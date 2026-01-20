@@ -1,0 +1,12 @@
+"""API Router modules for API Gateway.
+
+This package contains route handlers for different resource types.
+
+References:
+- Requirements 15: API and Integration Layer
+- Design Section 12: API Gateway
+"""
+
+from api_gateway.routers import auth, users, agents, tasks, knowledge
+
+__all__ = ["auth", "users", "agents", "tasks", "knowledge"]

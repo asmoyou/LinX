@@ -1,0 +1,243 @@
+"""Authentication Endpoints for API Gateway.
+
+This module provides authentication endpoints for login, logout, and token refresh.
+
+References:
+- Requirements 15: API and Integration Layer
+- Design Section 12: API Gateway
+- Task 2.1.5: Create authentication endpoints (login, logout, refresh)
+"""
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
+
+from access_control import (
+    UserModel,
+    verify_password,
+    create_token_pair,
+    refresh_access_token,
+    blacklist_token,
+    TokenPair,
+    register_user_self,
+    RegistrationRequest,
+    RegistrationResponse,
+    DuplicateUserError,
+    RegistrationValidationError,
+)
+from access_control.permissions import CurrentUser, get_current_user
+from access_control.audit_logger import log_authentication_event
+from shared.logging import get_logger
+from api_gateway.errors import ValidationError
+
+logger = get_logger(__name__)
+
+router = APIRouter()
+
+
+class LoginRequest(BaseModel):
+    """Login request model."""
+    
+    username: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=8)
+
+
+class LoginResponse(BaseModel):
+    """Login response model."""
+    
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: dict
+
+
+class RefreshRequest(BaseModel):
+    """Token refresh request model."""
+    
+    refresh_token: str
+
+
+class RefreshResponse(BaseModel):
+    """Token refresh response model."""
+    
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+@router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
+async def login(request: LoginRequest):
+    """Authenticate user and return JWT tokens.
+    
+    Args:
+        request: Login credentials
+        
+    Returns:
+        JWT token pair and user information
+        
+    Raises:
+        HTTPException: If credentials are invalid
+    """
+    # TODO: Query user from database
+    # For now, this is a placeholder that will be implemented when database is ready
+    # user = db.query(UserModel).filter(UserModel.username == request.username).first()
+    
+    # Placeholder response for development
+    logger.warning(
+        "Login endpoint called but database not yet integrated",
+        extra={"username": request.username}
+    )
+    
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Login endpoint requires database integration (Task 2.1.5 partial implementation)"
+    )
+    
+    # TODO: Uncomment when database is ready
+    # if not user or not verify_password(request.password, user.password_hash):
+    #     log_authentication_event(
+    #         event="login_failed",
+    #         username=request.username,
+    #         success=False,
+    #         reason="invalid_credentials"
+    #     )
+    #     raise HTTPException(
+    #         status_code=status.HTTP_401_UNAUTHORIZED,
+    #         detail="Invalid username or password",
+    #         headers={"WWW-Authenticate": "Bearer"},
+    #     )
+    #
+    # # Create token pair
+    # tokens = create_token_pair(
+    #     user_id=user.user_id,
+    #     username=user.username,
+    #     role=user.role
+    # )
+    #
+    # log_authentication_event(
+    #     event="login_success",
+    #     user_id=str(user.user_id),
+    #     username=user.username,
+    #     success=True
+    # )
+    #
+    # logger.info(
+    #     "User logged in",
+    #     extra={"user_id": str(user.user_id), "username": user.username}
+    # )
+    #
+    # return LoginResponse(
+    #     access_token=tokens.access_token,
+    #     refresh_token=tokens.refresh_token,
+    #     token_type=tokens.token_type,
+    #     expires_in=tokens.expires_in,
+    #     user={
+    #         "user_id": str(user.user_id),
+    #         "username": user.username,
+    #         "email": user.email,
+    #         "role": user.role,
+    #     }
+    # )
+
+
+@router.post("/register", response_model=RegistrationResponse, status_code=status.HTTP_201_CREATED)
+async def register(request: RegistrationRequest):
+    """Register a new user account.
+    
+    Args:
+        request: Registration information
+        
+    Returns:
+        Registration response with user information
+        
+    Raises:
+        HTTPException: If registration fails
+    """
+    try:
+        response = await register_user_self(request)
+        
+        logger.info(
+            "User registered",
+            extra={"user_id": response.user_id, "username": response.username}
+        )
+        
+        return response
+        
+    except DuplicateUserError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e)
+        )
+    except RegistrationValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e)
+        )
+
+
+@router.post("/refresh", response_model=RefreshResponse, status_code=status.HTTP_200_OK)
+async def refresh(request: RefreshRequest):
+    """Refresh access token using refresh token.
+    
+    Args:
+        request: Refresh token
+        
+    Returns:
+        New access token
+        
+    Raises:
+        HTTPException: If refresh token is invalid or expired
+    """
+    try:
+        new_access_token = refresh_access_token(request.refresh_token)
+        
+        # Get token expiration from config
+        from shared.config import get_config
+        config = get_config()
+        expires_in = config.get("api.jwt.expiration_hours", default=24) * 3600
+        
+        logger.info("Access token refreshed")
+        
+        return RefreshResponse(
+            access_token=new_access_token,
+            token_type="bearer",
+            expires_in=expires_in
+        )
+        
+    except Exception as e:
+        logger.warning(f"Token refresh failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(current_user: CurrentUser = Depends(get_current_user)):
+    """Logout user by blacklisting their token.
+    
+    Args:
+        current_user: Current authenticated user
+        
+    Returns:
+        No content
+    """
+    # TODO: Get token from request and blacklist it
+    # For now, this is a placeholder
+    
+    log_authentication_event(
+        event="logout",
+        user_id=current_user.user_id,
+        username=current_user.username,
+        success=True
+    )
+    
+    logger.info(
+        "User logged out",
+        extra={"user_id": current_user.user_id, "username": current_user.username}
+    )
+    
+    return None

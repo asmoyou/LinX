@@ -89,18 +89,18 @@
 **References**: Requirements 15, Design Section 12
 **Description**: Implement FastAPI-based API Gateway
 
-- [ ] 2.1.1 Create FastAPI application with CORS configuration
-- [ ] 2.1.2 Implement JWT authentication middleware
-- [ ] 2.1.3 Implement rate limiting middleware
-- [ ] 2.1.4 Add request logging middleware
-- [ ] 2.1.5 Create authentication endpoints (login, logout, refresh)
-- [ ] 2.1.6 Create user endpoints (GET /users/me, PUT /users/me, GET /users/{id}/quotas)
-- [ ] 2.1.7 Create agent endpoints (POST, GET, PUT, DELETE /agents)
-- [ ] 2.1.8 Create task endpoints (POST, GET, DELETE /tasks)
-- [ ] 2.1.9 Create knowledge endpoints (POST, GET, PUT, DELETE /knowledge)
-- [ ] 2.1.10 Implement WebSocket endpoint for real-time updates
-- [ ] 2.1.11 Add OpenAPI/Swagger documentation
-- [ ] 2.1.12 Implement error handling with structured responses
+- [x] 2.1.1 Create FastAPI application with CORS configuration
+- [x] 2.1.2 Implement JWT authentication middleware
+- [x] 2.1.3 Implement rate limiting middleware
+- [x] 2.1.4 Add request logging middleware
+- [x] 2.1.5 Create authentication endpoints (login, logout, refresh)
+- [x] 2.1.6 Create user endpoints (GET /users/me, PUT /users/me, GET /users/{id}/quotas)
+- [x] 2.1.7 Create agent endpoints (POST, GET, PUT, DELETE /agents)
+- [x] 2.1.8 Create task endpoints (POST, GET, DELETE /tasks)
+- [x] 2.1.9 Create knowledge endpoints (POST, GET, PUT, DELETE /knowledge)
+- [x] 2.1.10 Implement WebSocket endpoint for real-time updates
+- [x] 2.1.11 Add OpenAPI/Swagger documentation
+- [x] 2.1.12 Implement error handling with structured responses
 
 ### 2.2 Access Control System
 **References**: Requirements 14, Design Section 8
