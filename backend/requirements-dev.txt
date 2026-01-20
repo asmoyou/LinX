@@ -1,0 +1,55 @@
+# Development Dependencies for Digital Workforce Platform
+
+# Include all production dependencies
+-r requirements.txt
+
+# Testing Frameworks
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+pytest-xdist==3.5.0
+pytest-timeout==2.2.0
+faker==22.2.0
+
+# Code Quality and Linting
+black==24.1.1
+flake8==7.0.0
+flake8-docstrings==1.7.0
+flake8-bugbear==24.1.17
+mypy==1.8.0
+isort==5.13.2
+pylint==3.0.3
+bandit==1.7.6
+
+# Type Stubs
+types-redis==4.6.0.20240106
+types-PyYAML==6.0.12.12
+types-python-dateutil==2.8.19.20240106
+types-requests==2.31.0.20240106
+
+# Development Tools
+ipython==8.20.0
+ipdb==0.13.13
+pre-commit==3.6.0
+
+# Documentation
+sphinx==7.2.6
+sphinx-rtd-theme==2.0.0
+sphinx-autodoc-typehints==1.25.2
+
+# Performance Profiling
+py-spy==0.3.14
+memory-profiler==0.61.0
+line-profiler==4.1.1
+
+# Security Scanning
+safety==3.0.1
+pip-audit==2.7.0
+
+# Load Testing
+locust==2.20.0
+
+# API Documentation
+mkdocs==1.5.3
+mkdocs-material==9.5.6

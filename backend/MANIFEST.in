@@ -1,0 +1,37 @@
+# MANIFEST.in - Specify additional files to include in distribution
+
+# Include documentation
+include README.md
+include LICENSE
+include CONTRIBUTING.md
+
+# Include configuration files
+include requirements.txt
+include requirements-dev.txt
+include pyproject.toml
+include setup.py
+
+# Include configuration examples
+include config.yaml.example
+include .env.example
+
+# Include type stubs
+recursive-include */py.typed
+
+# Exclude development and build files
+exclude .gitignore
+exclude .pre-commit-config.yaml
+exclude pytest.ini
+exclude mypy.ini
+exclude .flake8
+exclude Makefile
+
+# Exclude test files
+recursive-exclude tests *
+recursive-exclude */tests *
+
+# Exclude cache and build artifacts
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude *.so
+global-exclude .DS_Store

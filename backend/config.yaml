@@ -1,0 +1,655 @@
+# Digital Workforce Platform Configuration
+# Development Configuration
+# For production, copy config.yaml.example and customize with secure values
+
+# ============================================================================
+# Platform Settings
+# ============================================================================
+platform:
+  name: "Digital Workforce Platform"
+  version: "1.0.0"
+  environment: "development"
+  debug: true
+
+# ============================================================================
+# API Gateway Configuration
+# ============================================================================
+api:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  
+  cors:
+    enabled: true
+    origins:
+      - "http://localhost:3000"
+      - "http://localhost:5173"
+    allow_credentials: true
+    allow_methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+    allow_headers: ["*"]
+  
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+    requests_per_hour: 1000
+    burst: 10
+  
+  jwt:
+    secret_key: "dev-secret-key-change-in-production"
+    algorithm: "HS256"
+    expiration_hours: 24
+    refresh_expiration_days: 7
+  
+  max_request_size_mb: 100
+  timeout_seconds: 300
+
+# ============================================================================
+# Database Configuration
+# ============================================================================
+database:
+  postgres:
+    host: "localhost"
+    port: 5432
+    database: "workforce_platform"
+    username: "platform_user"
+    password: "dev_password"
+    pool_size: 20
+    max_overflow: 10
+    pool_timeout: 30
+    pool_recycle: 3600
+    echo: false
+    echo_pool: false
+    ssl_mode: "prefer"
+    ssl_cert: null
+    ssl_key: null
+    ssl_root_cert: null
+  
+  milvus:
+    host: "localhost"
+    port: 19530
+    user: ""
+    password: ""
+    collection_prefix: "workforce_"
+    index_type: "IVF_FLAT"
+    metric_type: "L2"
+    nlist: 1024
+    nprobe: 16
+    hnsw_m: 16
+    hnsw_ef_construction: 200
+    hnsw_ef: 64
+    timeout: 30
+    enable_partitioning: true
+    partition_by: "user_id"
+  
+  redis:
+    host: "localhost"
+    port: 6379
+    password: ""
+    db: 0
+    max_connections: 50
+    socket_timeout: 5
+    socket_connect_timeout: 5
+    retry_on_timeout: true
+    max_retries: 3
+    ssl: false
+    ssl_cert_reqs: "required"
+    ssl_ca_certs: null
+
+# ============================================================================
+# Object Storage Configuration (MinIO)
+# ============================================================================
+storage:
+  minio:
+    endpoint: "localhost:9000"
+    access_key: "minioadmin"
+    secret_key: "minioadmin"
+    secure: false
+    region: "us-east-1"
+    buckets:
+      documents: "documents"
+      audio: "audio"
+      video: "video"
+      images: "images"
+      artifacts: "agent-artifacts"
+      backups: "backups"
+    max_file_size_mb: 500
+    allowed_document_types: ["pdf", "docx", "txt", "md", "html"]
+    allowed_audio_types: ["mp3", "wav", "m4a", "flac"]
+    allowed_video_types: ["mp4", "avi", "mov", "mkv"]
+    allowed_image_types: ["png", "jpg", "jpeg", "gif", "bmp"]
+    enable_versioning: true
+    temp_file_retention_days: 7
+    backup_retention_days: 90
+
+# ============================================================================
+# LLM Provider Configuration
+# ============================================================================
+llm:
+  default_provider: "ollama"
+  enable_fallback: false
+  fallback_order: ["ollama", "vllm"]
+  timeout_seconds: 120
+  max_retries: 3
+  retry_delay_seconds: 2
+  
+  providers:
+    ollama:
+      enabled: true
+      host: "192.168.0.29"
+      port: 11434
+      base_url: "http://192.168.0.29:11434"
+      models:
+        chat: "qwen3-vl:30b"
+        code: "qwen3-vl:30b"
+        embedding: "nomic-embed-text"
+        summarization: "qwen3-vl:30b"
+        translation: "qwen3-vl:30b"
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      num_predict: 2048
+      repeat_penalty: 1.1
+      context_window: 8192
+      num_ctx: 8192
+    
+    vllm:
+      enabled: false
+      host: "localhost"
+      port: 8000
+      base_url: "http://localhost:8000"
+      models:
+        chat: "meta-llama/Llama-3-70b"
+        code: "codellama/CodeLlama-13b-hf"
+      gpu_memory_utilization: 0.9
+      max_num_seqs: 256
+      max_model_len: 8192
+    
+    openai:
+      enabled: false
+      api_key: ""
+      organization: ""
+      models:
+        chat: "gpt-4"
+        code: "gpt-4"
+        embedding: "text-embedding-3-large"
+        summarization: "gpt-3.5-turbo"
+      temperature: 0.7
+      max_tokens: 2048
+      top_p: 1.0
+      frequency_penalty: 0.0
+      presence_penalty: 0.0
+    
+    anthropic:
+      enabled: false
+      api_key: ""
+      models:
+        chat: "claude-3-opus-20240229"
+        code: "claude-3-opus-20240229"
+        summarization: "claude-3-sonnet-20240229"
+      temperature: 0.7
+      max_tokens: 4096
+      top_p: 1.0
+      top_k: 40
+
+# ============================================================================
+# Agent Framework Configuration
+# ============================================================================
+agents:
+  pool:
+    min_size: 10
+    max_size: 100
+    idle_timeout_minutes: 5
+    warmup_enabled: true
+    warmup_count: 5
+  
+  resources:
+    default_cpu_cores: 1.0
+    default_memory_gb: 2
+    max_cpu_cores: 4
+    max_memory_gb: 8
+    default_disk_gb: 10
+    max_disk_gb: 50
+  
+  templates:
+    - name: "data_analyst"
+      display_name: "Data Analyst"
+      description: "Analyzes data, creates visualizations, and generates reports"
+      skills: ["data_processing", "statistical_analysis", "visualization", "sql_query"]
+      default_cpu: 2.0
+      default_memory: 4
+    
+    - name: "content_writer"
+      display_name: "Content Writer"
+      description: "Creates, edits, and summarizes written content"
+      skills: ["writing", "editing", "summarization", "translation"]
+      default_cpu: 1.0
+      default_memory: 2
+    
+    - name: "code_assistant"
+      display_name: "Code Assistant"
+      description: "Writes, debugs, and reviews code"
+      skills: ["code_generation", "debugging", "code_review", "testing"]
+      default_cpu: 2.0
+      default_memory: 4
+    
+    - name: "research_assistant"
+      display_name: "Research Assistant"
+      description: "Gathers information, conducts research, and compiles reports"
+      skills: ["information_gathering", "web_search", "summarization", "citation"]
+      default_cpu: 1.0
+      default_memory: 2
+  
+  execution:
+    max_task_duration_minutes: 60
+    heartbeat_interval_seconds: 30
+    max_retries: 3
+    retry_delay_seconds: 5
+
+# ============================================================================
+# Code Execution Sandbox Configuration
+# ============================================================================
+code_execution:
+  sandbox_mode: "auto"
+  fallback_enabled: true
+  fallback_to_docker: true
+  warn_on_fallback: true
+  require_minimum_security: "medium"
+  
+  platform_overrides:
+    linux:
+      preferred: "gvisor"
+      fallback: ["firecracker", "docker"]
+    darwin:
+      preferred: "docker"
+      fallback: []
+    windows:
+      preferred: "docker"
+      fallback: []
+  
+  resources:
+    default_cpu_cores: 0.5
+    max_cpu_cores: 2.0
+    default_memory_mb: 512
+    max_memory_mb: 2048
+    default_timeout_seconds: 30
+    max_timeout_seconds: 300
+    max_disk_io_mbps: 10
+    max_network_bandwidth_mbps: 1
+    max_network_connections: 5
+  
+  security:
+    enable_network: false
+    allowed_domains: []
+    block_dangerous_imports: true
+    enable_static_analysis: true
+    read_only_filesystem: true
+  
+  pool:
+    enabled: true
+    size: 10
+    warmup_on_startup: true
+
+# ============================================================================
+# Security Configuration
+# ============================================================================
+security:
+  encryption:
+    at_rest: true
+    in_transit: true
+    algorithm: "AES-256-GCM"
+  
+  data_classification:
+    enabled: true
+    auto_classify: true
+    levels: ["public", "internal", "confidential", "restricted"]
+    default_level: "internal"
+  
+  container_isolation:
+    drop_capabilities: ["NET_RAW", "SYS_ADMIN", "SYS_PTRACE", "SYS_MODULE", "DAC_OVERRIDE"]
+    read_only_root: true
+    no_new_privileges: true
+    seccomp_profile: "default"
+    apparmor_profile: "docker-default"
+  
+  network:
+    enable_firewall: true
+    default_policy: "deny"
+    allowed_internal_ports: [8000, 5432, 19530, 6379, 9000]
+    block_external_access: true
+  
+  authentication:
+    password_min_length: 12
+    password_require_uppercase: true
+    password_require_lowercase: true
+    password_require_numbers: true
+    password_require_special: true
+    max_login_attempts: 5
+    lockout_duration_minutes: 30
+  
+  session:
+    max_concurrent_sessions: 5
+    idle_timeout_minutes: 30
+    absolute_timeout_hours: 24
+
+# ============================================================================
+# Resource Quotas
+# ============================================================================
+quotas:
+  default:
+    max_agents: 10
+    max_storage_gb: 100
+    max_cpu_cores: 10
+    max_memory_gb: 20
+    max_concurrent_tasks: 50
+    max_knowledge_items: 1000
+  
+  admin:
+    max_agents: 100
+    max_storage_gb: 1000
+    max_cpu_cores: 100
+    max_memory_gb: 200
+    max_concurrent_tasks: 500
+    max_knowledge_items: 10000
+  
+  enforcement:
+    enabled: true
+    warn_at_percentage: 80
+    block_at_percentage: 100
+
+# ============================================================================
+# Monitoring and Observability
+# ============================================================================
+monitoring:
+  prometheus:
+    enabled: true
+    port: 9090
+    path: "/metrics"
+    collect_system_metrics: true
+    collect_application_metrics: true
+    collect_business_metrics: true
+    scrape_interval_seconds: 15
+  
+  logging:
+    level: "INFO"
+    format: "json"
+    output: "stdout"
+    file:
+      path: "/var/log/workforce-platform"
+      filename: "platform.log"
+      max_size_mb: 100
+      max_files: 10
+      rotation: "daily"
+    include_timestamp: true
+    include_level: true
+    include_caller: true
+    include_correlation_id: true
+    components:
+      api_gateway: "INFO"
+      task_manager: "INFO"
+      agent_framework: "INFO"
+      memory_system: "INFO"
+      llm_providers: "WARNING"
+      database: "WARNING"
+  
+  tracing:
+    enabled: true
+    provider: "jaeger"
+    jaeger:
+      agent_host: "localhost"
+      agent_port: 6831
+      collector_endpoint: "http://localhost:14268/api/traces"
+    sample_rate: 0.1
+    sample_errors: true
+    propagate_context: true
+  
+  health:
+    enabled: true
+    endpoint: "/health"
+    interval_seconds: 30
+    timeout_seconds: 5
+    check_database: true
+    check_redis: true
+    check_minio: true
+    check_milvus: true
+    check_llm: true
+
+# ============================================================================
+# Alerting Configuration
+# ============================================================================
+alerting:
+  enabled: false
+  
+  channels:
+    email:
+      enabled: false
+      smtp_host: "smtp.gmail.com"
+      smtp_port: 587
+      smtp_user: ""
+      smtp_password: ""
+      from_address: "alerts@company.com"
+      to_addresses: ["admin@company.com"]
+      use_tls: true
+    
+    slack:
+      enabled: false
+      webhook_url: ""
+      channel: "#workforce-alerts"
+      username: "Workforce Platform"
+      icon_emoji: ":robot_face:"
+    
+    teams:
+      enabled: false
+      webhook_url: ""
+    
+    pagerduty:
+      enabled: false
+      integration_key: ""
+      severity_threshold: "critical"
+  
+  rules:
+    system:
+      cpu_threshold: 90
+      memory_threshold: 95
+      disk_threshold: 85
+    application:
+      error_rate_threshold: 5
+      task_failure_rate_threshold: 10
+      api_latency_p99_threshold_ms: 5000
+    security:
+      failed_auth_attempts_per_minute: 10
+      unauthorized_access_attempts: 1
+    business:
+      task_queue_depth_threshold: 100
+      agent_pool_exhausted: true
+  
+  routing:
+    critical: ["pagerduty", "slack", "email"]
+    high: ["slack", "email"]
+    medium: ["slack"]
+    low: ["email"]
+  
+  deduplication:
+    enabled: true
+    window_minutes: 5
+  
+  throttling:
+    enabled: true
+    max_alerts_per_hour: 10
+
+# ============================================================================
+# Task Management Configuration
+# ============================================================================
+task_management:
+  decomposition:
+    max_depth: 5
+    max_subtasks: 20
+    use_llm: true
+    llm_model: "chat"
+  
+  execution:
+    default_timeout_minutes: 60
+    max_timeout_minutes: 480
+    enable_parallel: true
+    max_parallel_tasks: 10
+  
+  retry:
+    enabled: true
+    max_attempts: 3
+    backoff_strategy: "exponential"
+    initial_delay_seconds: 5
+    max_delay_seconds: 300
+  
+  aggregation:
+    default_strategy: "concatenation"
+    use_llm_for_summarization: true
+
+# ============================================================================
+# Memory System Configuration
+# ============================================================================
+memory:
+  types:
+    agent_memory:
+      enabled: true
+      retention_days: 90
+      max_items_per_agent: 10000
+    company_memory:
+      enabled: true
+      retention_days: 365
+      max_items: 100000
+    user_context:
+      enabled: true
+      retention_days: 365
+      max_items_per_user: 5000
+  
+  embedding:
+    model: "embedding"
+    dimension: 768
+    batch_size: 32
+  
+  retrieval:
+    top_k: 10
+    similarity_threshold: 0.7
+    enable_reranking: true
+    rerank_top_k: 5
+    similarity_weight: 0.7
+    recency_weight: 0.3
+  
+  sharing:
+    enable_automatic: true
+    enable_explicit: true
+    default_scope: "user_context"
+
+# ============================================================================
+# Knowledge Base Configuration
+# ============================================================================
+knowledge_base:
+  processing:
+    chunk_size_tokens: 512
+    chunk_overlap_tokens: 50
+    ocr:
+      enabled: true
+      engine: "tesseract"
+      languages: ["eng", "chi_sim"]
+      confidence_threshold: 0.7
+    transcription:
+      enabled: true
+      engine: "whisper"
+      model: "base"
+      language: "auto"
+    video:
+      extract_audio: true
+      extract_frames: false
+      frame_interval_seconds: 10
+  
+  queue:
+    max_concurrent_jobs: 5
+    job_timeout_minutes: 60
+    retry_failed_jobs: true
+    max_retries: 3
+  
+  search:
+    enable_semantic: true
+    enable_fulltext: true
+    combine_results: true
+    semantic_weight: 0.7
+    fulltext_weight: 0.3
+
+# ============================================================================
+# Message Bus Configuration
+# ============================================================================
+message_bus:
+  enable_pubsub: true
+  enable_streams: true
+  enable_queues: true
+  
+  retention:
+    pubsub_ttl_seconds: 3600
+    stream_max_length: 10000
+    stream_ttl_days: 7
+  
+  consumer_groups:
+    enabled: true
+    max_consumers_per_group: 10
+  
+  serialization: "json"
+  audit_messages: true
+
+# ============================================================================
+# Deployment Configuration
+# ============================================================================
+deployment:
+  mode: "docker-compose"
+  
+  docker_compose:
+    project_name: "workforce-platform"
+    network_name: "workforce-network"
+  
+  kubernetes:
+    namespace: "workforce-platform"
+    enable_autoscaling: true
+    min_replicas: 2
+    max_replicas: 10
+    target_cpu_utilization: 70
+    use_gvisor: true
+    runtime_class: "gvisor"
+  
+  backup:
+    enabled: true
+    schedule: "0 2 * * *"
+    retention_days: 30
+    backup_location: "backups"
+    backup_postgres: true
+    backup_milvus: true
+    backup_minio: true
+    backup_redis: false
+
+# ============================================================================
+# Feature Flags
+# ============================================================================
+features:
+  enable_task_flow_visualization: true
+  enable_real_time_updates: true
+  enable_websocket: true
+  enable_dynamic_skill_generation: false
+  enable_robot_integration: false
+  enable_multi_tenancy: false
+  enable_advanced_analytics: false
+  enable_cost_tracking: false
+  enable_anomaly_detection: false
+
+# ============================================================================
+# Development Settings
+# ============================================================================
+development:
+  debug_mode: true
+  verbose_logging: true
+  enable_profiling: false
+  hot_reload: true
+  watch_files: true
+  enable_test_mode: false
+  mock_llm_responses: false
+  mock_external_services: false
+  load_sample_data: false
+  sample_users: 5
+  sample_agents: 10
+  sample_tasks: 20

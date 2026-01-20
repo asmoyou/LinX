@@ -119,16 +119,17 @@ services:
     networks:
       - linx-network
 
-  # Ollama - 本地 LLM
-  ollama:
-    image: ollama/ollama:latest
-    container_name: linx-ollama
-    volumes:
-      - ollama-data:/root/.ollama
-    ports:
-      - "11434:11434"
-    networks:
-      - linx-network
+  # Ollama - 使用局域网服务器 (192.168.0.29:11434)
+  # 注释掉本地 Ollama 服务，使用远程服务器
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: linx-ollama
+  #   volumes:
+  #     - ollama-data:/root/.ollama
+  #   ports:
+  #     - "11434:11434"
+  #   networks:
+  #     - linx-network
 
   # API Gateway (待实现)
   # api:
@@ -175,7 +176,7 @@ volumes:
   minio-milvus-data:
   milvus-data:
   etcd-data:
-  ollama-data:
+  # ollama-data:  # 不再需要本地 Ollama 数据卷
 
 networks:
   linx-network:
