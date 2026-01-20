@@ -1,68 +1,82 @@
 version: '3.8'
 
 services:
-  # PostgreSQL - 主数据库
   postgres:
-    image: postgres:15-alpine
-    container_name: linx-postgres
+    image: postgres:16-alpine
+    container_name: dwp-postgres
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-linx}
-      POSTGRES_USER: ${POSTGRES_USER:-linx}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-linx123}
+      POSTGRES_DB: ${POSTGRES_DB:-digital_workforce}
+      POSTGRES_USER: ${POSTGRES_USER:-dwp_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dwp_password_change_me}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./infrastructure/scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-linx}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dwp_user} -d ${POSTGRES_DB:-digital_workforce}"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
     networks:
-      - linx-network
+      - dwp-backend
+      - dwp-data
+    restart: unless-stopped
 
-  # Redis - 消息总线
   redis:
     image: redis:7-alpine
-    container_name: linx-redis
-    command: redis-server --appendonly yes
+    container_name: dwp-redis
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:-redis_password_change_me}
     volumes:
       - redis-data:/data
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 5s
     networks:
-      - linx-network
+      - dwp-backend
+      - dwp-data
+    restart: unless-stopped
 
-  # MinIO - 对象存储
   minio:
     image: minio/minio:latest
-    container_name: linx-minio
+    container_name: dwp-minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin_change_me}
+      MINIO_BROWSER_REDIRECT_URL: ${MINIO_BROWSER_URL:-http://localhost:9001}
     volumes:
       - minio-data:/data
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
       timeout: 20s
       retries: 3
+      start_period: 10s
     networks:
-      - linx-network
+      - dwp-backend
+      - dwp-data
+    restart: unless-stopped
 
-  # Milvus Standalone - 向量数据库
   etcd:
     image: quay.io/coreos/etcd:v3.5.5
-    container_name: linx-etcd
+    container_name: dwp-etcd
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
       - ETCD_AUTO_COMPACTION_RETENTION=1000
@@ -76,15 +90,17 @@ services:
       interval: 30s
       timeout: 20s
       retries: 3
+      start_period: 10s
     networks:
-      - linx-network
+      - dwp-data
+    restart: unless-stopped
 
   minio-milvus:
     image: minio/minio:RELEASE.2023-03-20T20-16-18Z
-    container_name: linx-minio-milvus
+    container_name: dwp-minio-milvus
     environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      MINIO_ACCESS_KEY: ${MILVUS_MINIO_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MILVUS_MINIO_PASSWORD:-minioadmin}
     volumes:
       - minio-milvus-data:/minio_data
     command: minio server /minio_data --console-address ":9002"
@@ -93,81 +109,40 @@ services:
       interval: 30s
       timeout: 20s
       retries: 3
+      start_period: 10s
     networks:
-      - linx-network
+      - dwp-data
+    restart: unless-stopped
 
   milvus:
     image: milvusdb/milvus:v2.3.3
-    container_name: linx-milvus
+    container_name: dwp-milvus
     command: ["milvus", "run", "standalone"]
     environment:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio-milvus:9000
+      MINIO_ACCESS_KEY_ID: ${MILVUS_MINIO_USER:-minioadmin}
+      MINIO_SECRET_ACCESS_KEY: ${MILVUS_MINIO_PASSWORD:-minioadmin}
     volumes:
       - milvus-data:/var/lib/milvus
     ports:
-      - "19530:19530"
-      - "9091:9091"
+      - "${MILVUS_PORT:-19530}:19530"
+      - "${MILVUS_METRICS_PORT:-9091}:9091"
     depends_on:
-      - etcd
-      - minio-milvus
+      etcd:
+        condition: service_healthy
+      minio-milvus:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
       interval: 30s
       timeout: 20s
       retries: 5
+      start_period: 30s
     networks:
-      - linx-network
-
-  # Ollama - 使用局域网服务器 (192.168.0.29:11434)
-  # 注释掉本地 Ollama 服务，使用远程服务器
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: linx-ollama
-  #   volumes:
-  #     - ollama-data:/root/.ollama
-  #   ports:
-  #     - "11434:11434"
-  #   networks:
-  #     - linx-network
-
-  # API Gateway (待实现)
-  # api:
-  #   build:
-  #     context: ./backend
-  #     dockerfile: Dockerfile
-  #   container_name: linx-api
-  #   environment:
-  #     - DATABASE_URL=postgresql://${POSTGRES_USER:-linx}:${POSTGRES_PASSWORD:-linx123}@postgres:5432/${POSTGRES_DB:-linx}
-  #     - REDIS_HOST=redis
-  #     - MINIO_HOST=minio
-  #     - MILVUS_HOST=milvus
-  #     - OLLAMA_HOST=http://ollama:11434
-  #   ports:
-  #     - "8000:8000"
-  #   depends_on:
-  #     - postgres
-  #     - redis
-  #     - minio
-  #     - milvus
-  #     - ollama
-  #   networks:
-  #     - linx-network
-
-  # Frontend (待实现)
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #     dockerfile: Dockerfile
-  #   container_name: linx-frontend
-  #   ports:
-  #     - "3000:3000"
-  #   environment:
-  #     - VITE_API_URL=http://localhost:8000
-  #   depends_on:
-  #     - api
-  #   networks:
-  #     - linx-network
+      - dwp-backend
+      - dwp-data
+    restart: unless-stopped
 
 volumes:
   postgres-data:
@@ -176,8 +151,14 @@ volumes:
   minio-milvus-data:
   milvus-data:
   etcd-data:
-  # ollama-data:  # 不再需要本地 Ollama 数据卷
 
 networks:
-  linx-network:
+  dwp-frontend:
+    driver: bridge
+  dwp-backend:
+    driver: bridge
+  dwp-data:
+    driver: bridge
+    internal: true
+  dwp-agents:
     driver: bridge

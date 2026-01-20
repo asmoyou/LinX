@@ -21,7 +21,7 @@ asyncpg==0.29.0
 pymilvus==2.3.5
 
 # Object Storage - MinIO
-minio==7.2.3
+minio==7.2.20
 
 # Message Bus - Redis
 redis==5.0.1

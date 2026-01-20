@@ -50,9 +50,9 @@ database:
   postgres:
     host: "localhost"
     port: 5432
-    database: "workforce_platform"
-    username: "platform_user"
-    password: "dev_password"
+    database: "digital_workforce"
+    username: "dwp_user"
+    password: "dwp_password_change_me"
     pool_size: 20
     max_overflow: 10
     pool_timeout: 30
