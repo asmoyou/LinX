@@ -1,0 +1,7 @@
+{
+  "name": "LinX Workforce",
+  "description": "Enterprise-grade Digital Workforce Management Platform for coordinating AI agents and robotic workers through hierarchical task management and shared memory.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

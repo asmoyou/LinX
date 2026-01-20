@@ -1,0 +1,2 @@
+# Infrastructure directory for Docker, Kubernetes, and deployment configurations
+# This file ensures the directory is tracked by git

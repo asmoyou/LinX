@@ -1,0 +1,182 @@
+version: '3.8'
+
+services:
+  # PostgreSQL - 主数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: linx-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-linx}
+      POSTGRES_USER: ${POSTGRES_USER:-linx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-linx123}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-linx}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - linx-network
+
+  # Redis - 消息总线
+  redis:
+    image: redis:7-alpine
+    container_name: linx-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - linx-network
+
+  # MinIO - 对象存储
+  minio:
+    image: minio/minio:latest
+    container_name: linx-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - linx-network
+
+  # Milvus Standalone - 向量数据库
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: linx-etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd-data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - linx-network
+
+  minio-milvus:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    container_name: linx-minio-milvus
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - minio-milvus-data:/minio_data
+    command: minio server /minio_data --console-address ":9002"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - linx-network
+
+  milvus:
+    image: milvusdb/milvus:v2.3.3
+    container_name: linx-milvus
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio-milvus:9000
+    volumes:
+      - milvus-data:/var/lib/milvus
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      - etcd
+      - minio-milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+    networks:
+      - linx-network
+
+  # Ollama - 本地 LLM
+  ollama:
+    image: ollama/ollama:latest
+    container_name: linx-ollama
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - linx-network
+
+  # API Gateway (待实现)
+  # api:
+  #   build:
+  #     context: ./backend
+  #     dockerfile: Dockerfile
+  #   container_name: linx-api
+  #   environment:
+  #     - DATABASE_URL=postgresql://${POSTGRES_USER:-linx}:${POSTGRES_PASSWORD:-linx123}@postgres:5432/${POSTGRES_DB:-linx}
+  #     - REDIS_HOST=redis
+  #     - MINIO_HOST=minio
+  #     - MILVUS_HOST=milvus
+  #     - OLLAMA_HOST=http://ollama:11434
+  #   ports:
+  #     - "8000:8000"
+  #   depends_on:
+  #     - postgres
+  #     - redis
+  #     - minio
+  #     - milvus
+  #     - ollama
+  #   networks:
+  #     - linx-network
+
+  # Frontend (待实现)
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   container_name: linx-frontend
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - VITE_API_URL=http://localhost:8000
+  #   depends_on:
+  #     - api
+  #   networks:
+  #     - linx-network
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  minio-milvus-data:
+  milvus-data:
+  etcd-data:
+  ollama-data:
+
+networks:
+  linx-network:
+    driver: bridge
