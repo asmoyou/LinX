@@ -88,3 +88,6 @@ secrets/
 # Backups
 *.bak
 *.backup
+
+# Examples and temporary reference files
+examples-of-reference/
