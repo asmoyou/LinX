@@ -156,21 +156,21 @@
 **References**: Requirements 4, 16, Design Section 14
 **Description**: Implement document processing pipeline
 
-- [ ] 2.5.1 Create document upload handler
-- [ ] 2.5.2 Implement file type validation and malware scanning
-- [ ] 2.5.3 Create PDF text extraction (PyPDF2/pdfplumber)
-- [ ] 2.5.4 Create DOCX text extraction (python-docx)
-- [ ] 2.5.5 Create TXT/MD text extraction
-- [ ] 2.5.6 Implement OCR for images (Tesseract)
-- [ ] 2.5.7 Implement audio transcription (Whisper local)
-- [ ] 2.5.8 Implement video processing (audio extraction + transcription)
-- [ ] 2.5.9 Create document chunking service (512 tokens, 50 overlap)
-- [ ] 2.5.10 Implement batch embedding generation
-- [ ] 2.5.11 Create knowledge indexing service
-- [ ] 2.5.12 Implement knowledge search with permission filtering
-- [ ] 2.5.13 Add processing job queue (Redis)
-- [ ] 2.5.14 Create document processor worker
-- [ ] 2.5.15 Implement processing status tracking
+- [x] 2.5.1 Create document upload handler
+- [x] 2.5.2 Implement file type validation and malware scanning
+- [x] 2.5.3 Create PDF text extraction (PyPDF2/pdfplumber)
+- [x] 2.5.4 Create DOCX text extraction (python-docx)
+- [x] 2.5.5 Create TXT/MD text extraction
+- [x] 2.5.6 Implement OCR for images (Tesseract)
+- [x] 2.5.7 Implement audio transcription (Whisper local)
+- [x] 2.5.8 Implement video processing (audio extraction + transcription)
+- [x] 2.5.9 Create document chunking service (512 tokens, 50 overlap)
+- [x] 2.5.10 Implement batch embedding generation
+- [x] 2.5.11 Create knowledge indexing service
+- [x] 2.5.12 Implement knowledge search with permission filtering
+- [x] 2.5.13 Add processing job queue (Redis)
+- [x] 2.5.14 Create document processor worker
+- [x] 2.5.15 Implement processing status tracking
 
 ### 2.6 Skill Library
 **References**: Requirements 4, Design Section 4.4
