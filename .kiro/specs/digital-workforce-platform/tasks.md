@@ -626,13 +626,13 @@
 **References**: Best practices
 **Description**: Write end-to-end tests for user workflows
 
-- [ ] 8.3.1 Test user registration and login
-- [ ] 8.3.2 Test agent creation from template
-- [ ] 8.3.3 Test goal submission and completion
-- [ ] 8.3.4 Test document upload and search
-- [ ] 8.3.5 Test memory sharing across agents
-- [ ] 8.3.6 Test task flow visualization
-- [ ] 8.3.7 Test multi-agent collaboration
+- [x] 8.3.1 Test user registration and login
+- [x] 8.3.2 Test agent creation from template
+- [x] 8.3.3 Test goal submission and completion
+- [x] 8.3.4 Test document upload and search
+- [x] 8.3.5 Test memory sharing across agents
+- [x] 8.3.6 Test task flow visualization
+- [x] 8.3.7 Test multi-agent collaboration
 
 ### 8.4 Performance Tests
 **References**: Requirements 8
