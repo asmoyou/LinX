@@ -6,6 +6,7 @@ This module provides containerized agent execution with multi-layer security iso
 - Resource limits enforcement (CPU, memory, network)
 - Security policies and network isolation
 - Sandbox pool management for performance
+- Code execution sandbox with validation and monitoring
 
 References:
 - Requirements 6: Agent Virtualization and Isolation
@@ -36,6 +37,22 @@ from virtualization.sandbox_pool import (
     get_sandbox_pool,
 )
 
+from virtualization.code_validator import (
+    CodeValidator,
+    ValidationResult,
+    get_code_validator,
+)
+
+from virtualization.code_execution_sandbox import (
+    CodeExecutionSandbox,
+    ExecutionResult,
+    ExecutionStatus,
+    SecurityException,
+    ExecutionTimeoutException,
+    MemoryExceededException,
+    get_code_execution_sandbox,
+)
+
 __all__ = [
     # Sandbox selection
     'SandboxType',
@@ -56,4 +73,18 @@ __all__ = [
     # Sandbox pool
     'SandboxPool',
     'get_sandbox_pool',
+    
+    # Code validation
+    'CodeValidator',
+    'ValidationResult',
+    'get_code_validator',
+    
+    # Code execution
+    'CodeExecutionSandbox',
+    'ExecutionResult',
+    'ExecutionStatus',
+    'SecurityException',
+    'ExecutionTimeoutException',
+    'MemoryExceededException',
+    'get_code_execution_sandbox',
 ]
