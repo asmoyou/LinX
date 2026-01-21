@@ -54,6 +54,23 @@ from skill_library.default_skills import (
     get_default_skill_definitions,
 )
 
+from skill_library.dynamic_skill_generator import (
+    DynamicSkillGenerator,
+    GeneratedSkill,
+    get_dynamic_skill_generator,
+)
+
+from skill_library.skill_cache import (
+    SkillCache,
+    CachedSkill,
+    get_skill_cache,
+)
+
+from skill_library.semantic_skill_search import (
+    SemanticSkillSearch,
+    get_semantic_skill_search,
+)
+
 __all__ = [
     # Skill model
     'SkillModel',
@@ -88,4 +105,18 @@ __all__ = [
     # Default skills
     'register_default_skills',
     'get_default_skill_definitions',
+    
+    # Dynamic skill generation
+    'DynamicSkillGenerator',
+    'GeneratedSkill',
+    'get_dynamic_skill_generator',
+    
+    # Skill caching
+    'SkillCache',
+    'CachedSkill',
+    'get_skill_cache',
+    
+    # Semantic search
+    'SemanticSkillSearch',
+    'get_semantic_skill_search',
 ]
