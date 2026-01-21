@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus } from 'lucide-react';
+import { Plus, Search, Filter } from 'lucide-react';
 import type { Agent } from '@/types/agent';
 import { AgentCard } from '@/components/workforce/AgentCard';
-import { SearchFilterBar } from '@/components/workforce/SearchFilterBar';
 import { AddAgentModal } from '@/components/workforce/AddAgentModal';
 import { AgentDetailsModal } from '@/components/workforce/AgentDetailsModal';
 
@@ -14,24 +13,25 @@ export const Workforce: React.FC = () => {
   const [agents, setAgents] = useState<Agent[]>([
     {
       id: '1',
-      name: 'Data Analyst #1',
+      name: 'Analyst-Prime',
       type: 'Data Analyst',
-      status: 'working',
-      currentTask: 'Analyzing Q4 sales data',
+      status: 'idle',
+      currentTask: undefined,
       tasksCompleted: 45,
       uptime: '12h 34m',
     },
     {
       id: '2',
-      name: 'Content Writer #1',
+      name: 'Scribe-7',
       type: 'Content Writer',
-      status: 'idle',
+      status: 'working',
+      currentTask: 'Writing Q4 report',
       tasksCompleted: 28,
       uptime: '8h 15m',
     },
     {
       id: '3',
-      name: 'Code Assistant #1',
+      name: 'Code-Assistant-1',
       type: 'Code Assistant',
       status: 'working',
       currentTask: 'Reviewing pull request #234',
@@ -40,7 +40,7 @@ export const Workforce: React.FC = () => {
     },
     {
       id: '4',
-      name: 'Research Assistant #1',
+      name: 'Research-Unit-1',
       type: 'Research Assistant',
       status: 'offline',
       tasksCompleted: 12,
@@ -48,7 +48,7 @@ export const Workforce: React.FC = () => {
     },
     {
       id: '5',
-      name: 'Data Analyst #2',
+      name: 'Analyst-Beta',
       type: 'Data Analyst',
       status: 'working',
       currentTask: 'Generating monthly report',
@@ -57,7 +57,7 @@ export const Workforce: React.FC = () => {
     },
     {
       id: '6',
-      name: 'Content Writer #2',
+      name: 'Scribe-9',
       type: 'Content Writer',
       status: 'idle',
       tasksCompleted: 19,
@@ -66,8 +66,6 @@ export const Workforce: React.FC = () => {
   ]);
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [typeFilter, setTypeFilter] = useState('all');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
@@ -76,9 +74,7 @@ export const Workforce: React.FC = () => {
   const filteredAgents = agents.filter((agent) => {
     const matchesSearch = agent.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                          agent.type.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || agent.status === statusFilter;
-    const matchesType = typeFilter === 'all' || agent.type === typeFilter;
-    return matchesSearch && matchesStatus && matchesType;
+    return matchesSearch;
   });
 
   const handleAddAgent = (name: string, template: string) => {
@@ -105,34 +101,48 @@ export const Workforce: React.FC = () => {
   };
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-3xl font-bold text-gray-800 dark:text-white">
-          {t('nav.workforce')}
-        </h1>
+    <div className="space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6">
+        <div>
+          <h1 className="text-4xl font-bold tracking-tight mb-2">
+            {t('nav.workforce')}
+          </h1>
+          <p className="text-zinc-500 dark:text-zinc-400 font-medium">
+            Manage and monitor your AI agent workforce
+          </p>
+        </div>
         <button
           onClick={() => setIsAddModalOpen(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium"
+          className="bg-emerald-500 hover:bg-emerald-600 text-white dark:text-black px-8 py-3 rounded-full font-bold transition-all flex items-center gap-2 shadow-lg shadow-emerald-500/10 active:scale-95"
         >
           <Plus className="w-5 h-5" />
-          Add Agent
+          Deploy Agent
         </button>
       </div>
 
-      <SearchFilterBar
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
-        statusFilter={statusFilter}
-        onStatusFilterChange={setStatusFilter}
-        typeFilter={typeFilter}
-        onTypeFilterChange={setTypeFilter}
-      />
+      {/* Search Bar */}
+      <div className="flex gap-4 items-center bg-zinc-500/5 p-2 rounded-2xl border border-zinc-500/10">
+        <div className="relative flex-1">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
+          <input 
+            type="text" 
+            placeholder="Search agents by name or type..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-transparent border-none py-3 pl-12 pr-4 focus:ring-0 text-sm placeholder:text-zinc-400"
+          />
+        </div>
+        <button className="flex items-center gap-2 px-5 py-2.5 hover:bg-white/10 rounded-xl transition-all text-sm font-semibold text-zinc-500">
+          <Filter className="w-4 h-4" />
+          Filter
+        </button>
+      </div>
 
       {/* Agent Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {filteredAgents.length === 0 ? (
           <div className="col-span-full text-center py-12">
-            <p className="text-gray-500 dark:text-gray-400">No agents found</p>
+            <p className="text-zinc-500 dark:text-zinc-400">No agents found</p>
           </div>
         ) : (
           filteredAgents.map((agent) => (

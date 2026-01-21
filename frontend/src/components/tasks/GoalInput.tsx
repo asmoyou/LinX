@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import { Send, Loader2 } from 'lucide-react';
-import { GlassPanel } from '@/components/GlassPanel';
+import { Send, Loader2, Sparkles } from 'lucide-react';
 
 interface GoalInputProps {
   onSubmit: (title: string, description: string) => void;
@@ -8,65 +7,44 @@ interface GoalInputProps {
 }
 
 export const GoalInput: React.FC<GoalInputProps> = ({ onSubmit, isLoading }) => {
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  const [input, setInput] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (title.trim() && description.trim()) {
-      onSubmit(title, description);
-      setTitle('');
-      setDescription('');
+    if (input.trim()) {
+      // Use the input as both title and description for simplicity
+      onSubmit(input, input);
+      setInput('');
     }
   };
 
   return (
-    <GlassPanel>
-      <form onSubmit={handleSubmit}>
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Goal Title
-          </label>
-          <input
-            type="text"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g., Analyze Q4 sales data and create report"
-            className="w-full px-4 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-800 dark:text-white"
-            disabled={isLoading}
-          />
+    <form onSubmit={handleSubmit} className="relative group">
+      <div className="glass-panel p-3 rounded-[32px] flex items-center transition-all duration-500 focus-within:ring-4 focus-within:ring-emerald-500/10">
+        <div className="p-4">
+          <Sparkles className="w-7 h-7 text-emerald-500" />
         </div>
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Description
-          </label>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Provide detailed requirements and context..."
-            rows={4}
-            className="w-full px-4 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-800 dark:text-white resize-none"
-            disabled={isLoading}
-          />
-        </div>
-        <button
+        <input 
+          type="text" 
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          disabled={isLoading}
+          placeholder="Describe your goal in natural language..." 
+          className="flex-1 bg-transparent border-none py-6 text-xl focus:ring-0 placeholder:text-zinc-400 font-medium"
+        />
+        <button 
           type="submit"
-          disabled={isLoading || !title.trim() || !description.trim()}
-          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={!input.trim() || isLoading}
+          className="bg-emerald-500 hover:bg-emerald-600 disabled:bg-zinc-200 dark:disabled:bg-zinc-800 disabled:text-zinc-400 text-white dark:text-black px-10 py-5 rounded-[24px] font-bold flex items-center gap-3 transition-all active:scale-95 shadow-xl shadow-emerald-500/10"
         >
           {isLoading ? (
-            <>
-              <Loader2 className="w-5 h-5 animate-spin" />
-              Processing...
-            </>
+            <Loader2 className="w-6 h-6 animate-spin" />
           ) : (
-            <>
-              <Send className="w-5 h-5" />
-              Submit Goal
-            </>
+            <Send className="w-6 h-6" />
           )}
+          Execute
         </button>
-      </form>
-    </GlassPanel>
+      </div>
+    </form>
   );
 };

@@ -1,47 +1,48 @@
 import React from 'react';
-import { GlassPanel } from '@/components/GlassPanel';
 
 interface StatCardProps {
   title: string;
   value: string | number;
+  subtitle?: string;
   icon: React.ComponentType<{ className?: string }>;
   trend?: {
     value: number;
     isPositive: boolean;
   };
-  color?: string;
+  colorClass?: string;
 }
 
 export const StatCard: React.FC<StatCardProps> = ({
   title,
   value,
+  subtitle,
   icon: Icon,
   trend,
-  color = 'text-indigo-500',
+  colorClass = 'bg-emerald-500 text-emerald-600',
 }) => {
   return (
-    <GlassPanel className="hover:scale-105 transition-transform duration-200">
-      <div className="flex items-start justify-between">
-        <div className="flex-1">
-          <p className="text-sm text-gray-600 dark:text-gray-400 mb-1">{title}</p>
-          <p className="text-3xl font-bold text-gray-800 dark:text-white">{value}</p>
-          {trend && (
-            <div className="flex items-center gap-1 mt-2">
-              <span
-                className={`text-sm font-medium ${
-                  trend.isPositive ? 'text-green-500' : 'text-red-500'
-                }`}
-              >
-                {trend.isPositive ? '↑' : '↓'} {Math.abs(trend.value)}%
-              </span>
-              <span className="text-xs text-gray-500 dark:text-gray-400">vs last week</span>
-            </div>
-          )}
+    <div className="glass-panel p-6 rounded-[24px] group hover:-translate-y-1 transition-all duration-300">
+      <div className="flex justify-between items-start mb-4">
+        <div className={`p-2.5 rounded-xl ${colorClass} bg-opacity-10 text-opacity-90`}>
+          <Icon className="w-5 h-5" />
         </div>
-        <div className={`p-3 rounded-lg bg-white/20 ${color}`}>
-          <Icon className="w-6 h-6" />
-        </div>
+        {trend && (
+          <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-500 bg-emerald-500/5 px-2 py-0.5 rounded-full">
+            {trend.isPositive ? '+' : ''}{trend.value}%
+          </span>
+        )}
       </div>
-    </GlassPanel>
+      <div>
+        <h3 className="text-3xl font-bold tracking-tight mb-1">{value}</h3>
+        <p className="text-zinc-500 dark:text-zinc-400 text-xs font-medium uppercase tracking-wider">
+          {title}
+        </p>
+        {subtitle && (
+          <p className="text-zinc-400 dark:text-zinc-500 text-[10px] mt-2 font-mono">
+            {subtitle}
+          </p>
+        )}
+      </div>
+    </div>
   );
 };

@@ -1,6 +1,5 @@
 import React from 'react';
-import { Activity, Pause, Power, MoreVertical, Eye, Trash2 } from 'lucide-react';
-import { GlassPanel } from '@/components/GlassPanel';
+import { MoreVertical, Shield, Zap, Eye, Trash2 } from 'lucide-react';
 import type { Agent } from '@/types/agent';
 
 interface AgentCardProps {
@@ -15,77 +14,34 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onTerminate
   const getStatusColor = (status: Agent['status']) => {
     switch (status) {
       case 'working':
-        return 'bg-green-500';
+        return 'bg-emerald-500';
       case 'idle':
-        return 'bg-yellow-500';
+        return 'bg-zinc-400';
       case 'offline':
-        return 'bg-gray-500';
+        return 'bg-red-500';
     }
   };
 
-  const getStatusIcon = (status: Agent['status']) => {
-    switch (status) {
-      case 'working':
-        return <Activity className="w-4 h-4" />;
-      case 'idle':
-        return <Pause className="w-4 h-4" />;
-      case 'offline':
-        return <Power className="w-4 h-4" />;
-    }
-  };
+  // Generate avatar based on agent name
+  const avatarUrl = `https://picsum.photos/seed/${agent.id}/200`;
 
   return (
-    <GlassPanel className="hover:scale-105 transition-transform duration-200 relative">
-      {/* Status Badge */}
-      <div className="absolute top-4 right-4">
-        <div className={`flex items-center gap-2 px-2 py-1 rounded-full ${getStatusColor(agent.status)} bg-opacity-20`}>
-          {getStatusIcon(agent.status)}
-          <span className="text-xs font-medium capitalize">{agent.status}</span>
-        </div>
-      </div>
-
-      {/* Agent Info */}
-      <div className="mb-4">
-        <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-1">
-          {agent.name}
-        </h3>
-        <p className="text-sm text-gray-600 dark:text-gray-400">{agent.type}</p>
-      </div>
-
-      {/* Current Task */}
-      {agent.currentTask && (
-        <div className="mb-4 p-2 bg-white/10 rounded">
-          <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Current Task</p>
-          <p className="text-sm text-gray-700 dark:text-gray-300 truncate">{agent.currentTask}</p>
-        </div>
-      )}
-
-      {/* Stats */}
-      <div className="flex items-center justify-between text-sm mb-4">
-        <div>
-          <p className="text-gray-500 dark:text-gray-400">Tasks Completed</p>
-          <p className="font-semibold text-gray-800 dark:text-white">{agent.tasksCompleted}</p>
-        </div>
-        <div>
-          <p className="text-gray-500 dark:text-gray-400">Uptime</p>
-          <p className="font-semibold text-gray-800 dark:text-white">{agent.uptime}</p>
-        </div>
-      </div>
-
-      {/* Actions */}
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => onView(agent)}
-          className="flex-1 px-3 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors text-sm font-medium"
-        >
-          View Details
-        </button>
+    <div className="glass-panel group relative rounded-[32px] overflow-hidden p-8 hover:-translate-y-1 transition-all duration-300">
+      <div className="flex justify-between items-start mb-8">
         <div className="relative">
-          <button
+          <div className="w-20 h-20 rounded-[24px] overflow-hidden border-2 border-white dark:border-zinc-800 shadow-2xl">
+            <img src={avatarUrl} alt={agent.name} className="w-full h-full object-cover" />
+          </div>
+          <div className={`absolute -bottom-1 -right-1 w-6 h-6 rounded-full border-4 border-white dark:border-black shadow-lg flex items-center justify-center ${getStatusColor(agent.status)}`}>
+            {agent.status === 'working' && <Zap className="w-3.5 h-3.5 text-white" />}
+          </div>
+        </div>
+        <div className="relative">
+          <button 
             onClick={() => setShowMenu(!showMenu)}
-            className="p-2 hover:bg-white/20 rounded-lg transition-colors"
+            className="p-2.5 hover:bg-zinc-500/5 rounded-full text-zinc-400 transition-colors"
           >
-            <MoreVertical className="w-5 h-5 text-gray-700 dark:text-gray-300" />
+            <MoreVertical className="w-5 h-5" />
           </button>
           
           {showMenu && (
@@ -94,23 +50,23 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onTerminate
                 className="fixed inset-0 z-10"
                 onClick={() => setShowMenu(false)}
               />
-              <div className="absolute right-0 mt-2 w-48 glass rounded-lg shadow-lg z-20 overflow-hidden">
+              <div className="absolute right-0 mt-2 w-48 glass-panel rounded-[16px] shadow-2xl z-20 overflow-hidden p-2">
                 <button
                   onClick={() => {
                     onView(agent);
                     setShowMenu(false);
                   }}
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2"
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-zinc-500/5 rounded-lg transition-colors flex items-center gap-2 text-zinc-700 dark:text-zinc-300"
                 >
                   <Eye className="w-4 h-4" />
-                  View Logs
+                  View Details
                 </button>
                 <button
                   onClick={() => {
                     onTerminate(agent);
                     setShowMenu(false);
                   }}
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2 text-red-500"
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-red-500/5 rounded-lg transition-colors flex items-center gap-2 text-red-500"
                 >
                   <Trash2 className="w-4 h-4" />
                   Terminate
@@ -120,6 +76,45 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onTerminate
           )}
         </div>
       </div>
-    </GlassPanel>
+
+      <div className="space-y-4">
+        <div>
+          <h3 className="text-2xl font-bold tracking-tight mb-1">{agent.name}</h3>
+          <div className="flex items-center gap-2">
+            <Shield className="w-3.5 h-3.5 text-emerald-600" />
+            <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-600">
+              {agent.type}
+            </span>
+          </div>
+        </div>
+        
+        {agent.currentTask && (
+          <p className="text-zinc-500 dark:text-zinc-400 text-sm leading-relaxed line-clamp-2">
+            {agent.currentTask}
+          </p>
+        )}
+        
+        <div className="flex flex-wrap gap-2 pt-2">
+          <span className="px-3 py-1.5 bg-zinc-500/5 rounded-lg text-[10px] font-bold text-zinc-600 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
+            {agent.tasksCompleted} Tasks
+          </span>
+          <span className="px-3 py-1.5 bg-zinc-500/5 rounded-lg text-[10px] font-bold text-zinc-600 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
+            {agent.uptime}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-8 pt-6 border-t border-zinc-500/5 flex justify-between items-center">
+        <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">
+          Memory: 1.2GB
+        </span>
+        <button 
+          onClick={() => onView(agent)}
+          className="text-xs font-bold text-emerald-600 hover:text-emerald-500 transition-colors uppercase tracking-widest"
+        >
+          View Logs
+        </button>
+      </div>
+    </div>
   );
 };

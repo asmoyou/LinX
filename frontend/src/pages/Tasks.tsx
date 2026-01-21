@@ -24,27 +24,27 @@ export const Tasks: React.FC = () => {
     const mockGoals: Goal[] = [
       {
         id: '1',
-        title: 'Analyze Q4 Sales Data',
+        title: 'Q4 Market Strategy Report',
         description: 'Generate comprehensive sales report for Q4 2025',
         status: 'executing',
         createdAt: new Date().toISOString(),
         tasks: [
           {
             id: 't1',
-            title: 'Extract sales data from database',
+            title: 'Analyze competitor performance',
             status: 'completed',
             progress: 100,
-            assignedAgent: 'Data Analyst #1',
+            assignedAgent: 'Analyst-Prime',
             startTime: new Date(Date.now() - 3600000).toISOString(),
             endTime: new Date(Date.now() - 3000000).toISOString(),
-            result: 'Successfully extracted 15,234 sales records',
+            result: 'Competitors show a 15% increase in cloud adoption',
           },
           {
             id: 't2',
-            title: 'Clean and normalize data',
+            title: 'Draft executive summary',
             status: 'in_progress',
-            progress: 65,
-            assignedAgent: 'Data Analyst #1',
+            progress: 45,
+            assignedAgent: 'Scribe-7',
             dependencies: ['t1'],
             startTime: new Date(Date.now() - 2400000).toISOString(),
           },
@@ -54,21 +54,6 @@ export const Tasks: React.FC = () => {
             status: 'pending',
             progress: 0,
             dependencies: ['t2'],
-          },
-          {
-            id: 't4',
-            title: 'Create visualizations',
-            status: 'pending',
-            progress: 0,
-            dependencies: ['t3'],
-          },
-          {
-            id: 't5',
-            title: 'Write executive summary',
-            status: 'pending',
-            progress: 0,
-            assignedAgent: 'Content Writer #1',
-            dependencies: ['t3', 't4'],
           },
         ],
       },
@@ -94,37 +79,10 @@ export const Tasks: React.FC = () => {
     setGoals([newGoal, ...goals]);
     setIsSubmitting(false);
 
-    // Simulate clarification needed
-    setTimeout(() => {
-      const updatedGoal = {
-        ...newGoal,
-        clarificationNeeded: true,
-        clarificationQuestions: [
-          'What specific metrics should be included in the analysis?',
-          'What is the preferred format for the final report?',
-        ],
-      };
-      setGoals((prev) => prev.map((g) => (g.id === newGoal.id ? updatedGoal : g)));
-      setClarificationGoal(updatedGoal);
-    }, 3000);
-  };
-
-  const handleClarificationSubmit = (answers: string[]) => {
-    if (!clarificationGoal) return;
-
-    // Update goal status
-    const updatedGoal = {
-      ...clarificationGoal,
-      clarificationNeeded: false,
-      status: 'decomposing' as const,
-    };
-    setGoals((prev) => prev.map((g) => (g.id === clarificationGoal.id ? updatedGoal : g)));
-    setClarificationGoal(null);
-
     // Simulate task decomposition
     setTimeout(() => {
       const goalWithTasks = {
-        ...updatedGoal,
+        ...newGoal,
         status: 'executing' as const,
         tasks: [
           {
@@ -132,13 +90,18 @@ export const Tasks: React.FC = () => {
             title: 'Gather required data',
             status: 'in_progress' as const,
             progress: 30,
-            assignedAgent: 'Data Analyst #2',
+            assignedAgent: 'Analyst-Beta',
             startTime: new Date().toISOString(),
           },
         ],
       };
-      setGoals((prev) => prev.map((g) => (g.id === updatedGoal.id ? goalWithTasks : g)));
+      setGoals((prev) => prev.map((g) => (g.id === newGoal.id ? goalWithTasks : g)));
     }, 2000);
+  };
+
+  const handleClarificationSubmit = (answers: string[]) => {
+    if (!clarificationGoal) return;
+    setClarificationGoal(null);
   };
 
   const handleExpandGoal = (goalId: string) => {
@@ -148,10 +111,15 @@ export const Tasks: React.FC = () => {
   const expandedGoal = goals.find((g) => g.id === expandedGoalId);
 
   return (
-    <div>
-      <h1 className="text-3xl font-bold text-gray-800 dark:text-white mb-6">
-        {t('nav.tasks')}
-      </h1>
+    <div className="space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700">
+      <header>
+        <h1 className="text-4xl font-bold tracking-tight mb-2">
+          {t('nav.tasks')}
+        </h1>
+        <p className="text-zinc-500 dark:text-zinc-400 font-medium">
+          Submit goals and watch AI agents decompose and execute tasks
+        </p>
+      </header>
 
       {/* Goal Input */}
       <div className="mb-6">
@@ -160,9 +128,9 @@ export const Tasks: React.FC = () => {
 
       {/* Goals List */}
       <div className="mb-6">
-        <h2 className="text-xl font-semibold text-gray-800 dark:text-white mb-4">Active Goals</h2>
+        <h2 className="text-xl font-semibold text-zinc-800 dark:text-white mb-4">Active Goals</h2>
         {goals.length === 0 ? (
-          <div className="text-center py-12 text-gray-500 dark:text-gray-400">
+          <div className="text-center py-12 text-zinc-500 dark:text-zinc-400">
             No goals yet. Submit a goal above to get started.
           </div>
         ) : (
@@ -183,7 +151,7 @@ export const Tasks: React.FC = () => {
       {expandedGoal && expandedGoal.tasks.length > 0 && (
         <div>
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-semibold text-gray-800 dark:text-white">
+            <h2 className="text-xl font-semibold text-zinc-800 dark:text-white">
               Task Visualization
             </h2>
             <div className="flex items-center gap-2">
@@ -191,8 +159,8 @@ export const Tasks: React.FC = () => {
                 onClick={() => setViewMode('timeline')}
                 className={`p-2 rounded-lg transition-colors ${
                   viewMode === 'timeline'
-                    ? 'bg-indigo-500 text-white'
-                    : 'bg-white/20 text-gray-700 dark:text-gray-300 hover:bg-white/30'
+                    ? 'bg-emerald-500 text-white'
+                    : 'bg-zinc-500/5 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-500/10'
                 }`}
               >
                 <List className="w-5 h-5" />
@@ -201,8 +169,8 @@ export const Tasks: React.FC = () => {
                 onClick={() => setViewMode('flow')}
                 className={`p-2 rounded-lg transition-colors ${
                   viewMode === 'flow'
-                    ? 'bg-indigo-500 text-white'
-                    : 'bg-white/20 text-gray-700 dark:text-gray-300 hover:bg-white/30'
+                    ? 'bg-emerald-500 text-white'
+                    : 'bg-zinc-500/5 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-500/10'
                 }`}
               >
                 <LayoutGrid className="w-5 h-5" />

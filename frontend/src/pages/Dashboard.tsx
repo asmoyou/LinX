@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Users, CheckCircle, TrendingUp, Cpu } from 'lucide-react';
+import { Activity, CheckCircle2, Clock, Server } from 'lucide-react';
 import { StatCard } from '@/components/dashboard/StatCard';
 import { TaskDistributionChart } from '@/components/dashboard/TaskDistributionChart';
 import { RecentEvents } from '@/components/dashboard/RecentEvents';
@@ -17,48 +17,49 @@ export const Dashboard: React.FC = () => {
   });
 
   const [taskDistribution] = useState([
-    { name: 'Completed', value: 45 },
-    { name: 'In Progress', value: 25 },
-    { name: 'Pending', value: 15 },
-    { name: 'Failed', value: 5 },
-    { name: 'Queued', value: 10 },
+    { name: 'Mon', tasks: 4 },
+    { name: 'Tue', tasks: 12 },
+    { name: 'Wed', tasks: 8 },
+    { name: 'Thu', tasks: 15 },
+    { name: 'Fri', tasks: 10 },
+    { name: 'Sat', tasks: 6 },
+    { name: 'Sun', tasks: 5 },
   ]);
 
   const [events, setEvents] = useState([
     {
       id: '1',
       type: 'success' as const,
-      message: 'Agent "Data Analyst #3" completed task successfully',
-      timestamp: '2 minutes ago',
+      message: 'Goal "Q4 Report" decomposed into 5 tasks',
+      timestamp: '2m',
     },
     {
       id: '2',
-      type: 'info' as const,
-      message: 'New goal submitted: "Generate monthly report"',
-      timestamp: '5 minutes ago',
+      type: 'success' as const,
+      message: 'Agent "Data Analyst #3" completed task',
+      timestamp: '15m',
     },
     {
       id: '3',
-      type: 'success' as const,
-      message: 'Document processed: "Q4_Financial_Report.pdf"',
-      timestamp: '10 minutes ago',
+      type: 'info' as const,
+      message: 'System maintenance scheduled',
+      timestamp: '1h',
     },
     {
       id: '4',
-      type: 'error' as const,
-      message: 'Agent "Code Assistant #1" encountered an error',
-      timestamp: '15 minutes ago',
+      type: 'info' as const,
+      message: 'Cluster scaled to 8 nodes',
+      timestamp: '3h',
     },
   ]);
 
   // Simulate real-time updates
   useEffect(() => {
     const interval = setInterval(() => {
-      // Update stats with small random changes
       setStats((prev) => ({
-        activeAgents: prev.activeAgents + Math.floor(Math.random() * 3) - 1,
+        activeAgents: Math.max(0, prev.activeAgents + Math.floor(Math.random() * 3) - 1),
         goalsCompleted: prev.goalsCompleted + Math.floor(Math.random() * 2),
-        throughput: prev.throughput + Math.floor(Math.random() * 10) - 5,
+        throughput: Math.max(0, prev.throughput + Math.floor(Math.random() * 10) - 5),
         computeLoad: Math.max(0, Math.min(100, prev.computeLoad + Math.floor(Math.random() * 10) - 5)),
       }));
     }, 5000);
@@ -67,45 +68,56 @@ export const Dashboard: React.FC = () => {
   }, []);
 
   return (
-    <div>
-      <h1 className="text-3xl font-bold text-gray-800 dark:text-white mb-6">
-        {t('nav.dashboard')}
-      </h1>
+    <div className="space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700">
+      <header>
+        <h1 className="text-4xl font-bold tracking-tight mb-2">
+          {t('nav.dashboard')}
+        </h1>
+        <p className="text-zinc-500 dark:text-zinc-400 font-medium">
+          Real-time system overview and performance metrics
+        </p>
+      </header>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard
           title="Active Agents"
           value={stats.activeAgents}
-          icon={Users}
-          trend={{ value: 8.2, isPositive: true }}
-          color="text-blue-500"
+          subtitle="7 offline"
+          icon={Activity}
+          trend={{ value: 12.5, isPositive: true }}
+          colorClass="bg-emerald-500 text-emerald-600"
         />
         <StatCard
           title="Goals Completed"
           value={stats.goalsCompleted}
-          icon={CheckCircle}
+          subtitle="3 in progress"
+          icon={CheckCircle2}
           trend={{ value: 12.5, isPositive: true }}
-          color="text-green-500"
+          colorClass="bg-blue-500 text-blue-600"
         />
         <StatCard
-          title="Throughput (tasks/hr)"
-          value={stats.throughput}
-          icon={TrendingUp}
+          title="Throughput"
+          value={`${stats.throughput}/hr`}
+          subtitle="88% success rate"
+          icon={Clock}
           trend={{ value: 3.1, isPositive: false }}
-          color="text-purple-500"
+          colorClass="bg-purple-500 text-purple-600"
         />
         <StatCard
           title="Compute Load"
           value={`${stats.computeLoad}%`}
-          icon={Cpu}
-          color="text-orange-500"
+          subtitle="6/10 clusters"
+          icon={Server}
+          colorClass="bg-orange-500 text-orange-600"
         />
       </div>
 
       {/* Charts and Events */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <TaskDistributionChart data={taskDistribution} />
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2">
+          <TaskDistributionChart data={taskDistribution} />
+        </div>
         <RecentEvents events={events} />
       </div>
     </div>
