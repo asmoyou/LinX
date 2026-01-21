@@ -38,6 +38,26 @@ from memory_system.partitions import (
     get_partition_manager,
 )
 
+from memory_system.memory_interface import (
+    MemorySystemInterface,
+    EmbeddingServiceInterface,
+    MemoryItem,
+    MemoryType,
+    SearchQuery,
+)
+
+from memory_system.embedding_service import (
+    OllamaEmbeddingService,
+    VLLMEmbeddingService,
+    get_embedding_service,
+    set_embedding_service,
+)
+
+from memory_system.memory_system import (
+    MemorySystem,
+    get_memory_system,
+)
+
 __all__ = [
     # Connection management
     'MilvusConnectionManager',
@@ -61,4 +81,21 @@ __all__ = [
     # Partition management
     'PartitionManager',
     'get_partition_manager',
+    
+    # Memory System interface
+    'MemorySystemInterface',
+    'EmbeddingServiceInterface',
+    'MemoryItem',
+    'MemoryType',
+    'SearchQuery',
+    
+    # Embedding service
+    'OllamaEmbeddingService',
+    'VLLMEmbeddingService',
+    'get_embedding_service',
+    'set_embedding_service',
+    
+    # Memory System implementation
+    'MemorySystem',
+    'get_memory_system',
 ]
