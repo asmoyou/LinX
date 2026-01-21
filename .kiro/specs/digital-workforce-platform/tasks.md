@@ -613,14 +613,14 @@
 **References**: Best practices
 **Description**: Write integration tests for system components
 
-- [ ] 8.2.1 Test API Gateway → Task Manager integration
-- [ ] 8.2.2 Test Task Manager → Agent Framework integration
-- [ ] 8.2.3 Test Agent → Memory System integration
-- [ ] 8.2.4 Test Agent → Knowledge Base integration
-- [ ] 8.2.5 Test Document upload → Processing → Indexing flow
-- [ ] 8.2.6 Test Goal submission → Task decomposition → Execution flow
-- [ ] 8.2.7 Test Inter-agent communication
-- [ ] 8.2.8 Test WebSocket real-time updates
+- [x] 8.2.1 Test API Gateway → Task Manager integration
+- [x] 8.2.2 Test Task Manager → Agent Framework integration
+- [x] 8.2.3 Test Agent → Memory System integration
+- [x] 8.2.4 Test Agent → Knowledge Base integration
+- [x] 8.2.5 Test Document upload → Processing → Indexing flow
+- [x] 8.2.6 Test Goal submission → Task decomposition → Execution flow
+- [x] 8.2.7 Test Inter-agent communication
+- [x] 8.2.8 Test WebSocket real-time updates
 
 ### 8.3 End-to-End Tests
 **References**: Best practices
