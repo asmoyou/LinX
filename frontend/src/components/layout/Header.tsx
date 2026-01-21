@@ -1,21 +1,17 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Sun, Moon, Monitor, Bell, ShieldCheck, Menu } from 'lucide-react';
+import { Sun, Moon, Monitor, Bell, ShieldCheck } from 'lucide-react';
 import { useThemeStore } from '@/stores/themeStore';
 
-interface HeaderProps {
-  sidebarCollapsed: boolean;
-}
-
-export const Header: React.FC<HeaderProps> = ({ sidebarCollapsed }) => {
+export const Header: React.FC = () => {
   const { i18n, t } = useTranslation();
   const { theme, setTheme } = useThemeStore();
   const [showNotifications, setShowNotifications] = React.useState(false);
 
   const themeOptions = [
-    { id: 'light', icon: Sun },
-    { id: 'system', icon: Monitor },
-    { id: 'dark', icon: Moon }
+    { id: 'light' as const, icon: Sun },
+    { id: 'system' as const, icon: Monitor },
+    { id: 'dark' as const, icon: Moon }
   ];
 
   return (
@@ -40,15 +36,7 @@ export const Header: React.FC<HeaderProps> = ({ sidebarCollapsed }) => {
             {themeOptions.map((item) => (
               <button 
                 key={item.id}
-                onClick={() => {
-                  setTheme(item.id as 'light' | 'dark' | 'system');
-                  const newTheme = item.id as 'light' | 'dark' | 'system';
-                  if (newTheme === 'dark' || (newTheme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-                    document.documentElement.classList.add('dark');
-                  } else {
-                    document.documentElement.classList.remove('dark');
-                  }
-                }}
+                onClick={() => setTheme(item.id)}
                 className={`p-1.5 rounded-full transition-all duration-300 ${
                   theme === item.id 
                     ? 'bg-white dark:bg-zinc-700 shadow-sm text-emerald-600 dark:text-emerald-400' 
@@ -94,19 +82,25 @@ export const Header: React.FC<HeaderProps> = ({ sidebarCollapsed }) => {
           </button>
 
           {showNotifications && (
-            <div 
-              className="absolute right-0 mt-2 w-80 glass-panel rounded-[24px] shadow-2xl p-6 animate-slide-in-right"
-              role="menu"
-            >
-              <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400 mb-4">
-                Notifications
-              </h3>
-              <div className="space-y-3">
-                <div className="text-sm text-zinc-500 dark:text-zinc-400 p-3 hover:bg-zinc-500/5 rounded-xl transition-colors">
-                  No new notifications
+            <>
+              <div
+                className="fixed inset-0 z-10"
+                onClick={() => setShowNotifications(false)}
+              />
+              <div 
+                className="absolute right-0 mt-2 w-80 glass-panel rounded-[24px] shadow-2xl p-6 animate-slide-in-right z-20"
+                role="menu"
+              >
+                <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400 mb-4">
+                  Notifications
+                </h3>
+                <div className="space-y-3">
+                  <div className="text-sm text-zinc-500 dark:text-zinc-400 p-3 hover:bg-zinc-500/5 rounded-xl transition-colors">
+                    No new notifications
+                  </div>
                 </div>
               </div>
-            </div>
+            </>
           )}
         </div>
       </div>

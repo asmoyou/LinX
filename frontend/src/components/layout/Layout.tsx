@@ -6,16 +6,21 @@ import { useThemeStore } from '@/stores/themeStore';
 
 export const Layout: React.FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
-  const { theme } = useThemeStore();
+  const { applyTheme } = useThemeStore();
 
-  // Apply theme on mount and when it changes
+  // Apply theme on mount
   useEffect(() => {
-    if (theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  }, [theme]);
+    applyTheme();
+
+    // Listen for system theme changes
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = () => {
+      applyTheme();
+    };
+
+    mediaQuery.addEventListener('change', handleChange);
+    return () => mediaQuery.removeEventListener('change', handleChange);
+  }, [applyTheme]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -45,7 +50,7 @@ export const Layout: React.FC = () => {
   }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden selection:bg-emerald-500/30">
+    <div className="flex h-screen overflow-hidden selection:bg-emerald-500/30 bg-white dark:bg-black transition-colors duration-500">
       {/* Skip to main content link for keyboard navigation (6.9.2) */}
       <a
         href="#main-content"
@@ -63,11 +68,11 @@ export const Layout: React.FC = () => {
         id="main-content"
         role="main"
         aria-label="Main content"
-        className="flex-1 flex flex-col relative overflow-hidden bg-white dark:bg-black transition-colors duration-500"
+        className="flex-1 flex flex-col relative overflow-hidden"
       >
-        <div className="absolute inset-0 scan-line"></div>
+        <div className="absolute inset-0 scan-line pointer-events-none"></div>
         
-        <Header sidebarCollapsed={sidebarCollapsed} />
+        <Header />
         
         <div className="flex-1 overflow-y-auto p-6 lg:p-10 z-10 custom-scrollbar scroll-smooth">
           <div className="max-w-7xl mx-auto">
