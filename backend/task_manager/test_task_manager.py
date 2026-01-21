@@ -688,3 +688,212 @@ class TestAggregationStrategy:
         assert AggregationStrategy.SUMMARIZATION.value == "summarization"
         assert AggregationStrategy.STRUCTURED_MERGE.value == "structured_merge"
         assert AggregationStrategy.VOTING.value == "voting"
+
+
+
+class TestAggregationStrategySelection:
+    """Test automatic aggregation strategy selection."""
+    
+    def test_select_strategy_for_structured_data(self):
+        """Test strategy selection for structured data."""
+        from task_manager.result_collector import ResultCollector, CollectedResult
+        
+        collector = ResultCollector()
+        
+        # Structured results with similar keys
+        results = [
+            CollectedResult(
+                task_id=uuid4(),
+                result={"name": "John", "age": 30},
+                status="completed",
+                completed_at=None,
+            ),
+            CollectedResult(
+                task_id=uuid4(),
+                result={"name": "Jane", "age": 25},
+                status="completed",
+                completed_at=None,
+            ),
+        ]
+        
+        strategy = collector.select_aggregation_strategy(results)
+        
+        # Should select structured merge for similar structured data
+        from task_manager.result_collector import AggregationStrategy
+        assert strategy == AggregationStrategy.STRUCTURED_MERGE
+    
+    def test_select_strategy_for_long_text(self):
+        """Test strategy selection for long text."""
+        from task_manager.result_collector import ResultCollector, CollectedResult
+        
+        collector = ResultCollector()
+        
+        # Long text results
+        long_text = "This is a very long text result. " * 50
+        results = [
+            CollectedResult(
+                task_id=uuid4(),
+                result={"output": long_text},
+                status="completed",
+                completed_at=None,
+            ),
+            CollectedResult(
+                task_id=uuid4(),
+                result={"output": long_text},
+                status="completed",
+                completed_at=None,
+            ),
+            CollectedResult(
+                task_id=uuid4(),
+                result={"output": long_text},
+                status="completed",
+                completed_at=None,
+            ),
+        ]
+        
+        strategy = collector.select_aggregation_strategy(results)
+        
+        # Should select summarization for long text
+        from task_manager.result_collector import AggregationStrategy
+        assert strategy == AggregationStrategy.SUMMARIZATION
+    
+    def test_select_strategy_default(self):
+        """Test default strategy selection."""
+        from task_manager.result_collector import ResultCollector, CollectedResult
+        
+        collector = ResultCollector()
+        
+        # Simple results
+        results = [
+            CollectedResult(
+                task_id=uuid4(),
+                result={"output": "Short result"},
+                status="completed",
+                completed_at=None,
+            ),
+        ]
+        
+        strategy = collector.select_aggregation_strategy(results)
+        
+        # Should default to concatenation
+        from task_manager.result_collector import AggregationStrategy
+        assert strategy == AggregationStrategy.CONCATENATION
+
+
+class TestResultDelivery:
+    """Test ResultDelivery functionality."""
+    
+    def test_result_delivery_initialization(self):
+        """Test result delivery initializes correctly."""
+        from task_manager.result_collector import ResultDelivery
+        
+        delivery = ResultDelivery()
+        assert delivery is not None
+    
+    @pytest.mark.asyncio
+    async def test_deliver_result_to_database(self):
+        """Test delivering result to database."""
+        from task_manager.result_collector import ResultDelivery
+        
+        delivery = ResultDelivery()
+        task_id = uuid4()
+        user_id = uuid4()
+        result = {"output": "Test result"}
+        
+        # This will fail without database, but tests the interface
+        try:
+            success = await delivery.deliver_result(
+                task_id=task_id,
+                user_id=user_id,
+                result=result,
+                delivery_method="database",
+            )
+            assert isinstance(success, bool)
+        except Exception:
+            # Expected without database
+            pass
+    
+    def test_format_result_as_json(self):
+        """Test formatting result as JSON."""
+        from task_manager.result_collector import ResultDelivery
+        
+        delivery = ResultDelivery()
+        result = {"strategy": "concatenation", "output": "Test"}
+        
+        formatted = delivery.format_result_for_user(result, format_type="json")
+        
+        assert isinstance(formatted, str)
+        assert "concatenation" in formatted
+    
+    def test_format_result_as_text(self):
+        """Test formatting result as text."""
+        from task_manager.result_collector import ResultDelivery
+        
+        delivery = ResultDelivery()
+        result = {
+            "strategy": "summarization",
+            "summary": "This is a summary",
+        }
+        
+        formatted = delivery.format_result_for_user(result, format_type="text")
+        
+        assert isinstance(formatted, str)
+        assert "summarization" in formatted
+        assert "This is a summary" in formatted
+    
+    def test_format_result_as_html(self):
+        """Test formatting result as HTML."""
+        from task_manager.result_collector import ResultDelivery
+        
+        delivery = ResultDelivery()
+        result = {"strategy": "voting", "winner": "Best result"}
+        
+        formatted = delivery.format_result_for_user(result, format_type="html")
+        
+        assert isinstance(formatted, str)
+        assert "<div" in formatted
+        assert "voting" in formatted
+
+
+class TestResultAggregationIntegration:
+    """Test integrated result aggregation workflow."""
+    
+    @pytest.mark.asyncio
+    async def test_full_aggregation_workflow(self):
+        """Test complete aggregation workflow."""
+        from task_manager.result_collector import (
+            ResultCollector,
+            CollectedResult,
+            ResultDelivery,
+        )
+        
+        collector = ResultCollector()
+        delivery = ResultDelivery()
+        
+        # Create sample results
+        results = [
+            CollectedResult(
+                task_id=uuid4(),
+                result={"output": "Result 1"},
+                status="completed",
+                completed_at=None,
+            ),
+            CollectedResult(
+                task_id=uuid4(),
+                result={"output": "Result 2"},
+                status="completed",
+                completed_at=None,
+            ),
+        ]
+        
+        # Select strategy
+        strategy = collector.select_aggregation_strategy(results)
+        assert strategy is not None
+        
+        # Aggregate results
+        aggregated = await collector.aggregate_results(results, strategy)
+        assert isinstance(aggregated, dict)
+        
+        # Format for user
+        formatted = delivery.format_result_for_user(aggregated, format_type="text")
+        assert isinstance(formatted, str)

@@ -22,7 +22,7 @@ from task_manager.task_executor import TaskExecutor, ExecutionStrategy, Executio
 from task_manager.task_queue import TaskQueue, TaskPriority, QueuedTask
 from task_manager.load_balancer import LoadBalancer, AgentLoad
 from task_manager.progress_tracker import ProgressTracker, TaskProgress
-from task_manager.result_collector import ResultCollector, AggregationStrategy, CollectedResult
+from task_manager.result_collector import ResultCollector, AggregationStrategy, CollectedResult, ResultDelivery
 
 __all__ = [
     "GoalAnalyzer",
@@ -47,4 +47,5 @@ __all__ = [
     "ResultCollector",
     "AggregationStrategy",
     "CollectedResult",
+    "ResultDelivery",
 ]
