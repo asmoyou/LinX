@@ -32,6 +32,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
       className={`glass fixed left-0 top-0 h-screen transition-all duration-300 z-40 ${
         isCollapsed ? 'w-16' : 'w-64'
       }`}
+      role="navigation"
+      aria-label="Main navigation"
     >
       <div className="flex flex-col h-full p-4">
         {/* Logo */}
@@ -45,6 +47,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
             onClick={onToggle}
             className="p-2 rounded-lg hover:bg-white/20 transition-colors"
             aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!isCollapsed}
           >
             {isCollapsed ? (
               <ChevronRight className="w-5 h-5 text-gray-700 dark:text-gray-300" />
@@ -55,7 +58,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 space-y-2">
+        <nav className="flex-1 space-y-2" aria-label="Primary navigation">
           {navItems.map((item) => (
             <NavLink
               key={item.path}
@@ -68,8 +71,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
                 }`
               }
               title={isCollapsed ? item.label : undefined}
+              aria-label={item.label}
             >
-              <item.icon className="w-5 h-5 flex-shrink-0" />
+              <item.icon className="w-5 h-5 flex-shrink-0" aria-hidden="true" />
               {!isCollapsed && <span>{item.label}</span>}
             </NavLink>
           ))}

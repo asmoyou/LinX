@@ -5,12 +5,12 @@ import { MemoryCard } from '@/components/memory/MemoryCard';
 import { MemorySearchBar } from '@/components/memory/MemorySearchBar';
 import { MemoryDetailView } from '@/components/memory/MemoryDetailView';
 import { MemorySharingModal } from '@/components/memory/MemorySharingModal';
-import type { Memory, MemoryType } from '@/types/memory';
+import type { Memory as MemoryType, MemoryType as MemoryCategory } from '@/types/memory';
 
 export const Memory: React.FC = () => {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<MemoryType>('agent');
-  const [memories, setMemories] = useState<Memory[]>([]);
+  const [activeTab, setActiveTab] = useState<MemoryCategory>('agent');
+  const [memories, setMemories] = useState<MemoryType[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
