@@ -1,4 +1,4 @@
-export interface Agent {
+export type Agent = {
   id: string;
   name: string;
   type: string;
@@ -6,4 +6,4 @@ export interface Agent {
   currentTask?: string;
   tasksCompleted: number;
   uptime: string;
-}
+};
