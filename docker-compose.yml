@@ -144,6 +144,155 @@ services:
       - dwp-data
     restart: unless-stopped
 
+  # Application Services
+  api-gateway:
+    build:
+      context: ./backend
+      dockerfile: ../infrastructure/docker/Dockerfile.api-gateway
+    container_name: dwp-api-gateway
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-digital_workforce}
+      - POSTGRES_USER=${POSTGRES_USER:-dwp_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-dwp_password_change_me}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis_password_change_me}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_change_me}
+      - MILVUS_HOST=milvus
+      - MILVUS_PORT=19530
+      - JWT_SECRET=${JWT_SECRET:-change_me_in_production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./backend:/app
+      - ./backend/config.yaml:/app/config.yaml:ro
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - dwp-frontend
+      - dwp-backend
+    restart: unless-stopped
+
+  task-manager:
+    build:
+      context: ./backend
+      dockerfile: ../infrastructure/docker/Dockerfile.task-manager
+    container_name: dwp-task-manager
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-digital_workforce}
+      - POSTGRES_USER=${POSTGRES_USER:-dwp_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-dwp_password_change_me}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis_password_change_me}
+      - MILVUS_HOST=milvus
+      - MILVUS_PORT=19530
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./backend:/app
+      - ./backend/config.yaml:/app/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - dwp-backend
+      - dwp-agents
+    restart: unless-stopped
+
+  document-processor:
+    build:
+      context: ./backend
+      dockerfile: ../infrastructure/docker/Dockerfile.document-processor
+    container_name: dwp-document-processor
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-digital_workforce}
+      - POSTGRES_USER=${POSTGRES_USER:-dwp_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-dwp_password_change_me}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis_password_change_me}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_change_me}
+      - MILVUS_HOST=milvus
+      - MILVUS_PORT=19530
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./backend:/app
+      - ./backend/config.yaml:/app/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - dwp-backend
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: dwp-frontend
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - dwp-frontend
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   redis-data:

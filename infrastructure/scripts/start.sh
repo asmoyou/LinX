@@ -75,7 +75,7 @@ case $MODE in
     
     services)
         print_info "Starting application services only..."
-        docker-compose up -d api-gateway task-manager agent-runtime document-processor
+        docker-compose up -d api-gateway task-manager document-processor frontend
         ;;
     
     all)
@@ -167,14 +167,12 @@ if [ "$MODE" = "services" ] || [ "$MODE" = "all" ]; then
     # API Gateway
     check_service "API Gateway" 8000
     
-    # Task Manager
-    check_service "Task Manager" 8001
-    
-    # Agent Runtime
-    check_service "Agent Runtime" 8002
-    
-    # Document Processor
-    check_service "Document Processor" 8003
+    # Frontend
+    if curl -f -s http://localhost:3000/health > /dev/null 2>&1; then
+        print_success "Frontend is ready"
+    else
+        print_warning "Frontend is not ready yet"
+    fi
 fi
 
 # Print summary
@@ -182,6 +180,7 @@ echo ""
 print_success "Digital Workforce Platform started successfully!"
 echo ""
 print_info "Service URLs:"
+print_info "  - Frontend: http://localhost:3000"
 print_info "  - API Gateway: http://localhost:8000"
 print_info "  - API Documentation: http://localhost:8000/docs"
 print_info "  - MinIO Console: http://localhost:9001"
