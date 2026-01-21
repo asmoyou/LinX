@@ -26,6 +26,15 @@ class SandboxType(Enum):
     DOCKER_ENHANCED = "docker_enhanced"
 
 
+class PlatformType(Enum):
+    """Supported platform types."""
+    
+    LINUX = "Linux"
+    MACOS = "Darwin"
+    WINDOWS = "Windows"
+    UNKNOWN = "Unknown"
+
+
 class SandboxSelector:
     """Automatically select best available sandbox technology.
     
@@ -39,7 +48,8 @@ class SandboxSelector:
         """Initialize the sandbox selector."""
         self.logger = logging.getLogger(__name__)
         self._detected_sandbox: Optional[SandboxType] = None
-        self._platform = platform.system()
+        self._platform = self._detect_platform()
+        self._platform_details = self._get_detailed_platform_info()
     
     def detect_best_sandbox(self) -> SandboxType:
         """Detect and return the best available sandbox technology.
@@ -52,11 +62,14 @@ class SandboxSelector:
         
         self.logger.info(
             "Detecting best sandbox technology",
-            extra={"platform": self._platform},
+            extra={
+                "platform": self._platform,
+                "platform_details": self._platform_details,
+            },
         )
         
         # Check gVisor (Linux only)
-        if self._platform == "Linux":
+        if self._platform == PlatformType.LINUX.value:
             if self._is_gvisor_available():
                 self.logger.info(
                     "Using gVisor sandbox (highest security)",
@@ -75,16 +88,126 @@ class SandboxSelector:
                 return self._detected_sandbox
         
         # Fallback to Docker Enhanced (all platforms)
-        self.logger.info(
+        security_warning = self._get_security_warning()
+        self.logger.warning(
             f"Using Docker Enhanced sandbox on {self._platform}",
             extra={
                 "reason": "gVisor/Firecracker not available",
                 "security_level": "medium",
                 "overhead": "5%",
+                "warning": security_warning,
             },
         )
         self._detected_sandbox = SandboxType.DOCKER_ENHANCED
         return self._detected_sandbox
+    
+    def _detect_platform(self) -> str:
+        """Detect the current platform.
+        
+        Returns:
+            Platform name (Linux, Darwin, Windows, or Unknown)
+        """
+        system = platform.system()
+        
+        # Normalize platform names
+        if system in ["Linux", "Darwin", "Windows"]:
+            return system
+        
+        self.logger.warning(
+            f"Unknown platform detected: {system}",
+            extra={"detected_system": system},
+        )
+        return "Unknown"
+    
+    def _get_detailed_platform_info(self) -> Dict[str, Any]:
+        """Get detailed platform information.
+        
+        Returns:
+            Dictionary with detailed platform information
+        """
+        info = {
+            "system": self._platform,
+            "release": platform.release(),
+            "version": platform.version(),
+            "machine": platform.machine(),
+            "processor": platform.processor(),
+            "python_version": platform.python_version(),
+        }
+        
+        # Add Linux-specific information
+        if self._platform == PlatformType.LINUX.value:
+            try:
+                # Check for distribution info
+                if os.path.exists('/etc/os-release'):
+                    with open('/etc/os-release', 'r') as f:
+                        os_release = {}
+                        for line in f:
+                            if '=' in line:
+                                key, value = line.strip().split('=', 1)
+                                os_release[key] = value.strip('"')
+                        info['distribution'] = os_release.get('NAME', 'Unknown')
+                        info['distribution_version'] = os_release.get('VERSION', 'Unknown')
+                
+                # Check for KVM support
+                info['kvm_available'] = os.path.exists('/dev/kvm')
+                
+                # Check for cgroup v2
+                info['cgroup_v2'] = os.path.exists('/sys/fs/cgroup/cgroup.controllers')
+                
+            except Exception as e:
+                self.logger.debug(f"Failed to get Linux-specific info: {e}")
+        
+        # Add macOS-specific information
+        elif self._platform == PlatformType.MACOS.value:
+            try:
+                # Get macOS version
+                mac_ver = platform.mac_ver()
+                info['macos_version'] = mac_ver[0]
+                info['macos_arch'] = mac_ver[2]
+            except Exception as e:
+                self.logger.debug(f"Failed to get macOS-specific info: {e}")
+        
+        # Add Windows-specific information
+        elif self._platform == PlatformType.WINDOWS.value:
+            try:
+                # Get Windows version
+                win_ver = platform.win32_ver()
+                info['windows_version'] = win_ver[0]
+                info['windows_build'] = win_ver[1]
+            except Exception as e:
+                self.logger.debug(f"Failed to get Windows-specific info: {e}")
+        
+        return info
+    
+    def _get_security_warning(self) -> str:
+        """Get security warning message for fallback mode.
+        
+        Returns:
+            Security warning message
+        """
+        if self._platform == PlatformType.LINUX.value:
+            return (
+                "Running in Docker Enhanced mode on Linux. "
+                "For enhanced security, consider installing gVisor (runsc) or Firecracker. "
+                "See documentation for installation instructions."
+            )
+        elif self._platform == PlatformType.MACOS.value:
+            return (
+                "Running in Docker Enhanced mode on macOS. "
+                "gVisor and Firecracker are not available on macOS. "
+                "This provides container-level isolation with resource limits."
+            )
+        elif self._platform == PlatformType.WINDOWS.value:
+            return (
+                "Running in Docker Enhanced mode on Windows. "
+                "gVisor and Firecracker are not available on Windows. "
+                "This provides container-level isolation with resource limits."
+            )
+        else:
+            return (
+                "Running in Docker Enhanced mode on unknown platform. "
+                "Advanced sandbox technologies are not available."
+            )
     
     def _is_gvisor_available(self) -> bool:
         """Check if gVisor is available on the system.
@@ -246,14 +369,36 @@ class SandboxSelector:
             True if requirements are met, False otherwise
         """
         if sandbox_type == SandboxType.GVISOR:
-            return self._platform == "Linux" and self._is_gvisor_available()
+            return self._platform == PlatformType.LINUX.value and self._is_gvisor_available()
         elif sandbox_type == SandboxType.FIRECRACKER:
-            return self._platform == "Linux" and self._is_firecracker_available()
+            return self._platform == PlatformType.LINUX.value and self._is_firecracker_available()
         elif sandbox_type == SandboxType.DOCKER_ENHANCED:
             # Docker Enhanced works on all platforms
             return True
         
         return False
+    
+    def log_platform_detection(self) -> None:
+        """Log detailed platform detection information."""
+        self.logger.info(
+            "Platform detection complete",
+            extra={
+                "platform": self._platform,
+                "details": self._platform_details,
+                "selected_sandbox": self._detected_sandbox.value if self._detected_sandbox else "not_detected",
+            },
+        )
+        
+        # Log security recommendations
+        if self._platform == PlatformType.LINUX.value and self._detected_sandbox == SandboxType.DOCKER_ENHANCED:
+            self.logger.warning(
+                "Security recommendation: Install gVisor for enhanced isolation",
+                extra={
+                    "current_security": "medium",
+                    "recommended_security": "high",
+                    "installation_guide": "https://gvisor.dev/docs/user_guide/install/",
+                },
+            )
 
 
 # Global sandbox selector instance
