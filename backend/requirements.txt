@@ -76,7 +76,7 @@ prometheus-client==0.19.0
 opentelemetry-api==1.22.0
 opentelemetry-sdk==1.22.0
 opentelemetry-instrumentation-fastapi==0.43b0
-opentelemetry-exporter-jaeger==1.22.0
+opentelemetry-exporter-jaeger==1.21.0
 
 # Task Queue and Background Jobs
 celery==5.3.6
@@ -111,7 +111,7 @@ websockets==12.0
 slowapi==0.1.9
 
 # CORS
-python-cors==1.0.0
+# FastAPI has built-in CORS support via fastapi.middleware.cors
 
 # Email (for alerts)
 aiosmtplib==3.0.1

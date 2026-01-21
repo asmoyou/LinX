@@ -600,8 +600,8 @@
 **References**: Best practices
 **Description**: Write unit tests for core components
 
-- [ ] 8.1.1 Write tests for API Gateway endpoints
-- [ ] 8.1.2 Write tests for Access Control System
+- [x] 8.1.1 Write tests for API Gateway endpoints
+- [x] 8.1.2 Write tests for Access Control System
 - [ ] 8.1.3 Write tests for Memory System
 - [ ] 8.1.4 Write tests for Task Manager
 - [ ] 8.1.5 Write tests for Agent Framework
