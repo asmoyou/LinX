@@ -5,6 +5,7 @@ import { LogIn, Loader2 } from 'lucide-react';
 import { authApi } from '../api';
 import { useAuthStore } from '../stores';
 import toast from 'react-hot-toast';
+import { LanguageSwitcher } from '../components/LanguageSwitcher';
 
 export default function Login() {
   const { t } = useTranslation();
@@ -89,6 +90,11 @@ export default function Login() {
 
       {/* Login card */}
       <div className="relative w-full max-w-md">
+        {/* Language switcher */}
+        <div className="flex justify-end mb-4">
+          <LanguageSwitcher />
+        </div>
+
         <div className="backdrop-blur-xl bg-white/10 border border-white/20 rounded-2xl shadow-2xl p-8">
           {/* Logo and title */}
           <div className="text-center mb-8">

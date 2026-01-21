@@ -20,11 +20,13 @@ from access_control import (
     refresh_access_token,
     blacklist_token,
     TokenPair,
+)
+from access_control.registration import (
     register_user_self,
     RegistrationRequest,
     RegistrationResponse,
     DuplicateUserError,
-    RegistrationValidationError,
+    ValidationError as RegistrationValidationError,
 )
 from access_control.permissions import CurrentUser, get_current_user
 from access_control.audit_logger import log_authentication_event
@@ -155,8 +157,18 @@ async def register(request: RegistrationRequest):
     Raises:
         HTTPException: If registration fails
     """
+    from database.connection import get_db_session
+    
     try:
-        response = await register_user_self(request)
+        with get_db_session() as session:
+            response = register_user_self(
+                session=session,
+                username=request.username,
+                email=request.email,
+                password=request.password,
+                attributes=request.attributes
+            )
+            session.commit()
         
         logger.info(
             "User registered",
@@ -174,6 +186,12 @@ async def register(request: RegistrationRequest):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Registration error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Registration failed. Please try again."
         )
 
 
