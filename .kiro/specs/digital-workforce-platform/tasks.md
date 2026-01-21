@@ -547,18 +547,18 @@
 **References**: Requirements 15, Design Section 12
 **Description**: Integrate frontend with backend APIs
 
-- [ ] 6.11.1 Create API client with axios/fetch
-- [ ] 6.11.2 Implement authentication API calls (login, logout, refresh)
-- [ ] 6.11.3 Create user API integration (profile, quotas)
-- [ ] 6.11.4 Implement agents API integration (CRUD operations)
-- [ ] 6.11.5 Create tasks API integration (submit, query, delete)
-- [ ] 6.11.6 Implement knowledge API integration (upload, search, delete)
-- [ ] 6.11.7 Create memory API integration (query, share)
-- [ ] 6.11.8 Add skills API integration
-- [ ] 6.11.9 Implement error handling and retry logic
-- [ ] 6.11.10 Create API request/response interceptors
-- [ ] 6.11.11 Add request cancellation for navigation
-- [ ] 6.11.12 Implement optimistic UI updates
+- [x] 6.11.1 Create API client with axios/fetch
+- [x] 6.11.2 Implement authentication API calls (login, logout, refresh)
+- [x] 6.11.3 Create user API integration (profile, quotas)
+- [x] 6.11.4 Implement agents API integration (CRUD operations)
+- [x] 6.11.5 Create tasks API integration (submit, query, delete)
+- [x] 6.11.6 Implement knowledge API integration (upload, search, delete)
+- [x] 6.11.7 Create memory API integration (query, share)
+- [x] 6.11.8 Add skills API integration
+- [x] 6.11.9 Implement error handling and retry logic
+- [x] 6.11.10 Create API request/response interceptors
+- [x] 6.11.11 Add request cancellation for navigation
+- [x] 6.11.12 Implement optimistic UI updates
 
 ### 6.12 WebSocket Real-Time Integration
 **References**: Requirements 13, Design Section 12.1
