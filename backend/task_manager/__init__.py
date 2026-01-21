@@ -23,6 +23,20 @@ from task_manager.task_queue import TaskQueue, TaskPriority, QueuedTask
 from task_manager.load_balancer import LoadBalancer, AgentLoad
 from task_manager.progress_tracker import ProgressTracker, TaskProgress
 from task_manager.result_collector import ResultCollector, AggregationStrategy, CollectedResult, ResultDelivery
+from task_manager.error_handler import (
+    FailureDetector,
+    RetryManager,
+    TaskReassigner,
+    EscalationManager,
+    CircuitBreaker,
+    FailureLogger,
+    AlertManager,
+    FailureRecord,
+    FailureType,
+    RecoveryStrategy,
+    RetryPolicy,
+)
+from task_manager.recovery_coordinator import RecoveryCoordinator
 
 __all__ = [
     "GoalAnalyzer",
@@ -48,4 +62,16 @@ __all__ = [
     "AggregationStrategy",
     "CollectedResult",
     "ResultDelivery",
+    "FailureDetector",
+    "RetryManager",
+    "TaskReassigner",
+    "EscalationManager",
+    "CircuitBreaker",
+    "FailureLogger",
+    "AlertManager",
+    "FailureRecord",
+    "FailureType",
+    "RecoveryStrategy",
+    "RetryPolicy",
+    "RecoveryCoordinator",
 ]

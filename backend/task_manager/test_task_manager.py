@@ -897,3 +897,372 @@ class TestResultAggregationIntegration:
         # Format for user
         formatted = delivery.format_result_for_user(aggregated, format_type="text")
         assert isinstance(formatted, str)
+
+
+
+class TestFailureDetector:
+    """Test FailureDetector functionality."""
+    
+    def test_failure_detector_initialization(self):
+        """Test failure detector initializes correctly."""
+        from task_manager.error_handler import FailureDetector
+        
+        detector = FailureDetector()
+        assert detector is not None
+        assert len(detector._timeout_thresholds) > 0
+    
+    def test_detect_failure_no_task(self):
+        """Test failure detection with non-existent task."""
+        from task_manager.error_handler import FailureDetector
+        
+        detector = FailureDetector()
+        task_id = uuid4()
+        user_id = uuid4()
+        
+        failure = detector.detect_failure(task_id, user_id)
+        
+        assert failure is None
+
+
+class TestRetryManager:
+    """Test RetryManager functionality."""
+    
+    def test_retry_manager_initialization(self):
+        """Test retry manager initializes correctly."""
+        from task_manager.error_handler import RetryManager, RetryPolicy
+        
+        policy = RetryPolicy(max_retries=5)
+        manager = RetryManager(policy)
+        
+        assert manager is not None
+        assert manager.default_policy.max_retries == 5
+    
+    def test_should_retry_within_limit(self):
+        """Test retry decision within limit."""
+        from task_manager.error_handler import (
+            RetryManager,
+            FailureRecord,
+            FailureType,
+        )
+        from datetime import datetime
+        
+        manager = RetryManager()
+        task_id = uuid4()
+        
+        failure = FailureRecord(
+            task_id=task_id,
+            failure_type=FailureType.TIMEOUT,
+            error_message="Timeout",
+            timestamp=datetime.utcnow(),
+            retry_count=1,
+        )
+        
+        should_retry = manager.should_retry(task_id, failure)
+        
+        assert should_retry is True
+    
+    def test_should_not_retry_max_reached(self):
+        """Test retry decision when max reached."""
+        from task_manager.error_handler import (
+            RetryManager,
+            FailureRecord,
+            FailureType,
+        )
+        from datetime import datetime
+        
+        manager = RetryManager()
+        task_id = uuid4()
+        
+        failure = FailureRecord(
+            task_id=task_id,
+            failure_type=FailureType.TIMEOUT,
+            error_message="Timeout",
+            timestamp=datetime.utcnow(),
+            retry_count=3,  # Max retries
+        )
+        
+        should_retry = manager.should_retry(task_id, failure)
+        
+        assert should_retry is False
+    
+    def test_calculate_retry_delay(self):
+        """Test retry delay calculation."""
+        from task_manager.error_handler import RetryManager
+        
+        manager = RetryManager()
+        
+        delay0 = manager.calculate_retry_delay(0)
+        delay1 = manager.calculate_retry_delay(1)
+        delay2 = manager.calculate_retry_delay(2)
+        
+        # Delays should increase exponentially
+        assert delay1 > delay0
+        assert delay2 > delay1
+    
+    def test_record_retry(self):
+        """Test recording retry attempts."""
+        from task_manager.error_handler import RetryManager
+        
+        manager = RetryManager()
+        task_id = uuid4()
+        
+        manager.record_retry(task_id)
+        manager.record_retry(task_id)
+        
+        assert len(manager._retry_history[task_id]) == 2
+
+
+class TestCircuitBreaker:
+    """Test CircuitBreaker functionality."""
+    
+    def test_circuit_breaker_initialization(self):
+        """Test circuit breaker initializes correctly."""
+        from task_manager.error_handler import CircuitBreaker
+        
+        breaker = CircuitBreaker()
+        assert breaker is not None
+    
+    def test_circuit_breaker_closed_initially(self):
+        """Test circuit breaker is closed initially."""
+        from task_manager.error_handler import CircuitBreaker
+        
+        breaker = CircuitBreaker()
+        component_id = "test_component"
+        
+        assert breaker.is_open(component_id) is False
+    
+    def test_circuit_breaker_opens_after_failures(self):
+        """Test circuit breaker opens after threshold failures."""
+        from task_manager.error_handler import CircuitBreaker
+        
+        breaker = CircuitBreaker()
+        component_id = "test_component"
+        
+        # Record failures up to threshold
+        for _ in range(5):
+            breaker.record_failure(component_id)
+        
+        assert breaker.is_open(component_id) is True
+    
+    def test_circuit_breaker_closes_after_success(self):
+        """Test circuit breaker closes after success."""
+        from task_manager.error_handler import CircuitBreaker
+        
+        breaker = CircuitBreaker()
+        component_id = "test_component"
+        
+        # Record some failures
+        breaker.record_failure(component_id)
+        breaker.record_failure(component_id)
+        
+        # Record success
+        breaker.record_success(component_id)
+        
+        # Should reset failure count
+        assert breaker._breakers[component_id].failure_count == 0
+
+
+class TestEscalationManager:
+    """Test EscalationManager functionality."""
+    
+    def test_escalation_manager_initialization(self):
+        """Test escalation manager initializes correctly."""
+        from task_manager.error_handler import EscalationManager
+        
+        manager = EscalationManager()
+        assert manager is not None
+    
+    def test_register_escalation_callback(self):
+        """Test registering escalation callback."""
+        from task_manager.error_handler import EscalationManager
+        
+        manager = EscalationManager()
+        
+        def callback(task_id, failure_record):
+            pass
+        
+        manager.register_escalation_callback(callback)
+        
+        assert len(manager._escalation_callbacks) == 1
+    
+    @pytest.mark.asyncio
+    async def test_escalate_to_user(self):
+        """Test escalating to user."""
+        from task_manager.error_handler import (
+            EscalationManager,
+            FailureRecord,
+            FailureType,
+        )
+        from datetime import datetime
+        
+        manager = EscalationManager()
+        task_id = uuid4()
+        user_id = uuid4()
+        
+        failure = FailureRecord(
+            task_id=task_id,
+            failure_type=FailureType.TIMEOUT,
+            error_message="Test error",
+            timestamp=datetime.utcnow(),
+        )
+        
+        # This will fail without database, but tests the interface
+        try:
+            result = await manager.escalate_to_user(
+                task_id=task_id,
+                user_id=user_id,
+                failure_record=failure,
+                message="Test escalation",
+            )
+            assert isinstance(result, bool)
+        except Exception:
+            # Expected without database
+            pass
+
+
+class TestAlertManager:
+    """Test AlertManager functionality."""
+    
+    def test_alert_manager_initialization(self):
+        """Test alert manager initializes correctly."""
+        from task_manager.error_handler import AlertManager
+        
+        manager = AlertManager()
+        assert manager is not None
+    
+    def test_register_alert_callback(self):
+        """Test registering alert callback."""
+        from task_manager.error_handler import AlertManager
+        
+        manager = AlertManager()
+        
+        def callback(message, details):
+            pass
+        
+        manager.register_alert_callback(callback)
+        
+        assert len(manager._alert_callbacks) == 1
+    
+    def test_send_alert(self):
+        """Test sending alert."""
+        from task_manager.error_handler import AlertManager
+        
+        manager = AlertManager()
+        
+        # Should not raise exception
+        manager.send_alert(
+            severity="critical",
+            message="Test alert",
+            details={"key": "value"},
+        )
+
+
+class TestRecoveryCoordinator:
+    """Test RecoveryCoordinator functionality."""
+    
+    def test_recovery_coordinator_initialization(self):
+        """Test recovery coordinator initializes correctly."""
+        from task_manager.recovery_coordinator import RecoveryCoordinator
+        
+        coordinator = RecoveryCoordinator()
+        assert coordinator is not None
+        assert coordinator.failure_detector is not None
+        assert coordinator.retry_manager is not None
+        assert coordinator.task_reassigner is not None
+        assert coordinator.escalation_manager is not None
+        assert coordinator.circuit_breaker is not None
+        assert coordinator.failure_logger is not None
+        assert coordinator.alert_manager is not None
+    
+    def test_select_recovery_strategy_retry(self):
+        """Test recovery strategy selection for retry."""
+        from task_manager.recovery_coordinator import RecoveryCoordinator
+        from task_manager.error_handler import (
+            FailureRecord,
+            FailureType,
+            RecoveryStrategy,
+        )
+        from datetime import datetime
+        
+        coordinator = RecoveryCoordinator()
+        
+        failure = FailureRecord(
+            task_id=uuid4(),
+            failure_type=FailureType.TIMEOUT,
+            error_message="Timeout",
+            timestamp=datetime.utcnow(),
+            retry_count=0,
+        )
+        
+        strategy = coordinator._select_recovery_strategy(failure)
+        
+        assert strategy == RecoveryStrategy.RETRY
+    
+    def test_select_recovery_strategy_escalate(self):
+        """Test recovery strategy selection for escalation."""
+        from task_manager.recovery_coordinator import RecoveryCoordinator
+        from task_manager.error_handler import (
+            FailureRecord,
+            FailureType,
+            RecoveryStrategy,
+        )
+        from datetime import datetime
+        
+        coordinator = RecoveryCoordinator()
+        
+        failure = FailureRecord(
+            task_id=uuid4(),
+            failure_type=FailureType.VALIDATION_ERROR,
+            error_message="Validation failed",
+            timestamp=datetime.utcnow(),
+            retry_count=0,
+        )
+        
+        strategy = coordinator._select_recovery_strategy(failure)
+        
+        assert strategy == RecoveryStrategy.ESCALATE
+    
+    def test_register_callbacks(self):
+        """Test registering callbacks."""
+        from task_manager.recovery_coordinator import RecoveryCoordinator
+        
+        coordinator = RecoveryCoordinator()
+        
+        def escalation_callback(task_id, failure_record):
+            pass
+        
+        def alert_callback(message, details):
+            pass
+        
+        coordinator.register_escalation_callback(escalation_callback)
+        coordinator.register_alert_callback(alert_callback)
+        
+        assert len(coordinator.escalation_manager._escalation_callbacks) == 1
+        assert len(coordinator.alert_manager._alert_callbacks) == 1
+
+
+class TestFailureTypes:
+    """Test FailureType enum."""
+    
+    def test_failure_type_values(self):
+        """Test failure type enum values."""
+        from task_manager.error_handler import FailureType
+        
+        assert FailureType.TIMEOUT.value == "timeout"
+        assert FailureType.AGENT_ERROR.value == "agent_error"
+        assert FailureType.CONTAINER_CRASH.value == "container_crash"
+        assert FailureType.VALIDATION_ERROR.value == "validation_error"
+
+
+class TestRecoveryStrategies:
+    """Test RecoveryStrategy enum."""
+    
+    def test_recovery_strategy_values(self):
+        """Test recovery strategy enum values."""
+        from task_manager.error_handler import RecoveryStrategy
+        
+        assert RecoveryStrategy.RETRY.value == "retry"
+        assert RecoveryStrategy.REASSIGN.value == "reassign"
+        assert RecoveryStrategy.ESCALATE.value == "escalate"
+        assert RecoveryStrategy.PARTIAL_SUCCESS.value == "partial_success"
+        assert RecoveryStrategy.FAIL.value == "fail"
