@@ -438,14 +438,14 @@
 **References**: Design Section 18.3
 **Description**: Implement dashboard with metrics and charts
 
-- [ ] 6.3.1 Create StatCard component
-- [ ] 6.3.2 Implement Active Agents metric
-- [ ] 6.3.3 Implement Goals Completed metric
-- [ ] 6.3.4 Implement Throughput metric
-- [ ] 6.3.5 Implement Compute Load metric
-- [ ] 6.3.6 Create task distribution chart (Recharts)
-- [ ] 6.3.7 Implement recent events timeline
-- [ ] 6.3.8 Add real-time updates via WebSocket
+- [x] 6.3.1 Create StatCard component
+- [x] 6.3.2 Implement Active Agents metric
+- [x] 6.3.3 Implement Goals Completed metric
+- [x] 6.3.4 Implement Throughput metric
+- [x] 6.3.5 Implement Compute Load metric
+- [x] 6.3.6 Create task distribution chart (Recharts)
+- [x] 6.3.7 Implement recent events timeline
+- [x] 6.3.8 Add real-time updates via WebSocket
 
 ### 6.4 Workforce Management
 **References**: Design Section 18.4
