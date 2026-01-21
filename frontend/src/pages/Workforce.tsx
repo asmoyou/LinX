@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
-import { Agent } from '@/types/agent';
+import type { Agent } from '@/types/agent';
 import { AgentCard } from '@/components/workforce/AgentCard';
 import { SearchFilterBar } from '@/components/workforce/SearchFilterBar';
 import { AddAgentModal } from '@/components/workforce/AddAgentModal';

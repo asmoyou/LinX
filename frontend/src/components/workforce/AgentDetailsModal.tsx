@@ -1,7 +1,7 @@
 import React from 'react';
 import { X, Activity, Clock, CheckCircle } from 'lucide-react';
 import { GlassPanel } from '@/components/GlassPanel';
-import { Agent } from '@/types/agent';
+import type { Agent } from '@/types/agent';
 
 interface AgentDetailsModalProps {
   agent: Agent | null;

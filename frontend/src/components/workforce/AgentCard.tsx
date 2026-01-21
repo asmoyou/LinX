@@ -1,7 +1,7 @@
 import React from 'react';
 import { Activity, Pause, Power, MoreVertical, Eye, Trash2 } from 'lucide-react';
 import { GlassPanel } from '@/components/GlassPanel';
-import { Agent } from '@/types/agent';
+import type { Agent } from '@/types/agent';
 
 interface AgentCardProps {
   agent: Agent;
