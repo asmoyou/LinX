@@ -220,17 +220,17 @@
 **References**: Requirements 6, Design Section 5
 **Description**: Implement containerized agent execution
 
-- [ ] 3.3.1 Create SandboxSelector for automatic platform detection
-- [ ] 3.3.2 Implement gVisor availability check (Linux)
-- [ ] 3.3.3 Implement Firecracker availability check (Linux)
-- [ ] 3.3.4 Create Docker Enhanced sandbox configuration
-- [ ] 3.3.5 Implement container provisioning for agents
-- [ ] 3.3.6 Add resource limits enforcement (CPU, memory)
-- [ ] 3.3.7 Create container cleanup on agent termination
-- [ ] 3.3.8 Implement container health monitoring
-- [ ] 3.3.9 Add network isolation configuration
-- [ ] 3.3.10 Create seccomp profile for Linux
-- [ ] 3.3.11 Implement sandbox pool management for performance
+- [x] 3.3.1 Create SandboxSelector for automatic platform detection
+- [x] 3.3.2 Implement gVisor availability check (Linux)
+- [x] 3.3.3 Implement Firecracker availability check (Linux)
+- [x] 3.3.4 Create Docker Enhanced sandbox configuration
+- [x] 3.3.5 Implement container provisioning for agents
+- [x] 3.3.6 Add resource limits enforcement (CPU, memory)
+- [x] 3.3.7 Create container cleanup on agent termination
+- [x] 3.3.8 Implement container health monitoring
+- [x] 3.3.9 Add network isolation configuration
+- [x] 3.3.10 Create seccomp profile for Linux
+- [x] 3.3.11 Implement sandbox pool management for performance
 
 ### 3.4 Code Execution Sandbox
 **References**: Requirements 6, Design Section 5.4
