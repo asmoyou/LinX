@@ -451,15 +451,15 @@
 **References**: Design Section 18.4
 **Description**: Implement agent management interface
 
-- [ ] 6.4.1 Create AgentCard component
-- [ ] 6.4.2 Implement agent grid with responsive layout
-- [ ] 6.4.3 Add agent status indicators (working, idle, offline)
-- [ ] 6.4.4 Create search and filter bar
-- [ ] 6.4.5 Implement Add Agent modal
-- [ ] 6.4.6 Create template selection interface
-- [ ] 6.4.7 Add agent details view
-- [ ] 6.4.8 Implement agent logs viewer
-- [ ] 6.4.9 Add agent termination with confirmation
+- [x] 6.4.1 Create AgentCard component
+- [x] 6.4.2 Implement agent grid with responsive layout
+- [x] 6.4.3 Add agent status indicators (working, idle, offline)
+- [x] 6.4.4 Create search and filter bar
+- [x] 6.4.5 Implement Add Agent modal
+- [x] 6.4.6 Create template selection interface
+- [x] 6.4.7 Add agent details view
+- [x] 6.4.8 Implement agent logs viewer
+- [x] 6.4.9 Add agent termination with confirmation
 
 ### 6.5 Task Manager Interface
 **References**: Requirements 13, Design Section 18.5
