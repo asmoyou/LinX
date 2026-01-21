@@ -176,14 +176,14 @@
 **References**: Requirements 4, Design Section 4.4
 **Description**: Implement skill management system
 
-- [ ] 2.6.1 Create Skill model and database operations
-- [ ] 2.6.2 Implement skill registration API
-- [ ] 2.6.3 Create skill validation (interface, dependencies)
-- [ ] 2.6.4 Implement skill retrieval by name/ID
-- [ ] 2.6.5 Create default skills (data_processing, sql_query, etc.)
-- [ ] 2.6.6 Implement skill versioning
-- [ ] 2.6.7 Add skill dependency resolution
-- [ ] 2.6.8 Create skill execution wrapper
+- [x] 2.6.1 Create Skill model and database operations
+- [x] 2.6.2 Implement skill registration API
+- [x] 2.6.3 Create skill validation (interface, dependencies)
+- [x] 2.6.4 Implement skill retrieval by name/ID
+- [x] 2.6.5 Create default skills (data_processing, sql_query, etc.)
+- [x] 2.6.6 Implement skill versioning
+- [x] 2.6.7 Add skill dependency resolution
+- [x] 2.6.8 Create skill execution wrapper
 
 ## Phase 3: Agent Framework
 
