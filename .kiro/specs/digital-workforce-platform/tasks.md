@@ -574,12 +574,12 @@
 **References**: Best practices
 **Description**: Set up continuous integration and deployment
 
-- [ ] 7.4.1 Create GitHub Actions workflow for backend tests
-- [ ] 7.4.2 Create GitHub Actions workflow for frontend tests
-- [ ] 7.4.3 Add Docker image building and pushing
-- [ ] 7.4.4 Implement automated deployment to staging
-- [ ] 7.4.5 Add security scanning (Snyk, Trivy)
-- [ ] 7.4.6 Create release automation
+- [x] 7.4.1 Create GitHub Actions workflow for backend tests
+- [x] 7.4.2 Create GitHub Actions workflow for frontend tests
+- [x] 7.4.3 Add Docker image building and pushing
+- [x] 7.4.4 Implement automated deployment to staging
+- [x] 7.4.5 Add security scanning (Snyk, Trivy)
+- [x] 7.4.6 Create release automation
 
 ### 7.5 Documentation
 **References**: All requirements

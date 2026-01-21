@@ -1,0 +1,214 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Get previous tag
+        PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        
+        if [ -z "$PREV_TAG" ]; then
+          # First release
+          CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges)
+        else
+          # Generate changelog since previous tag
+          CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+        fi
+        
+        # Save changelog to file
+        echo "$CHANGELOG" > CHANGELOG.txt
+        
+        # Set output
+        echo "changelog<<EOF" >> $GITHUB_OUTPUT
+        echo "$CHANGELOG" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+    
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        body: |
+          ## Changes in this Release
+          
+          ${{ steps.changelog.outputs.changelog }}
+          
+          ## Docker Images
+          
+          All images are available at `ghcr.io/${{ github.repository }}`:
+          
+          - `api-gateway:${{ github.ref_name }}`
+          - `task-manager:${{ github.ref_name }}`
+          - `agent-runtime:${{ github.ref_name }}`
+          - `document-processor:${{ github.ref_name }}`
+          - `frontend:${{ github.ref_name }}`
+          
+          ## Installation
+          
+          See [Deployment Documentation](docs/deployment/) for installation instructions.
+          
+          ### Quick Start with Docker Compose
+          
+          ```bash
+          # Clone the repository
+          git clone https://github.com/${{ github.repository }}.git
+          cd $(basename ${{ github.repository }})
+          git checkout ${{ github.ref_name }}
+          
+          # Configure environment
+          cp .env.example .env
+          # Edit .env with your configuration
+          
+          # Start services
+          docker-compose up -d
+          ```
+          
+          ### Kubernetes Deployment
+          
+          ```bash
+          # Update image tags in Kubernetes manifests
+          cd infrastructure/kubernetes
+          
+          # Apply manifests
+          kubectl apply -f .
+          ```
+        draft: false
+        prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+        generate_release_notes: true
+        files: |
+          CHANGELOG.txt
+          docker-compose.yml
+          .env.example
+
+  build-release-artifacts:
+    runs-on: ubuntu-latest
+    needs: create-release
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Create release artifacts
+      run: |
+        # Create deployment package
+        mkdir -p release
+        
+        # Copy deployment files
+        cp -r infrastructure release/
+        cp docker-compose.yml release/
+        cp .env.example release/
+        cp README.md release/
+        cp LICENSE release/
+        
+        # Create tarball
+        tar -czf digital-workforce-${{ github.ref_name }}.tar.gz release/
+    
+    - name: Upload release artifacts
+      uses: softprops/action-gh-release@v1
+      with:
+        files: digital-workforce-${{ github.ref_name }}.tar.gz
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: create-release
+    environment:
+      name: production
+      url: https://your-domain.com
+    if: ${{ !contains(github.ref_name, 'rc') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'alpha') }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: 'v1.28.0'
+    
+    - name: Configure kubectl
+      run: |
+        mkdir -p $HOME/.kube
+        echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > $HOME/.kube/config
+        chmod 600 $HOME/.kube/config
+    
+    - name: Update image tags
+      run: |
+        cd infrastructure/kubernetes
+        
+        # Update image tags to release version
+        VERSION=${{ github.ref_name }}
+        
+        sed -i "s|image:.*api-gateway.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/api-gateway:${VERSION}|g" 20-api-gateway.yaml
+        sed -i "s|image:.*task-manager.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/task-manager:${VERSION}|g" 21-task-manager.yaml
+        sed -i "s|image:.*document-processor.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/document-processor:${VERSION}|g" 22-document-processor.yaml
+        sed -i "s|image:.*frontend.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/frontend:${VERSION}|g" 23-frontend.yaml
+    
+    - name: Deploy to Production
+      run: |
+        cd infrastructure/kubernetes
+        
+        # Apply application layer (data layer should already exist)
+        kubectl apply -f 20-api-gateway.yaml
+        kubectl apply -f 21-task-manager.yaml
+        kubectl apply -f 22-document-processor.yaml
+        kubectl apply -f 23-frontend.yaml
+    
+    - name: Wait for rollout
+      run: |
+        kubectl rollout status deployment/api-gateway -n digital-workforce --timeout=10m
+        kubectl rollout status deployment/task-manager -n digital-workforce --timeout=10m
+        kubectl rollout status deployment/document-processor -n digital-workforce --timeout=10m
+        kubectl rollout status deployment/frontend -n digital-workforce --timeout=10m
+    
+    - name: Run smoke tests
+      run: |
+        sleep 30
+        
+        INGRESS_URL="https://your-domain.com"
+        
+        # Test API health
+        curl -f ${INGRESS_URL}/api/health || exit 1
+        
+        # Test frontend
+        curl -f ${INGRESS_URL}/ || exit 1
+        
+        echo "Production deployment successful!"
+    
+    - name: Notify deployment
+      if: always()
+      run: |
+        if [ "${{ job.status }}" == "success" ]; then
+          echo "✅ Production deployment successful for ${{ github.ref_name }}"
+        else
+          echo "❌ Production deployment failed for ${{ github.ref_name }}"
+        fi
+
+  notify-release:
+    runs-on: ubuntu-latest
+    needs: [create-release, build-release-artifacts]
+    if: always()
+    
+    steps:
+    - name: Send notification
+      run: |
+        echo "Release ${{ github.ref_name }} completed"
+        echo "Status: ${{ job.status }}"
+        # Add Slack/Discord/Email notification here
