@@ -676,11 +676,11 @@
 **References**: Design Section 11.4
 **Description**: Implement distributed tracing
 
-- [ ] 9.2.1 Set up OpenTelemetry instrumentation
-- [ ] 9.2.2 Configure Jaeger for trace storage
-- [ ] 9.2.3 Implement trace context propagation
-- [ ] 9.2.4 Add trace sampling configuration
-- [ ] 9.2.5 Create trace visualization dashboards
+- [x] 9.2.1 Set up OpenTelemetry instrumentation
+- [x] 9.2.2 Configure Jaeger for trace storage
+- [x] 9.2.3 Implement trace context propagation
+- [x] 9.2.4 Add trace sampling configuration
+- [x] 9.2.5 Create trace visualization dashboards
 
 ### 9.3 Robot Integration Preparation
 **References**: Requirements 10, Design Section 17
