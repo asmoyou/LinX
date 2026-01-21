@@ -4,11 +4,15 @@
   :root {
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
+    --bg-secondary: rgba(255, 255, 255, 0.7);
+    --border-subtle: rgba(0, 0, 0, 0.05);
   }
 
   .dark {
     --background: 222.2 84% 4.9%;
     --foreground: 210 40% 98%;
+    --bg-secondary: rgba(0, 0, 0, 0.7);
+    --border-subtle: rgba(255, 255, 255, 0.05);
   }
 
   /* Smooth scroll behavior */
@@ -16,9 +20,13 @@
     scroll-behavior: smooth;
   }
 
+  body {
+    @apply bg-white dark:bg-black transition-colors duration-500;
+  }
+
   /* Focus indicators for accessibility */
   *:focus-visible {
-    @apply outline-none ring-2 ring-indigo-500 ring-offset-2 ring-offset-white dark:ring-offset-gray-900;
+    @apply outline-none ring-2 ring-emerald-500 ring-offset-2 ring-offset-white dark:ring-offset-gray-900;
   }
 
   /* Remove default focus outline but keep for keyboard navigation */
@@ -28,48 +36,107 @@
 }
 
 @layer utilities {
-  .glass {
-    @apply bg-white/10 backdrop-blur-md border border-white/20;
+  /* Glass Panel Effect */
+  .glass-panel {
+    @apply bg-white/70 dark:bg-zinc-900/70 backdrop-blur-2xl border border-zinc-500/5 shadow-xl shadow-black/5 transition-all duration-500;
   }
-  
-  .glass-dark {
-    @apply bg-black/10 backdrop-blur-md border border-white/10;
+
+  /* Custom Scrollbar */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-zinc-300 dark:bg-zinc-700 rounded-full;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    @apply bg-zinc-400 dark:bg-zinc-600;
   }
 
   /* Scan line background effect */
-  .scan-line-bg {
-    position: relative;
-    overflow: hidden;
-  }
-
-  .scan-line-bg::before {
-    content: '';
+  .scan-line {
     position: absolute;
     top: 0;
     left: 0;
     right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.5), transparent);
-    animation: scan 3s linear infinite;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(16, 185, 129, 0.3), transparent);
+    animation: scan 8s linear infinite;
     pointer-events: none;
+    z-index: 0;
   }
 
   @keyframes scan {
     0% {
       transform: translateY(0);
+      opacity: 0;
+    }
+    50% {
+      opacity: 1;
     }
     100% {
       transform: translateY(100vh);
+      opacity: 0;
+    }
+  }
+
+  /* Animate In */
+  @keyframes animate-in {
+    from {
+      opacity: 0;
+      transform: translateY(24px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-in {
+    animation: animate-in 0.7s ease-out;
+  }
+
+  .fade-in {
+    animation: fadeIn 0.5s ease-out;
+  }
+
+  .slide-in-from-bottom-6 {
+    animation: slideInFromBottom 0.7s ease-out;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes slideInFromBottom {
+    from {
+      opacity: 0;
+      transform: translateY(24px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
     }
   }
 
   /* Hover effects */
   .hover-lift {
-    @apply transition-transform duration-200 hover:scale-105;
+    @apply transition-all duration-300 hover:-translate-y-1;
   }
 
   .hover-glow {
-    @apply transition-shadow duration-300 hover:shadow-lg hover:shadow-indigo-500/20;
+    @apply transition-shadow duration-300 hover:shadow-2xl hover:shadow-emerald-500/10;
   }
 
   /* Loading pulse animation */
@@ -84,22 +151,6 @@
 
   .animate-pulse-slow {
     animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  }
-
-  /* Fade in animation */
-  @keyframes fadeIn {
-    from {
-      opacity: 0;
-      transform: translateY(10px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  .animate-fade-in {
-    animation: fadeIn 0.3s ease-out;
   }
 
   /* Slide in from right */

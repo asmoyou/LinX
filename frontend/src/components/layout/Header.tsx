@@ -1,6 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Sun, Moon, Monitor, Globe, Bell } from 'lucide-react';
+import { Sun, Moon, Monitor, Bell, ShieldCheck, Menu } from 'lucide-react';
 import { useThemeStore } from '@/stores/themeStore';
 
 interface HeaderProps {
@@ -8,118 +8,106 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ sidebarCollapsed }) => {
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation();
   const { theme, setTheme } = useThemeStore();
   const [showNotifications, setShowNotifications] = React.useState(false);
 
-  const toggleTheme = () => {
-    const themes: Array<'light' | 'dark' | 'system'> = ['light', 'dark', 'system'];
-    const currentIndex = themes.indexOf(theme);
-    const nextTheme = themes[(currentIndex + 1) % themes.length];
-    setTheme(nextTheme);
-    
-    // Apply theme
-    if (nextTheme === 'dark' || (nextTheme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  };
-
-  const toggleLanguage = () => {
-    const newLang = i18n.language === 'en' ? 'zh' : 'en';
-    i18n.changeLanguage(newLang);
-  };
-
-  const getThemeIcon = () => {
-    switch (theme) {
-      case 'light':
-        return <Sun className="w-5 h-5" />;
-      case 'dark':
-        return <Moon className="w-5 h-5" />;
-      case 'system':
-        return <Monitor className="w-5 h-5" />;
-    }
-  };
+  const themeOptions = [
+    { id: 'light', icon: Sun },
+    { id: 'system', icon: Monitor },
+    { id: 'dark', icon: Moon }
+  ];
 
   return (
     <header
-      className={`glass fixed top-0 right-0 h-16 z-30 transition-all duration-300 ${
-        sidebarCollapsed ? 'left-16' : 'left-64'
-      }`}
+      className="h-16 border-b border-zinc-500/5 glass-panel flex items-center justify-between px-6 z-10"
       role="banner"
     >
-      <div className="flex items-center justify-between h-full px-6">
-        {/* Status Indicator */}
-        <div className="flex items-center gap-2" role="status" aria-live="polite">
-          <div 
-            className="w-2 h-2 bg-green-500 rounded-full animate-pulse" 
-            aria-hidden="true"
-          />
-          <span className="text-sm text-gray-600 dark:text-gray-400">
-            System Online
+      <div className="flex items-center gap-4">
+        <div className="hidden md:flex items-center gap-2 text-[11px] font-medium text-zinc-400 uppercase tracking-widest">
+          <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+          <span>
+            {t('header.status', 'Status')}: <span className="text-emerald-600 dark:text-emerald-500">{t('header.optimal', 'Optimal')}</span>
           </span>
         </div>
+      </div>
 
-        {/* Actions */}
-        <div className="flex items-center gap-2" role="toolbar" aria-label="Header actions">
-          {/* Theme Toggle */}
-          <button
-            onClick={toggleTheme}
-            className="p-2 rounded-lg hover:bg-white/20 transition-colors text-gray-700 dark:text-gray-300"
-            aria-label={`Toggle theme. Current: ${theme}`}
-            title={`Current: ${theme}`}
-          >
-            {getThemeIcon()}
-          </button>
+      <div className="flex items-center gap-4">
+        {/* Theme & Lang Controls */}
+        <div className="flex items-center gap-2">
+          {/* Theme Selector */}
+          <div className="flex items-center bg-zinc-500/5 rounded-full p-1 border border-zinc-500/5">
+            {themeOptions.map((item) => (
+              <button 
+                key={item.id}
+                onClick={() => {
+                  setTheme(item.id as 'light' | 'dark' | 'system');
+                  const newTheme = item.id as 'light' | 'dark' | 'system';
+                  if (newTheme === 'dark' || (newTheme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                    document.documentElement.classList.add('dark');
+                  } else {
+                    document.documentElement.classList.remove('dark');
+                  }
+                }}
+                className={`p-1.5 rounded-full transition-all duration-300 ${
+                  theme === item.id 
+                    ? 'bg-white dark:bg-zinc-700 shadow-sm text-emerald-600 dark:text-emerald-400' 
+                    : 'text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300'
+                }`}
+                aria-label={`Set theme to ${item.id}`}
+                title={item.id}
+              >
+                <item.icon className="w-3.5 h-3.5" />
+              </button>
+            ))}
+          </div>
 
           {/* Language Selector */}
+          <div className="flex items-center bg-zinc-500/5 rounded-full p-1 border border-zinc-500/5">
+            {['zh', 'en'].map((lang) => (
+              <button 
+                key={lang}
+                onClick={() => i18n.changeLanguage(lang)}
+                className={`px-3 py-1 rounded-full text-[10px] font-bold transition-all duration-300 ${
+                  i18n.language === lang 
+                    ? 'bg-white dark:bg-zinc-700 shadow-sm text-emerald-600 dark:text-emerald-400' 
+                    : 'text-zinc-400'
+                }`}
+                aria-label={`Switch to ${lang === 'zh' ? 'Chinese' : 'English'}`}
+              >
+                {lang.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Notifications */}
+        <div className="relative">
           <button
-            onClick={toggleLanguage}
-            className="p-2 rounded-lg hover:bg-white/20 transition-colors text-gray-700 dark:text-gray-300"
-            aria-label={`Toggle language. Current: ${i18n.language === 'en' ? 'English' : 'Chinese'}`}
-            title={`Current: ${i18n.language}`}
+            onClick={() => setShowNotifications(!showNotifications)}
+            className="relative p-2.5 hover:bg-zinc-500/5 rounded-full transition-colors text-zinc-400"
+            aria-label="Notifications"
+            aria-expanded={showNotifications}
           >
-            <Globe className="w-5 h-5" aria-hidden="true" />
+            <Bell className="w-5 h-5" />
+            <span className="absolute top-2.5 right-2.5 w-1.5 h-1.5 bg-red-500 rounded-full border-2 border-white dark:border-black"></span>
           </button>
 
-          {/* Notifications */}
-          <div className="relative">
-            <button
-              onClick={() => setShowNotifications(!showNotifications)}
-              className="p-2 rounded-lg hover:bg-white/20 transition-colors text-gray-700 dark:text-gray-300 relative"
-              aria-label="Notifications"
-              aria-expanded={showNotifications}
-              aria-haspopup="true"
+          {showNotifications && (
+            <div 
+              className="absolute right-0 mt-2 w-80 glass-panel rounded-[24px] shadow-2xl p-6 animate-slide-in-right"
+              role="menu"
             >
-              <Bell className="w-5 h-5" aria-hidden="true" />
-              <span 
-                className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full" 
-                aria-label="New notifications"
-              />
-            </button>
-
-            {/* Notification Dropdown */}
-            {showNotifications && (
-              <div 
-                className="absolute right-0 mt-2 w-80 glass rounded-lg shadow-lg p-4"
-                role="menu"
-                aria-label="Notification menu"
-              >
-                <h3 className="text-sm font-semibold text-gray-800 dark:text-white mb-2">
-                  Notifications
-                </h3>
-                <div className="space-y-2">
-                  <div 
-                    className="text-sm text-gray-600 dark:text-gray-400 p-2 hover:bg-white/10 rounded"
-                    role="menuitem"
-                  >
-                    No new notifications
-                  </div>
+              <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400 mb-4">
+                Notifications
+              </h3>
+              <div className="space-y-3">
+                <div className="text-sm text-zinc-500 dark:text-zinc-400 p-3 hover:bg-zinc-500/5 rounded-xl transition-colors">
+                  No new notifications
                 </div>
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     </header>
