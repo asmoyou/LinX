@@ -360,13 +360,13 @@
 **References**: Requirements 19, Design Section 8
 **Description**: Implement resource quota management
 
-- [ ] 5.3.1 Create ResourceQuota model
-- [ ] 5.3.2 Implement quota checking on agent creation
-- [ ] 5.3.3 Add quota checking on file upload
-- [ ] 5.3.4 Create CPU/memory limit enforcement
-- [ ] 5.3.5 Implement storage quota tracking
-- [ ] 5.3.6 Add quota usage display API
-- [ ] 5.3.7 Create administrator alerts for quota thresholds
+- [x] 5.3.1 Create ResourceQuota model
+- [x] 5.3.2 Implement quota checking on agent creation
+- [x] 5.3.3 Add quota checking on file upload
+- [x] 5.3.4 Create CPU/memory limit enforcement
+- [x] 5.3.5 Implement storage quota tracking
+- [x] 5.3.6 Add quota usage display API
+- [x] 5.3.7 Create administrator alerts for quota thresholds
 
 ### 5.4 Monitoring and Metrics
 **References**: Requirements 11, Design Section 11
