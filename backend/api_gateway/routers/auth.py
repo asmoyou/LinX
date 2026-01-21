@@ -23,8 +23,6 @@ from access_control import (
 )
 from access_control.registration import (
     register_user_self,
-    RegistrationRequest,
-    RegistrationResponse,
     DuplicateUserError,
     ValidationError as RegistrationValidationError,
 )
@@ -68,6 +66,18 @@ class RegisterRequest(BaseModel):
     email: str = Field(..., pattern=r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
     password: str = Field(..., min_length=8)
     attributes: Optional[dict] = None
+
+
+class RegisterResponse(BaseModel):
+    """User registration response model for API."""
+    
+    user_id: str
+    username: str
+    email: str
+    role: str
+    attributes: Optional[dict] = None
+    resource_quotas: dict
+    created_at: str
 
 
 class RefreshResponse(BaseModel):
@@ -153,7 +163,7 @@ async def login(request: LoginRequest):
     # )
 
 
-@router.post("/register", response_model=RegistrationResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(request: RegisterRequest):
     """Register a new user account.
     
@@ -184,7 +194,16 @@ async def register(request: RegisterRequest):
             extra={"user_id": response.user_id, "username": response.username}
         )
         
-        return response
+        # Convert dataclass to Pydantic model
+        return RegisterResponse(
+            user_id=response.user_id,
+            username=response.username,
+            email=response.email,
+            role=response.role,
+            attributes=response.attributes,
+            resource_quotas=response.resource_quotas,
+            created_at=response.created_at
+        )
         
     except DuplicateUserError as e:
         raise HTTPException(
