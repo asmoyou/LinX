@@ -336,14 +336,14 @@
 **References**: Requirements 7, Design Section 8.4
 **Description**: Implement encryption at rest and in transit
 
-- [ ] 5.1.1 Configure PostgreSQL TDE or disk encryption
-- [ ] 5.1.2 Enable Milvus data file encryption
-- [ ] 5.1.3 Configure MinIO server-side encryption (SSE)
-- [ ] 5.1.4 Implement TLS/SSL for all API endpoints
-- [ ] 5.1.5 Add TLS for internal component communication
-- [ ] 5.1.6 Configure TLS for database connections
-- [ ] 5.1.7 Implement TLS for Message Bus connections
-- [ ] 5.1.8 Create key management service integration
+- [x] 5.1.1 Configure PostgreSQL TDE or disk encryption
+- [x] 5.1.2 Enable Milvus data file encryption
+- [x] 5.1.3 Configure MinIO server-side encryption (SSE)
+- [x] 5.1.4 Implement TLS/SSL for all API endpoints
+- [x] 5.1.5 Add TLS for internal component communication
+- [x] 5.1.6 Configure TLS for database connections
+- [x] 5.1.7 Implement TLS for Message Bus connections
+- [x] 5.1.8 Create key management service integration
 
 ### 5.2 Data Classification
 **References**: Requirements 7, Design Section 8.4
