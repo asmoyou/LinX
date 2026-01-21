@@ -1,9 +1,6 @@
 ---
 inclusion: always
 ---
----
-inclusion: always
----
 
 # Task Management and Tracking Rules
 

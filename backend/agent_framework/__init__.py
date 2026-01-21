@@ -8,9 +8,10 @@ This module provides LangChain-based agent framework including:
 - Agent memory access interface
 - Agent tool integration
 - Agent execution loop
+- Agent templates for common use cases
 
 References:
-- Requirements 2, 12: Agent Framework and Lifecycle Management
+- Requirements 2, 12, 21: Agent Framework, Lifecycle Management, and Templates
 - Design Section 4: Agent Framework Design
 """
 
@@ -61,6 +62,16 @@ from agent_framework.agent_executor import (
     get_agent_executor,
 )
 
+from agent_framework.agent_template import (
+    AgentTemplate,
+    AgentTemplateManager,
+)
+
+from agent_framework.default_templates import (
+    get_default_templates,
+    initialize_default_templates,
+)
+
 __all__ = [
     # Base agent
     'BaseAgent',
@@ -100,4 +111,10 @@ __all__ = [
     'AgentExecutor',
     'ExecutionContext',
     'get_agent_executor',
+    
+    # Agent templates
+    'AgentTemplate',
+    'AgentTemplateManager',
+    'get_default_templates',
+    'initialize_default_templates',
 ]
