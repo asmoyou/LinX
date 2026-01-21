@@ -183,7 +183,7 @@ class TestAgentTools:
         tools = create_langchain_tools()
         
         assert len(tools) > 0
-        assert any(tool.name == "Calculator" for tool in tools)
+        assert any(tool.name == "calculator" for tool in tools)
     
     def test_toolkit_add_tool(self):
         """Test adding tool to toolkit."""

@@ -198,23 +198,8 @@ class KnowledgeItem(Base):
         return f"<KnowledgeItem(knowledge_id={self.knowledge_id}, title={self.title}, content_type={self.content_type})>"
 
 
-class AgentTemplate(Base):
-    """Agent templates table.
-    
-    Stores pre-configured agent templates.
-    """
-    __tablename__ = 'agent_templates'
-    
-    template_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String(255), unique=True, nullable=False, index=True)
-    description = Column(Text, nullable=False)
-    default_skills = Column(JSONB, nullable=False)  # array of skill_ids
-    default_config = Column(JSONB, nullable=False)
-    version = Column(Integer, nullable=False, default=1)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    
-    def __repr__(self):
-        return f"<AgentTemplate(template_id={self.template_id}, name={self.name}, version={self.version})>"
+# AgentTemplate model is defined in agent_framework/agent_template.py
+# to avoid circular imports and keep agent-specific models with agent code
 
 
 class ResourceQuota(Base):

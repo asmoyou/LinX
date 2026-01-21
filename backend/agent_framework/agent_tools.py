@@ -53,30 +53,30 @@ class AgentToolkit:
         return None
 
 
+@tool
+def calculator(expression: str) -> str:
+    """Useful for mathematical calculations. Input should be a mathematical expression."""
+    try:
+        # Simple eval for demo (use safe eval in production)
+        result = eval(expression)
+        return str(result)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@tool
+def string_length(text: str) -> int:
+    """Returns the length of a string. Input should be a string."""
+    return len(str(text))
+
+
 def create_langchain_tools() -> List[BaseTool]:
     """Create default LangChain tools for agents.
     
     Returns:
         List of LangChain tools
     """
-    tools = []
-    
-    # Example tool: Calculator
-    calculator_tool = Tool(
-        name="Calculator",
-        func=lambda x: eval(x),  # Simple eval for demo (use safe eval in production)
-        description="Useful for mathematical calculations. Input should be a mathematical expression.",
-    )
-    tools.append(calculator_tool)
-    
-    # Example tool: String operations
-    string_tool = Tool(
-        name="StringLength",
-        func=lambda x: len(str(x)),
-        description="Returns the length of a string. Input should be a string.",
-    )
-    tools.append(string_tool)
-    
+    tools = [calculator, string_length]
     logger.info(f"Created {len(tools)} default tools")
     return tools
 

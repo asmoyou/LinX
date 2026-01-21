@@ -8,9 +8,9 @@ from .models import (
     Skill,
     Permission,
     KnowledgeItem,
-    AgentTemplate,
     ResourceQuota,
     AuditLog,
+    ABACPolicyModel,
 )
 from .connection import (
     DatabaseConnectionPool,
@@ -33,9 +33,9 @@ __all__ = [
     'Skill',
     'Permission',
     'KnowledgeItem',
-    'AgentTemplate',
     'ResourceQuota',
     'AuditLog',
+    'ABACPolicyModel',
     # Connection Pool
     'DatabaseConnectionPool',
     'get_connection_pool',
