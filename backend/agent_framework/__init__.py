@@ -9,10 +9,12 @@ This module provides LangChain-based agent framework including:
 - Agent tool integration
 - Agent execution loop
 - Agent templates for common use cases
+- Inter-agent communication
 
 References:
-- Requirements 2, 12, 21: Agent Framework, Lifecycle Management, and Templates
+- Requirements 2, 12, 17, 21: Agent Framework, Lifecycle Management, Communication, and Templates
 - Design Section 4: Agent Framework Design
+- Design Section 15: Inter-Agent Communication
 """
 
 from agent_framework.base_agent import (
@@ -72,6 +74,12 @@ from agent_framework.default_templates import (
     initialize_default_templates,
 )
 
+from agent_framework.inter_agent_communication import (
+    InterAgentCommunicator,
+    MessageResponse,
+    get_communicator,
+)
+
 __all__ = [
     # Base agent
     'BaseAgent',
@@ -117,4 +125,9 @@ __all__ = [
     'AgentTemplateManager',
     'get_default_templates',
     'initialize_default_templates',
+    
+    # Inter-agent communication
+    'InterAgentCommunicator',
+    'MessageResponse',
+    'get_communicator',
 ]

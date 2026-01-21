@@ -252,15 +252,15 @@
 **References**: Requirements 17, Design Section 15
 **Description**: Implement message bus for agent collaboration
 
-- [ ] 3.5.1 Create Message model with standard structure
-- [ ] 3.5.2 Implement direct messaging (agent-to-agent)
-- [ ] 3.5.3 Implement broadcast messaging
-- [ ] 3.5.4 Create request-response pattern
-- [ ] 3.5.5 Implement event notification system
-- [ ] 3.5.6 Add message authorization checks
-- [ ] 3.5.7 Create message audit logging
-- [ ] 3.5.8 Implement message queuing for offline agents
-- [ ] 3.5.9 Add correlation ID tracking for request-response
+- [x] 3.5.1 Create Message model with standard structure
+- [x] 3.5.2 Implement direct messaging (agent-to-agent)
+- [x] 3.5.3 Implement broadcast messaging
+- [x] 3.5.4 Create request-response pattern
+- [x] 3.5.5 Implement event notification system
+- [x] 3.5.6 Add message authorization checks
+- [x] 3.5.7 Create message audit logging
+- [x] 3.5.8 Implement message queuing for offline agents
+- [x] 3.5.9 Add correlation ID tracking for request-response
 
 ## Phase 4: Task Management System
 
