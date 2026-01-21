@@ -15,38 +15,38 @@ logger = logging.getLogger(__name__)
 @dataclass
 class JaegerConfig:
     """Jaeger configuration."""
-    
+
     # Agent configuration
     agent_host: str = "localhost"
     agent_port: int = 6831
-    
+
     # Collector configuration (alternative to agent)
     collector_endpoint: Optional[str] = None
-    
+
     # Service configuration
     service_name: str = "digital-workforce-platform"
     service_version: str = "1.0.0"
-    
+
     # Sampling configuration
     sampler_type: str = "probabilistic"  # const, probabilistic, ratelimiting, remote
     sampler_param: float = 0.1  # 10% sampling
-    
+
     # Reporter configuration
     log_spans: bool = False
     max_queue_size: int = 100
     flush_interval_ms: int = 1000
-    
+
     # Tags
     tags: Optional[dict] = None
-    
+
     def __post_init__(self):
         """Validate configuration."""
         if self.tags is None:
             self.tags = {}
-    
+
     def to_dict(self) -> dict:
         """Convert configuration to dictionary.
-        
+
         Returns:
             Configuration as dictionary
         """
@@ -67,12 +67,12 @@ class JaegerConfig:
 
 def get_jaeger_config_from_env() -> JaegerConfig:
     """Get Jaeger configuration from environment variables.
-    
+
     Returns:
         JaegerConfig instance
     """
     import os
-    
+
     return JaegerConfig(
         agent_host=os.getenv("JAEGER_AGENT_HOST", "localhost"),
         agent_port=int(os.getenv("JAEGER_AGENT_PORT", "6831")),
@@ -87,25 +87,25 @@ def get_jaeger_config_from_env() -> JaegerConfig:
 
 def validate_jaeger_connection(config: JaegerConfig) -> bool:
     """Validate connection to Jaeger.
-    
+
     Args:
         config: Jaeger configuration
-        
+
     Returns:
         True if connection is valid, False otherwise
     """
     import socket
-    
+
     try:
         # Try to connect to Jaeger agent
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(2)
         sock.connect((config.agent_host, config.agent_port))
         sock.close()
-        
+
         logger.info(f"Jaeger connection validated: {config.agent_host}:{config.agent_port}")
         return True
-        
+
     except Exception as e:
         logger.warning(f"Failed to validate Jaeger connection: {e}")
         return False
@@ -113,18 +113,18 @@ def validate_jaeger_connection(config: JaegerConfig) -> bool:
 
 def get_jaeger_ui_url(config: JaegerConfig, trace_id: Optional[str] = None) -> str:
     """Get Jaeger UI URL for viewing traces.
-    
+
     Args:
         config: Jaeger configuration
         trace_id: Optional trace ID to link directly to trace
-        
+
     Returns:
         Jaeger UI URL
     """
     # Default Jaeger UI port
     ui_port = 16686
     base_url = f"http://{config.agent_host}:{ui_port}"
-    
+
     if trace_id:
         return f"{base_url}/trace/{trace_id}"
     else:

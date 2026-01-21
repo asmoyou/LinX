@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PolicyDocument:
     """Policy document."""
-    
+
     policy_id: str
     policy_type: str  # privacy_policy, terms_of_service, cookie_policy, etc.
     version: str
@@ -28,7 +28,7 @@ class PolicyDocument:
 
 class PolicyManager:
     """Policy manager.
-    
+
     Manages legal policies:
     - Privacy policy
     - Terms of service
@@ -36,64 +36,70 @@ class PolicyManager:
     - Data processing agreements
     - Policy versioning
     """
-    
+
     def __init__(self):
         """Initialize policy manager."""
         self.policies: List[PolicyDocument] = []
-        
+
         # Initialize default policies
         self._initialize_default_policies()
-        
+
         logger.info("PolicyManager initialized")
-    
+
     def _initialize_default_policies(self):
         """Initialize default policy documents."""
         # Privacy Policy
-        self.add_policy(PolicyDocument(
-            policy_id="privacy_policy_v1",
-            policy_type="privacy_policy",
-            version="1.0",
-            effective_date=datetime(2024, 1, 1),
-            content=self._get_privacy_policy_content(),
-            summary="This privacy policy explains how we collect, use, and protect your personal data.",
-            language="en",
-        ))
-        
+        self.add_policy(
+            PolicyDocument(
+                policy_id="privacy_policy_v1",
+                policy_type="privacy_policy",
+                version="1.0",
+                effective_date=datetime(2024, 1, 1),
+                content=self._get_privacy_policy_content(),
+                summary="This privacy policy explains how we collect, use, and protect your personal data.",
+                language="en",
+            )
+        )
+
         # Terms of Service
-        self.add_policy(PolicyDocument(
-            policy_id="terms_of_service_v1",
-            policy_type="terms_of_service",
-            version="1.0",
-            effective_date=datetime(2024, 1, 1),
-            content=self._get_terms_of_service_content(),
-            summary="These terms govern your use of our digital workforce platform.",
-            language="en",
-        ))
-        
+        self.add_policy(
+            PolicyDocument(
+                policy_id="terms_of_service_v1",
+                policy_type="terms_of_service",
+                version="1.0",
+                effective_date=datetime(2024, 1, 1),
+                content=self._get_terms_of_service_content(),
+                summary="These terms govern your use of our digital workforce platform.",
+                language="en",
+            )
+        )
+
         # Cookie Policy
-        self.add_policy(PolicyDocument(
-            policy_id="cookie_policy_v1",
-            policy_type="cookie_policy",
-            version="1.0",
-            effective_date=datetime(2024, 1, 1),
-            content=self._get_cookie_policy_content(),
-            summary="This policy explains how we use cookies and similar technologies.",
-            language="en",
-        ))
-    
+        self.add_policy(
+            PolicyDocument(
+                policy_id="cookie_policy_v1",
+                policy_type="cookie_policy",
+                version="1.0",
+                effective_date=datetime(2024, 1, 1),
+                content=self._get_cookie_policy_content(),
+                summary="This policy explains how we use cookies and similar technologies.",
+                language="en",
+            )
+        )
+
     def add_policy(self, policy: PolicyDocument):
         """Add policy document.
-        
+
         Args:
             policy: Policy document
         """
         self.policies.append(policy)
-        
+
         logger.info(
             f"Added policy: {policy.policy_type} v{policy.version}",
             extra={"policy_id": policy.policy_id},
         )
-    
+
     def get_policy(
         self,
         policy_type: str,
@@ -101,91 +107,89 @@ class PolicyManager:
         language: str = "en",
     ) -> Optional[PolicyDocument]:
         """Get policy document.
-        
+
         Args:
             policy_type: Policy type
             version: Policy version (latest if not specified)
             language: Language code
-            
+
         Returns:
             Policy document or None
         """
         # Filter by type and language
         matching = [
-            p for p in self.policies
-            if p.policy_type == policy_type and p.language == language
+            p for p in self.policies if p.policy_type == policy_type and p.language == language
         ]
-        
+
         if not matching:
             return None
-        
+
         # Filter by version if specified
         if version:
             matching = [p for p in matching if p.version == version]
             return matching[0] if matching else None
-        
+
         # Return latest version
         return max(matching, key=lambda p: p.effective_date)
-    
+
     def get_latest_policies(self, language: str = "en") -> Dict[str, PolicyDocument]:
         """Get latest version of all policies.
-        
+
         Args:
             language: Language code
-            
+
         Returns:
             Dictionary of policy type to policy document
         """
         policy_types = set(p.policy_type for p in self.policies)
-        
+
         return {
             policy_type: self.get_policy(policy_type, language=language)
             for policy_type in policy_types
         }
-    
+
     def list_policy_versions(
         self,
         policy_type: str,
         language: str = "en",
     ) -> List[PolicyDocument]:
         """List all versions of a policy.
-        
+
         Args:
             policy_type: Policy type
             language: Language code
-            
+
         Returns:
             List of policy documents
         """
         policies = [
-            p for p in self.policies
-            if p.policy_type == policy_type and p.language == language
+            p for p in self.policies if p.policy_type == policy_type and p.language == language
         ]
-        
+
         # Sort by effective date
         policies.sort(key=lambda p: p.effective_date, reverse=True)
-        
+
         return policies
-    
+
     def get_policy_summary(
         self,
         policy_type: str,
         language: str = "en",
     ) -> Optional[str]:
         """Get policy summary.
-        
+
         Args:
             policy_type: Policy type
             language: Language code
-            
+
         Returns:
             Policy summary or None
         """
         policy = self.get_policy(policy_type, language=language)
         return policy.summary if policy else None
-    
+
     # Default policy content
-    
+
     def _get_privacy_policy_content(self) -> str:
         """Get privacy policy content."""
         return """
@@ -264,7 +268,7 @@ We may update this policy from time to time. We will notify you of significant c
 
 For privacy-related questions, contact us at: privacy@linx-platform.com
 """
-    
+
     def _get_terms_of_service_content(self) -> str:
         """Get terms of service content."""
         return """
@@ -339,7 +343,7 @@ We may modify these terms at any time. Continued use constitutes acceptance of c
 
 For questions about these terms, contact: legal@linx-platform.com
 """
-    
+
     def _get_cookie_policy_content(self) -> str:
         """Get cookie policy content."""
         return """

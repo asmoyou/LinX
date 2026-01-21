@@ -10,10 +10,10 @@ References:
 
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, String, TIMESTAMP, JSON, Integer
+from sqlalchemy import JSON, TIMESTAMP, Column, Integer, String
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Session
 
@@ -39,7 +39,9 @@ class AgentTemplate(Base):
     is_system_template = Column(String(10), nullable=False, default="true")
     created_by = Column(PGUUID(as_uuid=True), nullable=True)
     created_at = Column(TIMESTAMP, nullable=False, default=datetime.utcnow)
-    updated_at = Column(TIMESTAMP, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(
+        TIMESTAMP, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert template to dictionary representation."""

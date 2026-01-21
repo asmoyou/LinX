@@ -9,12 +9,12 @@ References:
 - Design Section 15: Inter-Agent Communication
 """
 
-from .redis_manager import RedisConnectionManager
-from .pubsub import PubSubManager
-from .streams import StreamsManager
-from .message import Message, MessageType
-from .authorization import MessageAuthorizer
 from .audit import MessageAuditor
+from .authorization import MessageAuthorizer
+from .message import Message, MessageType
+from .pubsub import PubSubManager
+from .redis_manager import RedisConnectionManager
+from .streams import StreamsManager
 
 __all__ = [
     "RedisConnectionManager",

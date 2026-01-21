@@ -6,7 +6,8 @@ References:
 """
 
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
 
 from access_control.permissions import CurrentUser, get_current_user
@@ -18,6 +19,7 @@ router = APIRouter()
 
 class KnowledgeItemResponse(BaseModel):
     """Knowledge item response model."""
+
     knowledge_id: str
     title: str
     content_type: str
@@ -27,13 +29,12 @@ class KnowledgeItemResponse(BaseModel):
 
 @router.post("", response_model=KnowledgeItemResponse, status_code=status.HTTP_201_CREATED)
 async def upload_knowledge(
-    file: UploadFile = File(...),
-    current_user: CurrentUser = Depends(get_current_user)
+    file: UploadFile = File(...), current_user: CurrentUser = Depends(get_current_user)
 ):
     """Upload a knowledge document."""
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Requires object storage and document processor integration"
+        detail="Requires object storage and document processor integration",
     )
 
 
@@ -41,20 +42,15 @@ async def upload_knowledge(
 async def list_knowledge(current_user: CurrentUser = Depends(get_current_user)):
     """List accessible knowledge items."""
     raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Requires database integration"
+        status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Requires database integration"
     )
 
 
 @router.get("/{knowledge_id}", response_model=KnowledgeItemResponse)
-async def get_knowledge(
-    knowledge_id: str,
-    current_user: CurrentUser = Depends(get_current_user)
-):
+async def get_knowledge(knowledge_id: str, current_user: CurrentUser = Depends(get_current_user)):
     """Get knowledge item details."""
     raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Requires database integration"
+        status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Requires database integration"
     )
 
 
@@ -62,22 +58,19 @@ async def get_knowledge(
 async def update_knowledge(
     knowledge_id: str,
     file: UploadFile = File(...),
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update knowledge item."""
     raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Requires object storage integration"
+        status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Requires object storage integration"
     )
 
 
 @router.delete("/{knowledge_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_knowledge(
-    knowledge_id: str,
-    current_user: CurrentUser = Depends(get_current_user)
+    knowledge_id: str, current_user: CurrentUser = Depends(get_current_user)
 ):
     """Delete knowledge item."""
     raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Requires database integration"
+        status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Requires database integration"
     )

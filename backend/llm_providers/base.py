@@ -10,12 +10,13 @@ References:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
 
 class TaskType(Enum):
     """Task types for model selection"""
+
     CHAT = "chat"
     CODE_GENERATION = "code_generation"
     EMBEDDING = "embedding"
@@ -27,6 +28,7 @@ class TaskType(Enum):
 @dataclass
 class LLMResponse:
     """Response from LLM generation"""
+
     content: str
     model: str
     provider: str
@@ -38,6 +40,7 @@ class LLMResponse:
 @dataclass
 class EmbeddingResponse:
     """Response from embedding generation"""
+
     embedding: List[float]
     model: str
     provider: str
@@ -48,21 +51,21 @@ class EmbeddingResponse:
 class BaseLLMProvider(ABC):
     """
     Abstract base class for all LLM providers.
-    
+
     All provider implementations must inherit from this class and implement
     the required methods for text generation and embedding generation.
     """
-    
+
     def __init__(self, config: Dict[str, Any]):
         """
         Initialize the LLM provider.
-        
+
         Args:
             config: Provider-specific configuration
         """
         self.config = config
         self.provider_name = self.__class__.__name__
-    
+
     @abstractmethod
     async def generate(
         self,
@@ -70,63 +73,58 @@ class BaseLLMProvider(ABC):
         model: str,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
-        **kwargs
+        **kwargs,
     ) -> LLMResponse:
         """
         Generate text completion from prompt.
-        
+
         Args:
             prompt: Input prompt text
             model: Model identifier
             temperature: Sampling temperature (0.0 to 1.0)
             max_tokens: Maximum tokens to generate
             **kwargs: Provider-specific parameters
-        
+
         Returns:
             LLMResponse with generated text and metadata
         """
         pass
-    
+
     @abstractmethod
-    async def generate_embedding(
-        self,
-        text: str,
-        model: str,
-        **kwargs
-    ) -> EmbeddingResponse:
+    async def generate_embedding(self, text: str, model: str, **kwargs) -> EmbeddingResponse:
         """
         Generate embedding vector for text.
-        
+
         Args:
             text: Input text to embed
             model: Embedding model identifier
             **kwargs: Provider-specific parameters
-        
+
         Returns:
             EmbeddingResponse with embedding vector and metadata
         """
         pass
-    
+
     @abstractmethod
     async def list_models(self) -> List[str]:
         """
         List available models from this provider.
-        
+
         Returns:
             List of model identifiers
         """
         pass
-    
+
     @abstractmethod
     async def health_check(self) -> bool:
         """
         Check if the provider is available and healthy.
-        
+
         Returns:
             True if provider is healthy, False otherwise
         """
         pass
-    
+
     def get_provider_name(self) -> str:
         """Get the provider name"""
         return self.provider_name

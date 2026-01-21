@@ -8,10 +8,10 @@ References:
 import json
 import logging
 import uuid
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Optional, List
+from typing import List, Optional
 
 from message_bus.redis_manager import RedisManager, get_redis_manager
 
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class JobStatus(Enum):
     """Status of processing job."""
-    
+
     QUEUED = "queued"
     PROCESSING = "processing"
     COMPLETED = "completed"
@@ -30,7 +30,7 @@ class JobStatus(Enum):
 @dataclass
 class ProcessingJob:
     """Processing job for document."""
-    
+
     job_id: str
     document_id: str
     file_key: str
@@ -47,10 +47,10 @@ class ProcessingJob:
 
 class ProcessingQueue:
     """Manage document processing job queue."""
-    
+
     def __init__(self, redis_manager: Optional[RedisManager] = None):
         """Initialize processing queue.
-        
+
         Args:
             redis_manager: Redis manager for queue operations
         """
@@ -58,7 +58,7 @@ class ProcessingQueue:
         self.queue_key = "document_processing_queue"
         self.job_prefix = "processing_job:"
         logger.info("ProcessingQueue initialized")
-    
+
     def enqueue(
         self,
         document_id: str,
@@ -69,7 +69,7 @@ class ProcessingQueue:
         task_id: Optional[str] = None,
     ) -> ProcessingJob:
         """Enqueue document for processing.
-        
+
         Args:
             document_id: Document identifier
             file_key: MinIO object key
@@ -77,7 +77,7 @@ class ProcessingQueue:
             mime_type: File MIME type
             user_id: User ID
             task_id: Optional task ID
-            
+
         Returns:
             ProcessingJob with job details
         """
@@ -93,41 +93,41 @@ class ProcessingQueue:
             status=JobStatus.QUEUED,
             created_at=datetime.utcnow().isoformat(),
         )
-        
+
         # Store job data
         job_key = f"{self.job_prefix}{job_id}"
         self.redis_manager.set(job_key, json.dumps(asdict(job)))
-        
+
         # Add to queue
         self.redis_manager.lpush(self.queue_key, job_id)
-        
+
         logger.info(f"Job enqueued: {job_id}", extra={"document_id": document_id})
         return job
-    
+
     def dequeue(self, timeout: int = 5) -> Optional[ProcessingJob]:
         """Dequeue next job for processing.
-        
+
         Args:
             timeout: Timeout in seconds for blocking pop
-            
+
         Returns:
             ProcessingJob or None if queue is empty
         """
         result = self.redis_manager.brpop(self.queue_key, timeout=timeout)
         if not result:
             return None
-        
+
         _, job_id = result
         job_key = f"{self.job_prefix}{job_id.decode()}"
         job_data = self.redis_manager.get(job_key)
-        
+
         if not job_data:
             return None
-        
+
         job_dict = json.loads(job_data)
-        job_dict['status'] = JobStatus(job_dict['status'])
+        job_dict["status"] = JobStatus(job_dict["status"])
         return ProcessingJob(**job_dict)
-    
+
     def update_status(
         self,
         job_id: str,
@@ -135,7 +135,7 @@ class ProcessingQueue:
         error_message: Optional[str] = None,
     ) -> None:
         """Update job status.
-        
+
         Args:
             job_id: Job identifier
             status: New status
@@ -143,42 +143,42 @@ class ProcessingQueue:
         """
         job_key = f"{self.job_prefix}{job_id}"
         job_data = self.redis_manager.get(job_key)
-        
+
         if not job_data:
             logger.warning(f"Job not found: {job_id}")
             return
-        
+
         job_dict = json.loads(job_data)
-        job_dict['status'] = status.value
-        
+        job_dict["status"] = status.value
+
         if status == JobStatus.PROCESSING:
-            job_dict['started_at'] = datetime.utcnow().isoformat()
+            job_dict["started_at"] = datetime.utcnow().isoformat()
         elif status in [JobStatus.COMPLETED, JobStatus.FAILED]:
-            job_dict['completed_at'] = datetime.utcnow().isoformat()
-        
+            job_dict["completed_at"] = datetime.utcnow().isoformat()
+
         if error_message:
-            job_dict['error_message'] = error_message
-        
+            job_dict["error_message"] = error_message
+
         self.redis_manager.set(job_key, json.dumps(job_dict))
         logger.info(f"Job status updated: {job_id} -> {status.value}")
-    
+
     def get_job(self, job_id: str) -> Optional[ProcessingJob]:
         """Get job by ID.
-        
+
         Args:
             job_id: Job identifier
-            
+
         Returns:
             ProcessingJob or None if not found
         """
         job_key = f"{self.job_prefix}{job_id}"
         job_data = self.redis_manager.get(job_key)
-        
+
         if not job_data:
             return None
-        
+
         job_dict = json.loads(job_data)
-        job_dict['status'] = JobStatus(job_dict['status'])
+        job_dict["status"] = JobStatus(job_dict["status"])
         return ProcessingJob(**job_dict)
 
 
@@ -188,7 +188,7 @@ _processing_queue: Optional[ProcessingQueue] = None
 
 def get_processing_queue() -> ProcessingQueue:
     """Get or create the processing queue singleton.
-    
+
     Returns:
         ProcessingQueue instance
     """

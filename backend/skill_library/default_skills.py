@@ -6,7 +6,7 @@ References:
 """
 
 import logging
-from typing import List, Dict
+from typing import Dict, List
 
 from skill_library.skill_registry import SkillRegistry, get_skill_registry
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 def get_default_skill_definitions() -> List[Dict]:
     """Get default skill definitions.
-    
+
     Returns:
         List of skill definition dictionaries
     """
@@ -208,18 +208,18 @@ def register_default_skills(
     skip_existing: bool = True,
 ) -> int:
     """Register all default skills.
-    
+
     Args:
         skill_registry: SkillRegistry instance
         skip_existing: Whether to skip skills that already exist
-        
+
     Returns:
         Number of skills registered
     """
     registry = skill_registry or get_skill_registry()
     skills = get_default_skill_definitions()
     registered_count = 0
-    
+
     for skill_def in skills:
         try:
             # Check if skill already exists
@@ -231,7 +231,7 @@ def register_default_skills(
                 if existing:
                     logger.info(f"Skipping existing skill: {skill_def['name']}")
                     continue
-            
+
             # Register skill
             registry.register_skill(
                 name=skill_def["name"],
@@ -242,9 +242,9 @@ def register_default_skills(
             )
             registered_count += 1
             logger.info(f"Registered default skill: {skill_def['name']}")
-            
+
         except Exception as e:
             logger.error(f"Failed to register skill {skill_def['name']}: {e}")
-    
+
     logger.info(f"Registered {registered_count} default skills")
     return registered_count

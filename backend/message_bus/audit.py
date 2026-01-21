@@ -9,11 +9,11 @@ References:
 - Design Section 15.4: Access Control
 """
 
+import json
 import logging
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Optional
-from dataclasses import dataclass, asdict
-import json
 
 from .message import Message
 
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class MessageAuditLog:
     """
     Audit log entry for a message.
-    
+
     Attributes:
         log_id: Unique log entry ID
         message_id: Message ID
@@ -38,6 +38,7 @@ class MessageAuditLog:
         error: Error message if delivery failed
         audit_timestamp: When audit log was created
     """
+
     log_id: str
     message_id: str
     from_agent_id: str
@@ -49,7 +50,7 @@ class MessageAuditLog:
     delivered: bool
     error: Optional[str] = None
     audit_timestamp: Optional[str] = None
-    
+
     def __post_init__(self):
         """Set audit timestamp if not provided."""
         if self.audit_timestamp is None:
@@ -59,7 +60,7 @@ class MessageAuditLog:
 class MessageAuditor:
     """
     Audits inter-agent messages.
-    
+
     Features:
     - Log all message attempts
     - Track authorization decisions
@@ -67,32 +68,29 @@ class MessageAuditor:
     - Support for database persistence
     - In-memory buffer for recent logs
     """
-    
+
     def __init__(self, buffer_size: int = 1000):
         """
         Initialize message auditor.
-        
+
         Args:
             buffer_size: Maximum number of logs to keep in memory
         """
         self._buffer_size = buffer_size
         self._logs: list[MessageAuditLog] = []
         self._log_count = 0
-    
+
     def log_message_attempt(
-        self,
-        message: Message,
-        authorized: bool,
-        authorization_reason: Optional[str] = None
+        self, message: Message, authorized: bool, authorization_reason: Optional[str] = None
     ) -> MessageAuditLog:
         """
         Log a message send attempt.
-        
+
         Args:
             message: Message being sent
             authorized: Whether message was authorized
             authorization_reason: Reason if not authorized
-            
+
         Returns:
             MessageAuditLog: Created audit log entry
         """
@@ -108,10 +106,10 @@ class MessageAuditor:
             delivered=False,  # Will be updated on delivery
             error=authorization_reason if not authorized else None,
         )
-        
+
         self._add_log(log_entry)
         self._log_count += 1
-        
+
         # Log to standard logger
         if authorized:
             logger.info(
@@ -124,18 +122,15 @@ class MessageAuditor:
                 f"Message denied: {message.message_id} "
                 f"from {message.from_agent_id} - {authorization_reason}"
             )
-        
+
         return log_entry
-    
+
     def log_message_delivery(
-        self,
-        message_id: str,
-        delivered: bool,
-        error: Optional[str] = None
+        self, message_id: str, delivered: bool, error: Optional[str] = None
     ) -> None:
         """
         Log message delivery status.
-        
+
         Args:
             message_id: Message ID
             delivered: Whether message was delivered
@@ -147,7 +142,7 @@ class MessageAuditor:
             log_entry.delivered = delivered
             if error:
                 log_entry.error = error
-            
+
             # Log to standard logger
             if delivered:
                 logger.info(f"Message delivered: {message_id}")
@@ -155,56 +150,52 @@ class MessageAuditor:
                 logger.error(f"Message delivery failed: {message_id} - {error}")
         else:
             logger.warning(f"No audit log found for message {message_id}")
-    
+
     def get_logs(
-        self,
-        agent_id: Optional[str] = None,
-        task_id: Optional[str] = None,
-        limit: int = 100
+        self, agent_id: Optional[str] = None, task_id: Optional[str] = None, limit: int = 100
     ) -> list[MessageAuditLog]:
         """
         Get audit logs with optional filtering.
-        
+
         Args:
             agent_id: Filter by sender or recipient agent ID
             task_id: Filter by task ID
             limit: Maximum number of logs to return
-            
+
         Returns:
             list: List of audit log entries
         """
         logs = self._logs
-        
+
         # Filter by agent_id
         if agent_id:
             logs = [
-                log for log in logs
-                if log.from_agent_id == agent_id or log.to_agent_id == agent_id
+                log for log in logs if log.from_agent_id == agent_id or log.to_agent_id == agent_id
             ]
-        
+
         # Filter by task_id
         if task_id:
             logs = [log for log in logs if log.task_id == task_id]
-        
+
         # Return most recent logs up to limit
         return logs[-limit:]
-    
+
     def get_log(self, message_id: str) -> Optional[MessageAuditLog]:
         """
         Get audit log for a specific message.
-        
+
         Args:
             message_id: Message ID
-            
+
         Returns:
             MessageAuditLog or None if not found
         """
         return self._find_log(message_id)
-    
+
     def get_statistics(self) -> dict:
         """
         Get audit statistics.
-        
+
         Returns:
             dict: Statistics about logged messages
         """
@@ -212,7 +203,7 @@ class MessageAuditor:
         authorized = sum(1 for log in self._logs if log.authorized)
         delivered = sum(1 for log in self._logs if log.delivered)
         failed = sum(1 for log in self._logs if not log.delivered and log.authorized)
-        
+
         return {
             "total_messages": total,
             "authorized": authorized,
@@ -222,48 +213,48 @@ class MessageAuditor:
             "authorization_rate": authorized / total if total > 0 else 0,
             "delivery_rate": delivered / authorized if authorized > 0 else 0,
         }
-    
+
     def export_logs(self, filepath: str) -> None:
         """
         Export audit logs to JSON file.
-        
+
         Args:
             filepath: Path to output file
         """
         try:
             logs_data = [asdict(log) for log in self._logs]
-            with open(filepath, 'w') as f:
+            with open(filepath, "w") as f:
                 json.dump(logs_data, f, indent=2)
             logger.info(f"Exported {len(logs_data)} audit logs to {filepath}")
         except Exception as e:
             logger.error(f"Failed to export audit logs: {e}")
             raise
-    
+
     def clear_logs(self) -> None:
         """Clear all audit logs from memory."""
         self._logs.clear()
         logger.info("Cleared all audit logs")
-    
+
     def _add_log(self, log_entry: MessageAuditLog) -> None:
         """
         Add log entry to buffer.
-        
+
         Args:
             log_entry: Log entry to add
         """
         self._logs.append(log_entry)
-        
+
         # Trim buffer if needed
         if len(self._logs) > self._buffer_size:
-            self._logs = self._logs[-self._buffer_size:]
-    
+            self._logs = self._logs[-self._buffer_size :]
+
     def _find_log(self, message_id: str) -> Optional[MessageAuditLog]:
         """
         Find log entry by message ID.
-        
+
         Args:
             message_id: Message ID to find
-            
+
         Returns:
             MessageAuditLog or None if not found
         """
@@ -280,7 +271,7 @@ _auditor: Optional[MessageAuditor] = None
 def get_message_auditor() -> MessageAuditor:
     """
     Get global message auditor instance.
-    
+
     Returns:
         MessageAuditor: Global auditor instance
     """

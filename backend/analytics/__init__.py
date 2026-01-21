@@ -18,65 +18,55 @@ from analytics.agent_performance import (
     PerformanceMetrics,
     PerformanceReport,
 )
-
+from analytics.anomaly_detection import (
+    AnomalyAlert,
+    AnomalyDetector,
+    AnomalyType,
+)
+from analytics.cost_tracking import (
+    CostMetrics,
+    CostOptimizer,
+    CostTracker,
+)
+from analytics.resource_forecasting import (
+    ForecastModel,
+    ForecastResult,
+    ResourceForecaster,
+)
 from analytics.task_trends import (
     TaskTrendAnalyzer,
     TrendMetrics,
     TrendReport,
 )
-
-from analytics.resource_forecasting import (
-    ResourceForecaster,
-    ForecastModel,
-    ForecastResult,
-)
-
-from analytics.anomaly_detection import (
-    AnomalyDetector,
-    AnomalyType,
-    AnomalyAlert,
-)
-
-from analytics.cost_tracking import (
-    CostTracker,
-    CostMetrics,
-    CostOptimizer,
-)
-
 from analytics.user_satisfaction import (
-    SatisfactionTracker,
     SatisfactionMetrics,
     SatisfactionSurvey,
+    SatisfactionTracker,
 )
 
 __all__ = [
     # Agent performance
-    'AgentPerformanceAnalytics',
-    'PerformanceMetrics',
-    'PerformanceReport',
-    
+    "AgentPerformanceAnalytics",
+    "PerformanceMetrics",
+    "PerformanceReport",
     # Task trends
-    'TaskTrendAnalyzer',
-    'TrendMetrics',
-    'TrendReport',
-    
+    "TaskTrendAnalyzer",
+    "TrendMetrics",
+    "TrendReport",
     # Resource forecasting
-    'ResourceForecaster',
-    'ForecastModel',
-    'ForecastResult',
-    
+    "ResourceForecaster",
+    "ForecastModel",
+    "ForecastResult",
     # Anomaly detection
-    'AnomalyDetector',
-    'AnomalyType',
-    'AnomalyAlert',
-    
+    "AnomalyDetector",
+    "AnomalyType",
+    "AnomalyAlert",
     # Cost tracking
-    'CostTracker',
-    'CostMetrics',
-    'CostOptimizer',
-    
+    "CostTracker",
+    "CostMetrics",
+    "CostOptimizer",
     # User satisfaction
-    'SatisfactionTracker',
-    'SatisfactionMetrics',
-    'SatisfactionSurvey',
+    "SatisfactionTracker",
+    "SatisfactionMetrics",
+    "SatisfactionSurvey",
 ]

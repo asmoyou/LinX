@@ -8,8 +8,9 @@ References:
 - Design Section 8: Access Control and Security
 """
 
+from unittest.mock import MagicMock, Mock, patch
+
 import pytest
-from unittest.mock import Mock, patch, MagicMock
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -27,11 +28,11 @@ class TestSQLInjectionPrevention:
         """Test that parameterized queries are used."""
         # Arrange
         user_input = "admin' OR '1'='1"
-        
+
         # Act - Use parameterized query (safe)
         query = text("SELECT * FROM users WHERE username = :username")
         mock_session.execute(query, {"username": user_input})
-        
+
         # Assert
         mock_session.execute.assert_called_once()
         call_args = mock_session.execute.call_args
@@ -41,13 +42,13 @@ class TestSQLInjectionPrevention:
     def test_prevent_string_concatenation(self):
         """Test that string concatenation is not used for queries."""
         user_input = "admin' OR '1'='1"
-        
+
         # Bad practice (vulnerable)
         vulnerable_query = f"SELECT * FROM users WHERE username = '{user_input}'"
-        
+
         # Check if query contains injection
         assert "OR '1'='1" in vulnerable_query
-        
+
         # Good practice (safe) - using parameters
         safe_query = "SELECT * FROM users WHERE username = :username"
         assert ":username" in safe_query
@@ -57,11 +58,11 @@ class TestSQLInjectionPrevention:
         """Test prevention of UNION-based SQL injection."""
         # Arrange
         malicious_input = "1 UNION SELECT password FROM users--"
-        
+
         # Act - Use parameterized query
         query = text("SELECT * FROM products WHERE id = :id")
         mock_session.execute(query, {"id": malicious_input})
-        
+
         # Assert - Input is treated as literal string, not SQL
         call_args = mock_session.execute.call_args
         assert call_args[0][1]["id"] == malicious_input
@@ -70,11 +71,11 @@ class TestSQLInjectionPrevention:
         """Test prevention of boolean-based SQL injection."""
         # Arrange
         malicious_input = "admin' AND '1'='1"
-        
+
         # Act
         query = text("SELECT * FROM users WHERE username = :username")
         mock_session.execute(query, {"username": malicious_input})
-        
+
         # Assert
         call_args = mock_session.execute.call_args
         assert call_args[0][1]["username"] == malicious_input
@@ -83,11 +84,11 @@ class TestSQLInjectionPrevention:
         """Test prevention of time-based SQL injection."""
         # Arrange
         malicious_input = "admin'; WAITFOR DELAY '00:00:05'--"
-        
+
         # Act
         query = text("SELECT * FROM users WHERE username = :username")
         mock_session.execute(query, {"username": malicious_input})
-        
+
         # Assert
         call_args = mock_session.execute.call_args
         assert call_args[0][1]["username"] == malicious_input
@@ -96,11 +97,11 @@ class TestSQLInjectionPrevention:
         """Test prevention of stacked query injection."""
         # Arrange
         malicious_input = "admin'; DROP TABLE users;--"
-        
+
         # Act
         query = text("SELECT * FROM users WHERE username = :username")
         mock_session.execute(query, {"username": malicious_input})
-        
+
         # Assert - DROP TABLE should not execute
         call_args = mock_session.execute.call_args
         assert call_args[0][1]["username"] == malicious_input
@@ -108,17 +109,13 @@ class TestSQLInjectionPrevention:
     def test_prevent_comment_injection(self, mock_session):
         """Test prevention of comment-based injection."""
         # Arrange
-        malicious_inputs = [
-            "admin'--",
-            "admin'#",
-            "admin'/*"
-        ]
-        
+        malicious_inputs = ["admin'--", "admin'#", "admin'/*"]
+
         for malicious_input in malicious_inputs:
             # Act
             query = text("SELECT * FROM users WHERE username = :username")
             mock_session.execute(query, {"username": malicious_input})
-            
+
             # Assert
             call_args = mock_session.execute.call_args
             assert call_args[0][1]["username"] == malicious_input
@@ -139,10 +136,10 @@ class TestORMSafety:
         """Test that ORM filters are safe from injection."""
         # Arrange
         user_input = "admin' OR '1'='1"
-        
+
         # Act - Using ORM filter (safe)
         mock_query.filter(username=user_input)
-        
+
         # Assert
         mock_query.filter.assert_called_once_with(username=user_input)
 
@@ -150,13 +147,13 @@ class TestORMSafety:
         """Test that raw SQL is avoided in ORM."""
         # ORM should be used instead of raw SQL
         # This is a conceptual test
-        
+
         # Bad practice
         raw_sql = "SELECT * FROM users WHERE username = 'admin'"
-        
+
         # Good practice - ORM usage
         # session.query(User).filter(User.username == 'admin')
-        
+
         assert "SELECT" in raw_sql  # Raw SQL detected
 
     def test_input_validation(self):
@@ -165,9 +162,9 @@ class TestORMSafety:
         malicious_inputs = [
             "'; DROP TABLE users;--",
             "admin' OR '1'='1",
-            "1' UNION SELECT * FROM passwords--"
+            "1' UNION SELECT * FROM passwords--",
         ]
-        
+
         # Act & Assert
         for malicious_input in malicious_inputs:
             # Check for SQL injection patterns
@@ -184,7 +181,7 @@ class TestDatabaseAccessControl:
         # Database users should have only necessary permissions
         app_user_permissions = ["SELECT", "INSERT", "UPDATE"]
         admin_permissions = ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP"]
-        
+
         # App user should not have admin permissions
         assert "DROP" not in app_user_permissions
         assert "CREATE" not in app_user_permissions
@@ -193,17 +190,17 @@ class TestDatabaseAccessControl:
         """Test that read and write operations use different users."""
         read_user = "app_reader"
         write_user = "app_writer"
-        
+
         assert read_user != write_user
 
     def test_connection_string_security(self):
         """Test that connection strings don't contain credentials."""
         # Connection strings should use environment variables
         connection_string = "postgresql://user:password@localhost/db"
-        
+
         # Should not hardcode credentials
         assert "password" in connection_string  # This is bad
-        
+
         # Better approach
         secure_connection = "postgresql://${DB_USER}:${DB_PASSWORD}@localhost/db"
         assert "${DB_PASSWORD}" in secure_connection
@@ -216,11 +213,11 @@ class TestStoredProcedureSecurity:
         """Test that stored procedures use parameters."""
         # Arrange
         user_input = "admin' OR '1'='1"
-        
+
         # Act - Call stored procedure with parameters
         query = text("CALL get_user(:username)")
         mock_session.execute(query, {"username": user_input})
-        
+
         # Assert
         call_args = mock_session.execute.call_args
         assert call_args[0][1]["username"] == user_input
@@ -229,7 +226,7 @@ class TestStoredProcedureSecurity:
         """Test that stored procedures have proper permissions."""
         # Stored procedures should have SECURITY DEFINER or SECURITY INVOKER
         # This ensures proper permission checking
-        
+
         # Example stored procedure definition
         proc_definition = """
         CREATE PROCEDURE get_user(username VARCHAR)
@@ -238,7 +235,7 @@ class TestStoredProcedureSecurity:
             SELECT * FROM users WHERE username = username;
         END
         """
-        
+
         assert "SECURITY INVOKER" in proc_definition or "SECURITY DEFINER" in proc_definition
 
 
@@ -250,16 +247,16 @@ class TestDynamicQuerySecurity:
         # Arrange
         allowed_tables = ["users", "agents", "tasks", "knowledge_items"]
         user_input = "users; DROP TABLE agents;--"
-        
+
         # Act - Extract table name
         table_name = user_input.split(";")[0].strip()
-        
+
         # Assert
         if table_name in allowed_tables:
             is_safe = True
         else:
             is_safe = False
-        
+
         # First part is safe, but full input is not
         assert table_name in allowed_tables
         assert "DROP TABLE" in user_input
@@ -269,10 +266,10 @@ class TestDynamicQuerySecurity:
         # Arrange
         allowed_columns = ["id", "username", "email", "created_at"]
         user_input = "username; DROP TABLE users;--"
-        
+
         # Act
         column_name = user_input.split(";")[0].strip()
-        
+
         # Assert
         assert column_name in allowed_columns
 
@@ -281,12 +278,12 @@ class TestDynamicQuerySecurity:
         # Arrange
         allowed_sort_columns = ["created_at", "updated_at", "name"]
         allowed_sort_orders = ["ASC", "DESC"]
-        
+
         malicious_sort = "created_at; DROP TABLE users;--"
-        
+
         # Act
         sort_column = malicious_sort.split(";")[0].strip()
-        
+
         # Assert
         is_valid = sort_column in allowed_sort_columns
         assert is_valid is True  # Column is valid
@@ -296,14 +293,14 @@ class TestDynamicQuerySecurity:
         """Test that LIMIT and OFFSET are validated."""
         # Arrange
         malicious_limit = "10; DROP TABLE users;--"
-        
+
         # Act - Validate that limit is numeric
         try:
             limit_value = int(malicious_limit.split(";")[0])
             is_valid = True
         except ValueError:
             is_valid = False
-        
+
         # Assert
         assert is_valid is True  # First part is valid number
         assert "DROP TABLE" in malicious_limit  # But full input is malicious
@@ -317,7 +314,7 @@ class TestErrorHandling:
         # Arrange
         detailed_error = "ERROR: column 'password_hash' does not exist in table 'users'"
         generic_error = "An error occurred while processing your request"
-        
+
         # Assert - Generic error should be shown to users
         assert "password_hash" not in generic_error
         assert "users" not in generic_error
@@ -325,11 +322,8 @@ class TestErrorHandling:
     def test_no_stack_traces_in_production(self):
         """Test that stack traces are not exposed in production."""
         # Stack traces should only be logged, not returned to users
-        error_response = {
-            "error": "An error occurred",
-            "message": "Please try again later"
-        }
-        
+        error_response = {"error": "An error occurred", "message": "Please try again later"}
+
         # Should not contain stack trace
         assert "Traceback" not in str(error_response)
         assert "File" not in str(error_response)
@@ -338,11 +332,11 @@ class TestErrorHandling:
         """Test that injection attempts are logged."""
         # Arrange
         malicious_input = "admin' OR '1'='1"
-        
+
         # Act - Detect injection attempt
         sql_keywords = ["OR '1'='1", "UNION", "DROP", "--"]
         is_injection_attempt = any(kw in malicious_input for kw in sql_keywords)
-        
+
         # Assert
         if is_injection_attempt:
             # Should be logged for security monitoring

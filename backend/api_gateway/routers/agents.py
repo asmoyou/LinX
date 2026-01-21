@@ -6,6 +6,7 @@ References:
 """
 
 from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
@@ -18,6 +19,7 @@ router = APIRouter()
 
 class CreateAgentRequest(BaseModel):
     """Create agent request."""
+
     name: str
     agent_type: str
     capabilities: List[str] = []
@@ -25,6 +27,7 @@ class CreateAgentRequest(BaseModel):
 
 class AgentResponse(BaseModel):
     """Agent response model."""
+
     agent_id: str
     name: str
     agent_type: str
@@ -34,13 +37,12 @@ class AgentResponse(BaseModel):
 
 @router.post("", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
 async def create_agent(
-    request: CreateAgentRequest,
-    current_user: CurrentUser = Depends(get_current_user)
+    request: CreateAgentRequest, current_user: CurrentUser = Depends(get_current_user)
 ):
     """Create a new agent."""
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Requires database and agent framework integration"
+        detail="Requires database and agent framework integration",
     )
 
 
@@ -48,20 +50,15 @@ async def create_agent(
 async def list_agents(current_user: CurrentUser = Depends(get_current_user)):
     """List user's agents."""
     raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Requires database integration"
+        status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Requires database integration"
     )
 
 
 @router.get("/{agent_id}", response_model=AgentResponse)
-async def get_agent(
-    agent_id: str,
-    current_user: CurrentUser = Depends(get_current_user)
-):
+async def get_agent(agent_id: str, current_user: CurrentUser = Depends(get_current_user)):
     """Get agent details."""
     raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Requires database integration"
+        status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Requires database integration"
     )
 
 
@@ -69,22 +66,17 @@ async def get_agent(
 async def update_agent(
     agent_id: str,
     request: CreateAgentRequest,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update agent configuration."""
     raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Requires database integration"
+        status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Requires database integration"
     )
 
 
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_agent(
-    agent_id: str,
-    current_user: CurrentUser = Depends(get_current_user)
-):
+async def delete_agent(agent_id: str, current_user: CurrentUser = Depends(get_current_user)):
     """Delete an agent."""
     raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Requires database integration"
+        status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Requires database integration"
     )

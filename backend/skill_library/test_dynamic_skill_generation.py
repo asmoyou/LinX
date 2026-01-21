@@ -5,20 +5,21 @@ References:
 - Requirements 4: Skill Library
 """
 
-import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, Mock, patch
 from uuid import uuid4
+
+import pytest
 
 from skill_library.dynamic_skill_generator import (
     DynamicSkillGenerator,
     GeneratedSkill,
     get_dynamic_skill_generator,
 )
-from skill_library.skill_cache import SkillCache, CachedSkill, get_skill_cache
 from skill_library.semantic_skill_search import (
     SemanticSkillSearch,
     get_semantic_skill_search,
 )
+from skill_library.skill_cache import CachedSkill, SkillCache, get_skill_cache
 
 
 class TestDynamicSkillGenerator:
@@ -48,10 +49,12 @@ def execute(inputs):
     def mock_sandbox(self):
         """Create mock sandbox."""
         sandbox = Mock()
-        sandbox.execute = Mock(return_value={
-            "status": "success",
-            "output": "{'result': 5}",
-        })
+        sandbox.execute = Mock(
+            return_value={
+                "status": "success",
+                "output": "{'result': 5}",
+            }
+        )
         return sandbox
 
     @pytest.fixture
@@ -68,10 +71,10 @@ def execute(inputs):
         # Arrange
         description = "Add two numbers"
         examples = [{"input": {"a": 2, "b": 3}, "output": {"result": 5}}]
-        
+
         # Act
         result = generator.generate_skill(description, examples, register=False)
-        
+
         # Assert
         assert isinstance(result, GeneratedSkill)
         assert result.is_valid
@@ -79,16 +82,14 @@ def execute(inputs):
         assert "execute" in result.code
         mock_llm_provider.generate.assert_called_once()
 
-    def test_generate_skill_with_registration(
-        self, generator, mock_skill_registry
-    ):
+    def test_generate_skill_with_registration(self, generator, mock_skill_registry):
         """Test skill generation with registration."""
         # Arrange
         description = "Multiply two numbers"
-        
+
         # Act
         result = generator.generate_skill(description, register=True)
-        
+
         # Assert
         assert result.skill_id is not None
         mock_skill_registry.register_skill.assert_called_once()
@@ -102,10 +103,10 @@ def execute(inputs):
     b = inputs.get('b')
     return {'result': a + b}
 """
-        
+
         # Act
         interface = generator._extract_interface(code)
-        
+
         # Assert
         assert "inputs" in interface
         assert "outputs" in interface
@@ -115,10 +116,10 @@ def execute(inputs):
         """Test skill name generation."""
         # Arrange
         description = "Calculate the sum of two numbers"
-        
+
         # Act
         name = generator._generate_skill_name(description)
-        
+
         # Assert
         assert isinstance(name, str)
         assert len(name) > 0
@@ -135,10 +136,10 @@ from datetime import datetime
 def execute(inputs):
     return {'result': math.sqrt(inputs['value'])}
 """
-        
+
         # Act
         dependencies = generator._extract_dependencies(code)
-        
+
         # Assert
         assert "math" in dependencies
         assert "json" in dependencies
@@ -151,10 +152,10 @@ def execute(inputs):
 def execute(inputs):
     return {'result': inputs['value'] * 2}
 """
-        
+
         # Act
         errors = generator._validate_code(code)
-        
+
         # Assert
         assert len(errors) == 0
 
@@ -162,10 +163,10 @@ def execute(inputs):
         """Test code validation with syntax error."""
         # Arrange
         code = "def execute(inputs):\n    return {"
-        
+
         # Act
         errors = generator._validate_code(code)
-        
+
         # Assert
         assert len(errors) > 0
         assert "Syntax error" in errors[0]
@@ -179,11 +180,11 @@ def execute(inputs):
             "__import__('os')",
             "open('/etc/passwd')",
         ]
-        
+
         for code in dangerous_codes:
             # Act
             errors = generator._validate_code(code)
-            
+
             # Assert
             assert len(errors) > 0
 
@@ -200,10 +201,10 @@ def execute(inputs):
 
 This function does...
 """
-        
+
         # Act
         code = generator._extract_code_from_response(response)
-        
+
         # Assert
         assert "def execute" in code
         assert "```" not in code
@@ -222,7 +223,7 @@ class TestSkillCache:
         # Arrange
         description = "Add two numbers"
         skill_id = uuid4()
-        
+
         # Act
         cache.put(
             description=description,
@@ -232,9 +233,9 @@ class TestSkillCache:
             interface_definition={},
             dependencies=[],
         )
-        
+
         result = cache.get(description)
-        
+
         # Assert
         assert result is not None
         assert result.skill_id == skill_id
@@ -244,7 +245,7 @@ class TestSkillCache:
         """Test cache miss."""
         # Act
         result = cache.get("nonexistent skill")
-        
+
         # Assert
         assert result is None
 
@@ -260,11 +261,11 @@ class TestSkillCache:
             interface_definition={},
             dependencies=[],
         )
-        
+
         # Act
         invalidated = cache.invalidate(description)
         result = cache.get(description)
-        
+
         # Assert
         assert invalidated is True
         assert result is None
@@ -288,10 +289,10 @@ class TestSkillCache:
             interface_definition={},
             dependencies=[],
         )
-        
+
         # Act
         cache.clear()
-        
+
         # Assert
         assert cache.get("skill1") is None
         assert cache.get("skill2") is None
@@ -307,10 +308,10 @@ class TestSkillCache:
             interface_definition={},
             dependencies=[],
         )
-        
+
         # Act
         stats = cache.get_stats()
-        
+
         # Assert
         assert stats["size"] == 1
         assert stats["max_size"] == 10
@@ -320,17 +321,17 @@ class TestSkillCache:
         """Test LRU eviction."""
         # Arrange
         cache = SkillCache(max_size=2, ttl=3600)
-        
+
         # Add 3 skills (should evict first one)
         cache.put("skill1", uuid4(), "skill1", "", {}, [])
         cache.put("skill2", uuid4(), "skill2", "", {}, [])
         cache.put("skill3", uuid4(), "skill3", "", {}, [])
-        
+
         # Act
         result1 = cache.get("skill1")
         result2 = cache.get("skill2")
         result3 = cache.get("skill3")
-        
+
         # Assert
         assert result1 is None  # Evicted
         assert result2 is not None
@@ -341,15 +342,15 @@ class TestSkillCache:
         # Arrange
         cache.put("skill1", uuid4(), "skill1", "", {}, [])
         cache.put("skill2", uuid4(), "skill2", "", {}, [])
-        
+
         # Access skill1 multiple times
         cache.get("skill1")
         cache.get("skill1")
         cache.get("skill2")
-        
+
         # Act
         top_skills = cache.get_top_skills(limit=2)
-        
+
         # Assert
         assert len(top_skills) == 2
         assert top_skills[0].name == "skill1"  # Most used
@@ -362,30 +363,33 @@ class TestSemanticSkillSearch:
     def mock_skill_registry(self):
         """Create mock skill registry."""
         registry = Mock()
-        registry.list_skills = Mock(return_value=[
-            Mock(
-                skill_id=uuid4(),
-                name="add_numbers",
-                description="Add two numbers together",
-                version="1.0.0",
-                interface_definition={},
-                dependencies=[],
-            ),
-            Mock(
-                skill_id=uuid4(),
-                name="multiply_numbers",
-                description="Multiply two numbers",
-                version="1.0.0",
-                interface_definition={},
-                dependencies=[],
-            ),
-        ])
+        registry.list_skills = Mock(
+            return_value=[
+                Mock(
+                    skill_id=uuid4(),
+                    name="add_numbers",
+                    description="Add two numbers together",
+                    version="1.0.0",
+                    interface_definition={},
+                    dependencies=[],
+                ),
+                Mock(
+                    skill_id=uuid4(),
+                    name="multiply_numbers",
+                    description="Multiply two numbers",
+                    version="1.0.0",
+                    interface_definition={},
+                    dependencies=[],
+                ),
+            ]
+        )
         return registry
 
     @pytest.fixture
     def mock_embedding_service(self):
         """Create mock embedding service."""
         service = Mock()
+
         # Return different embeddings for different descriptions
         def generate_embedding(text):
             if "add" in text.lower():
@@ -394,7 +398,7 @@ class TestSemanticSkillSearch:
                 return [0.0, 1.0, 0.0]
             else:
                 return [0.0, 0.0, 1.0]
-        
+
         service.generate_embedding = Mock(side_effect=generate_embedding)
         return service
 
@@ -410,10 +414,10 @@ class TestSemanticSkillSearch:
         """Test finding similar skills."""
         # Arrange
         description = "Add two numbers"
-        
+
         # Act
         results = search.find_similar_skills(description, threshold=0.5, limit=5)
-        
+
         # Assert
         assert len(results) > 0
         assert all(isinstance(r[0], Mock) for r in results)
@@ -423,10 +427,10 @@ class TestSemanticSkillSearch:
         """Test finding exact match."""
         # Arrange
         description = "Add two numbers together"
-        
+
         # Act
         result = search.find_exact_match(description)
-        
+
         # Assert
         # May or may not find exact match depending on similarity threshold
         assert result is None or result.name == "add_numbers"
@@ -435,10 +439,10 @@ class TestSemanticSkillSearch:
         """Test suggesting existing skill."""
         # Arrange
         description = "Sum two numbers"
-        
+
         # Act
         result = search.suggest_existing_skill(description)
-        
+
         # Assert
         # May or may not suggest depending on similarity
         if result:
@@ -451,11 +455,11 @@ class TestSemanticSkillSearch:
         embedding1 = [1.0, 0.0, 0.0]
         embedding2 = [1.0, 0.0, 0.0]
         embedding3 = [0.0, 1.0, 0.0]
-        
+
         # Act
         similarity_same = search._cosine_similarity(embedding1, embedding2)
         similarity_different = search._cosine_similarity(embedding1, embedding3)
-        
+
         # Assert
         assert similarity_same > similarity_different
         assert 0 <= similarity_same <= 1
@@ -469,19 +473,19 @@ class TestSingletons:
         """Test getting dynamic skill generator singleton."""
         generator1 = get_dynamic_skill_generator()
         generator2 = get_dynamic_skill_generator()
-        
+
         assert generator1 is generator2
 
     def test_get_skill_cache(self):
         """Test getting skill cache singleton."""
         cache1 = get_skill_cache()
         cache2 = get_skill_cache()
-        
+
         assert cache1 is cache2
 
     def test_get_semantic_skill_search(self):
         """Test getting semantic skill search singleton."""
         search1 = get_semantic_skill_search()
         search2 = get_semantic_skill_search()
-        
+
         assert search1 is search2

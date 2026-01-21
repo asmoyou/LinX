@@ -12,10 +12,10 @@ This module provides performance optimization features:
 - Performance monitoring
 """
 
-from performance.query_optimizer import QueryOptimizer
 from performance.cache_manager import CacheManager
-from performance.vector_optimizer import VectorSearchOptimizer
 from performance.connection_pool import ConnectionPoolManager
+from performance.query_optimizer import QueryOptimizer
+from performance.vector_optimizer import VectorSearchOptimizer
 
 __all__ = [
     "QueryOptimizer",

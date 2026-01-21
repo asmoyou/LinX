@@ -10,20 +10,22 @@ References:
 """
 
 import logging
-from typing import Dict, Any, Optional
 from datetime import datetime
+from typing import Any, Dict, Optional
 from uuid import UUID
+
 from sqlalchemy.orm import Session
 
-from database.models import AuditLog
-from access_control.rbac import Action, ResourceType
 from access_control.permissions import CurrentUser
+from access_control.rbac import Action, ResourceType
+from database.models import AuditLog
 
 logger = logging.getLogger(__name__)
 
 
 class AuditEventType:
     """Audit event types for access control."""
+
     # Authentication events
     LOGIN_SUCCESS = "login_success"
     LOGIN_FAILURE = "login_failure"
@@ -31,45 +33,45 @@ class AuditEventType:
     TOKEN_REFRESH = "token_refresh"
     TOKEN_EXPIRED = "token_expired"
     TOKEN_INVALID = "token_invalid"
-    
+
     # Authorization events
     PERMISSION_GRANTED = "permission_granted"
     PERMISSION_DENIED = "permission_denied"
     ROLE_CHECK_SUCCESS = "role_check_success"
     ROLE_CHECK_FAILURE = "role_check_failure"
-    
+
     # Resource access events
     RESOURCE_ACCESS_GRANTED = "resource_access_granted"
     RESOURCE_ACCESS_DENIED = "resource_access_denied"
     OWNERSHIP_VERIFIED = "ownership_verified"
     OWNERSHIP_DENIED = "ownership_denied"
-    
+
     # Policy events
     ABAC_POLICY_MATCHED = "abac_policy_matched"
     ABAC_POLICY_DENIED = "abac_policy_denied"
     RBAC_PERMISSION_GRANTED = "rbac_permission_granted"
     RBAC_PERMISSION_DENIED = "rbac_permission_denied"
-    
+
     # User management events
     USER_CREATED = "user_created"
     USER_UPDATED = "user_updated"
     USER_DELETED = "user_deleted"
     ROLE_ASSIGNED = "role_assigned"
     ROLE_REVOKED = "role_revoked"
-    
+
     # Agent events
     AGENT_CREATED = "agent_created"
     AGENT_ACCESSED = "agent_accessed"
     AGENT_UPDATED = "agent_updated"
     AGENT_DELETED = "agent_deleted"
     AGENT_CONTROLLED = "agent_controlled"
-    
+
     # Knowledge Base events
     KNOWLEDGE_ACCESSED = "knowledge_accessed"
     KNOWLEDGE_CREATED = "knowledge_created"
     KNOWLEDGE_UPDATED = "knowledge_updated"
     KNOWLEDGE_DELETED = "knowledge_deleted"
-    
+
     # Memory System events
     MEMORY_ACCESSED = "memory_accessed"
     MEMORY_CREATED = "memory_created"
@@ -86,12 +88,12 @@ def log_access_control_event(
     action: Optional[str] = None,
     result: str = "success",
     details: Optional[Dict[str, Any]] = None,
-    reason: Optional[str] = None
+    reason: Optional[str] = None,
 ) -> None:
     """Log an access control event to the audit log.
-    
+
     This is the main function for logging all access control decisions.
-    
+
     Args:
         session: SQLAlchemy database session
         event_type: Type of event (from AuditEventType)
@@ -103,7 +105,7 @@ def log_access_control_event(
         result: Result of the event (success, denied, error)
         details: Additional details as dictionary
         reason: Reason for denial (if applicable)
-        
+
     Example:
         log_access_control_event(
             session,
@@ -119,18 +121,20 @@ def log_access_control_event(
     try:
         # Build details dictionary
         audit_details = details or {}
-        audit_details.update({
-            "event_type": event_type,
-            "result": result,
-            "timestamp": datetime.utcnow().isoformat(),
-        })
-        
+        audit_details.update(
+            {
+                "event_type": event_type,
+                "result": result,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        )
+
         if action:
             audit_details["action"] = action
-        
+
         if reason:
             audit_details["reason"] = reason
-        
+
         # Create audit log entry
         audit_log = AuditLog(
             user_id=UUID(user_id) if user_id else None,
@@ -140,10 +144,10 @@ def log_access_control_event(
             resource_id=UUID(resource_id) if resource_id else None,
             details=audit_details,
         )
-        
+
         session.add(audit_log)
         session.flush()
-        
+
         # Also log to application logger
         log_level = logging.INFO if result == "success" else logging.WARNING
         logger.log(
@@ -158,14 +162,14 @@ def log_access_control_event(
                 "action": action,
                 "result": result,
                 "reason": reason,
-            }
+            },
         )
-        
+
     except Exception as e:
         logger.error(
             f"Failed to log access control event: {e}",
             extra={"event_type": event_type, "error": str(e)},
-            exc_info=True
+            exc_info=True,
         )
 
 
@@ -177,10 +181,10 @@ def log_authentication_event(
     success: bool = True,
     reason: Optional[str] = None,
     ip_address: Optional[str] = None,
-    user_agent: Optional[str] = None
+    user_agent: Optional[str] = None,
 ) -> None:
     """Log an authentication event.
-    
+
     Args:
         session: SQLAlchemy database session
         event_type: Authentication event type
@@ -196,14 +200,14 @@ def log_authentication_event(
         "ip_address": ip_address,
         "user_agent": user_agent,
     }
-    
+
     log_access_control_event(
         session,
         event_type,
         user_id=user_id,
         result="success" if success else "denied",
         details=details,
-        reason=reason
+        reason=reason,
     )
 
 
@@ -215,10 +219,10 @@ def log_permission_check(
     resource_id: Optional[str] = None,
     granted: bool = True,
     reason: Optional[str] = None,
-    scope: Optional[str] = None
+    scope: Optional[str] = None,
 ) -> None:
     """Log a permission check event.
-    
+
     Args:
         session: SQLAlchemy database session
         current_user: User performing the action
@@ -229,16 +233,13 @@ def log_permission_check(
         reason: Reason for denial
         scope: Permission scope (None, own, permitted)
     """
-    event_type = (
-        AuditEventType.PERMISSION_GRANTED if granted 
-        else AuditEventType.PERMISSION_DENIED
-    )
-    
+    event_type = AuditEventType.PERMISSION_GRANTED if granted else AuditEventType.PERMISSION_DENIED
+
     details = {
         "role": current_user.role,
         "scope": scope,
     }
-    
+
     log_access_control_event(
         session,
         event_type,
@@ -248,7 +249,7 @@ def log_permission_check(
         action=action.value,
         result="success" if granted else "denied",
         details=details,
-        reason=reason
+        reason=reason,
     )
 
 
@@ -260,10 +261,10 @@ def log_resource_access(
     action: str,
     granted: bool = True,
     reason: Optional[str] = None,
-    owner_id: Optional[str] = None
+    owner_id: Optional[str] = None,
 ) -> None:
     """Log a resource access event.
-    
+
     Args:
         session: SQLAlchemy database session
         current_user: User accessing the resource
@@ -275,15 +276,14 @@ def log_resource_access(
         owner_id: Owner of the resource
     """
     event_type = (
-        AuditEventType.RESOURCE_ACCESS_GRANTED if granted
-        else AuditEventType.RESOURCE_ACCESS_DENIED
+        AuditEventType.RESOURCE_ACCESS_GRANTED if granted else AuditEventType.RESOURCE_ACCESS_DENIED
     )
-    
+
     details = {
         "role": current_user.role,
         "owner_id": owner_id,
     }
-    
+
     log_access_control_event(
         session,
         event_type,
@@ -293,7 +293,7 @@ def log_resource_access(
         action=action,
         result="success" if granted else "denied",
         details=details,
-        reason=reason
+        reason=reason,
     )
 
 
@@ -304,10 +304,10 @@ def log_agent_access(
     action: str,
     granted: bool = True,
     reason: Optional[str] = None,
-    agent_owner_id: Optional[str] = None
+    agent_owner_id: Optional[str] = None,
 ) -> None:
     """Log an agent access event.
-    
+
     Args:
         session: SQLAlchemy database session
         current_user: User accessing the agent
@@ -324,17 +324,17 @@ def log_agent_access(
         "delete": AuditEventType.AGENT_DELETED,
         "control": AuditEventType.AGENT_CONTROLLED,
     }
-    
+
     event_type = event_type_map.get(action.lower(), AuditEventType.AGENT_ACCESSED)
-    
+
     if not granted:
         event_type = AuditEventType.RESOURCE_ACCESS_DENIED
-    
+
     details = {
         "role": current_user.role,
         "agent_owner_id": agent_owner_id,
     }
-    
+
     log_access_control_event(
         session,
         event_type,
@@ -345,7 +345,7 @@ def log_agent_access(
         action=action,
         result="success" if granted else "denied",
         details=details,
-        reason=reason
+        reason=reason,
     )
 
 
@@ -357,10 +357,10 @@ def log_knowledge_access(
     granted: bool = True,
     reason: Optional[str] = None,
     access_level: Optional[str] = None,
-    owner_id: Optional[str] = None
+    owner_id: Optional[str] = None,
 ) -> None:
     """Log a knowledge base access event.
-    
+
     Args:
         session: SQLAlchemy database session
         current_user: User accessing knowledge
@@ -377,18 +377,18 @@ def log_knowledge_access(
         "update": AuditEventType.KNOWLEDGE_UPDATED,
         "delete": AuditEventType.KNOWLEDGE_DELETED,
     }
-    
+
     event_type = event_type_map.get(action.lower(), AuditEventType.KNOWLEDGE_ACCESSED)
-    
+
     if not granted:
         event_type = AuditEventType.RESOURCE_ACCESS_DENIED
-    
+
     details = {
         "role": current_user.role,
         "access_level": access_level,
         "owner_id": owner_id,
     }
-    
+
     log_access_control_event(
         session,
         event_type,
@@ -398,7 +398,7 @@ def log_knowledge_access(
         action=action,
         result="success" if granted else "denied",
         details=details,
-        reason=reason
+        reason=reason,
     )
 
 
@@ -410,10 +410,10 @@ def log_memory_access(
     action: str,
     granted: bool = True,
     reason: Optional[str] = None,
-    agent_id: Optional[str] = None
+    agent_id: Optional[str] = None,
 ) -> None:
     """Log a memory system access event.
-    
+
     Args:
         session: SQLAlchemy database session
         current_user: User accessing memory
@@ -429,17 +429,17 @@ def log_memory_access(
         "create": AuditEventType.MEMORY_CREATED,
         "delete": AuditEventType.MEMORY_DELETED,
     }
-    
+
     event_type = event_type_map.get(action.lower(), AuditEventType.MEMORY_ACCESSED)
-    
+
     if not granted:
         event_type = AuditEventType.RESOURCE_ACCESS_DENIED
-    
+
     details = {
         "role": current_user.role,
         "memory_tier": memory_tier,
     }
-    
+
     log_access_control_event(
         session,
         event_type,
@@ -450,7 +450,7 @@ def log_memory_access(
         action=action,
         result="success" if granted else "denied",
         details=details,
-        reason=reason
+        reason=reason,
     )
 
 
@@ -462,10 +462,10 @@ def log_abac_policy_evaluation(
     resource_type: str,
     action: str,
     matched: bool,
-    effect: str
+    effect: str,
 ) -> None:
     """Log an ABAC policy evaluation.
-    
+
     Args:
         session: SQLAlchemy database session
         current_user: User being evaluated
@@ -477,17 +477,16 @@ def log_abac_policy_evaluation(
         effect: Policy effect (allow, deny)
     """
     event_type = (
-        AuditEventType.ABAC_POLICY_MATCHED if matched
-        else AuditEventType.ABAC_POLICY_DENIED
+        AuditEventType.ABAC_POLICY_MATCHED if matched else AuditEventType.ABAC_POLICY_DENIED
     )
-    
+
     details = {
         "policy_id": policy_id,
         "policy_name": policy_name,
         "effect": effect,
         "matched": matched,
     }
-    
+
     log_access_control_event(
         session,
         event_type,
@@ -495,7 +494,7 @@ def log_abac_policy_evaluation(
         resource_type=resource_type,
         action=action,
         result="success" if matched else "no_match",
-        details=details
+        details=details,
     )
 
 
@@ -506,10 +505,10 @@ def log_user_management_event(
     target_username: str,
     performed_by_user_id: Optional[str] = None,
     role: Optional[str] = None,
-    details: Optional[Dict[str, Any]] = None
+    details: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Log a user management event.
-    
+
     Args:
         session: SQLAlchemy database session
         event_type: Event type (user_created, role_assigned, etc.)
@@ -520,11 +519,13 @@ def log_user_management_event(
         details: Additional details
     """
     audit_details = details or {}
-    audit_details.update({
-        "target_username": target_username,
-        "role": role,
-    })
-    
+    audit_details.update(
+        {
+            "target_username": target_username,
+            "role": role,
+        }
+    )
+
     log_access_control_event(
         session,
         event_type,
@@ -532,7 +533,7 @@ def log_user_management_event(
         resource_type="user",
         resource_id=target_user_id,
         result="success",
-        details=audit_details
+        details=audit_details,
     )
 
 
@@ -543,10 +544,10 @@ def get_audit_logs(
     action: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-    limit: int = 100
+    limit: int = 100,
 ) -> list:
     """Retrieve audit logs with filtering.
-    
+
     Args:
         session: SQLAlchemy database session
         user_id: Filter by user ID
@@ -555,27 +556,27 @@ def get_audit_logs(
         start_date: Filter by start date
         end_date: Filter by end date
         limit: Maximum number of results
-        
+
     Returns:
         List of AuditLog objects
     """
     query = session.query(AuditLog)
-    
+
     if user_id:
         query = query.filter(AuditLog.user_id == UUID(user_id))
-    
+
     if resource_type:
         query = query.filter(AuditLog.resource_type == resource_type)
-    
+
     if action:
         query = query.filter(AuditLog.action == action)
-    
+
     if start_date:
         query = query.filter(AuditLog.timestamp >= start_date)
-    
+
     if end_date:
         query = query.filter(AuditLog.timestamp <= end_date)
-    
+
     query = query.order_by(AuditLog.timestamp.desc()).limit(limit)
-    
+
     return query.all()

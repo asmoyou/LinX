@@ -8,12 +8,13 @@ References:
 - Design Section 8: Access Control and Security
 """
 
-import pytest
-from unittest.mock import Mock, patch
-import secrets
-import hmac
 import hashlib
+import hmac
+import secrets
 import time
+from unittest.mock import Mock, patch
+
+import pytest
 
 
 class TestCSRFTokenGeneration:
@@ -23,7 +24,7 @@ class TestCSRFTokenGeneration:
         """Test that CSRF tokens are generated securely."""
         # Act
         token = secrets.token_urlsafe(32)
-        
+
         # Assert
         assert len(token) > 0
         assert isinstance(token, str)
@@ -33,7 +34,7 @@ class TestCSRFTokenGeneration:
         # Act
         token1 = secrets.token_urlsafe(32)
         token2 = secrets.token_urlsafe(32)
-        
+
         # Assert
         assert token1 != token2
 
@@ -41,7 +42,7 @@ class TestCSRFTokenGeneration:
         """Test that tokens have sufficient entropy."""
         # Act
         token = secrets.token_urlsafe(32)
-        
+
         # Assert - 32 bytes = 256 bits of entropy
         assert len(token) >= 32
 
@@ -50,10 +51,10 @@ class TestCSRFTokenGeneration:
         # Arrange
         session = {}
         token = secrets.token_urlsafe(32)
-        
+
         # Act
         session["csrf_token"] = token
-        
+
         # Assert
         assert "csrf_token" in session
         assert session["csrf_token"] == token
@@ -82,10 +83,10 @@ class TestCSRFTokenValidation:
         # Arrange
         token = mock_session["csrf_token"]
         mock_request.headers["X-CSRF-Token"] = token
-        
+
         # Act
         is_valid = mock_request.headers.get("X-CSRF-Token") == mock_session.get("csrf_token")
-        
+
         # Assert
         assert is_valid is True
 
@@ -94,10 +95,10 @@ class TestCSRFTokenValidation:
         # Arrange
         token = mock_session["csrf_token"]
         mock_request.form["csrf_token"] = token
-        
+
         # Act
         is_valid = mock_request.form.get("csrf_token") == mock_session.get("csrf_token")
-        
+
         # Assert
         assert is_valid is True
 
@@ -105,7 +106,7 @@ class TestCSRFTokenValidation:
         """Test that requests without CSRF token are rejected."""
         # Act
         is_valid = mock_request.headers.get("X-CSRF-Token") == mock_session.get("csrf_token")
-        
+
         # Assert
         assert is_valid is False
 
@@ -113,10 +114,10 @@ class TestCSRFTokenValidation:
         """Test that requests with invalid token are rejected."""
         # Arrange
         mock_request.headers["X-CSRF-Token"] = "invalid_token"
-        
+
         # Act
         is_valid = mock_request.headers.get("X-CSRF-Token") == mock_session.get("csrf_token")
-        
+
         # Assert
         assert is_valid is False
 
@@ -125,14 +126,14 @@ class TestCSRFTokenValidation:
         # Arrange
         token_data = {
             "token": secrets.token_urlsafe(32),
-            "created_at": time.time() - 7200  # 2 hours ago
+            "created_at": time.time() - 7200,  # 2 hours ago
         }
         max_age = 3600  # 1 hour
-        
+
         # Act
         age = time.time() - token_data["created_at"]
         is_valid = age <= max_age
-        
+
         # Assert
         assert is_valid is False
 
@@ -146,10 +147,10 @@ class TestCSRFProtectionMethods:
         token = secrets.token_urlsafe(32)
         cookie_token = token
         header_token = token
-        
+
         # Act
         is_valid = cookie_token == header_token
-        
+
         # Assert
         assert is_valid is True
 
@@ -158,10 +159,10 @@ class TestCSRFProtectionMethods:
         # Arrange
         session_token = secrets.token_urlsafe(32)
         request_token = session_token
-        
+
         # Act
         is_valid = session_token == request_token
-        
+
         # Assert
         assert is_valid is True
 
@@ -171,14 +172,14 @@ class TestCSRFProtectionMethods:
         secret_key = secrets.token_bytes(32)
         user_id = "user123"
         timestamp = str(int(time.time()))
-        
+
         # Generate token
         message = f"{user_id}:{timestamp}"
         token = hmac.new(secret_key, message.encode(), hashlib.sha256).hexdigest()
-        
+
         # Verify token
         expected_token = hmac.new(secret_key, message.encode(), hashlib.sha256).hexdigest()
-        
+
         # Assert
         assert token == expected_token
 
@@ -186,19 +187,19 @@ class TestCSRFProtectionMethods:
         """Test encrypted token pattern."""
         # This is a conceptual test
         # In practice, you would use a library like cryptography
-        
+
         # Token should contain:
         # - User ID
         # - Timestamp
         # - Random nonce
         # All encrypted with server secret
-        
+
         token_data = {
             "user_id": "user123",
             "timestamp": int(time.time()),
-            "nonce": secrets.token_urlsafe(16)
+            "nonce": secrets.token_urlsafe(16),
         }
-        
+
         assert "user_id" in token_data
         assert "timestamp" in token_data
         assert "nonce" in token_data
@@ -210,44 +211,32 @@ class TestSameSiteCookies:
     def test_samesite_strict(self):
         """Test SameSite=Strict cookie attribute."""
         # Arrange
-        cookie_attributes = {
-            "SameSite": "Strict",
-            "Secure": True,
-            "HttpOnly": True
-        }
-        
+        cookie_attributes = {"SameSite": "Strict", "Secure": True, "HttpOnly": True}
+
         # Assert
         assert cookie_attributes["SameSite"] == "Strict"
 
     def test_samesite_lax(self):
         """Test SameSite=Lax cookie attribute."""
         # Arrange
-        cookie_attributes = {
-            "SameSite": "Lax",
-            "Secure": True,
-            "HttpOnly": True
-        }
-        
+        cookie_attributes = {"SameSite": "Lax", "Secure": True, "HttpOnly": True}
+
         # Assert
         assert cookie_attributes["SameSite"] == "Lax"
 
     def test_secure_flag(self):
         """Test that Secure flag is set on cookies."""
         # Arrange
-        cookie_attributes = {
-            "Secure": True
-        }
-        
+        cookie_attributes = {"Secure": True}
+
         # Assert
         assert cookie_attributes["Secure"] is True
 
     def test_httponly_flag(self):
         """Test that HttpOnly flag is set on cookies."""
         # Arrange
-        cookie_attributes = {
-            "HttpOnly": True
-        }
-        
+        cookie_attributes = {"HttpOnly": True}
+
         # Assert
         assert cookie_attributes["HttpOnly"] is True
 
@@ -267,10 +256,10 @@ class TestOriginValidation:
         # Arrange
         allowed_origins = ["https://example.com", "https://app.example.com"]
         mock_request.headers["Origin"] = "https://example.com"
-        
+
         # Act
         is_valid = mock_request.headers.get("Origin") in allowed_origins
-        
+
         # Assert
         assert is_valid is True
 
@@ -279,10 +268,10 @@ class TestOriginValidation:
         # Arrange
         allowed_origins = ["https://example.com"]
         mock_request.headers["Origin"] = "https://evil.com"
-        
+
         # Act
         is_valid = mock_request.headers.get("Origin") in allowed_origins
-        
+
         # Assert
         assert is_valid is False
 
@@ -291,21 +280,21 @@ class TestOriginValidation:
         # Arrange
         allowed_domains = ["example.com", "app.example.com"]
         mock_request.headers["Referer"] = "https://example.com/page"
-        
+
         # Act
         referer = mock_request.headers.get("Referer", "")
         is_valid = any(domain in referer for domain in allowed_domains)
-        
+
         # Assert
         assert is_valid is True
 
     def test_reject_missing_origin(self, mock_request):
         """Test handling of missing Origin header."""
         # Arrange - No Origin header set
-        
+
         # Act
         has_origin = "Origin" in mock_request.headers
-        
+
         # Assert
         # For state-changing requests, missing Origin should be rejected
         assert has_origin is False
@@ -319,12 +308,12 @@ class TestCSRFExemptions:
         # Arrange
         safe_methods = ["GET", "HEAD", "OPTIONS", "TRACE"]
         unsafe_methods = ["POST", "PUT", "DELETE", "PATCH"]
-        
+
         # Assert
         for method in safe_methods:
             requires_csrf = method not in ["GET", "HEAD", "OPTIONS", "TRACE"]
             assert requires_csrf is False
-        
+
         for method in unsafe_methods:
             requires_csrf = method not in ["GET", "HEAD", "OPTIONS", "TRACE"]
             assert requires_csrf is True
@@ -332,13 +321,11 @@ class TestCSRFExemptions:
     def test_api_endpoints_with_token_auth(self):
         """Test that API endpoints with token auth may be exempt."""
         # Arrange
-        request_headers = {
-            "Authorization": "Bearer valid_jwt_token"
-        }
-        
+        request_headers = {"Authorization": "Bearer valid_jwt_token"}
+
         # Act - If using token-based auth, CSRF may not be needed
         has_token_auth = "Authorization" in request_headers
-        
+
         # Assert
         assert has_token_auth is True
 
@@ -358,10 +345,10 @@ class TestCSRFMiddleware:
         # Arrange
         request = Mock()
         request.method = "POST"
-        
+
         # Act
         mock_middleware.validate_csrf(request)
-        
+
         # Assert
         mock_middleware.validate_csrf.assert_called_once_with(request)
 
@@ -370,10 +357,10 @@ class TestCSRFMiddleware:
         # Arrange
         request = Mock()
         request.method = "GET"
-        
+
         # Act
         requires_validation = request.method not in ["GET", "HEAD", "OPTIONS"]
-        
+
         # Assert
         assert requires_validation is False
 
@@ -381,7 +368,7 @@ class TestCSRFMiddleware:
         """Test that middleware returns 403 on CSRF failure."""
         # Arrange
         csrf_valid = False
-        
+
         # Act
         if not csrf_valid:
             status_code = 403
@@ -389,7 +376,7 @@ class TestCSRFMiddleware:
         else:
             status_code = 200
             error_message = None
-        
+
         # Assert
         assert status_code == 403
         assert error_message is not None
@@ -401,27 +388,23 @@ class TestCSRFInAPIs:
     def test_jwt_tokens_prevent_csrf(self):
         """Test that JWT tokens in headers prevent CSRF."""
         # Arrange
-        request_headers = {
-            "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-        }
-        
+        request_headers = {"Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."}
+
         # Act - JWT in Authorization header is not vulnerable to CSRF
         # because attackers cannot read or set this header cross-origin
         has_jwt = "Authorization" in request_headers
-        
+
         # Assert
         assert has_jwt is True
 
     def test_api_key_in_header(self):
         """Test that API keys in headers prevent CSRF."""
         # Arrange
-        request_headers = {
-            "X-API-Key": "secret_api_key"
-        }
-        
+        request_headers = {"X-API-Key": "secret_api_key"}
+
         # Act - API key in custom header prevents CSRF
         has_api_key = "X-API-Key" in request_headers
-        
+
         # Assert
         assert has_api_key is True
 
@@ -432,9 +415,9 @@ class TestCSRFInAPIs:
             "allowed_origins": ["https://app.example.com"],
             "allow_credentials": True,
             "allowed_methods": ["GET", "POST", "PUT", "DELETE"],
-            "allowed_headers": ["Content-Type", "Authorization"]
+            "allowed_headers": ["Content-Type", "Authorization"],
         }
-        
+
         # Assert
         assert "https://app.example.com" in cors_config["allowed_origins"]
         assert "*" not in cors_config["allowed_origins"]  # Should not allow all origins
@@ -452,9 +435,9 @@ class TestCSRFLogging:
             "ip_address": "192.168.1.100",
             "user_agent": "Mozilla/5.0...",
             "endpoint": "/api/v1/users",
-            "reason": "Invalid CSRF token"
+            "reason": "Invalid CSRF token",
         }
-        
+
         # Assert
         assert "timestamp" in csrf_failure
         assert "ip_address" in csrf_failure
@@ -465,10 +448,10 @@ class TestCSRFLogging:
         # Arrange
         failure_count = 5
         max_failures = 3
-        
+
         # Act
         should_block = failure_count > max_failures
-        
+
         # Assert
         assert should_block is True
 
@@ -477,9 +460,9 @@ class TestCSRFLogging:
         # Arrange
         failure_rate = 10  # failures per minute
         alert_threshold = 5
-        
+
         # Act
         should_alert = failure_rate > alert_threshold
-        
+
         # Assert
         assert should_alert is True

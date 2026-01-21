@@ -9,7 +9,7 @@ References:
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -17,34 +17,34 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ResourceLimits:
     """Resource limits for agent containers."""
-    
+
     # CPU limits
     cpu_cores: float = 0.5  # Number of CPU cores
     cpu_shares: int = 512  # CPU shares (relative weight)
-    
+
     # Memory limits
     memory_mb: int = 512  # Memory limit in MB
     memory_swap_mb: int = 512  # Memory + swap limit in MB
-    
+
     # Execution time limits
     execution_timeout_seconds: int = 30  # Maximum execution time
     max_execution_time_seconds: int = 300  # Absolute maximum (5 minutes)
-    
+
     # Disk I/O limits
     disk_read_bps: int = 10 * 1024 * 1024  # 10 MB/s
     disk_write_bps: int = 5 * 1024 * 1024  # 5 MB/s
-    
+
     # Network limits
     network_bandwidth_bps: int = 1 * 1024 * 1024  # 1 MB/s
     max_connections: int = 5  # Maximum concurrent connections
-    
+
     # Storage limits
     tmp_storage_mb: int = 50  # /tmp storage limit
     output_storage_mb: int = 10  # /output storage limit
-    
+
     def to_docker_config(self) -> Dict[str, Any]:
         """Convert to Docker container configuration.
-        
+
         Returns:
             Dictionary with Docker resource configuration
         """
@@ -55,17 +55,13 @@ class ResourceLimits:
             "mem_limit": f"{self.memory_mb}m",
             "memswap_limit": f"{self.memory_swap_mb}m",
             "blkio_weight": 500,
-            "device_read_bps": [
-                {"Path": "/dev/sda", "Rate": self.disk_read_bps}
-            ],
-            "device_write_bps": [
-                {"Path": "/dev/sda", "Rate": self.disk_write_bps}
-            ],
+            "device_read_bps": [{"Path": "/dev/sda", "Rate": self.disk_read_bps}],
+            "device_write_bps": [{"Path": "/dev/sda", "Rate": self.disk_write_bps}],
         }
-    
+
     def to_kubernetes_config(self) -> Dict[str, Any]:
         """Convert to Kubernetes resource configuration.
-        
+
         Returns:
             Dictionary with Kubernetes resource configuration
         """
@@ -79,54 +75,54 @@ class ResourceLimits:
                 "memory": f"{self.memory_mb // 2}Mi",
             },
         }
-    
+
     def validate(self) -> bool:
         """Validate resource limits are within acceptable ranges.
-        
+
         Returns:
             True if valid, False otherwise
         """
         if self.cpu_cores <= 0 or self.cpu_cores > 4:
             logger.error(f"Invalid CPU cores: {self.cpu_cores}")
             return False
-        
+
         if self.memory_mb < 128 or self.memory_mb > 4096:
             logger.error(f"Invalid memory limit: {self.memory_mb}MB")
             return False
-        
+
         if self.execution_timeout_seconds <= 0:
             logger.error(f"Invalid timeout: {self.execution_timeout_seconds}s")
             return False
-        
+
         return True
 
 
 @dataclass
 class ResourceUsage:
     """Current resource usage for a container."""
-    
+
     # CPU usage
     cpu_percent: float = 0.0  # CPU usage percentage
     cpu_time_seconds: float = 0.0  # Total CPU time used
-    
+
     # Memory usage
     memory_mb: float = 0.0  # Current memory usage in MB
     memory_percent: float = 0.0  # Memory usage percentage
-    
+
     # Disk I/O
     disk_read_mb: float = 0.0  # Total disk read in MB
     disk_write_mb: float = 0.0  # Total disk write in MB
-    
+
     # Network I/O
     network_rx_mb: float = 0.0  # Total network received in MB
     network_tx_mb: float = 0.0  # Total network transmitted in MB
-    
+
     # Execution time
     execution_time_seconds: float = 0.0  # Current execution time
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation.
-        
+
         Returns:
             Dictionary with resource usage data
         """
@@ -149,13 +145,13 @@ class ResourceUsage:
             },
             "execution_time_seconds": round(self.execution_time_seconds, 2),
         }
-    
+
     def is_within_limits(self, limits: ResourceLimits) -> bool:
         """Check if current usage is within specified limits.
-        
+
         Args:
             limits: Resource limits to check against
-        
+
         Returns:
             True if within limits, False otherwise
         """
@@ -168,7 +164,7 @@ class ResourceUsage:
                 },
             )
             return False
-        
+
         if self.execution_time_seconds > limits.execution_timeout_seconds:
             logger.warning(
                 "Execution timeout exceeded",
@@ -178,16 +174,16 @@ class ResourceUsage:
                 },
             )
             return False
-        
+
         return True
 
 
 def get_default_limits(task_type: str = "default") -> ResourceLimits:
     """Get default resource limits for a task type.
-    
+
     Args:
         task_type: Type of task (default, data_processing, code_execution, etc.)
-    
+
     Returns:
         ResourceLimits instance with appropriate defaults
     """
@@ -218,16 +214,16 @@ def get_default_limits(task_type: str = "default") -> ResourceLimits:
             execution_timeout_seconds=15,
         ),
     }
-    
+
     return limits_by_type.get(task_type, limits_by_type["default"])
 
 
 def parse_resource_usage_from_docker_stats(stats: Dict[str, Any]) -> ResourceUsage:
     """Parse resource usage from Docker stats API response.
-    
+
     Args:
         stats: Docker stats dictionary
-    
+
     Returns:
         ResourceUsage instance
     """
@@ -235,21 +231,23 @@ def parse_resource_usage_from_docker_stats(stats: Dict[str, Any]) -> ResourceUsa
     memory_stats = stats.get("memory_stats", {})
     blkio_stats = stats.get("blkio_stats", {})
     networks = stats.get("networks", {})
-    
+
     # Calculate CPU percentage
-    cpu_delta = cpu_stats.get("cpu_usage", {}).get("total_usage", 0) - \
-                stats.get("precpu_stats", {}).get("cpu_usage", {}).get("total_usage", 0)
-    system_delta = cpu_stats.get("system_cpu_usage", 0) - \
-                   stats.get("precpu_stats", {}).get("system_cpu_usage", 0)
+    cpu_delta = cpu_stats.get("cpu_usage", {}).get("total_usage", 0) - stats.get(
+        "precpu_stats", {}
+    ).get("cpu_usage", {}).get("total_usage", 0)
+    system_delta = cpu_stats.get("system_cpu_usage", 0) - stats.get("precpu_stats", {}).get(
+        "system_cpu_usage", 0
+    )
     cpu_percent = 0.0
     if system_delta > 0:
         cpu_percent = (cpu_delta / system_delta) * 100.0
-    
+
     # Memory usage
     memory_usage = memory_stats.get("usage", 0)
     memory_limit = memory_stats.get("limit", 1)
     memory_percent = (memory_usage / memory_limit) * 100.0 if memory_limit > 0 else 0.0
-    
+
     # Disk I/O
     disk_read = 0
     disk_write = 0
@@ -258,11 +256,11 @@ def parse_resource_usage_from_docker_stats(stats: Dict[str, Any]) -> ResourceUsa
             disk_read += io_stat.get("value", 0)
         elif io_stat.get("op") == "Write":
             disk_write += io_stat.get("value", 0)
-    
+
     # Network I/O
     network_rx = sum(net.get("rx_bytes", 0) for net in networks.values())
     network_tx = sum(net.get("tx_bytes", 0) for net in networks.values())
-    
+
     return ResourceUsage(
         cpu_percent=cpu_percent,
         cpu_time_seconds=cpu_stats.get("cpu_usage", {}).get("total_usage", 0) / 1e9,

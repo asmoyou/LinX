@@ -8,7 +8,7 @@ References:
 """
 
 import logging
-from typing import List, Dict, Set
+from typing import Dict, List, Set
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class CapabilityMapper:
     """Maps task requirements to agent capabilities."""
-    
+
     def __init__(self):
         """Initialize capability mapper."""
         # Capability synonyms and mappings
@@ -27,26 +27,26 @@ class CapabilityMapper:
             "research": {"researcher", "research_assistant", "information_gathering"},
             "sql_query": {"database", "sql", "data_query"},
         }
-        
+
         logger.info("CapabilityMapper initialized")
-    
+
     def map_requirements_to_capabilities(
         self,
         required_capabilities: List[str],
     ) -> List[str]:
         """Map task requirements to standardized capabilities.
-        
+
         Args:
             required_capabilities: Raw capability requirements
-        
+
         Returns:
             List of standardized capability names
         """
         standardized = set()
-        
+
         for req in required_capabilities:
             req_lower = req.lower().strip()
-            
+
             # Check if it matches a standard capability
             for standard, synonyms in self.capability_synonyms.items():
                 if req_lower == standard or req_lower in synonyms:
@@ -55,9 +55,9 @@ class CapabilityMapper:
             else:
                 # Keep original if no match found
                 standardized.add(req_lower)
-        
+
         result = list(standardized)
-        
+
         logger.debug(
             "Mapped capabilities",
             extra={
@@ -65,38 +65,38 @@ class CapabilityMapper:
                 "output": result,
             },
         )
-        
+
         return result
-    
+
     def calculate_capability_match_score(
         self,
         required: List[str],
         available: List[str],
     ) -> float:
         """Calculate how well available capabilities match requirements.
-        
+
         Args:
             required: Required capabilities
             available: Available capabilities
-        
+
         Returns:
             Match score from 0.0 to 1.0
         """
         if not required:
             return 1.0
-        
+
         required_set = set(self.map_requirements_to_capabilities(required))
         available_set = set(self.map_requirements_to_capabilities(available))
-        
+
         # Calculate Jaccard similarity
         intersection = required_set & available_set
         union = required_set | available_set
-        
+
         if not union:
             return 0.0
-        
+
         score = len(intersection) / len(required_set)
-        
+
         logger.debug(
             "Capability match score",
             extra={
@@ -105,5 +105,5 @@ class CapabilityMapper:
                 "score": score,
             },
         )
-        
+
         return score

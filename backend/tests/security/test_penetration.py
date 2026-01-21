@@ -8,10 +8,11 @@ References:
 - Design Section 8: Access Control and Security
 """
 
-import pytest
-from unittest.mock import Mock, patch
-import requests
 import time
+from unittest.mock import Mock, patch
+
+import pytest
+import requests
 
 
 class TestAuthenticationPenetration:
@@ -22,16 +23,16 @@ class TestAuthenticationPenetration:
         # Simulate multiple failed login attempts
         failed_attempts = 0
         max_attempts = 5
-        
+
         for i in range(10):
             # Simulate login attempt
             failed_attempts += 1
-            
+
             if failed_attempts >= max_attempts:
                 # Account should be locked
                 is_locked = True
                 break
-        
+
         assert is_locked is True
         assert failed_attempts >= max_attempts
 
@@ -42,16 +43,16 @@ class TestAuthenticationPenetration:
             ("admin", "admin"),
             ("admin", "password"),
             ("root", "root"),
-            ("user", "user123")
+            ("user", "user123"),
         ]
-        
+
         # Act - These should all fail
         successful_logins = 0
         for username, password in common_credentials:
             # Simulate login attempt
             # In real system, these should fail
             successful_logins += 0
-        
+
         # Assert
         assert successful_logins == 0
 
@@ -61,10 +62,10 @@ class TestAuthenticationPenetration:
         session_token = "valid_session_token"
         original_ip = "192.168.1.100"
         new_ip = "10.0.0.50"
-        
+
         # Act - Session from different IP should be rejected
         is_valid = original_ip == new_ip
-        
+
         # Assert
         assert is_valid is False
 
@@ -73,11 +74,11 @@ class TestAuthenticationPenetration:
         # Arrange
         original_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.signature"
         tampered_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjo5OTl9.signature"
-        
+
         # Act - Tampered JWT should fail signature verification
         # In real system, signature would not match
         is_valid = original_jwt == tampered_jwt
-        
+
         # Assert
         assert is_valid is False
 
@@ -90,10 +91,10 @@ class TestAuthorizationPenetration:
         # Arrange
         user_role = "user"
         admin_role = "admin"
-        
+
         # Act - User should not be able to access admin resources
         can_access_admin = user_role == admin_role
-        
+
         # Assert
         assert can_access_admin is False
 
@@ -102,10 +103,10 @@ class TestAuthorizationPenetration:
         # Arrange
         user_id = 123
         target_user_id = 456
-        
+
         # Act - User should not access another user's data
         can_access = user_id == target_user_id
-        
+
         # Assert
         assert can_access is False
 
@@ -114,10 +115,10 @@ class TestAuthorizationPenetration:
         # Arrange
         user_id = 123
         requested_resource_owner = 456
-        
+
         # Act - Should check ownership before allowing access
         has_permission = user_id == requested_resource_owner
-        
+
         # Assert
         assert has_permission is False
 
@@ -127,9 +128,9 @@ class TestAuthorizationPenetration:
         malicious_paths = [
             "../../../etc/passwd",
             "..\\..\\..\\windows\\system32\\config\\sam",
-            "/etc/shadow"
+            "/etc/shadow",
         ]
-        
+
         # Act & Assert
         for path in malicious_paths:
             is_safe = not (".." in path or path.startswith("/etc"))
@@ -146,9 +147,9 @@ class TestInjectionPenetration:
             "' OR '1'='1",
             "'; DROP TABLE users;--",
             "' UNION SELECT * FROM passwords--",
-            "admin'--"
+            "admin'--",
         ]
-        
+
         # Act & Assert
         for payload in sql_injection_payloads:
             # Should be detected as malicious
@@ -158,12 +159,8 @@ class TestInjectionPenetration:
     def test_nosql_injection(self):
         """Test resistance to NoSQL injection."""
         # Arrange
-        nosql_payloads = [
-            {"$ne": None},
-            {"$gt": ""},
-            {"$regex": ".*"}
-        ]
-        
+        nosql_payloads = [{"$ne": None}, {"$gt": ""}, {"$regex": ".*"}]
+
         # Act & Assert
         for payload in nosql_payloads:
             # Should detect MongoDB operators
@@ -173,13 +170,8 @@ class TestInjectionPenetration:
     def test_command_injection(self):
         """Test resistance to command injection."""
         # Arrange
-        command_injection_payloads = [
-            "; ls -la",
-            "| cat /etc/passwd",
-            "& whoami",
-            "`rm -rf /`"
-        ]
-        
+        command_injection_payloads = ["; ls -la", "| cat /etc/passwd", "& whoami", "`rm -rf /`"]
+
         # Act & Assert
         for payload in command_injection_payloads:
             dangerous_chars = [";", "|", "&", "`", "$"]
@@ -193,7 +185,7 @@ class TestInjectionPenetration:
             "*)(uid=*))(|(uid=*",
             "admin)(&(password=*))",
         ]
-        
+
         # Act & Assert
         for payload in ldap_payloads:
             # Should detect LDAP special characters
@@ -211,9 +203,9 @@ class TestXSSPenetration:
             "<script>alert('XSS')</script>",
             "<img src=x onerror=alert('XSS')>",
             "<svg onload=alert('XSS')>",
-            "javascript:alert('XSS')"
+            "javascript:alert('XSS')",
         ]
-        
+
         # Act & Assert
         for payload in xss_payloads:
             # Should be escaped or sanitized
@@ -224,10 +216,10 @@ class TestXSSPenetration:
         """Test resistance to stored XSS."""
         # Arrange
         stored_payload = "<script>document.cookie</script>"
-        
+
         # Act - Should be sanitized before storage
         is_malicious = "<script>" in stored_payload
-        
+
         # Assert
         assert is_malicious is True
 
@@ -235,10 +227,10 @@ class TestXSSPenetration:
         """Test resistance to DOM-based XSS."""
         # Arrange
         dom_payload = "#<img src=x onerror=alert('XSS')>"
-        
+
         # Act
         is_malicious = "onerror=" in dom_payload
-        
+
         # Assert
         assert is_malicious is True
 
@@ -251,10 +243,10 @@ class TestCSRFPenetration:
         # Arrange - Attacker tries to forge request
         legitimate_token = "valid_csrf_token"
         forged_token = "forged_token"
-        
+
         # Act
         is_valid = legitimate_token == forged_token
-        
+
         # Assert
         assert is_valid is False
 
@@ -263,14 +255,14 @@ class TestCSRFPenetration:
         # Arrange
         used_tokens = set()
         token = "csrf_token_123"
-        
+
         # Act - First use
         used_tokens.add(token)
         first_use_valid = token not in used_tokens or len(used_tokens) == 1
-        
+
         # Second use
         second_use_valid = token not in used_tokens
-        
+
         # Assert
         assert first_use_valid is True
         assert second_use_valid is False
@@ -284,26 +276,22 @@ class TestAPISecurityPenetration:
         # Arrange
         request_count = 0
         rate_limit = 100
-        
+
         # Act - Simulate rapid requests
         for i in range(150):
             request_count += 1
             if request_count > rate_limit:
                 is_blocked = True
                 break
-        
+
         # Assert
         assert is_blocked is True
 
     def test_api_authentication_bypass(self):
         """Test resistance to authentication bypass."""
         # Arrange
-        endpoints_requiring_auth = [
-            "/api/v1/users/me",
-            "/api/v1/agents",
-            "/api/v1/tasks"
-        ]
-        
+        endpoints_requiring_auth = ["/api/v1/users/me", "/api/v1/agents", "/api/v1/tasks"]
+
         # Act - Requests without auth should fail
         for endpoint in endpoints_requiring_auth:
             requires_auth = True  # All these endpoints require auth
@@ -314,10 +302,10 @@ class TestAPISecurityPenetration:
         # Arrange
         original_params = {"user_id": 123, "role": "user"}
         tampered_params = {"user_id": 123, "role": "admin"}
-        
+
         # Act - Tampering should be detected
         is_tampered = original_params != tampered_params
-        
+
         # Assert
         assert is_tampered is True
 
@@ -326,10 +314,10 @@ class TestAPISecurityPenetration:
         # Arrange
         allowed_fields = ["name", "email"]
         user_input = {"name": "John", "email": "john@example.com", "is_admin": True}
-        
+
         # Act - is_admin should not be assignable
         dangerous_fields = [key for key in user_input.keys() if key not in allowed_fields]
-        
+
         # Assert
         assert "is_admin" in dangerous_fields
 
@@ -340,14 +328,9 @@ class TestFileUploadPenetration:
     def test_malicious_file_upload(self):
         """Test resistance to malicious file uploads."""
         # Arrange
-        malicious_files = [
-            "malware.exe",
-            "shell.php",
-            "script.js",
-            "payload.sh"
-        ]
+        malicious_files = ["malware.exe", "shell.php", "script.js", "payload.sh"]
         allowed_extensions = [".jpg", ".png", ".pdf", ".docx"]
-        
+
         # Act & Assert
         for filename in malicious_files:
             extension = "." + filename.split(".")[-1]
@@ -359,10 +342,10 @@ class TestFileUploadPenetration:
         # Arrange
         file_size = 1024 * 1024 * 1024  # 1GB
         max_size = 10 * 1024 * 1024  # 10MB
-        
+
         # Act
         is_too_large = file_size > max_size
-        
+
         # Assert
         assert is_too_large is True
 
@@ -372,11 +355,11 @@ class TestFileUploadPenetration:
         compressed_size = 1024  # 1KB
         uncompressed_size = 1024 * 1024 * 1024  # 1GB
         max_ratio = 100
-        
+
         # Act
         compression_ratio = uncompressed_size / compressed_size
         is_zip_bomb = compression_ratio > max_ratio
-        
+
         # Assert
         assert is_zip_bomb is True
 
@@ -389,10 +372,10 @@ class TestDenialOfServicePenetration:
         # Arrange
         connection_timeout = 30  # seconds
         request_timeout = 10  # seconds
-        
+
         # Act - Slow requests should timeout
         is_protected = request_timeout < connection_timeout
-        
+
         # Assert
         assert is_protected is True
 
@@ -401,10 +384,10 @@ class TestDenialOfServicePenetration:
         # Arrange
         max_connections = 1000
         current_connections = 1500
-        
+
         # Act
         should_reject = current_connections > max_connections
-        
+
         # Assert
         assert should_reject is True
 
@@ -413,10 +396,10 @@ class TestDenialOfServicePenetration:
         # Arrange
         malicious_regex = r"(a+)+"
         test_string = "a" * 100
-        
+
         # Act - This regex can cause exponential backtracking
         is_dangerous = "+" in malicious_regex and malicious_regex.count("+") > 1
-        
+
         # Assert
         assert is_dangerous is True
 
@@ -429,7 +412,7 @@ class TestNetworkSecurityPenetration:
         # Arrange
         allowed_protocols = ["TLSv1.2", "TLSv1.3"]
         weak_protocols = ["SSLv2", "SSLv3", "TLSv1.0", "TLSv1.1"]
-        
+
         # Act & Assert
         for protocol in weak_protocols:
             is_allowed = protocol in allowed_protocols
@@ -438,12 +421,8 @@ class TestNetworkSecurityPenetration:
     def test_weak_cipher_suites(self):
         """Test that weak cipher suites are disabled."""
         # Arrange
-        weak_ciphers = [
-            "DES-CBC3-SHA",
-            "RC4-SHA",
-            "NULL-SHA"
-        ]
-        
+        weak_ciphers = ["DES-CBC3-SHA", "RC4-SHA", "NULL-SHA"]
+
         # Act & Assert
         for cipher in weak_ciphers:
             # These should not be enabled
@@ -456,10 +435,10 @@ class TestNetworkSecurityPenetration:
         cert_expired = True
         cert_self_signed = True
         cert_hostname_mismatch = True
-        
+
         # Act
         is_valid = not (cert_expired or cert_self_signed or cert_hostname_mismatch)
-        
+
         # Assert
         assert is_valid is False
 
@@ -472,10 +451,10 @@ class TestContainerEscapePenetration:
         # Arrange
         docker_socket_path = "/var/run/docker.sock"
         mounted_volumes = ["/workspace", "/tmp"]
-        
+
         # Act
         has_docker_socket = docker_socket_path in mounted_volumes
-        
+
         # Assert
         assert has_docker_socket is False
 
@@ -483,7 +462,7 @@ class TestContainerEscapePenetration:
         """Test that containers are not privileged."""
         # Arrange
         is_privileged = False
-        
+
         # Assert
         assert is_privileged is False
 
@@ -491,10 +470,10 @@ class TestContainerEscapePenetration:
         """Test that containers don't have host network access."""
         # Arrange
         network_mode = "none"
-        
+
         # Act
         has_host_network = network_mode == "host"
-        
+
         # Assert
         assert has_host_network is False
 
@@ -507,10 +486,10 @@ class TestDataLeakagePenetration:
         # Arrange
         detailed_error = "Database connection failed: postgresql://user:pass@localhost/db"
         generic_error = "An error occurred. Please try again."
-        
+
         # Act
         leaks_info = "postgresql://" in detailed_error and "pass" in detailed_error
-        
+
         # Assert
         assert leaks_info is True  # Detailed error leaks info
         assert "pass" not in generic_error  # Generic error is safe
@@ -518,14 +497,11 @@ class TestDataLeakagePenetration:
     def test_stack_trace_exposure(self):
         """Test that stack traces are not exposed."""
         # Arrange
-        response = {
-            "error": "An error occurred",
-            "message": "Please contact support"
-        }
-        
+        response = {"error": "An error occurred", "message": "Please contact support"}
+
         # Act
         has_stack_trace = "Traceback" in str(response) or "File" in str(response)
-        
+
         # Assert
         assert has_stack_trace is False
 
@@ -534,10 +510,10 @@ class TestDataLeakagePenetration:
         # Arrange
         debug_mode = False
         environment = "production"
-        
+
         # Act
         is_safe = not debug_mode or environment != "production"
-        
+
         # Assert
         assert is_safe is True
 
@@ -553,27 +529,25 @@ class TestSecurityHeadersPenetration:
             "X-Frame-Options",
             "X-XSS-Protection",
             "Strict-Transport-Security",
-            "Content-Security-Policy"
+            "Content-Security-Policy",
         ]
-        
+
         response_headers = {
             "X-Content-Type-Options": "nosniff",
             "X-Frame-Options": "DENY",
-            "X-XSS-Protection": "1; mode=block"
+            "X-XSS-Protection": "1; mode=block",
         }
-        
+
         # Act
         missing_headers = [h for h in required_headers if h not in response_headers]
-        
+
         # Assert
         assert len(missing_headers) > 0  # Some headers are missing
 
     def test_clickjacking_protection(self):
         """Test clickjacking protection."""
         # Arrange
-        headers = {
-            "X-Frame-Options": "DENY"
-        }
-        
+        headers = {"X-Frame-Options": "DENY"}
+
         # Assert
         assert headers.get("X-Frame-Options") in ["DENY", "SAMEORIGIN"]

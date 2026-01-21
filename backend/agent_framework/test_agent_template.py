@@ -5,9 +5,10 @@ References:
 - Design Section 4.2: Agent Types and Templates
 """
 
-import pytest
-from uuid import uuid4
 from datetime import datetime
+from uuid import uuid4
+
+import pytest
 
 from agent_framework.agent_template import AgentTemplate, AgentTemplateManager
 from agent_framework.default_templates import get_default_templates, initialize_default_templates

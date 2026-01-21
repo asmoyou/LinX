@@ -9,13 +9,14 @@ References:
 """
 
 import logging
+from typing import Any, Dict
+
 from fastapi import APIRouter, Response
-from typing import Dict, Any
 
 from shared.metrics import (
+    get_health_status,
     get_metrics,
     get_metrics_content_type,
-    get_health_status,
     get_metrics_manager,
 )
 
@@ -27,17 +28,17 @@ router = APIRouter(prefix="/api/v1", tags=["monitoring"])
 @router.get("/metrics")
 async def metrics_endpoint() -> Response:
     """Prometheus metrics endpoint.
-    
+
     Returns:
         Prometheus metrics in text format
     """
     # Collect latest metrics
     metrics_manager = get_metrics_manager()
     metrics_manager.collect_all_metrics()
-    
+
     # Return metrics in Prometheus format
     metrics_data = get_metrics()
-    
+
     return Response(
         content=metrics_data,
         media_type=get_metrics_content_type(),
@@ -47,7 +48,7 @@ async def metrics_endpoint() -> Response:
 @router.get("/health")
 async def health_check() -> Dict[str, Any]:
     """Health check endpoint.
-    
+
     Returns:
         Health status of the system
     """
@@ -57,7 +58,7 @@ async def health_check() -> Dict[str, Any]:
 @router.get("/health/live")
 async def liveness_probe() -> Dict[str, str]:
     """Kubernetes liveness probe endpoint.
-    
+
     Returns:
         Simple alive status
     """
@@ -67,12 +68,12 @@ async def liveness_probe() -> Dict[str, str]:
 @router.get("/health/ready")
 async def readiness_probe() -> Dict[str, Any]:
     """Kubernetes readiness probe endpoint.
-    
+
     Returns:
         Readiness status with component checks
     """
     health = get_health_status()
-    
+
     if health["status"] == "healthy":
         return {"status": "ready", "checks": health["checks"]}
     else:

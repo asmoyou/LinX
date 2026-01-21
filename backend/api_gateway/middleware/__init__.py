@@ -9,8 +9,8 @@ References:
 """
 
 from api_gateway.middleware.auth import JWTAuthMiddleware
-from api_gateway.middleware.rate_limit import RateLimitMiddleware
 from api_gateway.middleware.logging import RequestLoggingMiddleware
+from api_gateway.middleware.rate_limit import RateLimitMiddleware
 
 __all__ = [
     "JWTAuthMiddleware",

@@ -5,20 +5,20 @@ References:
 - Design Section 10: Scalability and Performance
 """
 
+import asyncio
 import logging
 import signal
-import asyncio
-from typing import List, Callable, Optional
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import Callable, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class ShutdownPhase(Enum):
     """Shutdown phases."""
-    
+
     STOP_ACCEPTING_REQUESTS = "stop_accepting_requests"
     DRAIN_CONNECTIONS = "drain_connections"
     FINISH_TASKS = "finish_tasks"
@@ -29,7 +29,7 @@ class ShutdownPhase(Enum):
 @dataclass
 class ShutdownHook:
     """Shutdown hook definition."""
-    
+
     name: str
     phase: ShutdownPhase
     callback: Callable
@@ -38,7 +38,7 @@ class ShutdownHook:
 
 class GracefulShutdownManager:
     """Graceful shutdown manager.
-    
+
     Manages graceful shutdown of services:
     - Stop accepting new requests
     - Drain existing connections
@@ -46,10 +46,10 @@ class GracefulShutdownManager:
     - Clean up resources
     - Shutdown services
     """
-    
+
     def __init__(self, shutdown_timeout: int = 60):
         """Initialize graceful shutdown manager.
-        
+
         Args:
             shutdown_timeout: Maximum time to wait for shutdown (seconds)
         """
@@ -57,13 +57,13 @@ class GracefulShutdownManager:
         self.hooks: List[ShutdownHook] = []
         self.is_shutting_down = False
         self.shutdown_started_at: Optional[datetime] = None
-        
+
         # Register signal handlers
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
-        
+
         logger.info("GracefulShutdownManager initialized")
-    
+
     def register_hook(
         self,
         name: str,
@@ -72,7 +72,7 @@ class GracefulShutdownManager:
         timeout_seconds: int = 30,
     ):
         """Register shutdown hook.
-        
+
         Args:
             name: Hook name
             phase: Shutdown phase
@@ -85,29 +85,29 @@ class GracefulShutdownManager:
             callback=callback,
             timeout_seconds=timeout_seconds,
         )
-        
+
         self.hooks.append(hook)
         logger.info(f"Registered shutdown hook: {name} (phase: {phase.value})")
-    
+
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals."""
         signal_name = signal.Signals(signum).name
         logger.warning(f"Received signal: {signal_name}")
-        
+
         # Start graceful shutdown
         asyncio.create_task(self.shutdown())
-    
+
     async def shutdown(self):
         """Execute graceful shutdown."""
         if self.is_shutting_down:
             logger.warning("Shutdown already in progress")
             return
-        
+
         self.is_shutting_down = True
         self.shutdown_started_at = datetime.now()
-        
+
         logger.warning("Starting graceful shutdown")
-        
+
         # Execute hooks by phase
         phases = [
             ShutdownPhase.STOP_ACCEPTING_REQUESTS,
@@ -115,31 +115,31 @@ class GracefulShutdownManager:
             ShutdownPhase.FINISH_TASKS,
             ShutdownPhase.CLEANUP_RESOURCES,
         ]
-        
+
         for phase in phases:
             await self._execute_phase(phase)
-        
+
         duration = (datetime.now() - self.shutdown_started_at).total_seconds()
         logger.warning(f"Graceful shutdown completed in {duration:.2f}s")
-    
+
     async def _execute_phase(self, phase: ShutdownPhase):
         """Execute shutdown phase.
-        
+
         Args:
             phase: Shutdown phase
         """
         phase_hooks = [h for h in self.hooks if h.phase == phase]
-        
+
         if not phase_hooks:
             logger.info(f"No hooks for phase: {phase.value}")
             return
-        
+
         logger.info(f"Executing shutdown phase: {phase.value}")
-        
+
         for hook in phase_hooks:
             try:
                 logger.info(f"Executing hook: {hook.name}")
-                
+
                 # Execute hook with timeout
                 if asyncio.iscoroutinefunction(hook.callback):
                     await asyncio.wait_for(
@@ -148,17 +148,17 @@ class GracefulShutdownManager:
                     )
                 else:
                     hook.callback()
-                
+
                 logger.info(f"Hook completed: {hook.name}")
-                
+
             except asyncio.TimeoutError:
                 logger.error(f"Hook timed out: {hook.name}")
             except Exception as e:
                 logger.error(f"Hook failed: {hook.name} - {e}")
-    
+
     def is_shutdown_in_progress(self) -> bool:
         """Check if shutdown is in progress.
-        
+
         Returns:
             True if shutting down
         """
@@ -166,6 +166,7 @@ class GracefulShutdownManager:
 
 
 # Example usage hooks
+
 
 async def stop_accepting_requests():
     """Stop accepting new requests."""
@@ -199,12 +200,12 @@ async def cleanup_resources():
 
 def create_default_shutdown_manager() -> GracefulShutdownManager:
     """Create shutdown manager with default hooks.
-    
+
     Returns:
         Configured shutdown manager
     """
     manager = GracefulShutdownManager(shutdown_timeout=60)
-    
+
     # Register default hooks
     manager.register_hook(
         name="stop_accepting_requests",
@@ -212,26 +213,26 @@ def create_default_shutdown_manager() -> GracefulShutdownManager:
         callback=stop_accepting_requests,
         timeout_seconds=5,
     )
-    
+
     manager.register_hook(
         name="drain_connections",
         phase=ShutdownPhase.DRAIN_CONNECTIONS,
         callback=drain_connections,
         timeout_seconds=15,
     )
-    
+
     manager.register_hook(
         name="finish_tasks",
         phase=ShutdownPhase.FINISH_TASKS,
         callback=finish_tasks,
         timeout_seconds=30,
     )
-    
+
     manager.register_hook(
         name="cleanup_resources",
         phase=ShutdownPhase.CLEANUP_RESOURCES,
         callback=cleanup_resources,
         timeout_seconds=10,
     )
-    
+
     return manager

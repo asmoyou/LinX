@@ -7,15 +7,15 @@ References:
 
 import logging
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class RunbookCategory(Enum):
     """Runbook categories."""
-    
+
     DEPLOYMENT = "deployment"
     MAINTENANCE = "maintenance"
     TROUBLESHOOTING = "troubleshooting"
@@ -27,7 +27,7 @@ class RunbookCategory(Enum):
 @dataclass
 class RunbookStep:
     """Runbook step."""
-    
+
     step_number: int
     title: str
     description: str
@@ -39,7 +39,7 @@ class RunbookStep:
 @dataclass
 class Runbook:
     """Runbook definition."""
-    
+
     runbook_id: str
     title: str
     category: RunbookCategory
@@ -52,23 +52,23 @@ class Runbook:
 
 class RunbookManager:
     """Runbook manager.
-    
+
     Manages operational runbooks:
     - Deployment procedures
     - Maintenance tasks
     - Troubleshooting guides
     - Scaling operations
     """
-    
+
     def __init__(self):
         """Initialize runbook manager."""
         self.runbooks: Dict[str, Runbook] = {}
-        
+
         # Initialize default runbooks
         self._initialize_runbooks()
-        
+
         logger.info("RunbookManager initialized")
-    
+
     def _initialize_runbooks(self):
         """Initialize default runbooks."""
         # Deployment runbook
@@ -144,7 +144,7 @@ class RunbookManager:
             estimated_time_minutes=30,
             required_permissions=["admin", "deploy"],
         )
-        
+
         # Database maintenance runbook
         self.runbooks["db-maintenance"] = Runbook(
             runbook_id="db-maintenance",
@@ -185,7 +185,7 @@ class RunbookManager:
             estimated_time_minutes=60,
             required_permissions=["admin", "dba"],
         )
-        
+
         # Troubleshooting runbook
         self.runbooks["troubleshoot-high-cpu"] = Runbook(
             runbook_id="troubleshoot-high-cpu",
@@ -234,7 +234,7 @@ class RunbookManager:
             estimated_time_minutes=20,
             required_permissions=["admin", "devops"],
         )
-        
+
         # Scaling runbook
         self.runbooks["scale-up"] = Runbook(
             runbook_id="scale-up",
@@ -282,7 +282,7 @@ class RunbookManager:
             estimated_time_minutes=15,
             required_permissions=["admin", "devops"],
         )
-        
+
         # Backup and restore runbook
         self.runbooks["restore-backup"] = Runbook(
             runbook_id="restore-backup",
@@ -337,61 +337,61 @@ class RunbookManager:
             estimated_time_minutes=45,
             required_permissions=["admin", "dba"],
         )
-    
+
     def get_runbook(self, runbook_id: str) -> Optional[Runbook]:
         """Get runbook by ID.
-        
+
         Args:
             runbook_id: Runbook ID
-            
+
         Returns:
             Runbook or None
         """
         return self.runbooks.get(runbook_id)
-    
+
     def list_runbooks(
         self,
         category: Optional[RunbookCategory] = None,
     ) -> List[Runbook]:
         """List available runbooks.
-        
+
         Args:
             category: Filter by category
-            
+
         Returns:
             List of runbooks
         """
         runbooks = list(self.runbooks.values())
-        
+
         if category:
             runbooks = [r for r in runbooks if r.category == category]
-        
+
         return runbooks
-    
+
     def add_runbook(self, runbook: Runbook):
         """Add custom runbook.
-        
+
         Args:
             runbook: Runbook to add
         """
         self.runbooks[runbook.runbook_id] = runbook
         logger.info(f"Added runbook: {runbook.runbook_id}")
-    
+
     def execute_runbook(self, runbook_id: str) -> Dict[str, Any]:
         """Execute runbook (returns execution plan).
-        
+
         Args:
             runbook_id: Runbook ID
-            
+
         Returns:
             Execution plan
         """
         runbook = self.get_runbook(runbook_id)
         if not runbook:
             raise ValueError(f"Runbook not found: {runbook_id}")
-        
+
         logger.info(f"Executing runbook: {runbook_id}")
-        
+
         return {
             "runbook_id": runbook_id,
             "title": runbook.title,

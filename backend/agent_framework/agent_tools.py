@@ -15,35 +15,35 @@ logger = logging.getLogger(__name__)
 
 class AgentToolkit:
     """Toolkit for creating and managing LangChain tools."""
-    
+
     def __init__(self):
         """Initialize agent toolkit."""
         self.tools: List[BaseTool] = []
         logger.info("AgentToolkit initialized")
-    
+
     def add_tool(self, tool: BaseTool) -> None:
         """Add a tool to the toolkit.
-        
+
         Args:
             tool: LangChain tool to add
         """
         self.tools.append(tool)
         logger.info(f"Tool added: {tool.name}")
-    
+
     def get_tools(self) -> List[BaseTool]:
         """Get all tools in the toolkit.
-        
+
         Returns:
             List of LangChain tools
         """
         return self.tools
-    
+
     def get_tool_by_name(self, name: str) -> Optional[BaseTool]:
         """Get a tool by name.
-        
+
         Args:
             name: Tool name
-            
+
         Returns:
             Tool or None if not found
         """
@@ -72,7 +72,7 @@ def string_length(text: str) -> int:
 
 def create_langchain_tools() -> List[BaseTool]:
     """Create default LangChain tools for agents.
-    
+
     Returns:
         List of LangChain tools
     """
@@ -87,7 +87,7 @@ _agent_toolkit: Optional[AgentToolkit] = None
 
 def get_agent_toolkit() -> AgentToolkit:
     """Get or create the agent toolkit singleton.
-    
+
     Returns:
         AgentToolkit instance
     """

@@ -13,11 +13,11 @@ from uuid import uuid4
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from database.connection import get_db_session
+from object_storage.file_metadata import FileMetadataManager
+from object_storage.minio_client import MinIOClient
 from shared.config import get_config
 from shared.logging import setup_logging
-from database.connection import get_db_session
-from object_storage.minio_client import MinIOClient
-from object_storage.file_metadata import FileMetadataManager
 
 # Setup logging
 setup_logging()
@@ -29,10 +29,10 @@ def test_minio_connection():
     logger.info("=" * 60)
     logger.info("Testing MinIO Connection")
     logger.info("=" * 60)
-    
+
     try:
         client = MinIOClient()
-        
+
         # Health check
         if client.health_check():
             logger.info("✓ MinIO connection successful")
@@ -40,7 +40,7 @@ def test_minio_connection():
         else:
             logger.error("✗ MinIO health check failed")
             return False
-            
+
     except Exception as e:
         logger.error(f"✗ MinIO connection failed: {e}")
         return False
@@ -51,22 +51,22 @@ def test_bucket_initialization():
     logger.info("=" * 60)
     logger.info("Testing Bucket Initialization")
     logger.info("=" * 60)
-    
+
     try:
         client = MinIOClient()
-        
+
         # Initialize buckets
         client.initialize_buckets()
         logger.info("✓ All buckets initialized successfully")
-        
+
         # List buckets
         buckets = client.client.list_buckets()
         logger.info(f"✓ Found {len(buckets)} buckets:")
         for bucket in buckets:
             logger.info(f"  - {bucket.name}")
-        
+
         return True
-        
+
     except Exception as e:
         logger.error(f"✗ Bucket initialization failed: {e}")
         return False
@@ -77,18 +77,18 @@ def test_file_upload_download():
     logger.info("=" * 60)
     logger.info("Testing File Upload and Download")
     logger.info("=" * 60)
-    
+
     try:
         client = MinIOClient()
-        
+
         # Create test file
         test_content = b"This is a test file for MinIO object storage."
         test_filename = "test_document.txt"
         test_user_id = str(uuid4())
         test_task_id = str(uuid4())
-        
+
         file_data = io.BytesIO(test_content)
-        
+
         # Upload file
         bucket_name, object_key = client.upload_file(
             bucket_type="documents",
@@ -97,41 +97,42 @@ def test_file_upload_download():
             user_id=test_user_id,
             task_id=test_task_id,
             content_type="text/plain",
-            metadata={"test": "true"}
+            metadata={"test": "true"},
         )
-        
+
         logger.info(f"✓ File uploaded: {bucket_name}/{object_key}")
-        
+
         # Get metadata
         metadata = client.get_file_metadata(bucket_name, object_key)
         logger.info(f"✓ File metadata retrieved:")
         logger.info(f"  - Size: {metadata['size']} bytes")
         logger.info(f"  - Content-Type: {metadata['content_type']}")
         logger.info(f"  - ETag: {metadata['etag']}")
-        
+
         # Download file
         downloaded_data, download_metadata = client.download_file(bucket_name, object_key)
         downloaded_content = downloaded_data.read()
-        
+
         if downloaded_content == test_content:
             logger.info("✓ File downloaded successfully and content matches")
         else:
             logger.error("✗ Downloaded content does not match original")
             return False
-        
+
         # Generate presigned URL
         url = client.get_presigned_url(bucket_name, object_key)
         logger.info(f"✓ Presigned URL generated: {url[:50]}...")
-        
+
         # Clean up
         client.delete_file(bucket_name, object_key)
         logger.info(f"✓ Test file deleted")
-        
+
         return True
-        
+
     except Exception as e:
         logger.error(f"✗ File upload/download test failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -141,20 +142,21 @@ def test_file_metadata_storage():
     logger.info("=" * 60)
     logger.info("Testing File Metadata Storage")
     logger.info("=" * 60)
-    
+
     try:
         # Get database session
         from database.connection import DatabaseConnectionPool
+
         pool = DatabaseConnectionPool()
         pool.initialize()
-        
+
         with pool.get_session() as db:
             manager = FileMetadataManager(db)
-        
+
         # Create test metadata
         test_user_id = uuid4()
         test_task_id = uuid4()
-        
+
         file_meta = manager.create_metadata(
             bucket_name="documents",
             object_key=f"{test_user_id}/{test_task_id}/test.pdf",
@@ -163,11 +165,11 @@ def test_file_metadata_storage():
             user_id=test_user_id,
             task_id=test_task_id,
             content_type="application/pdf",
-            custom_metadata={"test": "true"}
+            custom_metadata={"test": "true"},
         )
-        
+
         logger.info(f"✓ File metadata created: {file_meta.file_id}")
-        
+
         # Retrieve metadata
         retrieved = manager.get_by_id(file_meta.file_id)
         if retrieved:
@@ -178,30 +180,25 @@ def test_file_metadata_storage():
         else:
             logger.error("✗ Failed to retrieve file metadata")
             return False
-        
+
         # Update processing status
-        manager.update_processing_status(
-            file_meta.file_id,
-            "completed"
-        )
+        manager.update_processing_status(file_meta.file_id, "completed")
         logger.info("✓ Processing status updated")
-        
+
         # List files by user
         user_files = manager.list_by_user(test_user_id)
         logger.info(f"✓ Found {len(user_files)} files for user")
-        
+
         # Search files
         search_results = manager.search_files(
-            user_id=test_user_id,
-            query="test",
-            file_extension="pdf"
+            user_id=test_user_id, query="test", file_extension="pdf"
         )
         logger.info(f"✓ Search found {len(search_results)} files")
-        
+
         # Soft delete
         manager.soft_delete(file_meta.file_id)
         logger.info("✓ File metadata soft deleted")
-        
+
         # Verify deletion
         deleted = manager.get_by_id(file_meta.file_id)
         if deleted is None:
@@ -209,13 +206,14 @@ def test_file_metadata_storage():
         else:
             logger.error("✗ Soft delete failed")
             return False
-        
+
         pool.close()
         return True
-        
+
     except Exception as e:
         logger.error(f"✗ File metadata storage test failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -225,14 +223,14 @@ def test_versioning():
     logger.info("=" * 60)
     logger.info("Testing File Versioning")
     logger.info("=" * 60)
-    
+
     try:
         client = MinIOClient()
-        
+
         test_user_id = str(uuid4())
         test_task_id = str(uuid4())
         test_filename = "versioned_document.txt"
-        
+
         # Upload version 1
         v1_content = b"Version 1 content"
         v1_data = io.BytesIO(v1_content)
@@ -241,10 +239,10 @@ def test_versioning():
             file_data=v1_data,
             filename=test_filename,
             user_id=test_user_id,
-            task_id=test_task_id
+            task_id=test_task_id,
         )
         logger.info(f"✓ Version 1 uploaded: {bucket_name}/{object_key}")
-        
+
         # Upload version 2 (same key)
         v2_content = b"Version 2 content - updated"
         v2_data = io.BytesIO(v2_content)
@@ -253,29 +251,30 @@ def test_versioning():
             file_data=v2_data,
             filename=test_filename,
             user_id=test_user_id,
-            task_id=test_task_id
+            task_id=test_task_id,
         )
         logger.info(f"✓ Version 2 uploaded: {bucket_name}/{object_key}")
-        
+
         # Download latest version
         downloaded_data, metadata = client.download_file(bucket_name, object_key)
         latest_content = downloaded_data.read()
-        
+
         if latest_content == v2_content:
             logger.info("✓ Latest version retrieved correctly")
         else:
             logger.error("✗ Latest version content mismatch")
             return False
-        
+
         # Clean up
         client.delete_file(bucket_name, object_key)
         logger.info("✓ Test file deleted")
-        
+
         return True
-        
+
     except Exception as e:
         logger.error(f"✗ Versioning test failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -285,36 +284,34 @@ def test_cleanup():
     logger.info("=" * 60)
     logger.info("Testing Automatic Cleanup")
     logger.info("=" * 60)
-    
+
     try:
         client = MinIOClient()
-        
+
         # Upload a temporary file
         test_content = b"Temporary file content"
         test_data = io.BytesIO(test_content)
         test_user_id = str(uuid4())
-        
+
         bucket_name, object_key = client.upload_file(
             bucket_type="artifacts",
             file_data=test_data,
             filename="temp_file.txt",
             user_id=test_user_id,
-            metadata={"temporary": "true"}
+            metadata={"temporary": "true"},
         )
         logger.info(f"✓ Temporary file uploaded: {bucket_name}/{object_key}")
-        
+
         # Run cleanup (with 0 days to clean everything)
-        deleted_count = client.cleanup_temporary_files(
-            bucket_name=bucket_name,
-            older_than_days=0
-        )
+        deleted_count = client.cleanup_temporary_files(bucket_name=bucket_name, older_than_days=0)
         logger.info(f"✓ Cleanup completed: {deleted_count} files deleted")
-        
+
         return True
-        
+
     except Exception as e:
         logger.error(f"✗ Cleanup test failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -324,7 +321,7 @@ def main():
     logger.info("\n" + "=" * 60)
     logger.info("MinIO Object Storage Test Suite")
     logger.info("=" * 60 + "\n")
-    
+
     tests = [
         ("MinIO Connection", test_minio_connection),
         ("Bucket Initialization", test_bucket_initialization),
@@ -333,7 +330,7 @@ def main():
         ("File Versioning", test_versioning),
         ("Automatic Cleanup", test_cleanup),
     ]
-    
+
     results = []
     for test_name, test_func in tests:
         try:
@@ -343,23 +340,23 @@ def main():
             logger.error(f"Test '{test_name}' crashed: {e}")
             results.append((test_name, False))
         logger.info("")
-    
+
     # Summary
     logger.info("=" * 60)
     logger.info("Test Summary")
     logger.info("=" * 60)
-    
+
     passed = sum(1 for _, result in results if result)
     total = len(results)
-    
+
     for test_name, result in results:
         status = "✓ PASS" if result else "✗ FAIL"
         logger.info(f"{status}: {test_name}")
-    
+
     logger.info("=" * 60)
     logger.info(f"Results: {passed}/{total} tests passed")
     logger.info("=" * 60)
-    
+
     return passed == total
 
 

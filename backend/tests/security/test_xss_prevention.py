@@ -8,11 +8,12 @@ References:
 - Design Section 8: Access Control and Security
 """
 
-import pytest
-from unittest.mock import Mock, patch
 import html
-import re
 import json
+import re
+from unittest.mock import Mock, patch
+
+import pytest
 
 
 class TestXSSPrevention:
@@ -22,10 +23,10 @@ class TestXSSPrevention:
         """Test that HTML special characters are escaped."""
         # Arrange
         malicious_input = "<script>alert('XSS')</script>"
-        
+
         # Act
         escaped = html.escape(malicious_input)
-        
+
         # Assert
         assert "&lt;script&gt;" in escaped
         assert "<script>" not in escaped
@@ -37,13 +38,13 @@ class TestXSSPrevention:
             "<script>alert('XSS')</script>",
             "<img src=x onerror=alert('XSS')>",
             "<svg onload=alert('XSS')>",
-            "javascript:alert('XSS')"
+            "javascript:alert('XSS')",
         ]
-        
+
         for malicious_input in malicious_inputs:
             # Act
             escaped = html.escape(malicious_input)
-            
+
             # Assert
             assert "<script>" not in escaped
             assert "onerror=" not in escaped or "&" in escaped
@@ -52,11 +53,11 @@ class TestXSSPrevention:
     def test_attribute_escaping(self):
         """Test that HTML attributes are properly escaped."""
         # Arrange
-        malicious_input = '" onload="alert(\'XSS\')'
-        
+        malicious_input = "\" onload=\"alert('XSS')"
+
         # Act
         escaped = html.escape(malicious_input, quote=True)
-        
+
         # Assert
         assert "&quot;" in escaped
         assert '"' not in escaped or escaped.count('"') == 0
@@ -67,21 +68,21 @@ class TestXSSPrevention:
         malicious_urls = [
             "javascript:alert('XSS')",
             "data:text/html,<script>alert('XSS')</script>",
-            "vbscript:msgbox('XSS')"
+            "vbscript:msgbox('XSS')",
         ]
-        
+
         safe_urls = [
             "https://example.com",
             "http://example.com",
             "/relative/path",
-            "mailto:user@example.com"
+            "mailto:user@example.com",
         ]
-        
+
         # Act & Assert
         for url in malicious_urls:
             is_safe = url.startswith(("http://", "https://", "/", "mailto:"))
             assert is_safe is False
-        
+
         for url in safe_urls:
             is_safe = url.startswith(("http://", "https://", "/", "mailto:"))
             assert is_safe is True
@@ -98,7 +99,7 @@ class TestXSSPrevention:
             "connect-src 'self'; "
             "frame-ancestors 'none'"
         )
-        
+
         # Assert
         assert "default-src 'self'" in csp_header
         assert "script-src 'self'" in csp_header
@@ -107,20 +108,16 @@ class TestXSSPrevention:
     def test_x_xss_protection_header(self):
         """Test that X-XSS-Protection header is set."""
         # Arrange
-        headers = {
-            "X-XSS-Protection": "1; mode=block"
-        }
-        
+        headers = {"X-XSS-Protection": "1; mode=block"}
+
         # Assert
         assert headers.get("X-XSS-Protection") == "1; mode=block"
 
     def test_x_content_type_options(self):
         """Test that X-Content-Type-Options header is set."""
         # Arrange
-        headers = {
-            "X-Content-Type-Options": "nosniff"
-        }
-        
+        headers = {"X-Content-Type-Options": "nosniff"}
+
         # Assert
         assert headers.get("X-Content-Type-Options") == "nosniff"
 
@@ -132,10 +129,12 @@ class TestStoredXSSPrevention:
         """Test that user input is sanitized before storage."""
         # Arrange
         malicious_input = "<script>alert('XSS')</script>Hello"
-        
+
         # Act - Remove script tags
-        sanitized = re.sub(r'<script[^>]*>.*?</script>', '', malicious_input, flags=re.IGNORECASE | re.DOTALL)
-        
+        sanitized = re.sub(
+            r"<script[^>]*>.*?</script>", "", malicious_input, flags=re.IGNORECASE | re.DOTALL
+        )
+
         # Assert
         assert "<script>" not in sanitized
         assert "Hello" in sanitized
@@ -144,10 +143,10 @@ class TestStoredXSSPrevention:
         """Test that dangerous HTML tags are removed."""
         # Arrange
         malicious_input = "<img src=x onerror=alert('XSS')>"
-        
+
         # Act - Remove dangerous attributes
-        sanitized = re.sub(r'on\w+\s*=', '', malicious_input, flags=re.IGNORECASE)
-        
+        sanitized = re.sub(r"on\w+\s*=", "", malicious_input, flags=re.IGNORECASE)
+
         # Assert
         assert "onerror=" not in sanitized
 
@@ -156,10 +155,10 @@ class TestStoredXSSPrevention:
         # Arrange
         allowed_tags = ["p", "br", "strong", "em", "a"]
         input_html = "<p>Hello</p><script>alert('XSS')</script><strong>World</strong>"
-        
+
         # Act - Extract tags
-        tags = re.findall(r'<(\w+)', input_html)
-        
+        tags = re.findall(r"<(\w+)", input_html)
+
         # Assert
         dangerous_tags = [tag for tag in tags if tag not in allowed_tags]
         assert "script" in dangerous_tags
@@ -168,15 +167,15 @@ class TestStoredXSSPrevention:
         """Test that markdown is safely converted to HTML."""
         # Arrange
         malicious_markdown = "[Click me](javascript:alert('XSS'))"
-        
+
         # Act - Validate URL in markdown link
-        url_match = re.search(r'\[.*?\]\((.*?)\)', malicious_markdown)
+        url_match = re.search(r"\[.*?\]\((.*?)\)", malicious_markdown)
         if url_match:
             url = url_match.group(1)
             is_safe = url.startswith(("http://", "https://", "/"))
         else:
             is_safe = True
-        
+
         # Assert
         assert is_safe is False
 
@@ -188,10 +187,10 @@ class TestReflectedXSSPrevention:
         """Test that query parameters are escaped."""
         # Arrange
         malicious_param = "<script>alert('XSS')</script>"
-        
+
         # Act
         escaped = html.escape(malicious_param)
-        
+
         # Assert
         assert "<script>" not in escaped
 
@@ -200,7 +199,7 @@ class TestReflectedXSSPrevention:
         # Arrange
         user_input = "<script>alert('XSS')</script>"
         error_message = f"Invalid input: {html.escape(user_input)}"
-        
+
         # Assert
         assert "<script>" not in error_message
         assert "&lt;script&gt;" in error_message
@@ -209,11 +208,11 @@ class TestReflectedXSSPrevention:
         """Test that search results escape user input."""
         # Arrange
         search_query = "<img src=x onerror=alert('XSS')>"
-        
+
         # Act
         escaped_query = html.escape(search_query)
         result_message = f"Search results for: {escaped_query}"
-        
+
         # Assert
         assert "onerror=" not in result_message or "&" in result_message
 
@@ -224,13 +223,11 @@ class TestDOMBasedXSSPrevention:
     def test_json_encoding(self):
         """Test that data is properly JSON encoded."""
         # Arrange
-        data = {
-            "message": "<script>alert('XSS')</script>"
-        }
-        
+        data = {"message": "<script>alert('XSS')</script>"}
+
         # Act
         json_data = json.dumps(data)
-        
+
         # Assert
         # JSON encoding escapes < and > as unicode
         assert "\\u003c" in json_data or "<script>" not in json_data
@@ -239,13 +236,13 @@ class TestDOMBasedXSSPrevention:
         """Test that innerHTML is avoided in favor of textContent."""
         # This is a conceptual test for frontend code
         # Frontend should use textContent instead of innerHTML
-        
+
         # Bad practice
         bad_code = "element.innerHTML = userInput"
-        
+
         # Good practice
         good_code = "element.textContent = userInput"
-        
+
         assert "innerHTML" in bad_code
         assert "textContent" in good_code
 
@@ -253,10 +250,10 @@ class TestDOMBasedXSSPrevention:
         """Test that DOM manipulation is sanitized."""
         # Arrange
         user_input = "<img src=x onerror=alert('XSS')>"
-        
+
         # Act - Escape before DOM manipulation
         escaped = html.escape(user_input)
-        
+
         # Assert
         assert "onerror=" not in escaped or "&" in escaped
 
@@ -267,24 +264,19 @@ class TestAPIResponseSecurity:
     def test_json_content_type(self):
         """Test that JSON responses have correct content type."""
         # Arrange
-        headers = {
-            "Content-Type": "application/json"
-        }
-        
+        headers = {"Content-Type": "application/json"}
+
         # Assert
         assert headers.get("Content-Type") == "application/json"
 
     def test_escape_json_values(self):
         """Test that JSON values are properly escaped."""
         # Arrange
-        data = {
-            "name": "<script>alert('XSS')</script>",
-            "description": "Normal text"
-        }
-        
+        data = {"name": "<script>alert('XSS')</script>", "description": "Normal text"}
+
         # Act
         json_response = json.dumps(data)
-        
+
         # Assert
         # JSON encoding should escape special characters
         assert "<script>" not in json_response or "\\" in json_response
@@ -293,13 +285,13 @@ class TestAPIResponseSecurity:
         """Test that JSONP callbacks are not allowed."""
         # JSONP can be exploited for XSS
         # Modern APIs should use CORS instead
-        
+
         # Bad practice
         jsonp_response = "callback({data: 'value'})"
-        
+
         # Good practice
         json_response = '{"data": "value"}'
-        
+
         assert "callback(" in jsonp_response
         assert "callback(" not in json_response
 
@@ -312,7 +304,7 @@ class TestFileUploadSecurity:
         # Arrange
         allowed_types = ["image/png", "image/jpeg", "application/pdf"]
         malicious_type = "text/html"
-        
+
         # Assert
         assert malicious_type not in allowed_types
 
@@ -320,10 +312,10 @@ class TestFileUploadSecurity:
         """Test that filenames are sanitized."""
         # Arrange
         malicious_filename = "<script>alert('XSS')</script>.jpg"
-        
+
         # Act - Remove special characters
-        sanitized = re.sub(r'[<>:"/\\|?*]', '', malicious_filename)
-        
+        sanitized = re.sub(r'[<>:"/\\|?*]', "", malicious_filename)
+
         # Assert
         assert "<script>" not in sanitized
 
@@ -333,9 +325,9 @@ class TestFileUploadSecurity:
         headers = {
             "Content-Type": "image/jpeg",
             "Content-Disposition": "attachment; filename=image.jpg",
-            "X-Content-Type-Options": "nosniff"
+            "X-Content-Type-Options": "nosniff",
         }
-        
+
         # Assert
         assert headers.get("X-Content-Type-Options") == "nosniff"
         assert "attachment" in headers.get("Content-Disposition", "")
@@ -343,15 +335,15 @@ class TestFileUploadSecurity:
     def test_prevent_svg_xss(self):
         """Test that SVG files are sanitized."""
         # Arrange
-        malicious_svg = '''
+        malicious_svg = """
         <svg xmlns="http://www.w3.org/2000/svg">
             <script>alert('XSS')</script>
         </svg>
-        '''
-        
+        """
+
         # Act - Check for script tags in SVG
         has_script = "<script>" in malicious_svg
-        
+
         # Assert
         assert has_script is True  # Should be detected and removed
 
@@ -362,16 +354,18 @@ class TestRichTextEditorSecurity:
     def test_sanitize_rich_text(self):
         """Test that rich text content is sanitized."""
         # Arrange
-        rich_text = '''
+        rich_text = """
         <p>Normal text</p>
         <script>alert('XSS')</script>
         <img src=x onerror=alert('XSS')>
-        '''
-        
+        """
+
         # Act - Remove dangerous elements
-        sanitized = re.sub(r'<script[^>]*>.*?</script>', '', rich_text, flags=re.IGNORECASE | re.DOTALL)
-        sanitized = re.sub(r'on\w+\s*=', '', sanitized, flags=re.IGNORECASE)
-        
+        sanitized = re.sub(
+            r"<script[^>]*>.*?</script>", "", rich_text, flags=re.IGNORECASE | re.DOTALL
+        )
+        sanitized = re.sub(r"on\w+\s*=", "", sanitized, flags=re.IGNORECASE)
+
         # Assert
         assert "<script>" not in sanitized
         assert "onerror=" not in sanitized
@@ -381,12 +375,12 @@ class TestRichTextEditorSecurity:
         # Arrange
         allowed_attributes = ["href", "src", "alt", "title", "class", "id"]
         dangerous_attributes = ["onclick", "onerror", "onload", "onmouseover"]
-        
+
         html_content = '<a href="#" onclick="alert(\'XSS\')">Link</a>'
-        
+
         # Act - Extract attributes
-        attributes = re.findall(r'(\w+)\s*=', html_content)
-        
+        attributes = re.findall(r"(\w+)\s*=", html_content)
+
         # Assert
         dangerous_found = [attr for attr in attributes if attr in dangerous_attributes]
         assert len(dangerous_found) > 0  # Should be detected
@@ -396,9 +390,9 @@ class TestRichTextEditorSecurity:
         # Arrange
         deeply_nested = "<div>" * 100 + "content" + "</div>" * 100
         max_depth = 10
-        
+
         # Act - Count nesting depth
         depth = deeply_nested.count("<div>")
-        
+
         # Assert
         assert depth > max_depth  # Should be rejected

@@ -13,11 +13,11 @@ This module provides compliance features:
 - Privacy policy and terms of service
 """
 
-from compliance.gdpr import GDPRComplianceManager
-from compliance.data_retention import DataRetentionManager
-from compliance.audit_reports import ComplianceAuditReporter
 from compliance.anonymization import DataAnonymizer
+from compliance.audit_reports import ComplianceAuditReporter
 from compliance.consent import ConsentManager
+from compliance.data_retention import DataRetentionManager
+from compliance.gdpr import GDPRComplianceManager
 from compliance.policies import PolicyManager
 
 __all__ = [

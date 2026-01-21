@@ -8,7 +8,7 @@ References:
 """
 
 import logging
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
 from agent_framework.agent_template import AgentTemplateManager
 

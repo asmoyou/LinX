@@ -8,7 +8,7 @@ References:
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 logger = logging.getLogger(__name__)
@@ -16,35 +16,35 @@ logger = logging.getLogger(__name__)
 
 class PhysicalTaskType(Enum):
     """Types of physical tasks robots can perform."""
-    
+
     # Navigation tasks
     NAVIGATE_TO_LOCATION = "navigate_to_location"
     FOLLOW_PATH = "follow_path"
     PATROL_AREA = "patrol_area"
-    
+
     # Manipulation tasks
     PICK_OBJECT = "pick_object"
     PLACE_OBJECT = "place_object"
     MOVE_OBJECT = "move_object"
     ASSEMBLE_PARTS = "assemble_parts"
-    
+
     # Inspection tasks
     VISUAL_INSPECTION = "visual_inspection"
     MEASURE_DIMENSION = "measure_dimension"
     SCAN_BARCODE = "scan_barcode"
     TAKE_PHOTO = "take_photo"
-    
+
     # Delivery tasks
     DELIVER_ITEM = "deliver_item"
     COLLECT_ITEM = "collect_item"
     TRANSPORT_LOAD = "transport_load"
-    
+
     # Maintenance tasks
     CLEAN_SURFACE = "clean_surface"
     APPLY_COATING = "apply_coating"
     WELD_JOINT = "weld_joint"
     TIGHTEN_FASTENER = "tighten_fastener"
-    
+
     # Interaction tasks
     OPEN_DOOR = "open_door"
     PRESS_BUTTON = "press_button"
@@ -54,23 +54,23 @@ class PhysicalTaskType(Enum):
 @dataclass
 class TaskLocation:
     """Physical location for task execution."""
-    
+
     x: float  # meters
     y: float  # meters
     z: float  # meters
-    
+
     # Orientation (quaternion)
     qx: float = 0.0
     qy: float = 0.0
     qz: float = 0.0
     qw: float = 1.0
-    
+
     # Reference frame
     frame_id: str = "world"
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary.
-        
+
         Returns:
             Dictionary representation
         """
@@ -84,28 +84,28 @@ class TaskLocation:
 @dataclass
 class TaskConstraints:
     """Constraints for physical task execution."""
-    
+
     # Time constraints
     max_duration_seconds: Optional[float] = None
     deadline_timestamp: Optional[float] = None
-    
+
     # Safety constraints
     max_force_newtons: Optional[float] = None
     max_velocity_ms: Optional[float] = None
     safety_zone_radius_m: float = 1.0
-    
+
     # Quality constraints
     position_tolerance_m: float = 0.01
     orientation_tolerance_rad: float = 0.05
-    
+
     # Environmental constraints
     min_temperature_c: Optional[float] = None
     max_temperature_c: Optional[float] = None
     max_humidity_percent: Optional[float] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary.
-        
+
         Returns:
             Dictionary representation
         """
@@ -134,25 +134,25 @@ class TaskConstraints:
 @dataclass
 class PhysicalTask:
     """Physical task definition."""
-    
+
     task_id: UUID
     task_type: PhysicalTaskType
     description: str
-    
+
     # Task parameters
     target_location: Optional[TaskLocation] = None
     target_object_id: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = None
-    
+
     # Constraints
     constraints: Optional[TaskConstraints] = None
-    
+
     # Dependencies
     prerequisite_tasks: List[UUID] = None
-    
+
     # Status
     status: str = "pending"  # pending, executing, completed, failed
-    
+
     def __post_init__(self):
         """Initialize default values."""
         if self.parameters is None:
@@ -161,10 +161,10 @@ class PhysicalTask:
             self.prerequisite_tasks = []
         if self.constraints is None:
             self.constraints = TaskConstraints()
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary.
-        
+
         Returns:
             Dictionary representation
         """
@@ -179,7 +179,7 @@ class PhysicalTask:
             "prerequisite_tasks": [str(tid) for tid in self.prerequisite_tasks],
             "status": self.status,
         }
-    
+
     @classmethod
     def create_navigation_task(
         cls,
@@ -187,11 +187,11 @@ class PhysicalTask:
         description: str = "Navigate to location",
     ) -> "PhysicalTask":
         """Create a navigation task.
-        
+
         Args:
             target_location: Target location
             description: Task description
-            
+
         Returns:
             PhysicalTask instance
         """
@@ -201,7 +201,7 @@ class PhysicalTask:
             description=description,
             target_location=target_location,
         )
-    
+
     @classmethod
     def create_manipulation_task(
         cls,
@@ -211,13 +211,13 @@ class PhysicalTask:
         description: str = "Manipulate object",
     ) -> "PhysicalTask":
         """Create a manipulation task.
-        
+
         Args:
             task_type: Type of manipulation task
             target_object_id: ID of target object
             target_location: Optional target location
             description: Task description
-            
+
         Returns:
             PhysicalTask instance
         """
@@ -228,7 +228,7 @@ class PhysicalTask:
             target_object_id=target_object_id,
             target_location=target_location,
         )
-    
+
     @classmethod
     def create_inspection_task(
         cls,
@@ -238,13 +238,13 @@ class PhysicalTask:
         description: str = "Perform inspection",
     ) -> "PhysicalTask":
         """Create an inspection task.
-        
+
         Args:
             task_type: Type of inspection task
             target_location: Location to inspect
             parameters: Optional task parameters
             description: Task description
-            
+
         Returns:
             PhysicalTask instance
         """
@@ -259,14 +259,14 @@ class PhysicalTask:
 
 class PhysicalTaskValidator:
     """Validate physical tasks before execution."""
-    
+
     @staticmethod
     def validate_task(task: PhysicalTask) -> tuple[bool, Optional[str]]:
         """Validate a physical task.
-        
+
         Args:
             task: Physical task to validate
-            
+
         Returns:
             Tuple of (is_valid, error_message)
         """
@@ -277,7 +277,7 @@ class PhysicalTaskValidator:
         ]:
             if not task.target_location:
                 return False, "Navigation task requires target_location"
-        
+
         elif task.task_type in [
             PhysicalTaskType.PICK_OBJECT,
             PhysicalTaskType.PLACE_OBJECT,
@@ -285,13 +285,13 @@ class PhysicalTaskValidator:
         ]:
             if not task.target_object_id:
                 return False, "Manipulation task requires target_object_id"
-        
+
         # Validate constraints
         if task.constraints:
             if task.constraints.max_force_newtons and task.constraints.max_force_newtons < 0:
                 return False, "max_force_newtons must be positive"
-            
+
             if task.constraints.max_velocity_ms and task.constraints.max_velocity_ms < 0:
                 return False, "max_velocity_ms must be positive"
-        
+
         return True, None

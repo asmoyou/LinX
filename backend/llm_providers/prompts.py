@@ -7,29 +7,29 @@ References:
 - Design Section 9.3: Prompt Engineering
 """
 
-from typing import Dict, Any, List
 from string import Template
+from typing import Any, Dict, List
 
 
 class PromptTemplate:
     """Base class for prompt templates"""
-    
+
     def __init__(self, template: str):
         """
         Initialize prompt template.
-        
+
         Args:
             template: Template string with ${variable} placeholders
         """
         self.template = Template(template)
-    
+
     def format(self, **kwargs) -> str:
         """
         Format template with provided variables.
-        
+
         Args:
             **kwargs: Template variables
-        
+
         Returns:
             Formatted prompt string
         """
@@ -281,22 +281,18 @@ Generate the complete function code.
 
 
 def get_agent_prompt(
-    agent_type: str,
-    skills: List[str],
-    task_description: str,
-    tools: List[str],
-    context: str = ""
+    agent_type: str, skills: List[str], task_description: str, tools: List[str], context: str = ""
 ) -> str:
     """
     Get formatted agent system prompt.
-    
+
     Args:
         agent_type: Type of agent
         skills: List of agent skills
         task_description: Current task
         tools: Available tools
         context: Additional context
-    
+
     Returns:
         Formatted prompt string
     """
@@ -305,34 +301,31 @@ def get_agent_prompt(
         skills=", ".join(skills),
         task_description=task_description,
         tools=", ".join(tools),
-        context=context or "No additional context provided"
+        context=context or "No additional context provided",
     )
 
 
 def get_task_decomposition_prompt(goal: str, available_skills: List[str]) -> str:
     """
     Get formatted task decomposition prompt.
-    
+
     Args:
         goal: User's goal
         available_skills: Available skills
-    
+
     Returns:
         Formatted prompt string
     """
-    return TASK_DECOMPOSITION_PROMPT.format(
-        goal=goal,
-        available_skills=", ".join(available_skills)
-    )
+    return TASK_DECOMPOSITION_PROMPT.format(goal=goal, available_skills=", ".join(available_skills))
 
 
 def get_clarification_prompt(goal: str) -> str:
     """
     Get formatted clarification prompt.
-    
+
     Args:
         goal: User's goal
-    
+
     Returns:
         Formatted prompt string
     """
@@ -340,20 +333,17 @@ def get_clarification_prompt(goal: str) -> str:
 
 
 def get_code_generation_prompt(
-    language: str,
-    task_description: str,
-    requirements: List[str],
-    examples: str = ""
+    language: str, task_description: str, requirements: List[str], examples: str = ""
 ) -> str:
     """
     Get formatted code generation prompt.
-    
+
     Args:
         language: Programming language
         task_description: Task description
         requirements: List of requirements
         examples: Example code (optional)
-    
+
     Returns:
         Formatted prompt string
     """
@@ -361,28 +351,24 @@ def get_code_generation_prompt(
         language=language,
         task_description=task_description,
         requirements="\n".join(f"- {req}" for req in requirements),
-        examples=f"\nExamples:\n{examples}" if examples else ""
+        examples=f"\nExamples:\n{examples}" if examples else "",
     )
 
 
 def get_summarization_prompt(
-    content: str,
-    max_words: int = 100,
-    output_format: str = "paragraph"
+    content: str, max_words: int = 100, output_format: str = "paragraph"
 ) -> str:
     """
     Get formatted summarization prompt.
-    
+
     Args:
         content: Content to summarize
         max_words: Maximum words in summary
         output_format: Output format
-    
+
     Returns:
         Formatted prompt string
     """
     return SUMMARIZATION_PROMPT.format(
-        content=content,
-        max_words=max_words,
-        output_format=output_format
+        content=content, max_words=max_words, output_format=output_format
     )

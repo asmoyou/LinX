@@ -10,7 +10,7 @@ References:
 
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 from uuid import UUID
 
 from database.connection import get_db_session
@@ -22,11 +22,11 @@ logger = logging.getLogger(__name__)
 
 class ClassificationAuditLogger:
     """Audit logger for classified data operations."""
-    
+
     def __init__(self):
         """Initialize classification audit logger."""
         logger.info("ClassificationAuditLogger initialized")
-    
+
     def log_data_access(
         self,
         user_id: UUID,
@@ -38,7 +38,7 @@ class ClassificationAuditLogger:
         details: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Log access to classified data.
-        
+
         Args:
             user_id: User accessing the data
             resource_type: Type of resource (document, memory, knowledge, etc.)
@@ -52,10 +52,10 @@ class ClassificationAuditLogger:
             "classification": classification.value,
             "action": action,
         }
-        
+
         if details:
             audit_details.update(details)
-        
+
         with get_db_session() as session:
             audit_log = AuditLog(
                 user_id=user_id,
@@ -65,10 +65,10 @@ class ClassificationAuditLogger:
                 resource_id=resource_id,
                 details=audit_details,
             )
-            
+
             session.add(audit_log)
             session.commit()
-        
+
         logger.info(
             "Classified data access logged",
             extra={
@@ -79,7 +79,7 @@ class ClassificationAuditLogger:
                 "action": action,
             },
         )
-    
+
     def log_classification_change(
         self,
         user_id: UUID,
@@ -90,7 +90,7 @@ class ClassificationAuditLogger:
         reason: Optional[str] = None,
     ) -> None:
         """Log classification level change.
-        
+
         Args:
             user_id: User making the change
             resource_type: Type of resource
@@ -103,10 +103,10 @@ class ClassificationAuditLogger:
             "old_classification": old_classification.value,
             "new_classification": new_classification.value,
         }
-        
+
         if reason:
             details["reason"] = reason
-        
+
         with get_db_session() as session:
             audit_log = AuditLog(
                 user_id=user_id,
@@ -115,10 +115,10 @@ class ClassificationAuditLogger:
                 resource_id=resource_id,
                 details=details,
             )
-            
+
             session.add(audit_log)
             session.commit()
-        
+
         logger.warning(
             "Classification level changed",
             extra={
@@ -129,7 +129,7 @@ class ClassificationAuditLogger:
                 "new_classification": new_classification.value,
             },
         )
-    
+
     def log_unauthorized_access_attempt(
         self,
         user_id: UUID,
@@ -139,7 +139,7 @@ class ClassificationAuditLogger:
         reason: str,
     ) -> None:
         """Log unauthorized access attempt to classified data.
-        
+
         Args:
             user_id: User attempting access
             resource_type: Type of resource
@@ -151,7 +151,7 @@ class ClassificationAuditLogger:
             "classification": classification.value,
             "denial_reason": reason,
         }
-        
+
         with get_db_session() as session:
             audit_log = AuditLog(
                 user_id=user_id,
@@ -160,10 +160,10 @@ class ClassificationAuditLogger:
                 resource_id=resource_id,
                 details=details,
             )
-            
+
             session.add(audit_log)
             session.commit()
-        
+
         logger.warning(
             "Unauthorized access attempt to classified data",
             extra={
@@ -174,7 +174,7 @@ class ClassificationAuditLogger:
                 "reason": reason,
             },
         )
-    
+
     def log_data_sharing(
         self,
         user_id: UUID,
@@ -185,7 +185,7 @@ class ClassificationAuditLogger:
         permissions: Dict[str, bool],
     ) -> None:
         """Log sharing of classified data.
-        
+
         Args:
             user_id: User sharing the data
             resource_type: Type of resource
@@ -199,7 +199,7 @@ class ClassificationAuditLogger:
             "shared_with": str(shared_with),
             "permissions": permissions,
         }
-        
+
         with get_db_session() as session:
             audit_log = AuditLog(
                 user_id=user_id,
@@ -208,10 +208,10 @@ class ClassificationAuditLogger:
                 resource_id=resource_id,
                 details=details,
             )
-            
+
             session.add(audit_log)
             session.commit()
-        
+
         logger.info(
             "Classified data shared",
             extra={
@@ -222,7 +222,7 @@ class ClassificationAuditLogger:
                 "shared_with": str(shared_with),
             },
         )
-    
+
     def log_export(
         self,
         user_id: UUID,
@@ -233,7 +233,7 @@ class ClassificationAuditLogger:
         destination: str,
     ) -> None:
         """Log export of classified data.
-        
+
         Args:
             user_id: User exporting data
             resource_type: Type of resource
@@ -247,7 +247,7 @@ class ClassificationAuditLogger:
             "export_format": export_format,
             "destination": destination,
         }
-        
+
         with get_db_session() as session:
             audit_log = AuditLog(
                 user_id=user_id,
@@ -256,10 +256,10 @@ class ClassificationAuditLogger:
                 resource_id=resource_id,
                 details=details,
             )
-            
+
             session.add(audit_log)
             session.commit()
-        
+
         logger.info(
             "Classified data exported",
             extra={
@@ -278,13 +278,13 @@ _audit_logger_instance: Optional[ClassificationAuditLogger] = None
 
 def get_classification_audit_logger() -> ClassificationAuditLogger:
     """Get global classification audit logger instance.
-    
+
     Returns:
         ClassificationAuditLogger instance
     """
     global _audit_logger_instance
-    
+
     if _audit_logger_instance is None:
         _audit_logger_instance = ClassificationAuditLogger()
-    
+
     return _audit_logger_instance

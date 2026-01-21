@@ -14,20 +14,20 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 from uuid import uuid4
 
-from virtualization.sandbox_selector import SandboxType, get_sandbox_selector
-from virtualization.container_manager import get_container_manager, ContainerConfig
+from virtualization.code_validator import ValidationResult, get_code_validator
+from virtualization.container_manager import ContainerConfig, get_container_manager
 from virtualization.resource_limits import ResourceLimits, ResourceUsage, get_default_limits
-from virtualization.code_validator import get_code_validator, ValidationResult
+from virtualization.sandbox_selector import SandboxType, get_sandbox_selector
 
 logger = logging.getLogger(__name__)
 
 
 class ExecutionStatus(Enum):
     """Execution status states."""
-    
+
     PENDING = "pending"
     VALIDATING = "validating"
     RUNNING = "running"
@@ -40,7 +40,7 @@ class ExecutionStatus(Enum):
 @dataclass
 class ExecutionResult:
     """Result of code execution."""
-    
+
     execution_id: str
     success: bool
     status: ExecutionStatus
@@ -53,10 +53,10 @@ class ExecutionResult:
     validation_result: Optional[ValidationResult] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation.
-        
+
         Returns:
             Dictionary with execution result data
         """
@@ -77,29 +77,32 @@ class ExecutionResult:
 
 class SecurityException(Exception):
     """Exception raised for security violations."""
+
     pass
 
 
 class ExecutionTimeoutException(Exception):
     """Exception raised when execution times out."""
+
     pass
 
 
 class MemoryExceededException(Exception):
     """Exception raised when memory limit is exceeded."""
+
     pass
 
 
 class CodeExecutionSandbox:
     """Secure sandbox for executing agent-generated code."""
-    
+
     def __init__(
         self,
         sandbox_type: str = "auto",
         resource_limits: Optional[ResourceLimits] = None,
     ):
         """Initialize the code execution sandbox.
-        
+
         Args:
             sandbox_type: Sandbox type ("auto", "gvisor", "firecracker", "docker_enhanced")
             resource_limits: Resource limits for execution (uses defaults if None)
@@ -108,16 +111,16 @@ class CodeExecutionSandbox:
         self.sandbox_selector = get_sandbox_selector()
         self.container_manager = get_container_manager()
         self.code_validator = get_code_validator()
-        
+
         # Auto-detect best sandbox if not specified
         if sandbox_type == "auto":
             self.sandbox_type = self.sandbox_selector.detect_best_sandbox()
         else:
             self.sandbox_type = SandboxType(sandbox_type)
-        
+
         self.config = self.sandbox_selector.get_sandbox_config(self.sandbox_type)
         self.resource_limits = resource_limits or get_default_limits("code_execution")
-        
+
         self.logger.info(
             "CodeExecutionSandbox initialized",
             extra={
@@ -128,7 +131,7 @@ class CodeExecutionSandbox:
                 "timeout_seconds": self.resource_limits.execution_timeout_seconds,
             },
         )
-    
+
     async def execute_code(
         self,
         code: str,
@@ -137,16 +140,16 @@ class CodeExecutionSandbox:
         timeout: Optional[int] = None,
     ) -> ExecutionResult:
         """Execute code in isolated sandbox.
-        
+
         Args:
             code: Source code to execute
             language: Programming language (python, javascript, etc.)
             context: Execution context and input data
             timeout: Execution timeout in seconds (uses default if None)
-        
+
         Returns:
             ExecutionResult with output, errors, and metrics
-        
+
         Raises:
             SecurityException: If code validation fails
             ExecutionTimeoutException: If execution times out
@@ -154,13 +157,13 @@ class CodeExecutionSandbox:
         """
         execution_id = str(uuid4())
         started_at = datetime.utcnow()
-        
+
         if context is None:
             context = {}
-        
+
         if timeout is None:
             timeout = self.resource_limits.execution_timeout_seconds
-        
+
         self.logger.info(
             "Starting code execution",
             extra={
@@ -170,10 +173,10 @@ class CodeExecutionSandbox:
                 "timeout": timeout,
             },
         )
-        
+
         # 1. Validate code (static analysis)
         validation_result = self.code_validator.validate_code(code, language)
-        
+
         if not validation_result.safe:
             self.logger.warning(
                 "Code validation failed",
@@ -182,7 +185,7 @@ class CodeExecutionSandbox:
                     "issues": validation_result.issues,
                 },
             )
-            
+
             return ExecutionResult(
                 execution_id=execution_id,
                 success=False,
@@ -192,7 +195,7 @@ class CodeExecutionSandbox:
                 started_at=started_at,
                 completed_at=datetime.utcnow(),
             )
-        
+
         # Log warnings if any
         if validation_result.warnings:
             self.logger.info(
@@ -202,40 +205,40 @@ class CodeExecutionSandbox:
                     "warnings": validation_result.warnings,
                 },
             )
-        
+
         sandbox_id = None
-        
+
         try:
             # 2. Create isolated sandbox environment
             sandbox_id = await self._create_sandbox(execution_id)
-            
+
             # 3. Inject code and context into sandbox
             await self._inject_code(sandbox_id, code, context, language)
-            
+
             # 4. Execute with resource limits and timeout
             start_time = time.time()
-            
+
             result = await asyncio.wait_for(
                 self._run_code(sandbox_id, language),
                 timeout=timeout,
             )
-            
+
             execution_time = time.time() - start_time
-            
+
             # 5. Collect output and metrics
             output = result.get("output", "")
             error = result.get("error", "")
             return_value = result.get("return_value")
-            
+
             metrics = self.container_manager.get_container_stats(sandbox_id)
             if metrics:
                 metrics.execution_time_seconds = execution_time
-            
+
             completed_at = datetime.utcnow()
-            
+
             success = error == ""
             status = ExecutionStatus.COMPLETED if success else ExecutionStatus.FAILED
-            
+
             self.logger.info(
                 "Code execution completed",
                 extra={
@@ -245,7 +248,7 @@ class CodeExecutionSandbox:
                     "sandbox_id": sandbox_id,
                 },
             )
-            
+
             return ExecutionResult(
                 execution_id=execution_id,
                 success=success,
@@ -260,7 +263,7 @@ class CodeExecutionSandbox:
                 started_at=started_at,
                 completed_at=completed_at,
             )
-        
+
         except asyncio.TimeoutError:
             self.logger.warning(
                 "Code execution timeout",
@@ -270,10 +273,10 @@ class CodeExecutionSandbox:
                     "sandbox_id": sandbox_id,
                 },
             )
-            
+
             if sandbox_id:
                 await self._kill_sandbox(sandbox_id)
-            
+
             return ExecutionResult(
                 execution_id=execution_id,
                 success=False,
@@ -284,7 +287,7 @@ class CodeExecutionSandbox:
                 started_at=started_at,
                 completed_at=datetime.utcnow(),
             )
-        
+
         except MemoryExceededException as e:
             self.logger.warning(
                 "Memory limit exceeded",
@@ -293,10 +296,10 @@ class CodeExecutionSandbox:
                     "sandbox_id": sandbox_id,
                 },
             )
-            
+
             if sandbox_id:
                 await self._kill_sandbox(sandbox_id)
-            
+
             return ExecutionResult(
                 execution_id=execution_id,
                 success=False,
@@ -307,7 +310,7 @@ class CodeExecutionSandbox:
                 started_at=started_at,
                 completed_at=datetime.utcnow(),
             )
-        
+
         except Exception as e:
             self.logger.error(
                 "Code execution failed",
@@ -317,7 +320,7 @@ class CodeExecutionSandbox:
                     "sandbox_id": sandbox_id,
                 },
             )
-            
+
             return ExecutionResult(
                 execution_id=execution_id,
                 success=False,
@@ -328,25 +331,26 @@ class CodeExecutionSandbox:
                 started_at=started_at,
                 completed_at=datetime.utcnow(),
             )
-        
+
         finally:
             # 6. Cleanup sandbox
             if sandbox_id:
                 await self._destroy_sandbox(sandbox_id)
-    
+
     async def _create_sandbox(self, execution_id: str) -> str:
         """Create isolated sandbox environment.
-        
+
         Args:
             execution_id: Execution ID for tracking
-        
+
         Returns:
             Sandbox container ID
         """
         # Create a temporary agent ID for the sandbox
         from uuid import UUID
+
         temp_agent_id = UUID(execution_id)
-        
+
         config = ContainerConfig(
             agent_id=temp_agent_id,
             name=f"code-exec-{execution_id[:8]}",
@@ -354,15 +358,15 @@ class CodeExecutionSandbox:
             resource_limits=self.resource_limits,
             network_disabled=True,  # Disable network for code execution
         )
-        
+
         container_id = self.container_manager.create_container(
             agent_id=temp_agent_id,
             config=config,
         )
-        
+
         # Start the container
         self.container_manager.start_container(container_id)
-        
+
         self.logger.debug(
             "Sandbox created",
             extra={
@@ -370,9 +374,9 @@ class CodeExecutionSandbox:
                 "container_id": container_id,
             },
         )
-        
+
         return container_id
-    
+
     async def _inject_code(
         self,
         sandbox_id: str,
@@ -381,7 +385,7 @@ class CodeExecutionSandbox:
         language: str,
     ) -> None:
         """Inject code and context into sandbox.
-        
+
         Args:
             sandbox_id: Sandbox container ID
             code: Source code
@@ -392,7 +396,7 @@ class CodeExecutionSandbox:
         # 1. Write code to a file in the container
         # 2. Write context data as JSON
         # 3. Set up execution environment
-        
+
         self.logger.debug(
             "Code injected into sandbox",
             extra={
@@ -400,14 +404,14 @@ class CodeExecutionSandbox:
                 "language": language,
             },
         )
-    
+
     async def _run_code(self, sandbox_id: str, language: str) -> Dict[str, Any]:
         """Run code in sandbox.
-        
+
         Args:
             sandbox_id: Sandbox container ID
             language: Programming language
-        
+
         Returns:
             Dictionary with execution results
         """
@@ -416,37 +420,37 @@ class CodeExecutionSandbox:
         # 2. Capture stdout, stderr
         # 3. Get return value
         # 4. Monitor resource usage
-        
+
         # Simulate execution
         await asyncio.sleep(0.1)
-        
+
         return {
             "output": "Execution completed successfully",
             "error": "",
             "return_value": None,
         }
-    
+
     async def _kill_sandbox(self, sandbox_id: str) -> None:
         """Force kill a sandbox.
-        
+
         Args:
             sandbox_id: Sandbox container ID
         """
         self.container_manager.stop_container(sandbox_id, timeout=1)
-        
+
         self.logger.debug(
             "Sandbox killed",
             extra={"sandbox_id": sandbox_id},
         )
-    
+
     async def _destroy_sandbox(self, sandbox_id: str) -> None:
         """Destroy and cleanup sandbox.
-        
+
         Args:
             sandbox_id: Sandbox container ID
         """
         self.container_manager.terminate_container(sandbox_id)
-        
+
         self.logger.debug(
             "Sandbox destroyed",
             extra={"sandbox_id": sandbox_id},
@@ -462,11 +466,11 @@ def get_code_execution_sandbox(
     resource_limits: Optional[ResourceLimits] = None,
 ) -> CodeExecutionSandbox:
     """Get the global code execution sandbox instance.
-    
+
     Args:
         sandbox_type: Sandbox type (only used on first call)
         resource_limits: Resource limits (only used on first call)
-    
+
     Returns:
         CodeExecutionSandbox instance
     """
