@@ -161,7 +161,7 @@ export const Memory: React.FC = () => {
 
   return (
     <div>
-      <h1 className="text-3xl font-bold text-gray-800 dark:text-white mb-6">
+      <h1 className="text-3xl font-bold text-zinc-800 dark:text-white mb-6">
         {t('nav.memory')}
       </h1>
 

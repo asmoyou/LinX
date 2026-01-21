@@ -30,7 +30,7 @@ export const GoalInput: React.FC<GoalInputProps> = ({ onSubmit, isLoading }) => 
           onChange={(e) => setInput(e.target.value)}
           disabled={isLoading}
           placeholder="Describe your goal in natural language..." 
-          className="flex-1 bg-transparent border-none py-6 text-xl focus:ring-0 placeholder:text-zinc-400 font-medium"
+          className="flex-1 bg-transparent border-none py-6 text-xl focus:ring-0 placeholder:text-zinc-400 font-medium text-zinc-800 dark:text-zinc-200"
         />
         <button 
           type="submit"

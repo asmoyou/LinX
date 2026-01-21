@@ -16,29 +16,29 @@ export const GoalCard: React.FC<GoalCardProps> = ({ goal, onExpand, isExpanded }
     <div className="glass-panel rounded-[40px] overflow-hidden">
       <div className="bg-zinc-500/5 p-8 border-b border-zinc-500/5 flex justify-between items-center">
         <div>
-          <h3 className="text-2xl font-bold tracking-tight">{goal.title}</h3>
+          <h3 className="text-2xl font-bold tracking-tight text-zinc-800 dark:text-zinc-200">{goal.title}</h3>
           <p className="text-[10px] font-bold text-zinc-400 mt-2 uppercase tracking-widest">
             ID: {goal.id.toUpperCase()}
           </p>
         </div>
         <span className={`px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest ${
           goal.status === 'completed' 
-            ? 'bg-emerald-500/10 text-emerald-600' 
+            ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-500' 
             : goal.status === 'failed'
-            ? 'bg-red-500/10 text-red-600'
-            : 'bg-blue-500/10 text-blue-600'
+            ? 'bg-red-500/10 text-red-600 dark:text-red-500'
+            : 'bg-blue-500/10 text-blue-600 dark:text-blue-500'
         }`}>
           {goal.status}
         </span>
       </div>
       
       <div className="p-8">
-        <p className="text-zinc-600 dark:text-zinc-400 mb-6">{goal.description}</p>
+        <p className="text-zinc-700 dark:text-zinc-400 mb-6">{goal.description}</p>
         
         {totalTasks > 0 && (
           <div className="mb-6">
             <div className="flex items-center justify-between text-sm mb-2">
-              <span className="text-zinc-500 dark:text-zinc-400">Progress</span>
+              <span className="text-zinc-600 dark:text-zinc-400">Progress</span>
               <span className="text-zinc-800 dark:text-white font-medium">
                 {completedTasks}/{totalTasks} tasks
               </span>

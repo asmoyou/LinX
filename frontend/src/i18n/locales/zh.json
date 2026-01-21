@@ -8,7 +8,10 @@
     "workforce": "劳动力",
     "tasks": "任务",
     "knowledge": "知识库",
-    "memory": "记忆系统"
+    "memory": "记忆系统",
+    "settings": "设置",
+    "collapseSidebar": "收起侧边栏",
+    "expandSidebar": "展开侧边栏"
   },
   "common": {
     "loading": "加载中...",

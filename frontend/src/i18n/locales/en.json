@@ -8,7 +8,10 @@
     "workforce": "Workforce",
     "tasks": "Tasks",
     "knowledge": "Knowledge Base",
-    "memory": "Memory System"
+    "memory": "Memory System",
+    "settings": "Settings",
+    "collapseSidebar": "Collapse sidebar",
+    "expandSidebar": "Expand sidebar"
   },
   "common": {
     "loading": "Loading...",

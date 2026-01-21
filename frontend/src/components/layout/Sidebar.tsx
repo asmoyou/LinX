@@ -8,7 +8,9 @@ import {
   Database, 
   BrainCircuit,
   Cpu,
-  Settings
+  Settings,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -31,7 +33,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
     <aside
       className={`glass-panel z-50 transition-all duration-500 flex flex-col ${
         isCollapsed ? 'w-20' : 'w-64'
-      } h-full border-r border-zinc-500/5`}
+      } h-full border-r border-zinc-500/5 relative`}
       role="navigation"
       aria-label="Main navigation"
     >
@@ -47,6 +49,20 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
         )}
       </div>
 
+      {/* Collapse Toggle Button */}
+      <button
+        onClick={onToggle}
+        className="absolute -right-3.5 top-24 w-7 h-7 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 shadow-lg shadow-emerald-500/25 flex items-center justify-center text-white hover:shadow-xl hover:shadow-emerald-500/40 transition-all duration-300 hover:scale-105 z-10 group"
+        aria-label={isCollapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')}
+        title={isCollapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')}
+      >
+        {isCollapsed ? (
+          <ChevronRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
+        ) : (
+          <ChevronLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" />
+        )}
+      </button>
+
       {/* Navigation */}
       <nav className="flex-1 px-4 space-y-1.5 mt-2" aria-label="Primary navigation">
         {navItems.map((item) => (
@@ -58,7 +74,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
               `w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-300 ${
                 isActive
                   ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-500 shadow-sm border border-emerald-500/10'
-                  : 'text-zinc-500 dark:text-zinc-400 hover:bg-zinc-500/5 hover:text-zinc-900 dark:hover:text-white'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-500/5 dark:hover:text-emerald-400'
               }`
             }
             title={isCollapsed ? item.label : undefined}
@@ -81,17 +97,17 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
 
       {/* User Profile */}
       <div className="p-4 border-t border-zinc-500/10">
-        <div className={`flex items-center gap-3 p-3 rounded-2xl bg-zinc-500/5 ${isCollapsed ? 'justify-center' : ''}`}>
-          <div className="w-8 h-8 rounded-full bg-zinc-200 dark:bg-zinc-800 flex items-center justify-center text-[10px] font-bold">
+        <div className={`flex items-center gap-3 p-3 rounded-2xl bg-zinc-100 dark:bg-zinc-500/5 ${isCollapsed ? 'justify-center' : ''}`}>
+          <div className="w-8 h-8 rounded-full bg-zinc-200 dark:bg-zinc-800 flex items-center justify-center text-[10px] font-bold text-zinc-700 dark:text-zinc-300">
             AD
           </div>
           {!isCollapsed && (
             <>
               <div className="flex-1 min-w-0">
-                <p className="text-xs font-semibold truncate">Admin User</p>
+                <p className="text-xs font-semibold truncate text-zinc-800 dark:text-zinc-200">Admin User</p>
                 <p className="text-[10px] text-zinc-500 truncate">{t('nav.settings')}</p>
               </div>
-              <Settings className="w-4 h-4 text-zinc-400 cursor-pointer hover:text-zinc-900 dark:hover:text-white transition-colors" />
+              <Settings className="w-4 h-4 text-zinc-400 cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-500 transition-colors" />
             </>
           )}
         </div>

@@ -70,10 +70,10 @@ export const Dashboard: React.FC = () => {
   return (
     <div className="space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700">
       <header>
-        <h1 className="text-4xl font-bold tracking-tight mb-2">
+        <h1 className="text-4xl font-bold tracking-tight mb-2 text-zinc-800 dark:text-zinc-200">
           {t('nav.dashboard')}
         </h1>
-        <p className="text-zinc-500 dark:text-zinc-400 font-medium">
+        <p className="text-zinc-600 dark:text-zinc-400 font-medium">
           Real-time system overview and performance metrics
         </p>
       </header>

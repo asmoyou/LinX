@@ -33,12 +33,12 @@ export const StatCard: React.FC<StatCardProps> = ({
         )}
       </div>
       <div>
-        <h3 className="text-3xl font-bold tracking-tight mb-1">{value}</h3>
-        <p className="text-zinc-500 dark:text-zinc-400 text-xs font-medium uppercase tracking-wider">
+        <h3 className="text-3xl font-bold tracking-tight mb-1 text-zinc-800 dark:text-zinc-200">{value}</h3>
+        <p className="text-zinc-600 dark:text-zinc-400 text-xs font-medium uppercase tracking-wider">
           {title}
         </p>
         {subtitle && (
-          <p className="text-zinc-400 dark:text-zinc-500 text-[10px] mt-2 font-mono">
+          <p className="text-zinc-500 dark:text-zinc-500 text-[10px] mt-2 font-mono">
             {subtitle}
           </p>
         )}

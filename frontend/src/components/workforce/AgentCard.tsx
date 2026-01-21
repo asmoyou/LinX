@@ -79,26 +79,26 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onTerminate
 
       <div className="space-y-4">
         <div>
-          <h3 className="text-2xl font-bold tracking-tight mb-1">{agent.name}</h3>
+          <h3 className="text-2xl font-bold tracking-tight mb-1 text-zinc-800 dark:text-zinc-200">{agent.name}</h3>
           <div className="flex items-center gap-2">
-            <Shield className="w-3.5 h-3.5 text-emerald-600" />
-            <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-600">
+            <Shield className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-500" />
+            <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-600 dark:text-emerald-500">
               {agent.type}
             </span>
           </div>
         </div>
         
         {agent.currentTask && (
-          <p className="text-zinc-500 dark:text-zinc-400 text-sm leading-relaxed line-clamp-2">
+          <p className="text-zinc-600 dark:text-zinc-400 text-sm leading-relaxed line-clamp-2">
             {agent.currentTask}
           </p>
         )}
         
         <div className="flex flex-wrap gap-2 pt-2">
-          <span className="px-3 py-1.5 bg-zinc-500/5 rounded-lg text-[10px] font-bold text-zinc-600 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
+          <span className="px-3 py-1.5 bg-zinc-500/5 rounded-lg text-[10px] font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
             {agent.tasksCompleted} Tasks
           </span>
-          <span className="px-3 py-1.5 bg-zinc-500/5 rounded-lg text-[10px] font-bold text-zinc-600 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
+          <span className="px-3 py-1.5 bg-zinc-500/5 rounded-lg text-[10px] font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
             {agent.uptime}
           </span>
         </div>

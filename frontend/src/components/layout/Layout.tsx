@@ -50,7 +50,7 @@ export const Layout: React.FC = () => {
   }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden selection:bg-emerald-500/30 bg-white dark:bg-black transition-colors duration-500">
+    <div className="flex h-screen overflow-hidden selection:bg-emerald-500/30">
       {/* Skip to main content link for keyboard navigation (6.9.2) */}
       <a
         href="#main-content"

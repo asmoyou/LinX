@@ -20,7 +20,7 @@ export const Header: React.FC = () => {
       role="banner"
     >
       <div className="flex items-center gap-4">
-        <div className="hidden md:flex items-center gap-2 text-[11px] font-medium text-zinc-400 uppercase tracking-widest">
+        <div className="hidden md:flex items-center gap-2 text-[11px] font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-widest">
           <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
           <span>
             {t('header.status', 'Status')}: <span className="text-emerald-600 dark:text-emerald-500">{t('header.optimal', 'Optimal')}</span>
@@ -95,7 +95,7 @@ export const Header: React.FC = () => {
                   Notifications
                 </h3>
                 <div className="space-y-3">
-                  <div className="text-sm text-zinc-500 dark:text-zinc-400 p-3 hover:bg-zinc-500/5 rounded-xl transition-colors">
+                  <div className="text-sm text-zinc-600 dark:text-zinc-400 p-3 hover:bg-zinc-500/5 rounded-xl transition-colors">
                     No new notifications
                   </div>
                 </div>
