@@ -1,0 +1,137 @@
+# Application Alert Rules for Prometheus
+#
+# References:
+# - Requirements 11: Monitoring and Observability
+# - Design Section 11.3: Alerting
+# - Task 5.4: Monitoring and Metrics
+
+groups:
+  - name: application_alerts
+    interval: 30s
+    rules:
+      # API Alerts
+      - alert: HighAPIErrorRate
+        expr: rate(api_requests_total{status=~"5.."}[5m]) / rate(api_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "High API error rate"
+          description: "API error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+
+      - alert: HighAPILatency
+        expr: histogram_quantile(0.95, rate(api_request_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High API latency"
+          description: "95th percentile latency is {{ $value }}s (threshold: 5s)"
+
+      # Task Alerts
+      - alert: HighTaskFailureRate
+        expr: rate(tasks_failed_total[10m]) / rate(tasks_completed_total[10m]) > 0.10
+        for: 10m
+        labels:
+          severity: critical
+          component: tasks
+        annotations:
+          summary: "High task failure rate"
+          description: "Task failure rate is {{ $value | humanizePercentage }} (threshold: 10%)"
+
+      - alert: TaskQueueBacklog
+        expr: tasks_queued > 100
+        for: 15m
+        labels:
+          severity: warning
+          component: tasks
+        annotations:
+          summary: "Large task queue backlog"
+          description: "{{ $value }} tasks queued (threshold: 100)"
+
+      # Agent Alerts
+      - alert: NoActiveAgents
+        expr: agents_total{status="active"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: agents
+        annotations:
+          summary: "No active agents available"
+          description: "Agent pool is exhausted - no active agents"
+
+      - alert: HighAgentFailureRate
+        expr: rate(agents_terminated_total{reason="error"}[10m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: agents
+        annotations:
+          summary: "High agent failure rate"
+          description: "Agent failure rate is {{ $value }}/min (threshold: 0.1/min)"
+
+      # LLM Alerts
+      - alert: HighLLMLatency
+        expr: histogram_quantile(0.95, rate(llm_request_duration_seconds_bucket[5m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+          component: llm
+        annotations:
+          summary: "High LLM inference latency"
+          description: "95th percentile LLM latency is {{ $value }}s (threshold: 30s)"
+
+      - alert: HighLLMErrorRate
+        expr: rate(llm_errors_total[5m]) / rate(llm_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: llm
+        annotations:
+          summary: "High LLM error rate"
+          description: "LLM error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+
+      # Database Alerts
+      - alert: HighDatabaseConnections
+        expr: db_connections_active > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "High number of database connections"
+          description: "{{ $value }} active connections (threshold: 80)"
+
+      - alert: SlowDatabaseQueries
+        expr: histogram_quantile(0.95, rate(db_query_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Slow database queries detected"
+          description: "95th percentile query time is {{ $value }}s (threshold: 1s)"
+
+      # Memory System Alerts
+      - alert: SlowMemoryQueries
+        expr: histogram_quantile(0.95, rate(memory_query_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: memory
+        annotations:
+          summary: "Slow memory system queries"
+          description: "95th percentile memory query time is {{ $value }}s (threshold: 2s)"
+
+      # Document Processing Alerts
+      - alert: HighDocumentProcessingFailureRate
+        expr: rate(documents_processed_total{status="failed"}[10m]) / rate(documents_processed_total[10m]) > 0.10
+        for: 10m
+        labels:
+          severity: warning
+          component: documents
+        annotations:
+          summary: "High document processing failure rate"
+          description: "Document processing failure rate is {{ $value | humanizePercentage }} (threshold: 10%)"

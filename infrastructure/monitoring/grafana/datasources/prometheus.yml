@@ -1,0 +1,20 @@
+# Grafana Datasource Configuration
+#
+# References:
+# - Requirements 11: Monitoring and Observability
+# - Design Section 11: Monitoring and Observability Design
+# - Task 5.4.7: Set up Grafana dashboards
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: "15s"
+      queryTimeout: "60s"
+      httpMethod: "POST"

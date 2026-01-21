@@ -372,14 +372,14 @@
 **References**: Requirements 11, Design Section 11
 **Description**: Implement comprehensive monitoring
 
-- [ ] 5.4.1 Set up Prometheus metrics collection
-- [ ] 5.4.2 Create system metrics exporters (CPU, memory, disk, network)
-- [ ] 5.4.3 Implement application metrics (task completion, agent status)
-- [ ] 5.4.4 Add API metrics (request rate, latency, errors)
-- [ ] 5.4.5 Create LLM metrics (inference latency, token usage)
-- [ ] 5.4.6 Implement custom metrics for business KPIs
-- [ ] 5.4.7 Set up Grafana dashboards
-- [ ] 5.4.8 Create health check endpoints for all services
+- [x] 5.4.1 Set up Prometheus metrics collection
+- [x] 5.4.2 Create system metrics exporters (CPU, memory, disk, network)
+- [x] 5.4.3 Implement application metrics (task completion, agent status)
+- [x] 5.4.4 Add API metrics (request rate, latency, errors)
+- [x] 5.4.5 Create LLM metrics (inference latency, token usage)
+- [x] 5.4.6 Implement custom metrics for business KPIs
+- [x] 5.4.7 Set up Grafana dashboards
+- [x] 5.4.8 Create health check endpoints for all services
 
 ### 5.5 Logging and Audit
 **References**: Requirements 7, 11, Design Section 11.2

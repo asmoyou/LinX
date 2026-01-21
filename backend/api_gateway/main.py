@@ -22,7 +22,7 @@ from shared.logging import setup_logging, get_logger
 from api_gateway.middleware.auth import JWTAuthMiddleware
 from api_gateway.middleware.rate_limit import RateLimitMiddleware
 from api_gateway.middleware.logging import RequestLoggingMiddleware
-from api_gateway.routers import auth, users, agents, tasks, knowledge
+from api_gateway.routers import auth, users, agents, tasks, knowledge, monitoring
 from api_gateway.websocket import router as websocket_router
 from api_gateway.errors import setup_error_handlers
 
@@ -126,19 +126,8 @@ def create_app() -> FastAPI:
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
     app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["Tasks"])
     app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["Knowledge"])
+    app.include_router(monitoring.router, tags=["Monitoring"])
     app.include_router(websocket_router, prefix="/api/v1/ws", tags=["WebSocket"])
-    
-    # Health check endpoint
-    @app.get("/health", tags=["Health"])
-    async def health_check():
-        """Health check endpoint for monitoring."""
-        return JSONResponse(
-            content={
-                "status": "healthy",
-                "service": "api-gateway",
-                "version": "1.0.0"
-            }
-        )
     
     # Root endpoint
     @app.get("/", tags=["Root"])
@@ -149,7 +138,8 @@ def create_app() -> FastAPI:
                 "service": "Digital Workforce Platform API",
                 "version": "1.0.0",
                 "docs": "/docs",
-                "health": "/health"
+                "health": "/api/v1/health",
+                "metrics": "/api/v1/metrics"
             }
         )
     

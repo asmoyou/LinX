@@ -1,0 +1,84 @@
+# System Alert Rules for Prometheus
+#
+# References:
+# - Requirements 11: Monitoring and Observability
+# - Design Section 11.3: Alerting
+# - Task 5.4: Monitoring and Metrics
+
+groups:
+  - name: system_alerts
+    interval: 30s
+    rules:
+      # CPU Alerts
+      - alert: HighCPUUsage
+        expr: system_cpu_usage_percent > 90
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is {{ $value }}% (threshold: 90%)"
+
+      - alert: WarningCPUUsage
+        expr: system_cpu_usage_percent > 75
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "Elevated CPU usage"
+          description: "CPU usage is {{ $value }}% (threshold: 75%)"
+
+      # Memory Alerts
+      - alert: HighMemoryUsage
+        expr: system_memory_usage_percent > 95
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Critical memory usage"
+          description: "Memory usage is {{ $value }}% (threshold: 95%)"
+
+      - alert: WarningMemoryUsage
+        expr: system_memory_usage_percent > 85
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value }}% (threshold: 85%)"
+
+      # Disk Alerts
+      - alert: HighDiskUsage
+        expr: system_disk_usage_percent > 85
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "High disk usage on {{ $labels.path }}"
+          description: "Disk usage is {{ $value }}% (threshold: 85%)"
+
+      - alert: WarningDiskUsage
+        expr: system_disk_usage_percent > 75
+        for: 15m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "Elevated disk usage on {{ $labels.path }}"
+          description: "Disk usage is {{ $value }}% (threshold: 75%)"
+
+      # Service Health
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: service
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "Service {{ $labels.job }} has been down for more than 2 minutes"
