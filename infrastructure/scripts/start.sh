@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Digital Workforce Platform - Startup Script
+# LinX (灵枢) - Startup Script
 # This script helps start the platform with proper initialization
 
 set -e
@@ -65,7 +65,7 @@ fi
 # Parse command line arguments
 MODE=${1:-all}
 
-print_info "Starting Digital Workforce Platform in mode: $MODE"
+print_info "Starting LinX (灵枢) in mode: $MODE"
 
 case $MODE in
     infrastructure)
@@ -177,7 +177,7 @@ fi
 
 # Print summary
 echo ""
-print_success "Digital Workforce Platform started successfully!"
+print_success "LinX (灵枢) started successfully!"
 echo ""
 print_info "Service URLs:"
 print_info "  - Frontend: http://localhost:3000"

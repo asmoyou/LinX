@@ -1,6 +1,6 @@
 # Product Overview
 
-LinX is an enterprise-grade Digital Workforce Management Platform for managing and coordinating AI agents and future robotic workers. The platform establishes a digital company structure enabling autonomous goal completion through hierarchical task management, collaborative agent coordination, and comprehensive knowledge management.
+LinX (灵枢) is an enterprise-grade intelligent collaboration platform for managing and coordinating AI agents and future robotic workers. The platform establishes a digital company structure enabling autonomous goal completion through hierarchical task management, collaborative agent coordination, and comprehensive knowledge management.
 
 ## Core Capabilities
 

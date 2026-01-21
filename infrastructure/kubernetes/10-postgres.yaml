@@ -99,7 +99,7 @@ metadata:
   namespace: digital-workforce
 data:
   init.sql: |
-    -- Digital Workforce Platform - Database Initialization Script
+    -- LinX (灵枢) - Database Initialization Script
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
     CREATE EXTENSION IF NOT EXISTS "pg_trgm";
     CREATE EXTENSION IF NOT EXISTS "btree_gin";

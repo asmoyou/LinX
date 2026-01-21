@@ -1,4 +1,4 @@
-# Development Dependencies for Digital Workforce Platform
+# Development Dependencies for LinX (灵枢)
 
 # Include all production dependencies
 -r requirements.txt

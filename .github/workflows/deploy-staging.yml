@@ -1,9 +1,7 @@
 name: Deploy to Staging
 
 on:
-  push:
-    branches: [ develop ]
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger only
 
 env:
   REGISTRY: ghcr.io
@@ -14,124 +12,14 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: staging
-      url: https://staging.your-domain.com
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    - name: Set up kubectl
-      uses: azure/setup-kubectl@v4
-      with:
-        version: 'v1.28.0'
-    
-    - name: Configure kubectl
+    - name: Check deployment readiness
       run: |
-        mkdir -p $HOME/.kube
-        echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > $HOME/.kube/config
-        chmod 600 $HOME/.kube/config
-    
-    - name: Update image tags
-      run: |
-        # Update image tags in Kubernetes manifests
-        cd infrastructure/kubernetes
-        
-        # Get short SHA for image tag
-        SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
-        
-        # Update API Gateway
-        sed -i "s|image:.*api-gateway.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/api-gateway:develop-${SHORT_SHA}|g" 20-api-gateway.yaml
-        
-        # Update Task Manager
-        sed -i "s|image:.*task-manager.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/task-manager:develop-${SHORT_SHA}|g" 21-task-manager.yaml
-        
-        # Update Document Processor
-        sed -i "s|image:.*document-processor.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/document-processor:develop-${SHORT_SHA}|g" 22-document-processor.yaml
-        
-        # Update Frontend
-        sed -i "s|image:.*frontend.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/frontend:develop-${SHORT_SHA}|g" 23-frontend.yaml
-    
-    - name: Deploy to Kubernetes
-      run: |
-        cd infrastructure/kubernetes
-        
-        # Apply configurations
-        kubectl apply -f 00-namespace.yaml
-        kubectl apply -f 01-configmap.yaml
-        kubectl apply -f 02-secrets.yaml
-        kubectl apply -f 03-storage.yaml
-        
-        # Apply data layer (if not exists)
-        kubectl apply -f 10-postgres.yaml
-        kubectl apply -f 11-redis.yaml
-        kubectl apply -f 12-minio.yaml
-        kubectl apply -f 13-milvus.yaml
-        
-        # Apply application layer
-        kubectl apply -f 20-api-gateway.yaml
-        kubectl apply -f 21-task-manager.yaml
-        kubectl apply -f 22-document-processor.yaml
-        kubectl apply -f 23-frontend.yaml
-        
-        # Apply networking
-        kubectl apply -f 30-ingress.yaml
-    
-    - name: Wait for rollout
-      run: |
-        kubectl rollout status deployment/api-gateway -n digital-workforce --timeout=5m
-        kubectl rollout status deployment/task-manager -n digital-workforce --timeout=5m
-        kubectl rollout status deployment/document-processor -n digital-workforce --timeout=5m
-        kubectl rollout status deployment/frontend -n digital-workforce --timeout=5m
-    
-    - name: Run smoke tests
-      run: |
-        # Wait for services to be ready
-        sleep 30
-        
-        # Get ingress URL
-        INGRESS_URL="https://staging.your-domain.com"
-        
-        # Test API health endpoint
-        curl -f ${INGRESS_URL}/api/health || exit 1
-        
-        # Test frontend
-        curl -f ${INGRESS_URL}/ || exit 1
-        
-        echo "Smoke tests passed!"
-    
-    - name: Notify deployment
-      if: always()
-      run: |
-        if [ "${{ job.status }}" == "success" ]; then
-          echo "✅ Deployment to staging successful"
-        else
-          echo "❌ Deployment to staging failed"
-        fi
-
-  run-integration-tests:
-    runs-on: ubuntu-latest
-    needs: deploy
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-    
-    - name: Install dependencies
-      working-directory: ./backend
-      run: |
-        pip install -r requirements.txt
-        pip install -r requirements-dev.txt
-    
-    - name: Run integration tests
-      working-directory: ./backend
-      env:
-        API_URL: https://staging.your-domain.com/api
-        TEST_USER: ${{ secrets.STAGING_TEST_USER }}
-        TEST_PASSWORD: ${{ secrets.STAGING_TEST_PASSWORD }}
-      run: |
-        pytest tests/integration/ -v || echo "Integration tests not configured yet"
+        echo "⚠️ Staging deployment is not yet configured"
+        echo "This workflow is disabled until Kubernetes cluster is ready"
+        echo "To enable: Configure KUBE_CONFIG_STAGING secret and update this workflow"
+        exit 0

@@ -4,7 +4,7 @@
 
 set -e
 
-echo "=== Digital Workforce Platform - Linux Setup ==="
+echo "=== LinX (灵枢) - Linux Setup ==="
 echo ""
 
 # Colors for output

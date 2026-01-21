@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Digital Workforce Platform uses a structured JSON logging system that provides:
+LinX (灵枢) uses a structured JSON logging system that provides:
 
 - **JSON Format**: Machine-parsable structured logs for easy integration with log aggregation systems
 - **Correlation IDs**: Track requests across components and services

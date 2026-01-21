@@ -1,6 +1,6 @@
 # System Architecture
 
-This document describes the architecture of the Digital Workforce Management Platform.
+This document describes the architecture of LinX (灵枢) intelligent collaboration platform.
 
 ## Table of Contents
 
@@ -15,7 +15,7 @@ This document describes the architecture of the Digital Workforce Management Pla
 
 ## Overview
 
-The Digital Workforce Management Platform is a microservices-based system for managing AI agents and automating complex tasks through intelligent task decomposition and agent collaboration.
+LinX (灵枢) is a microservices-based system for managing AI agents and automating complex tasks through intelligent task decomposition and agent collaboration.
 
 ### High-Level Architecture
 

@@ -1,6 +1,6 @@
 # Administrator Guide
 
-This guide is for system administrators managing the Digital Workforce Management Platform.
+This guide is for system administrators managing LinX (灵枢).
 
 ## Table of Contents
 

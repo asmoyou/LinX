@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document summarizes the Docker infrastructure implementation for the Digital Workforce Management Platform, completing all tasks in section 1.6 of the implementation plan.
+This document summarizes the Docker infrastructure implementation for LinX (灵枢), completing all tasks in section 1.6 of the implementation plan.
 
 ## Completed Tasks
 

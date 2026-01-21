@@ -1,6 +1,6 @@
 # API Documentation
 
-This document provides comprehensive documentation for the Digital Workforce Management Platform REST API.
+This document provides comprehensive documentation for the LinX (灵枢) REST API.
 
 ## Table of Contents
 

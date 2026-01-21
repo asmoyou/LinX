@@ -1,6 +1,6 @@
-# Backend - Digital Workforce Platform
+# Backend - LinX (灵枢)
 
-Python backend services for the Digital Workforce Management Platform.
+Python backend services for LinX (灵枢) intelligent collaboration platform.
 
 ## Quick Start
 

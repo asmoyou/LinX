@@ -1,5 +1,5 @@
 """
-Setup configuration for Digital Workforce Management Platform
+Setup configuration for LinX (灵枢)
 """
 from setuptools import setup, find_packages
 
@@ -7,11 +7,11 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="digital-workforce-platform",
+    name="linx-platform",
     version="1.0.0",
-    author="Digital Workforce Team",
-    author_email="team@digitalworkforce.com",
-    description="Digital Workforce Management Platform - AI Agent Management System",
+    author="LinX Team",
+    author_email="team@linx.platform",
+    description="LinX (灵枢) - Intelligent Collaboration Platform",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/yourusername/digital-workforce-platform",

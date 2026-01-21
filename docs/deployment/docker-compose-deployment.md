@@ -1,6 +1,6 @@
 # Docker Compose Deployment Guide
 
-This guide covers deploying the Digital Workforce Platform using Docker Compose for development and staging environments.
+This guide covers deploying LinX (灵枢) using Docker Compose for development and staging environments.
 
 ## Prerequisites
 

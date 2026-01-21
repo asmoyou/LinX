@@ -1,6 +1,6 @@
-# Digital Workforce Management Platform - Project Structure
+# LinX (灵枢) - Project Structure
 
-This document describes the directory structure of the Digital Workforce Management Platform.
+This document describes the directory structure of LinX (灵枢) intelligent collaboration platform.
 
 ## Overview
 
@@ -13,7 +13,7 @@ The project is organized into four main directories:
 ## Directory Structure
 
 ```
-digital-workforce-platform/
+LinX/
 ├── backend/                    # Python backend services
 │   ├── api_gateway/           # FastAPI-based API Gateway
 │   ├── task_manager/          # Hierarchical task management service
@@ -299,9 +299,9 @@ User manual:
 
 ## References
 
-- **Requirements**: `.kiro/specs/digital-workforce-platform/requirements.md`
-- **Design**: `.kiro/specs/digital-workforce-platform/design.md`
-- **Tasks**: `.kiro/specs/digital-workforce-platform/tasks.md`
+- **Requirements**: `.kiro/specs/LinX/requirements.md`
+- **Design**: `.kiro/specs/LinX/design.md`
+- **Tasks**: `.kiro/specs/LinX/tasks.md`
 
 ## Next Steps
 
@@ -313,4 +313,4 @@ User manual:
 
 ---
 
-**Note**: This structure follows the design specified in Requirements 20 and Design Section 16 of the Digital Workforce Management Platform specification.
+**Note**: This structure follows the design specified in Requirements 20 and Design Section 16 of the LinX (灵枢) platform specification.

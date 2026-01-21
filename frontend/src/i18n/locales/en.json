@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "Digital Workforce Platform",
+    "name": "LinX - 灵枢",
     "tagline": "Enterprise AI Agent Management"
   },
   "nav": {
@@ -36,7 +36,7 @@
     "noAccount": "Don't have an account?",
     "signUp": "Sign up",
     "success": "Login successful!",
-    "footer": "© 2024 Digital Workforce Platform. All rights reserved.",
+    "footer": "© 2026 灵枢科技. All rights reserved.",
     "errors": {
       "usernameRequired": "Username is required",
       "passwordRequired": "Password is required",
@@ -60,7 +60,7 @@
     "haveAccount": "Already have an account?",
     "signIn": "Sign in",
     "success": "Registration successful!",
-    "footer": "© 2024 Digital Workforce Platform. All rights reserved.",
+    "footer": "© 2026 灵枢科技. All rights reserved.",
     "errors": {
       "usernameRequired": "Username is required",
       "usernameTooShort": "Username must be at least 3 characters",

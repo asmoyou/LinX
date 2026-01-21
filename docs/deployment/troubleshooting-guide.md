@@ -1,6 +1,6 @@
 # Troubleshooting Guide
 
-Common issues and solutions for the Digital Workforce Management Platform.
+Common issues and solutions for LinX (灵枢).
 
 ## Table of Contents
 

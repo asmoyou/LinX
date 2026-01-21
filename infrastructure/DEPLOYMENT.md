@@ -1,6 +1,6 @@
-# Digital Workforce Platform - Deployment Guide
+# LinX (灵枢) - Deployment Guide
 
-This guide covers deploying the Digital Workforce Platform using Docker Compose.
+This guide covers deploying LinX (灵枢) using Docker Compose.
 
 ## Table of Contents
 
@@ -90,8 +90,8 @@ docker compose version
 
 ### 1. Clone Repository
 ```bash
-git clone https://github.com/your-org/digital-workforce-platform.git
-cd digital-workforce-platform
+git clone https://github.com/your-org/LinX.git
+cd LinX
 ```
 
 ### 2. Configure Environment
@@ -621,10 +621,10 @@ See `infrastructure/kubernetes/README.md` for Kubernetes deployment guide.
 ## Support
 
 For issues and questions:
-- GitHub Issues: https://github.com/your-org/digital-workforce-platform/issues
-- Documentation: https://docs.digitalworkforce.platform
-- Email: support@digitalworkforce.platform
+- GitHub Issues: https://github.com/your-org/LinX/issues
+- Documentation: https://docs.linx.platform
+- Email: support@linx.platform
 
 ## License
 
-Copyright © 2024 Digital Workforce Platform
+Copyright © 2026 灵枢科技 (LinX Technology)

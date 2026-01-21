@@ -1,6 +1,6 @@
 # Developer Guide
 
-This guide helps developers extend and customize the Digital Workforce Management Platform.
+This guide helps developers extend and customize LinX (灵枢).
 
 ## Table of Contents
 

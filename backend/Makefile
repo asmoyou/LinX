@@ -2,7 +2,7 @@
 
 # Default target
 help:
-	@echo "Digital Workforce Platform - Backend Makefile"
+	@echo "LinX (灵枢) - Backend Makefile"
 	@echo ""
 	@echo "Available targets:"
 	@echo "  install          - Install production dependencies"

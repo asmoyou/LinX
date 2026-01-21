@@ -2,11 +2,11 @@
 
 ## Introduction
 
-This document specifies the requirements for a Digital Workforce Management Platform (数字员工管理平台) designed to manage and coordinate AI agents and future robotic workers within an enterprise environment. The platform establishes a digital company structure that enables autonomous goal completion through hierarchical task management, collaborative agent coordination, and comprehensive knowledge management.
+This document specifies the requirements for LinX (灵枢), an intelligent collaboration platform designed to manage and coordinate AI agents and future robotic workers within an enterprise environment. The platform establishes a digital company structure that enables autonomous goal completion through hierarchical task management, collaborative agent coordination, and comprehensive knowledge management.
 
 ## Glossary
 
-- **Digital_Workforce_Platform**: The complete system for managing AI agents and robotic workers
+- **LinX**: The complete intelligent collaboration system for managing AI agents and robotic workers (灵枢)
 - **Agent**: An autonomous AI entity capable of executing tasks using LLM capabilities
 - **Task_Manager**: Component responsible for decomposing and distributing tasks
 - **Agent_Framework**: The LangChain-based infrastructure for agent implementation
@@ -113,7 +113,7 @@ This document specifies the requirements for a Digital Workforce Management Plat
 
 #### Acceptance Criteria
 
-1. THE Digital_Workforce_Platform SHALL use PostgreSQL as the Primary_Database
+1. THE LinX_Platform SHALL use PostgreSQL as the Primary_Database
 2. THE Primary_Database SHALL store agent metadata (agent_id, name, capabilities, status, owner_user_id)
 3. THE Primary_Database SHALL store task information (task_id, goal, status, assigned_agents, dependencies, results)
 4. THE Primary_Database SHALL store user accounts and authentication credentials
@@ -131,7 +131,7 @@ This document specifies the requirements for a Digital Workforce Management Plat
 
 #### Acceptance Criteria
 
-1. THE Digital_Workforce_Platform SHALL use MinIO as the Object_Storage system
+1. THE LinX_Platform SHALL use MinIO as the Object_Storage system
 2. THE Object_Storage SHALL support uploading documents (PDF, DOCX, TXT, MD)
 3. THE Object_Storage SHALL support uploading audio files (MP3, WAV, M4A)
 4. THE Object_Storage SHALL support uploading video files (MP4, AVI, MOV)
@@ -192,13 +192,13 @@ This document specifies the requirements for a Digital Workforce Management Plat
 
 #### Acceptance Criteria
 
-1. WHEN handling sensitive data, THE Digital_Workforce_Platform SHALL classify data according to sensitivity levels
-2. WHEN processing classified data, THE Digital_Workforce_Platform SHALL enforce appropriate security controls
-3. THE Digital_Workforce_Platform SHALL encrypt data at rest in all memory systems
-4. THE Digital_Workforce_Platform SHALL encrypt data in transit between components
-5. WHEN using cloud LLM providers, THE Digital_Workforce_Platform SHALL prevent transmission of sensitive data
-6. THE Digital_Workforce_Platform SHALL maintain audit logs of all data access and agent actions
-7. WHEN a security violation is detected, THE Digital_Workforce_Platform SHALL alert administrators and halt affected operations
+1. WHEN handling sensitive data, THE LinX_Platform SHALL classify data according to sensitivity levels
+2. WHEN processing classified data, THE LinX_Platform SHALL enforce appropriate security controls
+3. THE LinX_Platform SHALL encrypt data at rest in all memory systems
+4. THE LinX_Platform SHALL encrypt data in transit between components
+5. WHEN using cloud LLM providers, THE LinX_Platform SHALL prevent transmission of sensitive data
+6. THE LinX_Platform SHALL maintain audit logs of all data access and agent actions
+7. WHEN a security violation is detected, THE LinX_Platform SHALL alert administrators and halt affected operations
 
 ### Requirement 8: Scalability and Concurrent Execution
 
@@ -206,12 +206,12 @@ This document specifies the requirements for a Digital Workforce Management Plat
 
 #### Acceptance Criteria
 
-1. THE Digital_Workforce_Platform SHALL support concurrent execution of at least 100 agents
-2. WHEN system load increases, THE Digital_Workforce_Platform SHALL scale agent execution capacity horizontally
-3. WHEN system load decreases, THE Digital_Workforce_Platform SHALL release unused resources
+1. THE LinX_Platform SHALL support concurrent execution of at least 100 agents
+2. WHEN system load increases, THE LinX_Platform SHALL scale agent execution capacity horizontally
+3. WHEN system load decreases, THE LinX_Platform SHALL release unused resources
 4. THE Task_Manager SHALL distribute tasks across available agents to balance workload
 5. WHEN an agent becomes unavailable, THE Task_Manager SHALL reassign its tasks to other capable agents
-6. THE Digital_Workforce_Platform SHALL monitor system resource utilization and agent performance
+6. THE LinX_Platform SHALL monitor system resource utilization and agent performance
 
 ### Requirement 9: Deployment Flexibility
 
@@ -219,14 +219,14 @@ This document specifies the requirements for a Digital Workforce Management Plat
 
 #### Acceptance Criteria
 
-1. THE Digital_Workforce_Platform SHALL support deployment to on-premise infrastructure as the primary deployment model
-2. THE Digital_Workforce_Platform SHALL support hybrid deployment with core components on-premise and optional monitoring in cloud
-3. WHEN deployed on-premise, THE Digital_Workforce_Platform SHALL function completely without internet connectivity
-4. THE Digital_Workforce_Platform SHALL provide deployment configurations for different environment types
-5. THE Digital_Workforce_Platform SHALL support infrastructure-as-code deployment using Docker Compose
-6. THE Digital_Workforce_Platform SHALL support infrastructure-as-code deployment using Kubernetes for production scale
-7. THE Digital_Workforce_Platform SHALL provide installation scripts for common Linux distributions
-8. WHEN deployed, THE Digital_Workforce_Platform SHALL include all required dependencies without external downloads
+1. THE LinX_Platform SHALL support deployment to on-premise infrastructure as the primary deployment model
+2. THE LinX_Platform SHALL support hybrid deployment with core components on-premise and optional monitoring in cloud
+3. WHEN deployed on-premise, THE LinX_Platform SHALL function completely without internet connectivity
+4. THE LinX_Platform SHALL provide deployment configurations for different environment types
+5. THE LinX_Platform SHALL support infrastructure-as-code deployment using Docker Compose
+6. THE LinX_Platform SHALL support infrastructure-as-code deployment using Kubernetes for production scale
+7. THE LinX_Platform SHALL provide installation scripts for common Linux distributions
+8. WHEN deployed, THE LinX_Platform SHALL include all required dependencies without external downloads
 
 ### Requirement 10: Future Robot Integration
 
@@ -238,7 +238,7 @@ This document specifies the requirements for a Digital Workforce Management Plat
 2. THE Task_Manager SHALL support task types that can be assigned to either digital or robotic agents
 3. THE Memory_System SHALL support storing physical world state information for robotic operations
 4. THE Virtualization_System SHALL provide extension points for integrating robotic control systems
-5. WHEN a robotic agent is added, THE Digital_Workforce_Platform SHALL treat it as a specialized agent type with physical capabilities
+5. WHEN a robotic agent is added, THE LinX_Platform SHALL treat it as a specialized agent type with physical capabilities
 
 ### Requirement 11: Monitoring and Observability
 
@@ -246,12 +246,12 @@ This document specifies the requirements for a Digital Workforce Management Plat
 
 #### Acceptance Criteria
 
-1. THE Digital_Workforce_Platform SHALL expose metrics for agent execution status and performance
-2. THE Digital_Workforce_Platform SHALL expose metrics for task completion rates and durations
-3. THE Digital_Workforce_Platform SHALL expose metrics for resource utilization across the system
-4. WHEN an agent fails, THE Digital_Workforce_Platform SHALL log detailed error information
-5. THE Digital_Workforce_Platform SHALL provide a dashboard for visualizing system status and metrics
-6. WHEN anomalies are detected, THE Digital_Workforce_Platform SHALL generate alerts for operators
+1. THE LinX_Platform SHALL expose metrics for agent execution status and performance
+2. THE LinX_Platform SHALL expose metrics for task completion rates and durations
+3. THE LinX_Platform SHALL expose metrics for resource utilization across the system
+4. WHEN an agent fails, THE LinX_Platform SHALL log detailed error information
+5. THE LinX_Platform SHALL provide a dashboard for visualizing system status and metrics
+6. WHEN anomalies are detected, THE LinX_Platform SHALL generate alerts for operators
 
 ### Requirement 12: Agent Lifecycle Management
 
@@ -271,15 +271,15 @@ This document specifies the requirements for a Digital Workforce Management Plat
 
 #### Acceptance Criteria
 
-1. WHEN a goal is decomposed into tasks, THE Digital_Workforce_Platform SHALL generate a visual task flow representation
-2. THE Digital_Workforce_Platform SHALL display each task as a card showing task details and assigned agent
-3. WHEN an agent starts working on a task, THE Digital_Workforce_Platform SHALL update the task card to show "in progress" status
-4. WHEN an agent completes a task, THE Digital_Workforce_Platform SHALL update the task card to show "completed" status with results summary
-5. THE Digital_Workforce_Platform SHALL display dependencies between tasks in the visual flow
-6. WHEN a user views the task flow, THE Digital_Workforce_Platform SHALL show real-time updates as agents progress
-7. THE Digital_Workforce_Platform SHALL display agent information on each task card including agent name and current action
-8. WHEN multiple agents collaborate on related tasks, THE Digital_Workforce_Platform SHALL visually indicate collaboration relationships
-9. WHEN a task fails or encounters issues, THE Digital_Workforce_Platform SHALL highlight the task card with error status and details
+1. WHEN a goal is decomposed into tasks, THE LinX_Platform SHALL generate a visual task flow representation
+2. THE LinX_Platform SHALL display each task as a card showing task details and assigned agent
+3. WHEN an agent starts working on a task, THE LinX_Platform SHALL update the task card to show "in progress" status
+4. WHEN an agent completes a task, THE LinX_Platform SHALL update the task card to show "completed" status with results summary
+5. THE LinX_Platform SHALL display dependencies between tasks in the visual flow
+6. WHEN a user views the task flow, THE LinX_Platform SHALL show real-time updates as agents progress
+7. THE LinX_Platform SHALL display agent information on each task card including agent name and current action
+8. WHEN multiple agents collaborate on related tasks, THE LinX_Platform SHALL visually indicate collaboration relationships
+9. WHEN a task fails or encounters issues, THE LinX_Platform SHALL highlight the task card with error status and details
 
 ### Requirement 14: User-Based Access Control
 
@@ -295,7 +295,7 @@ This document specifies the requirements for a Digital Workforce Management Plat
 6. WHEN an agent accesses Agent_Memory, THE Access_Control_System SHALL ensure the memory belongs to an agent owned by the same user
 7. THE Access_Control_System SHALL support role-based access control (RBAC) with predefined roles
 8. THE Access_Control_System SHALL support attribute-based access control (ABAC) for fine-grained permissions
-9. WHEN a user queries available agents, THE Digital_Workforce_Platform SHALL return only agents the user has permission to view or control
+9. WHEN a user queries available agents, THE LinX_Platform SHALL return only agents the user has permission to view or control
 10. THE Access_Control_System SHALL provide an extensible framework for future permission policy enhancements
 11. WHEN permission policies are updated, THE Access_Control_System SHALL apply changes without requiring system restart
 
@@ -305,7 +305,7 @@ This document specifies the requirements for a Digital Workforce Management Plat
 
 #### Acceptance Criteria
 
-1. THE Digital_Workforce_Platform SHALL provide a RESTful API_Gateway for all platform operations
+1. THE LinX_Platform SHALL provide a RESTful API_Gateway for all platform operations
 2. THE API_Gateway SHALL support authentication using JWT tokens
 3. THE API_Gateway SHALL support API operations for goal submission and task management
 4. THE API_Gateway SHALL support API operations for agent creation, configuration, and lifecycle management
@@ -339,7 +339,7 @@ This document specifies the requirements for a Digital Workforce Management Plat
 
 #### Acceptance Criteria
 
-1. THE Digital_Workforce_Platform SHALL provide a Message_Bus for inter-agent communication
+1. THE LinX_Platform SHALL provide a Message_Bus for inter-agent communication
 2. WHEN an agent needs to communicate with another agent, THE Message_Bus SHALL deliver messages reliably
 3. THE Message_Bus SHALL support publish-subscribe patterns for broadcasting information
 4. THE Message_Bus SHALL support point-to-point messaging for direct agent communication
@@ -360,10 +360,10 @@ This document specifies the requirements for a Digital Workforce Management Plat
 3. WHEN a task fails, THE Task_Manager SHALL support manual or automatic retry with configurable retry policies
 4. WHEN an agent becomes unresponsive, THE Virtualization_System SHALL detect the timeout and terminate the agent
 5. WHEN an agent is terminated, THE Task_Manager SHALL reassign incomplete tasks to other capable agents
-6. THE Digital_Workforce_Platform SHALL implement circuit breakers for external dependencies
-7. WHEN critical errors occur, THE Digital_Workforce_Platform SHALL send alerts to administrators
-8. THE Digital_Workforce_Platform SHALL maintain system stability even when individual agents fail
-9. WHEN recovering from failures, THE Digital_Workforce_Platform SHALL restore agent state from the last checkpoint
+6. THE LinX_Platform SHALL implement circuit breakers for external dependencies
+7. WHEN critical errors occur, THE LinX_Platform SHALL send alerts to administrators
+8. THE LinX_Platform SHALL maintain system stability even when individual agents fail
+9. WHEN recovering from failures, THE LinX_Platform SHALL restore agent state from the last checkpoint
 
 ### Requirement 19: Resource Quotas and Limits
 
@@ -371,14 +371,14 @@ This document specifies the requirements for a Digital Workforce Management Plat
 
 #### Acceptance Criteria
 
-1. THE Digital_Workforce_Platform SHALL support configuring resource quotas per user
-2. THE Digital_Workforce_Platform SHALL support configuring resource quotas per agent
-3. WHEN a user reaches their agent limit, THE Digital_Workforce_Platform SHALL prevent creation of additional agents
-4. WHEN a user reaches their storage quota, THE Digital_Workforce_Platform SHALL prevent additional file uploads
+1. THE LinX_Platform SHALL support configuring resource quotas per user
+2. THE LinX_Platform SHALL support configuring resource quotas per agent
+3. WHEN a user reaches their agent limit, THE LinX_Platform SHALL prevent creation of additional agents
+4. WHEN a user reaches their storage quota, THE LinX_Platform SHALL prevent additional file uploads
 5. WHEN an agent exceeds CPU limits, THE Virtualization_System SHALL throttle the agent
 6. WHEN an agent exceeds memory limits, THE Virtualization_System SHALL terminate the agent gracefully
-7. THE Digital_Workforce_Platform SHALL display current resource usage and quota limits to users
-8. THE Digital_Workforce_Platform SHALL alert administrators when system-wide resource thresholds are approached
+7. THE LinX_Platform SHALL display current resource usage and quota limits to users
+8. THE LinX_Platform SHALL alert administrators when system-wide resource thresholds are approached
 
 ### Requirement 20: Configuration Management
 
@@ -386,15 +386,15 @@ This document specifies the requirements for a Digital Workforce Management Plat
 
 #### Acceptance Criteria
 
-1. THE Digital_Workforce_Platform SHALL store all configuration in a centralized configuration file
-2. THE Digital_Workforce_Platform SHALL support environment-specific configurations (development, staging, production)
-3. THE Digital_Workforce_Platform SHALL support hot-reloading of non-critical configuration changes
-4. THE Digital_Workforce_Platform SHALL validate configuration on startup and report errors clearly
-5. THE Digital_Workforce_Platform SHALL provide default configurations for quick setup
-6. THE Digital_Workforce_Platform SHALL support configuration of LLM providers and models
-7. THE Digital_Workforce_Platform SHALL support configuration of database connections
-8. THE Digital_Workforce_Platform SHALL support configuration of resource limits and quotas
-9. THE Digital_Workforce_Platform SHALL encrypt sensitive configuration values (passwords, API keys)
+1. THE LinX_Platform SHALL store all configuration in a centralized configuration file
+2. THE LinX_Platform SHALL support environment-specific configurations (development, staging, production)
+3. THE LinX_Platform SHALL support hot-reloading of non-critical configuration changes
+4. THE LinX_Platform SHALL validate configuration on startup and report errors clearly
+5. THE LinX_Platform SHALL provide default configurations for quick setup
+6. THE LinX_Platform SHALL support configuration of LLM providers and models
+7. THE LinX_Platform SHALL support configuration of database connections
+8. THE LinX_Platform SHALL support configuration of resource limits and quotas
+9. THE LinX_Platform SHALL encrypt sensitive configuration values (passwords, API keys)
 
 ### Requirement 21: Agent Templates
 
@@ -402,12 +402,12 @@ This document specifies the requirements for a Digital Workforce Management Plat
 
 #### Acceptance Criteria
 
-1. THE Digital_Workforce_Platform SHALL provide agent templates for common use cases
-2. THE Digital_Workforce_Platform SHALL provide a "Data Analyst" template with data processing and visualization skills
-3. THE Digital_Workforce_Platform SHALL provide a "Content Writer" template with writing and editing skills
-4. THE Digital_Workforce_Platform SHALL provide a "Code Assistant" template with programming and debugging skills
-5. THE Digital_Workforce_Platform SHALL provide a "Research Assistant" template with information gathering and summarization skills
+1. THE LinX_Platform SHALL provide agent templates for common use cases
+2. THE LinX_Platform SHALL provide a "Data Analyst" template with data processing and visualization skills
+3. THE LinX_Platform SHALL provide a "Content Writer" template with writing and editing skills
+4. THE LinX_Platform SHALL provide a "Code Assistant" template with programming and debugging skills
+5. THE LinX_Platform SHALL provide a "Research Assistant" template with information gathering and summarization skills
 6. WHEN a user creates an agent from a template, THE Agent_Framework SHALL initialize it with pre-configured skills and settings
-7. THE Digital_Workforce_Platform SHALL allow administrators to create custom templates
-8. THE Digital_Workforce_Platform SHALL store templates in the Primary_Database
-9. WHEN templates are updated, THE Digital_Workforce_Platform SHALL version them to maintain compatibility
+7. THE LinX_Platform SHALL allow administrators to create custom templates
+8. THE LinX_Platform SHALL store templates in the Primary_Database
+9. WHEN templates are updated, THE LinX_Platform SHALL version them to maintain compatibility

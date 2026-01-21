@@ -1,6 +1,6 @@
 # Installation Guide
 
-This guide provides step-by-step instructions for installing the Digital Workforce Management Platform on Linux, macOS, and Windows.
+This guide provides step-by-step instructions for installing LinX (灵枢) on Linux, macOS, and Windows.
 
 ## Table of Contents
 

@@ -1,4 +1,4 @@
-# Digital Workforce Platform Configuration
+# LinX (灵枢) Configuration
 # Development Configuration
 # For production, copy config.yaml.example and customize with secure values
 
@@ -6,7 +6,7 @@
 # Platform Settings
 # ============================================================================
 platform:
-  name: "Digital Workforce Platform"
+  name: "LinX Platform"
   version: "1.0.0"
   environment: "development"
   debug: true
@@ -374,7 +374,7 @@ monitoring:
     format: "json"
     output: "stdout"
     file:
-      path: "/var/log/workforce-platform"
+      path: "/var/log/linx-platform"
       filename: "platform.log"
       max_size_mb: 100
       max_files: 10
@@ -601,11 +601,11 @@ deployment:
   mode: "docker-compose"
   
   docker_compose:
-    project_name: "workforce-platform"
+    project_name: "linx-platform"
     network_name: "workforce-network"
   
   kubernetes:
-    namespace: "workforce-platform"
+    namespace: "linx-platform"
     enable_autoscaling: true
     min_replicas: 2
     max_replicas: 10

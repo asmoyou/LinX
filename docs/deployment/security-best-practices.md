@@ -1,6 +1,6 @@
 # Security Best Practices
 
-Security guidelines for deploying and operating the Digital Workforce Management Platform.
+Security guidelines for deploying and operating LinX (灵枢).
 
 ## Table of Contents
 

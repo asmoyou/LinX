@@ -1,10 +1,10 @@
-# Design Document: Digital Workforce Management Platform
+# Design Document: LinX (灵枢) Intelligent Collaboration Platform
 
 ## 1. Overview
 
 ### 1.1 Purpose
 
-This document specifies the technical design for a Digital Workforce Management Platform (数字员工管理平台) - an enterprise system for managing and coordinating AI agents and future robotic workers. The platform establishes a digital company structure enabling autonomous goal completion through hierarchical task management, collaborative agent coordination, and comprehensive knowledge management.
+This document specifies the technical design for LinX (灵枢) - an enterprise intelligent collaboration system for managing and coordinating AI agents and future robotic workers. The platform establishes a digital company structure enabling autonomous goal completion through hierarchical task management, collaborative agent coordination, and comprehensive knowledge management.
 
 ### 1.2 Design Principles
 
@@ -1958,7 +1958,7 @@ Server 3-N (Compute Plane):
 ```yaml
 services:
   api-gateway:
-    image: workforce-platform/api-gateway:latest
+    image: linx-platform/api-gateway:latest
     ports: ["8000:8000"]
     environment:
       - DATABASE_URL=postgresql://...
@@ -1966,7 +1966,7 @@ services:
     depends_on: [postgres, redis]
   
   task-manager:
-    image: workforce-platform/task-manager:latest
+    image: linx-platform/task-manager:latest
     environment:
       - DATABASE_URL=postgresql://...
       - MILVUS_HOST=milvus
@@ -2008,10 +2008,10 @@ services:
 ### 13.3 Kubernetes Deployment
 
 **Namespace Structure**
-- workforce-platform-core: API Gateway, Task Manager
-- workforce-platform-data: Databases, storage
-- workforce-platform-agents: Agent containers
-- workforce-platform-llm: LLM providers
+- linx-platform-core: API Gateway, Task Manager
+- linx-platform-data: Databases, storage
+- linx-platform-agents: Agent containers
+- linx-platform-llm: LLM providers
 
 **Key Kubernetes Resources**
 - Deployments: API Gateway, Task Manager, Document Processor
@@ -2339,7 +2339,7 @@ def initialize_platform():
 **Configuration File: config.yaml**
 ```yaml
 platform:
-  name: "Digital Workforce Platform"
+  name: "LinX Platform"
   version: "1.0.0"
   environment: "production"  # development, staging, production
 
@@ -2358,7 +2358,7 @@ database:
   postgres:
     host: "postgres"
     port: 5432
-    database: "workforce_platform"
+    database: "linx_platform"
     username: "platform_user"
     password: "${POSTGRES_PASSWORD}"
     pool_size: 20

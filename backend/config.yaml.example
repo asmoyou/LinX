@@ -1,4 +1,4 @@
-# Digital Workforce Platform Configuration
+# LinX (灵枢) Configuration
 # This is an example configuration file. Copy to config.yaml and customize for your environment.
 # Environment variables can be used with ${VAR_NAME} syntax.
 
@@ -6,7 +6,7 @@
 # Platform Settings
 # ============================================================================
 platform:
-  name: "Digital Workforce Platform"
+  name: "LinX Platform"
   version: "1.0.0"
   environment: "development"  # Options: development, staging, production
   debug: true

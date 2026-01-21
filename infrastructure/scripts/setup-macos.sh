@@ -4,7 +4,7 @@
 
 set -e
 
-echo "=== Digital Workforce Platform - macOS Setup ==="
+echo "=== LinX (灵枢) - macOS Setup ==="
 echo ""
 
 # Colors for output

@@ -1,6 +1,6 @@
 # Frontend Setup Guide
 
-Complete guide for setting up the Digital Workforce Platform frontend.
+Complete guide for setting up the LinX (灵枢) frontend.
 
 ## Prerequisites
 

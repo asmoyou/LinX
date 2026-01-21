@@ -1,6 +1,6 @@
 # Kubernetes Deployment Guide
 
-This guide covers deploying the Digital Workforce Management Platform to a Kubernetes cluster for production use.
+This guide covers deploying LinX (灵枢) to a Kubernetes cluster for production use.
 
 ## Table of Contents
 
@@ -843,7 +843,7 @@ kubectl delete pod -n digital-workforce --field-selector status.phase=Succeeded
 
 ## Conclusion
 
-This guide covers the essential aspects of deploying and managing the Digital Workforce Management Platform on Kubernetes. For additional information, refer to:
+This guide covers the essential aspects of deploying and managing LinX (灵枢) on Kubernetes. For additional information, refer to:
 
 - [Docker Compose Deployment](./docker-compose-deployment.md)
 - [API Documentation](../api/)

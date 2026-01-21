@@ -1,11 +1,11 @@
 """
-Digital Workforce Management Platform - Backend Services
+LinX Management Platform - Backend Services
 
 A comprehensive AI agent management system for enterprise environments.
 """
 
 __version__ = "1.0.0"
-__author__ = "Digital Workforce Team"
+__author__ = "LinX Team"
 __license__ = "MIT"
 
 # Package metadata

@@ -1,6 +1,6 @@
 # Data Encryption Setup Guide
 
-Complete guide for configuring encryption at rest and in transit for the Digital Workforce Platform.
+Complete guide for configuring encryption at rest and in transit for LinX (灵枢).
 
 ## Overview
 

@@ -1,6 +1,6 @@
 # Testing Guide
 
-Comprehensive testing guide for the Digital Workforce Platform.
+Comprehensive testing guide for LinX (灵枢).
 
 ## Overview
 

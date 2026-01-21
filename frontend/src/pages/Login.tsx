@@ -105,7 +105,7 @@ export default function Login() {
               {t('login.title', 'Welcome Back')}
             </h1>
             <p className="text-slate-300">
-              {t('login.subtitle', 'Sign in to your Digital Workforce Platform')}
+              {t('login.subtitle', 'Sign in to LinX Platform')}
             </p>
           </div>
 
@@ -201,7 +201,7 @@ export default function Login() {
 
         {/* Footer */}
         <div className="mt-8 text-center text-slate-400 text-sm">
-          <p>{t('login.footer', '© 2024 Digital Workforce Platform. All rights reserved.')}</p>
+          <p>{t('login.footer', '© 2026 灵枢科技. All rights reserved.')}</p>
         </div>
       </div>
     </div>

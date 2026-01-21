@@ -1,4 +1,4 @@
-# Digital Workforce Management Platform - Python Dependencies
+# LinX (灵枢) - Python Dependencies
 # Core Framework and API
 fastapi==0.109.0
 uvicorn[standard]==0.27.0

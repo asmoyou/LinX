@@ -1,4 +1,4 @@
--- Digital Workforce Platform - Database Initialization Script
+-- LinX (灵枢) - Database Initialization Script
 -- This script runs automatically when PostgreSQL container starts for the first time
 
 -- Create extensions
@@ -27,5 +27,5 @@ ON CONFLICT (version) DO NOTHING;
 -- Log successful initialization
 DO $$
 BEGIN
-    RAISE NOTICE 'Digital Workforce Platform database initialized successfully';
+    RAISE NOTICE 'LinX (灵枢) database initialized successfully';
 END $$;

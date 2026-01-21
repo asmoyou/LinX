@@ -1,6 +1,6 @@
 # CI/CD Pipeline Documentation
 
-This document describes the Continuous Integration and Continuous Deployment (CI/CD) pipeline for the Digital Workforce Management Platform.
+This document describes the Continuous Integration and Continuous Deployment (CI/CD) pipeline for LinX (灵枢).
 
 ## Table of Contents
 

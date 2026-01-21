@@ -5,7 +5,7 @@
 
 #Requires -RunAsAdministrator
 
-Write-Host "=== Digital Workforce Platform - Windows Setup ===" -ForegroundColor Cyan
+Write-Host "=== LinX (灵枢) - Windows Setup ===" -ForegroundColor Cyan
 Write-Host ""
 
 # Check Windows version

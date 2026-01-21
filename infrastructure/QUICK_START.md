@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-Get the Digital Workforce Platform running in 5 minutes!
+Get LinX (灵枢) running in 5 minutes!
 
 ## Prerequisites
 
@@ -15,8 +15,8 @@ Get the Digital Workforce Platform running in 5 minutes!
 
 ```bash
 # Clone repository
-git clone https://github.com/your-org/digital-workforce-platform.git
-cd digital-workforce-platform
+git clone https://github.com/your-org/LinX.git
+cd LinX
 
 # Copy environment file
 cp .env.example .env
@@ -254,7 +254,7 @@ docker network inspect dwp_dwp-backend
 
 - **Documentation**: `infrastructure/DEPLOYMENT.md`
 - **Docker Guide**: `infrastructure/docker/README.md`
-- **GitHub Issues**: https://github.com/your-org/digital-workforce-platform/issues
+- **GitHub Issues**: https://github.com/your-org/LinX/issues
 - **API Docs**: http://localhost:8000/docs (when running)
 
 ## Architecture Overview
@@ -341,4 +341,4 @@ Need help? Check:
 
 ---
 
-**Ready to build your digital workforce!** 🚀
+**Ready to build with LinX!** 🚀

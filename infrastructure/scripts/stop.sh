@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Digital Workforce Platform - Stop Script
+# LinX (灵枢) - Stop Script
 # This script helps stop the platform gracefully
 
 set -e
@@ -32,7 +32,7 @@ print_error() {
 # Parse command line arguments
 MODE=${1:-graceful}
 
-print_info "Stopping Digital Workforce Platform..."
+print_info "Stopping LinX (灵枢)..."
 
 case $MODE in
     graceful)

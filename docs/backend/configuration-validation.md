@@ -1,6 +1,6 @@
 # Configuration Validation
 
-This document describes the configuration validation system implemented for the Digital Workforce Platform.
+This document describes the configuration validation system implemented for LinX (灵枢).
 
 ## Overview
 

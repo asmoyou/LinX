@@ -1,5 +1,5 @@
 #!/bin/bash
-# Generate TLS certificates for Digital Workforce Platform
+# Generate TLS certificates for LinX (灵枢)
 # Usage: ./generate-certs.sh [development|production]
 
 set -e

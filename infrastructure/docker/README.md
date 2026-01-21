@@ -1,6 +1,6 @@
 # Docker Infrastructure
 
-This directory contains Dockerfiles for all Digital Workforce Platform services.
+This directory contains Dockerfiles for all LinX (灵枢) services.
 
 ## Dockerfiles
 

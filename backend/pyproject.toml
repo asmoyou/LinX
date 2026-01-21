@@ -1,8 +1,8 @@
 [tool.poetry]
-name = "digital-workforce-platform"
+name = "linx-platform"
 version = "1.0.0"
-description = "Digital Workforce Management Platform - AI Agent Management System"
-authors = ["Digital Workforce Team"]
+description = "LinX (灵枢) - Intelligent Collaboration Platform"
+authors = ["LinX Team"]
 readme = "README.md"
 license = "MIT"
 python = "^3.11"

@@ -1,4 +1,4 @@
-"""FastAPI Application - API Gateway for Digital Workforce Platform.
+"""FastAPI Application - API Gateway for LinX (灵枢).
 
 This module implements the main FastAPI application serving as the API Gateway
 for the platform, providing RESTful endpoints and WebSocket support.
@@ -78,7 +78,7 @@ def create_app() -> FastAPI:
     
     # Create FastAPI app
     app = FastAPI(
-        title="Digital Workforce Platform API",
+        title="LinX Platform API",
         description="API Gateway for managing AI agents and tasks",
         version="1.0.0",
         docs_url="/docs",
@@ -135,7 +135,7 @@ def create_app() -> FastAPI:
         """Root endpoint with API information."""
         return JSONResponse(
             content={
-                "service": "Digital Workforce Platform API",
+                "service": "LinX Platform API",
                 "version": "1.0.0",
                 "docs": "/docs",
                 "health": "/api/v1/health",

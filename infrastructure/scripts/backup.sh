@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Digital Workforce Platform - Backup Script
+# LinX (灵枢) - Backup Script
 # This script creates backups of all data volumes
 
 set -e

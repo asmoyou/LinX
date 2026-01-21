@@ -1,6 +1,6 @@
 # User Manual
 
-Welcome to the Digital Workforce Management Platform! This manual will guide you through using the platform to manage AI agents, submit tasks, and leverage the knowledge base.
+Welcome to LinX (灵枢)! This manual will guide you through using the platform to manage AI agents, submit tasks, and leverage the knowledge base.
 
 ## Table of Contents
 
@@ -400,4 +400,4 @@ We value your feedback! Please:
 - Rate your experience
 - Share success stories
 
-Thank you for using the Digital Workforce Management Platform!
+Thank you for using LinX (灵枢)!

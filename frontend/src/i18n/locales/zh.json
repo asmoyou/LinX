@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "数字劳动力平台",
+    "name": "LinX - 灵枢",
     "tagline": "企业级AI代理管理"
   },
   "nav": {
@@ -26,7 +26,7 @@
   },
   "login": {
     "title": "欢迎回来",
-    "subtitle": "登录到数字劳动力平台",
+    "subtitle": "登录到LinX平台",
     "username": "用户名",
     "usernamePlaceholder": "请输入用户名",
     "password": "密码",
@@ -36,7 +36,7 @@
     "noAccount": "还没有账号？",
     "signUp": "注册",
     "success": "登录成功！",
-    "footer": "© 2024 数字劳动力平台。保留所有权利。",
+    "footer": "© 2026 灵枢科技。保留所有权利。",
     "errors": {
       "usernameRequired": "用户名不能为空",
       "passwordRequired": "密码不能为空",
@@ -60,7 +60,7 @@
     "haveAccount": "已有账号？",
     "signIn": "登录",
     "success": "注册成功！",
-    "footer": "© 2024 数字劳动力平台。保留所有权利。",
+    "footer": "© 2026 灵枢科技。保留所有权利。",
     "errors": {
       "usernameRequired": "用户名不能为空",
       "usernameTooShort": "用户名至少需要3个字符",

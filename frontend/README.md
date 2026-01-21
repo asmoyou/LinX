@@ -1,6 +1,6 @@
-# Digital Workforce Platform - Frontend
+# LinX (灵枢) - Frontend
 
-React + TypeScript + Vite frontend for the Digital Workforce Management Platform.
+React + TypeScript + Vite frontend for LinX (灵枢) intelligent collaboration platform.
 
 ## Quick Start
 

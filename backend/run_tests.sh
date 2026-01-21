@@ -1,10 +1,10 @@
 #!/bin/bash
-# Comprehensive test runner script for the Digital Workforce Platform
+# Comprehensive test runner script for LinX (灵枢)
 # This script runs all unit tests and generates coverage reports
 
 set -e
 
-echo "=== Digital Workforce Platform - Test Runner ==="
+echo "=== LinX (灵枢) - Test Runner ==="
 echo ""
 
 # Colors for output

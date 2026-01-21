@@ -122,7 +122,7 @@ export default function Register() {
               {t('register.title', 'Create Account')}
             </h1>
             <p className="text-slate-300">
-              {t('register.subtitle', 'Join the Digital Workforce Platform')}
+              {t('register.subtitle', 'Join LinX Platform')}
             </p>
           </div>
 
@@ -264,7 +264,7 @@ export default function Register() {
 
         {/* Footer */}
         <div className="mt-8 text-center text-slate-400 text-sm">
-          <p>{t('register.footer', '© 2024 Digital Workforce Platform. All rights reserved.')}</p>
+          <p>{t('register.footer', '© 2026 灵枢科技. All rights reserved.')}</p>
         </div>
       </div>
     </div>

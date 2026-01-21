@@ -12,9 +12,9 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['vite.svg'],
       manifest: {
-        name: 'LinX - Digital Workforce Platform',
+        name: 'LinX - 灵枢智能协作平台',
         short_name: 'LinX',
-        description: 'Digital Workforce Management Platform for AI agents and automation',
+        description: 'LinX (灵枢) - Intelligent Collaboration Platform for AI agents',
         theme_color: '#4F46E5',
         background_color: '#1F2937',
         display: 'standalone',

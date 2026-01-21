@@ -1,4 +1,4 @@
-# Implementation Tasks: Digital Workforce Management Platform
+# Implementation Tasks: LinX (灵枢) Intelligent Collaboration Platform
 
 ## Phase 1: Foundation and Infrastructure Setup
 
@@ -1558,7 +1558,7 @@
 
 ## Summary
 
-This comprehensive task list covers all aspects of the Digital Workforce Management Platform implementation:
+This comprehensive task list covers all aspects of LinX (灵枢) implementation:
 
 - **300+ tasks** organized into 19 phases
 - **Complete coverage** of all 21 requirements
