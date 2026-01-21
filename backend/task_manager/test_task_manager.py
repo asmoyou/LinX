@@ -1266,3 +1266,378 @@ class TestRecoveryStrategies:
         assert RecoveryStrategy.ESCALATE.value == "escalate"
         assert RecoveryStrategy.PARTIAL_SUCCESS.value == "partial_success"
         assert RecoveryStrategy.FAIL.value == "fail"
+
+
+# Task Flow Visualization Tests
+
+def test_task_node_creation():
+    """Test TaskNode creation and serialization."""
+    from task_manager.task_flow_visualizer import TaskNode, NodeType
+    
+    task_id = uuid4()
+    agent_id = uuid4()
+    
+    node = TaskNode(
+        task_id=task_id,
+        node_type=NodeType.TASK,
+        title="Test Task",
+        status="in_progress",
+        progress=0.5,
+        agent_id=agent_id,
+        agent_name="Test Agent",
+    )
+    
+    assert node.task_id == task_id
+    assert node.node_type == NodeType.TASK
+    assert node.status == "in_progress"
+    assert node.progress == 0.5
+    
+    # Test serialization
+    data = node.to_dict()
+    assert data["task_id"] == str(task_id)
+    assert data["node_type"] == "task"
+    assert data["status"] == "in_progress"
+    assert data["agent_name"] == "Test Agent"
+
+
+def test_task_relationship_creation():
+    """Test TaskRelationship creation and serialization."""
+    from task_manager.task_flow_visualizer import TaskRelationship, RelationshipType
+    
+    source_id = uuid4()
+    target_id = uuid4()
+    
+    rel = TaskRelationship(
+        source_id=source_id,
+        target_id=target_id,
+        relationship_type=RelationshipType.DEPENDENCY,
+        metadata={"priority": "high"},
+    )
+    
+    assert rel.source_id == source_id
+    assert rel.target_id == target_id
+    assert rel.relationship_type == RelationshipType.DEPENDENCY
+    
+    # Test serialization
+    data = rel.to_dict()
+    assert data["source_id"] == str(source_id)
+    assert data["target_id"] == str(target_id)
+    assert data["relationship_type"] == "dependency"
+    assert data["metadata"]["priority"] == "high"
+
+
+def test_task_flow_graph_operations():
+    """Test TaskFlowGraph operations."""
+    from task_manager.task_flow_visualizer import (
+        TaskFlowGraph,
+        TaskNode,
+        TaskRelationship,
+        NodeType,
+        RelationshipType,
+    )
+    
+    root_id = uuid4()
+    graph = TaskFlowGraph(root_task_id=root_id)
+    
+    # Add nodes
+    node1 = TaskNode(
+        task_id=root_id,
+        node_type=NodeType.GOAL,
+        title="Root Task",
+        status="in_progress",
+    )
+    
+    node2_id = uuid4()
+    node2 = TaskNode(
+        task_id=node2_id,
+        node_type=NodeType.TASK,
+        title="Subtask",
+        status="pending",
+    )
+    
+    graph.add_node(node1)
+    graph.add_node(node2)
+    
+    assert len(graph.nodes) == 2
+    assert graph.get_node(root_id) == node1
+    assert graph.get_node(node2_id) == node2
+    
+    # Add relationship
+    rel = TaskRelationship(
+        source_id=root_id,
+        target_id=node2_id,
+        relationship_type=RelationshipType.PARENT_CHILD,
+    )
+    graph.add_relationship(rel)
+    
+    assert len(graph.relationships) == 1
+    
+    # Update node
+    graph.update_node(node2_id, status="in_progress", progress=0.3)
+    updated_node = graph.get_node(node2_id)
+    assert updated_node.status == "in_progress"
+    assert updated_node.progress == 0.3
+    
+    # Test serialization
+    data = graph.to_dict()
+    assert data["root_task_id"] == str(root_id)
+    assert len(data["nodes"]) == 2
+    assert len(data["relationships"]) == 1
+
+
+def test_task_flow_visualizer_initialization():
+    """Test TaskFlowVisualizer initialization."""
+    visualizer = TaskFlowVisualizer()
+    
+    assert visualizer is not None
+    assert len(visualizer._graphs) == 0
+
+
+def test_task_flow_visualizer_update_task_status():
+    """Test updating task status in visualizer."""
+    from task_manager.task_flow_visualizer import (
+        TaskFlowVisualizer,
+        TaskFlowGraph,
+        TaskNode,
+        NodeType,
+    )
+    
+    visualizer = TaskFlowVisualizer()
+    
+    # Create a graph
+    root_id = uuid4()
+    task_id = uuid4()
+    
+    graph = TaskFlowGraph(root_task_id=root_id)
+    node = TaskNode(
+        task_id=task_id,
+        node_type=NodeType.TASK,
+        title="Test Task",
+        status="pending",
+    )
+    graph.add_node(node)
+    
+    visualizer._graphs[root_id] = graph
+    
+    # Update status
+    updated_roots = visualizer.update_task_status(
+        task_id=task_id,
+        status="in_progress",
+        progress=0.5,
+    )
+    
+    assert root_id in updated_roots
+    updated_node = graph.get_node(task_id)
+    assert updated_node.status == "in_progress"
+    assert updated_node.progress == 0.5
+
+
+def test_task_flow_visualizer_update_agent():
+    """Test updating task agent assignment."""
+    from task_manager.task_flow_visualizer import (
+        TaskFlowVisualizer,
+        TaskFlowGraph,
+        TaskNode,
+        NodeType,
+    )
+    
+    visualizer = TaskFlowVisualizer()
+    
+    # Create a graph
+    root_id = uuid4()
+    task_id = uuid4()
+    agent_id = uuid4()
+    
+    graph = TaskFlowGraph(root_task_id=root_id)
+    node = TaskNode(
+        task_id=task_id,
+        node_type=NodeType.TASK,
+        title="Test Task",
+        status="pending",
+    )
+    graph.add_node(node)
+    
+    visualizer._graphs[root_id] = graph
+    
+    # Update agent
+    updated_roots = visualizer.update_task_agent(
+        task_id=task_id,
+        agent_id=agent_id,
+        agent_name="Test Agent",
+    )
+    
+    assert root_id in updated_roots
+    updated_node = graph.get_node(task_id)
+    assert updated_node.agent_id == agent_id
+    assert updated_node.agent_name == "Test Agent"
+
+
+def test_task_flow_visualizer_add_collaboration():
+    """Test adding collaboration relationship."""
+    from task_manager.task_flow_visualizer import (
+        TaskFlowVisualizer,
+        TaskFlowGraph,
+        TaskNode,
+        NodeType,
+        RelationshipType,
+    )
+    
+    visualizer = TaskFlowVisualizer()
+    
+    # Create a graph with two tasks
+    root_id = uuid4()
+    task1_id = uuid4()
+    task2_id = uuid4()
+    
+    graph = TaskFlowGraph(root_task_id=root_id)
+    
+    node1 = TaskNode(
+        task_id=task1_id,
+        node_type=NodeType.TASK,
+        title="Task 1",
+        status="in_progress",
+    )
+    
+    node2 = TaskNode(
+        task_id=task2_id,
+        node_type=NodeType.TASK,
+        title="Task 2",
+        status="in_progress",
+    )
+    
+    graph.add_node(node1)
+    graph.add_node(node2)
+    
+    visualizer._graphs[root_id] = graph
+    
+    # Add collaboration
+    updated_roots = visualizer.add_collaboration_relationship(
+        task_id_1=task1_id,
+        task_id_2=task2_id,
+        metadata={"type": "data_sharing"},
+    )
+    
+    assert root_id in updated_roots
+    assert len(graph.relationships) == 1
+    
+    rel = graph.relationships[0]
+    assert rel.source_id == task1_id
+    assert rel.target_id == task2_id
+    assert rel.relationship_type == RelationshipType.COLLABORATION
+    assert rel.metadata["type"] == "data_sharing"
+
+
+def test_task_flow_visualizer_clear_graph():
+    """Test clearing cached graph."""
+    from task_manager.task_flow_visualizer import (
+        TaskFlowVisualizer,
+        TaskFlowGraph,
+    )
+    
+    visualizer = TaskFlowVisualizer()
+    
+    root_id = uuid4()
+    graph = TaskFlowGraph(root_task_id=root_id)
+    
+    visualizer._graphs[root_id] = graph
+    assert root_id in visualizer._graphs
+    
+    visualizer.clear_graph(root_id)
+    assert root_id not in visualizer._graphs
+
+
+def test_task_flow_visualizer_get_cached_graph():
+    """Test getting cached graph."""
+    from task_manager.task_flow_visualizer import (
+        TaskFlowVisualizer,
+        TaskFlowGraph,
+    )
+    
+    visualizer = TaskFlowVisualizer()
+    
+    root_id = uuid4()
+    graph = TaskFlowGraph(root_task_id=root_id)
+    
+    visualizer._graphs[root_id] = graph
+    
+    cached_graph = visualizer.get_task_flow(root_id)
+    assert cached_graph == graph
+    
+    # Test non-existent graph
+    non_existent = visualizer.get_task_flow(uuid4())
+    assert non_existent is None
+
+
+def test_node_type_enum():
+    """Test NodeType enum values."""
+    from task_manager.task_flow_visualizer import NodeType
+    
+    assert NodeType.GOAL.value == "goal"
+    assert NodeType.TASK.value == "task"
+    assert NodeType.SUBTASK.value == "subtask"
+
+
+def test_relationship_type_enum():
+    """Test RelationshipType enum values."""
+    from task_manager.task_flow_visualizer import RelationshipType
+    
+    assert RelationshipType.PARENT_CHILD.value == "parent_child"
+    assert RelationshipType.DEPENDENCY.value == "dependency"
+    assert RelationshipType.COLLABORATION.value == "collaboration"
+
+
+def test_task_node_with_error():
+    """Test TaskNode with error message."""
+    from task_manager.task_flow_visualizer import TaskNode, NodeType
+    
+    task_id = uuid4()
+    
+    node = TaskNode(
+        task_id=task_id,
+        node_type=NodeType.TASK,
+        title="Failed Task",
+        status="failed",
+        error_message="Task execution failed",
+    )
+    
+    assert node.status == "failed"
+    assert node.error_message == "Task execution failed"
+    
+    data = node.to_dict()
+    assert data["error_message"] == "Task execution failed"
+
+
+def test_task_node_metadata():
+    """Test TaskNode with custom metadata."""
+    from task_manager.task_flow_visualizer import TaskNode, NodeType
+    
+    task_id = uuid4()
+    
+    node = TaskNode(
+        task_id=task_id,
+        node_type=NodeType.TASK,
+        title="Task with Metadata",
+        status="in_progress",
+        metadata={
+            "priority": "high",
+            "estimated_duration": 300,
+            "tags": ["urgent", "critical"],
+        },
+    )
+    
+    assert node.metadata["priority"] == "high"
+    assert node.metadata["estimated_duration"] == 300
+    assert "urgent" in node.metadata["tags"]
+    
+    data = node.to_dict()
+    assert data["metadata"]["priority"] == "high"
+
+
+def test_get_task_flow_visualizer_singleton():
+    """Test get_task_flow_visualizer returns singleton."""
+    from task_manager.task_flow_visualizer import get_task_flow_visualizer
+    
+    visualizer1 = get_task_flow_visualizer()
+    visualizer2 = get_task_flow_visualizer()
+    
+    assert visualizer1 is visualizer2

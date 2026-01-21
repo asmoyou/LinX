@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 
-from llm_providers import get_llm_provider, LLMProvider
+from llm_providers.router import LLMRouter
+from llm_providers.base import BaseLLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +43,13 @@ class GoalAnalysis:
 class GoalAnalyzer:
     """Analyzes user goals and generates clarification questions."""
     
-    def __init__(self, llm_provider: Optional[LLMProvider] = None):
+    def __init__(self, llm_provider: Optional[BaseLLMProvider] = None):
         """Initialize the goal analyzer.
         
         Args:
             llm_provider: LLM provider for goal analysis (uses default if None)
         """
-        self.llm_provider = llm_provider or get_llm_provider()
+        self.llm_provider = llm_provider or LLMRouter()
         
         logger.info("GoalAnalyzer initialized")
     

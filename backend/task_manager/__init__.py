@@ -37,6 +37,15 @@ from task_manager.error_handler import (
     RetryPolicy,
 )
 from task_manager.recovery_coordinator import RecoveryCoordinator
+from task_manager.task_flow_visualizer import (
+    TaskFlowVisualizer,
+    TaskNode,
+    TaskRelationship,
+    TaskFlowGraph,
+    NodeType,
+    RelationshipType,
+    get_task_flow_visualizer,
+)
 
 __all__ = [
     "GoalAnalyzer",
@@ -74,4 +83,11 @@ __all__ = [
     "RecoveryStrategy",
     "RetryPolicy",
     "RecoveryCoordinator",
+    "TaskFlowVisualizer",
+    "TaskNode",
+    "TaskRelationship",
+    "TaskFlowGraph",
+    "NodeType",
+    "RelationshipType",
+    "get_task_flow_visualizer",
 ]
