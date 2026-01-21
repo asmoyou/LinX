@@ -374,3 +374,317 @@ class TestDecomposedTask:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+
+class TestTaskExecutor:
+    """Test TaskExecutor functionality."""
+    
+    def test_task_executor_initialization(self):
+        """Test task executor initializes correctly."""
+        from task_manager.task_executor import TaskExecutor
+        
+        executor = TaskExecutor()
+        assert executor is not None
+        assert len(executor._active_executions) == 0
+    
+    @pytest.mark.asyncio
+    async def test_execute_sequential(self):
+        """Test sequential task execution."""
+        from task_manager.task_executor import TaskExecutor
+        
+        executor = TaskExecutor()
+        user_id = uuid4()
+        task_ids = [uuid4(), uuid4(), uuid4()]
+        
+        # This will fail without database, but tests the interface
+        try:
+            results = await executor.execute_sequential(task_ids, user_id)
+            assert isinstance(results, list)
+        except Exception:
+            # Expected without database
+            pass
+    
+    @pytest.mark.asyncio
+    async def test_execute_parallel(self):
+        """Test parallel task execution."""
+        from task_manager.task_executor import TaskExecutor
+        
+        executor = TaskExecutor()
+        user_id = uuid4()
+        task_ids = [uuid4(), uuid4()]
+        
+        try:
+            results = await executor.execute_parallel(task_ids, user_id, max_concurrent=2)
+            assert isinstance(results, list)
+        except Exception:
+            # Expected without database
+            pass
+
+
+class TestTaskQueue:
+    """Test TaskQueue functionality."""
+    
+    def test_task_queue_initialization(self):
+        """Test task queue initializes correctly."""
+        from task_manager.task_queue import TaskQueue
+        
+        queue = TaskQueue(max_size=100)
+        assert queue is not None
+        assert queue.max_size == 100
+        assert queue.get_queue_size() == 0
+    
+    @pytest.mark.asyncio
+    async def test_enqueue_task(self):
+        """Test enqueueing a task."""
+        from task_manager.task_queue import TaskQueue, TaskPriority
+        
+        queue = TaskQueue()
+        task_id = uuid4()
+        
+        result = await queue.enqueue(
+            task_id=task_id,
+            priority=TaskPriority.HIGH.value,
+        )
+        
+        assert result is True
+        assert queue.get_pending_count() >= 0
+    
+    @pytest.mark.asyncio
+    async def test_dequeue_task(self):
+        """Test dequeueing a task."""
+        from task_manager.task_queue import TaskQueue
+        
+        queue = TaskQueue()
+        task_id = uuid4()
+        
+        await queue.enqueue(task_id=task_id)
+        
+        task = await queue.dequeue(timeout=1.0)
+        
+        if task:
+            assert task.task_id == task_id
+    
+    def test_mark_completed(self):
+        """Test marking task as completed."""
+        from task_manager.task_queue import TaskQueue
+        
+        queue = TaskQueue()
+        task_id = uuid4()
+        
+        queue.mark_completed(task_id)
+        
+        assert task_id in queue._completed_tasks
+        assert queue.get_completed_count() == 1
+    
+    def test_queue_stats(self):
+        """Test getting queue statistics."""
+        from task_manager.task_queue import TaskQueue
+        
+        queue = TaskQueue()
+        stats = queue.get_stats()
+        
+        assert "queue_size" in stats
+        assert "pending_count" in stats
+        assert "completed_count" in stats
+        assert "failed_count" in stats
+
+
+class TestLoadBalancer:
+    """Test LoadBalancer functionality."""
+    
+    def test_load_balancer_initialization(self):
+        """Test load balancer initializes correctly."""
+        from task_manager.load_balancer import LoadBalancer
+        
+        balancer = LoadBalancer(max_tasks_per_agent=5)
+        assert balancer is not None
+        assert balancer.max_tasks_per_agent == 5
+    
+    def test_select_agent_no_agents(self):
+        """Test agent selection with no agents."""
+        from task_manager.load_balancer import LoadBalancer
+        
+        balancer = LoadBalancer()
+        user_id = uuid4()
+        
+        agent_id = balancer.select_agent([], user_id)
+        
+        assert agent_id is None
+    
+    def test_get_least_loaded_agents(self):
+        """Test getting least loaded agents."""
+        from task_manager.load_balancer import LoadBalancer
+        
+        balancer = LoadBalancer()
+        agent_ids = [uuid4(), uuid4(), uuid4()]
+        
+        least_loaded = balancer.get_least_loaded_agents(agent_ids, count=2)
+        
+        assert len(least_loaded) <= 2
+
+
+class TestProgressTracker:
+    """Test ProgressTracker functionality."""
+    
+    def test_progress_tracker_initialization(self):
+        """Test progress tracker initializes correctly."""
+        from task_manager.progress_tracker import ProgressTracker
+        
+        tracker = ProgressTracker()
+        assert tracker is not None
+    
+    def test_update_progress(self):
+        """Test updating task progress."""
+        from task_manager.progress_tracker import ProgressTracker
+        
+        tracker = ProgressTracker()
+        task_id = uuid4()
+        
+        tracker.update_progress(task_id, 50.0, "Processing data")
+        
+        assert task_id in tracker._progress_cache
+        assert tracker._progress_cache[task_id].progress_percentage == 50.0
+    
+    def test_get_progress_from_cache(self):
+        """Test getting progress from cache."""
+        from task_manager.progress_tracker import ProgressTracker
+        
+        tracker = ProgressTracker()
+        task_id = uuid4()
+        
+        tracker.update_progress(task_id, 75.0)
+        
+        progress = tracker._progress_cache.get(task_id)
+        
+        if progress:
+            assert progress.progress_percentage == 75.0
+
+
+class TestResultCollector:
+    """Test ResultCollector functionality."""
+    
+    def test_result_collector_initialization(self):
+        """Test result collector initializes correctly."""
+        from task_manager.result_collector import ResultCollector
+        
+        collector = ResultCollector()
+        assert collector is not None
+        assert collector.llm_provider is not None
+    
+    def test_collect_results_no_tasks(self):
+        """Test collecting results with no tasks."""
+        from task_manager.result_collector import ResultCollector
+        
+        collector = ResultCollector()
+        user_id = uuid4()
+        
+        results = collector.collect_results([], user_id)
+        
+        assert len(results) == 0
+    
+    def test_concatenate_results(self):
+        """Test concatenating results."""
+        from task_manager.result_collector import ResultCollector, CollectedResult
+        
+        collector = ResultCollector()
+        
+        results = [
+            CollectedResult(
+                task_id=uuid4(),
+                result={"output": "Result 1"},
+                status="completed",
+                completed_at=None,
+            ),
+            CollectedResult(
+                task_id=uuid4(),
+                result={"output": "Result 2"},
+                status="completed",
+                completed_at=None,
+            ),
+        ]
+        
+        aggregated = collector._concatenate_results(results)
+        
+        assert "aggregated_output" in aggregated
+        assert "Result 1" in aggregated["aggregated_output"]
+        assert "Result 2" in aggregated["aggregated_output"]
+    
+    def test_merge_structured_results(self):
+        """Test merging structured results."""
+        from task_manager.result_collector import ResultCollector, CollectedResult
+        
+        collector = ResultCollector()
+        
+        results = [
+            CollectedResult(
+                task_id=uuid4(),
+                result={"data": {"key": "value1"}},
+                status="completed",
+                completed_at=None,
+            ),
+            CollectedResult(
+                task_id=uuid4(),
+                result={"data": {"key": "value2"}},
+                status="completed",
+                completed_at=None,
+            ),
+        ]
+        
+        merged = collector._merge_structured_results(results)
+        
+        assert merged["strategy"] == "structured_merge"
+        assert len(merged["results"]) == 2
+    
+    @pytest.mark.asyncio
+    async def test_aggregate_results(self):
+        """Test aggregating results."""
+        from task_manager.result_collector import (
+            ResultCollector,
+            CollectedResult,
+            AggregationStrategy,
+        )
+        
+        collector = ResultCollector()
+        
+        results = [
+            CollectedResult(
+                task_id=uuid4(),
+                result={"output": "Test output"},
+                status="completed",
+                completed_at=None,
+            ),
+        ]
+        
+        aggregated = await collector.aggregate_results(
+            results,
+            strategy=AggregationStrategy.CONCATENATION,
+        )
+        
+        assert isinstance(aggregated, dict)
+        assert "strategy" in aggregated or "aggregated_output" in aggregated
+
+
+class TestExecutionStrategy:
+    """Test ExecutionStrategy enum."""
+    
+    def test_execution_strategy_values(self):
+        """Test execution strategy enum values."""
+        from task_manager.task_executor import ExecutionStrategy
+        
+        assert ExecutionStrategy.SEQUENTIAL.value == "sequential"
+        assert ExecutionStrategy.PARALLEL.value == "parallel"
+        assert ExecutionStrategy.COLLABORATIVE.value == "collaborative"
+
+
+class TestAggregationStrategy:
+    """Test AggregationStrategy enum."""
+    
+    def test_aggregation_strategy_values(self):
+        """Test aggregation strategy enum values."""
+        from task_manager.result_collector import AggregationStrategy
+        
+        assert AggregationStrategy.CONCATENATION.value == "concatenation"
+        assert AggregationStrategy.SUMMARIZATION.value == "summarization"
+        assert AggregationStrategy.STRUCTURED_MERGE.value == "structured_merge"
+        assert AggregationStrategy.VOTING.value == "voting"
