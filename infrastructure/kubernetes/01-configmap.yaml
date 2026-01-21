@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dwp-config
+  namespace: digital-workforce
+data:
+  # Application Configuration
+  LOG_LEVEL: "INFO"
+  ENVIRONMENT: "production"
+  
+  # Database Configuration
+  POSTGRES_DB: "digital_workforce"
+  POSTGRES_USER: "dwp_user"
+  POSTGRES_PORT: "5432"
+  
+  # Redis Configuration
+  REDIS_PORT: "6379"
+  
+  # Milvus Configuration
+  MILVUS_PORT: "19530"
+  
+  # MinIO Configuration
+  MINIO_API_PORT: "9000"
+  MINIO_CONSOLE_PORT: "9001"
+  
+  # Service Endpoints
+  POSTGRES_HOST: "postgres-service"
+  REDIS_HOST: "redis-service"
+  MILVUS_HOST: "milvus-service"
+  MINIO_ENDPOINT: "minio-service:9000"
+  
+  # Feature Flags
+  ENABLE_METRICS_COLLECTION: "true"
+  ENABLE_WEBSOCKET_UPDATES: "true"
+  ENABLE_API_DOCS: "false"
+  
+  # Resource Limits
+  SANDBOX_CPU_LIMIT: "0.5"
+  SANDBOX_MEMORY_LIMIT: "512M"
+  SANDBOX_TIMEOUT: "30"
+  
+  # Document Processing
+  CHUNK_SIZE: "512"
+  CHUNK_OVERLAP: "50"
+  TESSERACT_LANG: "eng+chi_sim"

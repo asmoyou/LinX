@@ -546,17 +546,17 @@
 **References**: Requirements 9, Design Section 13.3
 **Description**: Prepare Kubernetes manifests for production
 
-- [ ] 7.2.1 Create namespace definitions
-- [ ] 7.2.2 Create Deployment manifests for stateless services
-- [ ] 7.2.3 Create StatefulSet manifests for databases
-- [ ] 7.2.4 Create Service manifests for service discovery
-- [ ] 7.2.5 Create Ingress manifest with TLS
-- [ ] 7.2.6 Create ConfigMap for configuration
-- [ ] 7.2.7 Create Secret for credentials
-- [ ] 7.2.8 Create PersistentVolumeClaim for storage
-- [ ] 7.2.9 Create HorizontalPodAutoscaler for auto-scaling
-- [ ] 7.2.10 Create RuntimeClass for gVisor (Linux)
-- [ ] 7.2.11 Write Kubernetes deployment guide
+- [x] 7.2.1 Create namespace definitions
+- [x] 7.2.2 Create Deployment manifests for stateless services
+- [x] 7.2.3 Create StatefulSet manifests for databases
+- [x] 7.2.4 Create Service manifests for service discovery
+- [x] 7.2.5 Create Ingress manifest with TLS
+- [x] 7.2.6 Create ConfigMap for configuration
+- [x] 7.2.7 Create Secret for credentials
+- [x] 7.2.8 Create PersistentVolumeClaim for storage
+- [x] 7.2.9 Create HorizontalPodAutoscaler for auto-scaling
+- [x] 7.2.10 Create RuntimeClass for gVisor (Linux)
+- [x] 7.2.11 Write Kubernetes deployment guide
 
 ### 7.3 Platform Detection and Sandbox Selection
 **References**: Requirements 6, Design Section 5.3, 13.5

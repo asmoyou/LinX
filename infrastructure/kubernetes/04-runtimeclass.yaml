@@ -1,0 +1,24 @@
+# RuntimeClass for gVisor sandbox (Linux only)
+# This provides additional security isolation for agent workloads
+# Requires gVisor to be installed on Kubernetes nodes
+# Installation: https://gvisor.dev/docs/user_guide/install/
+
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+---
+# RuntimeClass for standard runc (fallback)
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: runc
+handler: runc
+---
+# Note: To use gVisor RuntimeClass, add the following to your Pod spec:
+# spec:
+#   runtimeClassName: gvisor
+#
+# For agent workloads, this is configured in the agent-runtime Deployment
+# The platform will automatically detect gVisor availability and fall back to runc if needed
