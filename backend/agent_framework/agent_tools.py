@@ -8,8 +8,7 @@ References:
 import logging
 from typing import List, Optional
 
-from langchain.tools import Tool
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, tool
 
 logger = logging.getLogger(__name__)
 

@@ -11,9 +11,10 @@ from enum import Enum
 from typing import List, Dict, Any, Optional
 from uuid import UUID
 
-from langchain.agents import AgentExecutor, create_react_agent
-from langchain.prompts import PromptTemplate
-from langchain_core.language_models import BaseLLM
+from langgraph.prebuilt import create_react_agent
+from langchain_core.prompts import PromptTemplate
+from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import Runnable
 
 logger = logging.getLogger(__name__)
 
@@ -57,21 +58,21 @@ class BaseAgent:
     def __init__(
         self,
         config: AgentConfig,
-        llm: Optional[BaseLLM] = None,
+        llm: Optional[BaseChatModel] = None,
         tools: Optional[List] = None,
     ):
         """Initialize base agent.
         
         Args:
             config: Agent configuration
-            llm: LangChain LLM instance
+            llm: LangChain Chat Model instance
             tools: List of LangChain tools
         """
         self.config = config
         self.llm = llm
         self.tools = tools or []
         self.status = AgentStatus.INITIALIZING
-        self.agent_executor: Optional[AgentExecutor] = None
+        self.agent: Optional[Runnable] = None
         
         logger.info(
             f"BaseAgent initialized: {config.name}",
@@ -88,21 +89,14 @@ class BaseAgent:
             if not self.llm:
                 raise ValueError("LLM not configured for agent")
             
-            # Create ReAct agent with LangChain
-            prompt = self._create_agent_prompt()
-            agent = create_react_agent(
-                llm=self.llm,
-                tools=self.tools,
-                prompt=prompt,
-            )
+            # Create system prompt for the agent
+            system_prompt = self._create_system_prompt()
             
-            # Create agent executor
-            self.agent_executor = AgentExecutor(
-                agent=agent,
+            # Create ReAct agent with LangGraph
+            self.agent = create_react_agent(
+                model=self.llm,
                 tools=self.tools,
-                max_iterations=self.config.max_iterations,
-                verbose=True,
-                handle_parsing_errors=True,
+                prompt=system_prompt,
             )
             
             self.status = AgentStatus.ACTIVE
@@ -123,7 +117,7 @@ class BaseAgent:
         Returns:
             Dict with execution results
         """
-        if not self.agent_executor:
+        if not self.agent:
             raise RuntimeError("Agent not initialized. Call initialize() first.")
         
         if self.status != AgentStatus.ACTIVE:
@@ -133,25 +127,29 @@ class BaseAgent:
             self.status = AgentStatus.BUSY
             logger.info(f"Agent executing task: {self.config.name}")
             
-            # Prepare input
-            input_data = {
-                "input": task_description,
-                "agent_scratchpad": "",
-            }
+            # Prepare input messages
+            messages = [{"role": "user", "content": task_description}]
             
-            if context:
-                input_data.update(context)
+            # Execute task with LangGraph agent
+            result = self.agent.invoke({"messages": messages})
             
-            # Execute task
-            result = self.agent_executor.invoke(input_data)
+            # Extract output from result
+            output_messages = result.get("messages", [])
+            final_output = ""
+            if output_messages:
+                last_message = output_messages[-1]
+                if hasattr(last_message, "content"):
+                    final_output = last_message.content
+                else:
+                    final_output = str(last_message)
             
             self.status = AgentStatus.ACTIVE
             logger.info(f"Task completed: {self.config.name}")
             
             return {
                 "success": True,
-                "output": result.get("output", ""),
-                "intermediate_steps": result.get("intermediate_steps", []),
+                "output": final_output,
+                "messages": output_messages,
             }
             
         except Exception as e:
@@ -167,7 +165,7 @@ class BaseAgent:
         """Terminate the agent."""
         logger.info(f"Terminating agent: {self.config.name}")
         self.status = AgentStatus.TERMINATED
-        self.agent_executor = None
+        self.agent = None
     
     def get_status(self) -> AgentStatus:
         """Get current agent status.
@@ -194,39 +192,22 @@ class BaseAgent:
         self.tools.append(tool)
         logger.info(f"Tool added to agent: {tool.name}")
     
-    def _create_agent_prompt(self) -> PromptTemplate:
-        """Create agent prompt template.
+    def _create_system_prompt(self) -> str:
+        """Create system prompt for the agent.
         
         Returns:
-            PromptTemplate for the agent
+            System prompt string
         """
-        template = """You are {agent_name}, a {agent_type} agent with the following capabilities: {capabilities}.
+        prompt = f"""You are {self.config.name}, a {self.config.agent_type} agent with the following capabilities: {', '.join(self.config.capabilities)}.
 
-You have access to the following tools:
-{tools}
+Your role is to help users accomplish tasks using your available tools and capabilities.
 
-Use the following format:
+When solving problems:
+1. Analyze the user's request carefully
+2. Use available tools when needed
+3. Provide clear and helpful responses
+4. If you need more information, ask clarifying questions
 
-Question: the input question you must answer
-Thought: you should always think about what to do
-Action: the action to take, should be one of [{tool_names}]
-Action Input: the input to the action
-Observation: the result of the action
-... (this Thought/Action/Action Input/Observation can repeat N times)
-Thought: I now know the final answer
-Final Answer: the final answer to the original input question
-
-Begin!
-
-Question: {input}
-Thought: {agent_scratchpad}"""
+Always be professional, accurate, and helpful."""
         
-        return PromptTemplate(
-            template=template,
-            input_variables=["input", "agent_scratchpad"],
-            partial_variables={
-                "agent_name": self.config.name,
-                "agent_type": self.config.agent_type,
-                "capabilities": ", ".join(self.config.capabilities),
-            },
-        )
+        return prompt

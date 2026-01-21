@@ -7,9 +7,12 @@ pydantic==2.5.3
 pydantic-settings==2.1.0
 
 # Agent Framework
-langchain==0.1.4
-langchain-community==0.0.16
-langchain-core==0.1.16
+langgraph==0.2.60
+langchain==1.2.6
+langchain-community==0.4.1
+langchain-core==0.3.83
+langchain-openai==1.1.7
+langchain-text-splitters==1.1.0
 
 # Database - PostgreSQL
 psycopg2-binary==2.9.9
