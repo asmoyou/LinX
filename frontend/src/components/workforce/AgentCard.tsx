@@ -1,16 +1,7 @@
 import React from 'react';
 import { Activity, Pause, Power, MoreVertical, Eye, Trash2 } from 'lucide-react';
 import { GlassPanel } from '@/components/GlassPanel';
-
-export interface Agent {
-  id: string;
-  name: string;
-  type: string;
-  status: 'working' | 'idle' | 'offline';
-  currentTask?: string;
-  tasksCompleted: number;
-  uptime: string;
-}
+import { Agent } from '@/types/agent';
 
 interface AgentCardProps {
   agent: Agent;
