@@ -606,3 +606,21 @@ class MinIOClient:
         except Exception as e:
             logger.error(f"MinIO health check failed: {e}")
             return False
+
+
+# Singleton instance
+_minio_client: Optional[MinIOClient] = None
+
+
+def get_minio_client() -> MinIOClient:
+    """
+    Get or create the MinIO client singleton.
+    
+    Returns:
+        MinIOClient instance
+    """
+    global _minio_client
+    if _minio_client is None:
+        _minio_client = MinIOClient()
+        _minio_client.initialize_buckets()
+    return _minio_client

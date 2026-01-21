@@ -5,11 +5,12 @@ This module provides MinIO object storage integration for the Digital Workforce 
 It handles file uploads, downloads, versioning, and metadata management.
 """
 
-from object_storage.minio_client import MinIOClient
+from object_storage.minio_client import MinIOClient, get_minio_client
 from object_storage.file_metadata import FileMetadata, FileMetadataManager
 
 __all__ = [
     "MinIOClient",
+    "get_minio_client",
     "FileMetadata",
     "FileMetadataManager",
 ]

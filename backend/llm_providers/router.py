@@ -432,3 +432,28 @@ class LLMRouter:
                 await provider.close()
             except Exception as e:
                 logger.error(f"Error closing provider: {e}")
+
+
+# Singleton instance
+_llm_router: Optional[LLMRouter] = None
+
+
+def get_llm_provider(config: Optional[Dict[str, Any]] = None) -> LLMRouter:
+    """
+    Get or create the LLM router singleton.
+    
+    Args:
+        config: Optional configuration dictionary. If not provided,
+               configuration will be loaded from config.yaml
+    
+    Returns:
+        LLMRouter instance
+    """
+    global _llm_router
+    if _llm_router is None:
+        if config is None:
+            from shared.config import get_config
+            cfg = get_config()
+            config = cfg.get_section('llm')
+        _llm_router = LLMRouter(config)
+    return _llm_router

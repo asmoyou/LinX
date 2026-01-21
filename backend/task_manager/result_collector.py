@@ -15,7 +15,7 @@ from enum import Enum
 
 from database.connection import get_db_session
 from database.models import Task as TaskModel
-from llm_providers import get_llm_provider, LLMProvider
+from llm_providers import get_llm_provider, BaseLLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class CollectedResult:
 class ResultCollector:
     """Collects and aggregates task results."""
     
-    def __init__(self, llm_provider: Optional[LLMProvider] = None):
+    def __init__(self, llm_provider: Optional[BaseLLMProvider] = None):
         """Initialize result collector.
         
         Args:
