@@ -638,13 +638,13 @@
 **References**: Requirements 8
 **Description**: Validate scalability and performance
 
-- [ ] 8.4.1 Load test API Gateway (1000 req/s)
-- [ ] 8.4.2 Test concurrent agent execution (100 agents)
-- [ ] 8.4.3 Test vector search performance (1M+ embeddings)
-- [ ] 8.4.4 Test document processing throughput
-- [ ] 8.4.5 Test memory retrieval latency
-- [ ] 8.4.6 Benchmark LLM inference latency
-- [ ] 8.4.7 Test horizontal scaling behavior
+- [x] 8.4.1 Load test API Gateway (1000 req/s)
+- [x] 8.4.2 Test concurrent agent execution (100 agents)
+- [x] 8.4.3 Test vector search performance (1M+ embeddings)
+- [x] 8.4.4 Test document processing throughput
+- [x] 8.4.5 Test memory retrieval latency
+- [x] 8.4.6 Benchmark LLM inference latency
+- [x] 8.4.7 Test horizontal scaling behavior
 
 ### 8.5 Security Tests
 **References**: Requirements 7
