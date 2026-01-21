@@ -1,0 +1,24 @@
+{
+  "app": {
+    "name": "数字劳动力平台",
+    "tagline": "企业级AI代理管理"
+  },
+  "nav": {
+    "dashboard": "仪表板",
+    "workforce": "劳动力",
+    "tasks": "任务",
+    "knowledge": "知识库",
+    "memory": "记忆系统"
+  },
+  "common": {
+    "loading": "加载中...",
+    "error": "错误",
+    "success": "成功",
+    "cancel": "取消",
+    "save": "保存",
+    "delete": "删除",
+    "edit": "编辑",
+    "search": "搜索",
+    "filter": "筛选"
+  }
+}

@@ -410,16 +410,16 @@
 **References**: Requirements 13, Design Section 18
 **Description**: Set up React frontend with glassmorphism design
 
-- [ ] 6.1.1 Initialize React 19 + TypeScript + Vite project
-- [ ] 6.1.2 Configure TailwindCSS with custom theme
-- [ ] 6.1.3 Set up Lucide React icons
-- [ ] 6.1.4 Create design system (colors, typography, spacing)
-- [ ] 6.1.5 Implement glass panel component
-- [ ] 6.1.6 Create theme system (light/dark/system)
-- [ ] 6.1.7 Set up i18n (Chinese/English)
-- [ ] 6.1.8 Configure routing (React Router)
-- [ ] 6.1.9 Create API client with authentication
-- [ ] 6.1.10 Implement WebSocket client for real-time updates
+- [x] 6.1.1 Initialize React 19 + TypeScript + Vite project
+- [x] 6.1.2 Configure TailwindCSS with custom theme
+- [x] 6.1.3 Set up Lucide React icons
+- [x] 6.1.4 Create design system (colors, typography, spacing)
+- [x] 6.1.5 Implement glass panel component
+- [x] 6.1.6 Create theme system (light/dark/system)
+- [x] 6.1.7 Set up i18n (Chinese/English)
+- [x] 6.1.8 Configure routing (React Router)
+- [x] 6.1.9 Create API client with authentication
+- [x] 6.1.10 Implement WebSocket client for real-time updates
 
 ### 6.2 Layout and Navigation
 **References**: Design Section 18.2

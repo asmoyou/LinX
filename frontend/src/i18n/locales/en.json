@@ -1,0 +1,24 @@
+{
+  "app": {
+    "name": "Digital Workforce Platform",
+    "tagline": "Enterprise AI Agent Management"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "workforce": "Workforce",
+    "tasks": "Tasks",
+    "knowledge": "Knowledge Base",
+    "memory": "Memory System"
+  },
+  "common": {
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "cancel": "Cancel",
+    "save": "Save",
+    "delete": "Delete",
+    "edit": "Edit",
+    "search": "Search",
+    "filter": "Filter"
+  }
+}
