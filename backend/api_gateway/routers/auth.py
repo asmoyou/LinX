@@ -61,6 +61,15 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class RegisterRequest(BaseModel):
+    """User registration request model for API."""
+    
+    username: str = Field(..., min_length=3, max_length=50)
+    email: str = Field(..., pattern=r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
+    password: str = Field(..., min_length=8)
+    attributes: Optional[dict] = None
+
+
 class RefreshResponse(BaseModel):
     """Token refresh response model."""
     
@@ -145,7 +154,7 @@ async def login(request: LoginRequest):
 
 
 @router.post("/register", response_model=RegistrationResponse, status_code=status.HTTP_201_CREATED)
-async def register(request: RegistrationRequest):
+async def register(request: RegisterRequest):
     """Register a new user account.
     
     Args:
