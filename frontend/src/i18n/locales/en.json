@@ -23,5 +23,54 @@
     "edit": "Edit",
     "search": "Search",
     "filter": "Filter"
+  },
+  "login": {
+    "title": "Welcome Back",
+    "subtitle": "Sign in to your Digital Workforce Platform",
+    "username": "Username",
+    "usernamePlaceholder": "Enter your username",
+    "password": "Password",
+    "passwordPlaceholder": "Enter your password",
+    "signIn": "Sign In",
+    "signingIn": "Signing in...",
+    "noAccount": "Don't have an account?",
+    "signUp": "Sign up",
+    "success": "Login successful!",
+    "footer": "© 2024 Digital Workforce Platform. All rights reserved.",
+    "errors": {
+      "usernameRequired": "Username is required",
+      "passwordRequired": "Password is required",
+      "passwordTooShort": "Password must be at least 6 characters",
+      "failed": "Login failed. Please check your credentials."
+    }
+  },
+  "register": {
+    "title": "Create Account",
+    "subtitle": "Join the Digital Workforce Platform",
+    "username": "Username",
+    "usernamePlaceholder": "Choose a username",
+    "email": "Email",
+    "emailPlaceholder": "Enter your email",
+    "password": "Password",
+    "passwordPlaceholder": "Create a password",
+    "confirmPassword": "Confirm Password",
+    "confirmPasswordPlaceholder": "Confirm your password",
+    "createAccount": "Create Account",
+    "creatingAccount": "Creating account...",
+    "haveAccount": "Already have an account?",
+    "signIn": "Sign in",
+    "success": "Registration successful!",
+    "footer": "© 2024 Digital Workforce Platform. All rights reserved.",
+    "errors": {
+      "usernameRequired": "Username is required",
+      "usernameTooShort": "Username must be at least 3 characters",
+      "emailRequired": "Email is required",
+      "emailInvalid": "Email is invalid",
+      "passwordRequired": "Password is required",
+      "passwordTooShort": "Password must be at least 6 characters",
+      "confirmPasswordRequired": "Please confirm your password",
+      "passwordMismatch": "Passwords do not match",
+      "failed": "Registration failed. Please try again."
+    }
   }
 }
