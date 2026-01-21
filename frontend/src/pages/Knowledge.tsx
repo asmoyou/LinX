@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Upload as UploadIcon } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { DocumentCard } from '@/components/knowledge/DocumentCard';
 import { UploadZone } from '@/components/knowledge/UploadZone';
 import { DocumentViewer } from '@/components/knowledge/DocumentViewer';
@@ -75,6 +76,8 @@ export const Knowledge: React.FC = () => {
   }, []);
 
   const handleUpload = (files: File[]) => {
+    toast.success(`Uploading ${files.length} ${files.length === 1 ? 'file' : 'files'}...`);
+    
     // Simulate file upload
     const newDocuments: Document[] = files.map((file, index) => ({
       id: String(Date.now() + index),
@@ -136,6 +139,7 @@ export const Knowledge: React.FC = () => {
                     : d
                 )
               );
+              toast.success(`${doc.name} processed successfully!`);
             }
           }, 500);
         }
@@ -156,6 +160,7 @@ export const Knowledge: React.FC = () => {
   const handleDelete = (document: Document) => {
     if (confirm(`Are you sure you want to delete ${document.name}?`)) {
       setDocuments((prev) => prev.filter((d) => d.id !== document.id));
+      toast.success(`${document.name} deleted successfully`);
     }
   };
 

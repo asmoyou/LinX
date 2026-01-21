@@ -10,6 +10,21 @@
     --background: 222.2 84% 4.9%;
     --foreground: 210 40% 98%;
   }
+
+  /* Smooth scroll behavior */
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* Focus indicators for accessibility */
+  *:focus-visible {
+    @apply outline-none ring-2 ring-primary-500 ring-offset-2 ring-offset-white dark:ring-offset-gray-900;
+  }
+
+  /* Remove default focus outline but keep for keyboard navigation */
+  *:focus:not(:focus-visible) {
+    outline: none;
+  }
 }
 
 @layer utilities {
@@ -19,5 +34,103 @@
   
   .glass-dark {
     @apply bg-black/10 backdrop-blur-md border border-white/10;
+  }
+
+  /* Scan line background effect */
+  .scan-line-bg {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .scan-line-bg::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.5), transparent);
+    animation: scan 3s linear infinite;
+    pointer-events: none;
+  }
+
+  @keyframes scan {
+    0% {
+      transform: translateY(0);
+    }
+    100% {
+      transform: translateY(100vh);
+    }
+  }
+
+  /* Hover effects */
+  .hover-lift {
+    @apply transition-transform duration-200 hover:scale-105;
+  }
+
+  .hover-glow {
+    @apply transition-shadow duration-300 hover:shadow-lg hover:shadow-primary-500/20;
+  }
+
+  /* Loading pulse animation */
+  @keyframes pulse-slow {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
+  }
+
+  .animate-pulse-slow {
+    animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  /* Fade in animation */
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.3s ease-out;
+  }
+
+  /* Slide in from right */
+  @keyframes slideInRight {
+    from {
+      opacity: 0;
+      transform: translateX(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  .animate-slide-in-right {
+    animation: slideInRight 0.3s ease-out;
+  }
+
+  /* Slide in from left */
+  @keyframes slideInLeft {
+    from {
+      opacity: 0;
+      transform: translateX(-20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  .animate-slide-in-left {
+    animation: slideInLeft 0.3s ease-out;
   }
 }
