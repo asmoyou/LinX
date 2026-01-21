@@ -32,7 +32,7 @@ export const GoalInput: React.FC<GoalInputProps> = ({ onSubmit, isLoading }) => 
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="e.g., Analyze Q4 sales data and create report"
-            className="w-full px-4 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 text-gray-800 dark:text-white"
+            className="w-full px-4 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-800 dark:text-white"
             disabled={isLoading}
           />
         </div>
@@ -45,14 +45,14 @@ export const GoalInput: React.FC<GoalInputProps> = ({ onSubmit, isLoading }) => 
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Provide detailed requirements and context..."
             rows={4}
-            className="w-full px-4 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 text-gray-800 dark:text-white resize-none"
+            className="w-full px-4 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-800 dark:text-white resize-none"
             disabled={isLoading}
           />
         </div>
         <button
           type="submit"
           disabled={isLoading || !title.trim() || !description.trim()}
-          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isLoading ? (
             <>

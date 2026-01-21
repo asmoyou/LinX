@@ -47,7 +47,7 @@ export const GoalCard: React.FC<GoalCardProps> = ({ goal, onExpand, isExpanded }
     <GlassPanel className="hover:scale-[1.01] transition-transform duration-200">
       <div className="flex items-start justify-between mb-4">
         <div className="flex items-start gap-3 flex-1">
-          <Target className="w-6 h-6 text-primary-500 mt-1" />
+          <Target className="w-6 h-6 text-indigo-500 mt-1" />
           <div className="flex-1">
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-1">
               {goal.title}
@@ -74,7 +74,7 @@ export const GoalCard: React.FC<GoalCardProps> = ({ goal, onExpand, isExpanded }
           </div>
           <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
             <div
-              className="h-full bg-primary-500 transition-all duration-500"
+              className="h-full bg-indigo-500 transition-all duration-500"
               style={{ width: `${progress}%` }}
             />
           </div>
@@ -100,7 +100,7 @@ export const GoalCard: React.FC<GoalCardProps> = ({ goal, onExpand, isExpanded }
         <span>Created: {new Date(goal.createdAt).toLocaleString()}</span>
         <button
           onClick={() => onExpand(goal.id)}
-          className="flex items-center gap-1 hover:text-primary-500 transition-colors"
+          className="flex items-center gap-1 hover:text-indigo-500 transition-colors"
         >
           {isExpanded ? (
             <>

@@ -191,7 +191,7 @@ export const Tasks: React.FC = () => {
                 onClick={() => setViewMode('timeline')}
                 className={`p-2 rounded-lg transition-colors ${
                   viewMode === 'timeline'
-                    ? 'bg-primary-500 text-white'
+                    ? 'bg-indigo-500 text-white'
                     : 'bg-white/20 text-gray-700 dark:text-gray-300 hover:bg-white/30'
                 }`}
               >
@@ -201,7 +201,7 @@ export const Tasks: React.FC = () => {
                 onClick={() => setViewMode('flow')}
                 className={`p-2 rounded-lg transition-colors ${
                   viewMode === 'flow'
-                    ? 'bg-primary-500 text-white'
+                    ? 'bg-indigo-500 text-white'
                     : 'bg-white/20 text-gray-700 dark:text-gray-300 hover:bg-white/30'
                 }`}
               >

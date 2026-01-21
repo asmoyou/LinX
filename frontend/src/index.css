@@ -18,7 +18,7 @@
 
   /* Focus indicators for accessibility */
   *:focus-visible {
-    @apply outline-none ring-2 ring-primary-500 ring-offset-2 ring-offset-white dark:ring-offset-gray-900;
+    @apply outline-none ring-2 ring-indigo-500 ring-offset-2 ring-offset-white dark:ring-offset-gray-900;
   }
 
   /* Remove default focus outline but keep for keyboard navigation */
@@ -69,7 +69,7 @@
   }
 
   .hover-glow {
-    @apply transition-shadow duration-300 hover:shadow-lg hover:shadow-primary-500/20;
+    @apply transition-shadow duration-300 hover:shadow-lg hover:shadow-indigo-500/20;
   }
 
   /* Loading pulse animation */

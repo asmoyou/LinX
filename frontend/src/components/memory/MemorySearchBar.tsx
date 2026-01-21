@@ -38,14 +38,14 @@ export const MemorySearchBar: React.FC<MemorySearchBarProps> = ({
               value={searchQuery}
               onChange={(e) => onSearchChange(e.target.value)}
               placeholder="Search memories by content or tags..."
-              className="w-full pl-10 pr-4 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 text-gray-800 dark:text-white"
+              className="w-full pl-10 pr-4 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-800 dark:text-white"
             />
           </div>
           <button
             onClick={() => setShowFilters(!showFilters)}
             className={`px-4 py-2 rounded-lg transition-colors flex items-center gap-2 ${
               showFilters
-                ? 'bg-primary-500 text-white'
+                ? 'bg-indigo-500 text-white'
                 : 'bg-white/50 dark:bg-black/20 text-gray-700 dark:text-gray-300 hover:bg-white/70 dark:hover:bg-black/30'
             }`}
           >
@@ -70,7 +70,7 @@ export const MemorySearchBar: React.FC<MemorySearchBarProps> = ({
                     type="date"
                     value={dateFrom}
                     onChange={(e) => onDateFromChange(e.target.value)}
-                    className="w-full px-3 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 text-gray-800 dark:text-white text-sm"
+                    className="w-full px-3 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-800 dark:text-white text-sm"
                   />
                 </div>
                 <div>
@@ -79,7 +79,7 @@ export const MemorySearchBar: React.FC<MemorySearchBarProps> = ({
                     type="date"
                     value={dateTo}
                     onChange={(e) => onDateToChange(e.target.value)}
-                    className="w-full px-3 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 text-gray-800 dark:text-white text-sm"
+                    className="w-full px-3 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-800 dark:text-white text-sm"
                   />
                 </div>
               </div>
@@ -99,7 +99,7 @@ export const MemorySearchBar: React.FC<MemorySearchBarProps> = ({
                       onClick={() => onTagToggle(tag)}
                       className={`px-3 py-1 rounded-full text-sm transition-colors ${
                         selectedTags.includes(tag)
-                          ? 'bg-primary-500 text-white'
+                          ? 'bg-indigo-500 text-white'
                           : 'bg-white/20 text-gray-700 dark:text-gray-300 hover:bg-white/30'
                       }`}
                     >

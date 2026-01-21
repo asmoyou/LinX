@@ -176,7 +176,7 @@ export const Memory: React.FC = () => {
               onClick={() => setActiveTab(tab.id)}
               className={`flex items-center gap-2 px-4 py-3 rounded-lg transition-colors whitespace-nowrap ${
                 activeTab === tab.id
-                  ? 'bg-primary-500 text-white'
+                  ? 'bg-indigo-500 text-white'
                   : 'glass text-gray-700 dark:text-gray-300 hover:bg-white/30 dark:hover:bg-black/30'
               }`}
             >

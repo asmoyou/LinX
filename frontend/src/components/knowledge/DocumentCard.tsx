@@ -141,7 +141,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
         <button
           onClick={() => onView(document)}
           disabled={document.status !== 'completed'}
-          className="flex-1 px-3 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex-1 px-3 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
         >
           View
         </button>

@@ -36,7 +36,7 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({ agent, isO
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="p-4 bg-white/10 rounded-lg">
             <div className="flex items-center gap-2 mb-2">
-              <Activity className="w-5 h-5 text-primary-500" />
+              <Activity className="w-5 h-5 text-indigo-500" />
               <span className="text-sm text-gray-600 dark:text-gray-400">Status</span>
             </div>
             <p className="text-lg font-semibold text-gray-800 dark:text-white capitalize">

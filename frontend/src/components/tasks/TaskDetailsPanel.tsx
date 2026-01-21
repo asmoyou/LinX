@@ -80,7 +80,7 @@ export const TaskDetailsPanel: React.FC<TaskDetailsPanelProps> = ({ task, isOpen
           {task.assignedAgent && (
             <div className="p-4 bg-white/10 rounded-lg">
               <div className="flex items-center gap-2 mb-2">
-                <User className="w-5 h-5 text-primary-500" />
+                <User className="w-5 h-5 text-indigo-500" />
                 <span className="text-sm text-gray-600 dark:text-gray-400">Assigned Agent</span>
               </div>
               <p className="text-gray-800 dark:text-white font-medium">{task.assignedAgent}</p>

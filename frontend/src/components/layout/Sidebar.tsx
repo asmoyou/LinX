@@ -63,7 +63,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
               className={({ isActive }) =>
                 `flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
                   isActive
-                    ? 'bg-primary-500 text-white'
+                    ? 'bg-indigo-500 text-white'
                     : 'text-gray-700 dark:text-gray-300 hover:bg-white/20'
                 }`
               }

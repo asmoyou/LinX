@@ -70,7 +70,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({ document, isOpen
               <p className="text-gray-600 dark:text-gray-400 mb-4">
                 Preview not available for this file type
               </p>
-              <button className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors">
+              <button className="px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors">
                 <Download className="w-4 h-4 inline mr-2" />
                 Download to View
               </button>

@@ -51,7 +51,7 @@ export const MemorySharingModal: React.FC<MemorySharingModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
-            <Share2 className="w-6 h-6 text-primary-500" />
+            <Share2 className="w-6 h-6 text-indigo-500" />
             <h2 className="text-2xl font-bold text-gray-800 dark:text-white">Share Memory</h2>
           </div>
           <button
@@ -83,7 +83,7 @@ export const MemorySharingModal: React.FC<MemorySharingModalProps> = ({
                 onClick={() => handleToggleUser(target.id)}
                 className={`w-full flex items-center justify-between p-3 rounded-lg transition-colors ${
                   selectedUsers.includes(target.id)
-                    ? 'bg-primary-500/20 border-2 border-primary-500'
+                    ? 'bg-indigo-500/20 border-2 border-indigo-500'
                     : 'bg-white/10 border-2 border-transparent hover:bg-white/20'
                 }`}
               >
@@ -105,7 +105,7 @@ export const MemorySharingModal: React.FC<MemorySharingModalProps> = ({
                   </div>
                 </div>
                 {selectedUsers.includes(target.id) && (
-                  <Check className="w-5 h-5 text-primary-500" />
+                  <Check className="w-5 h-5 text-indigo-500" />
                 )}
               </button>
             ))}
@@ -123,7 +123,7 @@ export const MemorySharingModal: React.FC<MemorySharingModalProps> = ({
           <button
             onClick={handleShare}
             disabled={selectedUsers.length === 0}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Share2 className="w-5 h-5" />
             Share with {selectedUsers.length} {selectedUsers.length === 1 ? 'recipient' : 'recipients'}

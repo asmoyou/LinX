@@ -100,11 +100,11 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
         onDrop={handleDrop}
         className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
           isDragging
-            ? 'border-primary-500 bg-primary-500/10'
+            ? 'border-indigo-500 bg-indigo-500/10'
             : 'border-gray-300 dark:border-gray-600'
         }`}
       >
-        <Upload className={`w-12 h-12 mx-auto mb-4 ${isDragging ? 'text-primary-500' : 'text-gray-400'}`} />
+        <Upload className={`w-12 h-12 mx-auto mb-4 ${isDragging ? 'text-indigo-500' : 'text-gray-400'}`} />
         <p className="text-lg font-medium text-gray-800 dark:text-white mb-2">
           {isDragging ? 'Drop files here' : 'Drag and drop files here'}
         </p>
@@ -121,7 +121,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
         />
         <label
           htmlFor="file-input"
-          className="inline-block px-6 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors cursor-pointer font-medium"
+          className="inline-block px-6 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors cursor-pointer font-medium"
         >
           Browse Files
         </label>
@@ -172,7 +172,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
           </div>
           <button
             onClick={handleUpload}
-            className="w-full mt-4 px-4 py-3 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors font-medium"
+            className="w-full mt-4 px-4 py-3 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium"
           >
             Upload {selectedFiles.length} {selectedFiles.length === 1 ? 'File' : 'Files'}
           </button>

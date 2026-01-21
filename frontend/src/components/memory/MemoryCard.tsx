@@ -105,7 +105,7 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({ memory, onClick, showRel
             )}
           </div>
           {memory.isShared && (
-            <div className="flex items-center gap-1 text-primary-500">
+            <div className="flex items-center gap-1 text-indigo-500">
               <Share2 className="w-3 h-3" />
               <span>Shared</span>
             </div>

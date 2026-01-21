@@ -181,7 +181,7 @@ export const Knowledge: React.FC = () => {
         </h1>
         <button
           onClick={() => setShowUploadZone(!showUploadZone)}
-          className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors font-medium"
+          className="flex items-center gap-2 px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium"
         >
           <UploadIcon className="w-5 h-5" />
           Upload Documents

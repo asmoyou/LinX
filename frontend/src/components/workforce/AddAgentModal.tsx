@@ -55,7 +55,7 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g., Data Analyst #1"
-              className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 text-gray-800 dark:text-white placeholder-gray-500"
+              className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-800 dark:text-white placeholder-gray-500"
               required
             />
           </div>
@@ -73,7 +73,7 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
                   onClick={() => setSelectedTemplate(template.id)}
                   className={`p-4 rounded-lg border-2 transition-all text-left ${
                     selectedTemplate === template.id
-                      ? 'border-primary-500 bg-primary-500/10'
+                      ? 'border-indigo-500 bg-indigo-500/10'
                       : 'border-white/20 hover:border-white/40'
                   }`}
                 >
@@ -93,7 +93,7 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
             <button
               type="submit"
               disabled={!name || !selectedTemplate}
-              className="flex-1 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+              className="flex-1 px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
             >
               Create Agent
             </button>

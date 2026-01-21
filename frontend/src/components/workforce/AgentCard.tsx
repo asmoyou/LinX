@@ -76,7 +76,7 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onTerminate
       <div className="flex items-center gap-2">
         <button
           onClick={() => onView(agent)}
-          className="flex-1 px-3 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors text-sm font-medium"
+          className="flex-1 px-3 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors text-sm font-medium"
         >
           View Details
         </button>

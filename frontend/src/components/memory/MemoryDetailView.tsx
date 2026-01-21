@@ -72,21 +72,21 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
 
         {/* Relevance Score */}
         {memory.relevanceScore !== undefined && (
-          <div className="mb-6 p-4 bg-primary-500/10 border border-primary-500/30 rounded-lg">
+          <div className="mb-6 p-4 bg-indigo-500/10 border border-indigo-500/30 rounded-lg">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <TrendingUp className="w-5 h-5 text-primary-500" />
+                <TrendingUp className="w-5 h-5 text-indigo-500" />
                 <span className="text-sm font-medium text-gray-800 dark:text-white">
                   Relevance Score
                 </span>
               </div>
-              <span className="text-2xl font-bold text-primary-500">
+              <span className="text-2xl font-bold text-indigo-500">
                 {(memory.relevanceScore * 100).toFixed(0)}%
               </span>
             </div>
             <div className="mt-2 w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
               <div
-                className="h-full bg-primary-500 transition-all duration-500"
+                className="h-full bg-indigo-500 transition-all duration-500"
                 style={{ width: `${memory.relevanceScore * 100}%` }}
               />
             </div>
@@ -211,9 +211,9 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
 
         {/* Sharing Status */}
         {memory.isShared && (
-          <div className="p-4 bg-primary-500/10 border border-primary-500/30 rounded-lg">
+          <div className="p-4 bg-indigo-500/10 border border-indigo-500/30 rounded-lg">
             <div className="flex items-center gap-2 mb-2">
-              <Share2 className="w-5 h-5 text-primary-500" />
+              <Share2 className="w-5 h-5 text-indigo-500" />
               <span className="text-sm font-medium text-gray-800 dark:text-white">
                 Shared Memory
               </span>

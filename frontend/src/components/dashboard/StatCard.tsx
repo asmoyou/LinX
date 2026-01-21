@@ -17,7 +17,7 @@ export const StatCard: React.FC<StatCardProps> = ({
   value,
   icon: Icon,
   trend,
-  color = 'text-primary-500',
+  color = 'text-indigo-500',
 }) => {
   return (
     <GlassPanel className="hover:scale-105 transition-transform duration-200">
