@@ -1,6 +1,7 @@
 {
   "app": {
     "name": "LinX - 灵枢",
+    "brandName": "LinX",
     "tagline": "Enterprise AI Agent Management"
   },
   "nav": {
