@@ -7,7 +7,6 @@ import {
   Target, 
   Database, 
   BrainCircuit,
-  Cpu,
   Settings,
   ChevronLeft,
   ChevronRight
@@ -31,7 +30,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
 
   return (
     <aside
-      className={`glass-panel z-50 transition-all duration-500 flex flex-col ${
+      className={`glass-panel z-30 transition-all duration-500 flex flex-col ${
         isCollapsed ? 'w-20' : 'w-64'
       } h-full border-r border-zinc-500/5 relative`}
       role="navigation"
@@ -39,12 +38,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
     >
       {/* Logo */}
       <div className="p-6 flex items-center gap-3">
-        <div className="w-9 h-9 bg-emerald-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
-          <Cpu className="text-white w-5 h-5" />
-        </div>
+        <img 
+          src="/logo-sm.webp" 
+          alt="LinX Logo" 
+          className="w-9 h-9 object-contain"
+        />
         {!isCollapsed && (
           <span className="font-bold text-xl tracking-tight uppercase bg-clip-text text-transparent bg-gradient-to-br from-emerald-500 to-emerald-700">
-            LinX
+            {t('app.brandName')}
           </span>
         )}
       </div>
@@ -97,7 +98,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
 
       {/* User Profile */}
       <div className="p-4 border-t border-zinc-500/10">
-        <div className={`flex items-center gap-3 p-3 rounded-2xl bg-zinc-100 dark:bg-zinc-500/5 ${isCollapsed ? 'justify-center' : ''}`}>
+        <NavLink
+          to="/profile"
+          className={({ isActive }) =>
+            `flex items-center gap-3 p-3 rounded-2xl transition-all duration-300 ${
+              isActive
+                ? 'bg-emerald-500/10 border border-emerald-500/10'
+                : 'bg-zinc-100 dark:bg-zinc-500/5 hover:bg-emerald-50 dark:hover:bg-emerald-500/5'
+            } ${isCollapsed ? 'justify-center' : ''}`
+          }
+        >
           <div className="w-8 h-8 rounded-full bg-zinc-200 dark:bg-zinc-800 flex items-center justify-center text-[10px] font-bold text-zinc-700 dark:text-zinc-300">
             AD
           </div>
@@ -107,10 +117,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
                 <p className="text-xs font-semibold truncate text-zinc-800 dark:text-zinc-200">Admin User</p>
                 <p className="text-[10px] text-zinc-500 truncate">{t('nav.settings')}</p>
               </div>
-              <Settings className="w-4 h-4 text-zinc-400 cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-500 transition-colors" />
+              <Settings className="w-4 h-4 text-zinc-400" />
             </>
           )}
-        </div>
+        </NavLink>
       </div>
     </aside>
   );

@@ -16,7 +16,7 @@ export const Header: React.FC = () => {
 
   return (
     <header
-      className="h-16 border-b border-zinc-500/5 glass-panel flex items-center justify-between px-6 z-10"
+      className="h-16 border-b border-zinc-500/5 glass-panel flex items-center justify-between px-6 z-30"
       role="banner"
     >
       <div className="flex items-center gap-4">
@@ -84,11 +84,11 @@ export const Header: React.FC = () => {
           {showNotifications && (
             <>
               <div
-                className="fixed inset-0 z-10"
+                className="fixed inset-0 z-40"
                 onClick={() => setShowNotifications(false)}
               />
               <div 
-                className="absolute right-0 mt-2 w-80 glass-panel rounded-[24px] shadow-2xl p-6 animate-slide-in-right z-20"
+                className="absolute right-0 mt-2 w-80 glass-panel rounded-[24px] shadow-2xl p-6 animate-slide-in-right z-50"
                 role="menu"
               >
                 <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400 mb-4">
