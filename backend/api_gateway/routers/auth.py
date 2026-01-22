@@ -103,66 +103,68 @@ async def login(request: LoginRequest):
     Raises:
         HTTPException: If credentials are invalid
     """
-    # TODO: Query user from database
-    # For now, this is a placeholder that will be implemented when database is ready
-    # user = db.query(UserModel).filter(UserModel.username == request.username).first()
+    from database.connection import get_db_session
+    from database.models import User
 
-    # Placeholder response for development
-    logger.warning(
-        "Login endpoint called but database not yet integrated",
-        extra={"username": request.username},
-    )
+    try:
+        with get_db_session() as session:
+            # Query user from database
+            user = session.query(User).filter(User.username == request.username).first()
 
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Login endpoint requires database integration (Task 2.1.5 partial implementation)",
-    )
+            if not user or not verify_password(request.password, user.password_hash):
+                log_authentication_event(
+                    session=session,
+                    event_type="login_failed",
+                    username=request.username,
+                    success=False,
+                    reason="invalid_credentials",
+                )
+                session.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid username or password",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
 
-    # TODO: Uncomment when database is ready
-    # if not user or not verify_password(request.password, user.password_hash):
-    #     log_authentication_event(
-    #         event="login_failed",
-    #         username=request.username,
-    #         success=False,
-    #         reason="invalid_credentials"
-    #     )
-    #     raise HTTPException(
-    #         status_code=status.HTTP_401_UNAUTHORIZED,
-    #         detail="Invalid username or password",
-    #         headers={"WWW-Authenticate": "Bearer"},
-    #     )
-    #
-    # # Create token pair
-    # tokens = create_token_pair(
-    #     user_id=user.user_id,
-    #     username=user.username,
-    #     role=user.role
-    # )
-    #
-    # log_authentication_event(
-    #     event="login_success",
-    #     user_id=str(user.user_id),
-    #     username=user.username,
-    #     success=True
-    # )
-    #
-    # logger.info(
-    #     "User logged in",
-    #     extra={"user_id": str(user.user_id), "username": user.username}
-    # )
-    #
-    # return LoginResponse(
-    #     access_token=tokens.access_token,
-    #     refresh_token=tokens.refresh_token,
-    #     token_type=tokens.token_type,
-    #     expires_in=tokens.expires_in,
-    #     user={
-    #         "user_id": str(user.user_id),
-    #         "username": user.username,
-    #         "email": user.email,
-    #         "role": user.role,
-    #     }
-    # )
+            # Create token pair
+            tokens = create_token_pair(
+                user_id=str(user.user_id), username=user.username, role=user.role
+            )
+
+            log_authentication_event(
+                session=session,
+                event_type="login_success",
+                user_id=str(user.user_id),
+                username=user.username,
+                success=True,
+            )
+            session.commit()
+
+            logger.info(
+                "User logged in", extra={"user_id": str(user.user_id), "username": user.username}
+            )
+
+            return LoginResponse(
+                access_token=tokens.access_token,
+                refresh_token=tokens.refresh_token,
+                token_type=tokens.token_type,
+                expires_in=tokens.expires_in,
+                user={
+                    "user_id": str(user.user_id),
+                    "username": user.username,
+                    "email": user.email,
+                    "role": user.role,
+                },
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Login failed. Please try again.",
+        )
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
@@ -265,12 +267,20 @@ async def logout(current_user: CurrentUser = Depends(get_current_user)):
     Returns:
         No content
     """
-    # TODO: Get token from request and blacklist it
-    # For now, this is a placeholder
+    from database.connection import get_db_session
 
-    log_authentication_event(
-        event="logout", user_id=current_user.user_id, username=current_user.username, success=True
-    )
+    # TODO: Get token from request and blacklist it
+    # For now, just log the event
+
+    with get_db_session() as session:
+        log_authentication_event(
+            session=session,
+            event_type="logout",
+            user_id=current_user.user_id,
+            username=current_user.username,
+            success=True,
+        )
+        session.commit()
 
     logger.info(
         "User logged out",
