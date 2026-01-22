@@ -47,10 +47,10 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onTerminate
           {showMenu && (
             <>
               <div
-                className="fixed inset-0 z-10"
+                className="fixed inset-0 z-40"
                 onClick={() => setShowMenu(false)}
               />
-              <div className="absolute right-0 mt-2 w-48 glass-panel rounded-[16px] shadow-2xl z-20 overflow-hidden p-2">
+              <div className="absolute right-0 mt-2 w-48 glass-panel rounded-[16px] shadow-2xl z-50 overflow-hidden p-2">
                 <button
                   onClick={() => {
                     onView(agent);

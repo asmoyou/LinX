@@ -156,10 +156,10 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
           {showMenu && (
             <>
               <div
-                className="fixed inset-0 z-10"
+                className="fixed inset-0 z-40"
                 onClick={() => setShowMenu(false)}
               />
-              <div className="absolute right-0 mt-2 w-48 glass rounded-lg shadow-lg z-20 overflow-hidden">
+              <div className="absolute right-0 mt-2 w-48 glass rounded-lg shadow-lg z-50 overflow-hidden">
                 <button
                   onClick={() => {
                     onView(document);
