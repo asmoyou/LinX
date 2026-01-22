@@ -287,7 +287,7 @@ export default function Login() {
               <button
                 type="button"
                 className="text-sm text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 font-medium transition-colors"
-                onClick={() => toast.info(t('login.forgotPasswordInfo', 'Please contact your administrator to reset your password'))}
+                onClick={() => toast(t('login.forgotPasswordInfo', 'Please contact your administrator to reset your password'), { icon: 'ℹ️' })}
               >
                 {t('login.forgotPassword', 'Forgot password?')}
               </button>
@@ -304,12 +304,16 @@ export default function Login() {
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full py-3 px-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white font-medium rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25"
+              className={`w-full py-3 px-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white font-medium rounded-lg transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25 ${
+                isLoading 
+                  ? 'opacity-75 cursor-not-allowed scale-[0.98]' 
+                  : 'hover:scale-[1.02] active:scale-[0.98]'
+              }`}
             >
               {isLoading ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  {t('login.signingIn', 'Signing in...')}
+                  <span className="animate-pulse">{t('login.signingIn', 'Signing in...')}</span>
                 </>
               ) : (
                 <>
