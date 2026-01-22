@@ -1,9 +1,13 @@
 # LinX - 灵枢智能协作平台
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Docker](https://img.shields.io/badge/docker-20.10+-blue.svg)](https://www.docker.com/)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](https://github.com/asmoyou/LinX)
+<div align="center">
+  <img src="frontend/public/logo-lg.webp" alt="LinX Logo" width="200"/>
+  
+  [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+  [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+  [![Docker](https://img.shields.io/badge/docker-20.10+-blue.svg)](https://www.docker.com/)
+  [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](https://github.com/asmoyou/LinX)
+</div>
 
 LinX (灵枢) is an enterprise-grade intelligent collaboration platform designed to manage and coordinate AI agents and future robotic workers. The platform establishes a digital company structure that enables autonomous goal completion through hierarchical task management, collaborative agent coordination, and comprehensive knowledge management.
 
