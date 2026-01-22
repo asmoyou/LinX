@@ -1,35 +1,43 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { UserPlus, Loader2, Moon, Sun } from 'lucide-react';
 import { authApi } from '../api';
 import { useAuthStore } from '../stores';
+import { useThemeStore } from '../stores/themeStore';
 import toast from 'react-hot-toast';
 import { LanguageSwitcher } from '../components/LanguageSwitcher';
-import { ThreeBackground } from '../components/ThreeBackground';
-import { useSystemTheme } from '../hooks/useSystemTheme';
+import { ParticleBackground } from '../components/ParticleBackground';
 
 export default function Register() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { login } = useAuthStore();
-  const isDark = useSystemTheme();
-  const [manualDarkMode, setManualDarkMode] = useState<boolean | null>(null);
+  const { theme, setTheme, applyTheme } = useThemeStore();
+  const [isDark, setIsDark] = useState(false);
   
-  // Use manual override if set, otherwise use system theme
-  const displayDarkMode = manualDarkMode !== null ? manualDarkMode : isDark;
-
-  const toggleTheme = () => {
-    const newDarkMode = manualDarkMode === null ? !isDark : !manualDarkMode;
-    setManualDarkMode(newDarkMode);
+  // Apply theme on mount and when theme changes
+  useEffect(() => {
+    applyTheme();
     
-    // Update localStorage and document class
-    localStorage.setItem('theme', newDarkMode ? 'dark' : 'light');
-    if (newDarkMode) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
+    // Update isDark based on current theme
+    const updateIsDark = () => {
+      const dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      setIsDark(dark);
+    };
+    
+    updateIsDark();
+    
+    // Listen for system theme changes if using system theme
+    if (theme === 'system') {
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      mediaQuery.addEventListener('change', updateIsDark);
+      return () => mediaQuery.removeEventListener('change', updateIsDark);
     }
+  }, [theme, applyTheme]);
+  
+  const toggleTheme = () => {
+    setTheme(isDark ? 'light' : 'dark');
   };
 
   const [formData, setFormData] = useState({
@@ -119,8 +127,7 @@ export default function Register() {
 
   return (
     <div className="min-h-screen flex items-center justify-center relative overflow-hidden bg-white dark:bg-zinc-950 p-4 transition-colors duration-500">
-      {/* Three.js animated background */}
-      <ThreeBackground isDark={displayDarkMode} />
+      <ParticleBackground isDark={isDark} />
       
       {/* Static background effects */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 1 }}>
@@ -135,14 +142,14 @@ export default function Register() {
           <button
             onClick={toggleTheme}
             className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-zinc-700 dark:text-zinc-300 bg-white/20 dark:bg-zinc-800/20 hover:bg-white/30 dark:hover:bg-zinc-800/30 border border-white/10 dark:border-zinc-700/10 rounded-lg transition-all duration-200 backdrop-blur-sm"
-            title={displayDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+            title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
           >
-            {displayDarkMode ? (
+            {isDark ? (
               <Sun className="w-4 h-4" />
             ) : (
               <Moon className="w-4 h-4" />
             )}
-            <span>{displayDarkMode ? '亮色' : '暗色'}</span>
+            <span>{isDark ? '亮色' : '暗色'}</span>
           </button>
           <LanguageSwitcher />
         </div>

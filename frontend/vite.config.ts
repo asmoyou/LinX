@@ -10,24 +10,24 @@ export default defineConfig({
     // Service Worker for offline support (6.9.8)
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['vite.svg'],
+      includeAssets: ['logo-favicon.webp', 'logo-lg.webp'],
       manifest: {
         name: 'LinX - 灵枢智能协作平台',
         short_name: 'LinX',
         description: 'LinX (灵枢) - Intelligent Collaboration Platform for AI agents',
-        theme_color: '#4F46E5',
-        background_color: '#1F2937',
+        theme_color: '#10b981',
+        background_color: '#000000',
         display: 'standalone',
         icons: [
           {
-            src: '/vite.svg',
-            sizes: '192x192',
-            type: 'image/svg+xml',
+            src: '/logo-lg.webp',
+            sizes: '512x512',
+            type: 'image/webp',
           },
           {
-            src: '/vite.svg',
-            sizes: '512x512',
-            type: 'image/svg+xml',
+            src: '/logo-md.webp',
+            sizes: '192x192',
+            type: 'image/webp',
           },
         ],
       },

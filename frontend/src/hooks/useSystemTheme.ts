@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 
-export const useSystemTheme = () => {
+export const useTheme = () => {
   const [isDark, setIsDark] = useState(() => {
-    // Check if user has a preference stored
+    // Check localStorage first
     const stored = localStorage.getItem('theme');
     if (stored) {
       return stored === 'dark';
@@ -12,36 +12,7 @@ export const useSystemTheme = () => {
   });
 
   useEffect(() => {
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    
-    const handleChange = (e: MediaQueryListEvent) => {
-      // Only update if user hasn't set a manual preference
-      const stored = localStorage.getItem('theme');
-      if (!stored) {
-        setIsDark(e.matches);
-      }
-    };
-
-    mediaQuery.addEventListener('change', handleChange);
-    
-    // Also listen for manual theme changes
-    const handleStorageChange = () => {
-      const stored = localStorage.getItem('theme');
-      if (stored) {
-        setIsDark(stored === 'dark');
-      }
-    };
-    
-    window.addEventListener('storage', handleStorageChange);
-
-    return () => {
-      mediaQuery.removeEventListener('change', handleChange);
-      window.removeEventListener('storage', handleStorageChange);
-    };
-  }, []);
-
-  // Apply theme to document
-  useEffect(() => {
+    // Apply theme to document
     if (isDark) {
       document.documentElement.classList.add('dark');
     } else {
@@ -49,5 +20,11 @@ export const useSystemTheme = () => {
     }
   }, [isDark]);
 
-  return isDark;
+  const toggleTheme = () => {
+    const newTheme = !isDark;
+    setIsDark(newTheme);
+    localStorage.setItem('theme', newTheme ? 'dark' : 'light');
+  };
+
+  return { isDark, toggleTheme };
 };
