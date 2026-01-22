@@ -32,6 +32,9 @@
     "usernamePlaceholder": "请输入用户名",
     "password": "密码",
     "passwordPlaceholder": "请输入密码",
+    "rememberMe": "记住我",
+    "forgotPassword": "忘记密码？",
+    "forgotPasswordInfo": "请联系管理员重置密码",
     "signIn": "登录",
     "signingIn": "登录中...",
     "noAccount": "还没有账号？",
@@ -40,6 +43,8 @@
     "footer": "© 2026 灵枢科技 LinX Technology. 保留所有权利。",
     "errors": {
       "usernameRequired": "用户名不能为空",
+      "usernameTooShort": "用户名至少需要3个字符",
+      "usernameInvalid": "用户名只能包含字母、数字、下划线和连字符",
       "passwordRequired": "密码不能为空",
       "passwordTooShort": "密码至少需要6个字符",
       "failed": "登录失败，请检查您的凭据。"

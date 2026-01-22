@@ -32,6 +32,9 @@
     "usernamePlaceholder": "Enter your username",
     "password": "Password",
     "passwordPlaceholder": "Enter your password",
+    "rememberMe": "Remember me",
+    "forgotPassword": "Forgot password?",
+    "forgotPasswordInfo": "Please contact your administrator to reset your password",
     "signIn": "Sign In",
     "signingIn": "Signing in...",
     "noAccount": "Don't have an account?",
@@ -40,6 +43,8 @@
     "footer": "© 2026 LinX Technology. All rights reserved.",
     "errors": {
       "usernameRequired": "Username is required",
+      "usernameTooShort": "Username must be at least 3 characters",
+      "usernameInvalid": "Username can only contain letters, numbers, underscores and hyphens",
       "passwordRequired": "Password is required",
       "passwordTooShort": "Password must be at least 6 characters",
       "failed": "Login failed. Please check your credentials."

@@ -43,17 +43,25 @@ export default function Login() {
   const [formData, setFormData] = useState({
     username: '',
     password: '',
+    rememberMe: false,
   });
   const [isLoading, setIsLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
 
+    // Username validation
     if (!formData.username.trim()) {
       newErrors.username = t('login.errors.usernameRequired', 'Username is required');
+    } else if (formData.username.length < 3) {
+      newErrors.username = t('login.errors.usernameTooShort', 'Username must be at least 3 characters');
+    } else if (!/^[a-zA-Z0-9_-]+$/.test(formData.username)) {
+      newErrors.username = t('login.errors.usernameInvalid', 'Username can only contain letters, numbers, underscores and hyphens');
     }
 
+    // Password validation
     if (!formData.password) {
       newErrors.password = t('login.errors.passwordRequired', 'Password is required');
     } else if (formData.password.length < 6) {
@@ -62,6 +70,34 @@ export default function Login() {
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
+  };
+
+  const validateField = (name: string, value: string) => {
+    const newErrors = { ...errors };
+
+    if (name === 'username') {
+      if (!value.trim()) {
+        newErrors.username = t('login.errors.usernameRequired', 'Username is required');
+      } else if (value.length < 3) {
+        newErrors.username = t('login.errors.usernameTooShort', 'Username must be at least 3 characters');
+      } else if (!/^[a-zA-Z0-9_-]+$/.test(value)) {
+        newErrors.username = t('login.errors.usernameInvalid', 'Username can only contain letters, numbers, underscores and hyphens');
+      } else {
+        delete newErrors.username;
+      }
+    }
+
+    if (name === 'password') {
+      if (!value) {
+        newErrors.password = t('login.errors.passwordRequired', 'Password is required');
+      } else if (value.length < 6) {
+        newErrors.password = t('login.errors.passwordTooShort', 'Password must be at least 6 characters');
+      } else {
+        delete newErrors.password;
+      }
+    }
+
+    setErrors(newErrors);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -83,6 +119,13 @@ export default function Login() {
       // Store tokens
       login(response.user, response.token);
       localStorage.setItem('refresh_token', response.refresh_token);
+      
+      // Store remember me preference
+      if (formData.rememberMe) {
+        localStorage.setItem('remember_username', formData.username);
+      } else {
+        localStorage.removeItem('remember_username');
+      }
 
       toast.success(t('login.success', 'Login successful!'));
       navigate('/dashboard');
@@ -100,13 +143,33 @@ export default function Login() {
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
-    // Clear error when user starts typing
-    if (errors[name]) {
-      setErrors((prev) => ({ ...prev, [name]: '' }));
+    const { name, value, type, checked } = e.target;
+    const newValue = type === 'checkbox' ? checked : value;
+    
+    setFormData((prev) => ({ ...prev, [name]: newValue }));
+    
+    // Mark field as touched
+    setTouched((prev) => ({ ...prev, [name]: true }));
+    
+    // Real-time validation for text inputs
+    if (type !== 'checkbox' && touched[name]) {
+      validateField(name, value);
     }
   };
+
+  const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setTouched((prev) => ({ ...prev, [name]: true }));
+    validateField(name, value);
+  };
+
+  // Load remembered username on mount
+  useEffect(() => {
+    const rememberedUsername = localStorage.getItem('remember_username');
+    if (rememberedUsername) {
+      setFormData((prev) => ({ ...prev, username: rememberedUsername, rememberMe: true }));
+    }
+  }, []);
 
   return (
     <div className="min-h-screen flex items-center justify-center relative overflow-hidden bg-white dark:bg-zinc-950 p-4">
@@ -168,6 +231,7 @@ export default function Login() {
                 name="username"
                 value={formData.username}
                 onChange={handleChange}
+                onBlur={handleBlur}
                 disabled={isLoading}
                 className={`w-full px-4 py-3 bg-white/50 dark:bg-zinc-800/50 border ${
                   errors.username ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
@@ -192,6 +256,7 @@ export default function Login() {
                 name="password"
                 value={formData.password}
                 onChange={handleChange}
+                onBlur={handleBlur}
                 disabled={isLoading}
                 className={`w-full px-4 py-3 bg-white/50 dark:bg-zinc-800/50 border ${
                   errors.password ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
@@ -202,6 +267,30 @@ export default function Login() {
               {errors.password && (
                 <p className="mt-1 text-sm text-red-500 dark:text-red-400">{errors.password}</p>
               )}
+            </div>
+
+            {/* Remember me and Forgot password */}
+            <div className="flex items-center justify-between">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  name="rememberMe"
+                  checked={formData.rememberMe}
+                  onChange={handleChange}
+                  disabled={isLoading}
+                  className="w-4 h-4 text-emerald-600 bg-white/50 dark:bg-zinc-800/50 border-zinc-300 dark:border-zinc-700 rounded focus:ring-2 focus:ring-emerald-500 focus:ring-offset-0 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                />
+                <span className="text-sm text-zinc-600 dark:text-zinc-400 transition-colors">
+                  {t('login.rememberMe', 'Remember me')}
+                </span>
+              </label>
+              <button
+                type="button"
+                className="text-sm text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 font-medium transition-colors"
+                onClick={() => toast.info(t('login.forgotPasswordInfo', 'Please contact your administrator to reset your password'))}
+              >
+                {t('login.forgotPassword', 'Forgot password?')}
+              </button>
             </div>
 
             {/* Submit error */}
