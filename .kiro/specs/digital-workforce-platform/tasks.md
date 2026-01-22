@@ -579,16 +579,16 @@
 **References**: Design Section 18
 **Description**: Implement forms with validation
 
-- [ ] 6.13.1 Set up React Hook Form or Formik
-- [ ] 6.13.2 Create login form with validation
-- [ ] 6.13.3 Implement registration form with validation
+- [x] 6.13.1 Set up React Hook Form or Formik
+- [x] 6.13.2 Create login form with validation
+- [x] 6.13.3 Implement registration form with validation
 - [ ] 6.13.4 Create agent creation form with template selection
 - [ ] 6.13.5 Implement goal submission form with rich text
 - [ ] 6.13.6 Create document upload form with drag-and-drop
 - [ ] 6.13.7 Implement user profile edit form
 - [ ] 6.13.8 Create skill creation form
-- [ ] 6.13.9 Add form error display components
-- [ ] 6.13.10 Implement form submission loading states
+- [x] 6.13.9 Add form error display components
+- [x] 6.13.10 Implement form submission loading states
 
 ### 6.14 Advanced UI Components
 **References**: Design Section 18
