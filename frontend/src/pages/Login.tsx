@@ -81,11 +81,12 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-zinc-50 via-emerald-50/30 to-zinc-50 dark:from-zinc-950 dark:via-emerald-950/20 dark:to-zinc-950 p-4 transition-colors duration-500">
       {/* Background effects */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-500/20 rounded-full blur-3xl animate-pulse" />
-        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-blue-500/20 rounded-full blur-3xl animate-pulse delay-1000" />
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-emerald-500/10 dark:bg-emerald-500/5 rounded-full blur-3xl animate-pulse" />
+        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-teal-500/10 dark:bg-teal-500/5 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }} />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-gradient-to-r from-emerald-500/5 to-teal-500/5 rounded-full blur-3xl" />
       </div>
 
       {/* Login card */}
@@ -95,7 +96,7 @@ export default function Login() {
           <LanguageSwitcher />
         </div>
 
-        <div className="backdrop-blur-xl bg-white/10 border border-white/20 rounded-2xl shadow-2xl p-8">
+        <div className="backdrop-blur-xl bg-white/80 dark:bg-zinc-900/80 border border-zinc-200/50 dark:border-zinc-800/50 rounded-2xl shadow-2xl shadow-emerald-500/5 p-8 transition-colors duration-500">
           {/* Logo and title */}
           <div className="text-center mb-8">
             <div className="inline-flex items-center justify-center w-16 h-16 mb-4">
@@ -105,10 +106,10 @@ export default function Login() {
                 className="w-16 h-16 object-contain"
               />
             </div>
-            <h1 className="text-3xl font-bold text-white mb-2">
+            <h1 className="text-3xl font-bold text-zinc-900 dark:text-zinc-100 mb-2 transition-colors">
               {t('login.title', 'Welcome Back')}
             </h1>
-            <p className="text-slate-300">
+            <p className="text-zinc-600 dark:text-zinc-400 transition-colors">
               {t('login.subtitle', 'Sign in to LinX Platform')}
             </p>
           </div>
@@ -117,7 +118,7 @@ export default function Login() {
           <form onSubmit={handleSubmit} className="space-y-6">
             {/* Username field */}
             <div>
-              <label htmlFor="username" className="block text-sm font-medium text-slate-200 mb-2">
+              <label htmlFor="username" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2 transition-colors">
                 {t('login.username', 'Username')}
               </label>
               <input
@@ -127,21 +128,21 @@ export default function Login() {
                 value={formData.username}
                 onChange={handleChange}
                 disabled={isLoading}
-                className={`w-full px-4 py-3 bg-white/5 border ${
-                  errors.username ? 'border-red-500' : 'border-white/10'
-                } rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
+                className={`w-full px-4 py-3 bg-white/50 dark:bg-zinc-800/50 border ${
+                  errors.username ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
+                } rounded-lg text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
                 placeholder={t('login.usernamePlaceholder', 'Enter your username')}
                 autoComplete="username"
                 autoFocus
               />
               {errors.username && (
-                <p className="mt-1 text-sm text-red-400">{errors.username}</p>
+                <p className="mt-1 text-sm text-red-500 dark:text-red-400">{errors.username}</p>
               )}
             </div>
 
             {/* Password field */}
             <div>
-              <label htmlFor="password" className="block text-sm font-medium text-slate-200 mb-2">
+              <label htmlFor="password" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2 transition-colors">
                 {t('login.password', 'Password')}
               </label>
               <input
@@ -151,21 +152,21 @@ export default function Login() {
                 value={formData.password}
                 onChange={handleChange}
                 disabled={isLoading}
-                className={`w-full px-4 py-3 bg-white/5 border ${
-                  errors.password ? 'border-red-500' : 'border-white/10'
-                } rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
+                className={`w-full px-4 py-3 bg-white/50 dark:bg-zinc-800/50 border ${
+                  errors.password ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
+                } rounded-lg text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
                 placeholder={t('login.passwordPlaceholder', 'Enter your password')}
                 autoComplete="current-password"
               />
               {errors.password && (
-                <p className="mt-1 text-sm text-red-400">{errors.password}</p>
+                <p className="mt-1 text-sm text-red-500 dark:text-red-400">{errors.password}</p>
               )}
             </div>
 
             {/* Submit error */}
             {errors.submit && (
-              <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-                <p className="text-sm text-red-400">{errors.submit}</p>
+              <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/30 rounded-lg transition-colors">
+                <p className="text-sm text-red-600 dark:text-red-400">{errors.submit}</p>
               </div>
             )}
 
@@ -173,7 +174,7 @@ export default function Login() {
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full py-3 px-4 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white font-medium rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className="w-full py-3 px-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white font-medium rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25"
             >
               {isLoading ? (
                 <>
@@ -191,11 +192,11 @@ export default function Login() {
 
           {/* Register link */}
           <div className="mt-6 text-center">
-            <p className="text-slate-300">
+            <p className="text-zinc-600 dark:text-zinc-400 transition-colors">
               {t('login.noAccount', "Don't have an account?")}{' '}
               <Link
                 to="/register"
-                className="text-purple-400 hover:text-purple-300 font-medium transition-colors"
+                className="text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 font-medium transition-colors"
               >
                 {t('login.signUp', 'Sign up')}
               </Link>
@@ -204,7 +205,7 @@ export default function Login() {
         </div>
 
         {/* Footer */}
-        <div className="mt-8 text-center text-slate-400 text-sm">
+        <div className="mt-8 text-center text-zinc-500 dark:text-zinc-500 text-sm transition-colors">
           <p>{t('login.footer', '© 2026 灵枢科技. All rights reserved.')}</p>
         </div>
       </div>
