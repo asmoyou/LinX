@@ -584,9 +584,9 @@
 - [x] 6.13.3 Implement registration form with validation
 - [x] 6.13.4 Create agent creation form with template selection
 - [x] 6.13.5 Implement goal submission form with rich text
-- [ ] 6.13.6 Create document upload form with drag-and-drop
-- [ ] 6.13.7 Implement user profile edit form
-- [ ] 6.13.8 Create skill creation form
+- [x] 6.13.6 Create document upload form with drag-and-drop
+- [x] 6.13.7 Implement user profile edit form
+- [x] 6.13.8 Create skill creation form
 - [x] 6.13.9 Add form error display components
 - [x] 6.13.10 Implement form submission loading states
 
@@ -690,7 +690,92 @@
 - [ ] 6.19.9 Implement memory deletion with confirmation
 - [ ] 6.19.10 Add memory visualization (graph view)
 
-### 6.20 Authentication and Login System
+### 6.20 Settings Page Implementation
+**References**: Design Section 18.8
+**Description**: Implement LLM provider settings and configuration management
+
+- [x] 6.20.1 Create backend LLM API routes (GET providers, models, health, test)
+- [x] 6.20.2 Register LLM routes in API Gateway
+- [x] 6.20.3 Create Settings page component
+- [x] 6.20.4 Implement provider status display (healthy/unhealthy)
+- [x] 6.20.5 Create provider cards with health indicators
+- [x] 6.20.6 Implement available models list display
+- [x] 6.20.7 Create configuration summary cards (default provider, active count, fallback status)
+- [x] 6.20.8 Implement provider test functionality
+- [x] 6.20.9 Create test prompt input field
+- [x] 6.20.10 Add refresh functionality for provider status
+- [x] 6.20.11 Implement error handling and user feedback
+- [x] 6.20.12 Add bilingual support (zh/en) for settings
+- [x] 6.20.13 Add Settings route to application
+- [x] 6.20.14 Add timeout handling for API requests (10s providers, 30s test)
+- [x] 6.20.15 Create unit tests for LLM API routes
+- [x] 6.20.16 Fix backend import errors and add graceful fallback
+- [x] 6.20.17 Unify backend error response format (error + message)
+- [x] 6.20.18 Fix frontend authentication (use authStore token)
+- [x] 6.20.19 Add authentication check and redirect for Settings page
+- [x] 6.20.20 Fix Login to use access_token from API response
+- [x] 6.20.21 Remove debug console.log statements
+- [x] 6.20.22 Design provider management UI (add/edit/delete)
+
+### 6.21 Provider Management - Backend API
+**References**: Design Section 18.8
+**Description**: Implement backend APIs for provider CRUD operations
+
+- [x] 6.21.1 Create provider configuration model (Pydantic)
+- [x] 6.21.2 Implement config.yaml reader/writer utility
+- [x] 6.21.3 Add POST /api/v1/llm/providers endpoint (create provider)
+- [x] 6.21.4 Add PUT /api/v1/llm/providers/{name} endpoint (update provider)
+- [x] 6.21.5 Add DELETE /api/v1/llm/providers/{name} endpoint (delete provider)
+- [x] 6.21.6 Add POST /api/v1/llm/providers/test-connection endpoint
+- [x] 6.21.7 Implement Ollama protocol client (fetch models)
+- [x] 6.21.8 Implement OpenAI Compatible protocol client (fetch models)
+- [x] 6.21.9 Add admin-only permission checks to provider endpoints
+- [x] 6.21.10 Add unit tests for provider CRUD operations
+
+### 6.22 Provider Management - Frontend UI
+**References**: Design Section 18.8
+**Description**: Implement provider management UI components
+
+- [x] 6.22.1 Add "Add Provider" button to Settings page (admin only)
+- [x] 6.22.2 Create AddProviderModal component skeleton
+- [x] 6.22.3 Add provider name input field with validation
+- [x] 6.22.4 Add protocol type selector (Ollama/OpenAI Compatible)
+- [x] 6.22.5 Add base URL input field with validation
+- [x] 6.22.6 Add API key input field (conditional, for OpenAI Compatible)
+- [x] 6.22.7 Add timeout and max retries fields
+- [x] 6.22.8 Implement "Test Connection" button functionality
+- [x] 6.22.9 Display fetched models list with checkboxes
+- [x] 6.22.10 Add model selection (multi-select with checkboxes)
+- [x] 6.22.11 Implement save provider functionality
+- [x] 6.22.12 Add form validation and error handling
+- [x] 6.22.13 Create EditProviderModal component (reuse AddProviderModal)
+- [x] 6.22.14 Add Edit button to provider cards (admin only)
+- [x] 6.22.15 Add Delete button to provider cards (admin only)
+- [x] 6.22.16 Create delete confirmation dialog
+- [x] 6.22.17 Implement delete provider functionality
+- [x] 6.22.18 Add bilingual support for provider management
+- [x] 6.22.19 Refresh provider list after add/edit/delete
+
+### 6.23 Model Selection Integration
+**References**: Design Section 18.8
+**Description**: Integrate model selection into agent creation
+
+- [ ] 6.23.1 Create model selection dropdown for agent creation form
+- [ ] 6.23.2 Fetch available models from selected provider
+- [ ] 6.23.3 Add model validation in agent creation
+- [ ] 6.23.4 Display model capabilities/info in dropdown
+
+### 6.24 Advanced Features
+**References**: Design Section 18.8
+**Description**: Additional provider management features
+
+- [ ] 6.24.1 Add token usage statistics display (admin only)
+- [ ] 6.24.2 Add provider enable/disable toggle
+- [ ] 6.24.3 Add default provider selection
+- [ ] 6.24.4 Add fallback order configuration
+- [ ] 6.24.5 Add provider health monitoring dashboard
+
+### 6.21 Authentication and Login System
 **References**: Requirements 14, Design Section 8
 **Description**: Implement complete authentication UI
 

@@ -21,7 +21,7 @@ from api_gateway.errors import setup_error_handlers
 from api_gateway.middleware.auth import JWTAuthMiddleware
 from api_gateway.middleware.logging import RequestLoggingMiddleware
 from api_gateway.middleware.rate_limit import RateLimitMiddleware
-from api_gateway.routers import agents, auth, knowledge, monitoring, tasks, users
+from api_gateway.routers import agents, auth, knowledge, llm, monitoring, tasks, users
 from api_gateway.websocket import router as websocket_router
 from shared.config import get_config
 from shared.logging import get_logger, setup_logging
@@ -125,6 +125,7 @@ def create_app() -> FastAPI:
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
     app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["Tasks"])
     app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["Knowledge"])
+    app.include_router(llm.router, prefix="/api/v1/llm", tags=["LLM Providers"])
     app.include_router(monitoring.router, tags=["Monitoring"])
     app.include_router(websocket_router, prefix="/api/v1/ws", tags=["WebSocket"])
 

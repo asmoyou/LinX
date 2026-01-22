@@ -2860,7 +2860,151 @@ class RobotAgent(BaseAgent):
 </MemoryList>
 ```
 
-### 18.8 Responsive Breakpoints
+### 18.8 Settings Page
+
+**LLM Provider Management**:
+```tsx
+<SettingsPage>
+  - Header section:
+    - Settings icon with gradient background
+    - Title: "LLM Settings"
+    - Subtitle: "Manage your AI model providers and configurations"
+    - Refresh button
+    - Add Provider button (admin only)
+  
+  - Configuration Summary (3-column grid):
+    - Default Provider card
+      - Cpu icon
+      - Provider name (capitalized)
+    - Active Providers card
+      - CheckCircle2 icon
+      - Count: "X / Y"
+    - Fallback Status card
+      - Zap icon
+      - "Enabled" or "Disabled"
+  
+  - Providers List:
+    - Provider cards (one per provider):
+      - Provider icon (emoji: 🦙 Ollama, ⚡ vLLM, 🤖 OpenAI, 🧠 Anthropic)
+      - Provider name (capitalized, large, bold)
+      - Health status indicator:
+        - Healthy: CheckCircle2 icon (emerald)
+        - Unhealthy: XCircle icon (red)
+      - Border color based on health status
+      - Available models section:
+        - Model count display
+        - Model badges (pill style, monospace font)
+        - "No models available" message if empty
+      - Action buttons (admin only):
+        - Edit button (Pencil icon)
+        - Delete button (Trash icon)
+      - Test button (if healthy and has models):
+        - Zap icon
+        - "Test" / "Testing..." states
+        - Disabled during test
+  
+  - Test Prompt Input:
+    - Glass panel with rounded corners
+    - Input field for custom test prompt
+    - Default: "Hello, how are you?"
+    - Hint text: "This prompt will be used when testing providers"
+</SettingsPage>
+```
+
+**Add/Edit Provider Modal**:
+```tsx
+<ProviderModal>
+  - Modal header:
+    - Title: "Add Provider" / "Edit Provider"
+    - Close button
+  
+  - Form fields:
+    1. Provider Name (required):
+       - Text input
+       - Placeholder: "e.g., my-ollama-server"
+       - Validation: alphanumeric, hyphens, underscores
+    
+    2. Protocol Type (required):
+       - Select dropdown
+       - Options:
+         * Ollama (default)
+         * OpenAI Compatible
+       - Icon indicator for each protocol
+    
+    3. Base URL (required):
+       - Text input
+       - Placeholder: "http://localhost:11434" (Ollama) or "https://api.openai.com/v1" (OpenAI)
+       - Validation: valid URL format
+    
+    4. API Key (optional, required for OpenAI Compatible):
+       - Password input with show/hide toggle
+       - Placeholder: "sk-..."
+       - Only shown for OpenAI Compatible protocol
+    
+    5. Timeout (optional):
+       - Number input
+       - Default: 30 seconds
+       - Range: 5-300 seconds
+    
+    6. Max Retries (optional):
+       - Number input
+       - Default: 3
+       - Range: 0-10
+  
+  - Actions:
+    - Test Connection button:
+      - Validates configuration
+      - Fetches available models
+      - Shows success/error message
+    - Cancel button
+    - Save button (disabled until valid)
+</ProviderModal>
+```
+
+**Provider Configuration Storage**:
+```yaml
+# config.yaml
+llm:
+  providers:
+    ollama-local:
+      protocol: ollama
+      base_url: http://localhost:11434
+      timeout: 30
+      max_retries: 3
+      enabled: true
+    
+    openai-compatible:
+      protocol: openai_compatible
+      base_url: https://api.openai.com/v1
+      api_key: ${OPENAI_API_KEY}  # From environment variable
+      timeout: 60
+      max_retries: 3
+      enabled: true
+  
+  default_provider: ollama-local
+  fallback_enabled: true
+  fallback_order:
+    - ollama-local
+    - openai-compatible
+```
+
+**Provider Card States**:
+- Healthy: `border-emerald-500/30 bg-emerald-500/5`
+- Unhealthy: `border-red-500/30 bg-red-500/5`
+- Hover: Subtle scale effect
+- Test button: Emerald background, white text, spinner during testing
+
+**Interactions**:
+- Refresh button: Reloads all provider status
+- Add Provider: Opens modal for new provider configuration
+- Edit Provider: Opens modal with existing configuration
+- Delete Provider: Shows confirmation dialog
+- Test button: Sends test prompt to provider, shows toast with response
+- Test Connection: Validates config and fetches models
+- Real-time health status updates
+- Error handling with user-friendly messages
+
+### 18.9 Responsive Breakpoints
 
 ```css
 /* Mobile First */
@@ -2878,7 +3022,7 @@ xl: 1280px  /* Desktops */
 - Cards: Full width with reduced padding
 - Charts: Simplified with touch-friendly tooltips
 
-### 18.9 Animations and Transitions
+### 18.10 Animations and Transitions
 
 **Page Transitions**:
 ```css
@@ -2925,7 +3069,54 @@ xl: 1280px  /* Desktops */
 }
 ```
 
-### 18.10 Accessibility
+### 18.10 Animations and Transitions
+
+**Page Transitions**:
+```css
+.animate-in {
+  animation: fadeIn 0.7s ease-out,
+             slideInFromBottom 0.7s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideInFromBottom {
+  from { transform: translateY(24px); }
+  to { transform: translateY(0); }
+}
+```
+
+**Hover Effects**:
+- Cards: `translate-y-[-2px]` or `translate-y-[-4px]`
+- Buttons: `active:scale-95`
+- Icons: `scale-110` on active state
+- Colors: Smooth transition to emerald accent
+
+**Loading States**:
+- Spinner: `animate-spin` (Loader2 icon)
+- Skeleton screens for data loading
+- Progress bars with smooth transitions
+- Pulse animation for pending states
+
+**Scan Line Effect** (Background):
+```css
+.scan-line {
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(16, 185, 129, 0.02),
+    transparent
+  );
+  background-size: 100% 200px;
+  animation: scan 12s linear infinite;
+  pointer-events: none;
+}
+```
+
+### 18.11 Accessibility
 
 **WCAG 2.1 AA Compliance**:
 - Color contrast ratios: 4.5:1 for text, 3:1 for UI components
@@ -2941,7 +3132,7 @@ xl: 1280px  /* Desktops */
 - `Esc`: Close modals
 - Arrow keys: Navigate lists and grids
 
-### 18.11 Technology Stack
+### 18.12 Technology Stack
 
 **Frontend Framework**:
 - **React 19** with TypeScript

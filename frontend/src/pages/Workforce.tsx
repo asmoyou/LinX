@@ -5,11 +5,12 @@ import type { Agent } from '@/types/agent';
 import { AgentCard } from '@/components/workforce/AgentCard';
 import { AddAgentModal } from '@/components/workforce/AddAgentModal';
 import { AgentDetailsModal } from '@/components/workforce/AgentDetailsModal';
+import { AgentConfigModal } from '@/components/workforce/AgentConfigModal';
 
 export const Workforce: React.FC = () => {
   const { t } = useTranslation();
 
-  // Mock data
+  // Mock data - will be replaced with real API calls
   const [agents, setAgents] = useState<Agent[]>([
     {
       id: '1',
@@ -19,6 +20,10 @@ export const Workforce: React.FC = () => {
       currentTask: undefined,
       tasksCompleted: 45,
       uptime: '12h 34m',
+      systemPrompt: 'You are a data analyst specialized in business intelligence.',
+      skills: ['data-analysis', 'visualization'],
+      model: 'gpt-4',
+      provider: 'openai',
     },
     {
       id: '2',
@@ -28,6 +33,10 @@ export const Workforce: React.FC = () => {
       currentTask: 'Writing Q4 report',
       tasksCompleted: 28,
       uptime: '8h 15m',
+      systemPrompt: 'You are a professional content writer.',
+      skills: ['writing', 'editing'],
+      model: 'claude-3',
+      provider: 'anthropic',
     },
     {
       id: '3',
@@ -37,31 +46,10 @@ export const Workforce: React.FC = () => {
       currentTask: 'Reviewing pull request #234',
       tasksCompleted: 67,
       uptime: '15h 42m',
-    },
-    {
-      id: '4',
-      name: 'Research-Unit-1',
-      type: 'Research Assistant',
-      status: 'offline',
-      tasksCompleted: 12,
-      uptime: '0h 0m',
-    },
-    {
-      id: '5',
-      name: 'Analyst-Beta',
-      type: 'Data Analyst',
-      status: 'working',
-      currentTask: 'Generating monthly report',
-      tasksCompleted: 33,
-      uptime: '6h 20m',
-    },
-    {
-      id: '6',
-      name: 'Scribe-9',
-      type: 'Content Writer',
-      status: 'idle',
-      tasksCompleted: 19,
-      uptime: '4h 10m',
+      systemPrompt: 'You are a code assistant helping with software development.',
+      skills: ['coding', 'debugging'],
+      model: 'llama3',
+      provider: 'ollama',
     },
   ]);
 
@@ -69,6 +57,7 @@ export const Workforce: React.FC = () => {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
 
   // Filter agents
   const filteredAgents = agents.filter((agent) => {
@@ -85,6 +74,10 @@ export const Workforce: React.FC = () => {
       status: 'idle',
       tasksCompleted: 0,
       uptime: '0h 0m',
+      systemPrompt: 'You are a helpful AI assistant.',
+      skills: [],
+      model: 'gpt-4',
+      provider: 'openai',
     };
     setAgents([...agents, newAgent]);
   };
@@ -94,8 +87,17 @@ export const Workforce: React.FC = () => {
     setIsDetailsModalOpen(true);
   };
 
-  const handleTerminateAgent = (agent: Agent) => {
-    if (confirm(`Are you sure you want to terminate ${agent.name}?`)) {
+  const handleConfigureAgent = (agent: Agent) => {
+    setSelectedAgent(agent);
+    setIsConfigModalOpen(true);
+  };
+
+  const handleSaveConfig = (updatedAgent: Agent) => {
+    setAgents(agents.map(a => a.id === updatedAgent.id ? updatedAgent : a));
+  };
+
+  const handleDeleteAgent = (agent: Agent) => {
+    if (confirm(t('agent.deleteConfirm'))) {
       setAgents(agents.filter((a) => a.id !== agent.id));
     }
   };
@@ -105,10 +107,10 @@ export const Workforce: React.FC = () => {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6">
         <div>
           <h1 className="text-4xl font-bold tracking-tight mb-2 text-zinc-800 dark:text-zinc-200">
-            {t('nav.workforce')}
+            {t('agent.title')}
           </h1>
           <p className="text-zinc-600 dark:text-zinc-400 font-medium">
-            Manage and monitor your AI agent workforce
+            {t('agent.subtitle')}
           </p>
         </div>
         <button
@@ -116,7 +118,7 @@ export const Workforce: React.FC = () => {
           className="bg-emerald-500 hover:bg-emerald-600 text-white dark:text-black px-8 py-3 rounded-full font-bold transition-all flex items-center gap-2 shadow-lg shadow-emerald-500/10 active:scale-95"
         >
           <Plus className="w-5 h-5" />
-          Deploy Agent
+          {t('agent.addAgent')}
         </button>
       </div>
 
@@ -126,7 +128,7 @@ export const Workforce: React.FC = () => {
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
           <input 
             type="text" 
-            placeholder="Search agents by name or type..."
+            placeholder={t('common.search') + ' agents by name or type...'}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full bg-transparent border-none py-3 pl-12 pr-4 focus:ring-0 text-sm placeholder:text-zinc-400 text-zinc-800 dark:text-zinc-200"
@@ -134,7 +136,7 @@ export const Workforce: React.FC = () => {
         </div>
         <button className="flex items-center gap-2 px-5 py-2.5 hover:bg-zinc-500/10 rounded-xl transition-all text-sm font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white">
           <Filter className="w-4 h-4" />
-          Filter
+          {t('common.filter')}
         </button>
       </div>
 
@@ -150,7 +152,8 @@ export const Workforce: React.FC = () => {
               key={agent.id}
               agent={agent}
               onView={handleViewAgent}
-              onTerminate={handleTerminateAgent}
+              onConfigure={handleConfigureAgent}
+              onDelete={handleDeleteAgent}
             />
           ))
         )}
@@ -169,6 +172,15 @@ export const Workforce: React.FC = () => {
           setIsDetailsModalOpen(false);
           setSelectedAgent(null);
         }}
+      />
+      <AgentConfigModal
+        agent={selectedAgent}
+        isOpen={isConfigModalOpen}
+        onClose={() => {
+          setIsConfigModalOpen(false);
+          setSelectedAgent(null);
+        }}
+        onSave={handleSaveConfig}
       />
     </div>
   );

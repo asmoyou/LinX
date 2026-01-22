@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { UserPlus, Loader2, Moon, Sun } from 'lucide-react';
+import { UserPlus, Loader2, Moon, Sun, Eye, EyeOff } from 'lucide-react';
 import { authApi } from '../api';
 import { useAuthStore } from '../stores';
 import { useThemeStore } from '../stores/themeStore';
@@ -15,6 +15,8 @@ export default function Register() {
   const { login } = useAuthStore();
   const { theme, setTheme, applyTheme } = useThemeStore();
   const [isDark, setIsDark] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   
   // Apply theme on mount and when theme changes
   useEffect(() => {
@@ -322,20 +324,34 @@ export default function Register() {
               <label htmlFor="password" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2 transition-colors">
                 {t('register.password', 'Password')}
               </label>
-              <input
-                type="password"
-                id="password"
-                name="password"
-                value={formData.password}
-                onChange={handleChange}
-                onBlur={handleBlur}
-                disabled={isLoading}
-                className={`w-full px-4 py-3 bg-white/50 dark:bg-zinc-800/50 border ${
-                  errors.password ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
-                } rounded-lg text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
-                placeholder={t('register.passwordPlaceholder', 'Create a password')}
-                autoComplete="new-password"
-              />
+              <div className="relative">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  id="password"
+                  name="password"
+                  value={formData.password}
+                  onChange={handleChange}
+                  onBlur={handleBlur}
+                  disabled={isLoading}
+                  className={`w-full px-4 py-3 pr-12 bg-white/50 dark:bg-zinc-800/50 border ${
+                    errors.password ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
+                  } rounded-lg text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
+                  placeholder={t('register.passwordPlaceholder', 'Create a password')}
+                  autoComplete="new-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors"
+                  tabIndex={-1}
+                >
+                  {showPassword ? (
+                    <EyeOff className="w-5 h-5" />
+                  ) : (
+                    <Eye className="w-5 h-5" />
+                  )}
+                </button>
+              </div>
               {errors.password && (
                 <p className="mt-1 text-sm text-red-500 dark:text-red-400">{errors.password}</p>
               )}
@@ -383,20 +399,34 @@ export default function Register() {
               <label htmlFor="confirmPassword" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2 transition-colors">
                 {t('register.confirmPassword', 'Confirm Password')}
               </label>
-              <input
-                type="password"
-                id="confirmPassword"
-                name="confirmPassword"
-                value={formData.confirmPassword}
-                onChange={handleChange}
-                onBlur={handleBlur}
-                disabled={isLoading}
-                className={`w-full px-4 py-3 bg-white/50 dark:bg-zinc-800/50 border ${
-                  errors.confirmPassword ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
-                } rounded-lg text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
-                placeholder={t('register.confirmPasswordPlaceholder', 'Confirm your password')}
-                autoComplete="new-password"
-              />
+              <div className="relative">
+                <input
+                  type={showConfirmPassword ? "text" : "password"}
+                  id="confirmPassword"
+                  name="confirmPassword"
+                  value={formData.confirmPassword}
+                  onChange={handleChange}
+                  onBlur={handleBlur}
+                  disabled={isLoading}
+                  className={`w-full px-4 py-3 pr-12 bg-white/50 dark:bg-zinc-800/50 border ${
+                    errors.confirmPassword ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
+                  } rounded-lg text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
+                  placeholder={t('register.confirmPasswordPlaceholder', 'Confirm your password')}
+                  autoComplete="new-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors"
+                  tabIndex={-1}
+                >
+                  {showConfirmPassword ? (
+                    <EyeOff className="w-5 h-5" />
+                  ) : (
+                    <Eye className="w-5 h-5" />
+                  )}
+                </button>
+              </div>
               {errors.confirmPassword && (
                 <p className="mt-1 text-sm text-red-500 dark:text-red-400">{errors.confirmPassword}</p>
               )}

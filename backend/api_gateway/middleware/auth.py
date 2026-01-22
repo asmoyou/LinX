@@ -34,6 +34,27 @@ PUBLIC_ENDPOINTS = {
 }
 
 
+def create_auth_error_response(message: str, error_code: str, status_code: int = 401) -> JSONResponse:
+    """Create a structured authentication error response.
+    
+    Args:
+        message: Human-readable error message
+        error_code: Machine-readable error code
+        status_code: HTTP status code
+        
+    Returns:
+        JSONResponse with structured error
+    """
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": error_code,
+            "message": message,
+        },
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 class JWTAuthMiddleware(BaseHTTPMiddleware):
     """Middleware to validate JWT tokens and add user info to request state."""
 
@@ -59,10 +80,9 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 "Missing Authorization header",
                 extra={"path": request.url.path, "method": request.method},
             )
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Missing authentication credentials", "error": "unauthorized"},
-                headers={"WWW-Authenticate": "Bearer"},
+            return create_auth_error_response(
+                message="Missing authentication credentials",
+                error_code="missing_credentials"
             )
 
         # Validate Bearer token format
@@ -72,13 +92,9 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 "Invalid Authorization header format",
                 extra={"path": request.url.path, "method": request.method},
             )
-            return JSONResponse(
-                status_code=401,
-                content={
-                    "detail": "Invalid authentication credentials format",
-                    "error": "unauthorized",
-                },
-                headers={"WWW-Authenticate": "Bearer"},
+            return create_auth_error_response(
+                message="Invalid authentication credentials format",
+                error_code="invalid_format"
             )
 
         token = parts[1]
@@ -110,10 +126,9 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             logger.warning(
                 "Expired token", extra={"path": request.url.path, "method": request.method}
             )
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Token has expired", "error": "token_expired"},
-                headers={"WWW-Authenticate": "Bearer"},
+            return create_auth_error_response(
+                message="Token has expired",
+                error_code="token_expired"
             )
 
         except JWTTokenInvalidError as e:
@@ -121,10 +136,9 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 "Invalid token",
                 extra={"path": request.url.path, "method": request.method, "error": str(e)},
             )
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Invalid authentication credentials", "error": "invalid_token"},
-                headers={"WWW-Authenticate": "Bearer"},
+            return create_auth_error_response(
+                message="Invalid authentication credentials",
+                error_code="invalid_token"
             )
 
     def _is_public_endpoint(self, path: str) -> bool:

@@ -363,3 +363,41 @@ class ABACPolicyModel(Base):
 
     def __repr__(self):
         return f"<ABACPolicyModel(policy_id={self.policy_id}, name={self.name}, effect={self.effect}, enabled={self.enabled})>"
+
+
+class LLMProvider(Base):
+    """LLM Provider configurations table.
+    
+    Stores dynamically configured LLM providers.
+    """
+    
+    __tablename__ = "llm_providers"
+    
+    provider_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), unique=True, nullable=False, index=True)
+    protocol = Column(String(50), nullable=False)  # ollama, openai_compatible
+    base_url = Column(String(500), nullable=False)
+    api_key_encrypted = Column(Text, nullable=True)  # Encrypted API key
+    timeout = Column(Integer, nullable=False, default=30)
+    max_retries = Column(Integer, nullable=False, default=3)
+    models = Column(JSONB, nullable=False)  # List of model names
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    created_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    
+    # Indexes
+    __table_args__ = (
+        Index("idx_provider_enabled", "enabled"),
+        Index("idx_provider_protocol", "protocol"),
+    )
+    
+    def __repr__(self):
+        return f"<LLMProvider(provider_id={self.provider_id}, name={self.name}, protocol={self.protocol}, enabled={self.enabled})>"

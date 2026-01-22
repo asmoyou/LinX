@@ -1,11 +1,8 @@
 #!/bin/bash
-# Comprehensive test runner script for LinX (灵枢)
-# This script runs all unit tests and generates coverage reports
+# Test runner script for LinX backend
+# Usage: ./run_tests.sh [test-type] [options]
 
 set -e
-
-echo "=== LinX (灵枢) - Test Runner ==="
-echo ""
 
 # Colors for output
 RED='\033[0;31m'
@@ -13,139 +10,136 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# Check if virtual environment is activated
-if [ -z "$VIRTUAL_ENV" ]; then
-    echo -e "${YELLOW}Warning: Virtual environment not activated${NC}"
-    echo "Activating virtual environment..."
-    if [ -f ".venv/bin/activate" ]; then
-        source .venv/bin/activate
-    elif [ -f "venv/bin/activate" ]; then
-        source venv/bin/activate
-    else
-        echo -e "${RED}Error: Virtual environment not found${NC}"
-        echo "Please create a virtual environment first:"
-        echo "  python3 -m venv .venv"
-        echo "  source .venv/bin/activate"
-        echo "  pip install -r requirements.txt"
-        echo "  pip install -r requirements-dev.txt"
-        exit 1
-    fi
-fi
+# Default values
+TEST_TYPE="all"
+COVERAGE=false
+VERBOSE=false
+PARALLEL=false
 
-# Check if pytest is installed
-if ! python -c "import pytest" 2>/dev/null; then
-    echo -e "${RED}Error: pytest not installed${NC}"
-    echo "Installing test dependencies..."
-    pip install -r requirements-dev.txt
-fi
-
-# Parse command line arguments
-TEST_PATH="${1:-.}"
-COVERAGE_MIN="${2:-80}"
-VERBOSE=""
-MARKERS=""
-
+# Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -v|--verbose)
-            VERBOSE="-v"
+        unit|integration|e2e|performance|security)
+            TEST_TYPE=$1
             shift
             ;;
-        -vv|--very-verbose)
-            VERBOSE="-vv"
+        --coverage|-c)
+            COVERAGE=true
             shift
             ;;
-        -m|--marker)
-            MARKERS="-m $2"
-            shift 2
-            ;;
-        -k|--keyword)
-            MARKERS="-k $2"
-            shift 2
-            ;;
-        --fast)
-            MARKERS="-m 'not slow'"
+        --verbose|-v)
+            VERBOSE=true
             shift
             ;;
-        --slow)
-            MARKERS="-m slow"
+        --parallel|-p)
+            PARALLEL=true
             shift
+            ;;
+        --help|-h)
+            echo "Usage: ./run_tests.sh [test-type] [options]"
+            echo ""
+            echo "Test types:"
+            echo "  unit          Run unit tests only"
+            echo "  integration   Run integration tests only"
+            echo "  e2e           Run end-to-end tests only"
+            echo "  performance   Run performance tests only"
+            echo "  security      Run security tests only"
+            echo "  all           Run all tests (default)"
+            echo ""
+            echo "Options:"
+            echo "  -c, --coverage    Generate coverage report"
+            echo "  -v, --verbose     Verbose output"
+            echo "  -p, --parallel    Run tests in parallel"
+            echo "  -h, --help        Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  ./run_tests.sh                    # Run all tests"
+            echo "  ./run_tests.sh unit               # Run unit tests only"
+            echo "  ./run_tests.sh unit --coverage    # Run unit tests with coverage"
+            echo "  ./run_tests.sh --coverage         # Run all tests with coverage"
+            exit 0
             ;;
         *)
-            TEST_PATH="$1"
-            shift
+            echo -e "${RED}Unknown option: $1${NC}"
+            echo "Use --help for usage information"
+            exit 1
             ;;
     esac
 done
 
-echo "Test Configuration:"
-echo "  Test Path: $TEST_PATH"
-echo "  Coverage Minimum: ${COVERAGE_MIN}%"
-echo "  Verbose: ${VERBOSE:-No}"
-echo "  Markers: ${MARKERS:-None}"
+# Build pytest command
+PYTEST_CMD="pytest"
+
+# Add test path based on type
+case $TEST_TYPE in
+    unit)
+        PYTEST_CMD="$PYTEST_CMD tests/unit"
+        ;;
+    integration)
+        PYTEST_CMD="$PYTEST_CMD tests/integration"
+        ;;
+    e2e)
+        PYTEST_CMD="$PYTEST_CMD tests/e2e"
+        ;;
+    performance)
+        PYTEST_CMD="$PYTEST_CMD tests/performance"
+        ;;
+    security)
+        PYTEST_CMD="$PYTEST_CMD tests/security"
+        ;;
+    all)
+        PYTEST_CMD="$PYTEST_CMD tests/"
+        ;;
+esac
+
+# Add coverage options
+if [ "$COVERAGE" = true ]; then
+    PYTEST_CMD="$PYTEST_CMD --cov=. --cov-report=html --cov-report=term"
+fi
+
+# Add verbose option
+if [ "$VERBOSE" = true ]; then
+    PYTEST_CMD="$PYTEST_CMD -v"
+fi
+
+# Add parallel option
+if [ "$PARALLEL" = true ]; then
+    PYTEST_CMD="$PYTEST_CMD -n auto"
+fi
+
+# Print header
+echo -e "${GREEN}================================${NC}"
+echo -e "${GREEN}LinX Backend Test Runner${NC}"
+echo -e "${GREEN}================================${NC}"
+echo ""
+echo -e "Test type: ${YELLOW}$TEST_TYPE${NC}"
+echo -e "Coverage:  ${YELLOW}$COVERAGE${NC}"
+echo -e "Verbose:   ${YELLOW}$VERBOSE${NC}"
+echo -e "Parallel:  ${YELLOW}$PARALLEL${NC}"
+echo ""
+echo -e "Command: ${YELLOW}$PYTEST_CMD${NC}"
 echo ""
 
-# Run tests with coverage
+# Run tests
 echo -e "${GREEN}Running tests...${NC}"
 echo ""
 
-pytest $TEST_PATH \
-    --cov=. \
-    --cov-report=term-missing \
-    --cov-report=html \
-    --cov-report=xml \
-    --cov-fail-under=$COVERAGE_MIN \
-    $VERBOSE \
-    $MARKERS \
-    || TEST_FAILED=1
-
-echo ""
-
-if [ -n "$TEST_FAILED" ]; then
-    echo -e "${RED}✗ Tests failed${NC}"
-    exit 1
-else
-    echo -e "${GREEN}✓ All tests passed${NC}"
-fi
-
-# Display coverage summary
-echo ""
-echo "=== Coverage Summary ==="
-echo ""
-python -c "
-import xml.etree.ElementTree as ET
-try:
-    tree = ET.parse('coverage.xml')
-    root = tree.getroot()
-    line_rate = float(root.attrib['line-rate']) * 100
-    branch_rate = float(root.attrib['branch-rate']) * 100
-    print(f'Line Coverage: {line_rate:.2f}%')
-    print(f'Branch Coverage: {branch_rate:.2f}%')
-    if line_rate >= $COVERAGE_MIN:
-        print('\033[0;32m✓ Coverage target met\033[0m')
-    else:
-        print(f'\033[0;31m✗ Coverage below target ({$COVERAGE_MIN}%)\033[0m')
-except:
-    print('Coverage report not available')
-"
-
-echo ""
-echo "Detailed coverage report: htmlcov/index.html"
-echo ""
-
-# Run specific test suites
-echo "=== Test Suite Summary ==="
-echo ""
-
-# Count tests by category
-echo "Test counts by module:"
-find . -name "test_*.py" -type f | while read file; do
-    module=$(dirname "$file" | sed 's|^\./||')
-    count=$(grep -c "def test_" "$file" 2>/dev/null || echo 0)
-    if [ "$count" -gt 0 ]; then
-        echo "  $module: $count tests"
+if eval $PYTEST_CMD; then
+    echo ""
+    echo -e "${GREEN}================================${NC}"
+    echo -e "${GREEN}✅ All tests passed!${NC}"
+    echo -e "${GREEN}================================${NC}"
+    
+    if [ "$COVERAGE" = true ]; then
+        echo ""
+        echo -e "${YELLOW}Coverage report generated in: htmlcov/index.html${NC}"
     fi
-done | sort
-
-echo ""
-echo -e "${GREEN}Test run complete!${NC}"
+    
+    exit 0
+else
+    echo ""
+    echo -e "${RED}================================${NC}"
+    echo -e "${RED}❌ Some tests failed!${NC}"
+    echo -e "${RED}================================${NC}"
+    exit 1
+fi

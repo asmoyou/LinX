@@ -26,6 +26,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
     { path: '/tasks', icon: Target, label: t('nav.tasks') },
     { path: '/knowledge', icon: Database, label: t('nav.knowledge') },
     { path: '/memory', icon: BrainCircuit, label: t('nav.memory') },
+    { path: '/settings', icon: Settings, label: t('nav.settings') },
   ];
 
   return (

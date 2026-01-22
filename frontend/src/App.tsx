@@ -13,6 +13,7 @@ const Workforce = lazy(() => import('./pages/Workforce').then(m => ({ default: m
 const Tasks = lazy(() => import('./pages/Tasks').then(m => ({ default: m.Tasks })));
 const Knowledge = lazy(() => import('./pages/Knowledge').then(m => ({ default: m.Knowledge })));
 const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memory })));
+const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings })));
 const Profile = lazy(() => import('./pages/Profile').then(m => ({ default: m.Profile })));
 const Login = lazy(() => import('./pages/Login'));
 const Register = lazy(() => import('./pages/Register'));
@@ -138,6 +139,21 @@ const AnimatedRoutes = () => {
                   transition={{ duration: 0.3 }}
                 >
                   <Memory />
+                </motion.div>
+              </Suspense>
+            }
+          />
+          <Route
+            path="settings"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <Settings />
                 </motion.div>
               </Suspense>
             }

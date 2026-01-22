@@ -1,331 +1,288 @@
 # Testing Guide
 
-Comprehensive testing guide for LinX (灵枢).
+LinX 后端测试指南
 
-## Overview
+## 测试结构
 
-This guide covers testing strategies, tools, and best practices for ensuring code quality and reliability.
+所有测试文件统一放在 `backend/tests/` 目录下，按类型组织：
 
-## Test Infrastructure
+```
+backend/tests/
+├── unit/              # 单元测试 - 测试单个函数/类
+├── integration/       # 集成测试 - 测试模块间交互
+├── e2e/              # 端到端测试 - 测试完整流程
+├── performance/      # 性能测试 - 测试系统性能
+├── security/         # 安全测试 - 测试安全漏洞
+└── *.py              # 通用测试（config, logging等）
+```
 
-### Test Runner
+## 快速开始
 
-Use the provided test runner script:
+### 运行所有测试
 
 ```bash
 cd backend
 ./run_tests.sh
 ```
 
-Options:
-- `-v` or `--verbose`: Verbose output
-- `-vv` or `--very-verbose`: Very verbose output
-- `-m MARKER`: Run tests with specific marker
-- `-k KEYWORD`: Run tests matching keyword
-- `--fast`: Skip slow tests
-- `--slow`: Run only slow tests
-
-### Test Configuration
-
-Test configuration is in `backend/pytest.ini`:
-- Test discovery patterns
-- Coverage settings
-- Markers for test categorization
-- Asyncio mode configuration
-
-## Current Test Status
-
-### Overall Coverage
-
-- **Total Tests**: 106 passing
-- **Overall Coverage**: 8%
-- **Target Coverage**: 80%
-
-### Module Coverage
-
-| Module | Tests | Coverage | Status |
-|--------|-------|----------|--------|
-| API Gateway | 27 tests | 89% pass rate | ✅ Good |
-| Access Control | 403 tests | 87% pass rate | ✅ Good |
-| Memory System | 31 tests | 94% pass rate | ✅ Good |
-| LLM Providers | 16 tests | 75% pass rate | ⚠️ Needs work |
-| Shared Utilities | High | 24.6% | ⚠️ Needs work |
-| Agent Framework | Tests exist | Import errors | ❌ Blocked |
-| Task Manager | Tests exist | Import errors | ❌ Blocked |
-| Knowledge Base | Tests exist | Import errors | ❌ Blocked |
-
-### Known Issues
-
-1. **LangChain API Changes**: Agent Framework and Task Manager tests fail due to LangChain API changes
-   - `AgentExecutor` import path changed
-   - `create_react_agent` import path changed
-   - Solution: Update imports to use new LangChain API
-
-2. **Import Dependencies**: Some modules have circular import issues
-   - Knowledge Base: `get_minio_client` function name mismatch
-   - Solution: Fix function names and imports
-
-3. **Async Context Managers**: LLM Provider tests have async context manager issues
-   - Solution: Update test fixtures to properly handle async contexts
-
-## Test Categories
-
-### Unit Tests
-
-Test individual components in isolation:
-
-```python
-def test_function_behavior():
-    """Test specific function behavior."""
-    result = my_function(input_data)
-    assert result == expected_output
-```
-
-### Integration Tests
-
-Test component interactions:
-
-```python
-@pytest.mark.integration
-async def test_api_to_database():
-    """Test API Gateway to Database integration."""
-    # Test code here
-```
-
-### End-to-End Tests
-
-Test complete user workflows:
-
-```python
-@pytest.mark.e2e
-async def test_user_registration_flow():
-    """Test complete user registration workflow."""
-    # Test code here
-```
-
-## Writing Tests
-
-### Test Structure
-
-```python
-"""Test module docstring.
-
-References:
-- Requirements X.Y: Description
-- Design Section Z: Description
-"""
-
-import pytest
-from unittest.mock import Mock, patch
-
-from module import function_to_test
-
-
-@pytest.fixture
-def sample_data():
-    """Provide sample test data."""
-    return {"key": "value"}
-
-
-class TestFeature:
-    """Test feature functionality."""
-    
-    def test_basic_behavior(self, sample_data):
-        """Test basic behavior with sample data."""
-        result = function_to_test(sample_data)
-        assert result is not None
-    
-    def test_error_handling(self):
-        """Test error handling."""
-        with pytest.raises(ValueError):
-            function_to_test(invalid_data)
-```
-
-### Mocking
-
-Use mocks for external dependencies:
-
-```python
-@patch('module.external_service')
-def test_with_mock(mock_service):
-    """Test with mocked external service."""
-    mock_service.return_value = "mocked_response"
-    result = function_using_service()
-    assert result == "expected_result"
-    mock_service.assert_called_once()
-```
-
-### Async Tests
-
-Test async functions:
-
-```python
-@pytest.mark.asyncio
-async def test_async_function():
-    """Test async function."""
-    result = await async_function()
-    assert result is not None
-```
-
-## Test Markers
-
-Use markers to categorize tests:
-
-```python
-@pytest.mark.unit
-def test_unit():
-    """Unit test."""
-    pass
-
-@pytest.mark.integration
-def test_integration():
-    """Integration test."""
-    pass
-
-@pytest.mark.slow
-def test_slow_operation():
-    """Slow test."""
-    pass
-
-@pytest.mark.api
-def test_api_endpoint():
-    """API test."""
-    pass
-```
-
-## Coverage Requirements
-
-### Target Coverage
-
-- **Overall**: 80% minimum
-- **Critical modules**: 90% minimum
-  - Access Control
-  - API Gateway
-  - Authentication
-  - Data encryption
-
-### Measuring Coverage
+### 运行特定类型的测试
 
 ```bash
-# Run tests with coverage
+# 只运行单元测试
+./run_tests.sh unit
+
+# 只运行集成测试
+./run_tests.sh integration
+
+# 只运行端到端测试
+./run_tests.sh e2e
+```
+
+### 生成覆盖率报告
+
+```bash
+# 运行所有测试并生成覆盖率报告
+./run_tests.sh --coverage
+
+# 运行单元测试并生成覆盖率报告
+./run_tests.sh unit --coverage
+
+# 覆盖率报告会生成在 backend/htmlcov/index.html
+```
+
+### 详细输出
+
+```bash
+# 显示详细的测试输出
+./run_tests.sh --verbose
+
+# 或简写
+./run_tests.sh -v
+```
+
+### 并行运行测试
+
+```bash
+# 使用多核并行运行测试（更快）
+./run_tests.sh --parallel
+
+# 或简写
+./run_tests.sh -p
+```
+
+### 组合选项
+
+```bash
+# 运行单元测试，生成覆盖率，详细输出
+./run_tests.sh unit --coverage --verbose
+
+# 运行所有测试，并行执行，生成覆盖率
+./run_tests.sh --parallel --coverage
+```
+
+## 使用 pytest 直接运行
+
+如果你需要更多控制，可以直接使用 pytest：
+
+```bash
+cd backend
+
+# 运行所有测试
+pytest tests/
+
+# 运行特定目录的测试
+pytest tests/unit/
+
+# 运行特定文件的测试
+pytest tests/unit/access_control/test_rbac.py
+
+# 运行特定测试函数
+pytest tests/unit/access_control/test_rbac.py::test_role_assignment
+
+# 运行匹配特定模式的测试
+pytest -k "test_rbac"
+
+# 显示详细输出
+pytest -v
+
+# 显示打印语句
+pytest -s
+
+# 在第一个失败时停止
+pytest -x
+
+# 并行运行（需要 pytest-xdist）
+pytest -n auto
+
+# 生成覆盖率报告
 pytest --cov=. --cov-report=html --cov-report=term
-
-# View HTML report
-open htmlcov/index.html
 ```
 
-### Coverage Exclusions
+## Commit 前的测试流程
 
-Exclude from coverage:
-- Test files
-- `__init__.py` files
-- Abstract methods
-- Debug code
-- Type checking blocks
+在提交代码前，建议运行以下命令：
 
-## Best Practices
-
-### Test Naming
-
-- Use descriptive names: `test_function_behavior_with_valid_input`
-- Follow pattern: `test_<function>_<scenario>_<expected>`
-
-### Test Independence
-
-- Each test should be independent
-- Use fixtures for setup/teardown
-- Don't rely on test execution order
-
-### Test Data
-
-- Use fixtures for reusable test data
-- Keep test data minimal and focused
-- Use factories for complex objects
-
-### Assertions
-
-- One logical assertion per test
-- Use descriptive assertion messages
-- Test both success and failure cases
-
-### Performance
-
-- Keep tests fast (< 1 second each)
-- Mark slow tests with `@pytest.mark.slow`
-- Use mocks to avoid external dependencies
-
-## Continuous Integration
-
-Tests run automatically on:
-- Pull requests
-- Commits to main branch
-- Scheduled daily runs
-
-CI pipeline includes:
-- Unit tests
-- Integration tests
-- Coverage reporting
-- Security scanning
-- Code quality checks
-
-## Troubleshooting
-
-### Common Issues
-
-**Import Errors**
 ```bash
-# Ensure virtual environment is activated
-source .venv/bin/activate
+cd backend
 
-# Install dependencies
-pip install -r requirements.txt -r requirements-dev.txt
+# 1. 运行单元测试（快速验证）
+./run_tests.sh unit
+
+# 2. 如果单元测试通过，运行所有测试
+./run_tests.sh --coverage
+
+# 3. 检查覆盖率报告
+# 打开 htmlcov/index.html 查看覆盖率
 ```
 
-**Database Connection Errors**
-```bash
-# Use test database
-export DATABASE_URL="postgresql://test:test@localhost/test_db"
-```
+## 编写测试
 
-**Async Test Failures**
+### 单元测试示例
+
+单元测试应该放在 `tests/unit/<module_name>/` 目录下：
+
 ```python
-# Ensure pytest-asyncio is installed
-pip install pytest-asyncio
+# tests/unit/access_control/test_rbac.py
+import pytest
+from access_control.rbac import RoleManager, Role
 
-# Use correct marker
-@pytest.mark.asyncio
-async def test_async():
-    pass
+def test_role_assignment():
+    """Test role assignment to user."""
+    manager = RoleManager()
+    user_id = "user-123"
+    
+    # Assign role
+    manager.assign_role(user_id, Role.ADMIN)
+    
+    # Verify
+    assert manager.has_role(user_id, Role.ADMIN)
+    assert not manager.has_role(user_id, Role.USER)
+
+def test_role_removal():
+    """Test role removal from user."""
+    manager = RoleManager()
+    user_id = "user-123"
+    
+    # Setup
+    manager.assign_role(user_id, Role.ADMIN)
+    
+    # Remove role
+    manager.remove_role(user_id, Role.ADMIN)
+    
+    # Verify
+    assert not manager.has_role(user_id, Role.ADMIN)
 ```
 
-## Next Steps
+### 集成测试示例
 
-To reach 80% coverage:
+集成测试应该放在 `tests/integration/` 目录下：
 
-1. **Fix Import Issues**
-   - Update LangChain imports in Agent Framework
-   - Fix function name mismatches
-   - Resolve circular dependencies
+```python
+# tests/integration/test_agent_memory_integration.py
+import pytest
+from agent_framework.base_agent import BaseAgent
+from memory_system.memory_interface import MemoryInterface
 
-2. **Add Missing Tests**
-   - Virtualization module
-   - Skill Library
-   - Message Bus
-   - Object Storage
+@pytest.mark.asyncio
+async def test_agent_memory_integration():
+    """Test agent can store and retrieve memories."""
+    agent = BaseAgent(agent_id="test-agent")
+    memory = MemoryInterface()
+    
+    # Store memory
+    await agent.store_memory("Test memory content")
+    
+    # Retrieve memory
+    memories = await agent.retrieve_memories("Test")
+    
+    # Verify
+    assert len(memories) > 0
+    assert "Test memory content" in memories[0].content
+```
 
-3. **Improve Existing Tests**
-   - Add edge case tests
-   - Test error conditions
-   - Add integration tests
+## 测试最佳实践
 
-4. **Run Tests Regularly**
-   - Before committing code
-   - After fixing bugs
-   - When adding features
+1. **测试命名**：使用描述性的测试名称
+   - ✅ `test_user_can_login_with_valid_credentials`
+   - ❌ `test_login`
 
-## References
+2. **测试隔离**：每个测试应该独立运行
+   - 使用 fixtures 进行 setup/teardown
+   - 不要依赖其他测试的状态
 
-- [pytest Documentation](https://docs.pytest.org/)
-- [pytest-asyncio](https://pytest-asyncio.readthedocs.io/)
-- [pytest-cov](https://pytest-cov.readthedocs.io/)
-- [unittest.mock](https://docs.python.org/3/library/unittest.mock.html)
+3. **测试覆盖率**：目标是 80% 以上
+   - 重点测试核心业务逻辑
+   - 测试边界条件和错误处理
+
+4. **使用 fixtures**：复用测试设置
+   ```python
+   @pytest.fixture
+   def user():
+       return User(username="test", email="test@example.com")
+   
+   def test_user_creation(user):
+       assert user.username == "test"
+   ```
+
+5. **Mock 外部依赖**：使用 mock 隔离外部服务
+   ```python
+   from unittest.mock import Mock, patch
+   
+   @patch('llm_providers.openai_provider.OpenAI')
+   def test_llm_call(mock_openai):
+       mock_openai.return_value.generate.return_value = "response"
+       # Test code here
+   ```
+
+## 持续集成
+
+项目配置了 GitHub Actions，每次 push 和 PR 都会自动运行测试：
+
+- 单元测试
+- 集成测试
+- 代码覆盖率检查
+- 代码质量检查（flake8, mypy）
+
+确保本地测试通过后再提交代码。
+
+## 故障排查
+
+### 测试失败
+
+1. 查看详细输出：`./run_tests.sh -v`
+2. 运行特定失败的测试：`pytest tests/path/to/test.py::test_name -v`
+3. 检查测试日志和错误信息
+
+### 导入错误
+
+确保在 backend 目录下运行测试，并且虚拟环境已激活：
+
+```bash
+cd backend
+source .venv/bin/activate  # macOS/Linux
+# 或
+.venv\Scripts\activate     # Windows
+```
+
+### 数据库连接错误
+
+确保测试数据库正在运行：
+
+```bash
+docker-compose up -d postgres
+```
+
+### 依赖缺失
+
+安装开发依赖：
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+## 参考资料
+
+- [pytest 文档](https://docs.pytest.org/)
+- [pytest-asyncio 文档](https://pytest-asyncio.readthedocs.io/)
+- [pytest-cov 文档](https://pytest-cov.readthedocs.io/)
+- [unittest.mock 文档](https://docs.python.org/3/library/unittest.mock.html)

@@ -37,21 +37,25 @@ export const useAuthStore = create<AuthState>()(
       
       setUser: (user) => set({ user, isAuthenticated: !!user }),
       
-      setToken: (token) => set({ token }),
+      setToken: (token) => set({ token, isAuthenticated: !!token }),
       
-      login: (user, token) => set({ 
-        user, 
-        token, 
-        isAuthenticated: true,
-        error: null 
-      }),
+      login: (user, token) => {
+        set({ 
+          user, 
+          token, 
+          isAuthenticated: true,
+          error: null 
+        });
+      },
       
-      logout: () => set({ 
-        user: null, 
-        token: null, 
-        isAuthenticated: false,
-        error: null 
-      }),
+      logout: () => {
+        set({ 
+          user: null, 
+          token: null, 
+          isAuthenticated: false,
+          error: null 
+        });
+      },
       
       setLoading: (loading) => set({ isLoading: loading }),
       
@@ -61,6 +65,7 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'auth-storage',
+      // 确保所有认证相关的状态都被持久化
       partialize: (state) => ({
         user: state.user,
         token: state.token,

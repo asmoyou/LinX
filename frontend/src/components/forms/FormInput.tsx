@@ -43,7 +43,11 @@ export const FormInput: React.FC<FormInputProps> = ({
           error
             ? 'border-red-500 dark:border-red-400'
             : 'border-zinc-300 dark:border-zinc-700'
-        } rounded-lg text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
+        } rounded-lg text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all ${
+          disabled 
+            ? 'opacity-50 cursor-not-allowed bg-zinc-100 dark:bg-zinc-900' 
+            : ''
+        }`}
         placeholder={placeholder}
         autoComplete={autoComplete}
         autoFocus={autoFocus}

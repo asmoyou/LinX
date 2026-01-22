@@ -6,4 +6,14 @@ export type Agent = {
   currentTask?: string;
   tasksCompleted: number;
   uptime: string;
+  systemPrompt?: string;
+  skills?: string[];
+  model?: string;
+  provider?: string;
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  accessLevel?: 'private' | 'team' | 'public';
+  allowedKnowledge?: string[];
+  allowedMemory?: string[];
 };
