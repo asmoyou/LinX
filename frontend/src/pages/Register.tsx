@@ -48,28 +48,112 @@ export default function Register() {
   });
   const [isLoading, setIsLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [passwordStrength, setPasswordStrength] = useState<'weak' | 'medium' | 'strong'>('weak');
+
+  // Calculate password strength
+  const calculatePasswordStrength = (password: string): 'weak' | 'medium' | 'strong' => {
+    if (password.length === 0) return 'weak';
+    
+    let strength = 0;
+    if (password.length >= 8) strength++;
+    if (password.length >= 12) strength++;
+    if (/[a-z]/.test(password) && /[A-Z]/.test(password)) strength++;
+    if (/\d/.test(password)) strength++;
+    if (/[^a-zA-Z0-9]/.test(password)) strength++;
+    
+    if (strength <= 2) return 'weak';
+    if (strength <= 4) return 'medium';
+    return 'strong';
+  };
+
+  const validateField = (name: string, value: string) => {
+    const newErrors = { ...errors };
+
+    if (name === 'username') {
+      if (!value.trim()) {
+        newErrors.username = t('register.errors.usernameRequired', 'Username is required');
+      } else if (value.length < 3) {
+        newErrors.username = t('register.errors.usernameTooShort', 'Username must be at least 3 characters');
+      } else if (!/^[a-zA-Z0-9_-]+$/.test(value)) {
+        newErrors.username = t('register.errors.usernameInvalid', 'Username can only contain letters, numbers, underscores and hyphens');
+      } else {
+        delete newErrors.username;
+      }
+    }
+
+    if (name === 'email') {
+      if (!value.trim()) {
+        newErrors.email = t('register.errors.emailRequired', 'Email is required');
+      } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+        newErrors.email = t('register.errors.emailInvalid', 'Email is invalid');
+      } else {
+        delete newErrors.email;
+      }
+    }
+
+    if (name === 'password') {
+      if (!value) {
+        newErrors.password = t('register.errors.passwordRequired', 'Password is required');
+      } else if (value.length < 6) {
+        newErrors.password = t('register.errors.passwordTooShort', 'Password must be at least 6 characters');
+      } else {
+        delete newErrors.password;
+      }
+      
+      // Update password strength
+      setPasswordStrength(calculatePasswordStrength(value));
+      
+      // Re-validate confirm password if it has been touched
+      if (touched.confirmPassword && formData.confirmPassword) {
+        if (value !== formData.confirmPassword) {
+          newErrors.confirmPassword = t('register.errors.passwordMismatch', 'Passwords do not match');
+        } else {
+          delete newErrors.confirmPassword;
+        }
+      }
+    }
+
+    if (name === 'confirmPassword') {
+      if (!value) {
+        newErrors.confirmPassword = t('register.errors.confirmPasswordRequired', 'Please confirm your password');
+      } else if (value !== formData.password) {
+        newErrors.confirmPassword = t('register.errors.passwordMismatch', 'Passwords do not match');
+      } else {
+        delete newErrors.confirmPassword;
+      }
+    }
+
+    setErrors(newErrors);
+  };
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
 
+    // Username validation
     if (!formData.username.trim()) {
       newErrors.username = t('register.errors.usernameRequired', 'Username is required');
     } else if (formData.username.length < 3) {
       newErrors.username = t('register.errors.usernameTooShort', 'Username must be at least 3 characters');
+    } else if (!/^[a-zA-Z0-9_-]+$/.test(formData.username)) {
+      newErrors.username = t('register.errors.usernameInvalid', 'Username can only contain letters, numbers, underscores and hyphens');
     }
 
+    // Email validation
     if (!formData.email.trim()) {
       newErrors.email = t('register.errors.emailRequired', 'Email is required');
     } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
       newErrors.email = t('register.errors.emailInvalid', 'Email is invalid');
     }
 
+    // Password validation
     if (!formData.password) {
       newErrors.password = t('register.errors.passwordRequired', 'Password is required');
     } else if (formData.password.length < 6) {
       newErrors.password = t('register.errors.passwordTooShort', 'Password must be at least 6 characters');
     }
 
+    // Confirm password validation
     if (!formData.confirmPassword) {
       newErrors.confirmPassword = t('register.errors.confirmPasswordRequired', 'Please confirm your password');
     } else if (formData.password !== formData.confirmPassword) {
@@ -119,10 +203,20 @@ export default function Register() {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
-    // Clear error when user starts typing
-    if (errors[name]) {
-      setErrors((prev) => ({ ...prev, [name]: '' }));
+    
+    // Mark field as touched
+    setTouched((prev) => ({ ...prev, [name]: true }));
+    
+    // Real-time validation if field has been touched
+    if (touched[name]) {
+      validateField(name, value);
     }
+  };
+
+  const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setTouched((prev) => ({ ...prev, [name]: true }));
+    validateField(name, value);
   };
 
   return (
@@ -185,6 +279,7 @@ export default function Register() {
                 name="username"
                 value={formData.username}
                 onChange={handleChange}
+                onBlur={handleBlur}
                 disabled={isLoading}
                 className={`w-full px-4 py-3 bg-white/50 dark:bg-zinc-800/50 border ${
                   errors.username ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
@@ -209,6 +304,7 @@ export default function Register() {
                 name="email"
                 value={formData.email}
                 onChange={handleChange}
+                onBlur={handleBlur}
                 disabled={isLoading}
                 className={`w-full px-4 py-3 bg-white/50 dark:bg-zinc-800/50 border ${
                   errors.email ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
@@ -232,6 +328,7 @@ export default function Register() {
                 name="password"
                 value={formData.password}
                 onChange={handleChange}
+                onBlur={handleBlur}
                 disabled={isLoading}
                 className={`w-full px-4 py-3 bg-white/50 dark:bg-zinc-800/50 border ${
                   errors.password ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
@@ -241,6 +338,43 @@ export default function Register() {
               />
               {errors.password && (
                 <p className="mt-1 text-sm text-red-500 dark:text-red-400">{errors.password}</p>
+              )}
+              {/* Password strength indicator */}
+              {formData.password && !errors.password && (
+                <div className="mt-2">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs text-zinc-600 dark:text-zinc-400">
+                      {t('register.passwordStrength', 'Password Strength')}:
+                    </span>
+                    <span className={`text-xs font-medium ${
+                      passwordStrength === 'weak' ? 'text-red-500' :
+                      passwordStrength === 'medium' ? 'text-yellow-500' :
+                      'text-green-500'
+                    }`}>
+                      {passwordStrength === 'weak' && t('register.passwordStrengthWeak', 'Weak')}
+                      {passwordStrength === 'medium' && t('register.passwordStrengthMedium', 'Medium')}
+                      {passwordStrength === 'strong' && t('register.passwordStrengthStrong', 'Strong')}
+                    </span>
+                  </div>
+                  <div className="flex gap-1">
+                    <div className={`h-1 flex-1 rounded-full transition-colors ${
+                      passwordStrength === 'weak' ? 'bg-red-500' :
+                      passwordStrength === 'medium' ? 'bg-yellow-500' :
+                      'bg-green-500'
+                    }`} />
+                    <div className={`h-1 flex-1 rounded-full transition-colors ${
+                      passwordStrength === 'medium' ? 'bg-yellow-500' :
+                      passwordStrength === 'strong' ? 'bg-green-500' :
+                      'bg-zinc-300 dark:bg-zinc-700'
+                    }`} />
+                    <div className={`h-1 flex-1 rounded-full transition-colors ${
+                      passwordStrength === 'strong' ? 'bg-green-500' : 'bg-zinc-300 dark:bg-zinc-700'
+                    }`} />
+                  </div>
+                  <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    {t('register.passwordRequirements', 'Password requirements: at least 6 characters')}
+                  </p>
+                </div>
               )}
             </div>
 
@@ -255,6 +389,7 @@ export default function Register() {
                 name="confirmPassword"
                 value={formData.confirmPassword}
                 onChange={handleChange}
+                onBlur={handleBlur}
                 disabled={isLoading}
                 className={`w-full px-4 py-3 bg-white/50 dark:bg-zinc-800/50 border ${
                   errors.confirmPassword ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
@@ -278,12 +413,16 @@ export default function Register() {
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full py-3 px-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white font-medium rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25"
+              className={`w-full py-3 px-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white font-medium rounded-lg transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25 ${
+                isLoading 
+                  ? 'opacity-75 cursor-not-allowed scale-[0.98]' 
+                  : 'hover:scale-[1.02] active:scale-[0.98]'
+              }`}
             >
               {isLoading ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  {t('register.creatingAccount', 'Creating account...')}
+                  <span className="animate-pulse">{t('register.creatingAccount', 'Creating account...')}</span>
                 </>
               ) : (
                 <>
