@@ -5,12 +5,37 @@ interface ThreeBackgroundProps {
   isDark?: boolean;
 }
 
+// Detect device performance level and return appropriate particle count
+const detectPerformanceLevel = (): number => {
+  // Check device capabilities
+  const canvas = document.createElement('canvas');
+  const gl = canvas.getContext('webgl');
+  
+  if (!gl) return 150; // Fallback for very old devices
+  
+  // Check CPU cores (rough estimate)
+  const cpuCores = navigator.hardwareConcurrency || 4;
+  
+  // Check device memory (if available)
+  const deviceMemory = (navigator as any).deviceMemory || 4;
+  
+  // Adaptive particle count based on device capabilities
+  if (cpuCores >= 8 && deviceMemory >= 8) {
+    return 400; // High-end device
+  } else if (cpuCores >= 4 && deviceMemory >= 4) {
+    return 250; // Mid-range device
+  } else {
+    return 150; // Low-end device
+  }
+};
+
 export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const particlesRef = useRef<THREE.Points | null>(null);
   const linesRef = useRef<THREE.LineSegments | null>(null);
+  const velocitiesRef = useRef<Float32Array | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -38,19 +63,22 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
     containerRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
-    // Reduced particle system - only 300 particles for better performance
-    const particleCount = 300;
+    // Adaptive particle count based on device performance
+    const particleCount = detectPerformanceLevel();
     const positions = new Float32Array(particleCount * 3);
     const velocities = new Float32Array(particleCount * 3);
+    
+    // Store velocities in ref so they persist across renders
+    velocitiesRef.current = velocities;
 
     for (let i = 0; i < particleCount * 3; i += 3) {
       positions[i] = (Math.random() - 0.5) * 100;
       positions[i + 1] = (Math.random() - 0.5) * 100;
       positions[i + 2] = (Math.random() - 0.5) * 100;
 
-      velocities[i] = (Math.random() - 0.5) * 0.01;
-      velocities[i + 1] = (Math.random() - 0.5) * 0.01;
-      velocities[i + 2] = (Math.random() - 0.5) * 0.01;
+      velocities[i] = (Math.random() - 0.5) * 0.02;
+      velocities[i + 1] = (Math.random() - 0.5) * 0.02;
+      velocities[i + 2] = (Math.random() - 0.5) * 0.02;
     }
 
     const geometry = new THREE.BufferGeometry();
@@ -104,20 +132,23 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
       animationFrameId = requestAnimationFrame(animate);
 
       // Update particle positions
-      const positions = particles.geometry.attributes.position.array as Float32Array;
+      const positionsArray = particles.geometry.attributes.position.array as Float32Array;
+      const velocitiesArray = velocitiesRef.current;
       
-      for (let i = 0; i < particleCount * 3; i += 3) {
-        positions[i] += velocities[i];
-        positions[i + 1] += velocities[i + 1];
-        positions[i + 2] += velocities[i + 2];
+      if (velocitiesArray) {
+        for (let i = 0; i < particleCount * 3; i += 3) {
+          positionsArray[i] += velocitiesArray[i];
+          positionsArray[i + 1] += velocitiesArray[i + 1];
+          positionsArray[i + 2] += velocitiesArray[i + 2];
 
-        // Boundary check with wrapping
-        if (positions[i] > 50) positions[i] = -50;
-        if (positions[i] < -50) positions[i] = 50;
-        if (positions[i + 1] > 50) positions[i + 1] = -50;
-        if (positions[i + 1] < -50) positions[i + 1] = 50;
-        if (positions[i + 2] > 50) positions[i + 2] = -50;
-        if (positions[i + 2] < -50) positions[i + 2] = 50;
+          // Boundary check with wrapping
+          if (positionsArray[i] > 50) positionsArray[i] = -50;
+          if (positionsArray[i] < -50) positionsArray[i] = 50;
+          if (positionsArray[i + 1] > 50) positionsArray[i + 1] = -50;
+          if (positionsArray[i + 1] < -50) positionsArray[i + 1] = 50;
+          if (positionsArray[i + 2] > 50) positionsArray[i + 2] = -50;
+          if (positionsArray[i + 2] < -50) positionsArray[i + 2] = 50;
+        }
       }
 
       particles.geometry.attributes.position.needsUpdate = true;
@@ -129,19 +160,19 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
 
       for (let i = 0; i < particleCount; i += checkInterval) {
         for (let j = i + 1; j < particleCount; j += checkInterval) {
-          const dx = positions[i * 3] - positions[j * 3];
-          const dy = positions[i * 3 + 1] - positions[j * 3 + 1];
-          const dz = positions[i * 3 + 2] - positions[j * 3 + 2];
+          const dx = positionsArray[i * 3] - positionsArray[j * 3];
+          const dy = positionsArray[i * 3 + 1] - positionsArray[j * 3 + 1];
+          const dz = positionsArray[i * 3 + 2] - positionsArray[j * 3 + 2];
           const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
           if (distance < maxDistance) {
             linePositions.push(
-              positions[i * 3],
-              positions[i * 3 + 1],
-              positions[i * 3 + 2],
-              positions[j * 3],
-              positions[j * 3 + 1],
-              positions[j * 3 + 2]
+              positionsArray[i * 3],
+              positionsArray[i * 3 + 1],
+              positionsArray[i * 3 + 2],
+              positionsArray[j * 3],
+              positionsArray[j * 3 + 1],
+              positionsArray[j * 3 + 2]
             );
           }
         }

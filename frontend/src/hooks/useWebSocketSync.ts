@@ -1,125 +1,61 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useAgentStore } from '../stores/agentStore';
 import { useTaskStore } from '../stores/taskStore';
 import { useNotificationStore } from '../stores/notificationStore';
-
-/**
- * WebSocket message types from backend
- */
-type WebSocketMessageType =
-  | 'agent_status_update'
-  | 'task_status_update'
-  | 'goal_status_update'
-  | 'system_notification'
-  | 'agent_created'
-  | 'agent_deleted'
-  | 'task_created'
-  | 'task_completed'
-  | 'task_failed';
-
-interface WebSocketMessage {
-  type: WebSocketMessageType;
-  data: any;
-  timestamp: string;
-}
+import { useWebSocket } from './useWebSocket';
+import type { WebSocketMessage } from '../services/websocket';
 
 /**
  * Hook to sync WebSocket updates with Zustand stores
  * 
  * This hook listens to WebSocket messages and automatically updates
- * the relevant stores with real-time data.
+ * the relevant stores with real-time data. It uses the new WebSocket
+ * manager for improved reliability and features.
  * 
  * @param wsUrl - WebSocket URL (optional, defaults to env variable)
  * @param token - Authentication token
  */
 export const useWebSocketSync = (wsUrl?: string, token?: string) => {
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
-  const reconnectAttemptsRef = useRef(0);
-  const maxReconnectAttempts = 5;
-  const reconnectDelay = 3000;
-
   const agentStore = useAgentStore();
   const taskStore = useTaskStore();
   const notificationStore = useNotificationStore();
 
+  const { status, isConnected, reconnectAttempts, on } = useWebSocket({
+    url: wsUrl,
+    token,
+    autoConnect: true,
+    reconnect: true,
+    maxReconnectAttempts: 10,
+    debug: import.meta.env.DEV,
+  });
+
+  // Subscribe to all WebSocket messages
   useEffect(() => {
-    if (!token) {
-      console.warn('WebSocket: No authentication token provided');
-      return;
+    const unsubscribe = on('all', handleWebSocketMessage);
+    return unsubscribe;
+  }, [on, agentStore, taskStore, notificationStore]);
+
+  // Show notification when max reconnect attempts reached
+  useEffect(() => {
+    if (status === 'error' && reconnectAttempts >= 10) {
+      notificationStore.addNotification({
+        type: 'error',
+        title: 'Connection Lost',
+        message: 'Unable to connect to real-time updates. Please refresh the page.',
+      });
     }
+  }, [status, reconnectAttempts, notificationStore]);
 
-    const url = wsUrl || import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws';
-    const wsUrlWithToken = `${url}?token=${token}`;
-
-    const connect = () => {
-      try {
-        console.log('WebSocket: Connecting...');
-        const ws = new WebSocket(wsUrlWithToken);
-        wsRef.current = ws;
-
-        ws.onopen = () => {
-          console.log('WebSocket: Connected');
-          reconnectAttemptsRef.current = 0;
-          
-          // Send initial subscription message
-          ws.send(JSON.stringify({
-            type: 'subscribe',
-            channels: ['agents', 'tasks', 'notifications'],
-          }));
-        };
-
-        ws.onmessage = (event) => {
-          try {
-            const message: WebSocketMessage = JSON.parse(event.data);
-            handleWebSocketMessage(message);
-          } catch (error) {
-            console.error('WebSocket: Failed to parse message', error);
-          }
-        };
-
-        ws.onerror = (error) => {
-          console.error('WebSocket: Error', error);
-        };
-
-        ws.onclose = (event) => {
-          console.log('WebSocket: Disconnected', event.code, event.reason);
-          wsRef.current = null;
-
-          // Attempt to reconnect
-          if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-            reconnectAttemptsRef.current++;
-            console.log(
-              `WebSocket: Reconnecting (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})...`
-            );
-            reconnectTimeoutRef.current = setTimeout(connect, reconnectDelay);
-          } else {
-            console.error('WebSocket: Max reconnection attempts reached');
-            notificationStore.addNotification({
-              type: 'error',
-              title: 'Connection Lost',
-              message: 'Unable to connect to real-time updates. Please refresh the page.',
-            });
-          }
-        };
-      } catch (error) {
-        console.error('WebSocket: Connection failed', error);
-      }
-    };
-
-    connect();
-
-    // Cleanup on unmount
-    return () => {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-    };
-  }, [token, wsUrl, agentStore, taskStore, notificationStore]);
+  // Show notification when max reconnect attempts reached
+  useEffect(() => {
+    if (status === 'error' && reconnectAttempts >= 10) {
+      notificationStore.addNotification({
+        type: 'error',
+        title: 'Connection Lost',
+        message: 'Unable to connect to real-time updates. Please refresh the page.',
+      });
+    }
+  }, [status, reconnectAttempts, notificationStore]);
 
   const handleWebSocketMessage = (message: WebSocketMessage) => {
     console.log('WebSocket: Received message', message.type);
@@ -233,7 +169,8 @@ export const useWebSocketSync = (wsUrl?: string, token?: string) => {
   };
 
   return {
-    isConnected: wsRef.current?.readyState === WebSocket.OPEN,
-    reconnectAttempts: reconnectAttemptsRef.current,
+    isConnected,
+    status,
+    reconnectAttempts,
   };
 };

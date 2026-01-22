@@ -564,16 +564,16 @@
 **References**: Requirements 13, Design Section 12.1
 **Description**: Implement WebSocket for real-time updates
 
-- [ ] 6.12.1 Create WebSocket connection manager
-- [ ] 6.12.2 Implement automatic reconnection logic
-- [ ] 6.12.3 Add authentication for WebSocket connections
-- [ ] 6.12.4 Create task status update handlers
-- [ ] 6.12.5 Implement agent status update handlers
-- [ ] 6.12.6 Add system metrics update handlers
-- [ ] 6.12.7 Create notification event handlers
-- [ ] 6.12.8 Implement heartbeat mechanism
-- [ ] 6.12.9 Add connection status indicator in UI
-- [ ] 6.12.10 Create WebSocket error handling and fallback
+- [x] 6.12.1 Create WebSocket connection manager
+- [x] 6.12.2 Implement automatic reconnection logic
+- [x] 6.12.3 Add authentication for WebSocket connections
+- [x] 6.12.4 Create task status update handlers
+- [x] 6.12.5 Implement agent status update handlers
+- [x] 6.12.6 Add system metrics update handlers
+- [x] 6.12.7 Create notification event handlers
+- [x] 6.12.8 Implement heartbeat mechanism
+- [x] 6.12.9 Add connection status indicator in UI
+- [x] 6.12.10 Create WebSocket error handling and fallback
 
 ### 6.13 Form Handling and Validation
 **References**: Design Section 18

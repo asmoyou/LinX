@@ -111,7 +111,7 @@ export default function Register() {
   return (
     <div className="min-h-screen flex items-center justify-center relative overflow-hidden bg-gradient-to-br from-zinc-50 via-emerald-50/30 to-zinc-50 dark:from-zinc-950 dark:via-emerald-950/20 dark:to-zinc-950 p-4 transition-colors duration-500">
       {/* Three.js animated background */}
-      <ThreeBackground isDark={displayDarkMode} />
+      <ThreeBackground isDark={displayDarkMode} key={displayDarkMode ? 'dark' : 'light'} />
       
       {/* Static background effects (fallback/enhancement) */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 1 }}>
