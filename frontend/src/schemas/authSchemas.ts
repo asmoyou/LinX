@@ -24,6 +24,17 @@ export const createAgentSchema = z.object({
   description: z.string().max(200, 'Description must not exceed 200 characters').optional(),
 });
 
+export const submitGoalSchema = z.object({
+  title: z.string()
+    .min(5, 'Goal title must be at least 5 characters')
+    .max(100, 'Goal title must not exceed 100 characters'),
+  description: z.string()
+    .min(10, 'Goal description must be at least 10 characters')
+    .max(2000, 'Goal description must not exceed 2000 characters'),
+  priority: z.enum(['low', 'medium', 'high']).optional(),
+});
+
 export type LoginFormData = z.infer<typeof loginSchema>;
 export type RegisterFormData = z.infer<typeof registerSchema>;
 export type CreateAgentFormData = z.infer<typeof createAgentSchema>;
+export type SubmitGoalFormData = z.infer<typeof submitGoalSchema>;

@@ -583,7 +583,7 @@
 - [x] 6.13.2 Create login form with validation
 - [x] 6.13.3 Implement registration form with validation
 - [x] 6.13.4 Create agent creation form with template selection
-- [ ] 6.13.5 Implement goal submission form with rich text
+- [x] 6.13.5 Implement goal submission form with rich text
 - [ ] 6.13.6 Create document upload form with drag-and-drop
 - [ ] 6.13.7 Implement user profile edit form
 - [ ] 6.13.8 Create skill creation form

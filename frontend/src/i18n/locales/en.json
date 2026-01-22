@@ -125,5 +125,34 @@
       "descriptionTooLong": "Description must not exceed 200 characters",
       "failed": "Failed to create agent. Please try again."
     }
+  },
+  "goal": {
+    "submitGoal": "Submit Goal",
+    "submittingGoal": "Submitting...",
+    "goalTitle": "Goal Title",
+    "goalTitlePlaceholder": "e.g., Generate Q4 Market Strategy Report",
+    "goalDescription": "Goal Description",
+    "goalDescriptionPlaceholder": "Describe in detail what you want to achieve...\n\nYou can include:\n• Specific requirements and expected outcomes\n• Relevant background information\n• Any constraints or preferences",
+    "priority": "Priority",
+    "priorityLow": "Low",
+    "priorityMedium": "Medium",
+    "priorityHigh": "High",
+    "cancel": "Cancel",
+    "success": "Goal submitted successfully!",
+    "formattingHelp": "Formatting Help",
+    "bold": "Bold",
+    "italic": "Italic",
+    "bulletList": "Bullet List",
+    "numberedList": "Numbered List",
+    "characterCount": "Character Count",
+    "errors": {
+      "titleRequired": "Goal title is required",
+      "titleTooShort": "Goal title must be at least 5 characters",
+      "titleTooLong": "Goal title must not exceed 100 characters",
+      "descriptionRequired": "Goal description is required",
+      "descriptionTooShort": "Goal description must be at least 10 characters",
+      "descriptionTooLong": "Goal description must not exceed 2000 characters",
+      "failed": "Failed to submit goal. Please try again."
+    }
   }
 }

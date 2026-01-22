@@ -125,5 +125,34 @@
       "descriptionTooLong": "描述不能超过200个字符",
       "failed": "创建代理失败，请重试。"
     }
+  },
+  "goal": {
+    "submitGoal": "提交目标",
+    "submittingGoal": "提交中...",
+    "goalTitle": "目标标题",
+    "goalTitlePlaceholder": "例如：生成Q4市场策略报告",
+    "goalDescription": "目标描述",
+    "goalDescriptionPlaceholder": "详细描述您想要实现的目标...\n\n您可以包含：\n• 具体要求和期望结果\n• 相关背景信息\n• 任何约束条件或偏好",
+    "priority": "优先级",
+    "priorityLow": "低",
+    "priorityMedium": "中",
+    "priorityHigh": "高",
+    "cancel": "取消",
+    "success": "目标提交成功！",
+    "formattingHelp": "格式化帮助",
+    "bold": "粗体",
+    "italic": "斜体",
+    "bulletList": "项目符号列表",
+    "numberedList": "编号列表",
+    "characterCount": "字符数",
+    "errors": {
+      "titleRequired": "目标标题不能为空",
+      "titleTooShort": "目标标题至少需要5个字符",
+      "titleTooLong": "目标标题不能超过100个字符",
+      "descriptionRequired": "目标描述不能为空",
+      "descriptionTooShort": "目标描述至少需要10个字符",
+      "descriptionTooLong": "目标描述不能超过2000个字符",
+      "failed": "提交目标失败，请重试。"
+    }
   }
 }
