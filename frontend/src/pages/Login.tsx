@@ -20,7 +20,16 @@ export default function Login() {
   const displayDarkMode = manualDarkMode !== null ? manualDarkMode : isDark;
 
   const toggleTheme = () => {
-    setManualDarkMode(prev => prev === null ? !isDark : !prev);
+    const newDarkMode = manualDarkMode === null ? !isDark : !manualDarkMode;
+    setManualDarkMode(newDarkMode);
+    
+    // Update localStorage and document class
+    localStorage.setItem('theme', newDarkMode ? 'dark' : 'light');
+    if (newDarkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
   };
 
   const [formData, setFormData] = useState({
@@ -94,7 +103,7 @@ export default function Login() {
   return (
     <div className="min-h-screen flex items-center justify-center relative overflow-hidden bg-gradient-to-br from-zinc-50 via-emerald-50/30 to-zinc-50 dark:from-zinc-950 dark:via-emerald-950/20 dark:to-zinc-950 p-4 transition-colors duration-500">
       {/* Three.js animated background */}
-      <ThreeBackground isDark={displayDarkMode} key={displayDarkMode ? 'dark' : 'light'} />
+      <ThreeBackground isDark={displayDarkMode} />
       
       {/* Static background effects (fallback/enhancement) */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 1 }}>
@@ -108,14 +117,15 @@ export default function Login() {
         <div className="flex justify-between items-center mb-4">
           <button
             onClick={toggleTheme}
-            className="p-2 rounded-lg bg-white/20 dark:bg-zinc-800/20 hover:bg-white/30 dark:hover:bg-zinc-800/30 text-zinc-700 dark:text-zinc-300 transition-all duration-300 backdrop-blur-sm border border-white/10 dark:border-zinc-700/10"
+            className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-zinc-700 dark:text-zinc-300 bg-white/20 dark:bg-zinc-800/20 hover:bg-white/30 dark:hover:bg-zinc-800/30 border border-white/10 dark:border-zinc-700/10 rounded-lg transition-all duration-200 backdrop-blur-sm"
             title={displayDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
           >
             {displayDarkMode ? (
-              <Sun className="w-5 h-5" />
+              <Sun className="w-4 h-4" />
             ) : (
-              <Moon className="w-5 h-5" />
+              <Moon className="w-4 h-4" />
             )}
+            <span>{displayDarkMode ? '亮色' : '暗色'}</span>
           </button>
           <LanguageSwitcher />
         </div>

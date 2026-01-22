@@ -129,8 +129,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
           wsManagerRef.current.disconnect();
         }
       };
-    } catch (error) {
-      console.error('[useWebSocket] Failed to initialize WebSocket manager:', error);
+    } catch (err) {
+      console.error('[useWebSocket] Failed to initialize WebSocket manager:', err);
     }
   }, [url, token, autoConnect, reconnect, reconnectInterval, maxReconnectAttempts, heartbeatInterval, debug]);
 

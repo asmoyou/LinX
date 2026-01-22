@@ -29,34 +29,7 @@ export const useWebSocketSync = (wsUrl?: string, token?: string) => {
     debug: import.meta.env.DEV,
   });
 
-  // Subscribe to all WebSocket messages
-  useEffect(() => {
-    const unsubscribe = on('all', handleWebSocketMessage);
-    return unsubscribe;
-  }, [on, agentStore, taskStore, notificationStore]);
-
-  // Show notification when max reconnect attempts reached
-  useEffect(() => {
-    if (status === 'error' && reconnectAttempts >= 10) {
-      notificationStore.addNotification({
-        type: 'error',
-        title: 'Connection Lost',
-        message: 'Unable to connect to real-time updates. Please refresh the page.',
-      });
-    }
-  }, [status, reconnectAttempts, notificationStore]);
-
-  // Show notification when max reconnect attempts reached
-  useEffect(() => {
-    if (status === 'error' && reconnectAttempts >= 10) {
-      notificationStore.addNotification({
-        type: 'error',
-        title: 'Connection Lost',
-        message: 'Unable to connect to real-time updates. Please refresh the page.',
-      });
-    }
-  }, [status, reconnectAttempts, notificationStore]);
-
+  // Define message handler
   const handleWebSocketMessage = (message: WebSocketMessage) => {
     console.log('WebSocket: Received message', message.type);
 
@@ -167,6 +140,34 @@ export const useWebSocketSync = (wsUrl?: string, token?: string) => {
         console.warn('WebSocket: Unknown message type', message.type);
     }
   };
+
+  // Subscribe to all WebSocket messages
+  useEffect(() => {
+    const unsubscribe = on('all', handleWebSocketMessage);
+    return unsubscribe;
+  }, [on, handleWebSocketMessage]);
+
+  // Show notification when max reconnect attempts reached
+  useEffect(() => {
+    if (status === 'error' && reconnectAttempts >= 10) {
+      notificationStore.addNotification({
+        type: 'error',
+        title: 'Connection Lost',
+        message: 'Unable to connect to real-time updates. Please refresh the page.',
+      });
+    }
+  }, [status, reconnectAttempts, notificationStore]);
+
+  // Show notification when max reconnect attempts reached
+  useEffect(() => {
+    if (status === 'error' && reconnectAttempts >= 10) {
+      notificationStore.addNotification({
+        type: 'error',
+        title: 'Connection Lost',
+        message: 'Unable to connect to real-time updates. Please refresh the page.',
+      });
+    }
+  }, [status, reconnectAttempts, notificationStore]);
 
   return {
     isConnected,

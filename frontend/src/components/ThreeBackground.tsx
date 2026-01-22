@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useMemo } from 'react';
 import * as THREE from 'three';
 
 interface ThreeBackgroundProps {
@@ -7,12 +7,6 @@ interface ThreeBackgroundProps {
 
 // Detect device performance level and return appropriate particle count
 const detectPerformanceLevel = (): number => {
-  // Check device capabilities
-  const canvas = document.createElement('canvas');
-  const gl = canvas.getContext('webgl');
-  
-  if (!gl) return 150; // Fallback for very old devices
-  
   // Check CPU cores (rough estimate)
   const cpuCores = navigator.hardwareConcurrency || 4;
   
@@ -36,6 +30,10 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
   const particlesRef = useRef<THREE.Points | null>(null);
   const linesRef = useRef<THREE.LineSegments | null>(null);
   const velocitiesRef = useRef<Float32Array | null>(null);
+  const animationFrameIdRef = useRef<number | null>(null);
+  
+  // Memoize particle count to avoid recalculation
+  const particleCount = useMemo(() => detectPerformanceLevel(), []);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -63,8 +61,7 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
     containerRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
-    // Adaptive particle count based on device performance
-    const particleCount = detectPerformanceLevel();
+    // Create particle system
     const positions = new Float32Array(particleCount * 3);
     const velocities = new Float32Array(particleCount * 3);
     
@@ -127,9 +124,8 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
     window.addEventListener('mousemove', handleMouseMove);
 
     // Animation loop
-    let animationFrameId: number;
     const animate = () => {
-      animationFrameId = requestAnimationFrame(animate);
+      animationFrameIdRef.current = requestAnimationFrame(animate);
 
       // Update particle positions
       const positionsArray = particles.geometry.attributes.position.array as Float32Array;
@@ -207,7 +203,9 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('resize', handleResize);
-      cancelAnimationFrame(animationFrameId);
+      if (animationFrameIdRef.current !== null) {
+        cancelAnimationFrame(animationFrameIdRef.current);
+      }
       
       if (containerRef.current && renderer.domElement.parentNode === containerRef.current) {
         containerRef.current.removeChild(renderer.domElement);
@@ -219,7 +217,7 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
       lineMaterial.dispose();
       renderer.dispose();
     };
-  }, [isDark]);
+  }, [particleCount, isDark]);
 
   return (
     <div
