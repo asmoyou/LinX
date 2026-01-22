@@ -81,16 +81,29 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-zinc-50 via-emerald-50/30 to-zinc-50 dark:from-zinc-950 dark:via-emerald-950/20 dark:to-zinc-950 p-4 transition-colors duration-500">
-      {/* Background effects */}
+    <div className="min-h-screen flex items-center justify-center relative overflow-hidden bg-gradient-to-br from-zinc-50 via-emerald-50/30 to-zinc-50 dark:from-zinc-950 dark:via-emerald-950/20 dark:to-zinc-950 p-4 transition-colors duration-500">
+      {/* Enhanced background effects with multiple layers */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        {/* Large gradient orbs */}
         <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-emerald-500/10 dark:bg-emerald-500/5 rounded-full blur-3xl animate-pulse" />
         <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-teal-500/10 dark:bg-teal-500/5 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }} />
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-gradient-to-r from-emerald-500/5 to-teal-500/5 rounded-full blur-3xl" />
+        
+        {/* Additional accent orbs for depth */}
+        <div className="absolute top-10 right-20 w-64 h-64 bg-cyan-400/8 dark:bg-cyan-400/4 rounded-full blur-2xl animate-pulse" style={{ animationDelay: '2s' }} />
+        <div className="absolute bottom-20 left-20 w-80 h-80 bg-green-400/8 dark:bg-green-400/4 rounded-full blur-2xl animate-pulse" style={{ animationDelay: '3s' }} />
+        
+        {/* Subtle grid pattern overlay */}
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808008_1px,transparent_1px),linear-gradient(to_bottom,#80808008_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_80%_50%_at_50%_50%,#000_70%,transparent_110%)]" />
+        
+        {/* Floating particles effect */}
+        <div className="absolute top-1/4 left-1/3 w-2 h-2 bg-emerald-400/20 dark:bg-emerald-400/10 rounded-full animate-float" />
+        <div className="absolute top-2/3 right-1/3 w-1.5 h-1.5 bg-teal-400/20 dark:bg-teal-400/10 rounded-full animate-float" style={{ animationDelay: '1.5s' }} />
+        <div className="absolute bottom-1/3 left-1/4 w-1 h-1 bg-cyan-400/20 dark:bg-cyan-400/10 rounded-full animate-float" style={{ animationDelay: '2.5s' }} />
       </div>
 
       {/* Login card */}
-      <div className="relative w-full max-w-md">
+      <div className="relative w-full max-w-md z-10">
         {/* Language switcher */}
         <div className="flex justify-end mb-4">
           <LanguageSwitcher />

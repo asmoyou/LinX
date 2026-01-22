@@ -27,7 +27,7 @@
   },
   "login": {
     "title": "Welcome Back",
-    "subtitle": "Sign in to your Digital Workforce Platform",
+    "subtitle": "Sign in to LinX Platform",
     "username": "Username",
     "usernamePlaceholder": "Enter your username",
     "password": "Password",
@@ -37,7 +37,7 @@
     "noAccount": "Don't have an account?",
     "signUp": "Sign up",
     "success": "Login successful!",
-    "footer": "© 2026 灵枢科技. All rights reserved.",
+    "footer": "© 2026 LinX Technology. All rights reserved.",
     "errors": {
       "usernameRequired": "Username is required",
       "passwordRequired": "Password is required",
@@ -47,7 +47,7 @@
   },
   "register": {
     "title": "Create Account",
-    "subtitle": "Join the Digital Workforce Platform",
+    "subtitle": "Join LinX Platform",
     "username": "Username",
     "usernamePlaceholder": "Choose a username",
     "email": "Email",
@@ -61,7 +61,7 @@
     "haveAccount": "Already have an account?",
     "signIn": "Sign in",
     "success": "Registration successful!",
-    "footer": "© 2026 灵枢科技. All rights reserved.",
+    "footer": "© 2026 LinX Technology. All rights reserved.",
     "errors": {
       "usernameRequired": "Username is required",
       "usernameTooShort": "Username must be at least 3 characters",
