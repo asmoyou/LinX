@@ -1,27 +1,9 @@
-import { useEffect, useRef, useMemo } from 'react';
+import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 
 interface ThreeBackgroundProps {
   isDark?: boolean;
 }
-
-// Detect device performance level and return appropriate particle count
-const detectPerformanceLevel = (): number => {
-  // Check CPU cores (rough estimate)
-  const cpuCores = navigator.hardwareConcurrency || 4;
-  
-  // Check device memory (if available)
-  const deviceMemory = (navigator as any).deviceMemory || 4;
-  
-  // Adaptive particle count based on device capabilities
-  if (cpuCores >= 8 && deviceMemory >= 8) {
-    return 400; // High-end device
-  } else if (cpuCores >= 4 && deviceMemory >= 4) {
-    return 250; // Mid-range device
-  } else {
-    return 150; // Low-end device
-  }
-};
 
 export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -29,14 +11,23 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const particlesRef = useRef<THREE.Points | null>(null);
   const linesRef = useRef<THREE.LineSegments | null>(null);
-  const velocitiesRef = useRef<Float32Array | null>(null);
   const animationFrameIdRef = useRef<number | null>(null);
-  
-  // Memoize particle count to avoid recalculation
-  const particleCount = useMemo(() => detectPerformanceLevel(), []);
+  const stateRef = useRef<{
+    positions: Float32Array;
+    velocities: Float32Array;
+    particleCount: number;
+    mouseX: number;
+    mouseY: number;
+  } | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
+
+    // Detect device performance
+    const cpuCores = navigator.hardwareConcurrency || 4;
+    const deviceMemory = (navigator as any).deviceMemory || 4;
+    const particleCount = cpuCores >= 8 && deviceMemory >= 8 ? 400 : 
+                         cpuCores >= 4 && deviceMemory >= 4 ? 250 : 150;
 
     // Scene setup
     const scene = new THREE.Scene();
@@ -54,7 +45,8 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
     // Renderer setup
     const renderer = new THREE.WebGLRenderer({ 
       alpha: true, 
-      antialias: true 
+      antialias: true,
+      powerPreference: 'high-performance'
     });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -64,29 +56,35 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
     // Create particle system
     const positions = new Float32Array(particleCount * 3);
     const velocities = new Float32Array(particleCount * 3);
-    
-    // Store velocities in ref so they persist across renders
-    velocitiesRef.current = velocities;
 
-    for (let i = 0; i < particleCount * 3; i += 3) {
-      positions[i] = (Math.random() - 0.5) * 100;
-      positions[i + 1] = (Math.random() - 0.5) * 100;
-      positions[i + 2] = (Math.random() - 0.5) * 100;
+    for (let i = 0; i < particleCount; i++) {
+      positions[i * 3] = (Math.random() - 0.5) * 100;
+      positions[i * 3 + 1] = (Math.random() - 0.5) * 100;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 100;
 
-      velocities[i] = (Math.random() - 0.5) * 0.02;
-      velocities[i + 1] = (Math.random() - 0.5) * 0.02;
-      velocities[i + 2] = (Math.random() - 0.5) * 0.02;
+      velocities[i * 3] = (Math.random() - 0.5) * 0.03;
+      velocities[i * 3 + 1] = (Math.random() - 0.5) * 0.03;
+      velocities[i * 3 + 2] = (Math.random() - 0.5) * 0.03;
     }
+
+    // Store state in ref
+    stateRef.current = {
+      positions,
+      velocities,
+      particleCount,
+      mouseX: 0,
+      mouseY: 0,
+    };
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
     // Material with color based on theme
     const particleColor = isDark ? 0x10b981 : 0x059669;
-    const particleOpacity = isDark ? 0.5 : 0.3;
+    const particleOpacity = isDark ? 0.6 : 0.4;
     
     const material = new THREE.PointsMaterial({
-      size: 1.2,
+      size: 1.5,
       color: particleColor,
       transparent: true,
       opacity: particleOpacity,
@@ -98,14 +96,13 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
     scene.add(particles);
     particlesRef.current = particles;
 
-    // Add connecting lines between nearby particles
+    // Add connecting lines
     const lineGeometry = new THREE.BufferGeometry();
     const lineMaterial = new THREE.LineBasicMaterial({
       color: particleColor,
       transparent: true,
-      opacity: isDark ? 0.1 : 0.05,
+      opacity: isDark ? 0.15 : 0.08,
       blending: THREE.AdditiveBlending,
-      linewidth: 1,
     });
 
     const lines = new THREE.LineSegments(lineGeometry, lineMaterial);
@@ -113,12 +110,11 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
     linesRef.current = lines;
 
     // Mouse interaction
-    let mouseX = 0;
-    let mouseY = 0;
-
     const handleMouseMove = (event: MouseEvent) => {
-      mouseX = (event.clientX / window.innerWidth) * 2 - 1;
-      mouseY = -(event.clientY / window.innerHeight) * 2 + 1;
+      if (stateRef.current) {
+        stateRef.current.mouseX = (event.clientX / window.innerWidth) * 2 - 1;
+        stateRef.current.mouseY = -(event.clientY / window.innerHeight) * 2 + 1;
+      }
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -127,48 +123,44 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
     const animate = () => {
       animationFrameIdRef.current = requestAnimationFrame(animate);
 
-      // Update particle positions
-      const positionsArray = particles.geometry.attributes.position.array as Float32Array;
-      const velocitiesArray = velocitiesRef.current;
-      
-      if (velocitiesArray) {
-        for (let i = 0; i < particleCount * 3; i += 3) {
-          positionsArray[i] += velocitiesArray[i];
-          positionsArray[i + 1] += velocitiesArray[i + 1];
-          positionsArray[i + 2] += velocitiesArray[i + 2];
+      if (!stateRef.current || !particles) return;
 
-          // Boundary check with wrapping
-          if (positionsArray[i] > 50) positionsArray[i] = -50;
-          if (positionsArray[i] < -50) positionsArray[i] = 50;
-          if (positionsArray[i + 1] > 50) positionsArray[i + 1] = -50;
-          if (positionsArray[i + 1] < -50) positionsArray[i + 1] = 50;
-          if (positionsArray[i + 2] > 50) positionsArray[i + 2] = -50;
-          if (positionsArray[i + 2] < -50) positionsArray[i + 2] = 50;
-        }
+      const state = stateRef.current;
+      const { positions, velocities, particleCount, mouseX, mouseY } = state;
+
+      // Update particle positions
+      for (let i = 0; i < particleCount; i++) {
+        const idx = i * 3;
+        positions[idx] += velocities[idx];
+        positions[idx + 1] += velocities[idx + 1];
+        positions[idx + 2] += velocities[idx + 2];
+
+        // Boundary wrapping
+        if (positions[idx] > 50) positions[idx] = -50;
+        if (positions[idx] < -50) positions[idx] = 50;
+        if (positions[idx + 1] > 50) positions[idx + 1] = -50;
+        if (positions[idx + 1] < -50) positions[idx + 1] = 50;
+        if (positions[idx + 2] > 50) positions[idx + 2] = -50;
+        if (positions[idx + 2] < -50) positions[idx + 2] = 50;
       }
 
       particles.geometry.attributes.position.needsUpdate = true;
 
-      // Update lines between nearby particles - optimized
+      // Update lines
       const linePositions: number[] = [];
       const maxDistance = 20;
-      const checkInterval = 5; // Only check every 5th particle for performance
 
-      for (let i = 0; i < particleCount; i += checkInterval) {
-        for (let j = i + 1; j < particleCount; j += checkInterval) {
-          const dx = positionsArray[i * 3] - positionsArray[j * 3];
-          const dy = positionsArray[i * 3 + 1] - positionsArray[j * 3 + 1];
-          const dz = positionsArray[i * 3 + 2] - positionsArray[j * 3 + 2];
+      for (let i = 0; i < particleCount; i += 3) {
+        for (let j = i + 1; j < particleCount; j += 3) {
+          const dx = positions[i * 3] - positions[j * 3];
+          const dy = positions[i * 3 + 1] - positions[j * 3 + 1];
+          const dz = positions[i * 3 + 2] - positions[j * 3 + 2];
           const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
           if (distance < maxDistance) {
             linePositions.push(
-              positionsArray[i * 3],
-              positionsArray[i * 3 + 1],
-              positionsArray[i * 3 + 2],
-              positionsArray[j * 3],
-              positionsArray[j * 3 + 1],
-              positionsArray[j * 3 + 2]
+              positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2],
+              positions[j * 3], positions[j * 3 + 1], positions[j * 3 + 2]
             );
           }
         }
@@ -179,9 +171,9 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
         new THREE.Float32BufferAttribute(linePositions, 3)
       );
 
-      // Slow rotation based on mouse position
-      particles.rotation.x += 0.0002 + mouseY * 0.00005;
-      particles.rotation.y += 0.0002 + mouseX * 0.00005;
+      // Rotation
+      particles.rotation.x += 0.0001 + mouseY * 0.00003;
+      particles.rotation.y += 0.0001 + mouseX * 0.00003;
       lines.rotation.x = particles.rotation.x;
       lines.rotation.y = particles.rotation.y;
 
@@ -190,7 +182,7 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
 
     animate();
 
-    // Handle window resize
+    // Handle resize
     const handleResize = () => {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
@@ -206,18 +198,16 @@ export const ThreeBackground: React.FC<ThreeBackgroundProps> = ({ isDark = false
       if (animationFrameIdRef.current !== null) {
         cancelAnimationFrame(animationFrameIdRef.current);
       }
-      
       if (containerRef.current && renderer.domElement.parentNode === containerRef.current) {
         containerRef.current.removeChild(renderer.domElement);
       }
-      
       geometry.dispose();
       material.dispose();
       lineGeometry.dispose();
       lineMaterial.dispose();
       renderer.dispose();
     };
-  }, [particleCount, isDark]);
+  }, [isDark]);
 
   return (
     <div
