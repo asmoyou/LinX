@@ -85,5 +85,45 @@
       "passwordMismatch": "Passwords do not match",
       "failed": "Registration failed. Please try again."
     }
+  },
+  "agent": {
+    "addAgent": "Add New Agent",
+    "createAgent": "Create Agent",
+    "creatingAgent": "Creating...",
+    "agentName": "Agent Name",
+    "agentNamePlaceholder": "e.g., Data Analyst #1",
+    "selectTemplate": "Select Template",
+    "description": "Description (Optional)",
+    "descriptionPlaceholder": "Add a description for this agent...",
+    "cancel": "Cancel",
+    "templateRequired": "Please select a template",
+    "success": "Agent created successfully!",
+    "templates": {
+      "dataAnalyst": {
+        "name": "Data Analyst",
+        "description": "Analyze data and generate insights"
+      },
+      "contentWriter": {
+        "name": "Content Writer",
+        "description": "Create and edit content"
+      },
+      "codeAssistant": {
+        "name": "Code Assistant",
+        "description": "Help with coding tasks"
+      },
+      "researchAssistant": {
+        "name": "Research Assistant",
+        "description": "Research and summarize information"
+      }
+    },
+    "errors": {
+      "nameRequired": "Agent name is required",
+      "nameTooShort": "Agent name must be at least 3 characters",
+      "nameTooLong": "Agent name must not exceed 50 characters",
+      "nameInvalid": "Agent name can only contain letters, numbers, spaces, underscores and hyphens",
+      "templateRequired": "Please select a template",
+      "descriptionTooLong": "Description must not exceed 200 characters",
+      "failed": "Failed to create agent. Please try again."
+    }
   }
 }

@@ -85,5 +85,45 @@
       "passwordMismatch": "两次输入的密码不一致",
       "failed": "注册失败，请重试。"
     }
+  },
+  "agent": {
+    "addAgent": "添加新代理",
+    "createAgent": "创建代理",
+    "creatingAgent": "创建中...",
+    "agentName": "代理名称",
+    "agentNamePlaceholder": "例如：数据分析师 #1",
+    "selectTemplate": "选择模板",
+    "description": "描述（可选）",
+    "descriptionPlaceholder": "为这个代理添加描述...",
+    "cancel": "取消",
+    "templateRequired": "请选择一个模板",
+    "success": "代理创建成功！",
+    "templates": {
+      "dataAnalyst": {
+        "name": "数据分析师",
+        "description": "分析数据并生成洞察报告"
+      },
+      "contentWriter": {
+        "name": "内容撰写者",
+        "description": "创建和编辑各类内容"
+      },
+      "codeAssistant": {
+        "name": "代码助手",
+        "description": "协助完成编程任务"
+      },
+      "researchAssistant": {
+        "name": "研究助手",
+        "description": "研究并总结信息"
+      }
+    },
+    "errors": {
+      "nameRequired": "代理名称不能为空",
+      "nameTooShort": "代理名称至少需要3个字符",
+      "nameTooLong": "代理名称不能超过50个字符",
+      "nameInvalid": "代理名称只能包含字母、数字、空格、下划线和连字符",
+      "templateRequired": "请选择一个模板",
+      "descriptionTooLong": "描述不能超过200个字符",
+      "failed": "创建代理失败，请重试。"
+    }
   }
 }
