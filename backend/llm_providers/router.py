@@ -1,19 +1,23 @@
 """
-LLM Provider Router
+LLM Provider Router with Lazy Loading
 
-Routes requests to appropriate LLM providers with fallback logic,
-model selection, retry mechanisms, and request/response logging.
+Routes requests to appropriate LLM providers with on-demand initialization.
+
+Key Design Principles:
+1. Lazy Loading: Providers initialized only when first used
+2. Database-First: Always reads latest config from database
+3. Auto-Refresh: Config changes take effect immediately (no manual reload)
+4. Memory Efficient: Only active providers kept in memory
+5. Optional Caching: Configurable TTL to avoid repeated initialization
 
 References:
 - Requirements 5: Multi-Provider LLM Support
 - Design Section 9.2: Model Selection Strategy
-- Design Section 9.3: Prompt Engineering
 """
 
 import asyncio
 import logging
 import time
-from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from llm_providers.anthropic_provider import AnthropicProvider
@@ -27,391 +31,352 @@ logger = logging.getLogger(__name__)
 
 class LLMRouter:
     """
-    Routes LLM requests to appropriate providers with fallback logic.
-
-    Supports:
-    - Automatic provider selection based on availability
-    - Task-specific model selection
-    - Retry logic with exponential backoff
-    - Request/response logging
-    - Token usage tracking
+    Routes LLM requests to appropriate providers with lazy loading.
+    
+    Architecture:
+    - No pre-loading: Providers created on first use
+    - Database priority: User configs override system defaults
+    - Cache with TTL: Optional performance optimization
+    - Stateless: Each request gets fresh config from database
     """
 
     def __init__(self, config: Dict[str, Any]):
         """
-        Initialize LLM Router.
+        Initialize LLM Router with lazy loading.
 
         Args:
             config: Configuration dict with keys:
-                - providers: Dict of provider configs
+                - providers: Dict of provider configs from config.yaml (system defaults)
                 - model_mapping: Task type to model mapping
                 - fallback_enabled: Enable fallback to cloud providers
                 - max_retries: Maximum retry attempts (default: 3)
                 - retry_delay: Initial retry delay in seconds (default: 1)
+                - cache_ttl: Provider cache TTL in seconds (default: 300, 0 to disable)
+        
+        Provider Priority:
+        1. Database (user-configured via UI) - Always checked first
+        2. Config.yaml (system defaults) - Fallback only
         """
         self.config = config
-        self.providers: Dict[str, BaseLLMProvider] = {}
         self.model_mapping = config.get("model_mapping", {})
         self.fallback_enabled = config.get("fallback_enabled", False)
         self.max_retries = config.get("max_retries", 3)
         self.retry_delay = config.get("retry_delay", 1)
+        self.cache_ttl = config.get("cache_ttl", 300)  # 5 minutes default
+
+        # Provider cache: {provider_name: (provider_instance, timestamp)}
+        self._provider_cache: Dict[str, tuple[BaseLLMProvider, float]] = {}
+        self._cache_lock = asyncio.Lock()
 
         # Token usage tracking
         self.token_usage: Dict[str, int] = {}
+        
+        # Config.yaml providers (read-only system defaults)
+        self._config_providers = config.get("providers", {})
+        
+        logger.info("=" * 70)
+        logger.info("LLMRouter initialized with LAZY LOADING architecture")
+        logger.info("- Cache TTL: %ds (0 = disabled)", self.cache_ttl)
+        logger.info("- Config.yaml providers: %s", list(self._config_providers.keys()))
+        logger.info("- Database providers: Loaded on-demand")
+        logger.info("- No pre-loading: Providers created when first used")
+        logger.info("=" * 70)
 
-        # Initialize providers
-        self._initialize_providers(config.get("providers", {}))
-
-    def _initialize_providers(self, provider_configs: Dict[str, Dict[str, Any]]):
-        """Initialize configured providers"""
-
-        # Initialize Ollama (primary local provider)
-        if "ollama" in provider_configs:
-            try:
-                self.providers["ollama"] = OllamaProvider(provider_configs["ollama"])
-                logger.info("Initialized Ollama provider")
-            except Exception as e:
-                logger.error(f"Failed to initialize Ollama provider: {e}")
-
-        # Initialize vLLM (high-performance local provider)
-        if "vllm" in provider_configs:
-            try:
-                self.providers["vllm"] = VLLMProvider(provider_configs["vllm"])
-                logger.info("Initialized vLLM provider")
-            except Exception as e:
-                logger.error(f"Failed to initialize vLLM provider: {e}")
-
-        # Initialize OpenAI (optional cloud fallback)
-        if "openai" in provider_configs and self.fallback_enabled:
-            try:
-                self.providers["openai"] = OpenAIProvider(provider_configs["openai"])
-                logger.info("Initialized OpenAI provider (fallback)")
-            except Exception as e:
-                logger.error(f"Failed to initialize OpenAI provider: {e}")
-
-        # Initialize Anthropic (optional cloud fallback)
-        if "anthropic" in provider_configs and self.fallback_enabled:
-            try:
-                self.providers["anthropic"] = AnthropicProvider(provider_configs["anthropic"])
-                logger.info("Initialized Anthropic provider (fallback)")
-            except Exception as e:
-                logger.error(f"Failed to initialize Anthropic provider: {e}")
-
-    def select_model_for_task(self, task_type: TaskType) -> tuple[str, str]:
+    async def _get_provider(self, provider_name: str) -> Optional[BaseLLMProvider]:
         """
-        Select appropriate model and provider for task type.
-
+        Get provider instance with lazy loading and optional caching.
+        
+        Flow:
+        1. Check cache (if enabled and not expired)
+        2. Load from database (user config)
+        3. Load from config.yaml (system default)
+        4. Cache result (if caching enabled)
+        
         Args:
-            task_type: Type of task
-
+            provider_name: Name of the provider
+            
         Returns:
-            Tuple of (provider_name, model_name)
+            Provider instance or None if not found
         """
-        # Get model mapping for task type
-        task_config = self.model_mapping.get(task_type.value, {})
+        async with self._cache_lock:
+            # Check cache first (if enabled)
+            if self.cache_ttl > 0 and provider_name in self._provider_cache:
+                provider, timestamp = self._provider_cache[provider_name]
+                age = time.time() - timestamp
+                
+                if age < self.cache_ttl:
+                    logger.debug(f"Cache HIT: {provider_name} (age: {age:.1f}s)")
+                    return provider
+                else:
+                    logger.debug(f"Cache EXPIRED: {provider_name} (age: {age:.1f}s)")
+                    del self._provider_cache[provider_name]
+            
+            # Load provider fresh from database or config
+            logger.info(f"Loading provider: {provider_name}")
+            provider = await self._load_provider(provider_name)
+            
+            if provider:
+                # Cache if enabled
+                if self.cache_ttl > 0:
+                    self._provider_cache[provider_name] = (provider, time.time())
+                    logger.info(f"✓ Loaded and cached: {provider_name}")
+                else:
+                    logger.info(f"✓ Loaded (no cache): {provider_name}")
+            else:
+                logger.warning(f"✗ Provider not found: {provider_name}")
+            
+            return provider
+    
+    async def _load_provider(self, provider_name: str) -> Optional[BaseLLMProvider]:
+        """
+        Load provider from database or config.yaml.
+        
+        Priority: Database > Config.yaml
+        
+        Args:
+            provider_name: Name of the provider
+            
+        Returns:
+            Provider instance or None
+        """
+        # Try database first (user configuration)
+        try:
+            from database.connection import get_db_session
+            from llm_providers.db_manager import ProviderDBManager
+            
+            with get_db_session() as db:
+                db_manager = ProviderDBManager(db)
+                db_provider = db_manager.get_provider(provider_name)
+                
+                if db_provider and db_provider.enabled:
+                    logger.info(f"  → Loading from DATABASE: {provider_name}")
+                    return await self._create_provider_from_db(db_provider, db_manager)
+        except Exception as e:
+            logger.warning(f"  → Database load failed: {e}")
+        
+        # Fallback to config.yaml (system default)
+        if provider_name in self._config_providers:
+            provider_config = self._config_providers[provider_name]
+            if provider_config.get("enabled", False):
+                logger.info(f"  → Loading from CONFIG.YAML: {provider_name}")
+                return self._create_provider_from_config(provider_name, provider_config)
+        
+        return None
+    
+    async def _create_provider_from_db(self, db_provider, db_manager) -> Optional[BaseLLMProvider]:
+        """Create provider instance from database model."""
+        try:
+            # Build config
+            provider_config = {
+                "enabled": db_provider.enabled,
+                "base_url": db_provider.base_url,
+                "timeout": db_provider.timeout,
+                "max_retries": db_provider.max_retries,
+                "models": {},
+                "available_models": db_provider.models or []
+            }
+            
+            # Add models
+            if db_provider.models:
+                provider_config["models"] = {
+                    "chat": db_provider.models[0],
+                    "embedding": db_provider.models[0],
+                    "code": db_provider.models[0],
+                }
+            
+            # Decrypt API key
+            if db_provider.api_key_encrypted:
+                decrypted_key = db_manager._decrypt_api_key(db_provider.api_key_encrypted)
+                if decrypted_key:
+                    provider_config["api_key"] = decrypted_key
+            
+            # Create provider by protocol
+            if db_provider.protocol == "ollama":
+                return OllamaProvider(provider_config)
+            elif db_provider.protocol == "openai_compatible":
+                return OpenAIProvider(provider_config)
+            else:
+                logger.error(f"Unknown protocol: {db_provider.protocol}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to create provider from DB: {e}", exc_info=True)
+            return None
+    
+    def _create_provider_from_config(self, provider_name: str, provider_config: Dict[str, Any]) -> Optional[BaseLLMProvider]:
+        """Create provider instance from config.yaml."""
+        try:
+            if provider_name == "ollama":
+                return OllamaProvider(provider_config)
+            elif provider_name == "vllm":
+                return VLLMProvider(provider_config)
+            elif provider_name == "openai":
+                return OpenAIProvider(provider_config)
+            elif provider_name == "anthropic":
+                return AnthropicProvider(provider_config)
+            else:
+                # Generic OpenAI-compatible
+                return OpenAIProvider(provider_config)
+        except Exception as e:
+            logger.error(f"Failed to create provider from config: {e}", exc_info=True)
+            return None
 
-        # Try local providers first
-        if "ollama" in self.providers:
-            model = task_config.get("ollama")
-            if model:
-                return ("ollama", model)
+    async def list_all_providers(self) -> List[str]:
+        """
+        List all available provider names (database + config.yaml).
+        
+        Returns:
+            List of provider names
+        """
+        providers = set()
+        
+        # Add database providers
+        try:
+            from database.connection import get_db_session
+            from llm_providers.db_manager import ProviderDBManager
+            
+            with get_db_session() as db:
+                db_manager = ProviderDBManager(db)
+                db_providers = db_manager.list_providers()
+                providers.update(p.name for p in db_providers if p.enabled)
+        except Exception as e:
+            logger.warning(f"Failed to list database providers: {e}")
+        
+        # Add config.yaml providers
+        for name, config in self._config_providers.items():
+            if config.get("enabled", False):
+                providers.add(name)
+        
+        return sorted(providers)
 
-        if "vllm" in self.providers:
-            model = task_config.get("vllm")
-            if model:
-                return ("vllm", model)
+    async def health_check_all(self) -> Dict[str, bool]:
+        """
+        Check health of all available providers.
+        
+        Note: This loads all providers on-demand to check health.
+        Use sparingly as it may be expensive.
+        
+        Returns:
+            Dict mapping provider name to health status
+        """
+        provider_names = await self.list_all_providers()
+        health_status = {}
+        
+        # Check health concurrently
+        async def check_one(name: str) -> tuple[str, bool]:
+            try:
+                provider = await self._get_provider(name)
+                if provider:
+                    healthy = await provider.health_check()
+                    return (name, healthy)
+                return (name, False)
+            except Exception as e:
+                logger.error(f"Health check failed for {name}: {e}")
+                return (name, False)
+        
+        results = await asyncio.gather(*[check_one(name) for name in provider_names])
+        health_status = dict(results)
+        
+        return health_status
 
-        # Fallback to cloud providers if enabled
-        if self.fallback_enabled:
-            if "openai" in self.providers:
-                model = task_config.get("openai")
-                if model:
-                    logger.warning(f"Falling back to OpenAI for {task_type.value}")
-                    return ("openai", model)
-
-            if "anthropic" in self.providers:
-                model = task_config.get("anthropic")
-                if model:
-                    logger.warning(f"Falling back to Anthropic for {task_type.value}")
-                    return ("anthropic", model)
-
-        # Default fallback
-        if "ollama" in self.providers:
-            return ("ollama", "llama3")
-
-        raise RuntimeError("No LLM providers available")
+    async def list_available_models(self) -> Dict[str, List[str]]:
+        """
+        List available models for all providers.
+        
+        Note: This loads all providers on-demand.
+        Use sparingly as it may be expensive.
+        
+        Returns:
+            Dict mapping provider name to list of models
+        """
+        provider_names = await self.list_all_providers()
+        models_dict = {}
+        
+        # List models concurrently
+        async def list_one(name: str) -> tuple[str, List[str]]:
+            try:
+                provider = await self._get_provider(name)
+                if provider:
+                    models = await provider.list_models()
+                    return (name, models)
+                return (name, [])
+            except Exception as e:
+                logger.error(f"List models failed for {name}: {e}")
+                return (name, [])
+        
+        results = await asyncio.gather(*[list_one(name) for name in provider_names])
+        models_dict = dict(results)
+        
+        return models_dict
 
     async def generate(
         self,
         prompt: str,
-        task_type: TaskType = TaskType.CHAT,
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
         provider: Optional[str] = None,
         model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
         **kwargs,
     ) -> LLMResponse:
         """
-        Generate text completion with automatic provider selection and retry.
-
+        Generate text completion.
+        
+        Provider is loaded on-demand when this method is called.
+        
         Args:
-            prompt: Input prompt text
-            task_type: Type of task for model selection
+            prompt: Input prompt
+            provider: Provider name (optional, auto-selected if not provided)
+            model: Model name (optional)
             temperature: Sampling temperature
-            max_tokens: Maximum tokens to generate
-            provider: Specific provider to use (optional)
-            model: Specific model to use (optional)
+            max_tokens: Maximum tokens
             **kwargs: Additional parameters
-
+            
         Returns:
-            LLMResponse with generated text
+            LLMResponse
         """
-        start_time = time.time()
-
-        # Select provider and model if not specified
-        if not provider or not model:
-            provider, model = self.select_model_for_task(task_type)
-
-        # Log request
-        logger.info(
-            f"LLM generate request",
-            extra={
-                "provider": provider,
-                "model": model,
-                "task_type": task_type.value,
-                "prompt_length": len(prompt),
-            },
+        # Auto-select provider if not specified
+        if not provider:
+            provider_names = await self.list_all_providers()
+            if not provider_names:
+                raise ValueError("No providers available")
+            provider = provider_names[0]  # Use first available
+        
+        # Load provider on-demand
+        provider_instance = await self._get_provider(provider)
+        if not provider_instance:
+            raise ValueError(f"Provider '{provider}' not available")
+        
+        # Generate
+        response = await provider_instance.generate(
+            prompt=prompt,
+            model=model or "default",
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs
         )
-
-        # Try with retries
-        last_exception = None
-        for attempt in range(self.max_retries):
-            try:
-                provider_instance = self.providers.get(provider)
-                if not provider_instance:
-                    raise ValueError(f"Provider {provider} not available")
-
-                # Check provider health
-                if not await provider_instance.health_check():
-                    raise RuntimeError(f"Provider {provider} is unhealthy")
-
-                # Generate response
-                response = await provider_instance.generate(
-                    prompt=prompt,
-                    model=model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    **kwargs,
-                )
-
-                # Track token usage
-                self._track_token_usage(provider, response.tokens_used)
-
-                # Log response
-                duration = time.time() - start_time
-                logger.info(
-                    f"LLM generate success",
-                    extra={
-                        "provider": provider,
-                        "model": model,
-                        "tokens_used": response.tokens_used,
-                        "duration_seconds": duration,
-                    },
-                )
-
-                return response
-
-            except Exception as e:
-                last_exception = e
-                logger.warning(
-                    f"LLM generate attempt {attempt + 1} failed: {e}",
-                    extra={"provider": provider, "model": model},
-                )
-
-                if attempt < self.max_retries - 1:
-                    # Exponential backoff
-                    delay = self.retry_delay * (2**attempt)
-                    await asyncio.sleep(delay)
-                else:
-                    # Try fallback provider on final attempt
-                    if self.fallback_enabled and provider in ["ollama", "vllm"]:
-                        logger.warning(f"Attempting fallback to cloud provider")
-                        try:
-                            return await self._try_fallback_generate(
-                                prompt, task_type, temperature, max_tokens, **kwargs
-                            )
-                        except Exception as fallback_error:
-                            logger.error(f"Fallback also failed: {fallback_error}")
-
-        # All retries failed
-        logger.error(
-            f"LLM generate failed after {self.max_retries} attempts",
-            extra={"provider": provider, "model": model},
-        )
-        raise last_exception
-
-    async def _try_fallback_generate(
-        self,
-        prompt: str,
-        task_type: TaskType,
-        temperature: float,
-        max_tokens: Optional[int],
-        **kwargs,
-    ) -> LLMResponse:
-        """Try fallback cloud providers"""
-
-        # Try OpenAI
-        if "openai" in self.providers:
-            task_config = self.model_mapping.get(task_type.value, {})
-            model = task_config.get("openai", "gpt-3.5-turbo")
-            return await self.providers["openai"].generate(
-                prompt=prompt, model=model, temperature=temperature, max_tokens=max_tokens, **kwargs
-            )
-
-        # Try Anthropic
-        if "anthropic" in self.providers:
-            task_config = self.model_mapping.get(task_type.value, {})
-            model = task_config.get("anthropic", "claude-3-haiku-20240307")
-            return await self.providers["anthropic"].generate(
-                prompt=prompt, model=model, temperature=temperature, max_tokens=max_tokens, **kwargs
-            )
-
-        raise RuntimeError("No fallback providers available")
-
-    async def generate_embedding(
-        self, text: str, provider: Optional[str] = None, model: Optional[str] = None, **kwargs
-    ) -> EmbeddingResponse:
-        """
-        Generate embedding vector with automatic provider selection and retry.
-
-        Args:
-            text: Input text to embed
-            provider: Specific provider to use (optional)
-            model: Specific model to use (optional)
-            **kwargs: Additional parameters
-
-        Returns:
-            EmbeddingResponse with embedding vector
-        """
-        start_time = time.time()
-
-        # Select provider and model if not specified
-        if not provider or not model:
-            provider, model = self.select_model_for_task(TaskType.EMBEDDING)
-
-        # Log request
-        logger.info(
-            f"Embedding generate request",
-            extra={
-                "provider": provider,
-                "model": model,
-                "text_length": len(text),
-            },
-        )
-
-        # Try with retries
-        last_exception = None
-        for attempt in range(self.max_retries):
-            try:
-                provider_instance = self.providers.get(provider)
-                if not provider_instance:
-                    raise ValueError(f"Provider {provider} not available")
-
-                # Check provider health
-                if not await provider_instance.health_check():
-                    raise RuntimeError(f"Provider {provider} is unhealthy")
-
-                # Generate embedding
-                response = await provider_instance.generate_embedding(
-                    text=text, model=model, **kwargs
-                )
-
-                # Track token usage
-                self._track_token_usage(provider, response.tokens_used)
-
-                # Log response
-                duration = time.time() - start_time
-                logger.info(
-                    f"Embedding generate success",
-                    extra={
-                        "provider": provider,
-                        "model": model,
-                        "tokens_used": response.tokens_used,
-                        "embedding_dim": len(response.embedding),
-                        "duration_seconds": duration,
-                    },
-                )
-
-                return response
-
-            except Exception as e:
-                last_exception = e
-                logger.warning(
-                    f"Embedding generate attempt {attempt + 1} failed: {e}",
-                    extra={"provider": provider, "model": model},
-                )
-
-                if attempt < self.max_retries - 1:
-                    # Exponential backoff
-                    delay = self.retry_delay * (2**attempt)
-                    await asyncio.sleep(delay)
-
-        # All retries failed
-        logger.error(
-            f"Embedding generate failed after {self.max_retries} attempts",
-            extra={"provider": provider, "model": model},
-        )
-        raise last_exception
-
-    def _track_token_usage(self, provider: str, tokens: int):
-        """Track token usage by provider"""
-        if provider not in self.token_usage:
-            self.token_usage[provider] = 0
-        self.token_usage[provider] += tokens
+        
+        # Track token usage
+        self.token_usage[provider] = self.token_usage.get(provider, 0) + response.tokens_used
+        
+        return response
 
     def get_token_usage(self) -> Dict[str, int]:
-        """Get token usage statistics"""
+        """Get token usage by provider."""
         return self.token_usage.copy()
 
-    async def list_available_models(self) -> Dict[str, List[str]]:
-        """
-        List available models from all providers.
+    def clear_cache(self):
+        """Clear provider cache (force reload on next use)."""
+        self._provider_cache.clear()
+        logger.info("Provider cache cleared")
 
-        Returns:
-            Dict mapping provider names to model lists
-        """
-        models = {}
-        for provider_name, provider in self.providers.items():
-            try:
-                models[provider_name] = await provider.list_models()
-            except Exception as e:
-                logger.error(f"Failed to list models for {provider_name}: {e}")
-                models[provider_name] = []
-        return models
-
-    async def health_check_all(self) -> Dict[str, bool]:
-        """
-        Check health of all providers.
-
-        Returns:
-            Dict mapping provider names to health status
-        """
-        health = {}
-        for provider_name, provider in self.providers.items():
-            try:
-                health[provider_name] = await provider.health_check()
-            except Exception as e:
-                logger.error(f"Health check failed for {provider_name}: {e}")
-                health[provider_name] = False
-        return health
-
-    async def close_all(self):
-        """Close all provider connections"""
-        for provider in self.providers.values():
+    async def close(self):
+        """Close all cached providers."""
+        for provider, _ in self._provider_cache.values():
             try:
                 await provider.close()
             except Exception as e:
                 logger.error(f"Error closing provider: {e}")
+        self._provider_cache.clear()
 
 
 # Singleton instance
@@ -423,18 +388,27 @@ def get_llm_provider(config: Optional[Dict[str, Any]] = None) -> LLMRouter:
     Get or create the LLM router singleton.
 
     Args:
-        config: Optional configuration dictionary. If not provided,
-               configuration will be loaded from config.yaml
+        config: Optional configuration. If not provided, loads from config.yaml
 
     Returns:
         LLMRouter instance
     """
     global _llm_router
+
     if _llm_router is None:
         if config is None:
             from shared.config import get_config
-
             cfg = get_config()
-            config = cfg.get_section("llm")
+            config = {
+                "providers": cfg.get("llm.providers", {}),
+                "model_mapping": cfg.get("llm.model_mapping", {}),
+                "fallback_enabled": cfg.get("llm.fallback_enabled", False),
+                "max_retries": cfg.get("llm.max_retries", 3),
+                "retry_delay": cfg.get("llm.retry_delay", 1),
+                "cache_ttl": cfg.get("llm.cache_ttl", 300),
+            }
+
         _llm_router = LLMRouter(config)
+        logger.info("LLM Router singleton created")
+
     return _llm_router

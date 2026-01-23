@@ -8,12 +8,12 @@ interface AgentCardProps {
   onView: (agent: Agent) => void;
   onConfigure: (agent: Agent) => void;
   onDelete: (agent: Agent) => void;
+  onTest?: (agent: Agent) => void;
 }
 
-export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure, onDelete }) => {
+export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure, onDelete, onTest }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = React.useState(false);
-  const [showTestChat, setShowTestChat] = React.useState(false);
 
   const getStatusColor = (status: Agent['status']) => {
     switch (status) {
@@ -31,13 +31,14 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure
 
   const handleTestChat = () => {
     setShowMenu(false);
-    setShowTestChat(true);
+    if (onTest) {
+      onTest(agent);
+    }
   };
 
   return (
-    <>
-      <div className="glass-panel group relative rounded-[32px] overflow-hidden p-8 hover:-translate-y-1 transition-all duration-300">
-        <div className="flex justify-between items-start mb-8">
+    <div className="glass-panel group relative rounded-[32px] overflow-hidden p-8 hover:-translate-y-1 transition-all duration-300">
+      <div className="flex justify-between items-start mb-8">
           <div className="relative">
             <div className="w-20 h-20 rounded-[24px] overflow-hidden border-2 border-white dark:border-zinc-800 shadow-2xl">
               <img src={avatarUrl} alt={agent.name} className="w-full h-full object-cover" />
@@ -104,7 +105,7 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure
           </div>
         </div>
 
-        <div className="space-y-4">
+      <div className="space-y-4">
           <div>
             <h3 className="text-2xl font-bold tracking-tight mb-1 text-zinc-800 dark:text-zinc-200">{agent.name}</h3>
             <div className="flex items-center gap-2">
@@ -134,9 +135,9 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure
               </span>
             )}
           </div>
-        </div>
+      </div>
 
-        <div className="mt-8 pt-6 border-t border-zinc-500/5 flex justify-between items-center">
+      <div className="mt-8 pt-6 border-t border-zinc-500/5 flex justify-between items-center">
           <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">
             {agent.skills?.length || 0} Skills
           </span>
@@ -146,44 +147,7 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure
           >
             {t('agent.testAgent')}
           </button>
-        </div>
       </div>
-
-      {/* Test Chat Modal */}
-      {showTestChat && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="glass-panel w-full max-w-2xl max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-4 pb-4 border-b border-zinc-500/10">
-              <h3 className="text-xl font-bold text-zinc-800 dark:text-zinc-200">
-                {t('agent.testConversation')} - {agent.name}
-              </h3>
-              <button
-                onClick={() => setShowTestChat(false)}
-                className="p-2 hover:bg-zinc-500/5 rounded-lg transition-colors text-zinc-600 dark:text-zinc-400"
-              >
-                ✕
-              </button>
-            </div>
-            
-            <div className="flex-1 overflow-y-auto mb-4 space-y-4 min-h-[300px]">
-              <div className="text-center text-zinc-500 dark:text-zinc-400 text-sm py-8">
-                {t('agent.messagePlaceholder')}
-              </div>
-            </div>
-
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder={t('agent.messagePlaceholder')}
-                className="flex-1 px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
-              />
-              <button className="px-6 py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-semibold transition-colors">
-                {t('agent.sendMessage')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
+    </div>
   );
 };

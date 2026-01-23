@@ -10,16 +10,26 @@ References:
 
 import logging
 import os
+from pathlib import Path
 from typing import List, Optional
 from uuid import UUID
 
 from cryptography.fernet import Fernet
+from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
 from database.models import LLMProvider
 from llm_providers.models import ProviderConfig, ProviderProtocol
 
 logger = logging.getLogger(__name__)
+
+# Load .env file from backend directory
+env_path = Path(__file__).parent.parent / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
+    logger.info(f"Loaded .env file from {env_path}")
+else:
+    logger.warning(f".env file not found at {env_path}")
 
 
 def _get_encryption_key() -> bytes:
@@ -220,6 +230,38 @@ class ProviderDBManager:
         self.db.commit()
         
         logger.info(f"Deleted LLM provider: {name}")
+        return True
+    
+    def update_test_status(
+        self,
+        provider_name: str,
+        status: str,
+        error_message: Optional[str] = None,
+    ) -> bool:
+        """
+        Update provider's last test status.
+        
+        Args:
+            provider_name: Provider name
+            status: Test status ('success', 'failed', 'untested')
+            error_message: Error message if test failed
+            
+        Returns:
+            True if updated, False if provider not found
+        """
+        from datetime import datetime, timezone
+        
+        provider = self.get_provider(provider_name)
+        if not provider:
+            return False
+        
+        provider.last_test_status = status
+        provider.last_test_time = datetime.now(timezone.utc)
+        provider.last_test_error = error_message
+        
+        self.db.commit()
+        
+        logger.info(f"Updated test status for {provider_name}: {status}")
         return True
     
     def to_provider_config(self, provider: LLMProvider) -> ProviderConfig:

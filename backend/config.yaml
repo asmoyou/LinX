@@ -131,6 +131,7 @@ llm:
   timeout_seconds: 120
   max_retries: 3
   retry_delay_seconds: 2
+  cache_ttl: 30  # Provider cache TTL in seconds (0 to disable, default: 300)
   
   providers:
     ollama:
@@ -140,10 +141,6 @@ llm:
       base_url: "http://192.168.0.29:11434"
       models:
         chat: "qwen3-vl:30b"
-        code: "qwen3-vl:30b"
-        embedding: "nomic-embed-text"
-        summarization: "qwen3-vl:30b"
-        translation: "qwen3-vl:30b"
       temperature: 0.7
       top_p: 0.9
       top_k: 40
@@ -153,43 +150,16 @@ llm:
       num_ctx: 8192
     
     vllm:
-      enabled: false
-      host: "localhost"
+      enabled: true
+      host: "192.168.0.29"
       port: 8000
-      base_url: "http://localhost:8000"
+      base_url: "http://192.168.0.29:6006"
       models:
-        chat: "meta-llama/Llama-3-70b"
-        code: "codellama/CodeLlama-13b-hf"
+        chat: "Qwen3-Next-80B-A3B-Instruct-AWQ-4bit"
       gpu_memory_utilization: 0.9
       max_num_seqs: 256
       max_model_len: 8192
-    
-    openai:
-      enabled: false
-      api_key: ""
-      organization: ""
-      models:
-        chat: "gpt-4"
-        code: "gpt-4"
-        embedding: "text-embedding-3-large"
-        summarization: "gpt-3.5-turbo"
-      temperature: 0.7
-      max_tokens: 2048
-      top_p: 1.0
-      frequency_penalty: 0.0
-      presence_penalty: 0.0
-    
-    anthropic:
-      enabled: false
-      api_key: ""
-      models:
-        chat: "claude-3-opus-20240229"
-        code: "claude-3-opus-20240229"
-        summarization: "claude-3-sonnet-20240229"
-      temperature: 0.7
-      max_tokens: 4096
-      top_p: 1.0
-      top_k: 40
+
 
 # ============================================================================
 # Agent Framework Configuration

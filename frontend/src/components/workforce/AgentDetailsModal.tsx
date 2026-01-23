@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Activity, Clock, CheckCircle } from 'lucide-react';
+import { X, Activity, Clock, CheckCircle, MessageSquare } from 'lucide-react';
 import { GlassPanel } from '@/components/GlassPanel';
 import type { Agent } from '@/types/agent';
 
@@ -7,9 +7,10 @@ interface AgentDetailsModalProps {
   agent: Agent | null;
   isOpen: boolean;
   onClose: () => void;
+  onTest?: (agent: Agent) => void;
 }
 
-export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({ agent, isOpen, onClose }) => {
+export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({ agent, isOpen, onClose, onTest }) => {
   if (!isOpen || !agent) return null;
 
   const mockLogs = [
@@ -24,12 +25,23 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({ agent, isO
       <GlassPanel className="w-full max-w-4xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-gray-800 dark:text-white">{agent.name}</h2>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-white/20 rounded-lg transition-colors"
-          >
-            <X className="w-6 h-6 text-gray-700 dark:text-gray-300" />
-          </button>
+          <div className="flex items-center gap-2">
+            {onTest && (
+              <button
+                onClick={() => onTest(agent)}
+                className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg font-semibold transition-colors flex items-center gap-2"
+              >
+                <MessageSquare className="w-4 h-4" />
+                Test Agent
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-white/20 rounded-lg transition-colors"
+            >
+              <X className="w-6 h-6 text-gray-700 dark:text-gray-300" />
+            </button>
+          </div>
         </div>
 
         {/* Agent Info */}

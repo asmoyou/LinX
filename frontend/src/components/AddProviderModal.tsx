@@ -21,18 +21,7 @@ const providerSchema = z.object({
   timeout: z.number().min(5).max(300),
   max_retries: z.number().min(0).max(10),
   selected_models: z.array(z.string()).min(1, 'settings.errors.noModelsSelected'),
-}).refine(
-  (data) => {
-    if (data.protocol === 'openai_compatible' && !data.api_key) {
-      return false;
-    }
-    return true;
-  },
-  {
-    message: 'settings.errors.apiKeyRequired',
-    path: ['api_key'],
-  }
-);
+});
 
 type ProviderFormData = z.infer<typeof providerSchema>;
 
@@ -48,6 +37,7 @@ interface AddProviderModalProps {
     max_retries: number;
     selected_models: string[];
     has_api_key: boolean;
+    is_config_based?: boolean;
   };
 }
 
@@ -65,43 +55,64 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
   const [showApiKey, setShowApiKey] = useState(false);
   const [manualModelInput, setManualModelInput] = useState('');
   const [manualModels, setManualModels] = useState<string[]>([]);
+  const [isConfigBased, setIsConfigBased] = useState(false);
 
   const {
     register,
     handleSubmit,
     watch,
     setValue,
+    reset,
     formState: { errors, isSubmitting },
   } = useForm<ProviderFormData>({
     resolver: zodResolver(providerSchema),
-    defaultValues: editProvider
-      ? {
-          name: editProvider.name,
-          protocol: editProvider.protocol as 'ollama' | 'openai_compatible',
-          base_url: editProvider.base_url,
-          api_key: '',
-          timeout: editProvider.timeout,
-          max_retries: editProvider.max_retries,
-          selected_models: editProvider.selected_models,
-        }
-      : {
-          protocol: 'ollama',
-          timeout: 30,
-          max_retries: 3,
-          selected_models: [],
-        },
+    defaultValues: {
+      protocol: 'ollama',
+      timeout: 30,
+      max_retries: 3,
+      selected_models: [],
+    },
   });
 
   const protocol = watch('protocol');
   const selectedModels = watch('selected_models') || [];
 
-  // 编辑模式下，初始化手动模型列表
+  // 编辑模式下，初始化表单和手动模型列表
   useEffect(() => {
-    if (editProvider?.selected_models && editProvider.selected_models.length > 0) {
-      setManualModels(editProvider.selected_models);
-      setConnectionTested(true);
+    if (editProvider) {
+      // 记录是否是 config.yaml 提供商
+      setIsConfigBased(editProvider.is_config_based || false);
+      
+      // 重置表单为编辑模式的值
+      reset({
+        name: editProvider.name,
+        protocol: editProvider.protocol as 'ollama' | 'openai_compatible',
+        base_url: editProvider.base_url,
+        api_key: '',
+        timeout: editProvider.timeout,
+        max_retries: editProvider.max_retries,
+        selected_models: editProvider.selected_models || [],
+      });
+      
+      // 设置手动模型列表
+      if (editProvider.selected_models && editProvider.selected_models.length > 0) {
+        setManualModels(editProvider.selected_models);
+        setConnectionTested(true);
+      }
+    } else {
+      // 新建模式，重置为默认值
+      setIsConfigBased(false);
+      reset({
+        protocol: 'ollama',
+        timeout: 30,
+        max_retries: 3,
+        selected_models: [],
+      });
+      setManualModels([]);
+      setConnectionTested(false);
+      setAvailableModels([]);
     }
-  }, [editProvider]);
+  }, [editProvider, reset]);
 
   const testConnection = async () => {
     const base_url = watch('base_url');
@@ -113,7 +124,7 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
       return;
     }
 
-    // 编辑模式下，如果没有填写新的 API Key，提示用户
+    // 新建模式下，OpenAI 兼容协议必须提供 API Key
     if (protocol === 'openai_compatible' && !api_key && !editProvider) {
       toast.error(t('settings.errors.apiKeyRequired'));
       return;
@@ -144,15 +155,17 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
           t('settings.connectionSuccess', { count: data.available_models.length })
         );
       } else {
-        // 连接成功但没有模型，或者连接失败
-        toast(t('settings.connectionFailedManual'), { icon: '⚠️' });
-        setConnectionTested(true);
+        // 连接失败，显示详细错误信息
+        const errorMsg = data.error || data.message || t('settings.connectionFailed');
+        toast.error(`${t('settings.connectionFailed')}: ${errorMsg}`);
+        setConnectionTested(false);
         setAvailableModels([]);
       }
     } catch (error: any) {
-      // 网络错误，但允许手动输入模型
-      toast(t('settings.errors.testFailedManual'), { icon: '⚠️' });
-      setConnectionTested(true);
+      // 网络错误
+      const errorMsg = error.message || t('settings.errors.networkError');
+      toast.error(`${t('settings.errors.testFailed')}: ${errorMsg}`);
+      setConnectionTested(false);
       setAvailableModels([]);
     } finally {
       setTestingConnection(false);
@@ -198,13 +211,19 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
         : '/api/v1/llm/providers';
       const method = editProvider ? 'PUT' : 'POST';
 
+      // 如果是编辑模式且 API key 为空，不发送 api_key 字段（保持原有的 key）
+      const payload: any = { ...data };
+      if (editProvider && !data.api_key) {
+        delete payload.api_key;
+      }
+
       const response = await fetch(url, {
         method,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify(data),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
@@ -258,6 +277,21 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
 
         {/* Form */}
         <form onSubmit={handleSubmit(onSubmit)} className="p-6 space-y-6">
+          {/* Config-based Provider Warning */}
+          {isConfigBased && (
+            <div className="flex items-start gap-3 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+              <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-amber-800 dark:text-amber-300 mb-1">
+                  {t('settings.configProviderWarning', 'Config.yaml Provider')}
+                </p>
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  {t('settings.configProviderWarningDetail', 'Changes will take effect immediately but will NOT be saved to config.yaml. After restarting the service, settings will revert to config.yaml values. To make permanent changes, edit config.yaml directly.')}
+                </p>
+              </div>
+            </div>
+          )}
+          
           {/* Provider Name */}
           <div>
             <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">

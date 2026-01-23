@@ -96,7 +96,12 @@ async def get_providers(
     Get all LLM providers and their status.
 
     Returns provider health status, available models, and configuration.
+    Combines providers from config.yaml and database.
     Marks providers from config.yaml as is_config_based=True (cannot be deleted via API).
+    
+    NOTE: This endpoint does NOT initialize providers (lazy loading).
+    Health status is based on database configuration validity, not actual connection test.
+    Use test_connection endpoint to verify actual connectivity.
     """
     if get_llm_provider is None:
         raise HTTPException(
@@ -107,40 +112,75 @@ async def get_providers(
     try:
         llm_router = get_llm_provider()
 
-        # Get health status for all providers
-        health_status = await llm_router.health_check_all()
-
-        # Get available models for each provider
-        available_models = await llm_router.list_available_models()
-
-        # Get list of providers from database to determine which are config-based
-        db_provider_names = set()
+        # Get all providers from database
+        db_providers = {}
         try:
             with get_db_session() as db:
                 db_manager = ProviderDBManager(db)
-                db_providers = db_manager.list_providers()
-                db_provider_names = {p.name for p in db_providers}
+                db_provider_list = db_manager.list_providers()
+                for p in db_provider_list:
+                    db_providers[p.name] = p
         except Exception as e:
             logger.warning(f"Failed to get database providers: {e}")
 
-        # Build provider status
+        # Get config.yaml providers
+        from shared.config import get_config
+        config = get_config()
+        config_providers = config.get("llm.providers", {})
+
+        # Build provider status - combine all sources
         providers = {}
-        for provider_name in llm_router.providers.keys():
-            # Provider is config-based if it's NOT in the database
-            is_config_based = provider_name not in db_provider_names
+        
+        # Get all provider names (database + config.yaml)
+        all_provider_names = set()
+        all_provider_names.update(db_providers.keys())
+        all_provider_names.update(config_providers.keys())
+        
+        # Build status for each provider WITHOUT initializing them
+        for provider_name in all_provider_names:
+            is_config_based = provider_name in config_providers and provider_name not in db_providers
+            
+            # Determine health based on last test status
+            # For database providers: use last_test_status if available
+            # For config providers: assume healthy if enabled
+            healthy = False
+            available_models = []
+            
+            if provider_name in db_providers:
+                # Database provider
+                db_provider = db_providers[provider_name]
+                
+                # Health based on last test status
+                if db_provider.last_test_status == 'success':
+                    healthy = True
+                elif db_provider.last_test_status == 'failed':
+                    healthy = False
+                else:
+                    # Untested or no test yet - assume healthy if enabled and has base_url
+                    healthy = db_provider.enabled and bool(db_provider.base_url)
+                
+                available_models = db_provider.models or []
+            elif provider_name in config_providers:
+                # Config.yaml provider - assume healthy if enabled
+                provider_config = config_providers[provider_name]
+                healthy = provider_config.get("enabled", False) and bool(provider_config.get("base_url"))
+                # Extract models from config
+                models_dict = provider_config.get("models", {})
+                if isinstance(models_dict, dict):
+                    available_models = list(models_dict.values())
             
             providers[provider_name] = ProviderStatus(
                 name=provider_name,
-                healthy=health_status.get(provider_name, False),
-                available_models=available_models.get(provider_name, []),
+                healthy=healthy,
+                available_models=available_models,
                 is_config_based=is_config_based,
             )
 
         return LLMConfigResponse(
             providers=providers,
-            default_provider=llm_router.config.get("default_provider", "ollama"),
-            fallback_enabled=llm_router.fallback_enabled,
-            model_mapping=llm_router.model_mapping,
+            default_provider=config.get("llm.default_provider", "ollama"),
+            fallback_enabled=config.get("llm.enable_fallback", False),
+            model_mapping=config.get("llm.model_mapping", {}),
         )
 
     except Exception as e:
@@ -242,6 +282,7 @@ async def test_generation(
     Test LLM generation with a prompt.
 
     Useful for testing provider connectivity and model performance.
+    Returns detailed error information if generation fails.
     """
     if get_llm_provider is None:
         raise HTTPException(
@@ -269,11 +310,63 @@ async def test_generation(
             success=True,
         )
 
+    except ValueError as e:
+        # Provider not found or configuration error
+        error_msg = str(e)
+        logger.error(f"Test generation failed (ValueError): {error_msg}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Configuration error: {error_msg}",
+        )
     except Exception as e:
-        logger.error(f"Test generation failed: {e}")
+        # Connection error, timeout, or other runtime error
+        error_msg = str(e)
+        logger.error(f"Test generation failed: {error_msg}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Test generation failed: {str(e)}",
+            detail=f"Generation failed: {error_msg}",
+        )
+
+
+@router.get("/providers/available", response_model=Dict[str, List[str]])
+async def get_available_providers_and_models(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Get available providers and their models for agent configuration.
+    
+    Returns only enabled providers with their available models.
+    This endpoint is used by the agent configuration UI.
+    """
+    if get_llm_provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LLM providers not configured",
+        )
+
+    try:
+        llm_router = get_llm_provider()
+        
+        # Get health status and available models
+        health_status = await llm_router.health_check_all()
+        available_models = await llm_router.list_available_models()
+        
+        # Filter to only enabled and healthy providers
+        result = {}
+        for provider_name, provider in llm_router.providers.items():
+            # Check if provider is healthy
+            if health_status.get(provider_name, False):
+                models = available_models.get(provider_name, [])
+                if models:  # Only include providers with available models
+                    result[provider_name] = models
+        
+        return result
+
+    except Exception as e:
+        logger.error(f"Failed to get available providers: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get available providers: {str(e)}",
         )
 
 
@@ -306,6 +399,86 @@ async def get_token_usage(
 
 
 # Provider Management Endpoints (Admin Only)
+
+@router.get("/providers/{name}", response_model=ProviderResponse)
+@require_role([Role.ADMIN])
+async def get_provider_detail(
+    name: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Get detailed configuration for a specific provider.
+    
+    Returns full configuration including base_url, timeout, models, etc.
+    Useful for editing provider configuration.
+    
+    Requires admin permission.
+    """
+    try:
+        # First, try to get from database
+        with get_db_session() as db:
+            db_manager = ProviderDBManager(db)
+            db_provider = db_manager.get_provider(name)
+            
+            if db_provider:
+                return ProviderResponse(
+                    name=db_provider.name,
+                    protocol=db_provider.protocol,
+                    base_url=db_provider.base_url,
+                    timeout=db_provider.timeout,
+                    max_retries=db_provider.max_retries,
+                    selected_models=db_provider.models,
+                    enabled=db_provider.enabled,
+                    has_api_key=bool(db_provider.api_key_encrypted),
+                    is_config_based=False,
+                )
+        
+        # If not in database, try to get from config.yaml
+        from shared.config import get_config
+        config = get_config()
+        config_providers = config.get("llm.providers", {})
+        
+        if name in config_providers:
+            provider_config = config_providers[name]
+            
+            # Extract models from config
+            models_dict = provider_config.get("models", {})
+            models = list(models_dict.values()) if isinstance(models_dict, dict) else []
+            
+            # Get timeout and max_retries from provider config or global config
+            timeout = provider_config.get("timeout", config.get("llm.timeout_seconds", 30))
+            max_retries = provider_config.get("max_retries", config.get("llm.max_retries", 3))
+            
+            # Determine protocol
+            protocol = "ollama" if name == "ollama" else "openai_compatible"
+            
+            return ProviderResponse(
+                name=name,
+                protocol=protocol,
+                base_url=provider_config.get("base_url", ""),
+                timeout=timeout,
+                max_retries=max_retries,
+                selected_models=models,
+                enabled=provider_config.get("enabled", False),
+                has_api_key=bool(provider_config.get("api_key")),
+                is_config_based=True,
+            )
+        
+        # Provider not found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Provider '{name}' not found",
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get provider detail: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get provider detail: {str(e)}",
+        )
+
 
 @router.get("/providers/list", response_model=ProviderListResponse)
 @require_role([Role.ADMIN])
@@ -422,6 +595,15 @@ async def create_provider(
                 created_by=current_user.user_id,
             )
             
+            # Clear cache to force reload on next use
+            if get_llm_provider is not None:
+                try:
+                    llm_router = get_llm_provider()
+                    llm_router.clear_cache()
+                    logger.info(f"Cleared provider cache after creating {provider.name}")
+                except Exception as cache_error:
+                    logger.error(f"Failed to clear cache: {cache_error}")
+            
             return ProviderResponse(
                 name=provider.name,
                 protocol=provider.protocol,
@@ -473,6 +655,15 @@ async def update_provider(
                 enabled=request.enabled,
             )
             
+            # Clear cache to force reload on next use
+            if get_llm_provider is not None:
+                try:
+                    llm_router = get_llm_provider()
+                    llm_router.clear_cache()
+                    logger.info(f"Cleared provider cache after updating {provider.name}")
+                except Exception as cache_error:
+                    logger.error(f"Failed to clear cache: {cache_error}")
+            
             return ProviderResponse(
                 name=provider.name,
                 protocol=provider.protocol,
@@ -509,6 +700,8 @@ async def delete_provider(
     Only dynamically added providers (stored in database) can be deleted.
     Providers defined in config.yaml cannot be deleted via API.
     
+    Automatically reloads providers after deletion (hot reload).
+    
     Requires admin permission.
     """
     try:
@@ -543,6 +736,16 @@ async def delete_provider(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Provider '{name}' not found",
                 )
+            
+            # Hot reload: Remove the provider from runtime immediately
+            if get_llm_provider is not None:
+                try:
+                    llm_router = get_llm_provider()
+                    llm_router.reload_database_providers()
+                    logger.info(f"Hot reloaded providers after deleting {name}")
+                except Exception as reload_error:
+                    logger.error(f"Failed to hot reload after delete: {reload_error}")
+                    # Don't fail the request if reload fails
         
     except HTTPException:
         raise
@@ -563,30 +766,297 @@ async def test_connection(
     """
     Test connection to a provider and fetch available models.
     
+    If testing an existing provider and no API key is provided in the request,
+    the stored API key from the database will be used.
+    
+    Updates the provider's last_test_status in database if provider exists.
+    
+    Returns detailed error information if connection fails.
+    
     Requires admin permission.
     """
     try:
+        logger.info(f"Testing connection to {request.protocol} provider at {request.base_url}")
+        
+        # Determine which API key to use and find existing provider
+        api_key_to_use = request.api_key
+        existing_provider = None
+        
+        # If no API key provided, try to fetch from database
+        if not api_key_to_use:
+            try:
+                with get_db_session() as db:
+                    db_manager = ProviderDBManager(db)
+                    # Try to find provider by base_url
+                    providers = db_manager.list_providers()
+                    for provider in providers:
+                        if provider.base_url == request.base_url:
+                            existing_provider = provider
+                            # Decrypt and use its API key
+                            api_key_to_use = db_manager._decrypt_api_key(provider.api_key_encrypted)
+                            if api_key_to_use:
+                                logger.info(f"Using stored API key from provider: {provider.name}")
+                            break
+            except Exception as e:
+                logger.warning(f"Failed to fetch stored API key: {e}")
+        
+        logger.info(f"API key available: {'YES' if api_key_to_use else 'NO'} (length: {len(api_key_to_use) if api_key_to_use else 0})")
+        
         # Get protocol client
         client = get_protocol_client(request.protocol)
         
         # Fetch models
-        models = await client.fetch_models(
-            base_url=request.base_url,
-            api_key=request.api_key,
-            timeout=request.timeout,
-        )
-        
-        return TestConnectionResponse(
-            success=True,
-            message=f"Successfully connected. Found {len(models)} models.",
-            available_models=models,
-        )
+        try:
+            models = await client.fetch_models(
+                base_url=request.base_url,
+                api_key=api_key_to_use,
+                timeout=request.timeout,
+            )
+            
+            logger.info(f"✓ Connection test successful: {len(models)} models found")
+            
+            # Update test status in database if provider exists
+            if existing_provider:
+                try:
+                    with get_db_session() as db:
+                        db_manager = ProviderDBManager(db)
+                        db_manager.update_test_status(
+                            provider_name=existing_provider.name,
+                            status='success',
+                            error_message=None
+                        )
+                        logger.info(f"Updated test status for {existing_provider.name}: success")
+                except Exception as e:
+                    logger.error(f"Failed to update test status: {e}")
+            
+            return TestConnectionResponse(
+                success=True,
+                message=f"Successfully connected. Found {len(models)} models.",
+                available_models=models,
+            )
+            
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"✗ Connection test failed: {error_message}")
+            
+            # Update test status in database if provider exists
+            if existing_provider:
+                try:
+                    with get_db_session() as db:
+                        db_manager = ProviderDBManager(db)
+                        db_manager.update_test_status(
+                            provider_name=existing_provider.name,
+                            status='failed',
+                            error_message=error_message
+                        )
+                        logger.info(f"Updated test status for {existing_provider.name}: failed")
+                except Exception as update_error:
+                    logger.error(f"Failed to update test status: {update_error}")
+            
+            # Return detailed error information
+            return TestConnectionResponse(
+                success=False,
+                message="Connection test failed",
+                error=error_message,
+                available_models=[],
+            )
         
     except Exception as e:
-        logger.error(f"Connection test failed: {e}")
+        error_message = str(e)
+        logger.error(f"✗ Test connection error: {error_message}")
+        
+        # Return error response
         return TestConnectionResponse(
             success=False,
-            message="Connection failed",
-            error=str(e),
+            message="Connection test error",
+            error=error_message,
+            available_models=[],
         )
 
+
+
+# Model Metadata Endpoints
+
+class ModelMetadataResponse(BaseModel):
+    """Model metadata response."""
+    
+    model_id: str
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    capabilities: List[str] = []
+    context_window: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    default_temperature: float = 0.7
+    temperature_range: tuple[float, float] = (0.0, 2.0)
+    supports_streaming: bool = True
+    supports_system_prompt: bool = True
+    input_price_per_1k: Optional[float] = None
+    output_price_per_1k: Optional[float] = None
+    version: Optional[str] = None
+    release_date: Optional[str] = None
+    deprecated: bool = False
+
+
+class ProviderModelsResponse(BaseModel):
+    """Provider models with metadata."""
+    
+    provider_name: str
+    protocol: str
+    models: Dict[str, ModelMetadataResponse]
+
+
+@router.get("/providers/{provider_name}/models/metadata", response_model=ProviderModelsResponse)
+async def get_provider_models_metadata(
+    provider_name: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Get detailed metadata for all models of a provider.
+    
+    Returns model capabilities, context windows, pricing, and other metadata.
+    Supports both database providers and config.yaml providers.
+    """
+    try:
+        from llm_providers.model_metadata import ModelCapabilityDetector
+        from shared.config import get_config
+        
+        # Try database first
+        provider = None
+        protocol = None
+        models_list = []
+        stored_metadata = {}
+        
+        # Check database without raising exceptions
+        with get_db_session() as db:
+            db_manager = ProviderDBManager(db)
+            provider = db_manager.get_provider(provider_name)
+            
+            if provider:
+                protocol = provider.protocol
+                models_list = provider.models
+                stored_metadata = provider.model_metadata or {}
+        
+        # If not in database, try config.yaml
+        if not provider:
+            config = get_config()
+            providers_config = config.get("llm.providers", {})
+            
+            if provider_name not in providers_config:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Provider '{provider_name}' not found"
+                )
+            
+            provider_config = providers_config[provider_name]
+            
+            # Determine protocol from config
+            if provider_name == "ollama":
+                protocol = "ollama"
+            elif provider_name == "vllm":
+                protocol = "vllm"
+            elif provider_name in ["openai", "anthropic"]:
+                protocol = "openai_compatible"
+            else:
+                protocol = "openai_compatible"
+            
+            # Get models from config
+            models_dict = provider_config.get("models", {})
+            if isinstance(models_dict, dict):
+                # Extract unique model names from dict values
+                models_list = list(set(models_dict.values()))
+            elif isinstance(models_dict, list):
+                models_list = models_dict
+            else:
+                models_list = []
+        
+        if not models_list:
+            return ProviderModelsResponse(
+                provider_name=provider_name,
+                protocol=protocol or "unknown",
+                models={}
+            )
+        
+        # Get or generate metadata for each model
+        models_metadata = {}
+        
+        for model_name in models_list:
+            if model_name in stored_metadata:
+                # Use stored metadata
+                metadata_dict = stored_metadata[model_name]
+                models_metadata[model_name] = ModelMetadataResponse(**metadata_dict)
+            else:
+                # Generate default metadata
+                default_metadata = ModelCapabilityDetector.get_default_metadata(
+                    model_name, 
+                    protocol
+                )
+                models_metadata[model_name] = ModelMetadataResponse(
+                    **default_metadata.dict()
+                )
+        
+        return ProviderModelsResponse(
+            provider_name=provider_name,
+            protocol=protocol or "unknown",
+            models=models_metadata
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get models metadata: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get models metadata: {str(e)}"
+        )
+
+
+@router.put("/providers/{provider_name}/models/{model_name}/metadata")
+@require_role([Role.ADMIN])
+async def update_model_metadata(
+    provider_name: str,
+    model_name: str,
+    metadata: ModelMetadataResponse,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Update metadata for a specific model.
+    
+    Admin only. Allows customizing model capabilities, context windows, pricing, etc.
+    """
+    try:
+        with get_db_session() as db:
+            db_manager = ProviderDBManager(db)
+            provider = db_manager.get_provider(provider_name)
+            
+            if not provider:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Provider '{provider_name}' not found"
+                )
+            
+            if model_name not in provider.models:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Model '{model_name}' not found in provider '{provider_name}'"
+                )
+            
+            # Update metadata
+            stored_metadata = provider.model_metadata or {}
+            stored_metadata[model_name] = metadata.dict()
+            
+            # Save to database
+            provider.model_metadata = stored_metadata
+            db.commit()
+            
+            logger.info(f"Updated metadata for model {model_name} in provider {provider_name}")
+            
+            return {"success": True, "message": "Model metadata updated"}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update model metadata: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update model metadata: {str(e)}"
+        )

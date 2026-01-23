@@ -12,6 +12,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -84,6 +85,20 @@ class Agent(Base):
         String(50), nullable=False, default="idle", index=True
     )  # active, idle, terminated
     container_id = Column(String(255), nullable=True)
+    
+    # LLM Configuration
+    llm_provider = Column(String(100), nullable=True)  # provider name (ollama, openai, etc.)
+    llm_model = Column(String(255), nullable=True)  # model name
+    system_prompt = Column(Text, nullable=True)  # custom system prompt
+    temperature = Column(Float, nullable=True, default=0.7)
+    max_tokens = Column(Integer, nullable=True, default=2000)
+    top_p = Column(Float, nullable=True, default=0.9)
+    
+    # Access Control
+    access_level = Column(String(50), nullable=True, default="private")  # private, team, public
+    allowed_knowledge = Column(JSONB, nullable=True)  # list of knowledge base IDs
+    allowed_memory = Column(JSONB, nullable=True)  # list of memory collection IDs
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -381,7 +396,14 @@ class LLMProvider(Base):
     timeout = Column(Integer, nullable=False, default=30)
     max_retries = Column(Integer, nullable=False, default=3)
     models = Column(JSONB, nullable=False)  # List of model names
+    model_metadata = Column(JSONB, nullable=True)  # Dict[model_name, ModelMetadata]
     enabled = Column(Boolean, nullable=False, default=True, index=True)
+    
+    # Last test connection result
+    last_test_status = Column(String(20), nullable=True)  # 'success', 'failed', 'untested'
+    last_test_time = Column(DateTime(timezone=True), nullable=True)
+    last_test_error = Column(Text, nullable=True)  # Error message if test failed
+    
     created_by = Column(
         UUID(as_uuid=True),
         ForeignKey("users.user_id", ondelete="SET NULL"),

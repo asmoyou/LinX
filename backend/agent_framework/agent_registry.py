@@ -28,8 +28,29 @@ class AgentInfo:
     capabilities: List[str]
     status: str
     container_id: Optional[str]
-    created_at: datetime
-    updated_at: datetime
+    
+    # LLM Configuration
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    system_prompt: Optional[str] = None
+    temperature: float = 0.7
+    max_tokens: int = 2000
+    top_p: float = 0.9
+    
+    # Access Control
+    access_level: str = "private"
+    allowed_knowledge: List[str] = None
+    allowed_memory: List[str] = None
+    
+    created_at: datetime = None
+    updated_at: datetime = None
+    
+    def __post_init__(self):
+        """Initialize default values for mutable fields."""
+        if self.allowed_knowledge is None:
+            self.allowed_knowledge = []
+        if self.allowed_memory is None:
+            self.allowed_memory = []
 
 
 class AgentRegistry:
@@ -42,6 +63,15 @@ class AgentRegistry:
         owner_user_id: UUID,
         capabilities: List[str],
         container_id: Optional[str] = None,
+        llm_provider: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        top_p: float = 0.9,
+        access_level: str = "private",
+        allowed_knowledge: Optional[List[str]] = None,
+        allowed_memory: Optional[List[str]] = None,
     ) -> AgentInfo:
         """Register a new agent in the registry.
 
@@ -51,6 +81,15 @@ class AgentRegistry:
             owner_user_id: Owner user ID
             capabilities: List of skill names
             container_id: Optional container ID
+            llm_provider: LLM provider name
+            llm_model: LLM model name
+            system_prompt: Custom system prompt
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens
+            top_p: Top-p sampling
+            access_level: Access level (private, team, public)
+            allowed_knowledge: List of allowed knowledge base IDs
+            allowed_memory: List of allowed memory collection IDs
 
         Returns:
             AgentInfo with registered agent details
@@ -63,6 +102,15 @@ class AgentRegistry:
                 capabilities=capabilities,
                 status="initializing",
                 container_id=container_id,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                top_p=top_p,
+                access_level=access_level,
+                allowed_knowledge=allowed_knowledge or [],
+                allowed_memory=allowed_memory or [],
             )
             session.add(agent)
             session.commit()
@@ -128,6 +176,15 @@ class AgentRegistry:
         capabilities: Optional[List[str]] = None,
         status: Optional[str] = None,
         container_id: Optional[str] = None,
+        llm_provider: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        access_level: Optional[str] = None,
+        allowed_knowledge: Optional[List[str]] = None,
+        allowed_memory: Optional[List[str]] = None,
     ) -> Optional[AgentInfo]:
         """Update agent properties.
 
@@ -137,6 +194,15 @@ class AgentRegistry:
             capabilities: New capabilities
             status: New status
             container_id: New container ID
+            llm_provider: LLM provider name
+            llm_model: LLM model name
+            system_prompt: Custom system prompt
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens
+            top_p: Top-p sampling
+            access_level: Access level
+            allowed_knowledge: List of allowed knowledge base IDs
+            allowed_memory: List of allowed memory collection IDs
 
         Returns:
             Updated AgentInfo or None if not found
@@ -155,6 +221,24 @@ class AgentRegistry:
                 agent.status = status
             if container_id is not None:
                 agent.container_id = container_id
+            if llm_provider is not None:
+                agent.llm_provider = llm_provider
+            if llm_model is not None:
+                agent.llm_model = llm_model
+            if system_prompt is not None:
+                agent.system_prompt = system_prompt
+            if temperature is not None:
+                agent.temperature = temperature
+            if max_tokens is not None:
+                agent.max_tokens = max_tokens
+            if top_p is not None:
+                agent.top_p = top_p
+            if access_level is not None:
+                agent.access_level = access_level
+            if allowed_knowledge is not None:
+                agent.allowed_knowledge = allowed_knowledge
+            if allowed_memory is not None:
+                agent.allowed_memory = allowed_memory
 
             session.commit()
             session.refresh(agent)
@@ -215,6 +299,15 @@ class AgentRegistry:
             capabilities=agent.capabilities or [],
             status=agent.status,
             container_id=agent.container_id,
+            llm_provider=agent.llm_provider,
+            llm_model=agent.llm_model,
+            system_prompt=agent.system_prompt,
+            temperature=agent.temperature or 0.7,
+            max_tokens=agent.max_tokens or 2000,
+            top_p=agent.top_p or 0.9,
+            access_level=agent.access_level or "private",
+            allowed_knowledge=agent.allowed_knowledge or [],
+            allowed_memory=agent.allowed_memory or [],
             created_at=agent.created_at,
             updated_at=agent.updated_at,
         )

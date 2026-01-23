@@ -102,41 +102,82 @@ class OpenAICompatibleClient(ProtocolClient):
         """
         Fetch models from OpenAI Compatible API.
         
+        Tries multiple URL patterns for compatibility:
+        1. /v1/models (standard OpenAI format)
+        2. /models (without /v1 prefix)
+        
         OpenAI API endpoint: GET /v1/models
         Response format: {"data": [{"id": "model_id"}, ...]}
         """
-        url = f"{base_url.rstrip('/')}/v1/models"
+        # Normalize base_url
+        base_url = base_url.rstrip('/')
         
         headers = {}
         if api_key:
             headers['Authorization'] = f"Bearer {api_key}"
+            logger.info(f"API key provided: {api_key[:10]}... (length: {len(api_key)})")
+        else:
+            logger.warning("No API key provided for OpenAI Compatible API")
         
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=timeout),
-                ) as response:
-                    if response.status != 200:
-                        text = await response.text()
-                        raise Exception(f"OpenAI API returned {response.status}: {text}")
-                    
-                    data = await response.json()
-                    models = data.get('data', [])
-                    
-                    # Extract model IDs
-                    model_names = [model.get('id', '') for model in models if model.get('id')]
-                    
-                    logger.info(f"Fetched {len(model_names)} models from OpenAI Compatible API")
-                    return model_names
-                    
-        except aiohttp.ClientError as e:
-            logger.error(f"Failed to fetch OpenAI Compatible models: {e}")
-            raise Exception(f"Failed to connect to OpenAI Compatible API: {str(e)}")
-        except Exception as e:
-            logger.error(f"Error fetching OpenAI Compatible models: {e}")
-            raise
+        # Try different URL patterns
+        urls_to_try = [
+            f"{base_url}/v1/models",
+            f"{base_url}/models",  # Fallback without /v1
+        ]
+        
+        last_error = None
+        
+        for url in urls_to_try:
+            try:
+                logger.info(f"Testing connection to {url} with headers: {list(headers.keys())}")
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=timeout),
+                    ) as response:
+                        response_text = await response.text()
+                        
+                        if response.status == 200:
+                            try:
+                                data = await response.json()
+                                models = data.get('data', [])
+                                
+                                # Extract model IDs
+                                model_names = [model.get('id', '') for model in models if model.get('id')]
+                                
+                                if model_names:
+                                    logger.info(f"✓ Successfully fetched {len(model_names)} models from {url}")
+                                    return model_names
+                                else:
+                                    logger.warning(f"✗ No models found in response from {url}")
+                                    last_error = "No models found in API response"
+                            except Exception as json_error:
+                                logger.error(f"✗ Failed to parse JSON from {url}: {json_error}")
+                                last_error = f"Invalid JSON response: {str(json_error)}"
+                        else:
+                            error_msg = f"HTTP {response.status}: {response_text[:200]}"
+                            logger.warning(f"✗ {url} returned {error_msg}")
+                            last_error = error_msg
+                            
+            except aiohttp.ClientError as e:
+                error_msg = f"Connection error: {str(e)}"
+                logger.warning(f"✗ Failed to connect to {url}: {error_msg}")
+                last_error = error_msg
+            except Exception as e:
+                error_msg = f"Unexpected error: {str(e)}"
+                logger.error(f"✗ Error testing {url}: {error_msg}")
+                last_error = error_msg
+        
+        # All attempts failed
+        error_message = f"Failed to connect to OpenAI Compatible API at {base_url}. "
+        if last_error:
+            error_message += f"Last error: {last_error}"
+        else:
+            error_message += "Please verify the URL and API key."
+        
+        logger.error(f"✗ All connection attempts failed: {error_message}")
+        raise Exception(error_message)
 
 
 def get_protocol_client(protocol: ProviderProtocol) -> ProtocolClient:

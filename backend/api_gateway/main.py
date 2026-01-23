@@ -87,7 +87,14 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Configure CORS
+    # Add custom middleware (order matters - last added is executed first)
+    # These are added first so they execute after CORS
+    app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(JWTAuthMiddleware)
+
+    # Configure CORS - added last so it executes first
+    # This ensures CORS headers are added before any other processing
     cors_origins = config.get(
         "api.cors.origins", default=["http://localhost:3000", "http://localhost:5173"]
     )
@@ -110,11 +117,6 @@ def create_app() -> FastAPI:
             "allow_credentials": cors_allow_credentials,
         },
     )
-
-    # Add custom middleware (order matters - last added is executed first)
-    app.add_middleware(RequestLoggingMiddleware)
-    app.add_middleware(RateLimitMiddleware)
-    app.add_middleware(JWTAuthMiddleware)
 
     # Setup error handlers
     setup_error_handlers(app)

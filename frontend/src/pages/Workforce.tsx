@@ -1,63 +1,49 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus, Search, Filter } from 'lucide-react';
+import { Plus, Search, Filter, Loader2 } from 'lucide-react';
 import type { Agent } from '@/types/agent';
 import { AgentCard } from '@/components/workforce/AgentCard';
 import { AddAgentModal } from '@/components/workforce/AddAgentModal';
 import { AgentDetailsModal } from '@/components/workforce/AgentDetailsModal';
 import { AgentConfigModal } from '@/components/workforce/AgentConfigModal';
+import { TestAgentModal } from '@/components/workforce/TestAgentModal';
+import { agentsApi } from '@/api';
+import { useNotificationStore } from '@/stores';
 
 export const Workforce: React.FC = () => {
   const { t } = useTranslation();
+  const { addNotification } = useNotificationStore();
 
-  // Mock data - will be replaced with real API calls
-  const [agents, setAgents] = useState<Agent[]>([
-    {
-      id: '1',
-      name: 'Analyst-Prime',
-      type: 'Data Analyst',
-      status: 'idle',
-      currentTask: undefined,
-      tasksCompleted: 45,
-      uptime: '12h 34m',
-      systemPrompt: 'You are a data analyst specialized in business intelligence.',
-      skills: ['data-analysis', 'visualization'],
-      model: 'gpt-4',
-      provider: 'openai',
-    },
-    {
-      id: '2',
-      name: 'Scribe-7',
-      type: 'Content Writer',
-      status: 'working',
-      currentTask: 'Writing Q4 report',
-      tasksCompleted: 28,
-      uptime: '8h 15m',
-      systemPrompt: 'You are a professional content writer.',
-      skills: ['writing', 'editing'],
-      model: 'claude-3',
-      provider: 'anthropic',
-    },
-    {
-      id: '3',
-      name: 'Code-Assistant-1',
-      type: 'Code Assistant',
-      status: 'working',
-      currentTask: 'Reviewing pull request #234',
-      tasksCompleted: 67,
-      uptime: '15h 42m',
-      systemPrompt: 'You are a code assistant helping with software development.',
-      skills: ['coding', 'debugging'],
-      model: 'llama3',
-      provider: 'ollama',
-    },
-  ]);
-
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [isTestModalOpen, setIsTestModalOpen] = useState(false);
+
+  // Load agents on mount
+  useEffect(() => {
+    loadAgents();
+  }, []);
+
+  const loadAgents = async () => {
+    try {
+      setIsLoading(true);
+      const data = await agentsApi.getAll();
+      setAgents(data);
+    } catch (error) {
+      console.error('Failed to load agents:', error);
+      addNotification({
+        type: 'error',
+        title: 'Failed to load agents',
+        message: 'Could not fetch agents from server',
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // Filter agents
   const filteredAgents = agents.filter((agent) => {
@@ -66,20 +52,30 @@ export const Workforce: React.FC = () => {
     return matchesSearch;
   });
 
-  const handleAddAgent = (name: string, template: string) => {
-    const newAgent: Agent = {
-      id: String(agents.length + 1),
-      name,
-      type: template.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
-      status: 'idle',
-      tasksCompleted: 0,
-      uptime: '0h 0m',
-      systemPrompt: 'You are a helpful AI assistant.',
-      skills: [],
-      model: 'gpt-4',
-      provider: 'openai',
-    };
-    setAgents([...agents, newAgent]);
+  const handleAddAgent = async (name: string, template: string) => {
+    try {
+      const newAgent = await agentsApi.create({
+        name,
+        type: template,
+        capabilities: [],
+        config: {},
+      });
+      
+      setAgents([...agents, newAgent]);
+      
+      addNotification({
+        type: 'success',
+        title: 'Agent created',
+        message: `${name} has been created successfully`,
+      });
+    } catch (error) {
+      console.error('Failed to create agent:', error);
+      addNotification({
+        type: 'error',
+        title: 'Failed to create agent',
+        message: 'Could not create agent. Please try again.',
+      });
+    }
   };
 
   const handleViewAgent = (agent: Agent) => {
@@ -87,18 +83,72 @@ export const Workforce: React.FC = () => {
     setIsDetailsModalOpen(true);
   };
 
+  const handleTestAgent = (agent: Agent) => {
+    setSelectedAgent(agent);
+    setIsTestModalOpen(true);
+  };
+
   const handleConfigureAgent = (agent: Agent) => {
     setSelectedAgent(agent);
     setIsConfigModalOpen(true);
   };
 
-  const handleSaveConfig = (updatedAgent: Agent) => {
-    setAgents(agents.map(a => a.id === updatedAgent.id ? updatedAgent : a));
+  const handleSaveConfig = async (updatedAgent: Agent) => {
+    try {
+      const saved = await agentsApi.update(updatedAgent.id, {
+        name: updatedAgent.name,
+        capabilities: updatedAgent.skills,
+        config: {
+          systemPrompt: updatedAgent.systemPrompt,
+          model: updatedAgent.model,
+          provider: updatedAgent.provider,
+          temperature: updatedAgent.temperature,
+          maxTokens: updatedAgent.maxTokens,
+          topP: updatedAgent.topP,
+          accessLevel: updatedAgent.accessLevel,
+          allowedKnowledge: updatedAgent.allowedKnowledge,
+          allowedMemory: updatedAgent.allowedMemory,
+        },
+      });
+      
+      setAgents(agents.map(a => a.id === saved.id ? saved : a));
+      
+      addNotification({
+        type: 'success',
+        title: 'Agent updated',
+        message: `${saved.name} has been updated successfully`,
+      });
+    } catch (error) {
+      console.error('Failed to update agent:', error);
+      addNotification({
+        type: 'error',
+        title: 'Failed to update agent',
+        message: 'Could not update agent. Please try again.',
+      });
+    }
   };
 
-  const handleDeleteAgent = (agent: Agent) => {
-    if (confirm(t('agent.deleteConfirm'))) {
+  const handleDeleteAgent = async (agent: Agent) => {
+    if (!confirm(t('agent.deleteConfirm'))) {
+      return;
+    }
+    
+    try {
+      await agentsApi.delete(agent.id);
       setAgents(agents.filter((a) => a.id !== agent.id));
+      
+      addNotification({
+        type: 'success',
+        title: 'Agent deleted',
+        message: `${agent.name} has been deleted successfully`,
+      });
+    } catch (error) {
+      console.error('Failed to delete agent:', error);
+      addNotification({
+        type: 'error',
+        title: 'Failed to delete agent',
+        message: 'Could not delete agent. Please try again.',
+      });
     }
   };
 
@@ -140,24 +190,37 @@ export const Workforce: React.FC = () => {
         </button>
       </div>
 
+      {/* Loading State */}
+      {isLoading && (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
+          <span className="ml-3 text-zinc-600 dark:text-zinc-400">Loading agents...</span>
+        </div>
+      )}
+
       {/* Agent Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-        {filteredAgents.length === 0 ? (
-          <div className="col-span-full text-center py-12">
-            <p className="text-zinc-500 dark:text-zinc-400">No agents found</p>
-          </div>
-        ) : (
-          filteredAgents.map((agent) => (
-            <AgentCard
-              key={agent.id}
-              agent={agent}
-              onView={handleViewAgent}
-              onConfigure={handleConfigureAgent}
-              onDelete={handleDeleteAgent}
-            />
-          ))
-        )}
-      </div>
+      {!isLoading && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+          {filteredAgents.length === 0 ? (
+            <div className="col-span-full text-center py-12">
+              <p className="text-zinc-500 dark:text-zinc-400">
+                {searchQuery ? 'No agents found matching your search' : 'No agents yet. Create your first agent to get started!'}
+              </p>
+            </div>
+          ) : (
+            filteredAgents.map((agent) => (
+              <AgentCard
+                key={agent.id}
+                agent={agent}
+                onView={handleViewAgent}
+                onConfigure={handleConfigureAgent}
+                onDelete={handleDeleteAgent}
+                onTest={handleTestAgent}
+              />
+            ))
+          )}
+        </div>
+      )}
 
       {/* Modals */}
       <AddAgentModal
@@ -172,6 +235,7 @@ export const Workforce: React.FC = () => {
           setIsDetailsModalOpen(false);
           setSelectedAgent(null);
         }}
+        onTest={handleTestAgent}
       />
       <AgentConfigModal
         agent={selectedAgent}
@@ -181,6 +245,14 @@ export const Workforce: React.FC = () => {
           setSelectedAgent(null);
         }}
         onSave={handleSaveConfig}
+      />
+      <TestAgentModal
+        agent={selectedAgent}
+        isOpen={isTestModalOpen}
+        onClose={() => {
+          setIsTestModalOpen(false);
+          setSelectedAgent(null);
+        }}
       />
     </div>
   );

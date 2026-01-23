@@ -89,9 +89,21 @@ class OllamaProvider(BaseLLMProvider):
             async with session.post(f"{self.base_url}/api/generate", json=payload) as response:
                 response.raise_for_status()
                 data = await response.json()
+                
+                # Extract content from response
+                # Some models (like qwen3-vl) separate thinking and response
+                # If response is empty but thinking exists, use thinking
+                content = data.get("response", "")
+                thinking = data.get("thinking", "")
+                
+                # If response is empty but we have thinking, use that
+                if not content and thinking:
+                    content = thinking
+                # If both exist, prefer response (it's the final answer)
+                # thinking is just the reasoning process
 
                 return LLMResponse(
-                    content=data.get("response", ""),
+                    content=content,
                     model=model,
                     provider="Ollama",
                     tokens_used=data.get("eval_count", 0) + data.get("prompt_eval_count", 0),
@@ -100,6 +112,7 @@ class OllamaProvider(BaseLLMProvider):
                         "eval_count": data.get("eval_count", 0),
                         "prompt_eval_count": data.get("prompt_eval_count", 0),
                         "total_duration": data.get("total_duration", 0),
+                        "has_thinking": bool(thinking),
                     },
                 )
         except aiohttp.ClientError as e:

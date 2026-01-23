@@ -12,6 +12,7 @@ export { tasksApi } from './tasks';
 export { knowledgeApi } from './knowledge';
 export { memoriesApi } from './memories';
 export { skillsApi } from './skills';
+export { llmApi } from './llm';
 
 // Export types
 export type { LoginRequest, LoginResponse, RegisterRequest } from './auth';
@@ -34,3 +35,4 @@ export type {
   ShareMemoryRequest,
 } from './memories';
 export type { Skill, CreateSkillRequest, UpdateSkillRequest } from './skills';
+export type { ProviderModels } from './llm';
