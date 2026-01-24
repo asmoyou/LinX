@@ -22,7 +22,15 @@ interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: Date;
-  statusMessages?: StatusMessage[];  // 每个回复都有自己的状态消息
+  statusMessages?: StatusMessage[];
+  stats?: {
+    timeToFirstToken: number;
+    tokensPerSecond: number;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    totalTime: number;
+  };
 }
 
 export const TestAgentModal: React.FC<TestAgentModalProps> = ({
@@ -38,6 +46,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
   const [currentResponse, setCurrentResponse] = useState('');
   const [currentStatusMessages, setCurrentStatusMessages] = useState<StatusMessage[]>([]);
   const [collapsedStatus, setCollapsedStatus] = useState<{ [key: number]: boolean }>({});
+  const [currentStats, setCurrentStats] = useState<Message['stats'] | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   
@@ -45,7 +54,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
   const streamingDataRef = useRef<{
     content: string;
     statusMessages: StatusMessage[];
-  }>({ content: '', statusMessages: [] });
+    stats: Message['stats'] | null;
+  }>({ content: '', statusMessages: [], stats: null });
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -75,6 +85,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
       setInputMessage('');
       setCurrentResponse('');
       setCurrentStatusMessages([]);
+      setCurrentStats(null);
       setCollapsedStatus({});
       setError(null);
       setIsStreaming(false);
@@ -98,9 +109,15 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
     setIsStreaming(true);
     setCurrentResponse('');
     setCurrentStatusMessages([]);
+    setCurrentStats(null);
     
     // Reset streaming data ref
-    streamingDataRef.current = { content: '', statusMessages: [] };
+    streamingDataRef.current = { content: '', statusMessages: [], stats: null };
+
+    // Build conversation history (exclude system messages)
+    const history = messages
+      .filter(m => m.role !== 'system')
+      .map(m => ({ role: m.role, content: m.content }));
 
     try {
       await agentsApi.testAgent(
@@ -122,6 +139,18 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
             // content 是最终回复内容
             streamingDataRef.current.content += chunk.content;
             setCurrentResponse(streamingDataRef.current.content);
+          } else if (chunk.type === 'stats') {
+            // Token statistics
+            const stats = {
+              timeToFirstToken: chunk.timeToFirstToken,
+              tokensPerSecond: chunk.tokensPerSecond,
+              inputTokens: chunk.inputTokens,
+              outputTokens: chunk.outputTokens,
+              totalTokens: chunk.totalTokens,
+              totalTime: chunk.totalTime,
+            };
+            streamingDataRef.current.stats = stats;
+            setCurrentStats(stats);
           } else if (chunk.type === 'error') {
             setError(chunk.content);
             setIsStreaming(false);
@@ -132,11 +161,11 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
           setError(error);
           setIsStreaming(false);
           setCurrentResponse('');
-          streamingDataRef.current = { content: '', statusMessages: [] };
+          streamingDataRef.current = { content: '', statusMessages: [], stats: null };
         },
         () => {
           // Stream 结束 - 保存消息和状态
-          const { content, statusMessages } = streamingDataRef.current;
+          const { content, statusMessages, stats } = streamingDataRef.current;
           
           if (content) {
             const newMessage: Message = {
@@ -144,6 +173,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
               content: content,
               timestamp: new Date(),
               statusMessages: statusMessages.length > 0 ? statusMessages : undefined,
+              stats: stats || undefined,
             };
             
             setMessages((prev) => {
@@ -161,16 +191,19 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
           // Clear streaming state
           setCurrentResponse('');
           setCurrentStatusMessages([]);
+          setCurrentStats(null);
           setIsStreaming(false);
-          streamingDataRef.current = { content: '', statusMessages: [] };
-        }
+          streamingDataRef.current = { content: '', statusMessages: [], stats: null };
+        },
+        history
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message');
       setIsStreaming(false);
       setCurrentResponse('');
       setCurrentStatusMessages([]);
-      streamingDataRef.current = { content: '', statusMessages: [] };
+      setCurrentStats(null);
+      streamingDataRef.current = { content: '', statusMessages: [], stats: null };
     }
   };
 
@@ -287,9 +320,24 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                           {message.content}
                         </ReactMarkdown>
                       </div>
-                      <p className="text-xs mt-1 text-zinc-500 dark:text-zinc-400">
-                        {message.timestamp.toLocaleTimeString()}
-                      </p>
+                      <div className="flex items-center justify-between mt-2 pt-2 border-t border-zinc-200 dark:border-zinc-700">
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                          {message.timestamp.toLocaleTimeString()}
+                        </p>
+                        {message.stats && (
+                          <div className="flex items-center gap-3 text-[10px] text-zinc-500 dark:text-zinc-400">
+                            <span title="Time to first token">
+                              ⚡ {message.stats.timeToFirstToken}s
+                            </span>
+                            <span title="Tokens per second">
+                              🚀 {message.stats.tokensPerSecond} tok/s
+                            </span>
+                            <span title="Input / Output tokens">
+                              📊 {message.stats.inputTokens} / {message.stats.outputTokens}
+                            </span>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -350,6 +398,19 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                     {currentResponse}
                   </ReactMarkdown>
                 </div>
+                {currentStats && (
+                  <div className="flex items-center gap-3 mt-2 pt-2 border-t border-emerald-500/20 text-[10px] text-emerald-600 dark:text-emerald-400">
+                    <span title="Time to first token">
+                      ⚡ {currentStats.timeToFirstToken}s
+                    </span>
+                    <span title="Tokens per second">
+                      🚀 {currentStats.tokensPerSecond} tok/s
+                    </span>
+                    <span title="Input / Output tokens">
+                      📊 {currentStats.inputTokens} / {currentStats.outputTokens}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           )}

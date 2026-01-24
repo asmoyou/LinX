@@ -1,5 +1,5 @@
 import React from 'react';
-import { MoreVertical, Shield, Zap, Eye, Settings, Trash2, MessageSquare } from 'lucide-react';
+import { MoreVertical, Shield, Zap, Eye, Settings, Trash2 } from 'lucide-react';
 import type { Agent } from '@/types/agent';
 import { useTranslation } from 'react-i18next';
 
@@ -60,116 +60,109 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure
   };
 
   return (
-    <div className="glass-panel group relative rounded-[32px] overflow-hidden p-8 hover:-translate-y-1 transition-all duration-300">
-      <div className="flex justify-between items-start mb-8">
-          <div className="relative">
-            <div className="w-20 h-20 rounded-[24px] overflow-hidden border-2 border-white dark:border-zinc-800 shadow-2xl">
-              {getAvatarDisplay()}
-            </div>
-            <div className={`absolute -bottom-1 -right-1 w-6 h-6 rounded-full border-4 border-white dark:border-black shadow-lg flex items-center justify-center ${getStatusColor(agent.status)}`}>
-              {agent.status === 'working' && <Zap className="w-3.5 h-3.5 text-white" />}
-            </div>
+    <div className="glass-panel group relative rounded-2xl overflow-hidden p-5 hover:-translate-y-1 transition-all duration-300">
+      <div className="flex justify-between items-start mb-4">
+        <div className="relative">
+          <div className="w-14 h-14 rounded-xl overflow-hidden border-2 border-white dark:border-zinc-800 shadow-lg">
+            {getAvatarDisplay()}
           </div>
-          <div className="relative">
-            <button 
-              onClick={() => setShowMenu(!showMenu)}
-              className="p-2.5 hover:bg-zinc-500/5 rounded-full text-zinc-400 transition-colors"
-            >
-              <MoreVertical className="w-5 h-5" />
-            </button>
-            
-            {showMenu && (
-              <>
-                <div
-                  className="fixed inset-0 z-40"
-                  onClick={() => setShowMenu(false)}
-                />
-                <div className="absolute right-0 mt-2 w-48 glass-panel rounded-[16px] shadow-2xl z-50 overflow-hidden p-2">
-                  <button
-                    onClick={() => {
-                      onView(agent);
-                      setShowMenu(false);
-                    }}
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-zinc-500/5 rounded-lg transition-colors flex items-center gap-2 text-zinc-700 dark:text-zinc-300"
-                  >
-                    <Eye className="w-4 h-4" />
-                    {t('agent.viewDetails')}
-                  </button>
-                  <button
-                    onClick={() => {
-                      onConfigure(agent);
-                      setShowMenu(false);
-                    }}
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-zinc-500/5 rounded-lg transition-colors flex items-center gap-2 text-zinc-700 dark:text-zinc-300"
-                  >
-                    <Settings className="w-4 h-4" />
-                    {t('agent.configure')}
-                  </button>
-                  <button
-                    onClick={handleTestChat}
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-emerald-500/5 rounded-lg transition-colors flex items-center gap-2 text-emerald-600 dark:text-emerald-500"
-                  >
-                    <MessageSquare className="w-4 h-4" />
-                    {t('agent.testAgent')}
-                  </button>
-                  <button
-                    onClick={() => {
-                      onDelete(agent);
-                      setShowMenu(false);
-                    }}
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-red-500/5 rounded-lg transition-colors flex items-center gap-2 text-red-500"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                    {t('agent.deleteAgent')}
-                  </button>
-                </div>
-              </>
-            )}
+          <div className={`absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full border-3 border-white dark:border-black shadow-lg flex items-center justify-center ${getStatusColor(agent.status)}`}>
+            {agent.status === 'working' && <Zap className="w-2.5 h-2.5 text-white" />}
           </div>
         </div>
-
-      <div className="space-y-4">
-          <div>
-            <h3 className="text-2xl font-bold tracking-tight mb-1 text-zinc-800 dark:text-zinc-200">{agent.name}</h3>
-            <div className="flex items-center gap-2">
-              <Shield className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-500" />
-              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-600 dark:text-emerald-500">
-                {agent.type}
-              </span>
-            </div>
-          </div>
+        <div className="relative">
+          <button 
+            onClick={() => setShowMenu(!showMenu)}
+            className="p-1.5 hover:bg-zinc-500/5 rounded-lg text-zinc-400 transition-colors"
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
           
-          {agent.currentTask && (
-            <p className="text-zinc-600 dark:text-zinc-400 text-sm leading-relaxed line-clamp-2">
-              {agent.currentTask}
-            </p>
+          {showMenu && (
+            <>
+              <div
+                className="fixed inset-0 z-40"
+                onClick={() => setShowMenu(false)}
+              />
+              <div className="absolute right-0 mt-2 w-44 glass-panel rounded-xl shadow-2xl z-50 overflow-hidden p-1.5">
+                <button
+                  onClick={() => {
+                    onView(agent);
+                    setShowMenu(false);
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs hover:bg-zinc-500/5 rounded-lg transition-colors flex items-center gap-2 text-zinc-700 dark:text-zinc-300"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  {t('agent.viewDetails')}
+                </button>
+                <button
+                  onClick={() => {
+                    onConfigure(agent);
+                    setShowMenu(false);
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs hover:bg-zinc-500/5 rounded-lg transition-colors flex items-center gap-2 text-zinc-700 dark:text-zinc-300"
+                >
+                  <Settings className="w-3.5 h-3.5" />
+                  {t('agent.configure')}
+                </button>
+                <button
+                  onClick={() => {
+                    onDelete(agent);
+                    setShowMenu(false);
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs hover:bg-red-500/5 rounded-lg transition-colors flex items-center gap-2 text-red-500"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  {t('agent.deleteAgent')}
+                </button>
+              </div>
+            </>
           )}
-          
-          <div className="flex flex-wrap gap-2 pt-2">
-            <span className="px-3 py-1.5 bg-zinc-500/5 rounded-lg text-[10px] font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
-              {agent.tasksCompleted} Tasks
-            </span>
-            <span className="px-3 py-1.5 bg-zinc-500/5 rounded-lg text-[10px] font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
-              {agent.uptime}
-            </span>
-            {agent.model && (
-              <span className="px-3 py-1.5 bg-emerald-500/10 rounded-lg text-[10px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-tight border border-emerald-500/20">
-                {agent.model}
-              </span>
-            )}
-          </div>
+        </div>
       </div>
 
-      <div className="mt-8 pt-6 border-t border-zinc-500/5 flex justify-between items-center">
-          <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">
-            {agent.skills?.length || 0} Skills
+      <div className="space-y-3">
+        <div>
+          <h3 className="text-lg font-bold tracking-tight mb-0.5 text-zinc-800 dark:text-zinc-200">{agent.name}</h3>
+          <div className="flex items-center gap-1.5">
+            <Shield className="w-3 h-3 text-emerald-600 dark:text-emerald-500" />
+            <span className="text-[9px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-500">
+              {agent.type}
+            </span>
+          </div>
+        </div>
+        
+        {agent.currentTask && (
+          <p className="text-zinc-600 dark:text-zinc-400 text-xs leading-relaxed line-clamp-2">
+            {agent.currentTask}
+          </p>
+        )}
+        
+        <div className="flex flex-wrap gap-1.5">
+          <span className="px-2 py-1 bg-zinc-500/5 rounded-md text-[9px] font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
+            {agent.tasksCompleted} Tasks
           </span>
-          <button 
-            onClick={handleTestChat}
-            className="text-xs font-bold text-emerald-600 hover:text-emerald-500 transition-colors uppercase tracking-widest"
-          >
-            {t('agent.testAgent')}
-          </button>
+          <span className="px-2 py-1 bg-zinc-500/5 rounded-md text-[9px] font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
+            {agent.uptime}
+          </span>
+          {agent.model && (
+            <span className="px-2 py-1 bg-emerald-500/10 rounded-md text-[9px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-tight border border-emerald-500/20">
+              {agent.model}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-4 pt-3 border-t border-zinc-500/5 flex justify-between items-center">
+        <span className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider">
+          {agent.skills?.length || 0} Skills
+        </span>
+        <button 
+          onClick={handleTestChat}
+          className="text-[10px] font-bold text-emerald-600 hover:text-emerald-500 transition-colors uppercase tracking-wider"
+        >
+          {t('agent.testAgent')}
+        </button>
       </div>
     </div>
   );

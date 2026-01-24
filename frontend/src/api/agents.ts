@@ -161,9 +161,10 @@ export const agentsApi = {
   testAgent: async (
     agentId: string,
     message: string,
-    onChunk: (chunk: { type: string; content: string }) => void,
+    onChunk: (chunk: { type: string; content: string; [key: string]: any }) => void,
     onError?: (error: string) => void,
-    onComplete?: () => void
+    onComplete?: () => void,
+    history?: Array<{ role: string; content: string }>
   ): Promise<void> => {
     try {
       // Get token from auth store (same way apiClient does)
@@ -178,7 +179,7 @@ export const agentsApi = {
           'Accept': 'text/event-stream',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, history }),
       });
 
       if (!response.ok) {

@@ -556,6 +556,7 @@ class TestAgentRequest(BaseModel):
     """Test agent request."""
 
     message: str = Field(..., min_length=1, max_length=5000)
+    history: Optional[List[Dict[str, str]]] = Field(default=None, description="Conversation history with role and content")
 
 
 @router.post("/{agent_id}/test")
@@ -618,6 +619,14 @@ async def test_agent(
             try:
                 # Send start event
                 yield f"data: {json.dumps({'type': 'start', 'content': 'Agent execution started'})}\n\n"
+                
+                # Track timing and tokens
+                import time
+                start_time = time.time()
+                first_token_time = None
+                total_tokens = 0
+                input_tokens = 0
+                output_tokens = 0
                 
                 # Create agent config
                 config = AgentConfig(
@@ -753,29 +762,89 @@ async def test_agent(
                 except Exception as mem_error:
                     logger.warning(f"Failed to retrieve memories: {mem_error}")
                 
+                # Build messages with conversation history
+                from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+                
+                system_prompt = agent._create_system_prompt()
+                messages = [SystemMessage(content=system_prompt)]
+                
+                # Add conversation history if provided
+                if request.history:
+                    for msg in request.history:
+                        if msg.get("role") == "user":
+                            messages.append(HumanMessage(content=msg.get("content", "")))
+                        elif msg.get("role") == "assistant":
+                            messages.append(AIMessage(content=msg.get("content", "")))
+                
+                # Add current message
+                user_message = request.message
+                if context:
+                    context_info = []
+                    if context.get("agent_memories"):
+                        context_info.append(f"Relevant memories: {', '.join(context['agent_memories'][:3])}")
+                    if context.get("company_memories"):
+                        context_info.append(f"Company knowledge: {', '.join(context['company_memories'][:3])}")
+                    
+                    if context_info:
+                        user_message = f"{request.message}\n\nContext:\n" + "\n".join(context_info)
+                
+                messages.append(HumanMessage(content=user_message))
+                
+                # Estimate input tokens (rough approximation: 1 token ≈ 4 characters)
+                input_text = system_prompt + user_message
+                if request.history:
+                    for msg in request.history:
+                        input_text += msg.get("content", "")
+                input_tokens = len(input_text) // 4
+                
                 # Use a queue to collect streamed tokens from the agent
                 token_queue = queue.Queue()
                 error_holder = [None]
+                token_count = [0]  # Use list to allow modification in nested function
                 
                 def stream_callback(token: str):
                     """Callback for streaming tokens from agent."""
+                    nonlocal first_token_time
+                    if first_token_time is None:
+                        first_token_time = time.time()
                     token_queue.put(token)
+                    token_count[0] += len(token) // 4  # Rough token count
                 
                 def execute_agent():
                     """Execute agent in a separate thread."""
                     try:
-                        # Execute with streaming callback
-                        result = agent.execute_task(
-                            task_description=request.message,
-                            context=context,
-                            stream_callback=stream_callback
-                        )
+                        # Stream tokens from LLM
+                        final_output = ""
+                        chunk_count = 0
+                        
+                        try:
+                            for chunk in agent.llm.stream(messages):
+                                if hasattr(chunk, 'content') and chunk.content:
+                                    stream_callback(chunk.content)
+                                    final_output += chunk.content
+                                    chunk_count += 1
+                            
+                            if chunk_count == 0:
+                                logger.warning("LLM streaming returned no chunks")
+                                result = agent.llm.invoke(messages)
+                                if hasattr(result, 'content'):
+                                    final_output = result.content
+                                else:
+                                    final_output = str(result)
+                                stream_callback(final_output)
+                        
+                        except Exception as stream_error:
+                            logger.warning(f"Streaming failed: {stream_error}")
+                            result = agent.llm.invoke(messages)
+                            if hasattr(result, 'content'):
+                                final_output = result.content
+                            else:
+                                final_output = str(result)
+                            stream_callback(final_output)
                         
                         # Signal completion
                         token_queue.put(None)
                         
-                        if not result.get("success"):
-                            error_holder[0] = result.get("error", "Unknown error")
                     except Exception as e:
                         logger.error(f"Agent execution error: {e}", exc_info=True)
                         error_holder[0] = str(e)
@@ -805,10 +874,31 @@ async def test_agent(
                 # Wait for thread to complete
                 exec_thread.join(timeout=5)
                 
+                # Calculate statistics
+                end_time = time.time()
+                total_time = end_time - start_time
+                output_tokens = token_count[0]
+                total_tokens = input_tokens + output_tokens
+                
+                # Calculate speeds
+                time_to_first_token = (first_token_time - start_time) if first_token_time else 0
+                tokens_per_second = output_tokens / (end_time - (first_token_time or start_time)) if first_token_time and output_tokens > 0 else 0
+                
                 # Check for errors
                 if error_holder[0]:
                     yield f"data: {json.dumps({'type': 'error', 'content': f'Agent execution failed: {error_holder[0]}'})}\n\n"
                 else:
+                    # Send statistics
+                    stats = {
+                        'type': 'stats',
+                        'timeToFirstToken': round(time_to_first_token, 2),
+                        'tokensPerSecond': round(tokens_per_second, 1),
+                        'inputTokens': input_tokens,
+                        'outputTokens': output_tokens,
+                        'totalTokens': total_tokens,
+                        'totalTime': round(total_time, 2)
+                    }
+                    yield f"data: {json.dumps(stats)}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'content': 'Agent execution completed'})}\n\n"
                 
                 logger.info(f"Agent test completed: {agent_info.name}")
