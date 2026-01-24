@@ -74,6 +74,7 @@ class Agent(Base):
     agent_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False, index=True)
     agent_type = Column(String(100), nullable=False, index=True)  # template type
+    avatar = Column(Text, nullable=True)  # avatar image URL or path
     owner_user_id = Column(
         UUID(as_uuid=True),
         ForeignKey("users.user_id", ondelete="CASCADE"),
@@ -98,6 +99,13 @@ class Agent(Base):
     access_level = Column(String(50), nullable=True, default="private")  # private, team, public
     allowed_knowledge = Column(JSONB, nullable=True)  # list of knowledge base IDs
     allowed_memory = Column(JSONB, nullable=True)  # list of memory collection IDs
+    
+    # Knowledge Base Configuration
+    embedding_model = Column(String(255), nullable=True)  # embedding model name
+    embedding_provider = Column(String(100), nullable=True)  # embedding provider name
+    vector_dimension = Column(Integer, nullable=True)  # vector dimension (e.g., 1536)
+    top_k = Column(Integer, nullable=True)  # top K results for retrieval
+    similarity_threshold = Column(Float, nullable=True)  # similarity threshold (0.0-1.0)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(

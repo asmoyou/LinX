@@ -59,18 +59,29 @@ class AgentExecutor:
         )
 
         try:
-            # Retrieve relevant memories
-            agent_memories = self.memory_interface.retrieve_agent_memory(
-                agent_id=context.agent_id,
-                query=context.task_description,
-                top_k=3,
-            )
-
-            company_memories = self.memory_interface.retrieve_company_memory(
-                user_id=context.user_id,
-                query=context.task_description,
-                top_k=3,
-            )
+            # Try to retrieve relevant memories (optional - continue if fails)
+            agent_memories = []
+            company_memories = []
+            
+            try:
+                agent_memories = self.memory_interface.retrieve_agent_memory(
+                    agent_id=context.agent_id,
+                    query=context.task_description,
+                    top_k=3,
+                )
+                logger.debug(f"Retrieved {len(agent_memories)} agent memories")
+            except Exception as mem_error:
+                logger.warning(f"Failed to retrieve agent memories (continuing without): {mem_error}")
+            
+            try:
+                company_memories = self.memory_interface.retrieve_company_memory(
+                    user_id=context.user_id,
+                    query=context.task_description,
+                    top_k=3,
+                )
+                logger.debug(f"Retrieved {len(company_memories)} company memories")
+            except Exception as mem_error:
+                logger.warning(f"Failed to retrieve company memories (continuing without): {mem_error}")
 
             # Prepare execution context
             exec_context = {
@@ -87,13 +98,17 @@ class AgentExecutor:
                 context=exec_context,
             )
 
-            # Store result in memory if successful
+            # Store result in memory if successful (optional - don't fail if this fails)
             if result.get("success"):
-                self.memory_interface.store_agent_memory(
-                    agent_id=context.agent_id,
-                    content=f"Task: {context.task_description}\nResult: {result.get('output')}",
-                    metadata={"task_id": str(context.task_id) if context.task_id else None},
-                )
+                try:
+                    self.memory_interface.store_agent_memory(
+                        agent_id=context.agent_id,
+                        content=f"Task: {context.task_description}\nResult: {result.get('output')}",
+                        metadata={"task_id": str(context.task_id) if context.task_id else None},
+                    )
+                    logger.debug("Stored execution result in agent memory")
+                except Exception as mem_error:
+                    logger.warning(f"Failed to store result in memory (continuing): {mem_error}")
 
             logger.info(f"Agent execution completed: {agent.config.name}")
             return result

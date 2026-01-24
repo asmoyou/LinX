@@ -48,14 +48,27 @@ class OllamaEmbeddingService(EmbeddingServiceInterface):
         """
         self._config = get_config()
 
-        # Load configuration
+        # Load configuration - check both old and new config structure
         llm_config = self._config.get_section("llm")
-        ollama_config = llm_config.get("ollama", {})
+        
+        # Try new structure first (llm.providers.ollama)
+        providers = llm_config.get("providers", {})
+        ollama_config = providers.get("ollama", {})
+        
+        # Fallback to old structure (llm.ollama)
+        if not ollama_config:
+            ollama_config = llm_config.get("ollama", {})
 
         self._base_url = base_url or ollama_config.get("base_url", "http://localhost:11434")
-        self._model = model or ollama_config.get("embedding_model", "nomic-embed-text")
+        
+        # Try to get embedding model from models.embedding first, then embedding_model
+        models = ollama_config.get("models", {})
+        self._model = model or models.get("embedding") or ollama_config.get("embedding_model", "nomic-embed-text")
+        
         self._timeout = timeout
-        self._embedding_dim = ollama_config.get("embedding_dimension", 768)
+        # bge-m3 uses 1024 dimensions, nomic-embed-text uses 768
+        default_dim = 1024 if "bge" in self._model else 768
+        self._embedding_dim = ollama_config.get("embedding_dimension", default_dim)
 
         logger.info(
             f"Initialized Ollama embedding service: "
@@ -178,9 +191,16 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
         """
         self._config = get_config()
 
-        # Load configuration
+        # Load configuration - check both old and new config structure
         llm_config = self._config.get_section("llm")
-        vllm_config = llm_config.get("vllm", {})
+        
+        # Try new structure first (llm.providers.vllm)
+        providers = llm_config.get("providers", {})
+        vllm_config = providers.get("vllm", {})
+        
+        # Fallback to old structure (llm.vllm)
+        if not vllm_config:
+            vllm_config = llm_config.get("vllm", {})
 
         self._base_url = base_url or vllm_config.get("base_url", "http://localhost:8000")
         self._model = model or vllm_config.get("embedding_model", "BAAI/bge-large-en-v1.5")

@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import toast from 'react-hot-toast';
-import { useAuthStore } from '../stores';
+import { llmApi } from '../api';
 
 const providerSchema = z.object({
   name: z
@@ -48,7 +48,6 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
   editProvider,
 }) => {
   const { t } = useTranslation();
-  const { token } = useAuthStore();
   const [testingConnection, setTestingConnection] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [connectionTested, setConnectionTested] = useState(false);
@@ -132,21 +131,12 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
 
     setTestingConnection(true);
     try {
-      const response = await fetch('/api/v1/llm/providers/test-connection', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          protocol,
-          base_url,
-          api_key: api_key || undefined,
-          timeout,
-        }),
+      const data = await llmApi.testConnection({
+        protocol,
+        base_url,
+        api_key: api_key || undefined,
+        timeout,
       });
-
-      const data = await response.json();
 
       if (data.success && data.available_models && data.available_models.length > 0) {
         setAvailableModels(data.available_models);
@@ -162,8 +152,8 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
         setAvailableModels([]);
       }
     } catch (error: any) {
-      // 网络错误
-      const errorMsg = error.message || t('settings.errors.networkError');
+      // API client 已经处理了 500 错误，这里只处理其他错误
+      const errorMsg = error.response?.data?.detail || error.message || t('settings.errors.networkError');
       toast.error(`${t('settings.errors.testFailed')}: ${errorMsg}`);
       setConnectionTested(false);
       setAvailableModels([]);
@@ -206,41 +196,45 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
 
   const onSubmit = async (data: ProviderFormData) => {
     try {
-      const url = editProvider
-        ? `/api/v1/llm/providers/${editProvider.name}`
-        : '/api/v1/llm/providers';
-      const method = editProvider ? 'PUT' : 'POST';
-
-      // 如果是编辑模式且 API key 为空，不发送 api_key 字段（保持原有的 key）
-      const payload: any = { ...data };
-      if (editProvider && !data.api_key) {
-        delete payload.api_key;
+      if (editProvider) {
+        // 编辑模式
+        const payload: any = {
+          base_url: data.base_url,
+          selected_models: data.selected_models,
+          timeout: data.timeout,
+          max_retries: data.max_retries,
+          enabled: true,
+        };
+        
+        // 如果提供了新的 API key，则更新
+        if (data.api_key) {
+          payload.api_key = data.api_key;
+        }
+        
+        await llmApi.updateProvider(editProvider.name, payload);
+        toast.success(t('settings.updateSuccess'));
+      } else {
+        // 新建模式
+        await llmApi.createProvider({
+          name: data.name,
+          protocol: data.protocol,
+          base_url: data.base_url,
+          selected_models: data.selected_models,
+          api_key: data.api_key,
+          timeout: data.timeout,
+          max_retries: data.max_retries,
+        });
+        toast.success(t('settings.createSuccess'));
       }
-
-      const response = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(payload),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || errorData.detail || 'Request failed');
-      }
-
-      toast.success(
-        editProvider ? t('settings.updateSuccess') : t('settings.createSuccess')
-      );
+      
       onSuccess();
       onClose();
     } catch (error: any) {
+      const errorMsg = error.response?.data?.detail || error.message || 'Unknown error';
       toast.error(
         (editProvider ? t('settings.errors.updateFailed') : t('settings.errors.createFailed')) +
           ': ' +
-          error.message
+          errorMsg
       );
     }
   };
@@ -260,8 +254,8 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="w-full max-w-2xl bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm overflow-auto ml-64">
+      <div className="w-full max-w-2xl my-auto bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-zinc-200 dark:border-zinc-800">
           <h2 className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">

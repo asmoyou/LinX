@@ -26,8 +26,31 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure
     }
   };
 
-  // Generate avatar based on agent name
-  const avatarUrl = `https://picsum.photos/seed/${agent.id}/200`;
+  // Use agent's avatar if available, otherwise generate a gradient based on name
+  const getAvatarDisplay = () => {
+    if (agent.avatar) {
+      return (
+        <img 
+          src={agent.avatar} 
+          alt={agent.name} 
+          className="w-full h-full object-cover"
+          onError={(e) => {
+            // Fallback to gradient if image fails to load
+            e.currentTarget.style.display = 'none';
+          }}
+        />
+      );
+    }
+    
+    // Fallback: Show first letter with gradient background
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-emerald-400 to-cyan-500">
+        <span className="text-3xl font-bold text-white">
+          {agent.name.charAt(0).toUpperCase()}
+        </span>
+      </div>
+    );
+  };
 
   const handleTestChat = () => {
     setShowMenu(false);
@@ -41,7 +64,7 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure
       <div className="flex justify-between items-start mb-8">
           <div className="relative">
             <div className="w-20 h-20 rounded-[24px] overflow-hidden border-2 border-white dark:border-zinc-800 shadow-2xl">
-              <img src={avatarUrl} alt={agent.name} className="w-full h-full object-cover" />
+              {getAvatarDisplay()}
             </div>
             <div className={`absolute -bottom-1 -right-1 w-6 h-6 rounded-full border-4 border-white dark:border-black shadow-lg flex items-center justify-center ${getStatusColor(agent.status)}`}>
               {agent.status === 'working' && <Zap className="w-3.5 h-3.5 text-white" />}

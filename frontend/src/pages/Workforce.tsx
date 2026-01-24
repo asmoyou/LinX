@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, Search, Filter, Loader2 } from 'lucide-react';
+import toast from 'react-hot-toast';
 import type { Agent } from '@/types/agent';
 import { AgentCard } from '@/components/workforce/AgentCard';
 import { AddAgentModal } from '@/components/workforce/AddAgentModal';
@@ -8,11 +9,9 @@ import { AgentDetailsModal } from '@/components/workforce/AgentDetailsModal';
 import { AgentConfigModal } from '@/components/workforce/AgentConfigModal';
 import { TestAgentModal } from '@/components/workforce/TestAgentModal';
 import { agentsApi } from '@/api';
-import { useNotificationStore } from '@/stores';
 
 export const Workforce: React.FC = () => {
   const { t } = useTranslation();
-  const { addNotification } = useNotificationStore();
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -35,11 +34,7 @@ export const Workforce: React.FC = () => {
       setAgents(data);
     } catch (error) {
       console.error('Failed to load agents:', error);
-      addNotification({
-        type: 'error',
-        title: 'Failed to load agents',
-        message: 'Could not fetch agents from server',
-      });
+      toast.error('Failed to load agents from server');
     } finally {
       setIsLoading(false);
     }
@@ -52,29 +47,21 @@ export const Workforce: React.FC = () => {
     return matchesSearch;
   });
 
-  const handleAddAgent = async (name: string, template: string) => {
+  const handleAddAgent = async (name: string, systemPrompt: string) => {
     try {
       const newAgent = await agentsApi.create({
         name,
-        type: template,
+        type: 'general',  // Default type
+        systemPrompt: systemPrompt || undefined,
         capabilities: [],
         config: {},
       });
       
       setAgents([...agents, newAgent]);
-      
-      addNotification({
-        type: 'success',
-        title: 'Agent created',
-        message: `${name} has been created successfully`,
-      });
+      toast.success(`Agent "${name}" created successfully`);
     } catch (error) {
       console.error('Failed to create agent:', error);
-      addNotification({
-        type: 'error',
-        title: 'Failed to create agent',
-        message: 'Could not create agent. Please try again.',
-      });
+      toast.error('Failed to create agent. Please try again.');
     }
   };
 
@@ -94,37 +81,72 @@ export const Workforce: React.FC = () => {
   };
 
   const handleSaveConfig = async (updatedAgent: Agent) => {
+    console.log('[Workforce] handleSaveConfig called with:', updatedAgent);
+    
     try {
+      console.log('[Workforce] Calling agentsApi.update...');
       const saved = await agentsApi.update(updatedAgent.id, {
         name: updatedAgent.name,
-        capabilities: updatedAgent.skills,
-        config: {
-          systemPrompt: updatedAgent.systemPrompt,
-          model: updatedAgent.model,
-          provider: updatedAgent.provider,
-          temperature: updatedAgent.temperature,
-          maxTokens: updatedAgent.maxTokens,
-          topP: updatedAgent.topP,
-          accessLevel: updatedAgent.accessLevel,
-          allowedKnowledge: updatedAgent.allowedKnowledge,
-          allowedMemory: updatedAgent.allowedMemory,
-        },
+        avatar: updatedAgent.avatar,
+        systemPrompt: updatedAgent.systemPrompt,
+        skills: updatedAgent.skills,
+        model: updatedAgent.model,
+        provider: updatedAgent.provider,
+        temperature: updatedAgent.temperature,
+        maxTokens: updatedAgent.maxTokens,
+        topP: updatedAgent.topP,
+        accessLevel: updatedAgent.accessLevel,
+        allowedKnowledge: updatedAgent.allowedKnowledge,
+        allowedMemory: updatedAgent.allowedMemory,
+        embeddingModel: updatedAgent.embeddingModel,
+        embeddingProvider: updatedAgent.embeddingProvider,
+        vectorDimension: updatedAgent.vectorDimension,
+        topK: updatedAgent.topK,
+        similarityThreshold: updatedAgent.similarityThreshold,
       });
       
+      console.log('[Workforce] Update successful:', saved);
+      
+      // Update local state with saved agent
       setAgents(agents.map(a => a.id === saved.id ? saved : a));
       
-      addNotification({
-        type: 'success',
-        title: 'Agent updated',
-        message: `${saved.name} has been updated successfully`,
-      });
-    } catch (error) {
-      console.error('Failed to update agent:', error);
-      addNotification({
-        type: 'error',
-        title: 'Failed to update agent',
-        message: 'Could not update agent. Please try again.',
-      });
+      // Close modal
+      console.log('[Workforce] Closing modal...');
+      setIsConfigModalOpen(false);
+      setSelectedAgent(null);
+      
+      // Show success notification
+      console.log('[Workforce] Showing success notification');
+      toast.success(`Agent "${saved.name}" updated successfully`);
+    } catch (error: any) {
+      console.error('[Workforce] Update failed:', error);
+      
+      // Extract detailed error message
+      let errorMessage = 'Could not update agent. Please try again.';
+      
+      if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      } else if (error.response?.data?.detail) {
+        if (typeof error.response.data.detail === 'string') {
+          errorMessage = error.response.data.detail;
+        } else if (Array.isArray(error.response.data.detail)) {
+          errorMessage = error.response.data.detail
+            .map((err: any) => `${err.loc.join('.')}: ${err.msg}`)
+            .join(', ');
+        }
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      console.log('[Workforce] Error message:', errorMessage);
+      
+      // Show error notification
+      console.log('[Workforce] Showing error notification');
+      toast.error(errorMessage);
+      
+      // Re-throw error so Modal can catch it and stay open
+      console.log('[Workforce] Re-throwing error');
+      throw error;
     }
   };
 
@@ -136,19 +158,10 @@ export const Workforce: React.FC = () => {
     try {
       await agentsApi.delete(agent.id);
       setAgents(agents.filter((a) => a.id !== agent.id));
-      
-      addNotification({
-        type: 'success',
-        title: 'Agent deleted',
-        message: `${agent.name} has been deleted successfully`,
-      });
+      toast.success(`Agent "${agent.name}" deleted successfully`);
     } catch (error) {
       console.error('Failed to delete agent:', error);
-      addNotification({
-        type: 'error',
-        title: 'Failed to delete agent',
-        message: 'Could not delete agent. Please try again.',
-      });
+      toast.error('Failed to delete agent. Please try again.');
     }
   };
 

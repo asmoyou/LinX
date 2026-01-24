@@ -107,7 +107,7 @@ class AgentMemoryInterface:
             top_k=top_k,
         )
 
-        results = self.memory_system.search_memory(search_query)
+        results = self.memory_system.retrieve_memories(search_query)
         logger.info(f"Retrieved {len(results)} agent memories")
         return results
 
@@ -134,7 +134,7 @@ class AgentMemoryInterface:
             top_k=top_k,
         )
 
-        results = self.memory_system.search_memory(search_query)
+        results = self.memory_system.retrieve_memories(search_query)
         logger.info(f"Retrieved {len(results)} company memories")
         return results
 

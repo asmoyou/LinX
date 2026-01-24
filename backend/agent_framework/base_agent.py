@@ -1,4 +1,4 @@
-"""BaseAgent class with LangChain integration.
+"""BaseAgent class with LangGraph 1.0 integration.
 
 References:
 - Requirements 2: Agent Framework Implementation
@@ -12,9 +12,8 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import Runnable
-from langgraph.prebuilt import create_react_agent
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langgraph.graph import MessagesState, StateGraph, START, END
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +41,11 @@ class AgentConfig:
     llm_model: str = "ollama"
     temperature: float = 0.7
     max_iterations: int = 10
+    system_prompt: Optional[str] = None  # Custom system prompt
 
 
 class BaseAgent:
-    """Base agent class with LangChain integration.
+    """Base agent class with LangGraph 1.0 integration.
 
     Each agent is an autonomous entity with:
     - Identity (agent_id, name, owner)
@@ -53,6 +53,8 @@ class BaseAgent:
     - Memory access (Agent Memory + Company Memory)
     - Tools (LangChain tools)
     - Execution environment (isolated container)
+    
+    Uses LangGraph 1.0 StateGraph API for agent workflow.
     """
 
     def __init__(
@@ -72,7 +74,8 @@ class BaseAgent:
         self.llm = llm
         self.tools = tools or []
         self.status = AgentStatus.INITIALIZING
-        self.agent: Optional[Runnable] = None
+        self.agent = None  # Will be CompiledGraph after initialization
+        self.tools_by_name: Dict[str, Any] = {}
 
         logger.info(
             f"BaseAgent initialized: {config.name}",
@@ -84,20 +87,99 @@ class BaseAgent:
         )
 
     def initialize(self) -> None:
-        """Initialize agent with LangChain components."""
+        """Initialize agent with LangGraph 1.0 components."""
         try:
             if not self.llm:
                 raise ValueError("LLM not configured for agent")
 
-            # Create system prompt for the agent
+            # Bind tools to LLM
+            if self.tools:
+                self.tools_by_name = {tool.name: tool for tool in self.tools}
+                self.llm_with_tools = self.llm.bind_tools(self.tools)
+            else:
+                self.llm_with_tools = self.llm
+
+            # Create system prompt
             system_prompt = self._create_system_prompt()
 
-            # Create ReAct agent with LangGraph
-            self.agent = create_react_agent(
-                model=self.llm,
-                tools=self.tools,
-                prompt=system_prompt,
-            )
+            # Build agent graph using LangGraph 1.0 StateGraph API
+            builder = StateGraph(MessagesState)
+
+            # Add LLM node
+            def call_llm(state: MessagesState) -> Dict[str, List]:
+                """LLM node that processes messages and decides on tool calls."""
+                messages = state["messages"]
+                
+                # Prepend system message if not already present
+                if not messages or not isinstance(messages[0], SystemMessage):
+                    messages = [SystemMessage(content=system_prompt)] + messages
+                
+                response = self.llm_with_tools.invoke(messages)
+                return {"messages": [response]}
+
+            # Add tool execution node (only if tools are available)
+            if self.tools:
+                def call_tools(state: MessagesState) -> Dict[str, List]:
+                    """Tool node that executes tool calls."""
+                    messages = state["messages"]
+                    last_message = messages[-1]
+                    
+                    tool_results = []
+                    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+                        for tool_call in last_message.tool_calls:
+                            tool = self.tools_by_name.get(tool_call["name"])
+                            if tool:
+                                try:
+                                    result = tool.invoke(tool_call["args"])
+                                    from langchain_core.messages import ToolMessage
+                                    tool_results.append(
+                                        ToolMessage(
+                                            content=str(result),
+                                            tool_call_id=tool_call["id"]
+                                        )
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Tool execution failed: {e}")
+                                    from langchain_core.messages import ToolMessage
+                                    tool_results.append(
+                                        ToolMessage(
+                                            content=f"Error: {str(e)}",
+                                            tool_call_id=tool_call["id"]
+                                        )
+                                    )
+                    
+                    return {"messages": tool_results}
+
+                # Conditional edge to decide whether to continue or end
+                def should_continue(state: MessagesState) -> str:
+                    """Decide whether to continue with tools or end."""
+                    messages = state["messages"]
+                    last_message = messages[-1]
+                    
+                    # Check if LLM made tool calls
+                    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+                        return "tools"
+                    return END
+
+                # Build graph with tools
+                builder.add_node("llm", call_llm)
+                builder.add_node("tools", call_tools)
+                
+                builder.add_edge(START, "llm")
+                builder.add_conditional_edges(
+                    "llm",
+                    should_continue,
+                    {"tools": "tools", END: END}
+                )
+                builder.add_edge("tools", "llm")
+            else:
+                # Build simple graph without tools
+                builder.add_node("llm", call_llm)
+                builder.add_edge(START, "llm")
+                builder.add_edge("llm", END)
+
+            # Compile the agent graph
+            self.agent = builder.compile()
 
             self.status = AgentStatus.ACTIVE
             logger.info(f"Agent initialized successfully: {self.config.name}")
@@ -108,13 +190,15 @@ class BaseAgent:
             raise
 
     def execute_task(
-        self, task_description: str, context: Optional[Dict[str, Any]] = None
+        self, task_description: str, context: Optional[Dict[str, Any]] = None,
+        stream_callback: Optional[callable] = None
     ) -> Dict[str, Any]:
         """Execute a task using the agent.
 
         Args:
             task_description: Description of the task to execute
-            context: Optional context information
+            context: Optional context information (e.g., memories)
+            stream_callback: Optional callback for streaming tokens (callable(str))
 
         Returns:
             Dict with execution results
@@ -130,29 +214,106 @@ class BaseAgent:
             logger.info(f"Agent executing task: {self.config.name}")
 
             # Prepare input messages
-            messages = [{"role": "user", "content": task_description}]
+            user_message = task_description
+            
+            # Add context information if provided
+            if context:
+                context_info = []
+                if context.get("agent_memories"):
+                    context_info.append(f"Relevant memories: {', '.join(context['agent_memories'][:3])}")
+                if context.get("company_memories"):
+                    context_info.append(f"Company knowledge: {', '.join(context['company_memories'][:3])}")
+                
+                if context_info:
+                    user_message = f"{task_description}\n\nContext:\n" + "\n".join(context_info)
 
-            # Execute task with LangGraph agent
-            result = self.agent.invoke({"messages": messages})
+            # Invoke agent with streaming support
+            if stream_callback:
+                # Stream mode - use LLM's native streaming
+                # Build messages manually to get token-by-token streaming
+                system_prompt = self._create_system_prompt()
+                messages = [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_message)
+                ]
+                
+                # Try streaming from LLM
+                final_output = ""
+                chunk_count = 0
+                stream_failed = False
+                
+                try:
+                    for chunk in self.llm.stream(messages):
+                        if hasattr(chunk, 'content') and chunk.content:
+                            stream_callback(chunk.content)
+                            final_output += chunk.content
+                            chunk_count += 1
+                    
+                    # If no chunks were received, mark streaming as failed
+                    if chunk_count == 0:
+                        stream_failed = True
+                        logger.warning("LLM streaming returned no chunks")
+                    
+                except Exception as stream_error:
+                    stream_failed = True
+                    logger.warning(f"Streaming failed: {stream_error}")
+                
+                # If streaming failed, fall back to non-streaming
+                if stream_failed:
+                    logger.info("Falling back to non-streaming mode")
+                    try:
+                        result = self.llm.invoke(messages)
+                        if hasattr(result, 'content'):
+                            final_output = result.content
+                        else:
+                            final_output = str(result)
+                        
+                        # Send the complete response as one chunk
+                        if final_output:
+                            stream_callback(final_output)
+                        else:
+                            raise ValueError("LLM returned empty content")
+                    except Exception as invoke_error:
+                        logger.error(f"Non-streaming fallback also failed: {invoke_error}")
+                        raise
+                
+                self.status = AgentStatus.ACTIVE
+                logger.info(f"Task completed: {self.config.name}")
+                
+                return {
+                    "success": True,
+                    "output": final_output,
+                    "messages": [HumanMessage(content=user_message), AIMessage(content=final_output)],
+                }
+            else:
+                # Non-streaming mode - invoke normally
+                result = self.agent.invoke({
+                    "messages": [HumanMessage(content=user_message)]
+                })
 
-            # Extract output from result
-            output_messages = result.get("messages", [])
-            final_output = ""
-            if output_messages:
-                last_message = output_messages[-1]
-                if hasattr(last_message, "content"):
-                    final_output = last_message.content
-                else:
-                    final_output = str(last_message)
+                # Extract output from result
+                messages = result.get("messages", [])
+                final_output = ""
+                
+                if messages:
+                    # Get the last AI message
+                    for msg in reversed(messages):
+                        if isinstance(msg, AIMessage):
+                            final_output = msg.content
+                            break
+                    
+                    if not final_output and messages:
+                        # Fallback to last message
+                        final_output = str(messages[-1].content) if hasattr(messages[-1], 'content') else str(messages[-1])
 
-            self.status = AgentStatus.ACTIVE
-            logger.info(f"Task completed: {self.config.name}")
+                self.status = AgentStatus.ACTIVE
+                logger.info(f"Task completed: {self.config.name}")
 
-            return {
-                "success": True,
-                "output": final_output,
-                "messages": output_messages,
-            }
+                return {
+                    "success": True,
+                    "output": final_output,
+                    "messages": messages,
+                }
 
         except Exception as e:
             self.status = AgentStatus.ERROR
@@ -193,6 +354,11 @@ class BaseAgent:
         """
         self.tools.append(tool)
         logger.info(f"Tool added to agent: {tool.name}")
+        
+        # Re-initialize if agent is already initialized
+        if self.agent:
+            logger.info("Re-initializing agent with new tool")
+            self.initialize()
 
     def _create_system_prompt(self) -> str:
         """Create system prompt for the agent.
@@ -200,6 +366,11 @@ class BaseAgent:
         Returns:
             System prompt string
         """
+        # Use custom system prompt if provided
+        if self.config.system_prompt:
+            return self.config.system_prompt
+        
+        # Otherwise, generate default system prompt
         prompt = f"""You are {self.config.name}, a {self.config.agent_type} agent with the following capabilities: {', '.join(self.config.capabilities)}.
 
 Your role is to help users accomplish tasks using your available tools and capabilities.

@@ -8,13 +8,15 @@ References:
 from datetime import datetime
 from typing import Dict, List, Optional
 from uuid import UUID
+import io
+import base64
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from pydantic import BaseModel, Field
 
 from access_control.permissions import CurrentUser, get_current_user
 from agent_framework.agent_registry import get_agent_registry
-from agent_framework.default_templates import get_default_templates
+from object_storage.minio_client import get_minio_client
 from shared.logging import get_logger
 
 logger = get_logger(__name__)
@@ -27,6 +29,7 @@ class CreateAgentRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     type: str = Field(..., min_length=1, max_length=100)  # template type
     template_id: Optional[str] = None
+    avatar: Optional[str] = None
     systemPrompt: Optional[str] = None
     skills: List[str] = []
     model: Optional[str] = None
@@ -43,6 +46,7 @@ class UpdateAgentRequest(BaseModel):
     """Update agent request."""
 
     name: Optional[str] = Field(None, min_length=1, max_length=255)
+    avatar: Optional[str] = None
     systemPrompt: Optional[str] = None
     skills: Optional[List[str]] = None
     model: Optional[str] = None
@@ -53,6 +57,12 @@ class UpdateAgentRequest(BaseModel):
     accessLevel: Optional[str] = None
     allowedKnowledge: Optional[List[str]] = None
     allowedMemory: Optional[List[str]] = None
+    # Knowledge Base Configuration
+    embeddingModel: Optional[str] = None
+    embeddingProvider: Optional[str] = None
+    vectorDimension: Optional[int] = Field(None, ge=128, le=4096)
+    topK: Optional[int] = Field(None, ge=1, le=20)
+    similarityThreshold: Optional[float] = Field(None, ge=0.0, le=1.0)
 
 
 class AgentResponse(BaseModel):
@@ -61,6 +71,7 @@ class AgentResponse(BaseModel):
     id: str
     name: str
     type: str
+    avatar: Optional[str] = None
     status: str
     currentTask: Optional[str] = None
     tasksCompleted: int = 0
@@ -75,18 +86,14 @@ class AgentResponse(BaseModel):
     accessLevel: str = "private"
     allowedKnowledge: List[str] = []
     allowedMemory: List[str] = []
+    # Knowledge Base Configuration
+    embeddingModel: Optional[str] = None
+    embeddingProvider: Optional[str] = None
+    vectorDimension: Optional[int] = None
+    topK: Optional[int] = None
+    similarityThreshold: Optional[float] = None
     createdAt: datetime
     updatedAt: datetime
-
-
-class AgentTemplateResponse(BaseModel):
-    """Agent template response."""
-
-    id: str
-    name: str
-    description: str
-    default_skills: List[str]
-    default_config: dict
 
 
 class AvailableProvidersResponse(BaseModel):
@@ -176,6 +183,7 @@ async def create_agent(
             id=str(agent_info.agent_id),
             name=agent_info.name,
             type=agent_info.agent_type,
+            avatar=agent_info.avatar,
             status=agent_info.status,
             currentTask=None,
             tasksCompleted=0,
@@ -190,6 +198,11 @@ async def create_agent(
             accessLevel=agent_info.access_level,
             allowedKnowledge=agent_info.allowed_knowledge,
             allowedMemory=agent_info.allowed_memory,
+            embeddingModel=agent_info.embedding_model,
+            embeddingProvider=agent_info.embedding_provider,
+            vectorDimension=agent_info.vector_dimension,
+            topK=agent_info.top_k,
+            similarityThreshold=agent_info.similarity_threshold,
             createdAt=agent_info.created_at,
             updatedAt=agent_info.updated_at,
         )
@@ -216,6 +229,7 @@ async def list_agents(current_user: CurrentUser = Depends(get_current_user)):
                 id=str(agent.agent_id),
                 name=agent.name,
                 type=agent.agent_type,
+                avatar=agent.avatar,
                 status=agent.status,
                 currentTask=None,  # TODO: Get from task manager
                 tasksCompleted=0,  # TODO: Count from tasks table
@@ -230,6 +244,11 @@ async def list_agents(current_user: CurrentUser = Depends(get_current_user)):
                 accessLevel=agent.access_level,
                 allowedKnowledge=agent.allowed_knowledge,
                 allowedMemory=agent.allowed_memory,
+                embeddingModel=agent.embedding_model,
+                embeddingProvider=agent.embedding_provider,
+                vectorDimension=agent.vector_dimension,
+                topK=agent.top_k,
+                similarityThreshold=agent.similarity_threshold,
                 createdAt=agent.created_at,
                 updatedAt=agent.updated_at,
             )
@@ -241,31 +260,6 @@ async def list_agents(current_user: CurrentUser = Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list agents: {str(e)}",
-        )
-
-
-@router.get("/templates", response_model=List[AgentTemplateResponse])
-async def list_templates(current_user: CurrentUser = Depends(get_current_user)):
-    """List available agent templates."""
-    try:
-        templates = get_default_templates()
-        
-        return [
-            AgentTemplateResponse(
-                id=template.template_id,
-                name=template.name,
-                description=template.description,
-                default_skills=template.default_skills,
-                default_config=template.default_config,
-            )
-            for template in templates
-        ]
-        
-    except Exception as e:
-        logger.error(f"Failed to list templates: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list templates: {str(e)}",
         )
 
 
@@ -293,6 +287,7 @@ async def get_agent(agent_id: str, current_user: CurrentUser = Depends(get_curre
             id=str(agent.agent_id),
             name=agent.name,
             type=agent.agent_type,
+            avatar=agent.avatar,
             status=agent.status,
             currentTask=None,
             tasksCompleted=0,
@@ -307,6 +302,11 @@ async def get_agent(agent_id: str, current_user: CurrentUser = Depends(get_curre
             accessLevel=agent.access_level,
             allowedKnowledge=agent.allowed_knowledge,
             allowedMemory=agent.allowed_memory,
+            embeddingModel=agent.embedding_model,
+            embeddingProvider=agent.embedding_provider,
+            vectorDimension=agent.vector_dimension,
+            topK=agent.top_k,
+            similarityThreshold=agent.similarity_threshold,
             createdAt=agent.created_at,
             updatedAt=agent.updated_at,
         )
@@ -349,6 +349,7 @@ async def update_agent(
         updated_agent = registry.update_agent(
             agent_id=UUID(agent_id),
             name=request.name,
+            avatar=request.avatar,
             capabilities=request.skills,
             llm_provider=request.provider,
             llm_model=request.model,
@@ -359,6 +360,11 @@ async def update_agent(
             access_level=request.accessLevel,
             allowed_knowledge=request.allowedKnowledge,
             allowed_memory=request.allowedMemory,
+            embedding_model=request.embeddingModel,
+            embedding_provider=request.embeddingProvider,
+            vector_dimension=request.vectorDimension,
+            top_k=request.topK,
+            similarity_threshold=request.similarityThreshold,
         )
         
         if not updated_agent:
@@ -376,6 +382,7 @@ async def update_agent(
             id=str(updated_agent.agent_id),
             name=updated_agent.name,
             type=updated_agent.agent_type,
+            avatar=updated_agent.avatar,
             status=updated_agent.status,
             currentTask=None,
             tasksCompleted=0,
@@ -390,6 +397,11 @@ async def update_agent(
             accessLevel=updated_agent.access_level,
             allowedKnowledge=updated_agent.allowed_knowledge,
             allowedMemory=updated_agent.allowed_memory,
+            embeddingModel=updated_agent.embedding_model,
+            embeddingProvider=updated_agent.embedding_provider,
+            vectorDimension=updated_agent.vector_dimension,
+            topK=updated_agent.top_k,
+            similarityThreshold=updated_agent.similarity_threshold,
             createdAt=updated_agent.created_at,
             updatedAt=updated_agent.updated_at,
         )
@@ -401,6 +413,98 @@ async def update_agent(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update agent: {str(e)}",
+        )
+
+
+@router.post("/{agent_id}/avatar", response_model=Dict[str, str])
+async def upload_agent_avatar(
+    agent_id: str,
+    file: UploadFile = File(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Upload agent avatar image.
+    
+    Accepts image files (JPEG, PNG, WebP) and stores them in MinIO.
+    Returns the avatar URL.
+    """
+    try:
+        registry = get_agent_registry()
+        agent = registry.get_agent(UUID(agent_id))
+        
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Agent {agent_id} not found",
+            )
+        
+        # Check ownership
+        if str(agent.owner_user_id) != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to update this agent",
+            )
+        
+        # Validate file type
+        allowed_types = ["image/jpeg", "image/png", "image/webp"]
+        if file.content_type not in allowed_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid file type. Allowed types: {', '.join(allowed_types)}",
+            )
+        
+        # Read file data
+        file_data = await file.read()
+        file_stream = io.BytesIO(file_data)
+        
+        # Upload to MinIO
+        minio_client = get_minio_client()
+        bucket_name, object_key = minio_client.upload_file(
+            bucket_type="images",
+            file_data=file_stream,
+            filename=f"avatar_{agent_id}.webp",
+            user_id=current_user.user_id,
+            task_id=None,
+            agent_id=agent_id,
+            content_type=file.content_type,
+            metadata={
+                "agent_id": agent_id,
+                "agent_name": agent.name,
+            }
+        )
+        
+        # Generate presigned URL (valid for 7 days)
+        from datetime import timedelta
+        avatar_url = minio_client.get_presigned_url(
+            bucket_name=bucket_name,
+            object_key=object_key,
+            expires=timedelta(days=7)
+        )
+        
+        # Update agent with avatar URL
+        updated_agent = registry.update_agent(
+            agent_id=UUID(agent_id),
+            avatar=avatar_url,
+        )
+        
+        logger.info(
+            f"Avatar uploaded for agent: {agent.name}",
+            extra={"agent_id": agent_id, "user_id": current_user.user_id, "object_key": object_key},
+        )
+        
+        return {
+            "avatar_url": avatar_url,
+            "bucket": bucket_name,
+            "key": object_key,
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to upload avatar: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload avatar: {str(e)}",
         )
 
 
@@ -458,94 +562,371 @@ class TestAgentRequest(BaseModel):
 async def test_agent(
     agent_id: str,
     request: TestAgentRequest,
+    stream: bool = True,  # Query parameter to enable/disable streaming
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Test agent with a message (streaming response)."""
+    """
+    Test agent with a message (streaming SSE response or single response).
+    
+    This endpoint tests the full agent capabilities including:
+    - System prompt
+    - Skills/functions
+    - Memory access
+    - Real agent execution via AgentExecutor
+    
+    Args:
+        agent_id: Agent ID
+        request: Test request with message
+        stream: Enable streaming (default: True)
+        current_user: Current authenticated user
+    """
     from fastapi.responses import StreamingResponse
+    from agent_framework.agent_executor import get_agent_executor, ExecutionContext
+    from agent_framework.base_agent import BaseAgent, AgentConfig
+    from langchain_community.chat_models import ChatOllama
+    from langchain_openai import ChatOpenAI
+    from llm_providers.custom_openai_provider import CustomOpenAIChat
     import json
     import asyncio
-    from llm_providers.router import get_llm_router
+    import queue
+    import threading
     
     try:
         registry = get_agent_registry()
-        agent = registry.get_agent(UUID(agent_id))
+        agent_info = registry.get_agent(UUID(agent_id))
         
-        if not agent:
+        if not agent_info:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Agent {agent_id} not found",
             )
         
         # Check ownership
-        if str(agent.owner_user_id) != current_user.user_id:
+        if str(agent_info.owner_user_id) != current_user.user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You don't have permission to test this agent",
             )
         
         logger.info(
-            f"Testing agent: {agent.name}",
+            f"Testing agent: {agent_info.name}",
             extra={"agent_id": agent_id, "user_id": current_user.user_id},
         )
         
-        async def generate_response():
-            """Generate streaming response."""
+        async def generate_stream():
+            """Generate SSE stream for agent execution with real streaming."""
             try:
-                # Get LLM router
-                llm_router = get_llm_router()
+                # Send start event
+                yield f"data: {json.dumps({'type': 'start', 'content': 'Agent execution started'})}\n\n"
                 
-                # Get agent configuration
-                system_prompt = agent.system_prompt or f"You are {agent.name}, a helpful AI assistant."
-                model = agent.llm_model or "llama3.2:latest"  # Use agent's configured model
-                provider = agent.llm_provider  # Use agent's configured provider
-                temperature = agent.temperature or 0.7
-                max_tokens = agent.max_tokens or 2000
-                
-                # Prepare messages
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": request.message},
-                ]
-                
-                # Send initial status
-                yield f"data: {json.dumps({'type': 'status', 'content': 'Connecting to LLM...'})}\n\n"
-                await asyncio.sleep(0.1)
-                
-                # Stream response from LLM
-                full_response = ""
-                async for chunk in llm_router.generate_stream(
-                    messages=messages,
-                    model=model,
-                    provider=provider,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                ):
-                    if chunk:
-                        full_response += chunk
-                        yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
-                
-                # Send completion status
-                yield f"data: {json.dumps({'type': 'done', 'content': full_response})}\n\n"
-                
-                logger.info(
-                    f"Agent test completed: {agent.name}",
-                    extra={"agent_id": agent_id, "response_length": len(full_response)},
+                # Create agent config
+                config = AgentConfig(
+                    agent_id=UUID(agent_id),
+                    name=agent_info.name,
+                    agent_type=agent_info.agent_type,
+                    owner_user_id=UUID(current_user.user_id),
+                    capabilities=agent_info.capabilities or [],
+                    llm_model=agent_info.llm_model or "llama3.2:latest",
+                    temperature=agent_info.temperature or 0.7,
+                    max_iterations=10,
+                    system_prompt=agent_info.system_prompt,
                 )
                 
+                # Create agent instance
+                agent = BaseAgent(config)
+                
+                from shared.config import get_config
+                cfg = get_config()
+                llm_config = cfg.get_section("llm")
+                providers = llm_config.get("providers", {})
+                
+                provider_name = agent_info.llm_provider or "ollama"
+                model_name = agent_info.llm_model or "llama3.2:latest"
+                temperature = agent_info.temperature or 0.7
+                
+                yield f"data: {json.dumps({'type': 'info', 'content': 'Initializing agent...'})}\n\n"
+                
+                # Create LLM instance
+                llm = None
+                
+                try:
+                    from database.connection import get_db_session
+                    from llm_providers.db_manager import ProviderDBManager
+                    
+                    with get_db_session() as db:
+                        db_manager = ProviderDBManager(db)
+                        db_provider = db_manager.get_provider(provider_name)
+                        
+                        if db_provider and db_provider.enabled:
+                            if db_provider.protocol == "openai_compatible":
+                                api_key = None
+                                if db_provider.api_key_encrypted:
+                                    api_key = db_manager._decrypt_api_key(db_provider.api_key_encrypted)
+                                
+                                llm = CustomOpenAIChat(
+                                    base_url=db_provider.base_url,
+                                    model=model_name,
+                                    temperature=temperature,
+                                    api_key=api_key,
+                                    timeout=db_provider.timeout,
+                                    max_retries=db_provider.max_retries,
+                                )
+                                logger.info(f"Using Custom OpenAI-compatible provider: {provider_name}")
+                            
+                            elif db_provider.protocol == "ollama":
+                                llm = ChatOllama(
+                                    base_url=db_provider.base_url,
+                                    model=model_name,
+                                    temperature=temperature,
+                                )
+                                logger.info(f"Using Ollama provider: {provider_name}")
+                
+                except Exception as db_error:
+                    logger.warning(f"Failed to load provider from database: {db_error}")
+                
+                if llm is None:
+                    if provider_name == "ollama" or provider_name not in providers:
+                        ollama_config = providers.get("ollama", {})
+                        base_url = ollama_config.get("base_url", "http://localhost:11434")
+                        llm = ChatOllama(
+                            base_url=base_url,
+                            model=model_name,
+                            temperature=temperature,
+                        )
+                        logger.info(f"Using Ollama (config.yaml): {base_url}")
+                    elif provider_name in providers:
+                        provider_config = providers.get(provider_name, {})
+                        base_url = provider_config.get("base_url")
+                        
+                        if base_url:
+                            llm = ChatOpenAI(
+                                base_url=base_url,
+                                model=model_name,
+                                temperature=temperature,
+                                api_key="dummy-key",
+                            )
+                            logger.info(f"Using provider from config.yaml: {provider_name}")
+                
+                if llm is None:
+                    raise ValueError(f"Could not create LLM for provider: {provider_name}")
+                
+                agent.llm = llm
+                
+                # Initialize agent
+                await asyncio.to_thread(agent.initialize)
+                
+                model_info = f"{model_name} via {provider_name}"
+                yield f"data: {json.dumps({'type': 'info', 'content': f'Using model: {model_info}'})}\n\n"
+                
+                if config.capabilities:
+                    yield f"data: {json.dumps({'type': 'info', 'content': f'Available skills: {', '.join(config.capabilities)}'})}\n\n"
+                
+                yield f"data: {json.dumps({'type': 'thinking', 'content': 'Retrieving relevant memories and processing...'})}\n\n"
+                
+                # Get memory context
+                context = {}
+                try:
+                    from memory_system.memory_system import get_memory_system
+                    from memory_system.memory_interface import SearchQuery, MemoryType
+                    
+                    memory_system = get_memory_system()
+                    
+                    # Search agent memories
+                    agent_query = SearchQuery(
+                        query_text=request.message,
+                        agent_id=str(agent_id),
+                        memory_type=MemoryType.AGENT,
+                        top_k=5,
+                    )
+                    agent_memories = memory_system.retrieve_memories(agent_query)
+                    context["agent_memories"] = [m.content for m in agent_memories]
+                    
+                    # Search company memories
+                    company_query = SearchQuery(
+                        query_text=request.message,
+                        user_id=current_user.user_id,
+                        memory_type=MemoryType.COMPANY,
+                        top_k=5,
+                    )
+                    company_memories = memory_system.retrieve_memories(company_query)
+                    context["company_memories"] = [m.content for m in company_memories]
+                except Exception as mem_error:
+                    logger.warning(f"Failed to retrieve memories: {mem_error}")
+                
+                # Use a queue to collect streamed tokens from the agent
+                token_queue = queue.Queue()
+                error_holder = [None]
+                
+                def stream_callback(token: str):
+                    """Callback for streaming tokens from agent."""
+                    token_queue.put(token)
+                
+                def execute_agent():
+                    """Execute agent in a separate thread."""
+                    try:
+                        # Execute with streaming callback
+                        result = agent.execute_task(
+                            task_description=request.message,
+                            context=context,
+                            stream_callback=stream_callback
+                        )
+                        
+                        # Signal completion
+                        token_queue.put(None)
+                        
+                        if not result.get("success"):
+                            error_holder[0] = result.get("error", "Unknown error")
+                    except Exception as e:
+                        logger.error(f"Agent execution error: {e}", exc_info=True)
+                        error_holder[0] = str(e)
+                        token_queue.put(None)
+                
+                # Start agent execution in background thread
+                exec_thread = threading.Thread(target=execute_agent)
+                exec_thread.start()
+                
+                # Stream tokens as they arrive
+                while True:
+                    try:
+                        # Wait for token with timeout
+                        token = token_queue.get(timeout=0.1)
+                        
+                        if token is None:
+                            # Execution complete
+                            break
+                        
+                        # Send token to client
+                        yield f"data: {json.dumps({'type': 'content', 'content': token})}\n\n"
+                        
+                    except queue.Empty:
+                        # No token yet, continue waiting
+                        continue
+                
+                # Wait for thread to complete
+                exec_thread.join(timeout=5)
+                
+                # Check for errors
+                if error_holder[0]:
+                    yield f"data: {json.dumps({'type': 'error', 'content': f'Agent execution failed: {error_holder[0]}'})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'done', 'content': 'Agent execution completed'})}\n\n"
+                
+                logger.info(f"Agent test completed: {agent_info.name}")
+                
             except Exception as e:
-                logger.error(f"Error during agent test: {e}")
-                error_msg = f"Error: {str(e)}"
-                yield f"data: {json.dumps({'type': 'error', 'content': error_msg})}\n\n"
+                logger.error(f"Error during agent test streaming: {e}", exc_info=True)
+                yield f"data: {json.dumps({'type': 'error', 'content': f'Error: {str(e)}'})}\n\n"
         
-        return StreamingResponse(
-            generate_response(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
+        if stream:
+            # Return streaming response
+            return StreamingResponse(
+                generate_stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",  # Disable nginx buffering
+                },
+            )
+        else:
+            # Non-streaming response - execute and return complete result
+            try:
+                # Create agent config
+                config = AgentConfig(
+                    agent_id=UUID(agent_id),
+                    name=agent_info.name,
+                    agent_type=agent_info.agent_type,
+                    owner_user_id=UUID(current_user.user_id),
+                    capabilities=agent_info.capabilities or [],
+                    llm_model=agent_info.llm_model or "llama3.2:latest",
+                    temperature=agent_info.temperature or 0.7,
+                    max_iterations=10,
+                    system_prompt=agent_info.system_prompt,
+                )
+                
+                agent = BaseAgent(config)
+                
+                # Setup LLM (same as streaming)
+                from shared.config import get_config
+                cfg = get_config()
+                llm_config = cfg.get_section("llm")
+                providers = llm_config.get("providers", {})
+                
+                provider_name = agent_info.llm_provider or "ollama"
+                model_name = agent_info.llm_model or "llama3.2:latest"
+                temperature = agent_info.temperature or 0.7
+                
+                llm = None
+                try:
+                    from database.connection import get_db_session
+                    from llm_providers.db_manager import ProviderDBManager
+                    
+                    with get_db_session() as db:
+                        db_manager = ProviderDBManager(db)
+                        db_provider = db_manager.get_provider(provider_name)
+                        
+                        if db_provider and db_provider.enabled:
+                            if db_provider.protocol == "openai_compatible":
+                                api_key = None
+                                if db_provider.api_key_encrypted:
+                                    api_key = db_manager._decrypt_api_key(db_provider.api_key_encrypted)
+                                
+                                llm = CustomOpenAIChat(
+                                    base_url=db_provider.base_url,
+                                    model=model_name,
+                                    temperature=temperature,
+                                    api_key=api_key,
+                                    timeout=db_provider.timeout,
+                                    max_retries=db_provider.max_retries,
+                                )
+                            elif db_provider.protocol == "ollama":
+                                llm = ChatOllama(
+                                    base_url=db_provider.base_url,
+                                    model=model_name,
+                                    temperature=temperature,
+                                )
+                except Exception as db_error:
+                    logger.warning(f"Failed to load provider from database: {db_error}")
+                
+                if llm is None:
+                    if provider_name == "ollama" or provider_name not in providers:
+                        ollama_config = providers.get("ollama", {})
+                        base_url = ollama_config.get("base_url", "http://localhost:11434")
+                        llm = ChatOllama(base_url=base_url, model=model_name, temperature=temperature)
+                    elif provider_name in providers:
+                        provider_config = providers.get(provider_name, {})
+                        base_url = provider_config.get("base_url")
+                        if base_url:
+                            llm = ChatOpenAI(base_url=base_url, model=model_name, temperature=temperature, api_key="dummy-key")
+                
+                if llm is None:
+                    raise ValueError(f"Could not create LLM for provider: {provider_name}")
+                
+                agent.llm = llm
+                await asyncio.to_thread(agent.initialize)
+                
+                # Execute without streaming
+                exec_context = ExecutionContext(
+                    agent_id=UUID(agent_id),
+                    user_id=UUID(current_user.user_id),
+                    task_description=request.message,
+                )
+                
+                executor = get_agent_executor()
+                result = await asyncio.to_thread(executor.execute, agent, exec_context)
+                
+                return {
+                    "success": result.get("success"),
+                    "output": result.get("output"),
+                    "error": result.get("error"),
+                }
+                
+            except Exception as e:
+                logger.error(f"Non-streaming execution failed: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Execution failed: {str(e)}",
+                )
         
     except HTTPException:
         raise

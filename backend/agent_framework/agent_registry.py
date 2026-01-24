@@ -24,6 +24,7 @@ class AgentInfo:
     agent_id: UUID
     name: str
     agent_type: str
+    avatar: Optional[str]
     owner_user_id: UUID
     capabilities: List[str]
     status: str
@@ -41,6 +42,13 @@ class AgentInfo:
     access_level: str = "private"
     allowed_knowledge: List[str] = None
     allowed_memory: List[str] = None
+    
+    # Knowledge Base Configuration
+    embedding_model: Optional[str] = None
+    embedding_provider: Optional[str] = None
+    vector_dimension: Optional[int] = None
+    top_k: Optional[int] = None
+    similarity_threshold: Optional[float] = None
     
     created_at: datetime = None
     updated_at: datetime = None
@@ -63,6 +71,7 @@ class AgentRegistry:
         owner_user_id: UUID,
         capabilities: List[str],
         container_id: Optional[str] = None,
+        avatar: Optional[str] = None,
         llm_provider: Optional[str] = None,
         llm_model: Optional[str] = None,
         system_prompt: Optional[str] = None,
@@ -81,6 +90,7 @@ class AgentRegistry:
             owner_user_id: Owner user ID
             capabilities: List of skill names
             container_id: Optional container ID
+            avatar: Avatar image URL or path
             llm_provider: LLM provider name
             llm_model: LLM model name
             system_prompt: Custom system prompt
@@ -98,6 +108,7 @@ class AgentRegistry:
             agent = Agent(
                 name=name,
                 agent_type=agent_type,
+                avatar=avatar,
                 owner_user_id=owner_user_id,
                 capabilities=capabilities,
                 status="initializing",
@@ -173,6 +184,7 @@ class AgentRegistry:
         self,
         agent_id: UUID,
         name: Optional[str] = None,
+        avatar: Optional[str] = None,
         capabilities: Optional[List[str]] = None,
         status: Optional[str] = None,
         container_id: Optional[str] = None,
@@ -185,12 +197,18 @@ class AgentRegistry:
         access_level: Optional[str] = None,
         allowed_knowledge: Optional[List[str]] = None,
         allowed_memory: Optional[List[str]] = None,
+        embedding_model: Optional[str] = None,
+        embedding_provider: Optional[str] = None,
+        vector_dimension: Optional[int] = None,
+        top_k: Optional[int] = None,
+        similarity_threshold: Optional[float] = None,
     ) -> Optional[AgentInfo]:
         """Update agent properties.
 
         Args:
             agent_id: Agent UUID
             name: New name
+            avatar: Avatar image URL or path
             capabilities: New capabilities
             status: New status
             container_id: New container ID
@@ -203,6 +221,11 @@ class AgentRegistry:
             access_level: Access level
             allowed_knowledge: List of allowed knowledge base IDs
             allowed_memory: List of allowed memory collection IDs
+            embedding_model: Embedding model name
+            embedding_provider: Embedding provider name
+            vector_dimension: Vector dimension
+            top_k: Top K results for retrieval
+            similarity_threshold: Similarity threshold for retrieval
 
         Returns:
             Updated AgentInfo or None if not found
@@ -215,6 +238,8 @@ class AgentRegistry:
 
             if name is not None:
                 agent.name = name
+            if avatar is not None:
+                agent.avatar = avatar
             if capabilities is not None:
                 agent.capabilities = capabilities
             if status is not None:
@@ -239,6 +264,16 @@ class AgentRegistry:
                 agent.allowed_knowledge = allowed_knowledge
             if allowed_memory is not None:
                 agent.allowed_memory = allowed_memory
+            if embedding_model is not None:
+                agent.embedding_model = embedding_model
+            if embedding_provider is not None:
+                agent.embedding_provider = embedding_provider
+            if vector_dimension is not None:
+                agent.vector_dimension = vector_dimension
+            if top_k is not None:
+                agent.top_k = top_k
+            if similarity_threshold is not None:
+                agent.similarity_threshold = similarity_threshold
 
             session.commit()
             session.refresh(agent)
@@ -295,6 +330,7 @@ class AgentRegistry:
             agent_id=agent.agent_id,
             name=agent.name,
             agent_type=agent.agent_type,
+            avatar=agent.avatar,
             owner_user_id=agent.owner_user_id,
             capabilities=agent.capabilities or [],
             status=agent.status,
@@ -308,6 +344,11 @@ class AgentRegistry:
             access_level=agent.access_level or "private",
             allowed_knowledge=agent.allowed_knowledge or [],
             allowed_memory=agent.allowed_memory or [],
+            embedding_model=getattr(agent, 'embedding_model', None),
+            embedding_provider=getattr(agent, 'embedding_provider', None),
+            vector_dimension=getattr(agent, 'vector_dimension', None),
+            top_k=getattr(agent, 'top_k', None),
+            similarity_threshold=getattr(agent, 'similarity_threshold', None),
             created_at=agent.created_at,
             updated_at=agent.updated_at,
         )

@@ -1,16 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Loader2, AlertCircle } from 'lucide-react';
-import { GlassPanel } from '@/components/GlassPanel';
+import { X, Save, Loader2, AlertCircle, Info } from 'lucide-react';
+import toast from 'react-hot-toast';
 import type { Agent } from '@/types/agent';
-import { llmApi } from '@/api';
-import type { ProviderModels } from '@/api/llm';
+import { llmApi, agentsApi } from '@/api';
+import type { ModelMetadata } from '@/api/llm';
+import { ModelMetadataCard } from '@/components/settings/ModelMetadataCard';
+import { ImageCropModal } from '@/components/common/ImageCropModal';
 
 interface AgentConfigModalProps {
   agent: Agent | null;
   isOpen: boolean;
   onClose: () => void;
-  onSave: (agent: Agent) => void;
+  onSave: (agent: Agent) => Promise<void>;
 }
 
 export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
@@ -20,56 +22,157 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   onSave,
 }) => {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<'basic' | 'capabilities' | 'model' | 'access'>('basic');
+  const [activeTab, setActiveTab] = useState<'basic' | 'capabilities' | 'model' | 'knowledge' | 'access'>('basic');
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoadingProviders, setIsLoadingProviders] = useState(false);
-  const [availableProviders, setAvailableProviders] = useState<ProviderModels>({});
+  const [availableProviders, setAvailableProviders] = useState<Record<string, string[]>>({});
+  const [availableEmbeddingModels, setAvailableEmbeddingModels] = useState<Record<string, string[]>>({});
   const [providersError, setProvidersError] = useState<string | null>(null);
+  const [modelMetadata, setModelMetadata] = useState<ModelMetadata | null>(null);
+  const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
+  const [isAvatarCropModalOpen, setIsAvatarCropModalOpen] = useState(false);
 
   const [formData, setFormData] = useState<Partial<Agent>>({
-    name: agent?.name || '',
-    type: agent?.type || '',
-    systemPrompt: agent?.systemPrompt || '',
-    skills: agent?.skills || [],
-    model: agent?.model || '',
-    provider: agent?.provider || '',
-    temperature: agent?.temperature || 0.7,
-    maxTokens: agent?.maxTokens || 2000,
-    topP: agent?.topP || 0.9,
-    accessLevel: agent?.accessLevel || 'private',
-    allowedKnowledge: agent?.allowedKnowledge || [],
-    allowedMemory: agent?.allowedMemory || [],
+    name: '',
+    type: '',
+    avatar: '',
+    systemPrompt: '',
+    skills: [],
+    model: '',
+    provider: '',
+    temperature: 0.7,
+    maxTokens: 4096,
+    topP: 0.9,
+    accessLevel: 'private',
+    allowedKnowledge: [],
+    allowedMemory: [],
+    embeddingModel: '',
+    embeddingProvider: 'openai',
+    vectorDimension: 1536,
+    topK: 5,
+    similarityThreshold: 0.7,
   });
+
+  // Initialize form data when agent changes
+  useEffect(() => {
+    console.log('[AgentConfigModal] Agent or isOpen changed:', { agent, isOpen });
+    if (agent && isOpen) {
+      console.log('[AgentConfigModal] Initializing form with agent data:', agent);
+      setFormData({
+        name: agent.name || '',
+        type: agent.type || '',
+        avatar: agent.avatar || '',
+        systemPrompt: agent.systemPrompt || '',
+        skills: agent.skills || [],
+        model: agent.model || '',
+        provider: agent.provider || '',
+        temperature: agent.temperature ?? 0.7,
+        maxTokens: agent.maxTokens ?? 4096,
+        topP: agent.topP ?? 0.9,
+        accessLevel: agent.accessLevel || 'private',
+        allowedKnowledge: agent.allowedKnowledge || [],
+        allowedMemory: agent.allowedMemory || [],
+        embeddingModel: agent.embeddingModel || '',
+        embeddingProvider: agent.embeddingProvider || 'openai',
+        vectorDimension: agent.vectorDimension || 1536,
+        topK: agent.topK || 5,
+        similarityThreshold: agent.similarityThreshold || 0.7,
+      });
+      setSaveError(null);
+      setModelMetadata(null);
+    }
+  }, [agent, isOpen]);
 
   // Fetch available providers and models
   useEffect(() => {
     if (isOpen) {
       fetchAvailableProviders();
+      fetchAvailableEmbeddingModels();
     }
   }, [isOpen]);
 
+  const fetchAvailableEmbeddingModels = async () => {
+    try {
+      // TODO: Create dedicated endpoint for embedding models
+      // For now, we'll filter from available providers
+      const response = await llmApi.getAvailableProviders();
+      
+      // Filter providers that support embeddings
+      const embeddingModels: Record<string, string[]> = {};
+      
+      for (const [providerName, models] of Object.entries(response)) {
+        // Filter models that are embedding models (contain 'embed' in name)
+        const embeddingModelsList = models.filter(model => 
+          model.toLowerCase().includes('embed') || 
+          model.toLowerCase().includes('bge') ||
+          model.toLowerCase().includes('m3e')
+        );
+        
+        if (embeddingModelsList.length > 0) {
+          embeddingModels[providerName] = embeddingModelsList;
+        }
+      }
+      
+      setAvailableEmbeddingModels(embeddingModels);
+    } catch (error: any) {
+      console.error('Failed to fetch embedding models:', error);
+    }
+  };
+
+  // Fetch model metadata when provider and model are selected
+  // Only fetch if both are set and not empty, and not currently loading
+  useEffect(() => {
+    if (isOpen && formData.provider && formData.model && !isLoadingMetadata) {
+      fetchModelMetadata(formData.provider, formData.model);
+    } else if (!formData.provider || !formData.model) {
+      setModelMetadata(null);
+    }
+  }, [isOpen, formData.provider, formData.model]);
+
   const fetchAvailableProviders = async () => {
+    console.log('[AgentConfigModal] Fetching available providers...');
     setIsLoadingProviders(true);
     setProvidersError(null);
     try {
       const response = await llmApi.getAvailableProviders();
+      console.log('[AgentConfigModal] Available providers loaded:', response);
       setAvailableProviders(response);
       
-      // If no provider is selected and we have available providers, select the first one
-      if (!formData.provider && Object.keys(response).length > 0) {
-        const firstProvider = Object.keys(response)[0];
-        const firstModel = response[firstProvider][0] || '';
-        setFormData(prev => ({
-          ...prev,
-          provider: firstProvider,
-          model: firstModel,
-        }));
-      }
-    } catch (error) {
+      // DON'T auto-select provider/model - this was causing the bug!
+      // The agent's existing configuration should be preserved
+      // formData is already initialized from agent prop in the useEffect above
+    } catch (error: any) {
       console.error('Failed to fetch available providers:', error);
-      setProvidersError('Failed to load available providers. Please check your LLM configuration.');
+      const errorMsg = error.response?.data?.message || error.message || 'Failed to load available providers';
+      setProvidersError(`${errorMsg}. Please check your LLM configuration.`);
     } finally {
       setIsLoadingProviders(false);
+    }
+  };
+
+  const fetchModelMetadata = async (provider: string, model: string) => {
+    // Prevent duplicate requests
+    if (isLoadingMetadata) {
+      console.log('[AgentConfigModal] Skipping metadata fetch - already loading');
+      return;
+    }
+    
+    console.log(`[AgentConfigModal] Fetching metadata for ${provider}/${model}`);
+    setIsLoadingMetadata(true);
+    try {
+      const metadata = await llmApi.getModelMetadata(provider, model);
+      console.log('[AgentConfigModal] Metadata loaded:', metadata);
+      setModelMetadata(metadata);
+      
+      // DON'T auto-update temperature/maxTokens if user has already set them
+      // Only update if they're at default values AND agent doesn't have custom values
+      // This prevents overwriting user's choices
+    } catch (error: any) {
+      console.error('Failed to fetch model metadata:', error);
+      setModelMetadata(null);
+    } finally {
+      setIsLoadingMetadata(false);
     }
   };
 
@@ -83,15 +186,88 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     });
   };
 
+  // Handle avatar crop complete
+  const handleAvatarCropComplete = async (croppedBlob: Blob) => {
+    try {
+      if (!agent) return;
+      
+      // Upload to MinIO via API
+      const result = await agentsApi.uploadAvatar(agent.id, croppedBlob);
+      
+      // Update form data with the MinIO URL
+      setFormData({ ...formData, avatar: result.avatar_url });
+      
+      toast.success('Avatar uploaded successfully');
+    } catch (error: any) {
+      console.error('Failed to upload avatar:', error);
+      const errorMsg = error.response?.data?.detail || error.message || 'Failed to upload avatar';
+      toast.error(errorMsg);
+    }
+  };
+
   if (!isOpen || !agent) return null;
 
   const handleSave = async () => {
+    console.log('[AgentConfigModal] handleSave called');
+    console.log('[AgentConfigModal] formData:', formData);
+    
+    // Validate required fields
+    if (!formData.name?.trim()) {
+      console.log('[AgentConfigModal] Validation failed: name required');
+      setSaveError('Agent name is required');
+      return;
+    }
+    
+    if (!formData.provider) {
+      console.log('[AgentConfigModal] Validation failed: provider required');
+      setSaveError('Please select a provider');
+      return;
+    }
+    
+    if (!formData.model) {
+      console.log('[AgentConfigModal] Validation failed: model required');
+      setSaveError('Please select a model');
+      return;
+    }
+
+    // Clear any previous errors and start saving
+    console.log('[AgentConfigModal] Validation passed, starting save...');
+    setSaveError(null);
     setIsSaving(true);
+    
     try {
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate API call
-      onSave({ ...agent, ...formData });
-      onClose();
+      const updatedAgent = { ...agent!, ...formData } as Agent;
+      console.log('[AgentConfigModal] Calling onSave with:', updatedAgent);
+      
+      // Call parent's onSave with updated agent data
+      await onSave(updatedAgent);
+      
+      console.log('[AgentConfigModal] Save successful');
+      // If we get here, save was successful
+      // Parent component will close the modal
+    } catch (error: any) {
+      // If parent's onSave throws an error, display it in the modal
+      console.error('[AgentConfigModal] Save failed:', error);
+      
+      let errorMessage = 'Failed to save agent configuration';
+      if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      } else if (error.response?.data?.detail) {
+        if (typeof error.response.data.detail === 'string') {
+          errorMessage = error.response.data.detail;
+        } else if (Array.isArray(error.response.data.detail)) {
+          errorMessage = error.response.data.detail
+            .map((err: any) => `${err.loc.join('.')}: ${err.msg}`)
+            .join(', ');
+        }
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      console.log('[AgentConfigModal] Setting error:', errorMessage);
+      setSaveError(errorMessage);
     } finally {
+      console.log('[AgentConfigModal] Save process complete, setting isSaving=false');
       setIsSaving(false);
     }
   };
@@ -100,14 +276,15 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     { id: 'basic', label: t('agent.basicInfo') },
     { id: 'capabilities', label: t('agent.capabilities') },
     { id: 'model', label: t('agent.modelConfig') },
+    { id: 'knowledge', label: t('agent.knowledgeBase') },
     { id: 'access', label: t('agent.dataAccess') },
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <GlassPanel className="w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm overflow-auto ml-64">
+      <div className="w-full max-w-4xl my-auto max-h-[90vh] overflow-hidden flex flex-col bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl p-6">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6 pb-4 border-b border-zinc-500/10">
+        <div className="flex items-center justify-between mb-6 pb-4 border-b border-zinc-200 dark:border-zinc-700">
           <div>
             <h2 className="text-2xl font-bold text-zinc-800 dark:text-zinc-200">
               {t('agent.configure')}
@@ -116,22 +293,22 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="p-2 hover:bg-zinc-500/5 rounded-lg transition-colors text-zinc-600 dark:text-zinc-400"
+            className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors text-zinc-600 dark:text-zinc-400"
           >
             <X className="w-6 h-6" />
           </button>
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-2 mb-6 overflow-x-auto">
+        <div className="flex gap-2 mb-6 flex-wrap">
           {tabs.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
               className={`px-4 py-2 rounded-lg font-semibold text-sm whitespace-nowrap transition-all ${
                 activeTab === tab.id
-                  ? 'bg-emerald-500 text-white'
-                  : 'bg-zinc-500/5 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-500/10'
+                  ? 'bg-emerald-500 text-white shadow-sm'
+                  : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'
               }`}
             >
               {tab.label}
@@ -144,6 +321,38 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           {/* Basic Info Tab */}
           {activeTab === 'basic' && (
             <div className="space-y-4">
+              {/* Avatar Upload */}
+              <div>
+                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t('agent.avatar')}
+                </label>
+                <div className="flex items-center gap-4">
+                  {/* Avatar Preview */}
+                  <div className="relative w-24 h-24 rounded-full overflow-hidden bg-gradient-to-br from-emerald-400 to-cyan-500 flex items-center justify-center">
+                    {formData.avatar ? (
+                      <img
+                        src={formData.avatar}
+                        alt={formData.name}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <span className="text-3xl font-bold text-white">
+                        {formData.name?.charAt(0)?.toUpperCase() || 'A'}
+                      </span>
+                    )}
+                  </div>
+                  
+                  {/* Upload Button */}
+                  <button
+                    type="button"
+                    onClick={() => setIsAvatarCropModalOpen(true)}
+                    className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg font-semibold transition-colors"
+                  >
+                    {formData.avatar ? t('agent.changeAvatar') : t('agent.uploadAvatar')}
+                  </button>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
                   {t('agent.agentName')}
@@ -154,19 +363,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                   className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
                   placeholder={t('agent.agentNamePlaceholder')}
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.selectTemplate')}
-                </label>
-                <input
-                  type="text"
-                  value={formData.type}
-                  onChange={(e) => setFormData({ ...formData, type: e.target.value })}
-                  className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
-                  placeholder="Agent Type"
                 />
               </div>
 
@@ -296,36 +492,70 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                     </div>
                   </div>
 
+                  {/* Model Metadata Display */}
+                  {isLoadingMetadata && (
+                    <div className="flex items-center gap-2 p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+                      <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+                      <span className="text-sm text-blue-700 dark:text-blue-400">
+                        Loading model information...
+                      </span>
+                    </div>
+                  )}
+
+                  {modelMetadata && !isLoadingMetadata && (
+                    <ModelMetadataCard metadata={modelMetadata} />
+                  )}
+
                   <div>
                     <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                      {t('agent.temperature')}: {formData.temperature}
+                      {t('agent.temperature')}: {formData.temperature?.toFixed(1)}
+                      {modelMetadata && (
+                        <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
+                          (recommended: {modelMetadata.default_temperature})
+                        </span>
+                      )}
                     </label>
                     <input
                       type="range"
-                      min="0"
-                      max="2"
+                      min={modelMetadata?.temperature_range[0] ?? 0}
+                      max={modelMetadata?.temperature_range[1] ?? 2}
                       step="0.1"
                       value={formData.temperature}
                       onChange={(e) => setFormData({ ...formData, temperature: parseFloat(e.target.value) })}
                       className="w-full"
                     />
+                    <div className="flex justify-between text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                      <span>More focused</span>
+                      <span>More creative</span>
+                    </div>
                   </div>
 
                   <div>
                     <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                      {t('agent.maxTokens')}
+                      {t('agent.maxTokens')} (Maximum Output Tokens)
+                      {modelMetadata?.max_output_tokens && (
+                        <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
+                          (model max: {modelMetadata.max_output_tokens.toLocaleString()})
+                        </span>
+                      )}
                     </label>
                     <input
                       type="number"
                       value={formData.maxTokens}
-                      onChange={(e) => setFormData({ ...formData, maxTokens: parseInt(e.target.value) })}
+                      onChange={(e) => setFormData({ ...formData, maxTokens: parseInt(e.target.value) || 0 })}
+                      min={1}
+                      max={modelMetadata?.max_output_tokens ?? 8000}
                       className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
+                      placeholder="4096"
                     />
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                      Maximum number of tokens in the model's response. Default: 4096
+                    </p>
                   </div>
 
                   <div>
                     <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                      {t('agent.topP')}: {formData.topP}
+                      {t('agent.topP')}: {formData.topP?.toFixed(1)}
                     </label>
                     <input
                       type="range"
@@ -336,9 +566,170 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                       onChange={(e) => setFormData({ ...formData, topP: parseFloat(e.target.value) })}
                       className="w-full"
                     />
+                    <div className="flex justify-between text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                      <span>More deterministic</span>
+                      <span>More diverse</span>
+                    </div>
                   </div>
                 </>
               )}
+            </div>
+          )}
+
+          {/* Knowledge Base Tab */}
+          {activeTab === 'knowledge' && (
+            <div className="space-y-4">
+              <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-start gap-3 mb-4">
+                <Info className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-semibold text-blue-700 dark:text-blue-400 mb-1">
+                    {t('agent.knowledgeBaseConfig', '知识库配置')}
+                  </p>
+                  <p className="text-xs text-blue-600 dark:text-blue-500">
+                    {t('agent.knowledgeBaseConfigDesc', '配置此代理可以访问的知识库以及用于语义搜索的嵌入模型。')}
+                  </p>
+                </div>
+              </div>
+
+              {/* Embedding Provider Selection */}
+              <div>
+                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t('agent.embeddingProvider', 'Embedding 提供商')}
+                </label>
+                <select
+                  value={formData.embeddingProvider || ''}
+                  onChange={(e) => {
+                    const provider = e.target.value;
+                    setFormData({ 
+                      ...formData, 
+                      embeddingProvider: provider,
+                      embeddingModel: '' // Reset model when provider changes
+                    });
+                  }}
+                  className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
+                >
+                  <option value="">{t('agent.selectProvider', '选择提供商')}</option>
+                  {Object.keys(availableEmbeddingModels).map((providerName) => (
+                    <option key={providerName} value={providerName}>
+                      {providerName}
+                    </option>
+                  ))}
+                </select>
+                {Object.keys(availableEmbeddingModels).length === 0 && (
+                  <p className="text-xs text-yellow-600 dark:text-yellow-500 mt-1">
+                    {t('agent.noEmbeddingProviders', '未找到支持 embedding 的提供商。请在 LLM 配置中添加支持 embedding 的模型。')}
+                  </p>
+                )}
+              </div>
+
+              {/* Embedding Model Selection */}
+              <div>
+                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t('agent.embeddingModel', 'Embedding 模型')} <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={formData.embeddingModel || ''}
+                  onChange={(e) => setFormData({ ...formData, embeddingModel: e.target.value })}
+                  disabled={!formData.embeddingProvider}
+                  className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <option value="">{t('agent.selectModel', '选择模型')}</option>
+                  {formData.embeddingProvider &&
+                    availableEmbeddingModels[formData.embeddingProvider]?.map((modelName) => (
+                      <option key={modelName} value={modelName}>
+                        {modelName}
+                      </option>
+                    ))}
+                </select>
+                {!formData.embeddingProvider && (
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                    {t('agent.selectProviderFirst', '请先选择提供商')}
+                  </p>
+                )}
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                  {t('agent.embeddingModelDesc', 'Embedding 模型用于将文本转换为向量，以便在知识库中进行语义搜索。')}
+                </p>
+              </div>
+
+              {/* Vector Dimension */}
+              <div>
+                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t('agent.vectorDimension', '向量维度')}
+                </label>
+                <input
+                  type="number"
+                  value={formData.vectorDimension || 1536}
+                  onChange={(e) => setFormData({ ...formData, vectorDimension: parseInt(e.target.value) || 1536 })}
+                  min={128}
+                  max={4096}
+                  className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
+                  placeholder="1536"
+                />
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                  {t('agent.vectorDimensionDesc', '嵌入向量的维度。必须与所选模型匹配（例如，OpenAI ada-002 为 1536）。')}
+                </p>
+              </div>
+
+              {/* Knowledge Base Access */}
+              <div>
+                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t('agent.accessibleKnowledgeBases', '可访问的知识库')}
+                </label>
+                <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-xl min-h-[120px]">
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2">
+                    {formData.allowedKnowledge?.length || 0} {t('agent.knowledgeBasesSelected', '个知识库已选择')}
+                  </p>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                    {t('agent.knowledgeBaseAccessDesc', '配置此代理可以查询的知识库。知识库管理功能实现后将可用。')}
+                  </p>
+                </div>
+              </div>
+
+              {/* Retrieval Settings */}
+              <div>
+                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t('agent.topKResults', 'Top K 结果数')}: {formData.topK || 5}
+                </label>
+                <input
+                  type="range"
+                  min="1"
+                  max="20"
+                  step="1"
+                  value={formData.topK || 5}
+                  onChange={(e) => setFormData({ ...formData, topK: parseInt(e.target.value) })}
+                  className="w-full"
+                />
+                <div className="flex justify-between text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                  <span>{t('agent.fewerResults', '更少结果（更快）')}</span>
+                  <span>{t('agent.moreResults', '更多结果（更全面）')}</span>
+                </div>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
+                  {t('agent.topKResultsDesc', '每次查询从知识库检索的最相关文档数量。')}
+                </p>
+              </div>
+
+              {/* Similarity Threshold */}
+              <div>
+                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t('agent.similarityThreshold', '相似度阈值')}: {(formData.similarityThreshold || 0.7).toFixed(2)}
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={formData.similarityThreshold || 0.7}
+                  onChange={(e) => setFormData({ ...formData, similarityThreshold: parseFloat(e.target.value) })}
+                  className="w-full"
+                />
+                <div className="flex justify-between text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                  <span>{t('agent.morePermissive', '更宽松 (0.0)')}</span>
+                  <span>{t('agent.moreStrict', '更严格 (1.0)')}</span>
+                </div>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
+                  {t('agent.similarityThresholdDesc', '检索文档的最小相似度分数。较高的值仅返回高度相关的结果。')}
+                </p>
+              </div>
             </div>
           )}
 
@@ -386,32 +777,65 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end gap-3 pt-4 border-t border-zinc-500/10">
-          <button
-            onClick={onClose}
-            className="px-6 py-3 bg-zinc-500/5 hover:bg-zinc-500/10 text-zinc-700 dark:text-zinc-300 rounded-xl font-semibold transition-colors"
-          >
-            {t('common.cancel')}
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={isSaving}
-            className="px-6 py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-semibold transition-colors flex items-center gap-2 disabled:opacity-50"
-          >
-            {isSaving ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                {t('agent.configuring')}
-              </>
-            ) : (
-              <>
-                <Save className="w-4 h-4" />
-                {t('common.save')}
-              </>
-            )}
-          </button>
+        <div className="flex flex-col gap-3 pt-4 border-t border-zinc-200 dark:border-zinc-700">
+          {/* Save Error Display */}
+          {saveError && (
+            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-red-700 dark:text-red-400">
+                  Failed to save configuration
+                </p>
+                <p className="text-xs text-red-600 dark:text-red-500 mt-1">
+                  {saveError}
+                </p>
+              </div>
+              <button
+                onClick={() => setSaveError(null)}
+                className="text-red-500 hover:text-red-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={onClose}
+              disabled={isSaving}
+              className="px-6 py-3 bg-zinc-500/5 hover:bg-zinc-500/10 text-zinc-700 dark:text-zinc-300 rounded-xl font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {t('common.cancel')}
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={isSaving}
+              className="px-6 py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-semibold transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4" />
+                  {t('common.save')}
+                </>
+              )}
+            </button>
+          </div>
         </div>
-      </GlassPanel>
+      </div>
+
+      {/* Image Crop Modal */}
+      <ImageCropModal
+        isOpen={isAvatarCropModalOpen}
+        onClose={() => setIsAvatarCropModalOpen(false)}
+        onCropComplete={handleAvatarCropComplete}
+        aspectRatio={1}
+        title={t('agent.cropAvatar')}
+      />
     </div>
   );
 };

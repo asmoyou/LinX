@@ -1,95 +1,48 @@
 import React, { useState } from 'react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
 import { useTranslation } from 'react-i18next';
-import { X, Check } from 'lucide-react';
-import { GlassPanel } from '@/components/GlassPanel';
-import { SubmitButton } from '@/components/forms/SubmitButton';
-import { createAgentSchema, type CreateAgentFormData } from '@/schemas/authSchemas';
+import { X, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 interface AddAgentModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAdd: (name: string, template: string) => void;
+  onAdd: (name: string, systemPrompt: string) => void;
 }
-
-interface AgentTemplate {
-  id: string;
-  nameKey: string;
-  descriptionKey: string;
-  icon: string;
-}
-
-const templates: AgentTemplate[] = [
-  { 
-    id: 'data-analyst', 
-    nameKey: 'agent.templates.dataAnalyst.name',
-    descriptionKey: 'agent.templates.dataAnalyst.description',
-    icon: '📊'
-  },
-  { 
-    id: 'content-writer', 
-    nameKey: 'agent.templates.contentWriter.name',
-    descriptionKey: 'agent.templates.contentWriter.description',
-    icon: '✍️'
-  },
-  { 
-    id: 'code-assistant', 
-    nameKey: 'agent.templates.codeAssistant.name',
-    descriptionKey: 'agent.templates.codeAssistant.description',
-    icon: '💻'
-  },
-  { 
-    id: 'research-assistant', 
-    nameKey: 'agent.templates.researchAssistant.name',
-    descriptionKey: 'agent.templates.researchAssistant.description',
-    icon: '🔍'
-  },
-];
 
 export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, onAdd }) => {
   const { t } = useTranslation();
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [selectedTemplate, setSelectedTemplate] = useState<string>('');
-
-  const {
-    register,
-    handleSubmit,
-    formState: { errors, touchedFields },
-    reset,
-    setValue,
-    trigger,
-  } = useForm<CreateAgentFormData>({
-    resolver: zodResolver(createAgentSchema),
-    mode: 'onBlur',
-  });
+  const [name, setName] = useState('');
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [nameError, setNameError] = useState('');
 
   if (!isOpen) return null;
 
   const handleClose = () => {
-    reset();
-    setSelectedTemplate('');
+    setName('');
+    setSystemPrompt('');
+    setNameError('');
     onClose();
   };
 
-  const handleTemplateSelect = (templateId: string) => {
-    setSelectedTemplate(templateId);
-    setValue('template', templateId);
-    // Trigger validation for template field
-    if (touchedFields.template) {
-      trigger('template');
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    // Validate name
+    if (!name.trim()) {
+      setNameError('Agent name is required');
+      return;
     }
-  };
-
-  const onSubmit = async (data: CreateAgentFormData) => {
+    
+    if (name.trim().length < 2) {
+      setNameError('Agent name must be at least 2 characters');
+      return;
+    }
+    
     setIsSubmitting(true);
     
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      onAdd(data.name, data.template);
+      onAdd(name.trim(), systemPrompt.trim());
       toast.success(t('agent.success', 'Agent created successfully!'));
       handleClose();
     } catch (error: any) {
@@ -102,142 +55,102 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
-      <GlassPanel className="w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-in zoom-in-95 duration-200">
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl p-6 animate-in zoom-in-95 duration-200">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-zinc-800 dark:text-white">
             {t('agent.addAgent', 'Add New Agent')}
           </h2>
           <button
             onClick={handleClose}
-            className="p-2 hover:bg-white/20 dark:hover:bg-zinc-800/20 rounded-lg transition-colors"
+            className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
             disabled={isSubmitting}
           >
             <X className="w-6 h-6 text-zinc-700 dark:text-zinc-300" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        <form onSubmit={handleSubmit} className="space-y-6">
           {/* Agent Name */}
           <div>
             <label 
               htmlFor="agentName" 
-              className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2"
+              className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2"
             >
-              {t('agent.agentName', 'Agent Name')}
+              {t('agent.agentName', 'Agent Name')} <span className="text-red-500">*</span>
             </label>
             <input
               type="text"
               id="agentName"
-              {...register('name')}
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setNameError('');
+              }}
               disabled={isSubmitting}
-              className={`w-full px-4 py-3 bg-white/50 dark:bg-zinc-800/50 border ${
-                errors.name 
+              className={`w-full px-4 py-3 bg-zinc-50 dark:bg-zinc-800 border ${
+                nameError 
                   ? 'border-red-500 dark:border-red-400' 
-                  : 'border-zinc-300 dark:border-zinc-700'
-              } rounded-lg text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
-              placeholder={t('agent.agentNamePlaceholder', 'e.g., Data Analyst #1')}
+                  : 'border-zinc-200 dark:border-zinc-700'
+              } rounded-xl text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
+              placeholder={t('agent.agentNamePlaceholder', 'e.g., Data Analyst, Content Writer')}
               autoFocus
             />
-            {errors.name && (
+            {nameError && (
               <p className="mt-1 text-sm text-red-500 dark:text-red-400">
-                {t(`agent.errors.${errors.name.message?.replace(/\s+/g, '')}`, errors.name.message)}
+                {nameError}
               </p>
             )}
           </div>
 
-          {/* Template Selection */}
-          <div>
-            <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-3">
-              {t('agent.selectTemplate', 'Select Template')}
-            </label>
-            <input type="hidden" {...register('template')} />
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {templates.map((template) => (
-                <button
-                  key={template.id}
-                  type="button"
-                  onClick={() => handleTemplateSelect(template.id)}
-                  disabled={isSubmitting}
-                  className={`group relative p-5 rounded-xl border-2 transition-all text-left ${
-                    selectedTemplate === template.id
-                      ? 'border-emerald-500 bg-emerald-500/10 dark:bg-emerald-500/5 shadow-lg shadow-emerald-500/10'
-                      : 'border-zinc-300 dark:border-zinc-700 hover:border-emerald-400 dark:hover:border-emerald-600 hover:bg-white/50 dark:hover:bg-zinc-800/50'
-                  } disabled:opacity-50 disabled:cursor-not-allowed`}
-                >
-                  {/* Selection indicator */}
-                  {selectedTemplate === template.id && (
-                    <div className="absolute top-3 right-3 w-6 h-6 bg-emerald-500 rounded-full flex items-center justify-center">
-                      <Check className="w-4 h-4 text-white" />
-                    </div>
-                  )}
-                  
-                  {/* Template icon */}
-                  <div className="text-3xl mb-2">{template.icon}</div>
-                  
-                  {/* Template info */}
-                  <h3 className="font-semibold text-zinc-800 dark:text-white mb-1">
-                    {t(template.nameKey)}
-                  </h3>
-                  <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                    {t(template.descriptionKey)}
-                  </p>
-                </button>
-              ))}
-            </div>
-            {errors.template && (
-              <p className="mt-2 text-sm text-red-500 dark:text-red-400">
-                {t('agent.errors.templateRequired', 'Please select a template')}
-              </p>
-            )}
-          </div>
-
-          {/* Description (Optional) */}
+          {/* System Prompt */}
           <div>
             <label 
-              htmlFor="description" 
-              className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2"
+              htmlFor="systemPrompt" 
+              className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2"
             >
-              {t('agent.description', 'Description (Optional)')}
+              {t('agent.systemPrompt', 'System Prompt')} <span className="text-zinc-400 text-xs font-normal">(Optional)</span>
             </label>
             <textarea
-              id="description"
-              {...register('description')}
+              id="systemPrompt"
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
               disabled={isSubmitting}
-              rows={3}
-              className={`w-full px-4 py-3 bg-white/50 dark:bg-zinc-800/50 border ${
-                errors.description 
-                  ? 'border-red-500 dark:border-red-400' 
-                  : 'border-zinc-300 dark:border-zinc-700'
-              } rounded-lg text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed resize-none`}
-              placeholder={t('agent.descriptionPlaceholder', 'Add a description for this agent...')}
+              rows={8}
+              className="w-full px-4 py-3 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed resize-none"
+              placeholder={t('agent.systemPromptPlaceholder', 'Define the agent\'s role, behavior, and capabilities...')}
             />
-            {errors.description && (
-              <p className="mt-1 text-sm text-red-500 dark:text-red-400">
-                {t('agent.errors.descriptionTooLong', 'Description must not exceed 200 characters')}
-              </p>
-            )}
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              You can configure the model, temperature, and other settings after creating the agent.
+            </p>
           </div>
 
           {/* Actions */}
           <div className="flex items-center gap-3 pt-2">
-            <SubmitButton
-              isLoading={isSubmitting}
-              loadingText={t('agent.creatingAgent', 'Creating...')}
-              text={t('agent.createAgent', 'Create Agent')}
+            <button
+              type="submit"
               disabled={isSubmitting}
-              variant="primary"
-            />
+              className="flex-1 px-6 py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-semibold transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {t('agent.creatingAgent', 'Creating...')}
+                </>
+              ) : (
+                t('agent.createAgent', 'Create Agent')
+              )}
+            </button>
             <button
               type="button"
               onClick={handleClose}
               disabled={isSubmitting}
-              className="flex-1 px-4 py-3 bg-white/10 dark:bg-zinc-800/10 text-zinc-700 dark:text-zinc-300 rounded-lg hover:bg-white/20 dark:hover:bg-zinc-800/20 transition-all font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-1 px-6 py-3 bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 rounded-xl hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-all font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {t('agent.cancel', 'Cancel')}
             </button>
           </div>
         </form>
-      </GlassPanel>
+      </div>
     </div>
   );
 };

@@ -1,7 +1,7 @@
 """
 LLM Provider Protocol Clients
 
-Clients for fetching models from different provider protocols.
+Clients for fetching models and metadata from different provider protocols.
 
 References:
 - Requirements 5: Multi-Provider LLM Support
@@ -11,10 +11,11 @@ References:
 """
 
 import logging
-from typing import List
+from typing import Dict, List, Optional
 
 import aiohttp
 
+from llm_providers.model_metadata import ModelMetadata, ModelCapabilityDetector
 from llm_providers.models import ProviderProtocol
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,27 @@ class ProtocolClient:
             Exception: If request fails
         """
         raise NotImplementedError
+    
+    async def fetch_model_metadata(
+        self,
+        base_url: str,
+        model_id: str,
+        api_key: str = None,
+        timeout: int = 30,
+    ) -> Optional[Dict]:
+        """
+        Fetch detailed metadata for a specific model.
+        
+        Args:
+            base_url: Provider base URL
+            model_id: Model identifier
+            api_key: API key (if required)
+            timeout: Request timeout in seconds
+            
+        Returns:
+            Dictionary with model metadata or None if not available
+        """
+        return None  # Default implementation returns None
 
 
 class OllamaClient(ProtocolClient):
@@ -88,6 +110,57 @@ class OllamaClient(ProtocolClient):
         except Exception as e:
             logger.error(f"Error fetching Ollama models: {e}")
             raise
+    
+    async def fetch_model_metadata(
+        self,
+        base_url: str,
+        model_id: str,
+        api_key: str = None,
+        timeout: int = 30,
+    ) -> Optional[Dict]:
+        """
+        Fetch detailed metadata for an Ollama model.
+        
+        Ollama API endpoint: POST /api/show
+        Request: {"name": "model_name"}
+        Response: {"modelfile": "...", "parameters": "...", "template": "...", ...}
+        """
+        url = f"{base_url.rstrip('/')}/api/show"
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json={"name": model_id},
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                ) as response:
+                    if response.status != 200:
+                        logger.warning(f"Failed to fetch metadata for {model_id}: {response.status}")
+                        return None
+                    
+                    data = await response.json()
+                    
+                    # Extract useful metadata
+                    metadata = {
+                        "model_id": model_id,
+                        "modelfile": data.get("modelfile"),
+                        "parameters": data.get("parameters"),
+                        "template": data.get("template"),
+                        "details": data.get("details", {}),
+                    }
+                    
+                    # Extract context window from details
+                    details = data.get("details", {})
+                    if "parameter_size" in details:
+                        metadata["size"] = details["parameter_size"]
+                    if "quantization_level" in details:
+                        metadata["quantization"] = details["quantization_level"]
+                    
+                    return metadata
+                    
+        except Exception as e:
+            logger.warning(f"Error fetching Ollama model metadata for {model_id}: {e}")
+            return None
 
 
 class OpenAICompatibleClient(ProtocolClient):
@@ -178,6 +251,65 @@ class OpenAICompatibleClient(ProtocolClient):
         
         logger.error(f"✗ All connection attempts failed: {error_message}")
         raise Exception(error_message)
+    
+    async def fetch_model_metadata(
+        self,
+        base_url: str,
+        model_id: str,
+        api_key: str = None,
+        timeout: int = 30,
+    ) -> Optional[Dict]:
+        """
+        Fetch detailed metadata for an OpenAI Compatible model.
+        
+        OpenAI API endpoint: GET /v1/models/{model_id}
+        Response format: {"id": "...", "object": "model", "created": ..., ...}
+        """
+        base_url = base_url.rstrip('/')
+        
+        headers = {}
+        if api_key:
+            headers['Authorization'] = f"Bearer {api_key}"
+        
+        # Try different URL patterns
+        urls_to_try = [
+            f"{base_url}/v1/models/{model_id}",
+            f"{base_url}/models/{model_id}",
+        ]
+        
+        for url in urls_to_try:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=timeout),
+                    ) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            
+                            # Extract useful metadata
+                            metadata = {
+                                "model_id": data.get("id", model_id),
+                                "object": data.get("object"),
+                                "created": data.get("created"),
+                                "owned_by": data.get("owned_by"),
+                            }
+                            
+                            # Some providers include additional fields
+                            if "context_length" in data:
+                                metadata["context_window"] = data["context_length"]
+                            if "max_tokens" in data:
+                                metadata["max_output_tokens"] = data["max_tokens"]
+                            
+                            return metadata
+                            
+            except Exception as e:
+                logger.debug(f"Failed to fetch metadata from {url}: {e}")
+                continue
+        
+        logger.warning(f"Could not fetch metadata for model {model_id}")
+        return None
 
 
 def get_protocol_client(protocol: ProviderProtocol) -> ProtocolClient:

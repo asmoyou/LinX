@@ -9,7 +9,6 @@ import {
   Plus,
   Edit,
   Trash2,
-  Info,
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
@@ -18,6 +17,7 @@ import { useAuthStore } from '../../stores';
 import { llmApi } from '../../api';
 import type { LLMConfig, ModelMetadata, ProviderModelsMetadata } from '../../api/llm';
 import { AddProviderModal } from '../AddProviderModal';
+import { EditModelModal } from './EditModelModal';
 
 export const LLMSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -32,6 +32,8 @@ export const LLMSettings: React.FC = () => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingProvider, setEditingProvider] = useState<any>(null);
   const [deletingProvider, setDeletingProvider] = useState<string | null>(null);
+  const [editingModel, setEditingModel] = useState<{ provider: string; model: string; metadata: ModelMetadata } | null>(null);
+  const [refreshingMetadata, setRefreshingMetadata] = useState<string | null>(null);
 
   const isAdmin = user?.role === 'admin';
 
@@ -126,19 +128,26 @@ export const LLMSettings: React.FC = () => {
   };
 
   const getCapabilityIcon = (capability: string): string => {
+    const cap = capability.toLowerCase().replace(/_/g, '');
     const icons: Record<string, string> = {
       text: '📝',
       chat: '💬',
       code: '💻',
-      function_calling: '🔧',
+      functioncalling: '🔧',
       vision: '👁️',
       audio: '🎵',
       video: '🎬',
       embedding: '🔢',
+      embeddings: '🔢',
       reasoning: '🧠',
       multimodal: '🎨',
+      streaming: '⚡',
+      systemprompt: '📋',
+      imagegeneration: '🎨',
+      rerank: '🔄',
+      codegeneration: '💻',
     };
-    return icons[capability] || '❓';
+    return icons[cap] || '✨';  // 使用星星代替问号
   };
 
   const getCapabilityLabel = (capability: string): string => {
@@ -151,10 +160,16 @@ export const LLMSettings: React.FC = () => {
       audio: 'Audio',
       video: 'Video',
       embedding: 'Embeddings',
+      embeddings: 'Embeddings',
       reasoning: 'Reasoning',
       multimodal: 'Multimodal',
+      streaming: 'Streaming',
+      system_prompt: 'System Prompt',
+      image_generation: 'Image Gen',
+      rerank: 'Rerank',
+      code_generation: 'Code Gen',
     };
-    return labels[capability] || capability;
+    return labels[capability] || capability.replace(/_/g, ' ');
   };
 
   const fetchModelMetadata = async (providerName: string) => {
@@ -164,6 +179,47 @@ export const LLMSettings: React.FC = () => {
     } catch (error) {
       console.error(`Failed to fetch metadata for ${providerName}:`, error);
     }
+  };
+
+  const refreshModelMetadata = async (providerName: string) => {
+    setRefreshingMetadata(providerName);
+    try {
+      await llmApi.refreshModelsMetadata(providerName);
+      toast.success(t('settings.metadataRefreshed', 'Model metadata refreshed successfully'));
+      // Re-fetch metadata
+      await fetchModelMetadata(providerName);
+    } catch (error: any) {
+      console.error(`Failed to refresh metadata for ${providerName}:`, error);
+      toast.error(
+        t('settings.errors.refreshFailed', 'Failed to refresh metadata') + ': ' + 
+        (error.response?.data?.detail || error.message)
+      );
+    } finally {
+      setRefreshingMetadata(null);
+    }
+  };
+
+  const getModelTypeBadge = (modelType?: string) => {
+    if (!modelType) return null;
+    
+    const badges: Record<string, { label: string; color: string; icon: string }> = {
+      chat: { label: 'Chat', color: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300', icon: '💬' },
+      vision: { label: 'Vision', color: 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300', icon: '👁️' },
+      reasoning: { label: 'Reasoning', color: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300', icon: '🧠' },
+      embedding: { label: 'Embedding', color: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300', icon: '🔢' },
+      rerank: { label: 'Rerank', color: 'bg-cyan-100 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300', icon: '🔄' },
+      code: { label: 'Code', color: 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300', icon: '💻' },
+      image_generation: { label: 'Image Gen', color: 'bg-pink-100 dark:bg-pink-900/30 text-pink-700 dark:text-pink-300', icon: '🎨' },
+    };
+    
+    const badge = badges[modelType] || badges.chat;
+    
+    return (
+      <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${badge.color}`}>
+        <span>{badge.icon}</span>
+        <span>{badge.label}</span>
+      </span>
+    );
   };
 
   const toggleProviderExpanded = (providerName: string) => {
@@ -394,6 +450,30 @@ export const LLMSettings: React.FC = () => {
                         <ChevronDown className="w-4 h-4 text-zinc-600 dark:text-zinc-400" />
                       )}
                     </button>
+                    {/* Refresh Metadata Button - Admin Only */}
+                    {/* Debug: isAdmin={isAdmin}, expanded={expandedProviders[name]} */}
+                    {isAdmin && expandedProviders[name] && (
+                      <button
+                        onClick={() => refreshModelMetadata(name)}
+                        disabled={refreshingMetadata === name}
+                        className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm font-medium shadow-sm"
+                        title={t('settings.refreshMetadataTooltip', 'Refresh model metadata from provider API')}
+                      >
+                        {refreshingMetadata === name ? (
+                          <>
+                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            <span>{t('settings.refreshing', '刷新中...')}</span>
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            <span>{t('settings.refreshMetadata', '刷新元数据')}</span>
+                          </>
+                        )}
+                      </button>
+                    )}
                   </div>
                   {provider.healthy && (
                     <div className="flex items-center gap-2">
@@ -469,84 +549,189 @@ export const LLMSettings: React.FC = () => {
 
                 {/* Expanded Model Details */}
                 {expandedProviders[name] && modelsMetadata[name] && (
-                  <div className="mt-4 space-y-3 p-4 bg-zinc-50 dark:bg-zinc-800/50 rounded-lg border border-zinc-200 dark:border-zinc-700">
+                  <div className="mt-4 space-y-3">
                     {provider.available_models.map((model) => {
                       const metadata = modelsMetadata[name]?.models[model];
                       if (!metadata) return null;
 
+                      // Check if this is an embedding or rerank model
+                      const isEmbeddingOrRerank = metadata.model_type === 'embedding' || metadata.model_type === 'rerank';
+
                       return (
                         <div
                           key={model}
-                          className="p-3 bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700"
+                          className="p-4 bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700"
                         >
-                          <div className="flex items-start justify-between mb-2">
-                            <div>
-                              <h5 className="font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                                {metadata.display_name || model}
-                              </h5>
+                          {/* Header with Edit Button */}
+                          <div className="flex items-start justify-between mb-3">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                <h5 className="font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                  {metadata.display_name || model}
+                                </h5>
+                                {getModelTypeBadge(metadata.model_type)}
+                                {metadata.deprecated && (
+                                  <span className="px-2 py-0.5 text-xs bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded">
+                                    Deprecated
+                                  </span>
+                                )}
+                              </div>
                               {metadata.description && (
-                                <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-1">
+                                <p className="text-xs text-zinc-600 dark:text-zinc-400">
                                   {metadata.description}
                                 </p>
                               )}
                             </div>
-                            {metadata.deprecated && (
-                              <span className="px-2 py-0.5 text-xs bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded">
-                                Deprecated
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Capabilities */}
-                          <div className="flex flex-wrap gap-1.5 mb-2">
-                            {metadata.capabilities.map((cap) => (
-                              <span
-                                key={cap}
-                                className="px-2 py-0.5 text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded flex items-center gap-1"
+                            {isAdmin && (
+                              <button
+                                onClick={() => setEditingModel({ provider: name, model, metadata })}
+                                className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-lg transition-colors"
+                                title="Edit model metadata"
                               >
-                                <span>{getCapabilityIcon(cap)}</span>
-                                <span>{getCapabilityLabel(cap)}</span>
-                              </span>
-                            ))}
+                                <Edit className="w-4 h-4 text-zinc-600 dark:text-zinc-400" />
+                              </button>
+                            )}
                           </div>
 
-                          {/* Technical Details */}
-                          <div className="grid grid-cols-2 gap-2 text-xs">
-                            {metadata.context_window && (
-                              <div className="flex items-center gap-1 text-zinc-600 dark:text-zinc-400">
-                                <span className="font-medium">Context:</span>
-                                <span>{metadata.context_window.toLocaleString()} tokens</span>
+                          {/* Model Properties Grid - Different for embedding/rerank models */}
+                          {!isEmbeddingOrRerank && (
+                            <div className="grid grid-cols-2 gap-3 mb-3">
+                              {metadata.context_window && (
+                                <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
+                                  <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">Context Window</div>
+                                  <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                    {metadata.context_window.toLocaleString()}
+                                  </div>
+                                  <div className="text-xs text-zinc-500 dark:text-zinc-400">tokens</div>
+                                </div>
+                              )}
+                              {metadata.max_output_tokens && (
+                                <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
+                                  <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">Max Output</div>
+                                  <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                    {metadata.max_output_tokens.toLocaleString()}
+                                  </div>
+                                  <div className="text-xs text-zinc-500 dark:text-zinc-400">tokens</div>
+                                </div>
+                              )}
+                              <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
+                                <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">Temperature</div>
+                                <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                  {metadata.default_temperature}
+                                </div>
+                                <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                                  range: {metadata.temperature_range[0]}-{metadata.temperature_range[1]}
+                                </div>
                               </div>
-                            )}
-                            {metadata.max_output_tokens && (
-                              <div className="flex items-center gap-1 text-zinc-600 dark:text-zinc-400">
-                                <span className="font-medium">Max Output:</span>
-                                <span>{metadata.max_output_tokens.toLocaleString()} tokens</span>
-                              </div>
-                            )}
-                            <div className="flex items-center gap-1 text-zinc-600 dark:text-zinc-400">
-                              <span className="font-medium">Temperature:</span>
-                              <span>
-                                {metadata.default_temperature} ({metadata.temperature_range[0]}-
-                                {metadata.temperature_range[1]})
-                              </span>
+                              {metadata.version && (
+                                <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
+                                  <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">Version</div>
+                                  <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                    {metadata.version}
+                                  </div>
+                                  {metadata.release_date && (
+                                    <div className="text-xs text-zinc-500 dark:text-zinc-400">{metadata.release_date}</div>
+                                  )}
+                                </div>
+                              )}
                             </div>
-                            <div className="flex items-center gap-1 text-zinc-600 dark:text-zinc-400">
-                              <span className="font-medium">Streaming:</span>
-                              <span>{metadata.supports_streaming ? '✓' : '✗'}</span>
-                            </div>
-                            {(metadata.input_price_per_1k || metadata.output_price_per_1k) && (
-                              <div className="col-span-2 flex items-center gap-2 text-zinc-600 dark:text-zinc-400">
-                                <span className="font-medium">Pricing:</span>
-                                {metadata.input_price_per_1k && (
-                                  <span>In: ${metadata.input_price_per_1k}/1K</span>
+                          )}
+
+                          {/* Embedding/Rerank Model Properties */}
+                          {isEmbeddingOrRerank && (
+                            <div className="mb-3 p-3 bg-zinc-50 dark:bg-zinc-800/50 rounded">
+                              <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-2">
+                                Model Information
+                              </div>
+                              <div className="space-y-1 text-sm">
+                                <div className="flex justify-between">
+                                  <span className="text-zinc-600 dark:text-zinc-400">Type:</span>
+                                  <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                                    {metadata.model_type === 'embedding' ? 'Text Embedding' : 'Reranking'}
+                                  </span>
+                                </div>
+                                {metadata.context_window && (
+                                  <div className="flex justify-between">
+                                    <span className="text-zinc-600 dark:text-zinc-400">Max Input:</span>
+                                    <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                                      {metadata.context_window.toLocaleString()} tokens
+                                    </span>
+                                  </div>
                                 )}
-                                {metadata.output_price_per_1k && (
-                                  <span>Out: ${metadata.output_price_per_1k}/1K</span>
+                                {metadata.version && (
+                                  <div className="flex justify-between">
+                                    <span className="text-zinc-600 dark:text-zinc-400">Version:</span>
+                                    <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                                      {metadata.version}
+                                    </span>
+                                  </div>
                                 )}
                               </div>
-                            )}
-                          </div>
+                            </div>
+                          )}
+
+                          {/* Features - Only show for chat/vision/reasoning models */}
+                          {!isEmbeddingOrRerank && (
+                            <div className="mb-3">
+                              <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-2">
+                                Features
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                {metadata.supports_vision && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-1 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded text-xs">
+                                    👁️ Vision
+                                  </span>
+                                )}
+                                {metadata.supports_reasoning && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-1 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 rounded text-xs">
+                                    🧠 Reasoning
+                                  </span>
+                                )}
+                                {metadata.supports_function_calling && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded text-xs">
+                                    🔧 Functions
+                                  </span>
+                                )}
+                                {metadata.supports_streaming && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-1 bg-cyan-100 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 rounded text-xs">
+                                    ⚡ Streaming
+                                  </span>
+                                )}
+                                {metadata.supports_system_prompt && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded text-xs">
+                                    📋 System Prompt
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Pricing */}
+                          {(metadata.input_price_per_1m || metadata.output_price_per_1m) && (
+                            <div className="pt-3 border-t border-zinc-200 dark:border-zinc-700">
+                              <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-2">
+                                Pricing (per 1M tokens)
+                              </div>
+                              <div className="flex gap-4 text-xs">
+                                {metadata.input_price_per_1m && (
+                                  <div>
+                                    <span className="text-zinc-600 dark:text-zinc-400">Input: </span>
+                                    <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                                      ${metadata.input_price_per_1m.toFixed(2)}
+                                    </span>
+                                  </div>
+                                )}
+                                {metadata.output_price_per_1m && (
+                                  <div>
+                                    <span className="text-zinc-600 dark:text-zinc-400">Output: </span>
+                                    <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                                      ${metadata.output_price_per_1m.toFixed(2)}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -592,6 +777,24 @@ export const LLMSettings: React.FC = () => {
         onSuccess={fetchProviders}
         editProvider={editingProvider}
       />
+
+      {editingModel && (
+        <EditModelModal
+          isOpen={true}
+          onClose={() => setEditingModel(null)}
+          metadata={editingModel.metadata}
+          onSave={async (updated) => {
+            try {
+              await llmApi.updateModelMetadata(editingModel.provider, editingModel.model, updated);
+              // Refresh metadata
+              await fetchModelMetadata(editingModel.provider);
+              toast.success(t('settings.metadataUpdated', 'Model metadata updated successfully'));
+            } catch (error: any) {
+              throw new Error(error.response?.data?.detail || error.message || 'Failed to update metadata');
+            }
+          }}
+        />
+      )}
     </div>
   );
 };

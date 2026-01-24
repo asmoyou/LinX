@@ -202,24 +202,42 @@ async def get_provider_models(
     Args:
         provider_name: Name of the provider (ollama, vllm, openai, anthropic)
     """
-    if get_llm_provider is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="LLM providers not configured",
-        )
-
     try:
-        llm_router = get_llm_provider()
-
-        if provider_name not in llm_router.providers:
+        # Get models from database or config.yaml
+        models = []
+        
+        # Try database first
+        try:
+            with get_db_session() as db:
+                db_manager = ProviderDBManager(db)
+                db_provider = db_manager.get_provider(provider_name)
+                
+                if db_provider and db_provider.enabled:
+                    models = db_provider.models or []
+                    if models:
+                        return models
+        except Exception as e:
+            logger.warning(f"Failed to get models from database: {e}")
+        
+        # Try config.yaml
+        from shared.config import get_config
+        config = get_config()
+        config_providers = config.get("llm.providers", {})
+        
+        if provider_name in config_providers:
+            provider_config = config_providers[provider_name]
+            models_dict = provider_config.get("models", {})
+            if isinstance(models_dict, dict):
+                models = list(set(models_dict.values()))
+            elif isinstance(models_dict, list):
+                models = models_dict
+        
+        if not models:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Provider '{provider_name}' not found",
+                detail=f"Provider '{provider_name}' not found or has no models",
             )
-
-        provider = llm_router.providers[provider_name]
-        models = await provider.list_models()
-
+        
         return models
 
     except HTTPException:
@@ -239,6 +257,9 @@ async def check_provider_health(
 ):
     """
     Check health status of a specific provider.
+    
+    This performs an actual health check (may take time).
+    For quick status, use GET /providers instead.
 
     Args:
         provider_name: Name of the provider
@@ -252,13 +273,16 @@ async def check_provider_health(
     try:
         llm_router = get_llm_provider()
 
-        if provider_name not in llm_router.providers:
+        # Load provider on-demand
+        provider = await llm_router._get_provider(provider_name)
+        
+        if not provider:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Provider '{provider_name}' not found",
             )
 
-        provider = llm_router.providers[provider_name]
+        # Perform actual health check
         healthy = await provider.health_check()
 
         return {"healthy": healthy}
@@ -335,7 +359,10 @@ async def get_available_providers_and_models(
     """
     Get available providers and their models for agent configuration.
     
-    Returns only enabled providers with their available models.
+    Returns enabled providers with their configured models.
+    Does NOT perform actual health checks to avoid blocking.
+    Uses last known test status from database.
+    
     This endpoint is used by the agent configuration UI.
     """
     if get_llm_provider is None:
@@ -345,20 +372,44 @@ async def get_available_providers_and_models(
         )
 
     try:
-        llm_router = get_llm_provider()
-        
-        # Get health status and available models
-        health_status = await llm_router.health_check_all()
-        available_models = await llm_router.list_available_models()
-        
-        # Filter to only enabled and healthy providers
         result = {}
-        for provider_name, provider in llm_router.providers.items():
-            # Check if provider is healthy
-            if health_status.get(provider_name, False):
-                models = available_models.get(provider_name, [])
-                if models:  # Only include providers with available models
-                    result[provider_name] = models
+        
+        # Get providers from database
+        try:
+            with get_db_session() as db:
+                db_manager = ProviderDBManager(db)
+                db_providers = db_manager.list_providers()
+                
+                for p in db_providers:
+                    # Include if enabled and has models
+                    # Optionally filter by last_test_status == 'success'
+                    if p.enabled and p.models:
+                        # Only include if last test was successful or untested
+                        if p.last_test_status in ['success', None, 'untested']:
+                            result[p.name] = p.models
+        except Exception as e:
+            logger.warning(f"Failed to get database providers: {e}")
+        
+        # Get providers from config.yaml
+        try:
+            from shared.config import get_config
+            config = get_config()
+            config_providers = config.get("llm.providers", {})
+            
+            for provider_name, provider_config in config_providers.items():
+                # Skip if already in database (database takes precedence)
+                if provider_name in result:
+                    continue
+                
+                # Include if enabled and has models
+                if provider_config.get("enabled", False):
+                    models_dict = provider_config.get("models", {})
+                    if isinstance(models_dict, dict):
+                        models = list(set(models_dict.values()))
+                        if models:
+                            result[provider_name] = models
+        except Exception as e:
+            logger.warning(f"Failed to get config.yaml providers: {e}")
         
         return result
 
@@ -881,6 +932,7 @@ class ModelMetadataResponse(BaseModel):
     """Model metadata response."""
     
     model_id: str
+    model_type: Optional[str] = None  # chat, vision, reasoning, embedding, rerank, code, image_generation
     display_name: Optional[str] = None
     description: Optional[str] = None
     capabilities: List[str] = []
@@ -890,8 +942,11 @@ class ModelMetadataResponse(BaseModel):
     temperature_range: tuple[float, float] = (0.0, 2.0)
     supports_streaming: bool = True
     supports_system_prompt: bool = True
-    input_price_per_1k: Optional[float] = None
-    output_price_per_1k: Optional[float] = None
+    supports_function_calling: bool = False
+    supports_vision: bool = False
+    supports_reasoning: bool = False
+    input_price_per_1m: Optional[float] = None  # Per 1 million tokens
+    output_price_per_1m: Optional[float] = None  # Per 1 million tokens
     version: Optional[str] = None
     release_date: Optional[str] = None
     deprecated: bool = False
@@ -915,10 +970,13 @@ async def get_provider_models_metadata(
     
     Returns model capabilities, context windows, pricing, and other metadata.
     Supports both database providers and config.yaml providers.
+    Uses enhanced detection based on cherry-studio patterns.
     """
     try:
-        from llm_providers.model_metadata import ModelCapabilityDetector
+        from llm_providers.model_metadata_enhanced import get_enhanced_detector
         from shared.config import get_config
+        
+        detector = get_enhanced_detector()
         
         # Try database first
         provider = None
@@ -926,7 +984,7 @@ async def get_provider_models_metadata(
         models_list = []
         stored_metadata = {}
         
-        # Check database without raising exceptions
+        # Check database
         with get_db_session() as db:
             db_manager = ProviderDBManager(db)
             provider = db_manager.get_provider(provider_name)
@@ -962,7 +1020,6 @@ async def get_provider_models_metadata(
             # Get models from config
             models_dict = provider_config.get("models", {})
             if isinstance(models_dict, dict):
-                # Extract unique model names from dict values
                 models_list = list(set(models_dict.values()))
             elif isinstance(models_dict, list):
                 models_list = models_dict
@@ -981,17 +1038,44 @@ async def get_provider_models_metadata(
         
         for model_name in models_list:
             if model_name in stored_metadata:
-                # Use stored metadata
+                # Use stored metadata (user customizations)
                 metadata_dict = stored_metadata[model_name]
                 models_metadata[model_name] = ModelMetadataResponse(**metadata_dict)
             else:
-                # Generate default metadata
-                default_metadata = ModelCapabilityDetector.get_default_metadata(
-                    model_name, 
-                    protocol
+                # Use enhanced detector for accurate detection
+                detected_metadata = detector.detect_metadata(
+                    model_id=model_name,
+                    provider=provider_name,
+                    model_name=model_name  # Pass model_name for providers like doubao
                 )
+                
+                # Convert to response format
+                # Note: Convert enum capabilities to string values
+                capabilities_str = [cap.value if hasattr(cap, 'value') else str(cap) for cap in detected_metadata.capabilities]
+                
+                # Convert model_type enum to string
+                model_type_str = detected_metadata.model_type.value if hasattr(detected_metadata.model_type, 'value') else str(detected_metadata.model_type)
+                
                 models_metadata[model_name] = ModelMetadataResponse(
-                    **default_metadata.dict()
+                    model_id=detected_metadata.model_id,
+                    model_type=model_type_str,
+                    display_name=detected_metadata.display_name,
+                    description=detected_metadata.description,
+                    capabilities=capabilities_str,
+                    context_window=detected_metadata.context_window,
+                    max_output_tokens=detected_metadata.max_output_tokens,
+                    default_temperature=detected_metadata.default_temperature,
+                    temperature_range=detected_metadata.temperature_range,
+                    supports_streaming=detected_metadata.supports_streaming,
+                    supports_system_prompt=detected_metadata.supports_system_prompt,
+                    supports_function_calling=detected_metadata.supports_function_calling,
+                    supports_vision=detected_metadata.supports_vision,
+                    supports_reasoning=detected_metadata.supports_reasoning,
+                    input_price_per_1m=detected_metadata.input_price_per_1m,
+                    output_price_per_1m=detected_metadata.output_price_per_1m,
+                    version=detected_metadata.version,
+                    release_date=detected_metadata.release_date,
+                    deprecated=detected_metadata.deprecated,
                 )
         
         return ProviderModelsResponse(
@@ -1010,7 +1094,104 @@ async def get_provider_models_metadata(
         )
 
 
-@router.put("/providers/{provider_name}/models/{model_name}/metadata")
+@router.get("/providers/{provider_name}/models/{model_name:path}/metadata", response_model=ModelMetadataResponse)
+async def get_model_metadata(
+    provider_name: str,
+    model_name: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Get detailed metadata for a specific model.
+    
+    Returns model capabilities, context window, pricing, and other metadata.
+    Used for pre-filling agent configuration forms.
+    """
+    try:
+        from llm_providers.model_metadata import ModelCapabilityDetector
+        from shared.config import get_config
+        
+        # Try database first
+        provider = None
+        protocol = None
+        stored_metadata = {}
+        
+        with get_db_session() as db:
+            db_manager = ProviderDBManager(db)
+            provider = db_manager.get_provider(provider_name)
+            
+            if provider:
+                protocol = provider.protocol
+                stored_metadata = provider.model_metadata or {}
+                
+                # Check if model exists in provider
+                if model_name not in provider.models:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Model '{model_name}' not found in provider '{provider_name}'"
+                    )
+        
+        # If not in database, try config.yaml
+        if not provider:
+            config = get_config()
+            providers_config = config.get("llm.providers", {})
+            
+            if provider_name not in providers_config:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Provider '{provider_name}' not found"
+                )
+            
+            provider_config = providers_config[provider_name]
+            
+            # Determine protocol
+            if provider_name == "ollama":
+                protocol = "ollama"
+            elif provider_name == "vllm":
+                protocol = "vllm"
+            elif provider_name in ["openai", "anthropic"]:
+                protocol = "openai_compatible"
+            else:
+                protocol = "openai_compatible"
+            
+            # Check if model exists in config
+            models_dict = provider_config.get("models", {})
+            if isinstance(models_dict, dict):
+                models_list = list(set(models_dict.values()))
+            elif isinstance(models_dict, list):
+                models_list = models_dict
+            else:
+                models_list = []
+            
+            if model_name not in models_list:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Model '{model_name}' not found in provider '{provider_name}'"
+                )
+        
+        # Get or generate metadata for the model
+        if model_name in stored_metadata:
+            # Use stored metadata
+            metadata_dict = stored_metadata[model_name]
+            return ModelMetadataResponse(**metadata_dict)
+        else:
+            # Generate default metadata
+            default_metadata = ModelCapabilityDetector.get_default_metadata(
+                model_name,
+                protocol
+            )
+            return ModelMetadataResponse(**default_metadata.dict())
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get model metadata: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get model metadata: {str(e)}"
+        )
+
+
+@router.put("/providers/{provider_name}/models/{model_name:path}/metadata")
 @require_role([Role.ADMIN])
 async def update_model_metadata(
     provider_name: str,
@@ -1059,4 +1240,108 @@ async def update_model_metadata(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update model metadata: {str(e)}"
+        )
+
+
+@router.post("/providers/{provider_name}/models/refresh-metadata")
+@require_role([Role.ADMIN])
+async def refresh_models_metadata(
+    provider_name: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Refresh model metadata from provider API.
+    
+    Fetches latest model information from the provider and updates stored metadata.
+    This is useful after provider updates or to get accurate context windows and capabilities.
+    
+    Admin only.
+    """
+    try:
+        from llm_providers.model_metadata import ModelCapabilityDetector
+        from llm_providers.protocol_clients import get_protocol_client
+        
+        # Get provider from database
+        with get_db_session() as db:
+            db_manager = ProviderDBManager(db)
+            provider = db_manager.get_provider(provider_name)
+            
+            if not provider:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Provider '{provider_name}' not found"
+                )
+            
+            # Get protocol client
+            from llm_providers.models import ProviderProtocol
+            protocol = ProviderProtocol(provider.protocol)
+            client = get_protocol_client(protocol)
+            
+            # Decrypt API key
+            api_key = db_manager._decrypt_api_key(provider.api_key_encrypted)
+            
+            # Fetch models
+            try:
+                models = await client.fetch_models(
+                    base_url=provider.base_url,
+                    api_key=api_key,
+                    timeout=provider.timeout,
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Failed to fetch models from provider: {str(e)}"
+                )
+            
+            # Fetch metadata for each model
+            updated_metadata = {}
+            for model_id in models:
+                # Try to fetch from provider API
+                provider_metadata = await client.fetch_model_metadata(
+                    base_url=provider.base_url,
+                    model_id=model_id,
+                    api_key=api_key,
+                    timeout=provider.timeout,
+                )
+                
+                # Generate base metadata using detector
+                detected_metadata = ModelCapabilityDetector.detect_metadata(
+                    model_id,
+                    provider_name
+                )
+                
+                # Merge provider metadata with detected metadata
+                if provider_metadata:
+                    # Update detected metadata with provider-specific info
+                    if "context_window" in provider_metadata:
+                        detected_metadata.context_window = provider_metadata["context_window"]
+                    if "max_output_tokens" in provider_metadata:
+                        detected_metadata.max_output_tokens = provider_metadata["max_output_tokens"]
+                    if "size" in provider_metadata:
+                        detected_metadata.size = provider_metadata["size"]
+                    if "quantization" in provider_metadata:
+                        detected_metadata.quantization = provider_metadata["quantization"]
+                
+                updated_metadata[model_id] = detected_metadata.dict()
+            
+            # Update provider with new models and metadata
+            provider.models = models
+            provider.model_metadata = updated_metadata
+            db.commit()
+            
+            logger.info(f"Refreshed metadata for {len(models)} models in provider {provider_name}")
+            
+            return {
+                "success": True,
+                "message": f"Refreshed metadata for {len(models)} models",
+                "models_count": len(models)
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to refresh models metadata: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to refresh models metadata: {str(e)}"
         )

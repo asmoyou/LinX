@@ -80,8 +80,8 @@ class MinIOClient:
         Creates buckets if they don't exist and configures versioning
         for the documents bucket.
 
-        Raises:
-            S3Error: If bucket creation or configuration fails
+        Note: Errors are logged but not raised to allow operation to continue
+        even if some buckets cannot be initialized.
         """
         for bucket_key, bucket_name in self.buckets.items():
             try:
@@ -98,8 +98,10 @@ class MinIOClient:
                     self._enable_versioning(bucket_name)
 
             except S3Error as e:
-                logger.error(f"Error initializing bucket {bucket_name}: {e}")
-                raise
+                # Log error but don't raise - allow other buckets to be initialized
+                logger.warning(f"Could not initialize bucket {bucket_name}: {e}")
+                # Continue with next bucket
+                continue
 
     def _enable_versioning(self, bucket_name: str) -> None:
         """

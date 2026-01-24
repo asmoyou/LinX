@@ -1,6 +1,5 @@
 import React from 'react';
 import { X, Activity, Clock, CheckCircle, MessageSquare } from 'lucide-react';
-import { GlassPanel } from '@/components/GlassPanel';
 import type { Agent } from '@/types/agent';
 
 interface AgentDetailsModalProps {
@@ -21,8 +20,8 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({ agent, isO
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <GlassPanel className="w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm overflow-auto ml-64">
+      <div className="w-full max-w-4xl my-auto max-h-[90vh] overflow-y-auto bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl p-6">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-gray-800 dark:text-white">{agent.name}</h2>
           <div className="flex items-center gap-2">
@@ -110,7 +109,7 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({ agent, isO
             ))}
           </div>
         </div>
-      </GlassPanel>
+      </div>
     </div>
   );
 };
