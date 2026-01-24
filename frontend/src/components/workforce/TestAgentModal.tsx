@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Send, Loader2, AlertCircle, Bot, ChevronDown, ChevronUp, Brain } from 'lucide-react';
+import { X, Send, Loader2, AlertCircle, Bot, ChevronDown, ChevronUp, Brain, Paperclip, Image as ImageIcon, FileText, X as XIcon, Sparkles } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Agent } from '@/types/agent';
@@ -18,11 +18,19 @@ interface StatusMessage {
   timestamp: Date;
 }
 
+interface AttachedFile {
+  id: string;
+  file: File;
+  preview?: string;
+  type: 'image' | 'document' | 'other';
+}
+
 interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: Date;
   statusMessages?: StatusMessage[];
+  attachments?: AttachedFile[];
   stats?: {
     timeToFirstToken: number;
     tokensPerSecond: number;
@@ -41,6 +49,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
   const { t } = useTranslation();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentResponse, setCurrentResponse] = useState('');
@@ -49,6 +58,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
   const [currentStats, setCurrentStats] = useState<Message['stats'] | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   // Use refs to track streaming data for onComplete callback
   const streamingDataRef = useRef<{
@@ -83,6 +93,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
     if (!isOpen) {
       setMessages([]);
       setInputMessage('');
+      setAttachedFiles([]);
       setCurrentResponse('');
       setCurrentStatusMessages([]);
       setCurrentStats(null);
@@ -94,17 +105,59 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
 
   if (!isOpen || !agent) return null;
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    
+    files.forEach((file) => {
+      const fileType = file.type.startsWith('image/') ? 'image' : 
+                      file.type.includes('pdf') || file.type.includes('document') ? 'document' : 
+                      'other';
+      
+      const newFile: AttachedFile = {
+        id: Math.random().toString(36).substr(2, 9),
+        file,
+        type: fileType,
+      };
+
+      // Create preview for images
+      if (fileType === 'image') {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          setAttachedFiles((prev) =>
+            prev.map((f) =>
+              f.id === newFile.id ? { ...f, preview: e.target?.result as string } : f
+            )
+          );
+        };
+        reader.readAsDataURL(file);
+      }
+
+      setAttachedFiles((prev) => [...prev, newFile]);
+    });
+
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const removeFile = (fileId: string) => {
+    setAttachedFiles((prev) => prev.filter((f) => f.id !== fileId));
+  };
+
   const handleSendMessage = async () => {
-    if (!inputMessage.trim() || isStreaming) return;
+    if ((!inputMessage.trim() && attachedFiles.length === 0) || isStreaming) return;
 
     const userMessage: Message = {
       role: 'user',
-      content: inputMessage.trim(),
+      content: inputMessage.trim() || '[Attached files]',
       timestamp: new Date(),
+      attachments: attachedFiles.length > 0 ? [...attachedFiles] : undefined,
     };
 
     setMessages((prev) => [...prev, userMessage]);
     setInputMessage('');
+    setAttachedFiles([]);
     setError(null);
     setIsStreaming(true);
     setCurrentResponse('');
@@ -120,27 +173,24 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
       .map(m => ({ role: m.role, content: m.content }));
 
     try {
+      // TODO: Handle file uploads - for now just send text
       await agentsApi.testAgent(
         agent.id,
         userMessage.content,
         (chunk) => {
           if (chunk.type === 'start' || chunk.type === 'info' || chunk.type === 'thinking' || chunk.type === 'done') {
-            // 收集状态消息
             const newStatus: StatusMessage = {
               content: chunk.content,
               type: chunk.type as 'start' | 'info' | 'thinking' | 'done' | 'error',
               timestamp: new Date(),
             };
             
-            // Update both state and ref
             streamingDataRef.current.statusMessages.push(newStatus);
             setCurrentStatusMessages((prev) => [...prev, newStatus]);
           } else if (chunk.type === 'content') {
-            // content 是最终回复内容
             streamingDataRef.current.content += chunk.content;
             setCurrentResponse(streamingDataRef.current.content);
           } else if (chunk.type === 'stats') {
-            // Token statistics
             const stats = {
               timeToFirstToken: chunk.timeToFirstToken,
               tokensPerSecond: chunk.tokensPerSecond,
@@ -164,7 +214,6 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
           streamingDataRef.current = { content: '', statusMessages: [], stats: null };
         },
         () => {
-          // Stream 结束 - 保存消息和状态
           const { content, statusMessages, stats } = streamingDataRef.current;
           
           if (content) {
@@ -177,7 +226,6 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
             };
             
             setMessages((prev) => {
-              // 默认折叠新消息的状态
               const newIndex = prev.length;
               setCollapsedStatus((prevCollapsed) => ({
                 ...prevCollapsed,
@@ -188,7 +236,6 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
             });
           }
           
-          // Clear streaming state
           setCurrentResponse('');
           setCurrentStatusMessages([]);
           setCurrentStats(null);
@@ -222,62 +269,92 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm overflow-auto ml-64">
-      <div className="w-full max-w-4xl my-auto h-[80vh] flex flex-col bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl p-6">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-3 pb-3 border-b border-zinc-200 dark:border-zinc-700">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-emerald-500/10 rounded-lg">
-              <Bot className="w-5 h-5 text-emerald-500" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md overflow-auto ml-64">
+      <div className="w-full max-w-5xl my-auto h-[85vh] flex flex-col bg-gradient-to-br from-white to-zinc-50 dark:from-zinc-900 dark:to-zinc-950 rounded-2xl shadow-2xl border border-zinc-200/50 dark:border-zinc-800/50 overflow-hidden">
+        {/* Header with gradient */}
+        <div className="relative bg-gradient-to-r from-emerald-500 to-cyan-500 px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-white/20 backdrop-blur-sm rounded-xl">
+                <Bot className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                  {agent.name}
+                  <Sparkles className="w-4 h-4" />
+                </h2>
+                <p className="text-xs text-white/80">AI Agent Testing Environment</p>
+              </div>
             </div>
-            <div>
-              <h2 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">
-                {t('agent.testAgent')}
-              </h2>
-              <p className="text-xs text-zinc-600 dark:text-zinc-400">{agent.name}</p>
-            </div>
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-white/20 rounded-lg transition-colors text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors text-zinc-600 dark:text-zinc-400"
-          >
-            <X className="w-5 h-5" />
-          </button>
         </div>
 
-        {/* Messages Area */}
-        <div className="flex-1 overflow-y-auto mb-3 space-y-3">
+        {/* Messages Area with custom scrollbar */}
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 scrollbar-thin scrollbar-thumb-zinc-300 dark:scrollbar-thumb-zinc-700 scrollbar-track-transparent">
           {messages.map((message, index) => (
-            <div key={index}>
+            <div key={index} className="animate-in fade-in slide-in-from-bottom-2 duration-300">
               {message.role === 'user' ? (
                 <div className="flex justify-end">
-                  <div className="max-w-[75%] rounded-xl px-3 py-2 bg-emerald-500 text-white shadow-sm">
-                    <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
-                    <p className="text-xs mt-1 text-emerald-100 opacity-70">
-                      {message.timestamp.toLocaleTimeString()}
-                    </p>
+                  <div className="max-w-[75%] space-y-2">
+                    {/* User message */}
+                    <div className="rounded-2xl px-4 py-3 bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-500/20">
+                      <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
+                      
+                      {/* Attachments */}
+                      {message.attachments && message.attachments.length > 0 && (
+                        <div className="mt-2 space-y-2">
+                          {message.attachments.map((attachment) => (
+                            <div key={attachment.id} className="flex items-center gap-2 p-2 bg-white/10 rounded-lg backdrop-blur-sm">
+                              {attachment.type === 'image' ? (
+                                <>
+                                  <ImageIcon className="w-4 h-4" />
+                                  {attachment.preview && (
+                                    <img src={attachment.preview} alt={attachment.file.name} className="w-16 h-16 object-cover rounded" />
+                                  )}
+                                </>
+                              ) : (
+                                <FileText className="w-4 h-4" />
+                              )}
+                              <span className="text-xs truncate flex-1">{attachment.file.name}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      
+                      <p className="text-xs mt-2 text-emerald-100 opacity-80">
+                        {message.timestamp.toLocaleTimeString()}
+                      </p>
+                    </div>
                   </div>
                 </div>
               ) : message.role === 'system' ? (
-                <div className="w-full text-center">
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400 italic">
-                    {message.content}
-                  </p>
+                <div className="flex justify-center">
+                  <div className="px-4 py-2 bg-zinc-100 dark:bg-zinc-800 rounded-full">
+                    <p className="text-xs text-zinc-600 dark:text-zinc-400 font-medium">
+                      {message.content}
+                    </p>
+                  </div>
                 </div>
               ) : message.role === 'assistant' ? (
                 <div className="flex justify-start">
                   <div className="max-w-[85%] space-y-2">
                     {/* Agent Process (Status Messages) */}
                     {message.statusMessages && message.statusMessages.length > 0 && (
-                      <div className="rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 shadow-sm">
+                      <div className="rounded-xl overflow-hidden border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 shadow-sm">
                         <button
                           onClick={() => toggleStatusCollapse(index)}
-                          className="w-full flex items-center justify-between px-3 py-2 bg-zinc-50 dark:bg-zinc-800/50 hover:bg-zinc-100 dark:hover:bg-zinc-700/50 transition-colors text-left"
+                          className="w-full flex items-center justify-between px-4 py-2.5 bg-gradient-to-r from-zinc-50 to-zinc-100 dark:from-zinc-800 dark:to-zinc-800/50 hover:from-zinc-100 hover:to-zinc-100 dark:hover:from-zinc-700 dark:hover:to-zinc-700/50 transition-all text-left"
                         >
                           <div className="flex items-center gap-2">
-                            <Brain className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />
-                            <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                              Agent Process ({message.statusMessages.length} steps)
+                            <Brain className="w-4 h-4 text-purple-500" />
+                            <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                              Thinking Process ({message.statusMessages.length} steps)
                             </span>
                           </div>
                           {collapsedStatus[index] ? (
@@ -287,23 +364,23 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                           )}
                         </button>
                         {!collapsedStatus[index] && (
-                          <div className="px-3 py-2 space-y-1 bg-zinc-50/50 dark:bg-zinc-900/50">
+                          <div className="px-4 py-3 space-y-2 bg-zinc-50/50 dark:bg-zinc-900/50">
                             {message.statusMessages.map((status, idx) => (
-                              <div key={idx} className="flex items-start gap-2 text-xs">
+                              <div key={idx} className="flex items-start gap-2.5 text-xs">
                                 <div
-                                  className={`w-1.5 h-1.5 rounded-full mt-1 flex-shrink-0 ${
+                                  className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${
                                     status.type === 'start'
-                                      ? 'bg-blue-500'
+                                      ? 'bg-blue-500 animate-pulse'
                                       : status.type === 'info'
                                       ? 'bg-cyan-500'
                                       : status.type === 'thinking'
-                                      ? 'bg-purple-500'
+                                      ? 'bg-purple-500 animate-pulse'
                                       : status.type === 'done'
                                       ? 'bg-green-500'
                                       : 'bg-zinc-500'
                                   }`}
                                 />
-                                <span className="text-zinc-700 dark:text-zinc-300 flex-1">
+                                <span className="text-zinc-700 dark:text-zinc-300 flex-1 leading-relaxed">
                                   {status.content}
                                 </span>
                               </div>
@@ -314,25 +391,27 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                     )}
                     
                     {/* Assistant Response */}
-                    <div className="rounded-xl px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-sm">
-                      <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-pre:my-1">
+                    <div className="rounded-2xl px-4 py-3 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-lg">
+                      <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 prose-pre:bg-zinc-900 prose-pre:text-zinc-100">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
                           {message.content}
                         </ReactMarkdown>
                       </div>
-                      <div className="flex items-center justify-between mt-2 pt-2 border-t border-zinc-200 dark:border-zinc-700">
+                      
+                      {/* Stats footer */}
+                      <div className="flex items-center justify-between mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-700">
                         <p className="text-xs text-zinc-500 dark:text-zinc-400">
                           {message.timestamp.toLocaleTimeString()}
                         </p>
                         {message.stats && (
-                          <div className="flex items-center gap-3 text-[10px] text-zinc-500 dark:text-zinc-400">
-                            <span title="Time to first token">
+                          <div className="flex items-center gap-3 text-[10px] font-medium">
+                            <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400" title="Time to first token">
                               ⚡ {message.stats.timeToFirstToken}s
                             </span>
-                            <span title="Tokens per second">
+                            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400" title="Tokens per second">
                               🚀 {message.stats.tokensPerSecond} tok/s
                             </span>
-                            <span title="Input / Output tokens">
+                            <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400" title="Input / Output tokens">
                               📊 {message.stats.inputTokens} / {message.stats.outputTokens}
                             </span>
                           </div>
@@ -347,33 +426,33 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
 
           {/* Current Status Messages (while streaming) */}
           {isStreaming && currentStatusMessages.length > 0 && (
-            <div className="flex justify-start">
-              <div className="max-w-[85%] rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 shadow-sm">
-                <div className="flex items-center justify-between px-3 py-2 bg-zinc-50 dark:bg-zinc-800/50">
+            <div className="flex justify-start animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <div className="max-w-[85%] rounded-xl overflow-hidden border border-purple-200 dark:border-purple-800 bg-white dark:bg-zinc-800 shadow-lg">
+                <div className="flex items-center justify-between px-4 py-2.5 bg-gradient-to-r from-purple-50 to-purple-100 dark:from-purple-900/20 dark:to-purple-800/20">
                   <div className="flex items-center gap-2">
-                    <Brain className="w-4 h-4 text-zinc-500 dark:text-zinc-400 animate-pulse" />
-                    <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    <Brain className="w-4 h-4 text-purple-500 animate-pulse" />
+                    <span className="text-xs font-semibold text-purple-700 dark:text-purple-300">
                       Processing... ({currentStatusMessages.length} steps)
                     </span>
                   </div>
                 </div>
-                <div className="px-3 py-2 space-y-1 bg-zinc-50/50 dark:bg-zinc-900/50">
+                <div className="px-4 py-3 space-y-2 bg-purple-50/30 dark:bg-purple-900/10">
                   {currentStatusMessages.map((status, idx) => (
-                    <div key={idx} className="flex items-start gap-2 text-xs">
+                    <div key={idx} className="flex items-start gap-2.5 text-xs">
                       <div
-                        className={`w-1.5 h-1.5 rounded-full mt-1 flex-shrink-0 ${
+                        className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${
                           status.type === 'start'
-                            ? 'bg-blue-500'
+                            ? 'bg-blue-500 animate-pulse'
                             : status.type === 'info'
                             ? 'bg-cyan-500'
                             : status.type === 'thinking'
-                            ? 'bg-purple-500'
+                            ? 'bg-purple-500 animate-pulse'
                             : status.type === 'done'
                             ? 'bg-green-500'
                             : 'bg-zinc-500'
                         }`}
                       />
-                      <span className="text-zinc-700 dark:text-zinc-300 flex-1">
+                      <span className="text-zinc-700 dark:text-zinc-300 flex-1 leading-relaxed">
                         {status.content}
                       </span>
                     </div>
@@ -385,28 +464,28 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
 
           {/* Streaming Response */}
           {currentResponse && (
-            <div className="flex justify-start">
-              <div className="max-w-[85%] rounded-xl px-3 py-2 bg-white dark:bg-zinc-800 border border-emerald-500/30 dark:border-emerald-500/30 shadow-sm">
-                <div className="flex items-center gap-2 mb-1">
+            <div className="flex justify-start animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-white dark:bg-zinc-800 border-2 border-emerald-300 dark:border-emerald-700 shadow-lg shadow-emerald-500/10">
+                <div className="flex items-center gap-2 mb-2">
                   <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
                   <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                    Streaming
+                    Generating...
                   </span>
                 </div>
-                <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-pre:my-1">
+                <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
                     {currentResponse}
                   </ReactMarkdown>
                 </div>
                 {currentStats && (
-                  <div className="flex items-center gap-3 mt-2 pt-2 border-t border-emerald-500/20 text-[10px] text-emerald-600 dark:text-emerald-400">
-                    <span title="Time to first token">
+                  <div className="flex items-center gap-3 mt-3 pt-3 border-t border-emerald-200 dark:border-emerald-800 text-[10px] font-medium">
+                    <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
                       ⚡ {currentStats.timeToFirstToken}s
                     </span>
-                    <span title="Tokens per second">
+                    <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
                       🚀 {currentStats.tokensPerSecond} tok/s
                     </span>
-                    <span title="Input / Output tokens">
+                    <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400">
                       📊 {currentStats.inputTokens} / {currentStats.outputTokens}
                     </span>
                   </div>
@@ -417,14 +496,14 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
 
           {/* Error Message */}
           {error && (
-            <div className="flex justify-center">
-              <div className="max-w-[85%] rounded-xl px-3 py-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 flex items-start gap-2 shadow-sm">
-                <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+            <div className="flex justify-center animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <div className="max-w-[85%] rounded-xl px-4 py-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 flex items-start gap-3 shadow-lg">
+                <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
                 <div>
-                  <p className="text-xs font-semibold text-red-700 dark:text-red-400">
+                  <p className="text-sm font-semibold text-red-700 dark:text-red-400">
                     Error
                   </p>
-                  <p className="text-xs text-red-600 dark:text-red-500">{error}</p>
+                  <p className="text-xs text-red-600 dark:text-red-500 mt-1">{error}</p>
                 </div>
               </div>
             </div>
@@ -433,37 +512,94 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input Area */}
-        <div className="border-t border-zinc-200 dark:border-zinc-700 pt-3">
+        {/* Input Area with modern design */}
+        <div className="border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-6 py-4">
+          {/* Attached Files Preview */}
+          {attachedFiles.length > 0 && (
+            <div className="mb-3 flex flex-wrap gap-2">
+              {attachedFiles.map((file) => (
+                <div
+                  key={file.id}
+                  className="relative group flex items-center gap-2 px-3 py-2 bg-zinc-100 dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700"
+                >
+                  {file.type === 'image' ? (
+                    <>
+                      <ImageIcon className="w-4 h-4 text-emerald-500" />
+                      {file.preview && (
+                        <img src={file.preview} alt={file.file.name} className="w-10 h-10 object-cover rounded" />
+                      )}
+                    </>
+                  ) : (
+                    <FileText className="w-4 h-4 text-blue-500" />
+                  )}
+                  <span className="text-xs text-zinc-700 dark:text-zinc-300 max-w-[150px] truncate">
+                    {file.file.name}
+                  </span>
+                  <button
+                    onClick={() => removeFile(file.id)}
+                    className="ml-1 p-1 hover:bg-red-100 dark:hover:bg-red-900/20 rounded transition-colors"
+                  >
+                    <XIcon className="w-3 h-3 text-red-500" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className="flex gap-2">
-            <textarea
-              ref={inputRef}
-              value={inputMessage}
-              onChange={(e) => setInputMessage(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={
-                isStreaming
-                  ? 'Waiting for response...'
-                  : 'Type your message...'
-              }
-              disabled={isStreaming}
-              rows={2}
-              className="flex-1 px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-sm text-zinc-900 dark:text-zinc-100 resize-none disabled:opacity-50 disabled:cursor-not-allowed placeholder:text-zinc-400 dark:placeholder:text-zinc-500"
+            {/* File upload button */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,.pdf,.doc,.docx,.txt"
+              onChange={handleFileSelect}
+              className="hidden"
             />
             <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isStreaming}
+              className="p-3 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors text-zinc-600 dark:text-zinc-400 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Attach files"
+            >
+              <Paperclip className="w-5 h-5" />
+            </button>
+
+            {/* Text input */}
+            <div className="flex-1 relative">
+              <textarea
+                ref={inputRef}
+                value={inputMessage}
+                onChange={(e) => setInputMessage(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={
+                  isStreaming
+                    ? 'Waiting for response...'
+                    : 'Type your message or attach files...'
+                }
+                disabled={isStreaming}
+                rows={1}
+                className="w-full px-4 py-3 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 text-sm text-zinc-900 dark:text-zinc-100 resize-none disabled:opacity-50 disabled:cursor-not-allowed placeholder:text-zinc-400 dark:placeholder:text-zinc-500 transition-all"
+                style={{ minHeight: '48px', maxHeight: '120px' }}
+              />
+            </div>
+
+            {/* Send button */}
+            <button
               onClick={handleSendMessage}
-              disabled={!inputMessage.trim() || isStreaming}
-              className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg font-semibold transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed self-end text-sm shadow-sm"
+              disabled={(!inputMessage.trim() && attachedFiles.length === 0) || isStreaming}
+              className="px-5 py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white rounded-xl font-semibold transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-emerald-500/20 disabled:shadow-none"
             >
               {isStreaming ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-5 h-5 animate-spin" />
               ) : (
-                <Send className="w-4 h-4" />
+                <Send className="w-5 h-5" />
               )}
             </button>
           </div>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-            Enter to send, Shift+Enter for new line
+          
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2 text-center">
+            Press Enter to send • Shift+Enter for new line • Attach images and documents
           </p>
         </div>
       </div>
