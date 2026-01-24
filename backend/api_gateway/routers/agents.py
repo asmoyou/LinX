@@ -22,6 +22,9 @@ from shared.logging import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 
+# Global cache for initialized agents (agent_id -> (agent, llm))
+_agent_cache: Dict[str, tuple] = {}
+
 
 class CreateAgentRequest(BaseModel):
     """Create agent request."""
@@ -574,10 +577,12 @@ async def test_agent(
     - Skills/functions
     - Memory access
     - Real agent execution via AgentExecutor
+    - Conversation history support
+    - Agent caching for faster subsequent requests
     
     Args:
         agent_id: Agent ID
-        request: Test request with message
+        request: Test request with message and optional history
         stream: Enable streaming (default: True)
         current_user: Current authenticated user
     """
@@ -617,118 +622,129 @@ async def test_agent(
         async def generate_stream():
             """Generate SSE stream for agent execution with real streaming."""
             try:
-                # Send start event
-                yield f"data: {json.dumps({'type': 'start', 'content': 'Agent execution started'})}\n\n"
-                
                 # Track timing and tokens
                 import time
                 start_time = time.time()
                 first_token_time = None
-                total_tokens = 0
+                last_token_time = None
                 input_tokens = 0
                 output_tokens = 0
                 
-                # Create agent config
-                config = AgentConfig(
-                    agent_id=UUID(agent_id),
-                    name=agent_info.name,
-                    agent_type=agent_info.agent_type,
-                    owner_user_id=UUID(current_user.user_id),
-                    capabilities=agent_info.capabilities or [],
-                    llm_model=agent_info.llm_model or "llama3.2:latest",
-                    temperature=agent_info.temperature or 0.7,
-                    max_iterations=10,
-                    system_prompt=agent_info.system_prompt,
-                )
-                
-                # Create agent instance
-                agent = BaseAgent(config)
-                
-                from shared.config import get_config
-                cfg = get_config()
-                llm_config = cfg.get_section("llm")
-                providers = llm_config.get("providers", {})
-                
-                provider_name = agent_info.llm_provider or "ollama"
-                model_name = agent_info.llm_model or "llama3.2:latest"
-                temperature = agent_info.temperature or 0.7
-                
-                yield f"data: {json.dumps({'type': 'info', 'content': 'Initializing agent...'})}\n\n"
-                
-                # Create LLM instance
+                # Check if agent is already cached
+                cache_key = f"{agent_id}_{agent_info.llm_provider}_{agent_info.llm_model}"
+                agent = None
                 llm = None
                 
-                try:
-                    from database.connection import get_db_session
-                    from llm_providers.db_manager import ProviderDBManager
+                if cache_key in _agent_cache:
+                    agent, llm = _agent_cache[cache_key]
+                    logger.info(f"Reusing cached agent: {agent_info.name}")
+                    yield f"data: {json.dumps({'type': 'info', 'content': 'Using cached agent...'})}\n\n"
+                else:
+                    # Send start event
+                    yield f"data: {json.dumps({'type': 'start', 'content': 'Agent execution started'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'info', 'content': 'Initializing agent...'})}\n\n"
                     
-                    with get_db_session() as db:
-                        db_manager = ProviderDBManager(db)
-                        db_provider = db_manager.get_provider(provider_name)
+                    # Create agent config
+                    config = AgentConfig(
+                        agent_id=UUID(agent_id),
+                        name=agent_info.name,
+                        agent_type=agent_info.agent_type,
+                        owner_user_id=UUID(current_user.user_id),
+                        capabilities=agent_info.capabilities or [],
+                        llm_model=agent_info.llm_model or "llama3.2:latest",
+                        temperature=agent_info.temperature or 0.7,
+                        max_iterations=10,
+                        system_prompt=agent_info.system_prompt,
+                    )
+                    
+                    # Create agent instance
+                    agent = BaseAgent(config)
+                    
+                    from shared.config import get_config
+                    cfg = get_config()
+                    llm_config = cfg.get_section("llm")
+                    providers = llm_config.get("providers", {})
+                    
+                    provider_name = agent_info.llm_provider or "ollama"
+                    model_name = agent_info.llm_model or "llama3.2:latest"
+                    temperature = agent_info.temperature or 0.7
+                    
+                    # Create LLM instance
+                    try:
+                        from database.connection import get_db_session
+                        from llm_providers.db_manager import ProviderDBManager
                         
-                        if db_provider and db_provider.enabled:
-                            if db_provider.protocol == "openai_compatible":
-                                api_key = None
-                                if db_provider.api_key_encrypted:
-                                    api_key = db_manager._decrypt_api_key(db_provider.api_key_encrypted)
-                                
-                                llm = CustomOpenAIChat(
-                                    base_url=db_provider.base_url,
-                                    model=model_name,
-                                    temperature=temperature,
-                                    api_key=api_key,
-                                    timeout=db_provider.timeout,
-                                    max_retries=db_provider.max_retries,
-                                )
-                                logger.info(f"Using Custom OpenAI-compatible provider: {provider_name}")
+                        with get_db_session() as db:
+                            db_manager = ProviderDBManager(db)
+                            db_provider = db_manager.get_provider(provider_name)
                             
-                            elif db_provider.protocol == "ollama":
-                                llm = ChatOllama(
-                                    base_url=db_provider.base_url,
-                                    model=model_name,
-                                    temperature=temperature,
-                                )
-                                logger.info(f"Using Ollama provider: {provider_name}")
-                
-                except Exception as db_error:
-                    logger.warning(f"Failed to load provider from database: {db_error}")
-                
-                if llm is None:
-                    if provider_name == "ollama" or provider_name not in providers:
-                        ollama_config = providers.get("ollama", {})
-                        base_url = ollama_config.get("base_url", "http://localhost:11434")
-                        llm = ChatOllama(
-                            base_url=base_url,
-                            model=model_name,
-                            temperature=temperature,
-                        )
-                        logger.info(f"Using Ollama (config.yaml): {base_url}")
-                    elif provider_name in providers:
-                        provider_config = providers.get(provider_name, {})
-                        base_url = provider_config.get("base_url")
-                        
-                        if base_url:
-                            llm = ChatOpenAI(
+                            if db_provider and db_provider.enabled:
+                                if db_provider.protocol == "openai_compatible":
+                                    api_key = None
+                                    if db_provider.api_key_encrypted:
+                                        api_key = db_manager._decrypt_api_key(db_provider.api_key_encrypted)
+                                    
+                                    llm = CustomOpenAIChat(
+                                        base_url=db_provider.base_url,
+                                        model=model_name,
+                                        temperature=temperature,
+                                        api_key=api_key,
+                                        timeout=db_provider.timeout,
+                                        max_retries=db_provider.max_retries,
+                                    )
+                                    logger.info(f"Using Custom OpenAI-compatible provider: {provider_name}")
+                                
+                                elif db_provider.protocol == "ollama":
+                                    llm = ChatOllama(
+                                        base_url=db_provider.base_url,
+                                        model=model_name,
+                                        temperature=temperature,
+                                    )
+                                    logger.info(f"Using Ollama provider: {provider_name}")
+                    
+                    except Exception as db_error:
+                        logger.warning(f"Failed to load provider from database: {db_error}")
+                    
+                    if llm is None:
+                        if provider_name == "ollama" or provider_name not in providers:
+                            ollama_config = providers.get("ollama", {})
+                            base_url = ollama_config.get("base_url", "http://localhost:11434")
+                            llm = ChatOllama(
                                 base_url=base_url,
                                 model=model_name,
                                 temperature=temperature,
-                                api_key="dummy-key",
                             )
-                            logger.info(f"Using provider from config.yaml: {provider_name}")
+                            logger.info(f"Using Ollama (config.yaml): {base_url}")
+                        elif provider_name in providers:
+                            provider_config = providers.get(provider_name, {})
+                            base_url = provider_config.get("base_url")
+                            
+                            if base_url:
+                                llm = ChatOpenAI(
+                                    base_url=base_url,
+                                    model=model_name,
+                                    temperature=temperature,
+                                    api_key="dummy-key",
+                                )
+                                logger.info(f"Using provider from config.yaml: {provider_name}")
+                    
+                    if llm is None:
+                        raise ValueError(f"Could not create LLM for provider: {provider_name}")
+                    
+                    agent.llm = llm
+                    
+                    # Initialize agent
+                    await asyncio.to_thread(agent.initialize)
+                    
+                    # Cache the initialized agent
+                    _agent_cache[cache_key] = (agent, llm)
+                    logger.info(f"Cached agent: {cache_key}")
                 
-                if llm is None:
-                    raise ValueError(f"Could not create LLM for provider: {provider_name}")
-                
-                agent.llm = llm
-                
-                # Initialize agent
-                await asyncio.to_thread(agent.initialize)
-                
-                model_info = f"{model_name} via {provider_name}"
+                model_info = f"{agent_info.llm_model or 'llama3.2:latest'} via {agent_info.llm_provider or 'ollama'}"
                 yield f"data: {json.dumps({'type': 'info', 'content': f'Using model: {model_info}'})}\n\n"
                 
-                if config.capabilities:
-                    yield f"data: {json.dumps({'type': 'info', 'content': f'Available skills: {', '.join(config.capabilities)}'})}\n\n"
+                if agent.config.capabilities:
+                    yield f"data: {json.dumps({'type': 'info', 'content': f'Available skills: {', '.join(agent.config.capabilities)}'})}\n\n"
                 
                 yield f"data: {json.dumps({'type': 'thinking', 'content': 'Retrieving relevant memories and processing...'})}\n\n"
                 
@@ -790,57 +806,77 @@ async def test_agent(
                 
                 messages.append(HumanMessage(content=user_message))
                 
-                # Estimate input tokens (rough approximation: 1 token ≈ 4 characters)
-                input_text = system_prompt + user_message
-                if request.history:
-                    for msg in request.history:
-                        input_text += msg.get("content", "")
-                input_tokens = len(input_text) // 4
-                
                 # Use a queue to collect streamed tokens from the agent
                 token_queue = queue.Queue()
                 error_holder = [None]
-                token_count = [0]  # Use list to allow modification in nested function
+                final_response = [""]
+                response_metadata = [{}]
                 
                 def stream_callback(token: str):
                     """Callback for streaming tokens from agent."""
-                    nonlocal first_token_time
+                    nonlocal first_token_time, last_token_time
                     if first_token_time is None:
                         first_token_time = time.time()
+                    last_token_time = time.time()
                     token_queue.put(token)
-                    token_count[0] += len(token) // 4  # Rough token count
                 
                 def execute_agent():
                     """Execute agent in a separate thread."""
                     try:
                         # Stream tokens from LLM
-                        final_output = ""
                         chunk_count = 0
                         
                         try:
+                            # Try streaming with metadata tracking
                             for chunk in agent.llm.stream(messages):
                                 if hasattr(chunk, 'content') and chunk.content:
                                     stream_callback(chunk.content)
-                                    final_output += chunk.content
+                                    final_response[0] += chunk.content
                                     chunk_count += 1
+                                
+                                # Try to get usage metadata from chunk
+                                if hasattr(chunk, 'response_metadata'):
+                                    response_metadata[0] = chunk.response_metadata
+                                elif hasattr(chunk, 'usage_metadata'):
+                                    response_metadata[0] = {'usage': chunk.usage_metadata}
                             
-                            if chunk_count == 0:
+                            # If streaming didn't provide metadata, invoke once to get it
+                            if chunk_count > 0 and not response_metadata[0]:
+                                # We already have the response, just need metadata
+                                # Some providers don't send metadata in streaming mode
+                                pass
+                            elif chunk_count == 0:
+                                # Streaming failed, fall back to invoke
                                 logger.warning("LLM streaming returned no chunks")
                                 result = agent.llm.invoke(messages)
                                 if hasattr(result, 'content'):
-                                    final_output = result.content
+                                    final_response[0] = result.content
+                                    stream_callback(result.content)
                                 else:
-                                    final_output = str(result)
-                                stream_callback(final_output)
+                                    final_response[0] = str(result)
+                                    stream_callback(str(result))
+                                
+                                # Get metadata from invoke result
+                                if hasattr(result, 'response_metadata'):
+                                    response_metadata[0] = result.response_metadata
+                                elif hasattr(result, 'usage_metadata'):
+                                    response_metadata[0] = {'usage': result.usage_metadata}
                         
                         except Exception as stream_error:
                             logger.warning(f"Streaming failed: {stream_error}")
                             result = agent.llm.invoke(messages)
                             if hasattr(result, 'content'):
-                                final_output = result.content
+                                final_response[0] = result.content
+                                stream_callback(result.content)
                             else:
-                                final_output = str(result)
-                            stream_callback(final_output)
+                                final_response[0] = str(result)
+                                stream_callback(str(result))
+                            
+                            # Get metadata
+                            if hasattr(result, 'response_metadata'):
+                                response_metadata[0] = result.response_metadata
+                            elif hasattr(result, 'usage_metadata'):
+                                response_metadata[0] = {'usage': result.usage_metadata}
                         
                         # Signal completion
                         token_queue.put(None)
@@ -876,13 +912,47 @@ async def test_agent(
                 
                 # Calculate statistics
                 end_time = time.time()
-                total_time = end_time - start_time
-                output_tokens = token_count[0]
+                
+                # Extract token counts from metadata
+                metadata = response_metadata[0]
+                if 'usage' in metadata:
+                    usage = metadata['usage']
+                    if isinstance(usage, dict):
+                        input_tokens = usage.get('prompt_tokens', 0) or usage.get('input_tokens', 0)
+                        output_tokens = usage.get('completion_tokens', 0) or usage.get('output_tokens', 0)
+                    else:
+                        # usage_metadata object
+                        input_tokens = getattr(usage, 'input_tokens', 0)
+                        output_tokens = getattr(usage, 'output_tokens', 0)
+                elif 'token_usage' in metadata:
+                    token_usage = metadata['token_usage']
+                    input_tokens = token_usage.get('prompt_tokens', 0)
+                    output_tokens = token_usage.get('completion_tokens', 0)
+                
+                # Fallback: estimate if no metadata available
+                if input_tokens == 0 and output_tokens == 0:
+                    # Rough estimation: 1 token ≈ 4 characters
+                    input_text = system_prompt + user_message
+                    if request.history:
+                        for msg in request.history:
+                            input_text += msg.get("content", "")
+                    input_tokens = len(input_text) // 4
+                    output_tokens = len(final_response[0]) // 4
+                
                 total_tokens = input_tokens + output_tokens
                 
-                # Calculate speeds
+                # Calculate speeds (only generation time, not initialization)
                 time_to_first_token = (first_token_time - start_time) if first_token_time else 0
-                tokens_per_second = output_tokens / (end_time - (first_token_time or start_time)) if first_token_time and output_tokens > 0 else 0
+                
+                # Tokens per second: only count generation time (first token to last token)
+                if first_token_time and last_token_time and output_tokens > 0:
+                    generation_time = last_token_time - first_token_time
+                    if generation_time > 0:
+                        tokens_per_second = output_tokens / generation_time
+                    else:
+                        tokens_per_second = 0
+                else:
+                    tokens_per_second = 0
                 
                 # Check for errors
                 if error_holder[0]:
@@ -896,12 +966,12 @@ async def test_agent(
                         'inputTokens': input_tokens,
                         'outputTokens': output_tokens,
                         'totalTokens': total_tokens,
-                        'totalTime': round(total_time, 2)
+                        'totalTime': round(end_time - start_time, 2)
                     }
                     yield f"data: {json.dumps(stats)}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'content': 'Agent execution completed'})}\n\n"
                 
-                logger.info(f"Agent test completed: {agent_info.name}")
+                logger.info(f"Agent test completed: {agent_info.name} (tokens: {input_tokens}/{output_tokens}, speed: {tokens_per_second:.1f} tok/s)")
                 
             except Exception as e:
                 logger.error(f"Error during agent test streaming: {e}", exc_info=True)
