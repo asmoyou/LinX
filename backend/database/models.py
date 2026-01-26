@@ -184,7 +184,8 @@ class Task(Base):
 class Skill(Base):
     """Skills table.
 
-    Stores skill library definitions and metadata.
+    Stores skill library definitions with executable code and metadata.
+    Enhanced to support Claude Code style dynamic skills with full project support.
     """
 
     __tablename__ = "skills"
@@ -192,13 +193,49 @@ class Skill(Base):
     skill_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), unique=True, nullable=False, index=True)
     description = Column(Text, nullable=False)
+    
+    # Skill type and implementation
+    skill_type = Column(String(50), nullable=False, default="python_function", index=True)
+    code = Column(Text, nullable=True)  # Python code for inline skills
+    config = Column(JSONB, nullable=True)  # YAML/JSON config for API/DB skills
+    
+    # Storage location (for flexible architecture)
+    storage_type = Column(String(50), nullable=False, default="inline", index=True)
+    # inline (code field) | minio (package in MinIO)
+    storage_path = Column(String(500), nullable=True)
+    # MinIO path: skills-storage/{skill_id}/
+    
+    # Manifest (parsed from skill.yaml for packages)
+    manifest = Column(JSONB, nullable=True)
+    
+    # Auto-extracted from code/config/manifest
     interface_definition = Column(JSONB, nullable=False)
     dependencies = Column(JSONB, nullable=True)
+    
+    # Metadata
     version = Column(String(50), nullable=False, default="1.0.0")
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    is_system = Column(Boolean, nullable=False, default=False, index=True)
+    
+    # Execution stats
+    execution_count = Column(Integer, nullable=False, default=0)
+    last_executed_at = Column(DateTime(timezone=True), nullable=True)
+    average_execution_time = Column(Float, nullable=True)
+    
+    # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+    
+    # Owner (for custom skills)
+    created_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     def __repr__(self):
-        return f"<Skill(skill_id={self.skill_id}, name={self.name}, version={self.version})>"
+        return f"<Skill(skill_id={self.skill_id}, name={self.name}, type={self.skill_type}, storage={self.storage_type}, version={self.version})>"
 
 
 class Permission(Base):

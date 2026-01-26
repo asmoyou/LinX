@@ -26,6 +26,16 @@ class SkillInfo:
     version: str
     interface_definition: dict
     dependencies: List[str]
+    skill_type: str = "python_function"
+    code: Optional[str] = None
+    config: Optional[dict] = None
+    is_active: bool = True
+    is_system: bool = False
+    execution_count: int = 0
+    last_executed_at: Optional[object] = None  # datetime
+    average_execution_time: Optional[float] = None
+    created_at: Optional[object] = None  # datetime
+    updated_at: Optional[object] = None  # datetime
 
 
 class SkillRegistry:
@@ -53,6 +63,9 @@ class SkillRegistry:
         interface_definition: dict,
         dependencies: Optional[List[str]] = None,
         version: str = "1.0.0",
+        skill_type: str = "python_function",
+        code: Optional[str] = None,
+        config: Optional[dict] = None,
         validate: bool = True,
     ) -> SkillInfo:
         """Register a new skill.
@@ -63,6 +76,9 @@ class SkillRegistry:
             interface_definition: Interface definition
             dependencies: List of dependencies
             version: Skill version
+            skill_type: Type of skill (python_function, api_wrapper, etc.)
+            code: Python code for function skills
+            config: Configuration for API/DB skills
             validate: Whether to validate before registration
 
         Returns:
@@ -105,6 +121,16 @@ class SkillRegistry:
             version=skill.version,
             interface_definition=skill.interface_definition,
             dependencies=skill.dependencies or [],
+            skill_type=getattr(skill, 'skill_type', 'python_function'),
+            code=getattr(skill, 'code', None),
+            config=getattr(skill, 'config', None),
+            is_active=getattr(skill, 'is_active', True),
+            is_system=getattr(skill, 'is_system', False),
+            execution_count=getattr(skill, 'execution_count', 0),
+            last_executed_at=getattr(skill, 'last_executed_at', None),
+            average_execution_time=getattr(skill, 'average_execution_time', None),
+            created_at=getattr(skill, 'created_at', None),
+            updated_at=getattr(skill, 'updated_at', None),
         )
 
     def get_skill(self, skill_id: UUID) -> Optional[SkillInfo]:
@@ -128,6 +154,16 @@ class SkillRegistry:
             version=skill.version,
             interface_definition=skill.interface_definition,
             dependencies=skill.dependencies or [],
+            skill_type=getattr(skill, 'skill_type', 'python_function'),
+            code=getattr(skill, 'code', None),
+            config=getattr(skill, 'config', None),
+            is_active=getattr(skill, 'is_active', True),
+            is_system=getattr(skill, 'is_system', False),
+            execution_count=getattr(skill, 'execution_count', 0),
+            last_executed_at=getattr(skill, 'last_executed_at', None),
+            average_execution_time=getattr(skill, 'average_execution_time', None),
+            created_at=getattr(skill, 'created_at', None),
+            updated_at=getattr(skill, 'updated_at', None),
         )
 
     def get_skill_by_name(
@@ -156,6 +192,16 @@ class SkillRegistry:
             version=skill.version,
             interface_definition=skill.interface_definition,
             dependencies=skill.dependencies or [],
+            skill_type=getattr(skill, 'skill_type', 'python_function'),
+            code=getattr(skill, 'code', None),
+            config=getattr(skill, 'config', None),
+            is_active=getattr(skill, 'is_active', True),
+            is_system=getattr(skill, 'is_system', False),
+            execution_count=getattr(skill, 'execution_count', 0),
+            last_executed_at=getattr(skill, 'last_executed_at', None),
+            average_execution_time=getattr(skill, 'average_execution_time', None),
+            created_at=getattr(skill, 'created_at', None),
+            updated_at=getattr(skill, 'updated_at', None),
         )
 
     def list_skills(self, limit: int = 100, offset: int = 0) -> List[SkillInfo]:
@@ -178,6 +224,16 @@ class SkillRegistry:
                 version=skill.version,
                 interface_definition=skill.interface_definition,
                 dependencies=skill.dependencies or [],
+                skill_type=getattr(skill, 'skill_type', 'python_function'),
+                code=getattr(skill, 'code', None),
+                config=getattr(skill, 'config', None),
+                is_active=getattr(skill, 'is_active', True),
+                is_system=getattr(skill, 'is_system', False),
+                execution_count=getattr(skill, 'execution_count', 0),
+                last_executed_at=getattr(skill, 'last_executed_at', None),
+                average_execution_time=getattr(skill, 'average_execution_time', None),
+                created_at=getattr(skill, 'created_at', None),
+                updated_at=getattr(skill, 'updated_at', None),
             )
             for skill in skills
         ]
@@ -201,9 +257,83 @@ class SkillRegistry:
                 version=skill.version,
                 interface_definition=skill.interface_definition,
                 dependencies=skill.dependencies or [],
+                skill_type=getattr(skill, 'skill_type', 'python_function'),
+                code=getattr(skill, 'code', None),
+                config=getattr(skill, 'config', None),
+                is_active=getattr(skill, 'is_active', True),
+                is_system=getattr(skill, 'is_system', False),
+                execution_count=getattr(skill, 'execution_count', 0),
+                last_executed_at=getattr(skill, 'last_executed_at', None),
+                average_execution_time=getattr(skill, 'average_execution_time', None),
+                created_at=getattr(skill, 'created_at', None),
+                updated_at=getattr(skill, 'updated_at', None),
             )
             for skill in skills
         ]
+
+    def update_skill(
+        self,
+        skill_id: UUID,
+        description: Optional[str] = None,
+        interface_definition: Optional[dict] = None,
+        dependencies: Optional[List[str]] = None,
+        code: Optional[str] = None,
+        config: Optional[dict] = None,
+        is_active: Optional[bool] = None,
+    ) -> Optional[SkillInfo]:
+        """Update a skill.
+
+        Args:
+            skill_id: Skill UUID
+            description: New description
+            interface_definition: New interface definition
+            dependencies: New dependencies
+            code: New code
+            config: New config
+            is_active: New active status
+
+        Returns:
+            Updated SkillInfo or None if not found
+        """
+        skill = self.skill_model.update_skill(
+            skill_id=skill_id,
+            description=description,
+            interface_definition=interface_definition,
+            dependencies=dependencies,
+        )
+
+        if not skill:
+            return None
+
+        return SkillInfo(
+            skill_id=skill.skill_id,
+            name=skill.name,
+            description=skill.description,
+            version=skill.version,
+            interface_definition=skill.interface_definition,
+            dependencies=skill.dependencies or [],
+            skill_type=getattr(skill, 'skill_type', 'python_function'),
+            code=getattr(skill, 'code', None),
+            config=getattr(skill, 'config', None),
+            is_active=getattr(skill, 'is_active', True),
+            is_system=getattr(skill, 'is_system', False),
+            execution_count=getattr(skill, 'execution_count', 0),
+            last_executed_at=getattr(skill, 'last_executed_at', None),
+            average_execution_time=getattr(skill, 'average_execution_time', None),
+            created_at=getattr(skill, 'created_at', None),
+            updated_at=getattr(skill, 'updated_at', None),
+        )
+
+    def delete_skill(self, skill_id: UUID) -> bool:
+        """Delete a skill.
+
+        Args:
+            skill_id: Skill UUID
+
+        Returns:
+            True if deleted, False if not found
+        """
+        return self.skill_model.delete_skill(skill_id)
 
 
 # Singleton instance

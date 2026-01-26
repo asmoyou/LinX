@@ -55,6 +55,7 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
   const [manualModelInput, setManualModelInput] = useState('');
   const [manualModels, setManualModels] = useState<string[]>([]);
   const [isConfigBased, setIsConfigBased] = useState(false);
+  const [modelSearchQuery, setModelSearchQuery] = useState('');
 
   const {
     register,
@@ -193,6 +194,23 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
 
   // 合并自动获取的模型和手动添加的模型
   const allModels = [...new Set([...availableModels, ...manualModels])];
+  
+  // Filter models based on search query
+  const filteredModels = allModels.filter(model =>
+    model.toLowerCase().includes(modelSearchQuery.toLowerCase())
+  );
+  
+  // Select all filtered models
+  const handleSelectAll = () => {
+    const newSelected = [...new Set([...selectedModels, ...filteredModels])];
+    setValue('selected_models', newSelected);
+  };
+  
+  // Deselect all filtered models
+  const handleDeselectAll = () => {
+    const newSelected = selectedModels.filter(m => !filteredModels.includes(m));
+    setValue('selected_models', newSelected);
+  };
 
   const onSubmit = async (data: ProviderFormData) => {
     try {
@@ -473,46 +491,83 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
               <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-3">
                 {t('settings.selectModelsHint')}
               </p>
+              
+              {/* Search and Select All/None Controls */}
+              <div className="mb-3 space-y-2">
+                {/* Search Input */}
+                <input
+                  type="text"
+                  value={modelSearchQuery}
+                  onChange={(e) => setModelSearchQuery(e.target.value)}
+                  placeholder={t('settings.searchModels', 'Search models...')}
+                  className="w-full px-4 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-sm"
+                />
+                
+                {/* Select All / Deselect All Buttons */}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSelectAll}
+                    className="flex-1 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-colors text-sm font-medium"
+                  >
+                    {t('settings.selectAll', 'Select All')} ({filteredModels.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeselectAll}
+                    className="flex-1 px-3 py-2 bg-zinc-500 hover:bg-zinc-600 text-white rounded-lg transition-colors text-sm font-medium"
+                  >
+                    {t('settings.deselectAll', 'Deselect All')}
+                  </button>
+                </div>
+              </div>
+              
               <div className="max-h-48 overflow-y-auto space-y-2 p-4 bg-zinc-50 dark:bg-zinc-800/50 rounded-lg border border-zinc-200 dark:border-zinc-700">
-                {allModels.map((model) => {
-                  const isManual = manualModels.includes(model);
-                  return (
-                    <div
-                      key={model}
-                      className="flex items-center gap-3 p-2 hover:bg-white dark:hover:bg-zinc-800 rounded-lg transition-colors"
-                    >
-                      <label className="flex items-center gap-3 flex-1 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={selectedModels.includes(model)}
-                          onChange={() => toggleModel(model)}
-                          className="w-4 h-4 text-emerald-500 border-zinc-300 dark:border-zinc-600 rounded focus:ring-emerald-500"
-                        />
-                        <span className="text-sm font-mono text-zinc-700 dark:text-zinc-300">
-                          {model}
-                        </span>
-                        {isManual && (
-                          <span className="text-xs px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded">
-                            {t('settings.manual')}
+                {filteredModels.length > 0 ? (
+                  filteredModels.map((model) => {
+                    const isManual = manualModels.includes(model);
+                    return (
+                      <div
+                        key={model}
+                        className="flex items-center gap-3 p-2 hover:bg-white dark:hover:bg-zinc-800 rounded-lg transition-colors"
+                      >
+                        <label className="flex items-center gap-3 flex-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={selectedModels.includes(model)}
+                            onChange={() => toggleModel(model)}
+                            className="w-4 h-4 text-emerald-500 border-zinc-300 dark:border-zinc-600 rounded focus:ring-emerald-500"
+                          />
+                          <span className="text-sm font-mono text-zinc-700 dark:text-zinc-300">
+                            {model}
                           </span>
+                          {isManual && (
+                            <span className="text-xs px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded">
+                              {t('settings.manual')}
+                            </span>
+                          )}
+                          {selectedModels.includes(model) && (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-500 ml-auto" />
+                          )}
+                        </label>
+                        {isManual && (
+                          <button
+                            type="button"
+                            onClick={() => removeManualModel(model)}
+                            className="p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-colors"
+                            title={t('settings.removeModel')}
+                          >
+                            <Trash2 className="w-4 h-4 text-red-500" />
+                          </button>
                         )}
-                        {selectedModels.includes(model) && (
-                          <CheckCircle2 className="w-4 h-4 text-emerald-500 ml-auto" />
-                        )}
-                      </label>
-                      {isManual && (
-                        <button
-                          type="button"
-                          onClick={() => removeManualModel(model)}
-                          className="p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-colors"
-                          title={t('settings.removeModel')}
-                        >
-                          <Trash2 className="w-4 h-4 text-red-500" />
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400 text-center py-4">
+                    {t('settings.noModelsFound', 'No models found matching your search')}
+                  </p>
+                )}
               </div>
               {errors.selected_models && (
                 <p className="mt-1 text-sm text-red-500">

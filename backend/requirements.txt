@@ -159,3 +159,4 @@ psycopg2-pool==1.1
 
 # Async Support
 anyio==4.2.0
+psutil>=5.9.0

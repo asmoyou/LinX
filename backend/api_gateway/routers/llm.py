@@ -96,8 +96,7 @@ async def get_providers(
     Get all LLM providers and their status.
 
     Returns provider health status, available models, and configuration.
-    Combines providers from config.yaml and database.
-    Marks providers from config.yaml as is_config_based=True (cannot be deleted via API).
+    Only returns providers from database (config.yaml providers are synced on startup).
     
     NOTE: This endpoint does NOT initialize providers (lazy loading).
     Health status is based on database configuration validity, not actual connection test.
@@ -112,7 +111,7 @@ async def get_providers(
     try:
         llm_router = get_llm_provider()
 
-        # Get all providers from database
+        # Get all providers from database only
         db_providers = {}
         try:
             with get_db_session() as db:
@@ -123,57 +122,30 @@ async def get_providers(
         except Exception as e:
             logger.warning(f"Failed to get database providers: {e}")
 
-        # Get config.yaml providers
+        # Get default provider from config
         from shared.config import get_config
         config = get_config()
-        config_providers = config.get("llm.providers", {})
 
-        # Build provider status - combine all sources
+        # Build provider status from database only
         providers = {}
         
-        # Get all provider names (database + config.yaml)
-        all_provider_names = set()
-        all_provider_names.update(db_providers.keys())
-        all_provider_names.update(config_providers.keys())
-        
-        # Build status for each provider WITHOUT initializing them
-        for provider_name in all_provider_names:
-            is_config_based = provider_name in config_providers and provider_name not in db_providers
+        for provider_name, db_provider in db_providers.items():
+            # Health based on last test status
+            if db_provider.last_test_status == 'success':
+                healthy = True
+            elif db_provider.last_test_status == 'failed':
+                healthy = False
+            else:
+                # Untested or no test yet - assume healthy if enabled and has base_url
+                healthy = db_provider.enabled and bool(db_provider.base_url)
             
-            # Determine health based on last test status
-            # For database providers: use last_test_status if available
-            # For config providers: assume healthy if enabled
-            healthy = False
-            available_models = []
-            
-            if provider_name in db_providers:
-                # Database provider
-                db_provider = db_providers[provider_name]
-                
-                # Health based on last test status
-                if db_provider.last_test_status == 'success':
-                    healthy = True
-                elif db_provider.last_test_status == 'failed':
-                    healthy = False
-                else:
-                    # Untested or no test yet - assume healthy if enabled and has base_url
-                    healthy = db_provider.enabled and bool(db_provider.base_url)
-                
-                available_models = db_provider.models or []
-            elif provider_name in config_providers:
-                # Config.yaml provider - assume healthy if enabled
-                provider_config = config_providers[provider_name]
-                healthy = provider_config.get("enabled", False) and bool(provider_config.get("base_url"))
-                # Extract models from config
-                models_dict = provider_config.get("models", {})
-                if isinstance(models_dict, dict):
-                    available_models = list(models_dict.values())
+            available_models = db_provider.models or []
             
             providers[provider_name] = ProviderStatus(
                 name=provider_name,
                 healthy=healthy,
                 available_models=available_models,
-                is_config_based=is_config_based,
+                is_config_based=False,  # All providers are now in database
             )
 
         return LLMConfigResponse(
@@ -359,11 +331,12 @@ async def get_available_providers_and_models(
     """
     Get available providers and their models for agent configuration.
     
-    Returns enabled providers with their configured models.
+    Returns enabled providers with their configured models from database only.
     Does NOT perform actual health checks to avoid blocking.
     Uses last known test status from database.
     
     This endpoint is used by the agent configuration UI.
+    Config.yaml providers are synced to database on startup.
     """
     if get_llm_provider is None:
         raise HTTPException(
@@ -374,13 +347,16 @@ async def get_available_providers_and_models(
     try:
         result = {}
         
-        # Get providers from database
+        # Get providers from database only
         try:
             with get_db_session() as db:
                 db_manager = ProviderDBManager(db)
                 db_providers = db_manager.list_providers()
                 
+                logger.info(f"[LLM-AVAILABLE-PROVIDERS] Found {len(db_providers)} providers in database")
+                
                 for p in db_providers:
+                    logger.info(f"[LLM-AVAILABLE-PROVIDERS] Provider: {p.name}, enabled={p.enabled}, models={len(p.models) if p.models else 0}, test_status={p.last_test_status}")
                     # Include if enabled and has models
                     # Optionally filter by last_test_status == 'success'
                     if p.enabled and p.models:
@@ -390,27 +366,7 @@ async def get_available_providers_and_models(
         except Exception as e:
             logger.warning(f"Failed to get database providers: {e}")
         
-        # Get providers from config.yaml
-        try:
-            from shared.config import get_config
-            config = get_config()
-            config_providers = config.get("llm.providers", {})
-            
-            for provider_name, provider_config in config_providers.items():
-                # Skip if already in database (database takes precedence)
-                if provider_name in result:
-                    continue
-                
-                # Include if enabled and has models
-                if provider_config.get("enabled", False):
-                    models_dict = provider_config.get("models", {})
-                    if isinstance(models_dict, dict):
-                        models = list(set(models_dict.values()))
-                        if models:
-                            result[provider_name] = models
-        except Exception as e:
-            logger.warning(f"Failed to get config.yaml providers: {e}")
-        
+        logger.info(f"[LLM-AVAILABLE-PROVIDERS] Returning {len(result)} providers: {list(result.keys())}")
         return result
 
     except Exception as e:
@@ -528,94 +484,6 @@ async def get_provider_detail(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get provider detail: {str(e)}",
-        )
-
-
-@router.get("/providers/list", response_model=ProviderListResponse)
-@require_role([Role.ADMIN])
-async def list_providers(
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    """
-    List all configured providers from both config.yaml and database.
-    
-    Providers from config.yaml are marked as is_config_based=True and cannot be deleted via API.
-    Providers from database are marked as is_config_based=False and can be deleted.
-    
-    Requires admin permission.
-    """
-    try:
-        provider_responses = []
-        provider_names_seen = set()
-        
-        # First, get providers from database
-        with get_db_session() as db:
-            db_manager = ProviderDBManager(db)
-            db_providers = db_manager.list_providers()
-            
-            for p in db_providers:
-                provider_responses.append(
-                    ProviderResponse(
-                        name=p.name,
-                        protocol=p.protocol,
-                        base_url=p.base_url,
-                        timeout=p.timeout,
-                        max_retries=p.max_retries,
-                        selected_models=p.models,
-                        enabled=p.enabled,
-                        has_api_key=bool(p.api_key_encrypted),
-                        is_config_based=False,
-                    )
-                )
-                provider_names_seen.add(p.name)
-        
-        # Then, get providers from config.yaml
-        try:
-            from shared.config import get_config
-            config = get_config()
-            config_providers = config.get("llm.providers", {})
-            
-            for provider_name, provider_config in config_providers.items():
-                # Skip if already in database (database takes precedence)
-                if provider_name in provider_names_seen:
-                    continue
-                
-                # Extract configuration
-                enabled = provider_config.get("enabled", False)
-                base_url = provider_config.get("base_url", "")
-                models = list(provider_config.get("models", {}).values())
-                timeout = config.get("llm.timeout_seconds", 30)
-                max_retries = config.get("llm.max_retries", 3)
-                
-                # Determine protocol based on provider name or config
-                protocol = "ollama" if provider_name == "ollama" else "openai_compatible"
-                
-                provider_responses.append(
-                    ProviderResponse(
-                        name=provider_name,
-                        protocol=protocol,
-                        base_url=base_url,
-                        timeout=timeout,
-                        max_retries=max_retries,
-                        selected_models=models,
-                        enabled=enabled,
-                        has_api_key=False,  # Don't expose config.yaml API keys
-                        is_config_based=True,
-                    )
-                )
-        except Exception as e:
-            logger.warning(f"Failed to load providers from config.yaml: {e}")
-        
-        return ProviderListResponse(
-            providers=provider_responses,
-            total=len(provider_responses),
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to list providers: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list providers: {str(e)}",
         )
 
 
@@ -973,7 +841,7 @@ async def get_provider_models_metadata(
     Uses enhanced detection based on cherry-studio patterns.
     """
     try:
-        from llm_providers.model_metadata_enhanced import get_enhanced_detector
+        from llm_providers.model_metadata import get_enhanced_detector
         from shared.config import get_config
         
         detector = get_enhanced_detector()
@@ -1107,7 +975,7 @@ async def get_model_metadata(
     Used for pre-filling agent configuration forms.
     """
     try:
-        from llm_providers.model_metadata import ModelCapabilityDetector
+        from llm_providers.model_metadata import EnhancedModelCapabilityDetector
         from shared.config import get_config
         
         # Try database first
@@ -1174,11 +1042,29 @@ async def get_model_metadata(
             metadata_dict = stored_metadata[model_name]
             return ModelMetadataResponse(**metadata_dict)
         else:
-            # Generate default metadata
-            default_metadata = ModelCapabilityDetector.get_default_metadata(
+            # Generate default metadata using enhanced detector
+            detector = EnhancedModelCapabilityDetector()
+            default_metadata = detector.detect_metadata(
                 model_name,
-                protocol
+                provider_name
             )
+            
+            # Auto-save generated metadata to database for future use
+            if provider:
+                try:
+                    with get_db_session() as db:
+                        db_manager = ProviderDBManager(db)
+                        db_provider = db_manager.get_provider(provider_name)
+                        if db_provider:
+                            stored_metadata = db_provider.model_metadata or {}
+                            stored_metadata[model_name] = default_metadata.dict()
+                            db_provider.model_metadata = stored_metadata
+                            db.commit()
+                            logger.info(f"Auto-saved generated metadata for model {model_name} in provider {provider_name}")
+                except Exception as save_error:
+                    logger.warning(f"Failed to auto-save metadata: {save_error}")
+                    # Continue even if save fails
+            
             return ModelMetadataResponse(**default_metadata.dict())
         
     except HTTPException:
@@ -1258,7 +1144,7 @@ async def refresh_models_metadata(
     Admin only.
     """
     try:
-        from llm_providers.model_metadata import ModelCapabilityDetector
+        from llm_providers.model_metadata import EnhancedModelCapabilityDetector
         from llm_providers.protocol_clients import get_protocol_client
         
         # Get provider from database
@@ -1293,9 +1179,23 @@ async def refresh_models_metadata(
                     detail=f"Failed to fetch models from provider: {str(e)}"
                 )
             
-            # Fetch metadata for each model
+            # OPTIMIZATION: Only refresh metadata for user-selected models
+            # This prevents timeout when provider has 100+ models
+            selected_models = provider.models or []
+            models_to_refresh = [m for m in selected_models if m in models]
+            
+            if not models_to_refresh:
+                # If no selected models, just return success
+                return {
+                    "success": True,
+                    "message": "No selected models to refresh",
+                    "metadata_count": 0,
+                    "selected_models_count": len(selected_models)
+                }
+            
+            # Fetch metadata for each SELECTED model only
             updated_metadata = {}
-            for model_id in models:
+            for model_id in models_to_refresh:
                 # Try to fetch from provider API
                 provider_metadata = await client.fetch_model_metadata(
                     base_url=provider.base_url,
@@ -1304,8 +1204,9 @@ async def refresh_models_metadata(
                     timeout=provider.timeout,
                 )
                 
-                # Generate base metadata using detector
-                detected_metadata = ModelCapabilityDetector.detect_metadata(
+                # Generate base metadata using enhanced detector
+                detector = EnhancedModelCapabilityDetector()
+                detected_metadata = detector.detect_metadata(
                     model_id,
                     provider_name
                 )
@@ -1324,17 +1225,18 @@ async def refresh_models_metadata(
                 
                 updated_metadata[model_id] = detected_metadata.dict()
             
-            # Update provider with new models and metadata
-            provider.models = models
+            # IMPORTANT: Only update metadata, DO NOT change the models list
+            # The models list is user-selected and should not be overwritten
             provider.model_metadata = updated_metadata
             db.commit()
             
-            logger.info(f"Refreshed metadata for {len(models)} models in provider {provider_name}")
+            logger.info(f"Refreshed metadata for {len(updated_metadata)} models in provider {provider_name}")
             
             return {
                 "success": True,
-                "message": f"Refreshed metadata for {len(models)} models",
-                "models_count": len(models)
+                "message": f"Refreshed metadata for {len(updated_metadata)} models (user-selected models unchanged)",
+                "metadata_count": len(updated_metadata),
+                "selected_models_count": len(provider.models)
             }
             
     except HTTPException:

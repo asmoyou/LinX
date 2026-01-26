@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 
 import aiohttp
 
-from llm_providers.model_metadata import ModelMetadata, ModelCapabilityDetector
+from llm_providers.model_metadata import ModelMetadata, EnhancedModelCapabilityDetector
 from llm_providers.models import ProviderProtocol
 
 logger = logging.getLogger(__name__)

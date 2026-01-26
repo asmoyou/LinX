@@ -129,9 +129,9 @@ class LLMRouter:
     
     async def _load_provider(self, provider_name: str) -> Optional[BaseLLMProvider]:
         """
-        Load provider from database or config.yaml.
+        Load provider from database only.
         
-        Priority: Database > Config.yaml
+        Config.yaml providers are synced to database on startup.
         
         Args:
             provider_name: Name of the provider
@@ -139,7 +139,7 @@ class LLMRouter:
         Returns:
             Provider instance or None
         """
-        # Try database first (user configuration)
+        # Load from database only
         try:
             from database.connection import get_db_session
             from llm_providers.db_manager import ProviderDBManager
@@ -151,15 +151,10 @@ class LLMRouter:
                 if db_provider and db_provider.enabled:
                     logger.info(f"  → Loading from DATABASE: {provider_name}")
                     return await self._create_provider_from_db(db_provider, db_manager)
+                else:
+                    logger.warning(f"  → Provider '{provider_name}' not found or disabled in database")
         except Exception as e:
-            logger.warning(f"  → Database load failed: {e}")
-        
-        # Fallback to config.yaml (system default)
-        if provider_name in self._config_providers:
-            provider_config = self._config_providers[provider_name]
-            if provider_config.get("enabled", False):
-                logger.info(f"  → Loading from CONFIG.YAML: {provider_name}")
-                return self._create_provider_from_config(provider_name, provider_config)
+            logger.error(f"  → Database load failed: {e}")
         
         return None
     
@@ -223,14 +218,16 @@ class LLMRouter:
 
     async def list_all_providers(self) -> List[str]:
         """
-        List all available provider names (database + config.yaml).
+        List all available provider names from database only.
+        
+        Config.yaml providers are synced to database on startup.
         
         Returns:
-            List of provider names
+            List of enabled provider names from database
         """
         providers = set()
         
-        # Add database providers
+        # Get providers from database only
         try:
             from database.connection import get_db_session
             from llm_providers.db_manager import ProviderDBManager
@@ -241,11 +238,6 @@ class LLMRouter:
                 providers.update(p.name for p in db_providers if p.enabled)
         except Exception as e:
             logger.warning(f"Failed to list database providers: {e}")
-        
-        # Add config.yaml providers
-        for name, config in self._config_providers.items():
-            if config.get("enabled", False):
-                providers.add(name)
         
         return sorted(providers)
 

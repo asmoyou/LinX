@@ -155,7 +155,7 @@ export const agentsApi = {
   },
 
   /**
-   * Test agent with a message (streaming SSE)
+   * Test agent with a message and optional files (streaming SSE)
    * Note: SSE requires native fetch API, but we get auth token from apiClient interceptor
    */
   testAgent: async (
@@ -164,22 +164,41 @@ export const agentsApi = {
     onChunk: (chunk: { type: string; content: string; [key: string]: any }) => void,
     onError?: (error: string) => void,
     onComplete?: () => void,
-    history?: Array<{ role: string; content: string }>
+    history?: Array<{ role: string; content: string }>,
+    files?: File[],
+    signal?: AbortSignal  // 添加 AbortSignal 支持
   ): Promise<void> => {
     try {
       // Get token from auth store (same way apiClient does)
       const { useAuthStore } = await import('../stores/authStore');
       const token = useAuthStore.getState().token;
       
+      // Prepare form data for multipart/form-data request
+      const formData = new FormData();
+      formData.append('message', message);
+      
+      // Add history as JSON string
+      if (history && history.length > 0) {
+        formData.append('history', JSON.stringify(history));
+      }
+      
+      // Add files
+      if (files && files.length > 0) {
+        files.forEach((file) => {
+          formData.append('files', file);
+        });
+      }
+      
       // Use native fetch for SSE streaming (axios doesn't support SSE well in browser)
       const response = await fetch(`${apiClient.defaults.baseURL}/agents/${agentId}/test`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           'Accept': 'text/event-stream',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          // Don't set Content-Type - browser will set it with boundary for multipart/form-data
         },
-        body: JSON.stringify({ message, history }),
+        body: formData,
+        signal,  // 传递 AbortSignal
       });
 
       if (!response.ok) {
@@ -240,11 +259,26 @@ export const agentsApi = {
           }
         }
       } catch (error) {
+        // Check if error is due to abort
+        if (error instanceof Error && error.name === 'AbortError') {
+          console.log('Stream aborted by user');
+          return; // Don't call onError for user-initiated abort
+        }
+        
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         if (onError) onError(errorMessage);
         throw error;
+      } finally {
+        // Always release the reader
+        reader.releaseLock();
       }
     } catch (error: any) {
+      // Check if error is due to abort
+      if (error.name === 'AbortError') {
+        console.log('Request aborted by user');
+        return; // Don't call onError for user-initiated abort
+      }
+      
       const errorMessage = error.message || 'Failed to test agent';
       if (onError) onError(errorMessage);
       throw error;

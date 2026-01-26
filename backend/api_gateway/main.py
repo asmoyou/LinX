@@ -21,7 +21,7 @@ from api_gateway.errors import setup_error_handlers
 from api_gateway.middleware.auth import JWTAuthMiddleware
 from api_gateway.middleware.logging import RequestLoggingMiddleware
 from api_gateway.middleware.rate_limit import RateLimitMiddleware
-from api_gateway.routers import agents, auth, knowledge, llm, monitoring, tasks, users
+from api_gateway.routers import agents, auth, knowledge, llm, monitoring, skills, tasks, users
 from api_gateway.websocket import router as websocket_router
 from shared.config import get_config
 from shared.logging import get_logger, setup_logging
@@ -53,6 +53,65 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # TODO: Initialize database connections
     # TODO: Initialize Redis connections
     # TODO: Load ABAC policies
+
+    # Sync config.yaml providers to database
+    try:
+        from database.connection import get_db_session
+        from llm_providers.db_manager import ProviderDBManager
+        
+        llm_config = config.get_section("llm")
+        providers_config = llm_config.get("providers", {})
+        
+        with get_db_session() as db:
+            db_manager = ProviderDBManager(db)
+            
+            for provider_name, provider_config in providers_config.items():
+                if not provider_config.get("enabled", False):
+                    continue
+                
+                # Check if provider exists in database
+                existing = db_manager.get_provider(provider_name)
+                
+                if existing:
+                    logger.info(f"Provider '{provider_name}' already exists in database, skipping sync")
+                    continue
+                
+                # Determine protocol
+                protocol = "ollama" if provider_name == "ollama" else "openai_compatible"
+                
+                # Get models
+                models = []
+                if "models" in provider_config:
+                    models_dict = provider_config["models"]
+                    if isinstance(models_dict, dict):
+                        # Extract unique models from dict
+                        models = list(set(models_dict.values()))
+                    elif isinstance(models_dict, list):
+                        models = models_dict
+                
+                # Create provider in database
+                try:
+                    from llm_providers.models import ProviderProtocol
+                    
+                    # Convert protocol string to enum
+                    protocol_enum = ProviderProtocol.OLLAMA if protocol == "ollama" else ProviderProtocol.OPENAI_COMPATIBLE
+                    
+                    db_manager.create_provider(
+                        name=provider_name,
+                        protocol=protocol_enum,
+                        base_url=provider_config.get("base_url", ""),
+                        models=models,
+                        timeout=provider_config.get("timeout", 30),
+                        max_retries=provider_config.get("max_retries", 3),
+                    )
+                    logger.info(f"Synced provider '{provider_name}' from config.yaml to database")
+                except Exception as create_error:
+                    logger.error(f"Failed to sync provider '{provider_name}': {create_error}")
+        
+        logger.info("Config.yaml provider sync completed")
+        
+    except Exception as sync_error:
+        logger.error(f"Failed to sync config.yaml providers: {sync_error}", exc_info=True)
 
     logger.info("API Gateway started successfully")
 
@@ -127,6 +186,7 @@ def create_app() -> FastAPI:
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
     app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["Tasks"])
     app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["Knowledge"])
+    app.include_router(skills.router, prefix="/api/v1/skills", tags=["Skills"])
     app.include_router(llm.router, prefix="/api/v1/llm", tags=["LLM Providers"])
     app.include_router(monitoring.router, tags=["Monitoring"])
     app.include_router(websocket_router, prefix="/api/v1/ws", tags=["WebSocket"])

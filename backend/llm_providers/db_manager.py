@@ -283,3 +283,34 @@ class ProviderDBManager:
             max_retries=provider.max_retries,
             selected_models=provider.models,
         )
+    
+    def get_model_metadata(self, provider_name: str, model_name: str):
+        """
+        Get metadata for a specific model.
+        
+        Args:
+            provider_name: Provider name
+            model_name: Model name
+            
+        Returns:
+            ModelMetadata object or None if not found
+        """
+        from llm_providers.model_metadata import ModelMetadata
+        
+        provider = self.get_provider(provider_name)
+        if not provider:
+            logger.warning(f"Provider '{provider_name}' not found")
+            return None
+        
+        # Check if model metadata exists
+        if not provider.model_metadata or model_name not in provider.model_metadata:
+            logger.warning(f"Metadata for model '{model_name}' not found in provider '{provider_name}'")
+            return None
+        
+        # Convert dict to ModelMetadata object
+        metadata_dict = provider.model_metadata[model_name]
+        try:
+            return ModelMetadata(**metadata_dict)
+        except Exception as e:
+            logger.error(f"Failed to parse model metadata: {e}")
+            return None

@@ -7,6 +7,7 @@ import {
   Target, 
   Database, 
   BrainCircuit,
+  Code2,
   Settings,
   ChevronLeft,
   ChevronRight
@@ -26,6 +27,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
     { path: '/tasks', icon: Target, label: t('nav.tasks') },
     { path: '/knowledge', icon: Database, label: t('nav.knowledge') },
     { path: '/memory', icon: BrainCircuit, label: t('nav.memory') },
+    { path: '/skills', icon: Code2, label: t('nav.skills') },
     { path: '/settings', icon: Settings, label: t('nav.settings') },
   ];
 

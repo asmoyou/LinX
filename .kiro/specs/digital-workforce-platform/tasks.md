@@ -172,9 +172,9 @@
 - [x] 2.5.14 Create document processor worker
 - [x] 2.5.15 Implement processing status tracking
 
-### 2.6 Skill Library
+### 2.6 Skill Library (Basic - Completed)
 **References**: Requirements 4, Design Section 4.4
-**Description**: Implement skill management system
+**Description**: Implement basic skill management system (metadata only)
 
 - [x] 2.6.1 Create Skill model and database operations
 - [x] 2.6.2 Implement skill registration API
@@ -184,6 +184,93 @@
 - [x] 2.6.6 Implement skill versioning
 - [x] 2.6.7 Add skill dependency resolution
 - [x] 2.6.8 Create skill execution wrapper
+
+### 2.7 Dynamic Skill System (Claude Code Style)
+**References**: Requirements 4, Design Section 4.4, docs/backend/dynamic-skill-system.md
+**Description**: Implement flexible, code-based skill system with LangChain integration
+
+#### 2.7.1 Database Schema Enhancement
+- [ ] 2.7.1.1 Create Alembic migration for new skill fields (skill_type, code, config, is_active, is_system, execution_count, last_executed_at, average_execution_time, created_by)
+- [ ] 2.7.1.2 Add SkillType enum (python_function, api_wrapper, database_query, web_scraper, data_processor, custom)
+- [ ] 2.7.1.3 Update Skill model in database/models.py with new fields
+- [ ] 2.7.1.4 Create indexes for performance (skill_type, is_active, created_by)
+- [ ] 2.7.1.5 Run migration and verify schema changes
+
+#### 2.7.2 Skill Execution Engine
+- [ ] 2.7.2.1 Create SkillExecutionEngine class in skill_library/execution_engine.py
+- [ ] 2.7.2.2 Implement dynamic LangChain tool creation from Python code (@tool decorator)
+- [ ] 2.7.2.3 Implement Python function skill executor with sandbox integration
+- [ ] 2.7.2.4 Implement API wrapper skill executor (HTTP requests)
+- [ ] 2.7.2.5 Implement database query skill executor (SQL templates)
+- [ ] 2.7.2.6 Add code validation and static analysis (AST parsing, dangerous pattern detection)
+- [ ] 2.7.2.7 Implement execution stats tracking (count, timing, errors)
+- [ ] 2.7.2.8 Add error handling and timeout management
+
+#### 2.7.3 Skill Templates Library
+- [ ] 2.7.3.1 Create skill_library/templates.py with template definitions
+- [ ] 2.7.3.2 Implement web_search template (Tavily integration)
+- [ ] 2.7.3.3 Implement api_call template (generic HTTP requests)
+- [ ] 2.7.3.4 Implement data_analysis template (pandas operations)
+- [ ] 2.7.3.5 Implement file_operations template (read/write files)
+- [ ] 2.7.3.6 Implement database_query template (SQL queries)
+- [ ] 2.7.3.7 Add template metadata (category, difficulty, dependencies)
+- [ ] 2.7.3.8 Create template instantiation logic
+
+#### 2.7.4 Backend API Updates
+- [ ] 2.7.4.1 Update POST /skills endpoint to accept code and skill_type
+- [ ] 2.7.4.2 Update PUT /skills/{id} endpoint for code editing
+- [ ] 2.7.4.3 Create POST /skills/{id}/test endpoint for skill testing
+- [ ] 2.7.4.4 Create GET /skills/templates endpoint to list templates
+- [ ] 2.7.4.5 Create POST /skills/from-template endpoint to create from template
+- [ ] 2.7.4.6 Create GET /skills/{id}/stats endpoint for execution statistics
+- [ ] 2.7.4.7 Create POST /skills/{id}/activate and /deactivate endpoints
+- [ ] 2.7.4.8 Add code validation endpoint POST /skills/validate
+
+#### 2.7.5 Frontend - Code Editor Interface
+- [ ] 2.7.5.1 Install Monaco Editor (npm install @monaco-editor/react)
+- [ ] 2.7.5.2 Create CodeEditor component with Python syntax highlighting
+- [ ] 2.7.5.3 Create SkillTypeSelector component (function/API/database/custom)
+- [ ] 2.7.5.4 Update AddSkillModal to use code editor instead of form
+- [ ] 2.7.5.5 Add template selector dropdown with preview
+- [ ] 2.7.5.6 Implement code validation UI (real-time syntax checking)
+- [ ] 2.7.5.7 Add code formatting button (Black/Prettier)
+- [ ] 2.7.5.8 Create split view: code editor + preview/docs
+
+#### 2.7.6 Frontend - Skill Testing Interface
+- [ ] 2.7.6.1 Create SkillTester component with dynamic input fields
+- [ ] 2.7.6.2 Implement test execution with loading states
+- [ ] 2.7.6.3 Add result display (success/error, output, execution time)
+- [ ] 2.7.6.4 Create test history panel (recent test runs)
+- [ ] 2.7.6.5 Add example inputs for quick testing
+- [ ] 2.7.6.6 Implement test result export (JSON/CSV)
+
+#### 2.7.7 Frontend - Skill Management UI
+- [ ] 2.7.7.1 Update SkillCard to show skill type badge and stats
+- [ ] 2.7.7.2 Add code preview modal with syntax highlighting
+- [ ] 2.7.7.3 Implement skill activation/deactivation toggle
+- [ ] 2.7.7.4 Create skill usage analytics chart (execution count over time)
+- [ ] 2.7.7.5 Add skill filtering by type and status
+- [ ] 2.7.7.6 Implement skill search with code content search
+- [ ] 2.7.7.7 Create skill comparison view (side-by-side)
+- [ ] 2.7.7.8 Add skill export/import functionality
+
+#### 2.7.8 Agent-Skill Integration
+- [ ] 2.7.8.1 Update BaseAgent to dynamically load skills as LangChain tools
+- [ ] 2.7.8.2 Implement skill-to-tool conversion in execution engine
+- [ ] 2.7.8.3 Add skill permission checking before execution
+- [ ] 2.7.8.4 Update agent creation to validate skill availability
+- [ ] 2.7.8.5 Implement skill hot-reloading (update without agent restart)
+- [ ] 2.7.8.6 Add skill execution logging to agent audit trail
+- [ ] 2.7.8.7 Create skill recommendation system (suggest skills for tasks)
+
+#### 2.7.9 Testing and Documentation
+- [ ] 2.7.9.1 Write unit tests for SkillExecutionEngine
+- [ ] 2.7.9.2 Write integration tests for skill CRUD with code
+- [ ] 2.7.9.3 Write E2E tests for skill creation and execution flow
+- [ ] 2.7.9.4 Create skill development guide in docs/developer/
+- [ ] 2.7.9.5 Add API documentation for new endpoints
+- [ ] 2.7.9.6 Create video tutorial for skill creation (optional)
+- [ ] 2.7.9.7 Update user guide with skill management section
 
 ## Phase 3: Agent Framework
 

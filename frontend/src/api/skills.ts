@@ -1,15 +1,21 @@
+/**
+ * Skills API client
+ * Handles all skill-related API calls
+ */
+
 import apiClient from './client';
 
 export interface Skill {
-  id: string;
+  skill_id: string;
   name: string;
   description: string;
+  version: string;
   interface_definition: {
-    input: Record<string, string>;
-    output: Record<string, string>;
+    inputs: Record<string, string>;
+    outputs: Record<string, string>;
+    required_inputs?: string[];
   };
   dependencies: string[];
-  version: string;
   created_at: string;
 }
 
@@ -17,54 +23,57 @@ export interface CreateSkillRequest {
   name: string;
   description: string;
   interface_definition: {
-    input: Record<string, string>;
-    output: Record<string, string>;
+    inputs: Record<string, string>;
+    outputs: Record<string, string>;
+    required_inputs?: string[];
   };
   dependencies?: string[];
-  implementation?: string;
+  version?: string;
 }
 
 export interface UpdateSkillRequest {
   description?: string;
   interface_definition?: {
-    input: Record<string, string>;
-    output: Record<string, string>;
+    inputs: Record<string, string>;
+    outputs: Record<string, string>;
+    required_inputs?: string[];
   };
   dependencies?: string[];
 }
 
-/**
- * Skills API
- */
 export const skillsApi = {
   /**
    * Get all skills
    */
-  getAll: async (): Promise<Skill[]> => {
-    const response = await apiClient.get<Skill[]>('/skills');
+  async getAll(limit = 100, offset = 0): Promise<Skill[]> {
+    const response = await apiClient.get<Skill[]>('/skills', {
+      params: { limit, offset },
+    });
     return response.data;
   },
 
   /**
    * Get skill by ID
    */
-  getById: async (skillId: string): Promise<Skill> => {
+  async getById(skillId: string): Promise<Skill> {
     const response = await apiClient.get<Skill>(`/skills/${skillId}`);
     return response.data;
   },
 
   /**
-   * Get skill by name
+   * Search skills
    */
-  getByName: async (name: string): Promise<Skill> => {
-    const response = await apiClient.get<Skill>(`/skills/name/${name}`);
+  async search(query: string): Promise<Skill[]> {
+    const response = await apiClient.get<Skill[]>('/skills/search', {
+      params: { query },
+    });
     return response.data;
   },
 
   /**
-   * Create skill
+   * Create new skill
    */
-  create: async (data: CreateSkillRequest): Promise<Skill> => {
+  async create(data: CreateSkillRequest): Promise<Skill> {
     const response = await apiClient.post<Skill>('/skills', data);
     return response.data;
   },
@@ -72,7 +81,7 @@ export const skillsApi = {
   /**
    * Update skill
    */
-  update: async (skillId: string, data: UpdateSkillRequest): Promise<Skill> => {
+  async update(skillId: string, data: UpdateSkillRequest): Promise<Skill> {
     const response = await apiClient.put<Skill>(`/skills/${skillId}`, data);
     return response.data;
   },
@@ -80,25 +89,17 @@ export const skillsApi = {
   /**
    * Delete skill
    */
-  delete: async (skillId: string): Promise<void> => {
+  async delete(skillId: string): Promise<void> {
     await apiClient.delete(`/skills/${skillId}`);
   },
 
   /**
-   * Get default skills
+   * Register default skills
    */
-  getDefaults: async (): Promise<Skill[]> => {
-    const response = await apiClient.get<Skill[]>('/skills/defaults');
-    return response.data;
-  },
-
-  /**
-   * Search skills
-   */
-  search: async (query: string): Promise<Skill[]> => {
-    const response = await apiClient.get<Skill[]>('/skills/search', {
-      params: { q: query },
-    });
+  async registerDefaults(): Promise<{ registered_count: number }> {
+    const response = await apiClient.post<{ registered_count: number }>(
+      '/skills/register-defaults'
+    );
     return response.data;
   },
 };

@@ -239,9 +239,19 @@ class MinIOClient:
 
         # Prepare metadata
         upload_metadata = metadata or {}
+        
+        # Only add filename to metadata if it's ASCII-safe
+        # MinIO metadata only supports ASCII characters
+        try:
+            filename.encode('ascii')
+            upload_metadata["original_filename"] = filename
+        except UnicodeEncodeError:
+            # Skip non-ASCII filenames in metadata
+            # Filename is still preserved in object_key
+            logger.warning(f"Skipping non-ASCII filename in metadata: {filename}")
+        
         upload_metadata.update(
             {
-                "original_filename": filename,
                 "user_id": user_id,
                 "upload_timestamp": datetime.utcnow().isoformat(),
             }

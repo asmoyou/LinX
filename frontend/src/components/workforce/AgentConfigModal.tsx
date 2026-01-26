@@ -503,7 +503,9 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                   )}
 
                   {modelMetadata && !isLoadingMetadata && (
-                    <ModelMetadataCard metadata={modelMetadata} />
+                    <div className="mt-2">
+                      <ModelMetadataCard metadata={modelMetadata} />
+                    </div>
                   )}
 
                   <div>
