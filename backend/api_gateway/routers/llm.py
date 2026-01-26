@@ -276,52 +276,439 @@ async def test_generation(
 ):
     """
     Test LLM generation with a prompt.
-
+    
+    Based on cherry-studio's checkApi implementation:
+    - Detects model type (chat, embedding, rerank)
+    - Uses appropriate test method for each type
+    - Uses streaming for chat models (abort after first chunk)
+    - Measures latency accurately
+    
     Useful for testing provider connectivity and model performance.
     Returns detailed error information if generation fails.
     """
-    if get_llm_provider is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="LLM providers not configured",
-        )
-
+    import time
+    import re
+    
     try:
-        llm_router = get_llm_provider()
+        start_time = time.time()
+        
+        # Get provider from database
+        with get_db_session() as db:
+            from llm_providers.db_manager import ProviderDBManager
+            db_manager = ProviderDBManager(db)
+            
+            # Find provider
+            if request.provider:
+                db_provider = db_manager.get_provider(request.provider)
+                if not db_provider:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Provider '{request.provider}' not found"
+                    )
+            else:
+                # Use first available provider
+                providers = db_manager.list_providers()
+                enabled_providers = [p for p in providers if p.enabled]
+                if not enabled_providers:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="No enabled providers found"
+                    )
+                db_provider = enabled_providers[0]
+            
+            # Get model
+            model_to_test = request.model
+            if not model_to_test:
+                if not db_provider.models:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Provider '{db_provider.name}' has no models configured"
+                    )
+                model_to_test = db_provider.models[0]
+            
+            # Verify model exists in provider
+            if model_to_test not in db_provider.models:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Model '{model_to_test}' not found in provider '{db_provider.name}'"
+                )
+            
+            # Decrypt API key
+            api_key = None
+            if db_provider.api_key_encrypted:
+                api_key = db_manager._decrypt_api_key(db_provider.api_key_encrypted)
+            
+            # Get model type from metadata (if available)
+            model_type = "chat"  # default
+            if db_provider.model_metadata and model_to_test in db_provider.model_metadata:
+                metadata = db_provider.model_metadata[model_to_test]
+                metadata_type = metadata.get('model_type', 'chat')
+                if metadata_type in ['embedding', 'rerank']:
+                    model_type = metadata_type
+            else:
+                # Fallback to pattern detection
+                model_type = _detect_model_type(model_to_test)
+            
+            logger.info(f"Testing {model_type} model: {model_to_test} on {db_provider.name}")
+            
+            response_content = ""
+            
+            try:
+                if model_type == "embedding":
+                    # Test embedding model
+                    response_content = await _test_embedding_model(
+                        protocol=db_provider.protocol,
+                        base_url=db_provider.base_url,
+                        model=model_to_test,
+                        api_key=api_key,
+                        timeout=30
+                    )
+                elif model_type == "rerank":
+                    # Test rerank model
+                    response_content = await _test_rerank_model(
+                        protocol=db_provider.protocol,
+                        base_url=db_provider.base_url,
+                        model=model_to_test,
+                        api_key=api_key,
+                        timeout=30
+                    )
+                else:
+                    # Test chat/completion model with streaming
+                    first_chunk_received = False
+                    
+                    async def stream_callback(chunk):
+                        nonlocal first_chunk_received, response_content
+                        if chunk and not first_chunk_received:
+                            first_chunk_received = True
+                            response_content = str(chunk)[:100]
+                    
+                    if db_provider.protocol == "ollama":
+                        await _test_ollama_streaming(
+                            base_url=db_provider.base_url,
+                            model=model_to_test,
+                            prompt=request.prompt,
+                            callback=stream_callback,
+                            timeout=30
+                        )
+                    else:
+                        # OpenAI compatible
+                        await _test_openai_streaming(
+                            base_url=db_provider.base_url,
+                            model=model_to_test,
+                            prompt=request.prompt,
+                            api_key=api_key,
+                            callback=stream_callback,
+                            timeout=30
+                        )
+                    
+                    if not first_chunk_received:
+                        raise Exception("No response received from model")
+                
+            except Exception as e:
+                raise
+            
+            latency = (time.time() - start_time) * 1000  # ms
+            
+            return TestGenerationResponse(
+                content=response_content or "Test successful",
+                model=model_to_test,
+                provider=db_provider.name,
+                tokens_used=1,
+                success=True,
+            )
 
-        # Generate response
-        response = await llm_router.generate(
-            prompt=request.prompt,
-            provider=request.provider,
-            model=request.model,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-        )
-
-        return TestGenerationResponse(
-            content=response.content,
-            model=response.model,
-            provider=response.provider,
-            tokens_used=response.tokens_used,
-            success=True,
-        )
-
-    except ValueError as e:
-        # Provider not found or configuration error
-        error_msg = str(e)
-        logger.error(f"Test generation failed (ValueError): {error_msg}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Configuration error: {error_msg}",
-        )
+    except HTTPException:
+        raise
     except Exception as e:
-        # Connection error, timeout, or other runtime error
         error_msg = str(e)
         logger.error(f"Test generation failed: {error_msg}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Generation failed: {error_msg}",
         )
+
+
+def _detect_model_type(model_id: str) -> str:
+    """
+    Detect model type based on model ID.
+    Based on cherry-studio's model detection logic.
+    
+    Returns: "embedding", "rerank", or "chat"
+    """
+    import re
+    
+    model_lower = model_id.lower()
+    
+    # Rerank models (check first, as some rerank models may contain "embed")
+    rerank_patterns = [
+        r'rerank', r're-rank', r're-ranker', r're-ranking',
+        r'retrieval', r'retriever'
+    ]
+    for pattern in rerank_patterns:
+        if re.search(pattern, model_lower):
+            return "rerank"
+    
+    # Embedding models
+    embedding_patterns = [
+        r'^text-', r'embed', r'bge-', r'e5-', r'llm2vec',
+        r'retrieval', r'uae-', r'gte-', r'jina-clip',
+        r'jina-embeddings', r'voyage-'
+    ]
+    for pattern in embedding_patterns:
+        if re.search(pattern, model_lower):
+            return "embedding"
+    
+    # Default to chat model
+    return "chat"
+
+
+async def _test_embedding_model(
+    protocol: str,
+    base_url: str,
+    model: str,
+    api_key: str,
+    timeout: int = 30
+) -> str:
+    """Test embedding model by getting embedding dimensions."""
+    import aiohttp
+    
+    if protocol == "ollama":
+        # Ollama embedding test
+        url = f"{base_url.rstrip('/')}/api/embeddings"
+        payload = {
+            "model": model,
+            "prompt": "test"
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    raise Exception(f"Ollama embedding test failed: {response.status} - {text}")
+                
+                data = await response.json()
+                embedding = data.get('embedding', [])
+                return f"Embedding test successful (dimension: {len(embedding)})"
+    
+    else:
+        # OpenAI compatible embedding test
+        base_url = base_url.rstrip('/')
+        urls_to_try = [
+            f"{base_url}/v1/embeddings",
+            f"{base_url}/embeddings",
+        ]
+        
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        
+        payload = {
+            "model": model,
+            "input": "test"
+        }
+        
+        last_error = None
+        for url in urls_to_try:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        url,
+                        json=payload,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=timeout),
+                    ) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            embeddings = data.get('data', [])
+                            if embeddings:
+                                dim = len(embeddings[0].get('embedding', []))
+                                return f"Embedding test successful (dimension: {dim})"
+                        else:
+                            text = await response.text()
+                            last_error = f"HTTP {response.status}: {text[:200]}"
+            except Exception as e:
+                last_error = str(e)
+        
+        raise Exception(last_error or "Embedding test failed")
+
+
+async def _test_rerank_model(
+    protocol: str,
+    base_url: str,
+    model: str,
+    api_key: str,
+    timeout: int = 30
+) -> str:
+    """Test rerank model."""
+    import aiohttp
+    
+    # Most rerank models use OpenAI-compatible API
+    base_url = base_url.rstrip('/')
+    urls_to_try = [
+        f"{base_url}/v1/rerank",
+        f"{base_url}/rerank",
+    ]
+    
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    
+    payload = {
+        "model": model,
+        "query": "test query",
+        "documents": ["test document 1", "test document 2"]
+    }
+    
+    last_error = None
+    for url in urls_to_try:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        results = data.get('results', [])
+                        return f"Rerank test successful ({len(results)} results)"
+                    else:
+                        text = await response.text()
+                        last_error = f"HTTP {response.status}: {text[:200]}"
+        except Exception as e:
+            last_error = str(e)
+    
+    raise Exception(last_error or "Rerank test failed")
+
+
+async def _test_ollama_streaming(
+    base_url: str,
+    model: str,
+    prompt: str,
+    callback: callable,
+    timeout: int = 30
+):
+    """Test Ollama with streaming."""
+    import aiohttp
+    import json
+    
+    url = f"{base_url.rstrip('/')}/api/generate"
+    
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": True,
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            url,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as response:
+            if response.status != 200:
+                text = await response.text()
+                raise Exception(f"Ollama returned {response.status}: {text}")
+            
+            # Read stream line by line
+            async for line in response.content:
+                if line:
+                    try:
+                        line_text = line.decode('utf-8').strip()
+                        if line_text:
+                            data = json.loads(line_text)
+                            if "response" in data and data["response"]:
+                                # Got first chunk - success!
+                                await callback(data["response"])
+                                return
+                    except json.JSONDecodeError:
+                        # Skip invalid JSON lines
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Error parsing Ollama stream: {e}")
+                        continue
+
+
+async def _test_openai_streaming(
+    base_url: str,
+    model: str,
+    prompt: str,
+    api_key: str,
+    callback: callable,
+    timeout: int = 30
+):
+    """Test OpenAI compatible with streaming."""
+    import aiohttp
+    
+    base_url = base_url.rstrip('/')
+    
+    urls_to_try = [
+        f"{base_url}/v1/chat/completions",
+        f"{base_url}/chat/completions",
+    ]
+    
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": True,
+        "max_tokens": 10,
+    }
+    
+    last_error = None
+    
+    for url in urls_to_try:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                ) as response:
+                    if response.status != 200:
+                        text = await response.text()
+                        last_error = f"HTTP {response.status}: {text[:200]}"
+                        continue
+                    
+                    # Read first chunk only
+                    async for line in response.content:
+                        if line:
+                            line_text = line.decode('utf-8').strip()
+                            if line_text.startswith('data: '):
+                                data_str = line_text[6:]
+                                if data_str == '[DONE]':
+                                    continue
+                                try:
+                                    import json
+                                    data = json.loads(data_str)
+                                    if 'choices' in data and len(data['choices']) > 0:
+                                        delta = data['choices'][0].get('delta', {})
+                                        content = delta.get('content', '')
+                                        if content:
+                                            await callback(content)
+                                            return  # Success - abort after first chunk
+                                except:
+                                    pass
+                    
+                    return  # Success even if no content
+                    
+        except aiohttp.ClientError as e:
+            last_error = f"Connection error: {str(e)}"
+        except Exception as e:
+            last_error = f"Error: {str(e)}"
+    
+    raise Exception(last_error or "Failed to connect to model")
 
 
 @router.get("/providers/available", response_model=Dict[str, List[str]])
@@ -790,6 +1177,137 @@ async def test_connection(
             message="Connection test error",
             error=error_message,
             available_models=[],
+        )
+
+
+# Model Health Check Endpoints (Based on cherry-studio)
+
+class ModelTestRequest(BaseModel):
+    """Request to test specific models."""
+    
+    provider_name: str
+    protocol: str = Field(..., description="Provider protocol (ollama, openai_compatible)")
+    base_url: str
+    models: List[str] = Field(..., description="List of model IDs to test")
+    api_keys: List[str] = Field(default=[], description="List of API keys to test (optional)")
+    concurrent: bool = Field(default=True, description="Test models concurrently")
+    timeout: int = Field(default=15, ge=5, le=60, description="Timeout per model test in seconds")
+
+
+class ModelTestResponse(BaseModel):
+    """Response from model testing."""
+    
+    provider_name: str
+    status: str  # success, failed, not_checked
+    models: List[Dict[str, Any]]
+    summary: str
+    error: Optional[str] = None
+
+
+@router.post("/providers/test-models", response_model=ModelTestResponse)
+@require_role([Role.ADMIN])
+async def test_models(
+    request: ModelTestRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Test specific models for a provider.
+    
+    Performs actual generation tests on each model to verify functionality.
+    Based on cherry-studio's comprehensive health check system.
+    
+    Features:
+    - Tests multiple API keys per model
+    - Measures response latency
+    - Provides detailed error messages
+    - Supports concurrent or sequential testing
+    
+    Requires admin permission.
+    """
+    from llm_providers.health_check import check_models_health, summarize_health_results
+    
+    try:
+        logger.info(f"Testing {len(request.models)} models for {request.provider_name}")
+        
+        # Get API keys (use stored key if not provided)
+        api_keys = request.api_keys
+        if not api_keys:
+            try:
+                with get_db_session() as db:
+                    db_manager = ProviderDBManager(db)
+                    providers = db_manager.list_providers()
+                    for provider in providers:
+                        if provider.name == request.provider_name:
+                            decrypted_key = db_manager._decrypt_api_key(provider.api_key_encrypted)
+                            if decrypted_key:
+                                api_keys = [decrypted_key]
+                            break
+            except Exception as e:
+                logger.warning(f"Failed to fetch stored API key: {e}")
+        
+        # Perform health check
+        results = await check_models_health(
+            provider_name=request.provider_name,
+            protocol=request.protocol,
+            base_url=request.base_url,
+            models=request.models,
+            api_keys=api_keys or [],
+            concurrent=request.concurrent,
+            timeout=request.timeout,
+        )
+        
+        # Convert results to dict format
+        models_data = []
+        for result in results:
+            models_data.append({
+                "model_id": result.model_id,
+                "status": result.status.value,
+                "latency": result.latency,
+                "error": result.error,
+                "key_results": [
+                    {
+                        "key_masked": kr.key_masked,
+                        "status": kr.status.value,
+                        "latency": kr.latency,
+                        "error": kr.error,
+                    }
+                    for kr in result.key_results
+                ],
+            })
+        
+        # Determine overall status
+        success_count = sum(1 for r in results if r.status.value == "success")
+        failed_count = sum(1 for r in results if r.status.value == "failed")
+        
+        if success_count == len(results):
+            overall_status = "success"
+        elif success_count > 0:
+            overall_status = "partial"
+        else:
+            overall_status = "failed"
+        
+        # Generate summary
+        summary = summarize_health_results(results, request.provider_name)
+        
+        logger.info(f"✓ Model testing complete: {summary}")
+        
+        return ModelTestResponse(
+            provider_name=request.provider_name,
+            status=overall_status,
+            models=models_data,
+            summary=summary,
+        )
+        
+    except Exception as e:
+        error_message = str(e)
+        logger.error(f"✗ Model testing failed: {error_message}")
+        
+        return ModelTestResponse(
+            provider_name=request.provider_name,
+            status="failed",
+            models=[],
+            summary=f"Testing failed: {error_message}",
+            error=error_message,
         )
 
 
