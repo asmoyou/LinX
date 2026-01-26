@@ -5,13 +5,14 @@ References:
 - Task 2.1.7: Create agent endpoints
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from uuid import UUID
 import io
 import base64
+import psutil  # For system memory monitoring
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Body, Query
 from pydantic import BaseModel, Field
 
 from access_control.permissions import CurrentUser, get_current_user
@@ -22,8 +23,190 @@ from shared.logging import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Global cache for initialized agents (agent_id -> (agent, llm))
-_agent_cache: Dict[str, tuple] = {}
+
+# Agent cache with TTL (Time To Live) and memory-aware sizing
+class AgentCacheEntry:
+    """Cache entry for an initialized agent with TTL."""
+    
+    def __init__(self, agent, llm, ttl_minutes: int = 30):
+        self.agent = agent
+        self.llm = llm
+        self.created_at = datetime.now()
+        self.last_used = datetime.now()
+        self.ttl = timedelta(minutes=ttl_minutes)
+        self.access_count = 0
+    
+    def is_expired(self) -> bool:
+        """Check if cache entry has expired."""
+        return datetime.now() - self.last_used > self.ttl
+    
+    def touch(self):
+        """Update last used timestamp and increment access count."""
+        self.last_used = datetime.now()
+        self.access_count += 1
+
+
+# Global cache for initialized agents (cache_key -> CacheEntry)
+_agent_cache: Dict[str, AgentCacheEntry] = {}
+
+
+def get_dynamic_cache_limit() -> int:
+    """
+    Calculate dynamic cache limit based on available system memory.
+    
+    Returns:
+        int: Maximum number of agents to cache
+    """
+    try:
+        # Get system memory info
+        memory = psutil.virtual_memory()
+        available_gb = memory.available / (1024 ** 3)  # Convert to GB
+        
+        # Conservative estimate: each cached agent uses ~50-100MB
+        # Allow caching if we have at least 2GB available
+        if available_gb < 2:
+            return 10  # Minimal caching
+        elif available_gb < 4:
+            return 20
+        elif available_gb < 8:
+            return 30
+        elif available_gb < 16:
+            return 50
+        else:
+            return 100  # Maximum caching for systems with plenty of RAM
+            
+    except Exception as e:
+        logger.warning(f"Failed to get system memory info: {e}, using default limit")
+        return 30  # Safe default
+
+
+def get_cache_stats() -> dict:
+    """Get current cache statistics."""
+    total_entries = len(_agent_cache)
+    expired_entries = sum(1 for entry in _agent_cache.values() if entry.is_expired())
+    
+    # Calculate memory usage estimate
+    memory_estimate_mb = total_entries * 75  # Rough estimate: 75MB per agent
+    
+    # Get system memory
+    try:
+        memory = psutil.virtual_memory()
+        available_gb = memory.available / (1024 ** 3)
+        total_gb = memory.total / (1024 ** 3)
+        used_percent = memory.percent
+    except:
+        available_gb = 0
+        total_gb = 0
+        used_percent = 0
+    
+    return {
+        "total_entries": total_entries,
+        "expired_entries": expired_entries,
+        "active_entries": total_entries - expired_entries,
+        "memory_estimate_mb": memory_estimate_mb,
+        "cache_limit": get_dynamic_cache_limit(),
+        "system_memory_available_gb": round(available_gb, 2),
+        "system_memory_total_gb": round(total_gb, 2),
+        "system_memory_used_percent": round(used_percent, 1),
+    }
+
+
+def clear_agent_cache():
+    """Clear the agent cache. Useful after code changes."""
+    global _agent_cache
+    stats = get_cache_stats()
+    _agent_cache.clear()
+    logger.info(f"Agent cache cleared: {stats['total_entries']} entries removed")
+
+
+def cleanup_expired_cache():
+    """Remove expired entries from cache and enforce memory limits."""
+    global _agent_cache
+    
+    # Remove expired entries
+    expired_keys = [key for key, entry in _agent_cache.items() if entry.is_expired()]
+    for key in expired_keys:
+        del _agent_cache[key]
+        logger.debug(f"Removed expired cache entry: {key}")
+    
+    # Get dynamic cache limit based on available memory
+    cache_limit = get_dynamic_cache_limit()
+    
+    # If cache is still too large, remove least recently used entries
+    if len(_agent_cache) > cache_limit:
+        # Sort by last_used time (oldest first)
+        sorted_entries = sorted(_agent_cache.items(), key=lambda x: x[1].last_used)
+        to_remove = len(_agent_cache) - cache_limit
+        
+        for key, entry in sorted_entries[:to_remove]:
+            del _agent_cache[key]
+            logger.info(
+                f"Removed LRU cache entry: {key} "
+                f"(last used: {entry.last_used}, access count: {entry.access_count})"
+            )
+        
+        logger.info(
+            f"Cache size reduced from {len(_agent_cache) + to_remove} to {len(_agent_cache)} "
+            f"(limit: {cache_limit}, available memory: {get_cache_stats()['system_memory_available_gb']}GB)"
+        )
+
+
+def get_cached_agent(cache_key: str):
+    """Get agent from cache if exists and not expired."""
+    cleanup_expired_cache()  # Clean up on every access
+    
+    if cache_key in _agent_cache:
+        entry = _agent_cache[cache_key]
+        if not entry.is_expired():
+            entry.touch()  # Update last used time and access count
+            logger.debug(
+                f"Cache hit: {cache_key} "
+                f"(access count: {entry.access_count}, age: {(datetime.now() - entry.created_at).seconds}s)"
+            )
+            return entry.agent, entry.llm
+        else:
+            # Remove expired entry
+            del _agent_cache[cache_key]
+            logger.debug(f"Cache expired: {cache_key}")
+    
+    logger.debug(f"Cache miss: {cache_key}")
+    return None, None
+
+
+def cache_agent(cache_key: str, agent, llm, ttl_minutes: int = 30):
+    """Cache an initialized agent with TTL."""
+    global _agent_cache
+    cleanup_expired_cache()  # Clean up before adding
+    
+    _agent_cache[cache_key] = AgentCacheEntry(agent, llm, ttl_minutes)
+    
+    stats = get_cache_stats()
+    logger.info(
+        f"Cached agent: {cache_key} "
+        f"(TTL: {ttl_minutes}min, cache size: {stats['total_entries']}/{stats['cache_limit']}, "
+        f"memory estimate: {stats['memory_estimate_mb']}MB, "
+        f"available: {stats['system_memory_available_gb']}GB)"
+    )
+
+
+def invalidate_agent_cache(agent_id: str):
+    """
+    Invalidate all cache entries for a specific agent.
+    
+    This removes all cached versions of an agent (different provider/model combinations).
+    """
+    global _agent_cache
+    cache_keys_to_remove = [key for key in _agent_cache.keys() if key.startswith(f"{agent_id}_")]
+    
+    for key in cache_keys_to_remove:
+        entry = _agent_cache[key]
+        del _agent_cache[key]
+        logger.info(
+            f"Invalidated cache: {key} "
+            f"(age: {(datetime.now() - entry.created_at).seconds}s, access count: {entry.access_count})"
+        )
+    
+    return len(cache_keys_to_remove)
 
 
 class CreateAgentRequest(BaseModel):
@@ -112,30 +295,29 @@ async def get_available_providers(
     """
     Get available LLM providers and their models for agent configuration.
     
-    Returns only enabled and healthy providers with their available models.
+    Returns only enabled providers from database with their available models.
     This endpoint is used by the agent configuration UI to populate provider/model dropdowns.
     """
     try:
-        from llm_providers.router import get_llm_provider
+        from database.connection import get_db_session
+        from llm_providers.db_manager import ProviderDBManager
         
-        llm_router = get_llm_provider()
-        
-        # Get all available providers
-        provider_names = await llm_router.list_all_providers()
-        
-        # Get models for each provider
         providers_dict = {}
-        for provider_name in provider_names:
-            try:
-                provider = await llm_router._get_provider(provider_name)
-                if provider:
-                    models = await provider.list_models()
-                    if models:
-                        providers_dict[provider_name] = models
-            except Exception as e:
-                logger.warning(f"Failed to get models for provider {provider_name}: {e}")
-                continue
         
+        # Get providers directly from database
+        with get_db_session() as db:
+            db_manager = ProviderDBManager(db)
+            db_providers = db_manager.list_providers()
+            
+            logger.info(f"[AVAILABLE-PROVIDERS] Found {len(db_providers)} providers in database")
+            
+            for p in db_providers:
+                logger.info(f"[AVAILABLE-PROVIDERS] Provider: {p.name}, enabled={p.enabled}, models={len(p.models) if p.models else 0}")
+                # Only include enabled providers with models
+                if p.enabled and p.models:
+                    providers_dict[p.name] = p.models
+        
+        logger.info(f"[AVAILABLE-PROVIDERS] Returning {len(providers_dict)} providers: {list(providers_dict.keys())}")
         return AvailableProvidersResponse(providers=providers_dict)
         
     except Exception as e:
@@ -376,8 +558,11 @@ async def update_agent(
                 detail=f"Agent {agent_id} not found",
             )
         
+        # Invalidate cache for this agent (all provider/model combinations)
+        invalidated_count = invalidate_agent_cache(agent_id)
+        
         logger.info(
-            f"Agent updated: {updated_agent.name}",
+            f"Agent updated: {updated_agent.name} (invalidated {invalidated_count} cache entries)",
             extra={"agent_id": agent_id, "user_id": current_user.user_id},
         )
         
@@ -540,8 +725,11 @@ async def delete_agent(agent_id: str, current_user: CurrentUser = Depends(get_cu
                 detail=f"Agent {agent_id} not found",
             )
         
+        # Invalidate cache for this agent
+        invalidated_count = invalidate_agent_cache(agent_id)
+        
         logger.info(
-            f"Agent deleted: {agent_id}",
+            f"Agent deleted: {agent_id} (invalidated {invalidated_count} cache entries)",
             extra={"agent_id": agent_id, "user_id": current_user.user_id},
         )
         
@@ -555,6 +743,138 @@ async def delete_agent(agent_id: str, current_user: CurrentUser = Depends(get_cu
         )
 
 
+@router.post("/cache/clear", status_code=status.HTTP_200_OK)
+async def clear_cache(current_user: CurrentUser = Depends(get_current_user)):
+    """
+    Clear the agent cache. Useful for debugging or after code changes.
+    
+    This will force all agents to be reinitialized on next use.
+    """
+    try:
+        stats_before = get_cache_stats()
+        clear_agent_cache()
+        stats_after = get_cache_stats()
+        
+        logger.info(
+            f"Agent cache cleared by user",
+            extra={
+                "user_id": current_user.user_id,
+                "entries_cleared": stats_before['total_entries'],
+                "memory_freed_mb": stats_before['memory_estimate_mb']
+            },
+        )
+        
+        return {
+            "message": "Agent cache cleared successfully",
+            "entries_cleared": stats_before['total_entries'],
+            "memory_freed_mb": stats_before['memory_estimate_mb'],
+            "stats_before": stats_before,
+            "stats_after": stats_after
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to clear cache: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to clear cache: {str(e)}",
+        )
+
+
+@router.get("/cache/stats", status_code=status.HTTP_200_OK)
+async def get_cache_statistics(current_user: CurrentUser = Depends(get_current_user)):
+    """
+    Get current agent cache statistics.
+    
+    Returns information about:
+    - Number of cached agents
+    - Memory usage estimates
+    - System memory availability
+    - Cache limits
+    """
+    try:
+        stats = get_cache_stats()
+        
+        # Add detailed cache entries info
+        cache_entries = []
+        for key, entry in _agent_cache.items():
+            age_seconds = (datetime.now() - entry.created_at).total_seconds()
+            idle_seconds = (datetime.now() - entry.last_used).total_seconds()
+            
+            cache_entries.append({
+                "key": key,
+                "age_seconds": int(age_seconds),
+                "idle_seconds": int(idle_seconds),
+                "access_count": entry.access_count,
+                "is_expired": entry.is_expired(),
+                "ttl_minutes": int(entry.ttl.total_seconds() / 60)
+            })
+        
+        # Sort by access count (most used first)
+        cache_entries.sort(key=lambda x: x['access_count'], reverse=True)
+        
+        return {
+            "summary": stats,
+            "entries": cache_entries,
+            "recommendations": _get_cache_recommendations(stats)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get cache stats: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get cache stats: {str(e)}",
+        )
+
+
+def _get_cache_recommendations(stats: dict) -> list:
+    """Generate recommendations based on cache statistics."""
+    recommendations = []
+    
+    # Check memory pressure
+    if stats['system_memory_used_percent'] > 90:
+        recommendations.append({
+            "level": "warning",
+            "message": "System memory usage is high (>90%). Consider clearing cache or reducing cache limit."
+        })
+    
+    # Check cache utilization
+    utilization = stats['active_entries'] / stats['cache_limit'] if stats['cache_limit'] > 0 else 0
+    if utilization > 0.9:
+        recommendations.append({
+            "level": "info",
+            "message": f"Cache is {int(utilization * 100)}% full. Old entries will be evicted automatically."
+        })
+    
+    # Check expired entries
+    if stats['expired_entries'] > stats['active_entries'] * 0.3:
+        recommendations.append({
+            "level": "info",
+            "message": f"{stats['expired_entries']} expired entries detected. They will be cleaned up automatically."
+        })
+    
+    # Check available memory
+    if stats['system_memory_available_gb'] < 2:
+        recommendations.append({
+            "level": "warning",
+            "message": "Low system memory (<2GB available). Cache limit has been reduced automatically."
+        })
+    
+    if not recommendations:
+        recommendations.append({
+            "level": "success",
+            "message": "Cache is operating normally."
+        })
+    
+    return recommendations
+
+
+@router.post("/cache/clear", status_code=status.HTTP_200_OK)
+async def clear_cache(current_user: CurrentUser = Depends(get_current_user)):
+    """Clear the agent cache. Useful after code changes or for troubleshooting."""
+    clear_agent_cache()
+    return {"message": "Agent cache cleared successfully", "cached_agents": 0}
+
+
 class TestAgentRequest(BaseModel):
     """Test agent request."""
 
@@ -562,27 +882,50 @@ class TestAgentRequest(BaseModel):
     history: Optional[List[Dict[str, str]]] = Field(default=None, description="Conversation history with role and content")
 
 
+class FileReference(BaseModel):
+    """Reference to an uploaded file."""
+    
+    path: str  # MinIO object key
+    type: str  # file type: image, document, audio, video, other
+    name: str  # original filename
+    size: int  # file size in bytes
+    content_type: str  # MIME type
+
+
 @router.post("/{agent_id}/test")
 async def test_agent(
     agent_id: str,
-    request: TestAgentRequest,
-    stream: bool = True,  # Query parameter to enable/disable streaming
+    message: str = Body(..., min_length=1, max_length=5000, embed=True),
+    history: Optional[str] = Body(None, embed=True),  # JSON string of conversation history
+    files: List[UploadFile] = File(default=[]),
+    stream: bool = Query(default=True),  # Query parameter to enable/disable streaming
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """
-    Test agent with a message (streaming SSE response or single response).
+    Test agent with a message and optional files (streaming SSE response or single response).
     
     This endpoint tests the full agent capabilities including:
     - System prompt
-    - Skills/functions
+    - Skills/functions (dynamically loaded)
     - Memory access
     - Real agent execution via AgentExecutor
     - Conversation history support
     - Agent caching for faster subsequent requests
+    - File processing via agent skills
+    
+    File Processing:
+    - Files are processed by agent skills (if available)
+    - If agent has 'image_processing' skill: processes images
+    - If agent has 'document_processing' skill: processes documents
+    - If agent has 'ocr' skill: extracts text from images
+    - Without relevant skills: files are skipped, only text is processed
+    - Skills are dynamically loaded from skill_library at runtime
     
     Args:
         agent_id: Agent ID
-        request: Test request with message and optional history
+        message: User message
+        history: Optional JSON string of conversation history
+        files: Optional list of uploaded files
         stream: Enable streaming (default: True)
         current_user: Current authenticated user
     """
@@ -590,7 +933,6 @@ async def test_agent(
     from agent_framework.agent_executor import get_agent_executor, ExecutionContext
     from agent_framework.base_agent import BaseAgent, AgentConfig
     from langchain_community.chat_models import ChatOllama
-    from langchain_openai import ChatOpenAI
     from llm_providers.custom_openai_provider import CustomOpenAIChat
     import json
     import asyncio
@@ -598,6 +940,89 @@ async def test_agent(
     import threading
     
     try:
+        # Parse history from JSON string
+        parsed_history = []
+        if history:
+            try:
+                parsed_history = json.loads(history)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse history JSON: {e}")
+        
+        # Upload files to MinIO and create file references
+        file_refs: List[FileReference] = []
+        if files:
+            minio_client = get_minio_client()
+            
+            for file in files:
+                try:
+                    # Detect file type
+                    content_type = file.content_type or "application/octet-stream"
+                    file_type = "other"
+                    
+                    if content_type.startswith("image/"):
+                        file_type = "image"
+                        bucket_type = "images"
+                    elif content_type in ["application/pdf", "application/msword", 
+                                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                         "text/plain"]:
+                        file_type = "document"
+                        bucket_type = "documents"
+                    elif content_type.startswith("audio/"):
+                        file_type = "audio"
+                        bucket_type = "audio"
+                    elif content_type.startswith("video/"):
+                        file_type = "video"
+                        bucket_type = "video"
+                    else:
+                        bucket_type = "documents"  # Default bucket
+                    
+                    # Read file data
+                    file_data = await file.read()
+                    file_stream = io.BytesIO(file_data)
+                    
+                    # Upload to MinIO
+                    # Note: MinIO metadata only supports ASCII characters
+                    # Store filename in file_ref instead of metadata
+                    bucket_name, object_key = minio_client.upload_file(
+                        bucket_type=bucket_type,
+                        file_data=file_stream,
+                        filename=file.filename or "unnamed",
+                        user_id=current_user.user_id,
+                        task_id=None,
+                        agent_id=agent_id,
+                        content_type=content_type,
+                        metadata={
+                            "agent_id": agent_id,
+                            "uploaded_by": current_user.user_id,
+                            # Don't include filename in metadata to avoid non-ASCII errors
+                        }
+                    )
+                    
+                    # Create file reference
+                    file_ref = FileReference(
+                        path=f"{bucket_name}/{object_key}",
+                        type=file_type,
+                        name=file.filename or "unnamed",
+                        size=len(file_data),
+                        content_type=content_type,
+                    )
+                    file_refs.append(file_ref)
+                    
+                    logger.info(
+                        f"File uploaded for agent test: {file.filename}",
+                        extra={
+                            "agent_id": agent_id,
+                            "file_type": file_type,
+                            "size": len(file_data),
+                            "object_key": object_key,
+                        }
+                    )
+                    
+                except Exception as file_error:
+                    logger.error(f"Failed to upload file {file.filename}: {file_error}")
+                    # Continue with other files
+                    continue
+        
         registry = get_agent_registry()
         agent_info = registry.get_agent(UUID(agent_id))
         
@@ -632,11 +1057,9 @@ async def test_agent(
                 
                 # Check if agent is already cached
                 cache_key = f"{agent_id}_{agent_info.llm_provider}_{agent_info.llm_model}"
-                agent = None
-                llm = None
+                agent, llm = get_cached_agent(cache_key)
                 
-                if cache_key in _agent_cache:
-                    agent, llm = _agent_cache[cache_key]
+                if agent is not None and llm is not None:
                     logger.info(f"Reusing cached agent: {agent_info.name}")
                     yield f"data: {json.dumps({'type': 'info', 'content': 'Using cached agent...'})}\n\n"
                 else:
@@ -660,16 +1083,12 @@ async def test_agent(
                     # Create agent instance
                     agent = BaseAgent(config)
                     
-                    from shared.config import get_config
-                    cfg = get_config()
-                    llm_config = cfg.get_section("llm")
-                    providers = llm_config.get("providers", {})
-                    
                     provider_name = agent_info.llm_provider or "ollama"
                     model_name = agent_info.llm_model or "llama3.2:latest"
                     temperature = agent_info.temperature or 0.7
                     
-                    # Create LLM instance
+                    # Create LLM instance - only from database
+                    llm = None
                     try:
                         from database.connection import get_db_session
                         from llm_providers.db_manager import ProviderDBManager
@@ -684,49 +1103,38 @@ async def test_agent(
                                     if db_provider.api_key_encrypted:
                                         api_key = db_manager._decrypt_api_key(db_provider.api_key_encrypted)
                                     
+                                    # Use CustomOpenAIChat for all OpenAI-compatible providers
+                                    # It intelligently handles /v1 suffix in base_url
+                                    base_url = db_provider.base_url
                                     llm = CustomOpenAIChat(
-                                        base_url=db_provider.base_url,
+                                        base_url=base_url,
                                         model=model_name,
                                         temperature=temperature,
                                         api_key=api_key,
                                         timeout=db_provider.timeout,
                                         max_retries=db_provider.max_retries,
+                                        max_tokens=agent_info.max_tokens,
+                                        streaming=True,
                                     )
-                                    logger.info(f"Using Custom OpenAI-compatible provider: {provider_name}")
+                                    logger.info(f"[LLM-INIT] Using CustomOpenAIChat: provider={provider_name}, base_url={base_url}")
                                 
                                 elif db_provider.protocol == "ollama":
-                                    llm = ChatOllama(
+                                    # Use CustomOpenAIChat for Ollama to support reasoning content streaming
+                                    # Ollama provides OpenAI-compatible API at /v1/chat/completions
+                                    llm = CustomOpenAIChat(
                                         base_url=db_provider.base_url,
                                         model=model_name,
                                         temperature=temperature,
+                                        max_tokens=agent_info.max_tokens,
+                                        api_key=None,  # Ollama doesn't require API key
+                                        streaming=True,
                                     )
-                                    logger.info(f"Using Ollama provider: {provider_name}")
+                                    logger.info(f"[LLM-INIT] Using CustomOpenAIChat for Ollama: {provider_name} at {db_provider.base_url}")
+                            else:
+                                logger.error(f"Provider '{provider_name}' not found or disabled in database")
                     
                     except Exception as db_error:
-                        logger.warning(f"Failed to load provider from database: {db_error}")
-                    
-                    if llm is None:
-                        if provider_name == "ollama" or provider_name not in providers:
-                            ollama_config = providers.get("ollama", {})
-                            base_url = ollama_config.get("base_url", "http://localhost:11434")
-                            llm = ChatOllama(
-                                base_url=base_url,
-                                model=model_name,
-                                temperature=temperature,
-                            )
-                            logger.info(f"Using Ollama (config.yaml): {base_url}")
-                        elif provider_name in providers:
-                            provider_config = providers.get(provider_name, {})
-                            base_url = provider_config.get("base_url")
-                            
-                            if base_url:
-                                llm = ChatOpenAI(
-                                    base_url=base_url,
-                                    model=model_name,
-                                    temperature=temperature,
-                                    api_key="dummy-key",
-                                )
-                                logger.info(f"Using provider from config.yaml: {provider_name}")
+                        logger.error(f"Failed to load provider from database: {db_error}", exc_info=True)
                     
                     if llm is None:
                         raise ValueError(f"Could not create LLM for provider: {provider_name}")
@@ -736,9 +1144,8 @@ async def test_agent(
                     # Initialize agent
                     await asyncio.to_thread(agent.initialize)
                     
-                    # Cache the initialized agent
-                    _agent_cache[cache_key] = (agent, llm)
-                    logger.info(f"Cached agent: {cache_key}")
+                    # Cache the initialized agent with 30 minute TTL
+                    cache_agent(cache_key, agent, llm, ttl_minutes=30)
                 
                 model_info = f"{agent_info.llm_model or 'llama3.2:latest'} via {agent_info.llm_provider or 'ollama'}"
                 yield f"data: {json.dumps({'type': 'info', 'content': f'Using model: {model_info}'})}\n\n"
@@ -746,37 +1153,115 @@ async def test_agent(
                 if agent.config.capabilities:
                     yield f"data: {json.dumps({'type': 'info', 'content': f'Available skills: {', '.join(agent.config.capabilities)}'})}\n\n"
                 
-                yield f"data: {json.dumps({'type': 'thinking', 'content': 'Retrieving relevant memories and processing...'})}\n\n"
+                yield f"data: {json.dumps({'type': 'info', 'content': 'Retrieving relevant memories and processing...'})}\n\n"
+                logger.debug("[STREAM] Sent status: type='info', content='Retrieving relevant memories and processing...'")
                 
                 # Get memory context
                 context = {}
                 try:
-                    from memory_system.memory_system import get_memory_system
                     from memory_system.memory_interface import SearchQuery, MemoryType
+                    from memory_system.embedding_service import (
+                        set_embedding_service,
+                        OllamaEmbeddingService,
+                        get_embedding_service,
+                    )
                     
-                    memory_system = get_memory_system()
+                    # Check if agent has custom embedding configuration
+                    custom_embedding_service = None
+                    if agent_info.embedding_provider and agent_info.embedding_model:
+                        logger.info(
+                            f"Agent {agent_info.name} uses custom embedding: "
+                            f"provider={agent_info.embedding_provider}, model={agent_info.embedding_model}"
+                        )
+                        
+                        # Create agent-specific embedding service
+                        try:
+                            from database.connection import get_db_session
+                            from llm_providers.db_manager import ProviderDBManager
+                            
+                            with get_db_session() as db:
+                                db_manager = ProviderDBManager(db)
+                                embedding_provider = db_manager.get_provider(agent_info.embedding_provider)
+                                
+                                if embedding_provider and embedding_provider.enabled:
+                                    # Create custom embedding service with agent's configuration
+                                    if embedding_provider.protocol == "ollama":
+                                        custom_embedding_service = OllamaEmbeddingService(
+                                            base_url=embedding_provider.base_url,
+                                            model=agent_info.embedding_model,
+                                        )
+                                        logger.info(
+                                            f"Created custom Ollama embedding service: "
+                                            f"{embedding_provider.base_url} / {agent_info.embedding_model}"
+                                        )
+                                    elif embedding_provider.protocol == "openai_compatible":
+                                        # For OpenAI-compatible providers
+                                        from memory_system.embedding_service import VLLMEmbeddingService
+                                        custom_embedding_service = VLLMEmbeddingService(
+                                            base_url=embedding_provider.base_url,
+                                            model=agent_info.embedding_model,
+                                        )
+                                        logger.info(
+                                            f"Created custom OpenAI-compatible embedding service: "
+                                            f"{embedding_provider.base_url} / {agent_info.embedding_model}"
+                                        )
+                                else:
+                                    logger.warning(
+                                        f"Embedding provider {agent_info.embedding_provider} not found or disabled"
+                                    )
+                        except Exception as embed_error:
+                            logger.error(f"Failed to create custom embedding service: {embed_error}", exc_info=True)
+                    
+                    # If we have a custom embedding service, temporarily set it and create new MemorySystem
+                    if custom_embedding_service:
+                        # Save original and set custom
+                        original_service = get_embedding_service()
+                        set_embedding_service(custom_embedding_service)
+                        
+                        # Create a NEW MemorySystem instance that will use the custom embedding service
+                        from memory_system.memory_system import MemorySystem
+                        memory_system = MemorySystem()
+                        
+                        logger.info(f"Using custom embedding service for agent {agent_info.name}")
+                    else:
+                        # Use default memory system
+                        from memory_system.memory_system import get_memory_system
+                        memory_system = get_memory_system()
+                        original_service = None
                     
                     # Search agent memories
                     agent_query = SearchQuery(
-                        query_text=request.message,
+                        query_text=message,
                         agent_id=str(agent_id),
                         memory_type=MemoryType.AGENT,
-                        top_k=5,
+                        top_k=agent_info.top_k or 5,
                     )
                     agent_memories = memory_system.retrieve_memories(agent_query)
                     context["agent_memories"] = [m.content for m in agent_memories]
                     
                     # Search company memories
                     company_query = SearchQuery(
-                        query_text=request.message,
+                        query_text=message,
                         user_id=current_user.user_id,
                         memory_type=MemoryType.COMPANY,
-                        top_k=5,
+                        top_k=agent_info.top_k or 5,
                     )
                     company_memories = memory_system.retrieve_memories(company_query)
                     context["company_memories"] = [m.content for m in company_memories]
+                    
+                    # Restore original embedding service if we changed it
+                    if original_service is not None:
+                        set_embedding_service(original_service)
+                        logger.info("Restored original embedding service")
+                    
                 except Exception as mem_error:
-                    logger.warning(f"Failed to retrieve memories: {mem_error}")
+                    logger.error(f"Failed to retrieve memories: {mem_error}", exc_info=True)
+                    # Make sure to restore original embedding service even on error
+                    if 'original_service' in locals() and original_service is not None:
+                        try:
+                            set_embedding_service(original_service)
+                        except:
+                            pass
                 
                 # Build messages with conversation history
                 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
@@ -785,15 +1270,58 @@ async def test_agent(
                 messages = [SystemMessage(content=system_prompt)]
                 
                 # Add conversation history if provided
-                if request.history:
-                    for msg in request.history:
+                if parsed_history:
+                    for msg in parsed_history:
                         if msg.get("role") == "user":
                             messages.append(HumanMessage(content=msg.get("content", "")))
                         elif msg.get("role") == "assistant":
                             messages.append(AIMessage(content=msg.get("content", "")))
                 
-                # Add current message
-                user_message = request.message
+                # Process files with agent skills (if available)
+                file_processing_results = []
+                if file_refs:
+                    yield f"data: {json.dumps({'type': 'info', 'content': f'Processing {len(file_refs)} file(s)...'})}\n\n"
+                    
+                    # Check agent skills
+                    agent_skills = agent_info.capabilities or []
+                    has_image_skill = "image_processing" in agent_skills
+                    has_doc_skill = "document_processing" in agent_skills
+                    has_ocr_skill = "ocr" in agent_skills
+                    
+                    for file_ref in file_refs:
+                        try:
+                            if file_ref.type == "image":
+                                if has_image_skill:
+                                    # TODO: Load and execute image_processing skill
+                                    yield f"data: {json.dumps({'type': 'info', 'content': f'Analyzing image: {file_ref.name}'})}\n\n"
+                                    file_processing_results.append(f"[Image: {file_ref.name}] - Image processing skill not yet implemented")
+                                elif has_ocr_skill:
+                                    # TODO: Load and execute OCR skill
+                                    yield f"data: {json.dumps({'type': 'info', 'content': f'Extracting text from image: {file_ref.name}'})}\n\n"
+                                    file_processing_results.append(f"[Image: {file_ref.name}] - OCR skill not yet implemented")
+                                else:
+                                    logger.info(f"Agent {agent_id} lacks image processing skills, skipping image {file_ref.name}")
+                                    file_processing_results.append(f"[Image: {file_ref.name}] - Attached (no processing skill available)")
+                            
+                            elif file_ref.type == "document":
+                                if has_doc_skill:
+                                    # TODO: Load and execute document_processing skill
+                                    yield f"data: {json.dumps({'type': 'info', 'content': f'Processing document: {file_ref.name}'})}\n\n"
+                                    file_processing_results.append(f"[Document: {file_ref.name}] - Document processing skill not yet implemented")
+                                else:
+                                    logger.info(f"Agent {agent_id} lacks document processing skills, skipping document {file_ref.name}")
+                                    file_processing_results.append(f"[Document: {file_ref.name}] - Attached (no processing skill available)")
+                            
+                            else:
+                                # Other file types
+                                file_processing_results.append(f"[File: {file_ref.name}] - Attached")
+                        
+                        except Exception as process_error:
+                            logger.error(f"Error processing file {file_ref.name}: {process_error}")
+                            file_processing_results.append(f"[File: {file_ref.name}] - Processing failed: {str(process_error)}")
+                
+                # Add current message with file processing results
+                user_message = message
                 if context:
                     context_info = []
                     if context.get("agent_memories"):
@@ -802,9 +1330,104 @@ async def test_agent(
                         context_info.append(f"Company knowledge: {', '.join(context['company_memories'][:3])}")
                     
                     if context_info:
-                        user_message = f"{request.message}\n\nContext:\n" + "\n".join(context_info)
+                        user_message = f"{message}\n\nContext:\n" + "\n".join(context_info)
                 
-                messages.append(HumanMessage(content=user_message))
+                # Check if model supports vision
+                model_supports_vision = False
+                try:
+                    from database.connection import get_db_session
+                    from llm_providers.db_manager import ProviderDBManager
+                    from llm_providers.model_metadata import EnhancedModelCapabilityDetector
+                    
+                    provider_name = agent_info.llm_provider or "ollama"
+                    model_name = agent_info.llm_model or "llama3.2:latest"
+                    
+                    with get_db_session() as db:
+                        db_manager = ProviderDBManager(db)
+                        provider = db_manager.get_provider(provider_name)
+                        
+                        if provider and provider.model_metadata and model_name in provider.model_metadata:
+                            # Use stored metadata from database
+                            metadata_dict = provider.model_metadata[model_name]
+                            model_supports_vision = metadata_dict.get('supports_vision', False)
+                            logger.info(f"Model {model_name} vision support from database: {model_supports_vision}")
+                        else:
+                            # Generate metadata using detector (same as API endpoint)
+                            detector = EnhancedModelCapabilityDetector()
+                            metadata = detector.detect_metadata(model_name, provider_name)
+                            model_supports_vision = metadata.supports_vision
+                            logger.info(f"Model {model_name} vision support from detector: {model_supports_vision}")
+                            
+                except Exception as meta_error:
+                    logger.error(f"Failed to check model vision support: {meta_error}", exc_info=True)
+                    model_supports_vision = False
+                
+                # Build message content based on model capabilities
+                if model_supports_vision and file_refs:
+                    # For vision models, use multimodal content format
+                    message_content = []
+                    
+                    # Add text content
+                    if user_message:
+                        message_content.append({
+                            "type": "text",
+                            "text": user_message
+                        })
+                    
+                    # Add image content
+                    minio_client = get_minio_client()
+                    for file_ref in file_refs:
+                        if file_ref.type == "image":
+                            try:
+                                # Download image from MinIO
+                                bucket_name, object_key = file_ref.path.split("/", 1)
+                                image_stream, metadata = minio_client.download_file(bucket_name, object_key)
+                                
+                                # Read image data
+                                image_data = image_stream.read()
+                                
+                                # Convert to base64
+                                import base64
+                                image_base64 = base64.b64encode(image_data).decode('utf-8')
+                                
+                                # Determine image format from content type
+                                image_format = "jpeg"  # default
+                                if file_ref.content_type:
+                                    if "png" in file_ref.content_type:
+                                        image_format = "png"
+                                    elif "webp" in file_ref.content_type:
+                                        image_format = "webp"
+                                    elif "gif" in file_ref.content_type:
+                                        image_format = "gif"
+                                
+                                # Add image to message content
+                                message_content.append({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/{image_format};base64,{image_base64}"
+                                    }
+                                })
+                                
+                                yield f"data: {json.dumps({'type': 'info', 'content': f'Image {file_ref.name} added to message for vision model'})}\n\n"
+                                
+                            except Exception as img_error:
+                                logger.error(f"Failed to load image {file_ref.name}: {img_error}")
+                                yield f"data: {json.dumps({'type': 'info', 'content': f'Failed to load image {file_ref.name}'})}\n\n"
+                    
+                    # Create HumanMessage with multimodal content
+                    messages.append(HumanMessage(content=message_content))
+                    
+                else:
+                    # For non-vision models or no images, use text-only format
+                    # Append file processing results to message
+                    if file_processing_results:
+                        user_message += "\n\nAttached files:\n" + "\n".join(file_processing_results)
+                    
+                    messages.append(HumanMessage(content=user_message))
+                
+                # Send status message before generating content
+                yield f"data: {json.dumps({'type': 'info', 'content': 'Generating response...'})}\n\n"
+                logger.debug("[STREAM] Sent status: type='info', content='Generating response...'")
                 
                 # Use a queue to collect streamed tokens from the agent
                 token_queue = queue.Queue()
@@ -812,33 +1435,79 @@ async def test_agent(
                 final_response = [""]
                 response_metadata = [{}]
                 
-                def stream_callback(token: str):
+                def stream_callback(token_data):
                     """Callback for streaming tokens from agent."""
                     nonlocal first_token_time, last_token_time
                     if first_token_time is None:
                         first_token_time = time.time()
                     last_token_time = time.time()
-                    token_queue.put(token)
+                    token_queue.put(token_data)
                 
                 def execute_agent():
                     """Execute agent in a separate thread."""
                     try:
                         # Stream tokens from LLM
                         chunk_count = 0
+                        thinking_content = ""  # 单独追踪thinking内容
+                        content_content = ""   # 单独追踪content内容
                         
                         try:
                             # Try streaming with metadata tracking
                             for chunk in agent.llm.stream(messages):
+                                # 详细日志：打印chunk的完整结构
+                                if chunk_count == 0:
+                                    logger.info(f"[TOKEN-DEBUG] First chunk type: {type(chunk)}")
+                                    logger.info(f"[TOKEN-DEBUG] First chunk dir: {[attr for attr in dir(chunk) if not attr.startswith('_')]}")
+                                    if hasattr(chunk, '__dict__'):
+                                        logger.info(f"[TOKEN-DEBUG] First chunk __dict__: {chunk.__dict__}")
+                                
                                 if hasattr(chunk, 'content') and chunk.content:
-                                    stream_callback(chunk.content)
+                                    # Check if this is thinking content
+                                    content_type = "content"  # default
+                                    
+                                    # Check additional_kwargs first (preferred location)
+                                    if hasattr(chunk, 'additional_kwargs') and chunk.additional_kwargs:
+                                        content_type = chunk.additional_kwargs.get('content_type', 'content')
+                                    # Fallback to generation_info
+                                    elif hasattr(chunk, 'generation_info') and chunk.generation_info:
+                                        content_type = chunk.generation_info.get('content_type', 'content')
+                                    
+                                    # Put both content and type in queue
+                                    stream_callback((chunk.content, content_type))
                                     final_response[0] += chunk.content
+                                    
+                                    # 分别累积thinking和content
+                                    if content_type == "thinking":
+                                        thinking_content += chunk.content
+                                    else:
+                                        content_content += chunk.content
+                                    
                                     chunk_count += 1
                                 
                                 # Try to get usage metadata from chunk
+                                # vLLM sends usage in the LAST chunk (after finish_reason="stop")
                                 if hasattr(chunk, 'response_metadata'):
-                                    response_metadata[0] = chunk.response_metadata
+                                    if chunk.response_metadata:
+                                        logger.info(f"[TOKEN-DEBUG] Chunk {chunk_count} response_metadata: {chunk.response_metadata}")
+                                        response_metadata[0] = chunk.response_metadata
                                 elif hasattr(chunk, 'usage_metadata'):
-                                    response_metadata[0] = {'usage': chunk.usage_metadata}
+                                    if chunk.usage_metadata:
+                                        logger.info(f"[TOKEN-DEBUG] Chunk {chunk_count} usage_metadata: {chunk.usage_metadata}")
+                                        response_metadata[0] = {'usage': chunk.usage_metadata}
+                                
+                                # Check generation_info for usage data (some providers put it here)
+                                if hasattr(chunk, 'generation_info') and chunk.generation_info:
+                                    gen_info = chunk.generation_info
+                                    if 'usage' in gen_info or 'token_usage' in gen_info:
+                                        logger.info(f"[TOKEN-DEBUG] Chunk {chunk_count} generation_info has usage: {gen_info}")
+                                        if 'usage' in gen_info:
+                                            response_metadata[0] = {'usage': gen_info['usage']}
+                                        elif 'token_usage' in gen_info:
+                                            response_metadata[0] = {'token_usage': gen_info['token_usage']}
+                            
+                            # 流式结束后，打印最终的metadata
+                            logger.info(f"[TOKEN-DEBUG] Final response_metadata after streaming: {response_metadata[0]}")
+                            logger.info(f"[TOKEN-DEBUG] Total chunks: {chunk_count}, thinking_chars: {len(thinking_content)}, content_chars: {len(content_content)}")
                             
                             # If streaming didn't provide metadata, invoke once to get it
                             if chunk_count > 0 and not response_metadata[0]:
@@ -851,10 +1520,10 @@ async def test_agent(
                                 result = agent.llm.invoke(messages)
                                 if hasattr(result, 'content'):
                                     final_response[0] = result.content
-                                    stream_callback(result.content)
+                                    stream_callback((result.content, "content"))
                                 else:
                                     final_response[0] = str(result)
-                                    stream_callback(str(result))
+                                    stream_callback((str(result), "content"))
                                 
                                 # Get metadata from invoke result
                                 if hasattr(result, 'response_metadata'):
@@ -867,10 +1536,10 @@ async def test_agent(
                             result = agent.llm.invoke(messages)
                             if hasattr(result, 'content'):
                                 final_response[0] = result.content
-                                stream_callback(result.content)
+                                stream_callback((result.content, "content"))
                             else:
                                 final_response[0] = str(result)
-                                stream_callback(str(result))
+                                stream_callback((str(result), "content"))
                             
                             # Get metadata
                             if hasattr(result, 'response_metadata'):
@@ -894,14 +1563,24 @@ async def test_agent(
                 while True:
                     try:
                         # Wait for token with timeout
-                        token = token_queue.get(timeout=0.1)
+                        token_data = token_queue.get(timeout=0.1)
                         
-                        if token is None:
+                        if token_data is None:
                             # Execution complete
                             break
                         
-                        # Send token to client
-                        yield f"data: {json.dumps({'type': 'content', 'content': token})}\n\n"
+                        # token_data can be either a string (old format) or tuple (token, type)
+                        if isinstance(token_data, tuple):
+                            token, content_type = token_data
+                        else:
+                            token = token_data
+                            content_type = "content"
+                        
+                        # Debug: Log what we're sending
+                        logger.debug(f"[STREAM] Sending to frontend: type='{content_type}', length={len(token)}")
+                        
+                        # Send token to client with type information
+                        yield f"data: {json.dumps({'type': content_type, 'content': token})}\n\n"
                         
                     except queue.Empty:
                         # No token yet, continue waiting
@@ -915,8 +1594,13 @@ async def test_agent(
                 
                 # Extract token counts from metadata
                 metadata = response_metadata[0]
+                
+                # 详细日志：打印完整的metadata结构
+                logger.info(f"[TOKEN-STATS] Full metadata structure: {json.dumps(metadata, default=str, ensure_ascii=False)}")
+                
                 if 'usage' in metadata:
                     usage = metadata['usage']
+                    logger.info(f"[TOKEN-STATS] Found 'usage' field: {usage}")
                     if isinstance(usage, dict):
                         input_tokens = usage.get('prompt_tokens', 0) or usage.get('input_tokens', 0)
                         output_tokens = usage.get('completion_tokens', 0) or usage.get('output_tokens', 0)
@@ -924,20 +1608,37 @@ async def test_agent(
                         # usage_metadata object
                         input_tokens = getattr(usage, 'input_tokens', 0)
                         output_tokens = getattr(usage, 'output_tokens', 0)
+                    logger.info(f"[TOKEN-STATS] Extracted from 'usage': input={input_tokens}, output={output_tokens}")
                 elif 'token_usage' in metadata:
                     token_usage = metadata['token_usage']
+                    logger.info(f"[TOKEN-STATS] Found 'token_usage' field: {token_usage}")
                     input_tokens = token_usage.get('prompt_tokens', 0)
                     output_tokens = token_usage.get('completion_tokens', 0)
+                    logger.info(f"[TOKEN-STATS] Extracted from 'token_usage': input={input_tokens}, output={output_tokens}")
                 
                 # Fallback: estimate if no metadata available
                 if input_tokens == 0 and output_tokens == 0:
-                    # Rough estimation: 1 token ≈ 4 characters
-                    input_text = system_prompt + user_message
-                    if request.history:
-                        for msg in request.history:
-                            input_text += msg.get("content", "")
-                    input_tokens = len(input_text) // 4
-                    output_tokens = len(final_response[0]) // 4
+                    # 流式模式下LLM API通常不返回token统计，需要估算
+                    # 改进的估算：中文1字符≈1.5token，英文1字符≈0.25token
+                    # 简化：平均1字符≈0.5token（考虑中英文混合）
+                    input_chars = 0
+                    for msg in messages:
+                        if hasattr(msg, 'content'):
+                            if isinstance(msg.content, str):
+                                input_chars += len(msg.content)
+                            elif isinstance(msg.content, list):
+                                # 多模态内容（图片+文本）
+                                for item in msg.content:
+                                    if isinstance(item, dict) and item.get('type') == 'text':
+                                        input_chars += len(item.get('text', ''))
+                    
+                    # 改进的token估算：中英文混合平均
+                    input_tokens = int(input_chars * 0.5)
+                    output_tokens = int(len(final_response[0]) * 0.5)
+                    
+                    logger.info(f"Token estimation (no metadata from streaming API): input={input_tokens} (chars={input_chars}), output={output_tokens} (chars={len(final_response[0])}), messages_count={len(messages)}")
+                else:
+                    logger.info(f"Token from metadata: input={input_tokens}, output={output_tokens}")
                 
                 total_tokens = input_tokens + output_tokens
                 
@@ -945,12 +1646,19 @@ async def test_agent(
                 time_to_first_token = (first_token_time - start_time) if first_token_time else 0
                 
                 # Tokens per second: only count generation time (first token to last token)
+                # If no chunks were streamed (chunk_count=0), use total time instead
                 if first_token_time and last_token_time and output_tokens > 0:
                     generation_time = last_token_time - first_token_time
                     if generation_time > 0:
                         tokens_per_second = output_tokens / generation_time
                     else:
-                        tokens_per_second = 0
+                        # Fallback: use total time if generation_time is 0
+                        total_time = end_time - start_time
+                        tokens_per_second = output_tokens / total_time if total_time > 0 else 0
+                elif output_tokens > 0:
+                    # No streaming happened (chunk_count=0), use total time
+                    total_time = end_time - start_time
+                    tokens_per_second = output_tokens / total_time if total_time > 0 else 0
                 else:
                     tokens_per_second = 0
                 
@@ -1006,16 +1714,11 @@ async def test_agent(
                 
                 agent = BaseAgent(config)
                 
-                # Setup LLM (same as streaming)
-                from shared.config import get_config
-                cfg = get_config()
-                llm_config = cfg.get_section("llm")
-                providers = llm_config.get("providers", {})
-                
                 provider_name = agent_info.llm_provider or "ollama"
                 model_name = agent_info.llm_model or "llama3.2:latest"
                 temperature = agent_info.temperature or 0.7
                 
+                # Create LLM instance - only from database
                 llm = None
                 try:
                     from database.connection import get_db_session
@@ -1031,33 +1734,35 @@ async def test_agent(
                                 if db_provider.api_key_encrypted:
                                     api_key = db_manager._decrypt_api_key(db_provider.api_key_encrypted)
                                 
+                                # Use CustomOpenAIChat for all OpenAI-compatible providers
+                                # It intelligently handles /v1 suffix in base_url
+                                base_url = db_provider.base_url
                                 llm = CustomOpenAIChat(
-                                    base_url=db_provider.base_url,
+                                    base_url=base_url,
                                     model=model_name,
                                     temperature=temperature,
                                     api_key=api_key,
                                     timeout=db_provider.timeout,
                                     max_retries=db_provider.max_retries,
+                                    max_tokens=agent_info.max_tokens,
                                 )
+                                logger.info(f"[LLM-INIT] Using CustomOpenAIChat (non-streaming): provider={provider_name}, base_url={base_url}")
                             elif db_provider.protocol == "ollama":
-                                llm = ChatOllama(
+                                # Use CustomOpenAIChat for Ollama to support reasoning content
+                                llm = CustomOpenAIChat(
                                     base_url=db_provider.base_url,
                                     model=model_name,
                                     temperature=temperature,
+                                    max_tokens=agent_info.max_tokens,
+                                    api_key=None,  # Ollama doesn't require API key
+                                    streaming=False,
                                 )
-                except Exception as db_error:
-                    logger.warning(f"Failed to load provider from database: {db_error}")
+                                logger.info(f"[LLM-INIT] Using CustomOpenAIChat for Ollama (non-streaming): {provider_name}")
+                        else:
+                            logger.error(f"Provider '{provider_name}' not found or disabled in database")
                 
-                if llm is None:
-                    if provider_name == "ollama" or provider_name not in providers:
-                        ollama_config = providers.get("ollama", {})
-                        base_url = ollama_config.get("base_url", "http://localhost:11434")
-                        llm = ChatOllama(base_url=base_url, model=model_name, temperature=temperature)
-                    elif provider_name in providers:
-                        provider_config = providers.get(provider_name, {})
-                        base_url = provider_config.get("base_url")
-                        if base_url:
-                            llm = ChatOpenAI(base_url=base_url, model=model_name, temperature=temperature, api_key="dummy-key")
+                except Exception as db_error:
+                    logger.error(f"Failed to load provider from database: {db_error}", exc_info=True)
                 
                 if llm is None:
                     raise ValueError(f"Could not create LLM for provider: {provider_name}")
@@ -1069,7 +1774,7 @@ async def test_agent(
                 exec_context = ExecutionContext(
                     agent_id=UUID(agent_id),
                     user_id=UUID(current_user.user_id),
-                    task_description=request.message,
+                    task_description=message,
                 )
                 
                 executor = get_agent_executor()
