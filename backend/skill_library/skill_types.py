@@ -1,77 +1,76 @@
 """Skill types and enums.
 
+Simplified two-tier classification system:
+1. LangChain Tool - Simple standardized functions
+2. Agent Skill - Flexible skills (auto-detects storage based on complexity)
+
 References:
-- docs/backend/dynamic-skill-system.md
-- docs/backend/flexible-skill-architecture.md
+- docs/backend/skill-type-classification.md
 """
 
 from enum import Enum
 
 
-class SkillCategory(str, Enum):
-    """Skill category - top level classification."""
-    
-    # Claude Code style - highly flexible agent skills
-    AGENT_SKILL = "agent_skill"
-    
-    # LangChain standard tools - simple functions
-    LANGCHAIN_TOOL = "langchain_tool"
-
-
 class SkillType(str, Enum):
-    """Skill type enumeration - detailed implementation type."""
+    """Skill type classification.
     
-    # === Agent Skills (Claude Code Style) ===
-    # Single Python file with @tool decorator (inline storage)
-    AGENT_SKILL_SIMPLE = "agent_skill_simple"
-    
-    # Multiple Python files with entry point (MinIO storage)
-    AGENT_SKILL_MODULE = "agent_skill_module"
-    
-    # Full project with manifest, deps, config, data (MinIO storage)
-    AGENT_SKILL_PACKAGE = "agent_skill_package"
-    
-    # === LangChain Tools (Simple Functions) ===
-    # Standard LangChain tool with @tool decorator
+    Simplified system with only two types:
+    - LANGCHAIN_TOOL: Simple, standardized single-function tools
+    - AGENT_SKILL: Flexible skills (storage auto-detected)
+    """
+    # LangChain Tool - Simple standardized tool with @tool decorator
     LANGCHAIN_TOOL = "langchain_tool"
+    
+    # Agent Skill - Flexible skill (can be single or multi-file)
+    # Storage is automatically determined based on size/complexity
+    AGENT_SKILL = "agent_skill"
 
 
 class StorageType(str, Enum):
     """Storage type for skills."""
     
-    # Code stored inline in database
+    # Code stored inline in database (for small skills)
     INLINE = "inline"
     
-    # Full project stored in MinIO
+    # Full project stored in MinIO (for large/complex skills)
     MINIO = "minio"
 
 
-def get_storage_type(skill_type: SkillType) -> StorageType:
-    """Get storage type based on skill type.
+def get_default_storage_type(skill_type: SkillType) -> StorageType:
+    """Get default storage type based on skill type.
     
     Args:
         skill_type: The skill type
         
     Returns:
-        Appropriate storage type
+        Default storage type (can be overridden based on actual size)
     """
-    if skill_type in [SkillType.AGENT_SKILL_SIMPLE, SkillType.LANGCHAIN_TOOL]:
+    # LangChain tools are always inline
+    if skill_type == SkillType.LANGCHAIN_TOOL:
         return StorageType.INLINE
-    else:
-        return StorageType.MINIO
+    
+    # Agent skills default to inline, but can be MinIO if large
+    return StorageType.INLINE
 
 
-def get_category(skill_type: SkillType) -> SkillCategory:
-    """Get category based on skill type.
+def should_use_minio(code_size: int, has_multiple_files: bool = False) -> bool:
+    """Determine if MinIO storage should be used.
     
     Args:
-        skill_type: The skill type
+        code_size: Size of code in bytes
+        has_multiple_files: Whether skill has multiple files
         
     Returns:
-        Skill category
+        True if MinIO should be used, False for inline storage
     """
-    if skill_type.value.startswith("agent_skill"):
-        return SkillCategory.AGENT_SKILL
-    else:
-        return SkillCategory.LANGCHAIN_TOOL
+    # Use MinIO if:
+    # 1. Multiple files (module/package)
+    # 2. Single file but > 100KB
+    if has_multiple_files:
+        return True
+    
+    if code_size > 100 * 1024:  # 100KB threshold
+        return True
+    
+    return False
 

@@ -272,7 +272,7 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm overflow-auto ml-64">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm overflow-auto" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
       <div className="w-full max-w-2xl my-auto bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-zinc-200 dark:border-zinc-800">

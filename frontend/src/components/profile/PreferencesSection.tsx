@@ -1,11 +1,89 @@
 import { Monitor, Sun, Moon, Globe } from 'lucide-react';
 import { GlassPanel } from '../GlassPanel';
 import { useThemeStore } from '../../stores/themeStore';
-import { usePreferencesStore } from '../../stores/preferencesStore';
+import { useTranslation } from 'react-i18next';
+import { useEffect, useState } from 'react';
+import apiClient from '@/api/client';
+import toast from 'react-hot-toast';
+
+interface UserPreferences {
+  language: string;
+  theme: string;
+  sidebar_collapsed: boolean;
+  dashboard_layout: string;
+  notifications_enabled: boolean;
+  sound_enabled: boolean;
+  auto_refresh: boolean;
+  refresh_interval: number;
+}
 
 export const PreferencesSection = () => {
   const { theme, setTheme } = useThemeStore();
-  const { language, setLanguage } = usePreferencesStore();
+  const { i18n } = useTranslation();
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Load preferences from backend on mount
+  useEffect(() => {
+    loadPreferences();
+  }, []);
+
+  const loadPreferences = async () => {
+    try {
+      const response = await apiClient.get<UserPreferences>('/users/me/preferences');
+      const prefs = response.data;
+      
+      // Apply loaded preferences
+      if (prefs.language && prefs.language !== i18n.language) {
+        i18n.changeLanguage(prefs.language);
+      }
+      if (prefs.theme && prefs.theme !== theme) {
+        setTheme(prefs.theme as 'light' | 'dark' | 'system');
+      }
+    } catch (error) {
+      console.error('Failed to load preferences:', error);
+      // Don't show error toast on initial load, use defaults
+    }
+  };
+
+  const savePreferences = async (updates: Partial<UserPreferences>) => {
+    setIsLoading(true);
+    try {
+      // Get current preferences
+      const currentPrefs: UserPreferences = {
+        language: i18n.language,
+        theme: theme,
+        sidebar_collapsed: false,
+        dashboard_layout: 'default',
+        notifications_enabled: true,
+        sound_enabled: false,
+        auto_refresh: true,
+        refresh_interval: 30,
+      };
+
+      // Merge with updates
+      const newPrefs = { ...currentPrefs, ...updates };
+
+      // Save to backend
+      await apiClient.put('/users/me/preferences', newPrefs);
+      
+      toast.success('Preferences saved');
+    } catch (error) {
+      console.error('Failed to save preferences:', error);
+      toast.error('Failed to save preferences');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleThemeChange = async (newTheme: 'light' | 'dark' | 'system') => {
+    setTheme(newTheme);
+    await savePreferences({ theme: newTheme });
+  };
+
+  const handleLanguageChange = async (newLanguage: 'en' | 'zh') => {
+    i18n.changeLanguage(newLanguage);
+    await savePreferences({ language: newLanguage });
+  };
 
   const themes = [
     { id: 'light' as const, label: 'Light', icon: Sun },
@@ -41,8 +119,9 @@ export const PreferencesSection = () => {
               return (
                 <button
                   key={themeOption.id}
-                  onClick={() => setTheme(themeOption.id)}
-                  className={`p-4 rounded-lg border-2 transition-all ${
+                  onClick={() => handleThemeChange(themeOption.id)}
+                  disabled={isLoading}
+                  className={`p-4 rounded-lg border-2 transition-all disabled:opacity-50 ${
                     isActive
                       ? 'border-emerald-500 bg-emerald-500/10'
                       : 'border-white/10 bg-white/5 hover:border-white/20'
@@ -78,13 +157,14 @@ export const PreferencesSection = () => {
 
           <div className="grid grid-cols-2 gap-4">
             {languages.map((lang) => {
-              const isActive = language === lang.id;
+              const isActive = i18n.language === lang.id;
               
               return (
                 <button
                   key={lang.id}
-                  onClick={() => setLanguage(lang.id)}
-                  className={`p-4 rounded-lg border-2 transition-all ${
+                  onClick={() => handleLanguageChange(lang.id)}
+                  disabled={isLoading}
+                  className={`p-4 rounded-lg border-2 transition-all disabled:opacity-50 ${
                     isActive
                       ? 'border-emerald-500 bg-emerald-500/10'
                       : 'border-white/10 bg-white/5 hover:border-white/20'

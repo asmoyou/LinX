@@ -402,7 +402,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md overflow-auto ml-64">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md overflow-auto" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
       <div className="w-full max-w-5xl my-auto h-[85vh] flex flex-col bg-gradient-to-br from-white to-zinc-50 dark:from-zinc-900 dark:to-zinc-950 rounded-2xl shadow-2xl overflow-hidden">
         {/* Header with gradient */}
         <div className="relative bg-gradient-to-r from-emerald-500 to-cyan-500 px-6 py-4">

@@ -17,4 +17,9 @@ i18n
     },
   });
 
+// Listen for language changes and persist to localStorage
+i18n.on('languageChanged', (lng) => {
+  localStorage.setItem('language', lng);
+});
+
 export default i18n;

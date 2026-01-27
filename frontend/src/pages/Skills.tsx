@@ -1,15 +1,22 @@
 import { useState, useEffect } from 'react';
 import { Plus, Search, RefreshCw, Package } from 'lucide-react';
-import SkillCard from '@/components/skills/SkillCard';
-import AddSkillModal from '@/components/skills/AddSkillModal';
+import SkillCardV2 from '@/components/skills/SkillCardV2';
+import AddSkillModalV2 from '@/components/skills/AddSkillModalV2';
+import EditSkillModal from '@/components/skills/EditSkillModal';
+import CodePreviewModal from '@/components/skills/CodePreviewModal';
 import { skillsApi, type Skill, type CreateSkillRequest } from '@/api/skills';
+import { useTranslation } from 'react-i18next';
 
 export default function Skills() {
+  const { t } = useTranslation();
   const [skills, setSkills] = useState<Skill[]>([]);
   const [filteredSkills, setFilteredSkills] = useState<Skill[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [isCodePreviewOpen, setIsCodePreviewOpen] = useState(false);
+  const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
   const [isRegisteringDefaults, setIsRegisteringDefaults] = useState(false);
 
   useEffect(() => {
@@ -55,12 +62,27 @@ export default function Skills() {
   };
 
   const handleEditSkill = (skill: Skill) => {
-    // TODO: Implement edit modal
-    console.log('Edit skill:', skill);
+    setSelectedSkill(skill);
+    setIsEditModalOpen(true);
+  };
+
+  const handleUpdateSkill = async (skillId: string, data: any) => {
+    try {
+      await skillsApi.update(skillId, data);
+      await loadSkills();
+    } catch (error) {
+      console.error('Failed to update skill:', error);
+      throw error;
+    }
+  };
+
+  const handleViewCode = (skill: Skill) => {
+    setSelectedSkill(skill);
+    setIsCodePreviewOpen(true);
   };
 
   const handleDeleteSkill = async (skillId: string) => {
-    if (!confirm('Are you sure you want to delete this skill?')) {
+    if (!confirm(t('skills.deleteConfirm'))) {
       return;
     }
 
@@ -91,9 +113,9 @@ export default function Skills() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-foreground mb-2">Skills Library</h1>
+          <h1 className="text-3xl font-bold text-foreground mb-2">{t('skills.title')}</h1>
           <p className="text-muted-foreground">
-            Manage reusable capabilities that can be assigned to agents
+            {t('skills.subtitle')}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -103,14 +125,14 @@ export default function Skills() {
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-muted/50 hover:bg-muted text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Package className="w-4 h-4" />
-            {isRegisteringDefaults ? 'Registering...' : 'Register Defaults'}
+            {isRegisteringDefaults ? t('skills.registering') : t('skills.registerDefaults')}
           </button>
           <button
             onClick={() => setIsAddModalOpen(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground transition-colors"
           >
             <Plus className="w-4 h-4" />
-            Add Skill
+            {t('skills.addSkill')}
           </button>
         </div>
       </div>
@@ -124,7 +146,7 @@ export default function Skills() {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search skills by name or description..."
+              placeholder={t('skills.searchPlaceholder')}
               className="w-full pl-10 pr-4 py-2 rounded-lg bg-muted/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
             />
           </div>
@@ -132,7 +154,7 @@ export default function Skills() {
             onClick={loadSkills}
             disabled={isLoading}
             className="p-2 rounded-lg bg-muted/50 hover:bg-muted text-foreground transition-colors disabled:opacity-50"
-            title="Refresh"
+            title={t('skills.refresh')}
           >
             <RefreshCw className={`w-5 h-5 ${isLoading ? 'animate-spin' : ''}`} />
           </button>
@@ -142,15 +164,15 @@ export default function Skills() {
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="glass-panel p-4">
-          <div className="text-sm text-muted-foreground mb-1">Total Skills</div>
+          <div className="text-sm text-muted-foreground mb-1">{t('skills.totalSkills')}</div>
           <div className="text-2xl font-bold text-foreground">{skills.length}</div>
         </div>
         <div className="glass-panel p-4">
-          <div className="text-sm text-muted-foreground mb-1">Filtered Results</div>
+          <div className="text-sm text-muted-foreground mb-1">{t('skills.filteredResults')}</div>
           <div className="text-2xl font-bold text-foreground">{filteredSkills.length}</div>
         </div>
         <div className="glass-panel p-4">
-          <div className="text-sm text-muted-foreground mb-1">With Dependencies</div>
+          <div className="text-sm text-muted-foreground mb-1">{t('skills.withDependencies')}</div>
           <div className="text-2xl font-bold text-foreground">
             {skills.filter((s) => s.dependencies && s.dependencies.length > 0).length}
           </div>
@@ -162,19 +184,19 @@ export default function Skills() {
         <div className="flex items-center justify-center py-12">
           <div className="text-center">
             <RefreshCw className="w-8 h-8 text-primary animate-spin mx-auto mb-2" />
-            <p className="text-muted-foreground">Loading skills...</p>
+            <p className="text-muted-foreground">{t('skills.loading')}</p>
           </div>
         </div>
       ) : filteredSkills.length === 0 ? (
         <div className="glass-panel p-12 text-center">
           <Package className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-foreground mb-2">
-            {searchQuery ? 'No skills found' : 'No skills yet'}
+            {searchQuery ? t('skills.noSkillsFound') : t('skills.noSkillsYet')}
           </h3>
           <p className="text-muted-foreground mb-4">
             {searchQuery
-              ? 'Try adjusting your search query'
-              : 'Get started by adding your first skill or registering default skills'}
+              ? t('skills.tryAdjusting')
+              : t('skills.getStarted')}
           </p>
           {!searchQuery && (
             <div className="flex items-center justify-center gap-3">
@@ -184,14 +206,14 @@ export default function Skills() {
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-muted/50 hover:bg-muted text-foreground transition-colors"
               >
                 <Package className="w-4 h-4" />
-                Register Defaults
+                {t('skills.registerDefaults')}
               </button>
               <button
                 onClick={() => setIsAddModalOpen(true)}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground transition-colors"
               >
                 <Plus className="w-4 h-4" />
-                Add Skill
+                {t('skills.addSkill')}
               </button>
             </div>
           )}
@@ -199,22 +221,48 @@ export default function Skills() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredSkills.map((skill) => (
-            <SkillCard
+            <SkillCardV2
               key={skill.skill_id}
               skill={skill}
               onEdit={handleEditSkill}
               onDelete={handleDeleteSkill}
+              onViewCode={handleViewCode}
             />
           ))}
         </div>
       )}
 
       {/* Add Skill Modal */}
-      <AddSkillModal
+      <AddSkillModalV2
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
         onSubmit={handleCreateSkill}
       />
+
+      {/* Edit Skill Modal */}
+      {selectedSkill && (
+        <EditSkillModal
+          isOpen={isEditModalOpen}
+          onClose={() => {
+            setIsEditModalOpen(false);
+            setSelectedSkill(null);
+          }}
+          onSubmit={handleUpdateSkill}
+          skill={selectedSkill}
+        />
+      )}
+
+      {/* Code Preview Modal */}
+      {selectedSkill && (
+        <CodePreviewModal
+          isOpen={isCodePreviewOpen}
+          onClose={() => {
+            setIsCodePreviewOpen(false);
+            setSelectedSkill(null);
+          }}
+          skill={selectedSkill}
+        />
+      )}
     </div>
   );
 }

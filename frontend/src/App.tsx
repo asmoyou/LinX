@@ -6,6 +6,8 @@ import { ProtectedRoute } from './components/ProtectedRoute';
 import { LoadingSpinner } from './components/LoadingSpinner';
 import { Toast } from './components/Toast';
 import { useAuthStore } from './stores';
+import ErrorBoundary from './components/error/ErrorBoundary';
+import PageErrorBoundary from './components/error/PageErrorBoundary';
 
 // Lazy load pages for better performance (6.9.6)
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
@@ -72,121 +74,137 @@ const AnimatedRoutes = () => {
           <Route
             path="dashboard"
             element={
-              <Suspense fallback={<PageLoader />}>
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
-                  <Dashboard />
-                </motion.div>
-              </Suspense>
+              <PageErrorBoundary pageName="仪表盘">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <Dashboard />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
             }
           />
           <Route
             path="workforce"
             element={
-              <Suspense fallback={<PageLoader />}>
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
-                  <Workforce />
-                </motion.div>
-              </Suspense>
+              <PageErrorBoundary pageName="智能体">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <Workforce />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
             }
           />
           <Route
             path="tasks"
             element={
-              <Suspense fallback={<PageLoader />}>
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
-                  <Tasks />
-                </motion.div>
-              </Suspense>
+              <PageErrorBoundary pageName="任务">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <Tasks />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
             }
           />
           <Route
             path="knowledge"
             element={
-              <Suspense fallback={<PageLoader />}>
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
-                  <Knowledge />
-                </motion.div>
-              </Suspense>
+              <PageErrorBoundary pageName="知识库">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <Knowledge />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
             }
           />
           <Route
             path="memory"
             element={
-              <Suspense fallback={<PageLoader />}>
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
-                  <Memory />
-                </motion.div>
-              </Suspense>
+              <PageErrorBoundary pageName="记忆">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <Memory />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
             }
           />
           <Route
             path="skills"
             element={
-              <Suspense fallback={<PageLoader />}>
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
-                  <Skills />
-                </motion.div>
-              </Suspense>
+              <PageErrorBoundary pageName="技能库">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <Skills />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
             }
           />
           <Route
             path="settings"
             element={
-              <Suspense fallback={<PageLoader />}>
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
-                  <Settings />
-                </motion.div>
-              </Suspense>
+              <PageErrorBoundary pageName="设置">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <Settings />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
             }
           />
           <Route
             path="profile"
             element={
-              <Suspense fallback={<PageLoader />}>
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3 }}
-                >
-                  <Profile />
-                </motion.div>
-              </Suspense>
+              <PageErrorBoundary pageName="个人资料">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <Profile />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
             }
           />
         </Route>
@@ -197,10 +215,12 @@ const AnimatedRoutes = () => {
 
 function App() {
   return (
-    <Router>
-      <Toast />
-      <AnimatedRoutes />
-    </Router>
+    <ErrorBoundary>
+      <Router>
+        <Toast />
+        <AnimatedRoutes />
+      </Router>
+    </ErrorBoundary>
   );
 }
 

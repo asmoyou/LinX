@@ -50,7 +50,12 @@ export const Layout: React.FC = () => {
   }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden selection:bg-emerald-500/30">
+    <div 
+      className="flex h-screen overflow-hidden selection:bg-emerald-500/30"
+      style={{
+        '--sidebar-width': sidebarCollapsed ? '5rem' : '16rem'
+      } as React.CSSProperties}
+    >
       {/* Skip to main content link for keyboard navigation (6.9.2) */}
       <a
         href="#main-content"

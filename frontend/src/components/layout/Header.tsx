@@ -2,6 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Sun, Moon, Monitor, Bell, ShieldCheck } from 'lucide-react';
 import { useThemeStore } from '@/stores/themeStore';
+import apiClient from '@/api/client';
 
 export const Header: React.FC = () => {
   const { i18n, t } = useTranslation();
@@ -13,6 +14,42 @@ export const Header: React.FC = () => {
     { id: 'system' as const, icon: Monitor },
     { id: 'dark' as const, icon: Moon }
   ];
+
+  const savePreferences = async (updates: { language?: string; theme?: string }) => {
+    try {
+      // Get current preferences
+      const currentPrefs = {
+        language: i18n.language,
+        theme: theme,
+        sidebar_collapsed: false,
+        dashboard_layout: 'default',
+        notifications_enabled: true,
+        sound_enabled: false,
+        auto_refresh: true,
+        refresh_interval: 30,
+      };
+
+      // Merge with updates
+      const newPrefs = { ...currentPrefs, ...updates };
+
+      // Save to backend (fire and forget, don't block UI)
+      apiClient.put('/users/me/preferences', newPrefs).catch((error) => {
+        console.error('Failed to save preferences:', error);
+      });
+    } catch (error) {
+      console.error('Failed to save preferences:', error);
+    }
+  };
+
+  const handleThemeChange = (newTheme: 'light' | 'dark' | 'system') => {
+    setTheme(newTheme);
+    savePreferences({ theme: newTheme });
+  };
+
+  const handleLanguageChange = (newLanguage: string) => {
+    i18n.changeLanguage(newLanguage);
+    savePreferences({ language: newLanguage });
+  };
 
   return (
     <header
@@ -36,7 +73,7 @@ export const Header: React.FC = () => {
             {themeOptions.map((item) => (
               <button 
                 key={item.id}
-                onClick={() => setTheme(item.id)}
+                onClick={() => handleThemeChange(item.id)}
                 className={`p-1.5 rounded-full transition-all duration-300 ${
                   theme === item.id 
                     ? 'bg-white dark:bg-zinc-700 shadow-sm text-emerald-600 dark:text-emerald-400' 
@@ -52,18 +89,21 @@ export const Header: React.FC = () => {
 
           {/* Language Selector */}
           <div className="flex items-center bg-zinc-500/5 rounded-full p-1 border border-zinc-500/5">
-            {['zh', 'en'].map((lang) => (
+            {[
+              { code: 'zh', label: '中文' },
+              { code: 'en', label: 'EN' }
+            ].map((lang) => (
               <button 
-                key={lang}
-                onClick={() => i18n.changeLanguage(lang)}
+                key={lang.code}
+                onClick={() => handleLanguageChange(lang.code)}
                 className={`px-3 py-1 rounded-full text-[10px] font-bold transition-all duration-300 ${
-                  i18n.language === lang 
+                  i18n.language === lang.code 
                     ? 'bg-white dark:bg-zinc-700 shadow-sm text-emerald-600 dark:text-emerald-400' 
                     : 'text-zinc-400'
                 }`}
-                aria-label={`Switch to ${lang === 'zh' ? 'Chinese' : 'English'}`}
+                aria-label={`Switch to ${lang.code === 'zh' ? 'Chinese' : 'English'}`}
               >
-                {lang.toUpperCase()}
+                {lang.label}
               </button>
             ))}
           </div>

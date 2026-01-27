@@ -2,13 +2,16 @@
 
 Provides pre-built templates for common skill patterns.
 
+Simplified two-tier system:
+- LangChain Tool: Simple standardized functions
+- Agent Skill: Flexible skills
+
 References:
-- docs/backend/dynamic-skill-system.md
-- docs/backend/flexible-skill-architecture.md
+- docs/backend/skill-type-classification.md
 """
 
 from typing import Dict, List
-from skill_library.skill_types import SkillType, SkillCategory
+from skill_library.skill_types import SkillType
 
 
 def get_skill_templates() -> List[Dict]:
@@ -23,9 +26,9 @@ def get_skill_templates() -> List[Dict]:
             "id": "langchain_web_search",
             "name": "Web Search (LangChain Tool)",
             "description": "Simple web search using Tavily API - standard LangChain tool",
-            "category": SkillCategory.LANGCHAIN_TOOL,
+            "category": "langchain_tool",
             "difficulty": "beginner",
-            "skill_type": SkillType.LANGCHAIN_TOOL,
+            "skill_type": SkillType.LANGCHAIN_TOOL.value,
             "code": '''from langchain_core.tools import tool
 from tavily import TavilyClient
 import os
@@ -62,9 +65,9 @@ def web_search(query: str, max_results: int = 10) -> str:
             "id": "langchain_calculator",
             "name": "Calculator (LangChain Tool)",
             "description": "Simple calculator - standard LangChain tool",
-            "category": SkillCategory.LANGCHAIN_TOOL,
+            "category": "langchain_tool",
             "difficulty": "beginner",
-            "skill_type": SkillType.LANGCHAIN_TOOL,
+            "skill_type": SkillType.LANGCHAIN_TOOL.value,
             "code": '''from langchain_core.tools import tool
 
 @tool
@@ -88,14 +91,14 @@ def calculator(expression: str) -> str:
             "required_env": [],
         },
         
-        # === Agent Skills (Claude Code Style) ===
+        # === Agent Skills (Flexible) ===
         {
             "id": "agent_api_call",
             "name": "HTTP API Call (Agent Skill)",
             "description": "Flexible HTTP API client - Claude Code style agent skill",
-            "category": SkillCategory.AGENT_SKILL,
+            "category": "agent_skill",
             "difficulty": "beginner",
-            "skill_type": SkillType.AGENT_SKILL_SIMPLE,
+            "skill_type": SkillType.AGENT_SKILL.value,
             "code": '''from langchain_core.tools import tool
 import requests
 from typing import Dict, Any, Optional
@@ -142,9 +145,9 @@ def api_call(
             "id": "agent_data_analysis",
             "name": "Data Analysis (Agent Skill)",
             "description": "Advanced data analysis with pandas - Claude Code style",
-            "category": SkillCategory.AGENT_SKILL,
+            "category": "agent_skill",
             "difficulty": "intermediate",
-            "skill_type": SkillType.AGENT_SKILL_SIMPLE,
+            "skill_type": SkillType.AGENT_SKILL.value,
             "code": '''from langchain_core.tools import tool
 import pandas as pd
 import json
@@ -189,9 +192,9 @@ def analyze_data(data: str, operation: str, column: str = None) -> str:
             "id": "agent_file_operations",
             "name": "File Operations (Agent Skill)",
             "description": "Read and write files - Claude Code style",
-            "category": SkillCategory.AGENT_SKILL,
+            "category": "agent_skill",
             "difficulty": "beginner",
-            "skill_type": SkillType.AGENT_SKILL_SIMPLE,
+            "skill_type": SkillType.AGENT_SKILL.value,
             "code": '''from langchain_core.tools import tool
 import os
 from pathlib import Path
@@ -270,19 +273,6 @@ def get_template_by_id(template_id: str) -> Dict:
         if template["id"] == template_id:
             return template
     return None
-
-
-def get_templates_by_category(category: SkillCategory) -> List[Dict]:
-    """Get templates filtered by category.
-
-    Args:
-        category: Category (AGENT_SKILL or LANGCHAIN_TOOL)
-
-    Returns:
-        List of matching templates
-    """
-    templates = get_skill_templates()
-    return [t for t in templates if t["category"] == category]
 
 
 def get_templates_by_skill_type(skill_type: SkillType) -> List[Dict]:

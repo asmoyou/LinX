@@ -26,9 +26,12 @@ class SkillInfo:
     version: str
     interface_definition: dict
     dependencies: List[str]
-    skill_type: str = "python_function"
+    skill_type: str = "langchain_tool"
+    storage_type: str = "inline"
     code: Optional[str] = None
     config: Optional[dict] = None
+    storage_path: Optional[str] = None
+    manifest: Optional[dict] = None
     is_active: bool = True
     is_system: bool = False
     execution_count: int = 0
@@ -36,6 +39,7 @@ class SkillInfo:
     average_execution_time: Optional[float] = None
     created_at: Optional[object] = None  # datetime
     updated_at: Optional[object] = None  # datetime
+    created_by: Optional[str] = None
 
 
 class SkillRegistry:
@@ -63,9 +67,15 @@ class SkillRegistry:
         interface_definition: dict,
         dependencies: Optional[List[str]] = None,
         version: str = "1.0.0",
-        skill_type: str = "python_function",
+        skill_type: str = "langchain_tool",
+        storage_type: str = "inline",
         code: Optional[str] = None,
         config: Optional[dict] = None,
+        storage_path: Optional[str] = None,
+        manifest: Optional[dict] = None,
+        is_active: bool = True,
+        is_system: bool = False,
+        created_by: Optional[str] = None,
         validate: bool = True,
     ) -> SkillInfo:
         """Register a new skill.
@@ -76,9 +86,15 @@ class SkillRegistry:
             interface_definition: Interface definition
             dependencies: List of dependencies
             version: Skill version
-            skill_type: Type of skill (python_function, api_wrapper, etc.)
-            code: Python code for function skills
+            skill_type: Type of skill (langchain_tool, agent_skill)
+            storage_type: Storage type (inline, minio)
+            code: Python code for inline skills
             config: Configuration for API/DB skills
+            storage_path: MinIO path for package skills
+            manifest: Parsed manifest for package skills
+            is_active: Whether skill is active
+            is_system: Whether skill is system skill
+            created_by: User ID who created the skill
             validate: Whether to validate before registration
 
         Returns:
@@ -110,9 +126,18 @@ class SkillRegistry:
             interface_definition=interface_definition,
             dependencies=dependencies,
             version=version,
+            skill_type=skill_type,
+            storage_type=storage_type,
+            code=code,
+            config=config,
+            storage_path=storage_path,
+            manifest=manifest,
+            is_active=is_active,
+            is_system=is_system,
+            created_by=created_by,
         )
 
-        logger.info(f"Skill registered: {name} v{version}")
+        logger.info(f"Skill registered: {name} v{version} (type: {skill_type}, storage: {storage_type})")
 
         return SkillInfo(
             skill_id=skill.skill_id,
@@ -121,16 +146,16 @@ class SkillRegistry:
             version=skill.version,
             interface_definition=skill.interface_definition,
             dependencies=skill.dependencies or [],
-            skill_type=getattr(skill, 'skill_type', 'python_function'),
-            code=getattr(skill, 'code', None),
-            config=getattr(skill, 'config', None),
-            is_active=getattr(skill, 'is_active', True),
-            is_system=getattr(skill, 'is_system', False),
-            execution_count=getattr(skill, 'execution_count', 0),
-            last_executed_at=getattr(skill, 'last_executed_at', None),
-            average_execution_time=getattr(skill, 'average_execution_time', None),
-            created_at=getattr(skill, 'created_at', None),
-            updated_at=getattr(skill, 'updated_at', None),
+            skill_type=skill.skill_type,
+            code=skill.code,
+            config=skill.config,
+            is_active=skill.is_active,
+            is_system=skill.is_system,
+            execution_count=skill.execution_count,
+            last_executed_at=skill.last_executed_at,
+            average_execution_time=skill.average_execution_time,
+            created_at=skill.created_at,
+            updated_at=skill.updated_at,
         )
 
     def get_skill(self, skill_id: UUID) -> Optional[SkillInfo]:
@@ -154,16 +179,20 @@ class SkillRegistry:
             version=skill.version,
             interface_definition=skill.interface_definition,
             dependencies=skill.dependencies or [],
-            skill_type=getattr(skill, 'skill_type', 'python_function'),
-            code=getattr(skill, 'code', None),
-            config=getattr(skill, 'config', None),
-            is_active=getattr(skill, 'is_active', True),
-            is_system=getattr(skill, 'is_system', False),
-            execution_count=getattr(skill, 'execution_count', 0),
-            last_executed_at=getattr(skill, 'last_executed_at', None),
-            average_execution_time=getattr(skill, 'average_execution_time', None),
-            created_at=getattr(skill, 'created_at', None),
-            updated_at=getattr(skill, 'updated_at', None),
+            skill_type=skill.skill_type,
+            storage_type=skill.storage_type,
+            code=skill.code,
+            config=skill.config,
+            storage_path=skill.storage_path,
+            manifest=skill.manifest,
+            is_active=skill.is_active,
+            is_system=skill.is_system,
+            execution_count=skill.execution_count,
+            last_executed_at=skill.last_executed_at,
+            average_execution_time=skill.average_execution_time,
+            created_at=skill.created_at,
+            updated_at=skill.updated_at,
+            created_by=str(skill.created_by) if skill.created_by else None,
         )
 
     def get_skill_by_name(
@@ -192,16 +221,20 @@ class SkillRegistry:
             version=skill.version,
             interface_definition=skill.interface_definition,
             dependencies=skill.dependencies or [],
-            skill_type=getattr(skill, 'skill_type', 'python_function'),
-            code=getattr(skill, 'code', None),
-            config=getattr(skill, 'config', None),
-            is_active=getattr(skill, 'is_active', True),
-            is_system=getattr(skill, 'is_system', False),
-            execution_count=getattr(skill, 'execution_count', 0),
-            last_executed_at=getattr(skill, 'last_executed_at', None),
-            average_execution_time=getattr(skill, 'average_execution_time', None),
-            created_at=getattr(skill, 'created_at', None),
-            updated_at=getattr(skill, 'updated_at', None),
+            skill_type=skill.skill_type,
+            storage_type=skill.storage_type,
+            code=skill.code,
+            config=skill.config,
+            storage_path=skill.storage_path,
+            manifest=skill.manifest,
+            is_active=skill.is_active,
+            is_system=skill.is_system,
+            execution_count=skill.execution_count,
+            last_executed_at=skill.last_executed_at,
+            average_execution_time=skill.average_execution_time,
+            created_at=skill.created_at,
+            updated_at=skill.updated_at,
+            created_by=str(skill.created_by) if skill.created_by else None,
         )
 
     def list_skills(self, limit: int = 100, offset: int = 0) -> List[SkillInfo]:
@@ -224,16 +257,20 @@ class SkillRegistry:
                 version=skill.version,
                 interface_definition=skill.interface_definition,
                 dependencies=skill.dependencies or [],
-                skill_type=getattr(skill, 'skill_type', 'python_function'),
-                code=getattr(skill, 'code', None),
-                config=getattr(skill, 'config', None),
-                is_active=getattr(skill, 'is_active', True),
-                is_system=getattr(skill, 'is_system', False),
-                execution_count=getattr(skill, 'execution_count', 0),
-                last_executed_at=getattr(skill, 'last_executed_at', None),
-                average_execution_time=getattr(skill, 'average_execution_time', None),
-                created_at=getattr(skill, 'created_at', None),
-                updated_at=getattr(skill, 'updated_at', None),
+                skill_type=skill.skill_type,
+                storage_type=skill.storage_type,
+                code=skill.code,
+                config=skill.config,
+                storage_path=skill.storage_path,
+                manifest=skill.manifest,
+                is_active=skill.is_active,
+                is_system=skill.is_system,
+                execution_count=skill.execution_count,
+                last_executed_at=skill.last_executed_at,
+                average_execution_time=skill.average_execution_time,
+                created_at=skill.created_at,
+                updated_at=skill.updated_at,
+                created_by=str(skill.created_by) if skill.created_by else None,
             )
             for skill in skills
         ]
@@ -257,16 +294,20 @@ class SkillRegistry:
                 version=skill.version,
                 interface_definition=skill.interface_definition,
                 dependencies=skill.dependencies or [],
-                skill_type=getattr(skill, 'skill_type', 'python_function'),
-                code=getattr(skill, 'code', None),
-                config=getattr(skill, 'config', None),
-                is_active=getattr(skill, 'is_active', True),
-                is_system=getattr(skill, 'is_system', False),
-                execution_count=getattr(skill, 'execution_count', 0),
-                last_executed_at=getattr(skill, 'last_executed_at', None),
-                average_execution_time=getattr(skill, 'average_execution_time', None),
-                created_at=getattr(skill, 'created_at', None),
-                updated_at=getattr(skill, 'updated_at', None),
+                skill_type=skill.skill_type,
+                storage_type=skill.storage_type,
+                code=skill.code,
+                config=skill.config,
+                storage_path=skill.storage_path,
+                manifest=skill.manifest,
+                is_active=skill.is_active,
+                is_system=skill.is_system,
+                execution_count=skill.execution_count,
+                last_executed_at=skill.last_executed_at,
+                average_execution_time=skill.average_execution_time,
+                created_at=skill.created_at,
+                updated_at=skill.updated_at,
+                created_by=str(skill.created_by) if skill.created_by else None,
             )
             for skill in skills
         ]
@@ -312,16 +353,20 @@ class SkillRegistry:
             version=skill.version,
             interface_definition=skill.interface_definition,
             dependencies=skill.dependencies or [],
-            skill_type=getattr(skill, 'skill_type', 'python_function'),
-            code=getattr(skill, 'code', None),
-            config=getattr(skill, 'config', None),
-            is_active=getattr(skill, 'is_active', True),
-            is_system=getattr(skill, 'is_system', False),
-            execution_count=getattr(skill, 'execution_count', 0),
-            last_executed_at=getattr(skill, 'last_executed_at', None),
-            average_execution_time=getattr(skill, 'average_execution_time', None),
-            created_at=getattr(skill, 'created_at', None),
-            updated_at=getattr(skill, 'updated_at', None),
+            skill_type=skill.skill_type,
+            storage_type=skill.storage_type,
+            code=skill.code,
+            config=skill.config,
+            storage_path=skill.storage_path,
+            manifest=skill.manifest,
+            is_active=skill.is_active,
+            is_system=skill.is_system,
+            execution_count=skill.execution_count,
+            last_executed_at=skill.last_executed_at,
+            average_execution_time=skill.average_execution_time,
+            created_at=skill.created_at,
+            updated_at=skill.updated_at,
+            created_by=str(skill.created_by) if skill.created_by else None,
         )
 
     def delete_skill(self, skill_id: UUID) -> bool:

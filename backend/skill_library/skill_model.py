@@ -25,6 +25,15 @@ class SkillModel:
         interface_definition: dict,
         dependencies: Optional[List[str]] = None,
         version: str = "1.0.0",
+        skill_type: str = "langchain_tool",
+        storage_type: str = "inline",
+        code: Optional[str] = None,
+        config: Optional[dict] = None,
+        storage_path: Optional[str] = None,
+        manifest: Optional[dict] = None,
+        is_active: bool = True,
+        is_system: bool = False,
+        created_by: Optional[str] = None,
     ) -> Skill:
         """Create a new skill in the database.
 
@@ -34,17 +43,45 @@ class SkillModel:
             interface_definition: Interface definition (inputs, outputs)
             dependencies: List of required dependencies
             version: Skill version
+            skill_type: Type of skill (langchain_tool, agent_skill)
+            storage_type: Storage type (inline, minio)
+            code: Python code for inline skills
+            config: Configuration for API/DB skills
+            storage_path: MinIO path for package skills
+            manifest: Parsed manifest for package skills
+            is_active: Whether skill is active
+            is_system: Whether skill is system skill
+            created_by: User ID who created the skill (string UUID)
 
         Returns:
             Created Skill object
         """
+        from uuid import UUID as UUIDType
+        
         with get_db_session() as session:
+            # Convert created_by to UUID if it's a string
+            created_by_uuid = None
+            if created_by:
+                try:
+                    created_by_uuid = UUIDType(created_by) if isinstance(created_by, str) else created_by
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid created_by UUID: {created_by}")
+            
             skill = Skill(
                 name=name,
                 description=description,
                 interface_definition=interface_definition,
                 dependencies=dependencies or [],
                 version=version,
+                skill_type=skill_type,
+                storage_type=storage_type,
+                code=code,
+                config=config,
+                storage_path=storage_path,
+                manifest=manifest,
+                is_active=is_active,
+                is_system=is_system,
+                created_by=created_by_uuid,
             )
             session.add(skill)
             session.commit()
@@ -54,8 +91,11 @@ class SkillModel:
                 "Skill created",
                 extra={
                     "skill_id": str(skill.skill_id),
-                    "name": name,
-                    "version": version,
+                    "skill_name": name,
+                    "skill_version": version,
+                    "skill_type": skill_type,
+                    "storage_type": storage_type,
+                    "has_code": bool(code),
                 },
             )
 

@@ -153,7 +153,7 @@ export const PrivacySection = () => {
 
       {/* Delete Confirmation Modal */}
       {showDeleteModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
           <div className="bg-gray-900 border border-red-500/30 rounded-lg p-6 max-w-md w-full mx-4">
             <div className="flex items-center gap-3 mb-4">
               <AlertTriangle className="w-6 h-6 text-red-400" />

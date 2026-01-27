@@ -267,7 +267,7 @@ class AgentTemplateManager:
         if template.is_system_template == "true":
             logger.warning(
                 "Attempted to delete system template",
-                extra={"template_id": str(template_id), "name": template.name},
+                extra={"template_id": str(template_id), "template_name": template.name},
             )
             raise ValueError("Cannot delete system templates")
 
@@ -276,7 +276,7 @@ class AgentTemplateManager:
 
         logger.info(
             "Deleted agent template",
-            extra={"template_id": str(template_id), "name": template.name},
+            extra={"template_id": str(template_id), "template_name": template.name},
         )
 
         return True

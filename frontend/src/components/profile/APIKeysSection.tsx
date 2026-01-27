@@ -194,7 +194,7 @@ export const APIKeysSection = () => {
 
         {/* Create Key Modal */}
         {showNewKeyModal && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
             <div className="bg-gray-900 border border-white/10 rounded-lg p-6 max-w-md w-full mx-4">
               <h3 className="text-xl font-semibold text-white mb-4">Create API Key</h3>
               <div className="space-y-4">

@@ -54,7 +54,7 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
       <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl p-6 animate-in zoom-in-95 duration-200">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-zinc-800 dark:text-white">
