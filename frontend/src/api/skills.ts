@@ -177,12 +177,4 @@ export const skillsApi = {
     });
     return response.data;
   },
-
-  /**
-   * Register default skills
-   */
-  async registerDefaults(): Promise<{ registered_count: number }> {
-    const response = await apiClient.post('/skills/register-defaults');
-    return response.data;
-  },
 };
