@@ -24,7 +24,9 @@
     "delete": "Delete",
     "edit": "Edit",
     "search": "Search",
-    "filter": "Filter"
+    "filter": "Filter",
+    "hide": "Hide details",
+    "show": "Show details"
   },
   "login": {
     "title": "Welcome Back",
@@ -422,8 +424,20 @@
     }
   },
   "settings": {
-    "title": "LLM Settings",
-    "subtitle": "Manage your AI model providers and configurations",
+    "title": "Settings",
+    "subtitle": "Manage your platform configuration and preferences",
+    "comingSoon": "Coming soon...",
+    "tabs": {
+      "llm": "LLM Providers",
+      "profile": "Profile",
+      "security": "Security",
+      "notifications": "Notifications",
+      "appearance": "Appearance"
+    },
+    "llm": {
+      "title": "LLM Providers",
+      "subtitle": "Manage your AI model providers and configurations"
+    },
     "loading": "Loading settings...",
     "refresh": "Refresh",
     "retry": "Retry",
@@ -448,6 +462,36 @@
     "deleteProvider": "Delete Provider",
     "deleteConfirm": "Are you sure you want to delete provider \"{{name}}\"?",
     "deleteSuccess": "Provider deleted successfully",
+    "systemBuiltin": "System",
+    "cannotEditConfigProvider": "Cannot edit config.yaml provider. Please edit config.yaml file directly.",
+    "cannotDeleteConfigProvider": "Cannot delete config.yaml provider",
+    "refreshMetadata": "Refresh Metadata",
+    "refreshing": "Refreshing...",
+    "refreshMetadataTooltip": "Refresh model metadata from provider API",
+    "metadataRefreshed": "Model metadata refreshed successfully",
+    "metadataUpdated": "Model metadata updated successfully",
+    "modelDetails": {
+      "contextWindow": "Context Window",
+      "maxOutput": "Max Output",
+      "temperature": "Temperature",
+      "range": "range",
+      "version": "Version",
+      "tokens": "tokens",
+      "type": "Type",
+      "maxInput": "Max Input",
+      "modelInfo": "Model Information",
+      "textEmbedding": "Text Embedding",
+      "reranking": "Reranking",
+      "features": "Features",
+      "vision": "Vision",
+      "reasoning": "Reasoning",
+      "functions": "Functions",
+      "streaming": "Streaming",
+      "systemPrompt": "System Prompt",
+      "pricing": "Pricing (per 1M tokens)",
+      "input": "Input",
+      "output": "Output"
+    },
     "providerName": "Provider Name",
     "providerNamePlaceholder": "e.g., my-ollama",
     "protocol": "Protocol Type",

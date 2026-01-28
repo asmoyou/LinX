@@ -442,7 +442,7 @@ export const LLMSettings: React.FC = () => {
                     <button
                       onClick={() => toggleProviderExpanded(name)}
                       className="p-1 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded transition-colors"
-                      title={expandedProviders[name] ? 'Hide details' : 'Show details'}
+                      title={expandedProviders[name] ? t('common.hide', 'Hide details') : t('common.show', 'Show details')}
                     >
                       {expandedProviders[name] ? (
                         <ChevronUp className="w-4 h-4 text-zinc-600 dark:text-zinc-400" />
@@ -462,14 +462,14 @@ export const LLMSettings: React.FC = () => {
                         {refreshingMetadata === name ? (
                           <>
                             <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                            <span>{t('settings.refreshing', '刷新中...')}</span>
+                            <span>{t('settings.refreshing', 'Refreshing...')}</span>
                           </>
                         ) : (
                           <>
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                             </svg>
-                            <span>{t('settings.refreshMetadata', '刷新元数据')}</span>
+                            <span>{t('settings.refreshMetadata', 'Refresh Metadata')}</span>
                           </>
                         )}
                       </button>
@@ -586,7 +586,7 @@ export const LLMSettings: React.FC = () => {
                               <button
                                 onClick={() => setEditingModel({ provider: name, model, metadata })}
                                 className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-lg transition-colors"
-                                title="Edit model metadata"
+                                title={t('settings.editProvider', 'Edit model metadata')}
                               >
                                 <Edit className="w-4 h-4 text-zinc-600 dark:text-zinc-400" />
                               </button>
@@ -598,34 +598,34 @@ export const LLMSettings: React.FC = () => {
                             <div className="grid grid-cols-2 gap-3 mb-3">
                               {metadata.context_window && (
                                 <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
-                                  <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">Context Window</div>
+                                  <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">{t('settings.modelDetails.contextWindow')}</div>
                                   <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                                     {metadata.context_window.toLocaleString()}
                                   </div>
-                                  <div className="text-xs text-zinc-500 dark:text-zinc-400">tokens</div>
+                                  <div className="text-xs text-zinc-500 dark:text-zinc-400">{t('settings.modelDetails.tokens')}</div>
                                 </div>
                               )}
                               {metadata.max_output_tokens && (
                                 <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
-                                  <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">Max Output</div>
+                                  <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">{t('settings.modelDetails.maxOutput')}</div>
                                   <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                                     {metadata.max_output_tokens.toLocaleString()}
                                   </div>
-                                  <div className="text-xs text-zinc-500 dark:text-zinc-400">tokens</div>
+                                  <div className="text-xs text-zinc-500 dark:text-zinc-400">{t('settings.modelDetails.tokens')}</div>
                                 </div>
                               )}
                               <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
-                                <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">Temperature</div>
+                                <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">{t('settings.modelDetails.temperature')}</div>
                                 <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                                   {metadata.default_temperature}
                                 </div>
                                 <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                                  range: {metadata.temperature_range[0]}-{metadata.temperature_range[1]}
+                                  {t('settings.modelDetails.range')}: {metadata.temperature_range[0]}-{metadata.temperature_range[1]}
                                 </div>
                               </div>
                               {metadata.version && (
                                 <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
-                                  <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">Version</div>
+                                  <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">{t('settings.modelDetails.version')}</div>
                                   <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                                     {metadata.version}
                                   </div>
@@ -641,26 +641,26 @@ export const LLMSettings: React.FC = () => {
                           {isEmbeddingOrRerank && (
                             <div className="mb-3 p-3 bg-zinc-50 dark:bg-zinc-800/50 rounded">
                               <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-2">
-                                Model Information
+                                {t('settings.modelDetails.modelInfo')}
                               </div>
                               <div className="space-y-1 text-sm">
                                 <div className="flex justify-between">
-                                  <span className="text-zinc-600 dark:text-zinc-400">Type:</span>
+                                  <span className="text-zinc-600 dark:text-zinc-400">{t('settings.modelDetails.type')}:</span>
                                   <span className="font-semibold text-zinc-900 dark:text-zinc-100">
-                                    {metadata.model_type === 'embedding' ? 'Text Embedding' : 'Reranking'}
+                                    {metadata.model_type === 'embedding' ? t('settings.modelDetails.textEmbedding') : t('settings.modelDetails.reranking')}
                                   </span>
                                 </div>
                                 {metadata.context_window && (
                                   <div className="flex justify-between">
-                                    <span className="text-zinc-600 dark:text-zinc-400">Max Input:</span>
+                                    <span className="text-zinc-600 dark:text-zinc-400">{t('settings.modelDetails.maxInput')}:</span>
                                     <span className="font-semibold text-zinc-900 dark:text-zinc-100">
-                                      {metadata.context_window.toLocaleString()} tokens
+                                      {metadata.context_window.toLocaleString()} {t('settings.modelDetails.tokens')}
                                     </span>
                                   </div>
                                 )}
                                 {metadata.version && (
                                   <div className="flex justify-between">
-                                    <span className="text-zinc-600 dark:text-zinc-400">Version:</span>
+                                    <span className="text-zinc-600 dark:text-zinc-400">{t('settings.modelDetails.version')}:</span>
                                     <span className="font-semibold text-zinc-900 dark:text-zinc-100">
                                       {metadata.version}
                                     </span>
@@ -674,32 +674,32 @@ export const LLMSettings: React.FC = () => {
                           {!isEmbeddingOrRerank && (
                             <div className="mb-3">
                               <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-2">
-                                Features
+                                {t('settings.modelDetails.features')}
                               </div>
                               <div className="flex flex-wrap gap-2">
                                 {metadata.supports_vision && (
                                   <span className="inline-flex items-center gap-1 px-2 py-1 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded text-xs">
-                                    👁️ Vision
+                                    👁️ {t('settings.modelDetails.vision')}
                                   </span>
                                 )}
                                 {metadata.supports_reasoning && (
                                   <span className="inline-flex items-center gap-1 px-2 py-1 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 rounded text-xs">
-                                    🧠 Reasoning
+                                    🧠 {t('settings.modelDetails.reasoning')}
                                   </span>
                                 )}
                                 {metadata.supports_function_calling && (
                                   <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded text-xs">
-                                    🔧 Functions
+                                    🔧 {t('settings.modelDetails.functions')}
                                   </span>
                                 )}
                                 {metadata.supports_streaming && (
                                   <span className="inline-flex items-center gap-1 px-2 py-1 bg-cyan-100 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 rounded text-xs">
-                                    ⚡ Streaming
+                                    ⚡ {t('settings.modelDetails.streaming')}
                                   </span>
                                 )}
                                 {metadata.supports_system_prompt && (
                                   <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded text-xs">
-                                    📋 System Prompt
+                                    📋 {t('settings.modelDetails.systemPrompt')}
                                   </span>
                                 )}
                               </div>
@@ -710,12 +710,12 @@ export const LLMSettings: React.FC = () => {
                           {(metadata.input_price_per_1m || metadata.output_price_per_1m) && (
                             <div className="pt-3 border-t border-zinc-200 dark:border-zinc-700">
                               <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-2">
-                                Pricing (per 1M tokens)
+                                {t('settings.modelDetails.pricing')}
                               </div>
                               <div className="flex gap-4 text-xs">
                                 {metadata.input_price_per_1m && (
                                   <div>
-                                    <span className="text-zinc-600 dark:text-zinc-400">Input: </span>
+                                    <span className="text-zinc-600 dark:text-zinc-400">{t('settings.modelDetails.input')}: </span>
                                     <span className="font-semibold text-zinc-900 dark:text-zinc-100">
                                       ${metadata.input_price_per_1m.toFixed(2)}
                                     </span>
@@ -723,7 +723,7 @@ export const LLMSettings: React.FC = () => {
                                 )}
                                 {metadata.output_price_per_1m && (
                                   <div>
-                                    <span className="text-zinc-600 dark:text-zinc-400">Output: </span>
+                                    <span className="text-zinc-600 dark:text-zinc-400">{t('settings.modelDetails.output')}: </span>
                                     <span className="font-semibold text-zinc-900 dark:text-zinc-100">
                                       ${metadata.output_price_per_1m.toFixed(2)}
                                     </span>

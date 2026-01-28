@@ -24,7 +24,9 @@
     "delete": "删除",
     "edit": "编辑",
     "search": "搜索",
-    "filter": "筛选"
+    "filter": "筛选",
+    "hide": "隐藏详情",
+    "show": "显示详情"
   },
   "login": {
     "title": "欢迎回来",
@@ -422,8 +424,20 @@
     }
   },
   "settings": {
-    "title": "大模型设置",
-    "subtitle": "管理您的AI模型提供商和配置",
+    "title": "设置",
+    "subtitle": "管理您的平台配置和偏好",
+    "comingSoon": "即将推出...",
+    "tabs": {
+      "llm": "大模型提供商",
+      "profile": "个人资料",
+      "security": "安全",
+      "notifications": "通知",
+      "appearance": "外观"
+    },
+    "llm": {
+      "title": "大模型提供商",
+      "subtitle": "管理您的AI模型提供商和配置"
+    },
     "loading": "加载设置中...",
     "refresh": "刷新",
     "retry": "重试",
@@ -448,6 +462,36 @@
     "deleteProvider": "删除提供商",
     "deleteConfirm": "确定要删除提供商 \"{{name}}\" 吗？",
     "deleteSuccess": "提供商删除成功",
+    "systemBuiltin": "系统内置",
+    "cannotEditConfigProvider": "无法编辑 config.yaml 提供商。请直接编辑 config.yaml 文件。",
+    "cannotDeleteConfigProvider": "无法删除 config.yaml 提供商",
+    "refreshMetadata": "刷新元数据",
+    "refreshing": "刷新中...",
+    "refreshMetadataTooltip": "从提供商API刷新模型元数据",
+    "metadataRefreshed": "模型元数据刷新成功",
+    "metadataUpdated": "模型元数据更新成功",
+    "modelDetails": {
+      "contextWindow": "上下文窗口",
+      "maxOutput": "最大输出",
+      "temperature": "温度",
+      "range": "范围",
+      "version": "版本",
+      "tokens": "令牌",
+      "type": "类型",
+      "maxInput": "最大输入",
+      "modelInfo": "模型信息",
+      "textEmbedding": "文本嵌入",
+      "reranking": "重排序",
+      "features": "特性",
+      "vision": "视觉",
+      "reasoning": "推理",
+      "functions": "函数",
+      "streaming": "流式",
+      "systemPrompt": "系统提示词",
+      "pricing": "定价（每百万令牌）",
+      "input": "输入",
+      "output": "输出"
+    },
     "providerName": "提供商名称",
     "providerNamePlaceholder": "例如：my-ollama",
     "protocol": "协议类型",
