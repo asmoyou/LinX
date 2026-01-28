@@ -5,9 +5,10 @@ export interface UserProfile {
   username: string;
   email: string;
   role: string;
+  displayName?: string;
   attributes?: Record<string, any>;
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface ResourceQuota {
@@ -41,7 +42,7 @@ export const useUserStore = create<UserState>((set) => ({
   isLoading: false,
   error: null,
   
-  setProfile: (profile) => set({ profile }),
+  setProfile: (profile) => set({ profile: profile ? { ...profile } : null }),
   
   setQuotas: (quotas) => set({ quotas }),
   
