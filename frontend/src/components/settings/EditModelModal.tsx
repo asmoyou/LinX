@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save, ChevronDown, ChevronUp, RotateCcw, Eye, Brain, Code, Zap, MessageSquare, Image as ImageIcon } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { ModelMetadata } from '@/api/llm';
 
 interface EditModelModalProps {
@@ -21,6 +22,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
   metadata,
   onSave,
 }) => {
+  const { t } = useTranslation();
   const [formData, setFormData] = useState<ModelMetadata>(metadata);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +46,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
       await onSave(formData);
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save changes');
+      setError(err instanceof Error ? err.message : t('settings.editModel.errorSaving'));
     } finally {
       setIsSaving(false);
     }
@@ -80,7 +82,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
         <div className="px-4 sm:px-6 py-4 border-b border-zinc-200 dark:border-zinc-700 flex items-center justify-between flex-shrink-0">
           <div className="min-w-0 flex-1">
             <h2 className="text-lg sm:text-xl font-bold text-zinc-900 dark:text-zinc-100 truncate">
-              Edit Model
+              {t('settings.editModel.title')}
             </h2>
             <p className="text-xs sm:text-sm text-zinc-600 dark:text-zinc-400 mt-0.5 truncate">
               {metadata.model_id}
@@ -106,7 +108,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
           <div className="space-y-3">
             <div>
               <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
-                Model ID
+                {t('settings.editModel.modelId')}
               </label>
               <input
                 type="text"
@@ -115,31 +117,31 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
                 className="w-full px-3 py-2 bg-zinc-100 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-zinc-500 dark:text-zinc-400 cursor-not-allowed"
               />
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                Model ID cannot be changed
+                {t('settings.editModel.modelIdHint')}
               </p>
             </div>
 
             <div>
               <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
-                Display Name
+                {t('settings.editModel.displayName')}
               </label>
               <input
                 type="text"
                 value={formData.display_name || ''}
                 onChange={(e) => updateField('display_name', e.target.value)}
-                placeholder="e.g., GPT-4 Turbo"
+                placeholder={t('settings.editModel.displayNamePlaceholder')}
                 className="w-full px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
 
             <div>
               <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
-                Description
+                {t('settings.editModel.description')}
               </label>
               <textarea
                 value={formData.description || ''}
                 onChange={(e) => updateField('description', e.target.value)}
-                placeholder="Brief description of the model..."
+                placeholder={t('settings.editModel.descriptionPlaceholder')}
                 rows={2}
                 className="w-full px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
               />
@@ -150,7 +152,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                Model Capabilities
+                {t('settings.editModel.capabilities')}
               </label>
               {hasChanges && (
                 <button
@@ -158,38 +160,38 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
                   className="flex items-center gap-1 px-2 py-1 text-xs text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded transition-colors"
                 >
                   <RotateCcw className="w-3 h-3" />
-                  Reset
+                  {t('settings.editModel.reset')}
                 </button>
               )}
             </div>
             <div className="flex flex-wrap gap-2">
               <CapabilityTag
                 icon={<Eye className="w-3.5 h-3.5" />}
-                label="Vision"
+                label={t('settings.editModel.vision')}
                 active={formData.supports_vision}
                 onClick={() => toggleFeature('supports_vision')}
               />
               <CapabilityTag
                 icon={<Brain className="w-3.5 h-3.5" />}
-                label="Reasoning"
+                label={t('settings.editModel.reasoning')}
                 active={formData.supports_reasoning}
                 onClick={() => toggleFeature('supports_reasoning')}
               />
               <CapabilityTag
                 icon={<Code className="w-3.5 h-3.5" />}
-                label="Function Calling"
+                label={t('settings.editModel.functionCalling')}
                 active={formData.supports_function_calling}
                 onClick={() => toggleFeature('supports_function_calling')}
               />
               <CapabilityTag
                 icon={<Zap className="w-3.5 h-3.5" />}
-                label="Streaming"
+                label={t('settings.editModel.streaming')}
                 active={formData.supports_streaming}
                 onClick={() => toggleFeature('supports_streaming')}
               />
               <CapabilityTag
                 icon={<MessageSquare className="w-3.5 h-3.5" />}
-                label="System Prompt"
+                label={t('settings.editModel.systemPrompt')}
                 active={formData.supports_system_prompt}
                 onClick={() => toggleFeature('supports_system_prompt')}
               />
@@ -202,7 +204,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
             className="w-full flex items-center justify-between px-4 py-2 bg-zinc-50 dark:bg-zinc-800/50 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
           >
             <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              Advanced Settings
+              {t('settings.editModel.advancedSettings')}
             </span>
             {showAdvanced ? (
               <ChevronUp className="w-4 h-4 text-zinc-500" />
@@ -217,36 +219,36 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
-                    Context Window
+                    {t('settings.editModel.contextWindow')}
                   </label>
                   <input
                     type="number"
                     value={formData.context_window || ''}
                     onChange={(e) => updateField('context_window', parseInt(e.target.value) || undefined)}
-                    placeholder="e.g., 128000"
+                    placeholder={t('settings.editModel.contextWindowPlaceholder')}
                     className="w-full px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">tokens</p>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">{t('settings.editModel.tokens')}</p>
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
-                    Max Output Tokens
+                    {t('settings.editModel.maxOutputTokens')}
                   </label>
                   <input
                     type="number"
                     value={formData.max_output_tokens || ''}
                     onChange={(e) => updateField('max_output_tokens', parseInt(e.target.value) || undefined)}
-                    placeholder="e.g., 4096"
+                    placeholder={t('settings.editModel.maxOutputTokensPlaceholder')}
                     className="w-full px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">tokens</p>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">{t('settings.editModel.tokens')}</p>
                 </div>
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
-                  Default Temperature
+                  {t('settings.editModel.defaultTemperature')}
                 </label>
                 <input
                   type="number"
@@ -258,18 +260,18 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
                   className="w-full px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                  Range: {formData.temperature_range[0]} - {formData.temperature_range[1]}
+                  {t('settings.editModel.temperatureRange')}: {formData.temperature_range[0]} - {formData.temperature_range[1]}
                 </p>
               </div>
 
               <div className="border-t border-zinc-200 dark:border-zinc-700 pt-3">
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
-                  Pricing (per 1M tokens)
+                  {t('settings.editModel.pricing')}
                 </label>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs text-zinc-600 dark:text-zinc-400 mb-1">
-                      Input Price
+                      {t('settings.editModel.inputPrice')}
                     </label>
                     <div className="flex items-center gap-2">
                       <span className="text-zinc-600 dark:text-zinc-400">$</span>
@@ -287,7 +289,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
 
                   <div>
                     <label className="block text-xs text-zinc-600 dark:text-zinc-400 mb-1">
-                      Output Price
+                      {t('settings.editModel.outputPrice')}
                     </label>
                     <div className="flex items-center gap-2">
                       <span className="text-zinc-600 dark:text-zinc-400">$</span>
@@ -307,13 +309,13 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
 
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
-                  Version
+                  {t('settings.editModel.version')}
                 </label>
                 <input
                   type="text"
                   value={formData.version || ''}
                   onChange={(e) => updateField('version', e.target.value)}
-                  placeholder="e.g., v1.0"
+                  placeholder={t('settings.editModel.versionPlaceholder')}
                   className="w-full px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
@@ -327,7 +329,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
                   className="w-4 h-4 text-blue-600 bg-white dark:bg-zinc-800 border-zinc-300 dark:border-zinc-700 rounded focus:ring-2 focus:ring-blue-500"
                 />
                 <label htmlFor="deprecated" className="text-sm text-zinc-700 dark:text-zinc-300">
-                  Mark as deprecated
+                  {t('settings.editModel.markDeprecated')}
                 </label>
               </div>
             </div>
@@ -341,7 +343,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
             disabled={isSaving}
             className="px-3 sm:px-4 py-2 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors disabled:opacity-50"
           >
-            Cancel
+            {t('settings.editModel.cancel')}
           </button>
           <button
             onClick={handleSave}
@@ -351,13 +353,13 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
             {isSaving ? (
               <>
                 <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                <span className="hidden sm:inline">Saving...</span>
+                <span className="hidden sm:inline">{t('settings.editModel.saving')}</span>
               </>
             ) : (
               <>
                 <Save className="w-4 h-4" />
-                <span className="hidden sm:inline">Save Changes</span>
-                <span className="sm:hidden">Save</span>
+                <span className="hidden sm:inline">{t('settings.editModel.saveChanges')}</span>
+                <span className="sm:hidden">{t('settings.editModel.save')}</span>
               </>
             )}
           </button>
