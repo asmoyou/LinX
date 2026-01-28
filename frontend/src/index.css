@@ -14,6 +14,17 @@
   --color-primary-700: #0369a1;
   --color-primary-800: #075985;
   --color-primary-900: #0c4a6e;
+  
+  /* Background colors */
+  --color-background: #ffffff;
+  --color-foreground: #09090b;
+  
+  /* Muted colors */
+  --color-muted: #f4f4f5;
+  --color-muted-foreground: #71717a;
+  
+  /* Border colors */
+  --color-border: #e4e4e7;
 }
 
 @layer base {
@@ -26,6 +37,13 @@
     --text-secondary: #86868b;
     --accent: #10b981;
     --panel-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.04);
+    
+    /* Tailwind semantic colors */
+    --background: #ffffff;
+    --foreground: #09090b;
+    --muted: #f4f4f5;
+    --muted-foreground: #71717a;
+    --border: #e4e4e7;
   }
 
   .dark {
@@ -36,6 +54,13 @@
     --text-primary: #f5f5f7;
     --text-secondary: #a1a1a6;
     --panel-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+    
+    /* Tailwind semantic colors for dark mode */
+    --background: #09090b;
+    --foreground: #fafafa;
+    --muted: #27272a;
+    --muted-foreground: #a1a1aa;
+    --border: #27272a;
   }
 
   /* Smooth scroll behavior */
@@ -65,7 +90,20 @@
 }
 
 @layer utilities {
-  /* Glass Panel Effect - 参考 linx-workforce-web */
+  /* Glass Effect - For tabs and buttons */
+  .glass {
+    background: rgba(255, 255, 255, 0.5);
+    backdrop-filter: saturate(180%) blur(10px);
+    -webkit-backdrop-filter: saturate(180%) blur(10px);
+    border: 1px solid var(--border-subtle);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .dark .glass {
+    background: rgba(28, 28, 30, 0.5);
+  }
+
+  /* Glass Panel Effect - For cards and containers */
   .glass-panel {
     background: var(--bg-secondary);
     backdrop-filter: saturate(180%) blur(20px);
@@ -73,6 +111,24 @@
     border: 1px solid var(--border-subtle);
     box-shadow: var(--panel-shadow);
     transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Modal Panel Effect - For modal dialogs */
+  /* 白天模式：纯白不透明，避免与灰色蒙版混合变丑 */
+  /* 夜间模式：高透明度，保持玻璃效果 */
+  .modal-panel {
+    background: rgba(255, 255, 255, 1);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.08);
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .dark .modal-panel {
+    background: rgba(28, 28, 30, 0.95);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
   }
 
   /* Custom Scrollbar - 参考 linx-workforce-web */

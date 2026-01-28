@@ -53,47 +53,50 @@ export default function EditSkillModal({ isOpen, onClose, onSubmit, skill }: Edi
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <div className="glass-panel w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
+      <div className="modal-panel w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-[24px] shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-border/50">
+        <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-indigo-500/5 to-transparent">
           <div>
-            <h2 className="text-xl font-semibold text-foreground">{t('skills.editSkill')}</h2>
-            <p className="text-sm text-muted-foreground mt-1">{t('skills.editSkillDesc')}</p>
+            <h2 className="text-2xl font-bold text-gray-800 dark:text-white">{t('skills.editSkill')}</h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{t('skills.editSkillDesc')}</p>
           </div>
-          <button onClick={handleClose} className="p-2 rounded-xl hover:bg-muted/50 transition-colors">
-            <X className="w-5 h-5 text-muted-foreground" />
+          <button 
+            onClick={handleClose} 
+            className="p-2 rounded-xl hover:bg-white/30 dark:hover:bg-black/30 transition-all duration-300 hover:rotate-90"
+          >
+            <X className="w-5 h-5 text-gray-600 dark:text-gray-400" />
           </button>
         </div>
 
         {/* Content */}
         <form onSubmit={handleSubmit} className="p-6 space-y-6">
-          <div className="space-y-4">
+          <div className="space-y-5">
             {/* Basic Info */}
             <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
+              <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
                 {t('skills.skillName')} *
               </label>
               <input
                 type="text"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full px-4 py-2.5 rounded-xl bg-muted/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                className="w-full px-4 py-3 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all"
                 placeholder="e.g., my_custom_skill"
                 required
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
+              <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
                 {t('skills.description')} *
               </label>
               <textarea
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                className="w-full px-4 py-2.5 rounded-xl bg-muted/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
+                className="w-full px-4 py-3 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all resize-none"
                 placeholder={t('skills.description')}
-                rows={2}
+                rows={3}
                 required
               />
             </div>
@@ -101,20 +104,22 @@ export default function EditSkillModal({ isOpen, onClose, onSubmit, skill }: Edi
             {/* Code Editor */}
             {formData.code && (
               <div>
-                <label className="block text-sm font-medium text-foreground mb-2">
+                <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
                   {t('skills.pythonCode')} *
                 </label>
-                <CodeEditor
-                  value={formData.code}
-                  onChange={(value) => setFormData({ ...formData, code: value })}
-                  height="400px"
-                />
+                <div className="rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700">
+                  <CodeEditor
+                    value={formData.code}
+                    onChange={(value) => setFormData({ ...formData, code: value })}
+                    height="400px"
+                  />
+                </div>
               </div>
             )}
 
             {/* Dependencies */}
             <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
+              <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
                 {t('skills.dependencies')}
               </label>
               <input
@@ -126,28 +131,38 @@ export default function EditSkillModal({ isOpen, onClose, onSubmit, skill }: Edi
                     dependencies: e.target.value.split(',').map((d) => d.trim()).filter(Boolean),
                   })
                 }
-                className="w-full px-4 py-2.5 rounded-xl bg-muted/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                className="w-full px-4 py-3 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all font-mono text-sm"
                 placeholder={t('skills.dependenciesPlaceholder')}
               />
-              <p className="mt-1 text-xs text-muted-foreground">{t('skills.dependenciesNote')}</p>
+              <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">{t('skills.dependenciesNote')}</p>
             </div>
           </div>
 
-          <div className="flex justify-end gap-3 pt-4 border-t border-border/50">
+          <div className="flex justify-end gap-3 pt-6 border-t border-gray-200 dark:border-gray-700">
             <button
               type="button"
               onClick={handleClose}
-              className="px-6 py-2.5 rounded-xl bg-muted/50 hover:bg-muted text-foreground transition-colors font-medium"
+              className="px-8 py-3 rounded-xl glass hover:bg-white/30 dark:hover:bg-black/30 text-gray-700 dark:text-gray-300 transition-all duration-300 font-medium hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={isSubmitting}
             >
               {t('skills.cancel')}
             </button>
             <button
               type="submit"
-              className="px-6 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-8 py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white transition-all duration-300 font-medium shadow-lg hover:shadow-indigo-500/25 hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
               disabled={isSubmitting}
             >
-              {isSubmitting ? t('skills.saving') : t('skills.saveChanges')}
+              {isSubmitting ? (
+                <span className="flex items-center gap-2">
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  {t('skills.saving')}
+                </span>
+              ) : (
+                t('skills.saveChanges')
+              )}
             </button>
           </div>
         </form>

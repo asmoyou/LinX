@@ -79,20 +79,23 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <div className="glass-panel w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
+      <div className="modal-panel w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-[24px] shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-border/50">
+        <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-indigo-500/5 to-transparent">
           <div>
-            <h2 className="text-xl font-semibold text-foreground">{t('skills.createNewSkill')}</h2>
-            <p className="text-sm text-muted-foreground mt-1">
+            <h2 className="text-2xl font-bold text-gray-800 dark:text-white">{t('skills.createNewSkill')}</h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
               {step === 'type' && t('skills.step1')}
               {step === 'template' && t('skills.step2')}
               {step === 'code' && t('skills.step3')}
             </p>
           </div>
-          <button onClick={handleClose} className="p-2 rounded-xl hover:bg-muted/50 transition-colors">
-            <X className="w-5 h-5 text-muted-foreground" />
+          <button 
+            onClick={handleClose} 
+            className="p-2 rounded-xl hover:bg-white/30 dark:hover:bg-black/30 transition-all duration-300 hover:rotate-90"
+          >
+            <X className="w-5 h-5 text-gray-600 dark:text-gray-400" />
           </button>
         </div>
 
@@ -106,27 +109,43 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
               {/* Agent Skill Mode Selection */}
               {skillType === 'agent_skill' && (
                 <div className="space-y-3">
-                  <label className="block text-sm font-medium text-white/90">
+                  <label className="block text-sm font-medium text-gray-800 dark:text-white">
                     {t('skills.selectImplementation')}
                   </label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <button
                       type="button"
                       onClick={() => setAgentSkillMode('single')}
                       className={`
-                        p-4 rounded-xl border-2 transition-all text-left
+                        relative p-6 rounded-xl transition-all duration-300 text-left
                         ${
                           agentSkillMode === 'single'
-                            ? 'border-primary bg-primary/10'
-                            : 'border-border/50 bg-muted/30 hover:border-border'
+                            ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/30'
+                            : 'glass text-gray-700 dark:text-gray-300 hover:bg-white/30 dark:hover:bg-black/30'
                         }
                       `}
                     >
-                      <div className="flex items-start gap-3">
-                        <FileCode className="w-5 h-5 text-primary mt-0.5" />
-                        <div>
-                          <h4 className="font-medium text-foreground mb-1">{t('skills.singleFileCode')}</h4>
-                          <p className="text-sm text-muted-foreground">
+                      <div className="flex items-start gap-4">
+                        <div className={`p-3 rounded-xl transition-all duration-300 ${
+                          agentSkillMode === 'single' 
+                            ? 'bg-white/20' 
+                            : 'bg-gray-100 dark:bg-gray-800'
+                        }`}>
+                          <FileCode className={`w-6 h-6 ${
+                            agentSkillMode === 'single' 
+                              ? 'text-white' 
+                              : 'text-gray-600 dark:text-gray-400'
+                          }`} />
+                        </div>
+                        <div className="flex-1">
+                          <h4 className="font-semibold mb-1">
+                            {t('skills.singleFileCode')}
+                          </h4>
+                          <p className={`text-sm ${
+                            agentSkillMode === 'single' 
+                              ? 'text-white/80' 
+                              : 'text-gray-600 dark:text-gray-400'
+                          }`}>
                             {t('skills.singleFileDesc')}
                           </p>
                         </div>
@@ -137,19 +156,35 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
                       type="button"
                       onClick={() => setAgentSkillMode('package')}
                       className={`
-                        p-4 rounded-xl border-2 transition-all text-left
+                        relative p-6 rounded-xl transition-all duration-300 text-left
                         ${
                           agentSkillMode === 'package'
-                            ? 'border-purple-500 bg-purple-500/10'
-                            : 'border-border/50 bg-muted/30 hover:border-border'
+                            ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/30'
+                            : 'glass text-gray-700 dark:text-gray-300 hover:bg-white/30 dark:hover:bg-black/30'
                         }
                       `}
                     >
-                      <div className="flex items-start gap-3">
-                        <Upload className="w-5 h-5 text-purple-400 mt-0.5" />
-                        <div>
-                          <h4 className="font-medium text-foreground mb-1">{t('skills.uploadPackage')}</h4>
-                          <p className="text-sm text-muted-foreground">
+                      <div className="flex items-start gap-4">
+                        <div className={`p-3 rounded-xl transition-all duration-300 ${
+                          agentSkillMode === 'package' 
+                            ? 'bg-white/20' 
+                            : 'bg-gray-100 dark:bg-gray-800'
+                        }`}>
+                          <Upload className={`w-6 h-6 ${
+                            agentSkillMode === 'package' 
+                              ? 'text-white' 
+                              : 'text-gray-600 dark:text-gray-400'
+                          }`} />
+                        </div>
+                        <div className="flex-1">
+                          <h4 className="font-semibold mb-1">
+                            {t('skills.uploadPackage')}
+                          </h4>
+                          <p className={`text-sm ${
+                            agentSkillMode === 'package' 
+                              ? 'text-white/80' 
+                              : 'text-gray-600 dark:text-gray-400'
+                          }`}>
                             {t('skills.uploadPackageDesc')}
                           </p>
                         </div>
@@ -170,7 +205,7 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
                       setStep('template');
                     }
                   }}
-                  className="px-6 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground transition-colors font-medium"
+                  className="px-8 py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white transition-all duration-300 font-medium shadow-lg hover:shadow-indigo-500/25 hover:-translate-y-0.5"
                 >
                   {t('skills.next')}
                 </button>
@@ -198,14 +233,14 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
                 <button
                   type="button"
                   onClick={() => setStep('type')}
-                  className="px-6 py-2.5 rounded-xl bg-muted/50 hover:bg-muted text-foreground transition-colors font-medium"
+                  className="px-8 py-3 rounded-xl glass hover:bg-white/30 dark:hover:bg-black/30 text-gray-700 dark:text-gray-300 transition-all duration-300 font-medium hover:shadow-lg"
                 >
                   {t('skills.previous')}
                 </button>
                 <button
                   type="button"
                   onClick={() => setStep('code')}
-                  className="px-6 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground transition-colors font-medium"
+                  className="px-8 py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white transition-all duration-300 font-medium shadow-lg hover:shadow-indigo-500/25 hover:-translate-y-0.5"
                 >
                   {selectedTemplate ? t('skills.useTemplate') : t('skills.skip')}
                 </button>
@@ -219,27 +254,27 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
               <div className="space-y-4">
                 {/* Basic Info */}
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">
+                  <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
                     {t('skills.skillName')} *
                   </label>
                   <input
                     type="text"
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    className="w-full px-4 py-2.5 rounded-xl bg-muted/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    className="w-full px-4 py-2.5 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
                     placeholder="e.g., my_custom_skill"
                     required
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">
+                  <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
                     {t('skills.description')} *
                   </label>
                   <textarea
                     value={formData.description}
                     onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    className="w-full px-4 py-2.5 rounded-xl bg-muted/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
+                    className="w-full px-4 py-2.5 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 resize-none"
                     placeholder={t('skills.description')}
                     rows={2}
                     required
@@ -249,7 +284,7 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
                 {/* Code Editor for Single File Mode */}
                 {(skillType === 'langchain_tool' || (skillType === 'agent_skill' && agentSkillMode === 'single')) && (
                   <div>
-                    <label className="block text-sm font-medium text-foreground mb-2">
+                    <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
                       {t('skills.pythonCode')} *
                     </label>
                     <CodeEditor
@@ -301,8 +336,8 @@ def my_skill(url: str, method: str = "GET") -> Dict[str, Any]:
                 {/* File Upload for Package Mode */}
                 {skillType === 'agent_skill' && agentSkillMode === 'package' && (
                   <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="block text-sm font-medium text-foreground">
+                    <div className="flex items-center justify-between mb-3">
+                      <label className="block text-sm font-medium text-gray-800 dark:text-white">
                         {t('skills.uploadProjectPackage')} *
                       </label>
                       <button
@@ -323,13 +358,13 @@ def my_skill(url: str, method: str = "GET") -> Dict[str, Any]:
                             alert(t('skills.downloadFailed'));
                           }
                         }}
-                        className="text-sm text-primary hover:text-primary/80 flex items-center gap-1 transition-colors"
+                        className="text-sm text-indigo-500 hover:text-indigo-600 dark:text-indigo-400 dark:hover:text-indigo-300 flex items-center gap-1.5 transition-all duration-300 hover:gap-2 font-medium"
                       >
                         <FileCode className="w-4 h-4" />
                         {t('skills.downloadTemplate')}
                       </button>
                     </div>
-                    <div className="border-2 border-dashed border-border/50 rounded-xl p-8 text-center hover:border-border transition-colors bg-muted/30">
+                    <div className="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-10 text-center hover:border-indigo-500 hover:bg-indigo-500/5 transition-all duration-300 glass">
                       <input
                         type="file"
                         accept=".zip,.tar.gz"
@@ -338,38 +373,52 @@ def my_skill(url: str, method: str = "GET") -> Dict[str, Any]:
                         id="package-upload"
                         required
                       />
-                      <label htmlFor="package-upload" className="cursor-pointer">
-                        <Upload className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                      <label htmlFor="package-upload" className="cursor-pointer block">
                         {uploadedFile ? (
-                          <div>
-                            <p className="text-foreground font-medium mb-1">{uploadedFile.name}</p>
-                            <p className="text-sm text-muted-foreground">
-                              {(uploadedFile.size / 1024 / 1024).toFixed(2)} MB
-                            </p>
+                          <div className="space-y-3">
+                            <div className="w-16 h-16 rounded-full bg-green-500/10 flex items-center justify-center mx-auto">
+                              <Upload className="w-8 h-8 text-green-500" />
+                            </div>
+                            <div>
+                              <p className="text-gray-800 dark:text-white font-semibold mb-1">{uploadedFile.name}</p>
+                              <p className="text-sm text-gray-600 dark:text-gray-400">
+                                {(uploadedFile.size / 1024 / 1024).toFixed(2)} MB
+                              </p>
+                            </div>
                             <button
                               type="button"
-                              onClick={() => setUploadedFile(null)}
-                              className="mt-2 text-sm text-primary hover:text-primary/80 transition-colors"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                setUploadedFile(null);
+                              }}
+                              className="mt-3 px-4 py-2 text-sm text-indigo-500 hover:text-indigo-600 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors font-medium rounded-lg hover:bg-indigo-500/10"
                             >
                               {t('skills.reselect')}
                             </button>
                           </div>
                         ) : (
-                          <div>
-                            <p className="text-foreground mb-1">{t('skills.clickToUpload')}</p>
-                            <p className="text-sm text-muted-foreground">{t('skills.supportedFormats')}</p>
+                          <div className="space-y-3">
+                            <div className="w-16 h-16 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center mx-auto">
+                              <Upload className="w-8 h-8 text-gray-600 dark:text-gray-400" />
+                            </div>
+                            <div>
+                              <p className="text-gray-800 dark:text-white font-medium mb-1">{t('skills.clickToUpload')}</p>
+                              <p className="text-sm text-gray-600 dark:text-gray-400">{t('skills.supportedFormats')}</p>
+                            </div>
                           </div>
                         )}
                       </label>
                     </div>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      {t('skills.packageNote')}
-                    </p>
+                    <div className="mt-3 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                      <p className="text-xs text-gray-800 dark:text-white">
+                        💡 {t('skills.packageNote')}
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>
 
-              <div className="flex justify-between pt-4 border-t border-border/50">
+              <div className="flex justify-between pt-6 border-t border-gray-200 dark:border-gray-700">
                 <button
                   type="button"
                   onClick={() => {
@@ -380,7 +429,7 @@ def my_skill(url: str, method: str = "GET") -> Dict[str, Any]:
                       setStep('template');
                     }
                   }}
-                  className="px-6 py-2.5 rounded-xl bg-muted/50 hover:bg-muted text-foreground transition-colors font-medium"
+                  className="px-8 py-3 rounded-xl glass hover:bg-white/30 dark:hover:bg-black/30 text-gray-700 dark:text-gray-300 transition-all duration-300 font-medium hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
                   disabled={isSubmitting}
                 >
                   {t('skills.previous')}
@@ -389,17 +438,27 @@ def my_skill(url: str, method: str = "GET") -> Dict[str, Any]:
                   <button
                     type="button"
                     onClick={handleClose}
-                    className="px-6 py-2.5 rounded-xl bg-muted/50 hover:bg-muted text-foreground transition-colors font-medium"
+                    className="px-8 py-3 rounded-xl glass hover:bg-white/30 dark:hover:bg-black/30 text-gray-700 dark:text-gray-300 transition-all duration-300 font-medium hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
                     disabled={isSubmitting}
                   >
                     {t('skills.cancel')}
                   </button>
                   <button
                     type="submit"
-                    className="px-6 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-8 py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white transition-all duration-300 font-medium shadow-lg hover:shadow-indigo-500/25 hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
                     disabled={isSubmitting}
                   >
-                    {isSubmitting ? t('skills.creating') : t('skills.createSkill')}
+                    {isSubmitting ? (
+                      <span className="flex items-center gap-2">
+                        <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                        {t('skills.creating')}
+                      </span>
+                    ) : (
+                      t('skills.createSkill')
+                    )}
                   </button>
                 </div>
               </div>

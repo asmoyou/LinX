@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Search, RefreshCw, Package } from 'lucide-react';
+import { Plus, Search, RefreshCw, Package, Layers } from 'lucide-react';
 import SkillCardV2 from '@/components/skills/SkillCardV2';
 import AddSkillModalV2 from '@/components/skills/AddSkillModalV2';
 import EditSkillModal from '@/components/skills/EditSkillModal';
@@ -17,8 +17,6 @@ export default function Skills() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isCodePreviewOpen, setIsCodePreviewOpen] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
-  const [isRegisteringDefaults, setIsRegisteringDefaults] = useState(false);
-
   useEffect(() => {
     loadSkills();
   }, []);
@@ -94,175 +92,165 @@ export default function Skills() {
     }
   };
 
-  const handleRegisterDefaults = async () => {
-    try {
-      setIsRegisteringDefaults(true);
-      const result = await skillsApi.registerDefaults();
-      alert(`Successfully registered ${result.registered_count} default skills`);
-      await loadSkills();
-    } catch (error) {
-      console.error('Failed to register default skills:', error);
-      alert('Failed to register default skills');
-    } finally {
-      setIsRegisteringDefaults(false);
-    }
-  };
-
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-foreground mb-2">{t('skills.title')}</h1>
-          <p className="text-muted-foreground">
-            {t('skills.subtitle')}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleRegisterDefaults}
-            disabled={isRegisteringDefaults}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-muted/50 hover:bg-muted text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Package className="w-4 h-4" />
-            {isRegisteringDefaults ? t('skills.registering') : t('skills.registerDefaults')}
-          </button>
+    <div>
+      <div className="max-w-7xl mx-auto p-6 space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-foreground mb-2 bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+              {t('skills.title')}
+            </h1>
+            <p className="text-muted-foreground">
+              {t('skills.subtitle')}
+            </p>
+          </div>
           <button
             onClick={() => setIsAddModalOpen(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground transition-colors"
+            className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground transition-all duration-300 shadow-lg hover:shadow-primary/25 hover:-translate-y-0.5"
           >
-            <Plus className="w-4 h-4" />
+            <Plus className="w-5 h-5" />
             {t('skills.addSkill')}
           </button>
         </div>
-      </div>
 
-      {/* Search and Filter Bar */}
-      <div className="glass-panel p-4">
-        <div className="flex items-center gap-4">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={t('skills.searchPlaceholder')}
-              className="w-full pl-10 pr-4 py-2 rounded-lg bg-muted/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-            />
-          </div>
-          <button
-            onClick={loadSkills}
-            disabled={isLoading}
-            className="p-2 rounded-lg bg-muted/50 hover:bg-muted text-foreground transition-colors disabled:opacity-50"
-            title={t('skills.refresh')}
-          >
-            <RefreshCw className={`w-5 h-5 ${isLoading ? 'animate-spin' : ''}`} />
-          </button>
-        </div>
-      </div>
-
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="glass-panel p-4">
-          <div className="text-sm text-muted-foreground mb-1">{t('skills.totalSkills')}</div>
-          <div className="text-2xl font-bold text-foreground">{skills.length}</div>
-        </div>
-        <div className="glass-panel p-4">
-          <div className="text-sm text-muted-foreground mb-1">{t('skills.filteredResults')}</div>
-          <div className="text-2xl font-bold text-foreground">{filteredSkills.length}</div>
-        </div>
-        <div className="glass-panel p-4">
-          <div className="text-sm text-muted-foreground mb-1">{t('skills.withDependencies')}</div>
-          <div className="text-2xl font-bold text-foreground">
-            {skills.filter((s) => s.dependencies && s.dependencies.length > 0).length}
-          </div>
-        </div>
-      </div>
-
-      {/* Skills Grid */}
-      {isLoading ? (
-        <div className="flex items-center justify-center py-12">
-          <div className="text-center">
-            <RefreshCw className="w-8 h-8 text-primary animate-spin mx-auto mb-2" />
-            <p className="text-muted-foreground">{t('skills.loading')}</p>
-          </div>
-        </div>
-      ) : filteredSkills.length === 0 ? (
-        <div className="glass-panel p-12 text-center">
-          <Package className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-          <h3 className="text-lg font-semibold text-foreground mb-2">
-            {searchQuery ? t('skills.noSkillsFound') : t('skills.noSkillsYet')}
-          </h3>
-          <p className="text-muted-foreground mb-4">
-            {searchQuery
-              ? t('skills.tryAdjusting')
-              : t('skills.getStarted')}
-          </p>
-          {!searchQuery && (
-            <div className="flex items-center justify-center gap-3">
-              <button
-                onClick={handleRegisterDefaults}
-                disabled={isRegisteringDefaults}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-muted/50 hover:bg-muted text-foreground transition-colors"
-              >
-                <Package className="w-4 h-4" />
-                {t('skills.registerDefaults')}
-              </button>
-              <button
-                onClick={() => setIsAddModalOpen(true)}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground transition-colors"
-              >
-                <Plus className="w-4 h-4" />
-                {t('skills.addSkill')}
-              </button>
+        {/* Search and Filter Bar */}
+        <div className="glass-panel p-6 rounded-2xl shadow-xl">
+          <div className="flex items-center gap-4">
+            <div className="flex-1 relative">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={t('skills.searchPlaceholder')}
+                className="w-full pl-12 pr-4 py-3 rounded-xl bg-muted/30 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary/50 transition-all"
+              />
             </div>
-          )}
+            <button
+              onClick={loadSkills}
+              disabled={isLoading}
+              className="p-3 rounded-xl bg-muted/30 hover:bg-muted/50 text-foreground transition-all duration-300 disabled:opacity-50 hover:shadow-lg"
+              title={t('skills.refresh')}
+            >
+              <RefreshCw className={`w-5 h-5 ${isLoading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredSkills.map((skill) => (
-            <SkillCardV2
-              key={skill.skill_id}
-              skill={skill}
-              onEdit={handleEditSkill}
-              onDelete={handleDeleteSkill}
-              onViewCode={handleViewCode}
-            />
-          ))}
+
+        {/* Stats */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="glass-panel p-6 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-sm font-medium text-muted-foreground">{t('skills.totalSkills')}</div>
+              <Package className="w-5 h-5 text-primary/60" />
+            </div>
+            <div className="text-3xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+              {skills.length}
+            </div>
+          </div>
+          <div className="glass-panel p-6 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-sm font-medium text-muted-foreground">{t('skills.filteredResults')}</div>
+              <Search className="w-5 h-5 text-primary/60" />
+            </div>
+            <div className="text-3xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+              {filteredSkills.length}
+            </div>
+          </div>
+          <div className="glass-panel p-6 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-sm font-medium text-muted-foreground">{t('skills.withDependencies')}</div>
+              <Layers className="w-5 h-5 text-primary/60" />
+            </div>
+            <div className="text-3xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+              {skills.filter((s) => s.dependencies && s.dependencies.length > 0).length}
+            </div>
+          </div>
         </div>
-      )}
 
-      {/* Add Skill Modal */}
-      <AddSkillModalV2
-        isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
-        onSubmit={handleCreateSkill}
-      />
+        {/* Skills Grid */}
+        {isLoading ? (
+          <div className="flex items-center justify-center py-20">
+            <div className="text-center">
+              <div className="relative">
+                <div className="w-16 h-16 border-4 border-primary/20 border-t-primary rounded-full animate-spin mx-auto mb-4"></div>
+                <Package className="w-8 h-8 text-primary absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
+              </div>
+              <p className="text-muted-foreground font-medium">{t('skills.loading')}</p>
+            </div>
+          </div>
+        ) : filteredSkills.length === 0 ? (
+          <div className="glass-panel p-16 rounded-2xl shadow-xl text-center">
+            <div className="max-w-md mx-auto">
+              <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-6">
+                <Package className="w-10 h-10 text-primary" />
+              </div>
+              <h3 className="text-xl font-bold text-foreground mb-3">
+                {searchQuery ? t('skills.noSkillsFound') : t('skills.noSkillsYet')}
+              </h3>
+              <p className="text-muted-foreground mb-6">
+                {searchQuery
+                  ? t('skills.tryAdjusting')
+                  : t('skills.getStarted')}
+              </p>
+              {!searchQuery && (
+                <button
+                  onClick={() => setIsAddModalOpen(true)}
+                  className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground transition-all duration-300 shadow-lg hover:shadow-primary/25 hover:-translate-y-0.5"
+                >
+                  <Plus className="w-5 h-5" />
+                  {t('skills.addSkill')}
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {filteredSkills.map((skill) => (
+              <SkillCardV2
+                key={skill.skill_id}
+                skill={skill}
+                onEdit={handleEditSkill}
+                onDelete={handleDeleteSkill}
+                onViewCode={handleViewCode}
+              />
+            ))}
+          </div>
+        )}
 
-      {/* Edit Skill Modal */}
-      {selectedSkill && (
-        <EditSkillModal
-          isOpen={isEditModalOpen}
-          onClose={() => {
-            setIsEditModalOpen(false);
-            setSelectedSkill(null);
-          }}
-          onSubmit={handleUpdateSkill}
-          skill={selectedSkill}
+        {/* Add Skill Modal */}
+        <AddSkillModalV2
+          isOpen={isAddModalOpen}
+          onClose={() => setIsAddModalOpen(false)}
+          onSubmit={handleCreateSkill}
         />
-      )}
 
-      {/* Code Preview Modal */}
-      {selectedSkill && (
-        <CodePreviewModal
-          isOpen={isCodePreviewOpen}
-          onClose={() => {
-            setIsCodePreviewOpen(false);
-            setSelectedSkill(null);
-          }}
-          skill={selectedSkill}
-        />
-      )}
+        {/* Edit Skill Modal */}
+        {selectedSkill && (
+          <EditSkillModal
+            isOpen={isEditModalOpen}
+            onClose={() => {
+              setIsEditModalOpen(false);
+              setSelectedSkill(null);
+            }}
+            onSubmit={handleUpdateSkill}
+            skill={selectedSkill}
+          />
+        )}
+
+        {/* Code Preview Modal */}
+        {selectedSkill && (
+          <CodePreviewModal
+            isOpen={isCodePreviewOpen}
+            onClose={() => {
+              setIsCodePreviewOpen(false);
+              setSelectedSkill(null);
+            }}
+            skill={selectedSkill}
+          />
+        )}
+      </div>
     </div>
   );
 }
