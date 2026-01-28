@@ -1,10 +1,12 @@
 import { useEffect } from 'react';
 import { Database, Cpu, HardDrive, Users } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { GlassPanel } from '../GlassPanel';
 import { useUserStore } from '../../stores';
 import { usersApi } from '../../api/users';
 
 export const QuotaSection = () => {
+  const { t } = useTranslation();
   const { quotas, setQuotas, setLoading } = useUserStore();
 
   useEffect(() => {
@@ -25,7 +27,7 @@ export const QuotaSection = () => {
 
   const quotaItems = [
     {
-      label: 'Agents',
+      label: t('profileSettings.quotas.agents'),
       icon: Users,
       current: quotas?.currentAgents || 0,
       max: quotas?.maxAgents || 0,
@@ -33,7 +35,7 @@ export const QuotaSection = () => {
       color: 'emerald',
     },
     {
-      label: 'Storage',
+      label: t('profileSettings.quotas.storage'),
       icon: HardDrive,
       current: quotas?.currentStorageGb || 0,
       max: quotas?.maxStorageGb || 0,
@@ -41,7 +43,7 @@ export const QuotaSection = () => {
       color: 'blue',
     },
     {
-      label: 'CPU Cores',
+      label: t('profileSettings.quotas.cpuCores'),
       icon: Cpu,
       current: 0, // Not tracked yet
       max: quotas?.maxCpuCores || 0,
@@ -49,7 +51,7 @@ export const QuotaSection = () => {
       color: 'purple',
     },
     {
-      label: 'Memory',
+      label: t('profileSettings.quotas.memory'),
       icon: Database,
       current: 0, // Not tracked yet
       max: quotas?.maxMemoryGb || 0,
@@ -94,9 +96,9 @@ export const QuotaSection = () => {
     <GlassPanel className="p-6">
       <div className="space-y-6">
         <div>
-          <h2 className="text-xl font-semibold text-white">Resource Quotas</h2>
+          <h2 className="text-xl font-semibold text-white">{t('profileSettings.quotas.title')}</h2>
           <p className="text-sm text-gray-400 mt-1">
-            Monitor your resource usage and limits
+            {t('profileSettings.quotas.subtitle')}
           </p>
         </div>
 
@@ -129,7 +131,7 @@ export const QuotaSection = () => {
                 </div>
                 
                 <p className="text-xs text-gray-500 mt-2">
-                  {percentage.toFixed(1)}% used
+                  {percentage.toFixed(1)}% {t('profileSettings.quotas.used')}
                 </p>
               </div>
             );
@@ -139,7 +141,7 @@ export const QuotaSection = () => {
         {quotas && (
           <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
             <p className="text-sm text-blue-400">
-              <strong>Note:</strong> Contact your administrator to increase your resource quotas.
+              <strong>{t('profileSettings.quotas.note')}:</strong> {t('profileSettings.quotas.noteMessage')}
             </p>
           </div>
         )}

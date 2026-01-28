@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { User, Settings, Shield, Bell, Key, Monitor, Globe, Download, LogOut } from 'lucide-react';
 import { GlassPanel } from '../components/GlassPanel';
 import { ProfileSection } from '../components/profile/ProfileSection';
@@ -16,32 +17,33 @@ import { useNotificationStore } from '../stores/notificationStore';
 type TabType = 'profile' | 'security' | 'preferences' | 'notifications' | 'api-keys' | 'sessions' | 'privacy' | 'quotas';
 
 export const Profile = () => {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<TabType>('profile');
   const navigate = useNavigate();
   const { logout } = useAuthStore();
   const { addNotification } = useNotificationStore();
 
   const handleLogout = () => {
-    if (confirm('Are you sure you want to log out?')) {
+    if (confirm(t('profileSettings.logOutConfirm'))) {
       logout();
       addNotification({
         type: 'success',
-        title: 'Logged Out',
-        message: 'You have been logged out successfully',
+        title: t('profileSettings.logOutSuccess'),
+        message: t('profileSettings.logOutSuccess'),
       });
       navigate('/login');
     }
   };
 
   const tabs = [
-    { id: 'profile' as TabType, label: 'Profile', icon: User },
-    { id: 'security' as TabType, label: 'Security', icon: Shield },
-    { id: 'preferences' as TabType, label: 'Preferences', icon: Settings },
-    { id: 'notifications' as TabType, label: 'Notifications', icon: Bell },
-    { id: 'api-keys' as TabType, label: 'API Keys', icon: Key },
-    { id: 'sessions' as TabType, label: 'Sessions', icon: Monitor },
-    { id: 'privacy' as TabType, label: 'Privacy', icon: Globe },
-    { id: 'quotas' as TabType, label: 'Resource Quotas', icon: Download },
+    { id: 'profile' as TabType, label: t('profileSettings.tabs.profile'), icon: User },
+    { id: 'security' as TabType, label: t('profileSettings.tabs.security'), icon: Shield },
+    { id: 'preferences' as TabType, label: t('profileSettings.tabs.preferences'), icon: Settings },
+    { id: 'notifications' as TabType, label: t('profileSettings.tabs.notifications'), icon: Bell },
+    { id: 'api-keys' as TabType, label: t('profileSettings.tabs.apiKeys'), icon: Key },
+    { id: 'sessions' as TabType, label: t('profileSettings.tabs.sessions'), icon: Monitor },
+    { id: 'privacy' as TabType, label: t('profileSettings.tabs.privacy'), icon: Globe },
+    { id: 'quotas' as TabType, label: t('profileSettings.tabs.quotas'), icon: Download },
   ];
 
   return (
@@ -49,15 +51,15 @@ export const Profile = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Settings</h1>
-          <p className="text-gray-400">Manage your account settings and preferences</p>
+          <h1 className="text-3xl font-bold text-white mb-2">{t('profileSettings.title')}</h1>
+          <p className="text-gray-400">{t('profileSettings.subtitle')}</p>
         </div>
         <button
           onClick={handleLogout}
           className="flex items-center gap-2 px-4 py-2 bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/30 transition-colors border border-red-500/30"
         >
           <LogOut className="w-4 h-4" />
-          <span className="font-medium">Log Out</span>
+          <span className="font-medium">{t('profileSettings.logOut')}</span>
         </button>
       </div>
 

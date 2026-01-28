@@ -511,5 +511,60 @@
       "updateFailed": "更新提供商失败",
       "deleteFailed": "删除提供商失败"
     }
+  },
+  "profileSettings": {
+    "title": "设置",
+    "subtitle": "管理您的账户设置和偏好",
+    "logOut": "退出登录",
+    "logOutConfirm": "确定要退出登录吗？",
+    "logOutSuccess": "已成功退出登录",
+    "tabs": {
+      "profile": "个人资料",
+      "security": "安全",
+      "preferences": "偏好设置",
+      "notifications": "通知",
+      "apiKeys": "API密钥",
+      "sessions": "会话",
+      "privacy": "隐私",
+      "quotas": "资源配额"
+    },
+    "profile": {
+      "title": "个人资料信息",
+      "editProfile": "编辑资料",
+      "uploadAvatar": "上传头像",
+      "displayName": "显示名称",
+      "displayNamePlaceholder": "您的显示名称",
+      "displayNameHint": "这是其他人看到的名称",
+      "username": "用户名",
+      "usernameHint": "用户名不能更改",
+      "email": "邮箱",
+      "role": "角色",
+      "roleHint": "您的账户角色",
+      "saveChanges": "保存更改",
+      "cancel": "取消",
+      "avatarUpdated": "头像已更新",
+      "avatarUpdatedMessage": "您的头像已成功更新",
+      "profileUpdated": "资料已更新",
+      "profileUpdatedMessage": "您的资料已成功更新",
+      "invalidFile": "无效文件",
+      "invalidFileMessage": "请选择图片文件",
+      "fileTooLarge": "文件过大",
+      "fileTooLargeMessage": "头像图片必须小于5MB",
+      "uploadFailed": "上传失败",
+      "uploadFailedMessage": "上传头像失败",
+      "updateFailed": "更新失败",
+      "updateFailedMessage": "更新资料失败"
+    },
+    "quotas": {
+      "title": "资源配额",
+      "subtitle": "监控您的资源使用情况和限制",
+      "agents": "智能体",
+      "storage": "存储空间",
+      "cpuCores": "CPU核心",
+      "memory": "内存",
+      "used": "已使用",
+      "note": "注意",
+      "noteMessage": "如需增加资源配额，请联系管理员。"
+    }
   }
 }

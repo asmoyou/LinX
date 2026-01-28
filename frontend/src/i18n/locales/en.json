@@ -511,5 +511,60 @@
       "updateFailed": "Failed to update provider",
       "deleteFailed": "Failed to delete provider"
     }
+  },
+  "profileSettings": {
+    "title": "Settings",
+    "subtitle": "Manage your account settings and preferences",
+    "logOut": "Log Out",
+    "logOutConfirm": "Are you sure you want to log out?",
+    "logOutSuccess": "You have been logged out successfully",
+    "tabs": {
+      "profile": "Profile",
+      "security": "Security",
+      "preferences": "Preferences",
+      "notifications": "Notifications",
+      "apiKeys": "API Keys",
+      "sessions": "Sessions",
+      "privacy": "Privacy",
+      "quotas": "Resource Quotas"
+    },
+    "profile": {
+      "title": "Profile Information",
+      "editProfile": "Edit Profile",
+      "uploadAvatar": "Upload avatar",
+      "displayName": "Display Name",
+      "displayNamePlaceholder": "Your display name",
+      "displayNameHint": "This is how others will see you",
+      "username": "Username",
+      "usernameHint": "Username cannot be changed",
+      "email": "Email",
+      "role": "Role",
+      "roleHint": "Your account role",
+      "saveChanges": "Save Changes",
+      "cancel": "Cancel",
+      "avatarUpdated": "Avatar Updated",
+      "avatarUpdatedMessage": "Your avatar has been updated successfully",
+      "profileUpdated": "Profile Updated",
+      "profileUpdatedMessage": "Your profile has been updated successfully",
+      "invalidFile": "Invalid File",
+      "invalidFileMessage": "Please select an image file",
+      "fileTooLarge": "File Too Large",
+      "fileTooLargeMessage": "Avatar image must be less than 5MB",
+      "uploadFailed": "Upload Failed",
+      "uploadFailedMessage": "Failed to upload avatar",
+      "updateFailed": "Update Failed",
+      "updateFailedMessage": "Failed to update profile"
+    },
+    "quotas": {
+      "title": "Resource Quotas",
+      "subtitle": "Monitor your resource usage and limits",
+      "agents": "Agents",
+      "storage": "Storage",
+      "cpuCores": "CPU Cores",
+      "memory": "Memory",
+      "used": "used",
+      "note": "Note",
+      "noteMessage": "Contact your administrator to increase your resource quotas."
+    }
   }
 }
