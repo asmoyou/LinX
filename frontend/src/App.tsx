@@ -8,6 +8,7 @@ import { Toast } from './components/Toast';
 import { useAuthStore } from './stores';
 import ErrorBoundary from './components/error/ErrorBoundary';
 import PageErrorBoundary from './components/error/PageErrorBoundary';
+import { useUserInitialization } from './hooks';
 
 // Lazy load pages for better performance (6.9.6)
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
@@ -214,6 +215,9 @@ const AnimatedRoutes = () => {
 };
 
 function App() {
+  // Initialize user data when authenticated
+  useUserInitialization();
+
   return (
     <ErrorBoundary>
       <Router>

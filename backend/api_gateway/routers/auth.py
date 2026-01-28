@@ -93,9 +93,11 @@ class RefreshResponse(BaseModel):
 @router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
 async def login(request: LoginRequest):
     """Authenticate user and return JWT tokens.
+    
+    Supports login with either username or email.
 
     Args:
-        request: Login credentials
+        request: Login credentials (username or email + password)
 
     Returns:
         JWT token pair and user information
@@ -105,11 +107,17 @@ async def login(request: LoginRequest):
     """
     from database.connection import get_db_session
     from database.models import User
+    from sqlalchemy import or_
 
     try:
         with get_db_session() as session:
-            # Query user from database
-            user = session.query(User).filter(User.username == request.username).first()
+            # Query user by username OR email
+            user = session.query(User).filter(
+                or_(
+                    User.username == request.username,
+                    User.email == request.username  # Allow email as username
+                )
+            ).first()
 
             if not user or not verify_password(request.password, user.password_hash):
                 log_authentication_event(
@@ -122,7 +130,7 @@ async def login(request: LoginRequest):
                 session.commit()
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid username or password",
+                    detail="Invalid username/email or password",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 

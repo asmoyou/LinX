@@ -16,6 +16,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from api_gateway.errors import setup_error_handlers
 from api_gateway.middleware.auth import JWTAuthMiddleware
@@ -179,6 +180,13 @@ def create_app() -> FastAPI:
 
     # Setup error handlers
     setup_error_handlers(app)
+
+    # Mount static files for uploads
+    from pathlib import Path
+    uploads_dir = Path("uploads")
+    uploads_dir.mkdir(exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+    logger.info("Static file serving configured for /uploads")
 
     # Include routers
     app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])

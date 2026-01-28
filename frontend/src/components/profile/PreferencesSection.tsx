@@ -3,7 +3,7 @@ import { GlassPanel } from '../GlassPanel';
 import { useThemeStore } from '../../stores/themeStore';
 import { useTranslation } from 'react-i18next';
 import { useEffect, useState } from 'react';
-import apiClient from '@/api/client';
+import { usersApi } from '@/api/users';
 import toast from 'react-hot-toast';
 
 interface UserPreferences {
@@ -29,8 +29,7 @@ export const PreferencesSection = () => {
 
   const loadPreferences = async () => {
     try {
-      const response = await apiClient.get<UserPreferences>('/users/me/preferences');
-      const prefs = response.data;
+      const prefs = await usersApi.getPreferences();
       
       // Apply loaded preferences
       if (prefs.language && prefs.language !== i18n.language) {
@@ -63,8 +62,8 @@ export const PreferencesSection = () => {
       // Merge with updates
       const newPrefs = { ...currentPrefs, ...updates };
 
-      // Save to backend
-      await apiClient.put('/users/me/preferences', newPrefs);
+      // Save to backend using usersApi
+      await usersApi.updatePreferences(newPrefs);
       
       toast.success('Preferences saved');
     } catch (error) {

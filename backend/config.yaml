@@ -30,7 +30,7 @@ api:
   
   rate_limit:
     enabled: true
-    requests_per_minute: 60
+    requests_per_minute: 300  # 增加到300请求/分钟，避免开发时触发限流
     requests_per_hour: 1000
     burst: 10
   

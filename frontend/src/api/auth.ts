@@ -8,8 +8,10 @@ export interface LoginRequest {
 
 export interface LoginResponse {
   user: User;
-  token: string;
+  access_token: string;
   refresh_token: string;
+  token_type: string;
+  expires_in: number;
 }
 
 export interface RegisterRequest {
@@ -37,15 +39,40 @@ export const authApi = {
    */
   login: async (credentials: LoginRequest): Promise<LoginResponse> => {
     const response = await apiClient.post<LoginResponse>('/auth/login', credentials);
-    return response.data;
+    
+    // Map user_id to id for frontend compatibility
+    const data = response.data;
+    if (data.user && 'user_id' in data.user) {
+      data.user = {
+        ...data.user,
+        id: (data.user as any).user_id,
+      };
+    }
+    
+    return data;
   },
 
   /**
    * Register new user
    */
   register: async (data: RegisterRequest): Promise<LoginResponse> => {
-    const response = await apiClient.post<LoginResponse>('/auth/register', data);
-    return response.data;
+    const response = await apiClient.post<any>('/auth/register', data);
+    
+    // Map registration response to login response format
+    const regData = response.data;
+    return {
+      user: {
+        id: regData.user_id,
+        username: regData.username,
+        email: regData.email,
+        role: regData.role,
+        attributes: regData.attributes,
+      },
+      access_token: '', // Registration doesn't return tokens, need to login
+      refresh_token: '',
+      token_type: 'bearer',
+      expires_in: 0,
+    };
   },
 
   /**

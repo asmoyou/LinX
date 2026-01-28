@@ -2,7 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Sun, Moon, Monitor, Bell, ShieldCheck } from 'lucide-react';
 import { useThemeStore } from '@/stores/themeStore';
-import apiClient from '@/api/client';
+import { usersApi } from '@/api/users';
 
 export const Header: React.FC = () => {
   const { i18n, t } = useTranslation();
@@ -32,8 +32,8 @@ export const Header: React.FC = () => {
       // Merge with updates
       const newPrefs = { ...currentPrefs, ...updates };
 
-      // Save to backend (fire and forget, don't block UI)
-      apiClient.put('/users/me/preferences', newPrefs).catch((error) => {
+      // Save to backend using usersApi (fire and forget, don't block UI)
+      usersApi.updatePreferences(newPrefs).catch((error) => {
         console.error('Failed to save preferences:', error);
       });
     } catch (error) {
