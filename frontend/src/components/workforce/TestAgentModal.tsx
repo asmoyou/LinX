@@ -403,7 +403,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md overflow-auto" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <div className="w-full max-w-5xl my-auto h-[85vh] flex flex-col bg-gradient-to-br from-white to-zinc-50 dark:from-zinc-900 dark:to-zinc-950 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="w-full max-w-5xl my-auto h-[85vh] flex flex-col modal-panel rounded-[24px] shadow-2xl overflow-hidden">
         {/* Header with gradient */}
         <div className="relative bg-gradient-to-r from-emerald-500 to-cyan-500 px-6 py-4">
           <div className="flex items-center justify-between">
@@ -436,7 +436,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                 <div className="flex justify-end">
                   <div className="max-w-[75%] space-y-2">
                     {/* User message */}
-                    <div className="rounded-2xl px-4 py-3 bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-500/20">
+                    <div className="rounded-[24px] px-4 py-3 bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-500/20">
                       <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
                       
                       {/* Attachments */}
@@ -560,7 +560,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                     )}
                     
                     {/* Assistant Response */}
-                    <div className="rounded-2xl px-4 py-3 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-lg">
+                    <div className="rounded-[24px] px-4 py-3 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-lg">
                       <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 prose-pre:bg-zinc-900 prose-pre:text-zinc-100">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
                           {message.content}
@@ -683,7 +683,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                 
                 {/* Streaming Regular Content */}
                 {currentResponse && (
-                  <div className="rounded-2xl px-4 py-3 bg-white dark:bg-zinc-800 border-2 border-emerald-300 dark:border-emerald-700 shadow-lg shadow-emerald-500/10">
+                  <div className="rounded-[24px] px-4 py-3 bg-white dark:bg-zinc-800 border-2 border-emerald-300 dark:border-emerald-700 shadow-lg shadow-emerald-500/10">
                     <div className="flex items-center gap-2 mb-2">
                       <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
                       <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
@@ -733,7 +733,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
         </div>
 
         {/* Input Area with modern design */}
-        <div className="border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-6 py-4">
+        <div className="border-t border-zinc-200 dark:border-zinc-800 modal-panel px-6 py-4">
           {/* Attached Files Preview */}
           {attachedFiles.length > 0 && (
             <div className="mb-3 flex flex-wrap gap-2">

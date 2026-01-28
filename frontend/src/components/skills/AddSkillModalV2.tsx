@@ -3,6 +3,7 @@ import { useState } from 'react';
 import CodeEditor from './CodeEditor';
 import SkillTypeSelector, { type SkillType } from './SkillTypeSelector';
 import TemplateSelector from './TemplateSelector';
+import { ModalPanel } from '@/components/ModalPanel';
 import { skillsApi } from '@/api/skills';
 import { useTranslation } from 'react-i18next';
 
@@ -80,7 +81,7 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <div className="modal-panel w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-[24px] shadow-2xl">
+      <ModalPanel className="w-full max-w-4xl max-h-[90vh] overflow-y-auto shadow-2xl p-0">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-indigo-500/5 to-transparent">
           <div>
@@ -465,7 +466,7 @@ def my_skill(url: str, method: str = "GET") -> Dict[str, Any]:
             </>
           )}
         </form>
-      </div>
+      </ModalPanel>
     </div>
   );
 }

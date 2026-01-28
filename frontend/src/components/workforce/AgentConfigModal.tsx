@@ -281,8 +281,8 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm overflow-auto" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <div className="w-full max-w-4xl my-auto max-h-[90vh] overflow-hidden flex flex-col bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md overflow-auto" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
+      <div className="w-full max-w-4xl my-auto max-h-[90vh] overflow-hidden flex flex-col modal-panel rounded-[24px] shadow-2xl p-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-6 pb-4 border-b border-zinc-200 dark:border-zinc-700">
           <div>

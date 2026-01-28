@@ -1,6 +1,6 @@
 import React from 'react';
 import { X, Download, Share2, Lock, Globe, Building, AlertTriangle } from 'lucide-react';
-import { GlassPanel } from '@/components/GlassPanel';
+import { ModalPanel } from '@/components/ModalPanel';
 import type { Document } from '@/types/document';
 
 interface DocumentViewerProps {
@@ -32,8 +32,8 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({ document, isOpen
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <GlassPanel className="w-full max-w-5xl max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
+      <ModalPanel className="w-full max-w-5xl max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-gray-800 dark:text-white truncate flex-1">
@@ -156,7 +156,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({ document, isOpen
             </div>
           </div>
         )}
-      </GlassPanel>
+      </ModalPanel>
     </div>
   );
 };
