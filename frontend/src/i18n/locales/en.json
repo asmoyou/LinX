@@ -565,6 +565,21 @@
       "used": "used",
       "note": "Note",
       "noteMessage": "Contact your administrator to increase your resource quotas."
+    },
+    "preferences": {
+      "theme": {
+        "title": "Theme",
+        "subtitle": "Choose your preferred color scheme",
+        "light": "Light",
+        "dark": "Dark",
+        "system": "System"
+      },
+      "language": {
+        "title": "Language",
+        "subtitle": "Select your preferred language"
+      },
+      "preferencesSaved": "Preferences saved",
+      "preferencesSaveFailed": "Failed to save preferences"
     }
   }
 }

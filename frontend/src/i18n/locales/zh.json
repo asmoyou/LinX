@@ -565,6 +565,21 @@
       "used": "已使用",
       "note": "注意",
       "noteMessage": "如需增加资源配额，请联系管理员。"
+    },
+    "preferences": {
+      "theme": {
+        "title": "主题",
+        "subtitle": "选择您喜欢的配色方案",
+        "light": "浅色",
+        "dark": "深色",
+        "system": "跟随系统"
+      },
+      "language": {
+        "title": "语言",
+        "subtitle": "选择您的首选语言"
+      },
+      "preferencesSaved": "偏好设置已保存",
+      "preferencesSaveFailed": "保存偏好设置失败"
     }
   }
 }
