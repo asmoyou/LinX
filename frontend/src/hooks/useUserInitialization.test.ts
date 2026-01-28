@@ -136,4 +136,61 @@ describe('useUserInitialization', () => {
     const userState = useUserStore.getState();
     expect(userState.profile).toBeNull();
   });
+
+  it('should not re-fetch data on re-render after initialization', async () => {
+    const mockProfile = {
+      id: '123',
+      username: 'testuser',
+      email: 'test@example.com',
+      role: 'user',
+    };
+    
+    const mockPreferences = {
+      language: 'en',
+      theme: 'dark',
+      sidebar_collapsed: false,
+      dashboard_layout: 'default',
+      notifications_enabled: true,
+      sound_enabled: false,
+      auto_refresh: true,
+      refresh_interval: 30,
+    };
+    
+    vi.mocked(usersApi.getProfile).mockResolvedValue(mockProfile);
+    vi.mocked(usersApi.getPreferences).mockResolvedValue(mockPreferences);
+    vi.mocked(usersApi.getQuotas).mockResolvedValue({
+      maxAgents: 10,
+      maxStorageGb: 100,
+      currentAgents: 2,
+      currentStorageGb: 15.5,
+    });
+    
+    // Set authenticated state
+    useAuthStore.setState({
+      user: mockProfile as any,
+      token: 'test-token',
+      isAuthenticated: true,
+    });
+    
+    const { rerender } = renderHook(() => useUserInitialization());
+    
+    await waitFor(() => {
+      expect(usersApi.getProfile).toHaveBeenCalledTimes(1);
+      expect(usersApi.getPreferences).toHaveBeenCalledTimes(1);
+    });
+    
+    // Clear mock call counts
+    vi.clearAllMocks();
+    
+    // Re-render the hook (simulating language change or other re-render)
+    rerender();
+    
+    // Wait a bit to ensure no new calls are made
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Should NOT fetch data again
+    expect(usersApi.getProfile).not.toHaveBeenCalled();
+    expect(usersApi.getPreferences).not.toHaveBeenCalled();
+    expect(usersApi.getQuotas).not.toHaveBeenCalled();
+  });
 });

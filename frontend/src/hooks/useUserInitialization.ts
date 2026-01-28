@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 import { useAuthStore, useUserStore, usePreferencesStore } from '../stores';
 import { usersApi } from '../api';
 import { useTranslation } from 'react-i18next';
@@ -13,9 +13,18 @@ export const useUserInitialization = () => {
   const { setProfile, setQuotas } = useUserStore();
   const { updatePreferences } = usePreferencesStore();
   const { i18n } = useTranslation();
+  
+  // Track if we've already initialized to prevent re-fetching on language change
+  const hasInitialized = useRef(false);
 
   const initializeUserData = useCallback(async () => {
     if (!isAuthenticated || !token) {
+      hasInitialized.current = false;
+      return;
+    }
+
+    // Skip if already initialized (prevents re-fetch on language change)
+    if (hasInitialized.current) {
       return;
     }
 
@@ -64,6 +73,9 @@ export const useUserInitialization = () => {
         console.warn('Failed to fetch user quotas:', error);
         // Quotas are not critical, continue without them
       }
+
+      // Mark as initialized
+      hasInitialized.current = true;
     } catch (error) {
       console.error('Failed to initialize user data:', error);
       toast.error('Failed to load user data');

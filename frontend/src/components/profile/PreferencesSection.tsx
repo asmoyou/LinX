@@ -19,7 +19,7 @@ interface UserPreferences {
 
 export const PreferencesSection = () => {
   const { theme, setTheme } = useThemeStore();
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation();
   const [isLoading, setIsLoading] = useState(false);
 
   // Load preferences from backend on mount
@@ -65,10 +65,10 @@ export const PreferencesSection = () => {
       // Save to backend using usersApi
       await usersApi.updatePreferences(newPrefs);
       
-      toast.success('Preferences saved');
+      toast.success(t('profileSettings.preferences.preferencesSaved'));
     } catch (error) {
       console.error('Failed to save preferences:', error);
-      toast.error('Failed to save preferences');
+      toast.error(t('profileSettings.preferences.preferencesSaveFailed'));
     } finally {
       setIsLoading(false);
     }
@@ -85,9 +85,9 @@ export const PreferencesSection = () => {
   };
 
   const themes = [
-    { id: 'light' as const, label: 'Light', icon: Sun },
-    { id: 'dark' as const, label: 'Dark', icon: Moon },
-    { id: 'system' as const, label: 'System', icon: Monitor },
+    { id: 'light' as const, label: t('profileSettings.preferences.theme.light'), icon: Sun },
+    { id: 'dark' as const, label: t('profileSettings.preferences.theme.dark'), icon: Moon },
+    { id: 'system' as const, label: t('profileSettings.preferences.theme.system'), icon: Monitor },
   ];
 
   const languages = [
@@ -103,9 +103,9 @@ export const PreferencesSection = () => {
           <div className="flex items-center gap-3">
             <Monitor className="w-5 h-5 text-emerald-400" />
             <div>
-              <h2 className="text-xl font-semibold text-white">Theme</h2>
+              <h2 className="text-xl font-semibold text-white">{t('profileSettings.preferences.theme.title')}</h2>
               <p className="text-sm text-gray-400 mt-1">
-                Choose your preferred color scheme
+                {t('profileSettings.preferences.theme.subtitle')}
               </p>
             </div>
           </div>
@@ -147,9 +147,9 @@ export const PreferencesSection = () => {
           <div className="flex items-center gap-3">
             <Globe className="w-5 h-5 text-emerald-400" />
             <div>
-              <h2 className="text-xl font-semibold text-white">Language</h2>
+              <h2 className="text-xl font-semibold text-white">{t('profileSettings.preferences.language.title')}</h2>
               <p className="text-sm text-gray-400 mt-1">
-                Select your preferred language
+                {t('profileSettings.preferences.language.subtitle')}
               </p>
             </div>
           </div>
