@@ -42,7 +42,7 @@ const getSkillTypeInfo = (type: string, t: any) => {
         label: t('skills.langchainTool'), 
         color: 'text-blue-400', 
         bgColor: 'bg-blue-500/10',
-        badge: 'Executable'
+        badge: t('skills.langchainTool')
       };
     case 'agent_skill':
       return { 
@@ -50,7 +50,7 @@ const getSkillTypeInfo = (type: string, t: any) => {
         label: t('skills.agentSkill'), 
         color: 'text-purple-400', 
         bgColor: 'bg-purple-500/10',
-        badge: 'Instructions'
+        badge: t('skills.agentSkill')
       };
     case 'agent_skill_simple':
       return { icon: Code2, label: t('skills.agentSkill'), color: 'text-blue-400', bgColor: 'bg-blue-500/10', badge: 'Simple' };

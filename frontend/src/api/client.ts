@@ -1,7 +1,7 @@
 import axios, { AxiosError } from 'axios';
 import type { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import { useAuthStore } from '../stores/authStore';
-import { useNotificationStore } from '../stores/notificationStore';
+import toast from 'react-hot-toast';
 
 /**
  * API Client Configuration
@@ -129,64 +129,50 @@ apiClient.interceptors.response.use(
       switch (status) {
         case 400:
           // Bad Request - Validation errors
-          useNotificationStore.getState().addNotification({
-            type: 'error',
-            title: 'Validation Error',
-            message: errorData?.message || errorData?.detail || 'Invalid request. Please check your input.',
+          toast.error(errorData?.message || errorData?.detail || 'Invalid request. Please check your input.', {
+            duration: 5000,
           });
           break;
 
         case 403:
           // Forbidden
-          useNotificationStore.getState().addNotification({
-            type: 'error',
-            title: 'Access Denied',
-            message: 'You do not have permission to perform this action.',
+          toast.error('You do not have permission to perform this action.', {
+            duration: 4000,
           });
           break;
 
         case 404:
           // Not Found
-          useNotificationStore.getState().addNotification({
-            type: 'error',
-            title: 'Not Found',
-            message: 'The requested resource was not found.',
+          toast.error('The requested resource was not found.', {
+            duration: 4000,
           });
           break;
 
         case 422:
           // Unprocessable Entity - Validation errors
-          useNotificationStore.getState().addNotification({
-            type: 'error',
-            title: 'Validation Error',
-            message: errorData?.message || errorData?.detail || 'Request validation failed.',
+          toast.error(errorData?.message || errorData?.detail || 'Request validation failed.', {
+            duration: 5000,
           });
           break;
 
         case 500:
           // Internal Server Error
-          useNotificationStore.getState().addNotification({
-            type: 'error',
-            title: 'Server Error',
-            message: 'An unexpected error occurred. Please try again later.',
+          toast.error('An unexpected error occurred. Please try again later.', {
+            duration: 5000,
           });
           break;
 
         case 502:
           // Bad Gateway
-          useNotificationStore.getState().addNotification({
-            type: 'error',
-            title: 'Service Unavailable',
-            message: 'The service is temporarily unavailable. Please try again later.',
+          toast.error('The service is temporarily unavailable. Please try again later.', {
+            duration: 5000,
           });
           break;
 
         case 503:
           // Service Unavailable
-          useNotificationStore.getState().addNotification({
-            type: 'error',
-            title: 'Service Unavailable',
-            message: 'The service is under maintenance. Please try again later.',
+          toast.error('The service is under maintenance. Please try again later.', {
+            duration: 5000,
           });
           break;
 
@@ -194,34 +180,26 @@ apiClient.interceptors.response.use(
           // Catch-all for other HTTP errors (4xx, 5xx)
           if (status >= 400) {
             const message = errorData?.message || errorData?.detail || `Request failed with status ${status}`;
-            useNotificationStore.getState().addNotification({
-              type: 'error',
-              title: status >= 500 ? 'Server Error' : 'Request Failed',
-              message: message,
+            toast.error(message, {
+              duration: 5000,
             });
           }
           break;
       }
     } else if (error.message === 'Network Error') {
       // Handle network errors
-      useNotificationStore.getState().addNotification({
-        type: 'error',
-        title: 'Network Error',
-        message: 'Unable to connect to the server. Please check your connection.',
+      toast.error('Unable to connect to the server. Please check your connection.', {
+        duration: 5000,
       });
     } else if (error.code === 'ECONNABORTED') {
       // Handle timeout
-      useNotificationStore.getState().addNotification({
-        type: 'error',
-        title: 'Request Timeout',
-        message: 'The request took too long to complete. Please try again.',
+      toast.error('The request took too long to complete. Please try again.', {
+        duration: 5000,
       });
     } else {
       // Catch-all for any other errors
-      useNotificationStore.getState().addNotification({
-        type: 'error',
-        title: 'Error',
-        message: error.message || 'An unexpected error occurred.',
+      toast.error(error.message || 'An unexpected error occurred.', {
+        duration: 4000,
       });
     }
 

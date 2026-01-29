@@ -5,7 +5,7 @@ import SkillTypeSelector, { type SkillType } from './SkillTypeSelector';
 import TemplateSelector from './TemplateSelector';
 import { skillsApi } from '@/api/skills';
 import { useTranslation } from 'react-i18next';
-import { useNotificationStore } from '@/stores/notificationStore';
+import toast from 'react-hot-toast';
 
 interface AddSkillModalV2Props {
   isOpen: boolean;
@@ -79,11 +79,8 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
       const isValid = validTypes.some(type => file.name.toLowerCase().endsWith(type));
       
       if (!isValid) {
-        // Show error via notification store
-        useNotificationStore.getState().addNotification({
-          type: 'error',
-          title: 'Invalid File Type',
-          message: 'Please upload a ZIP or TAR.GZ file.',
+        toast.error('Please upload a ZIP or TAR.GZ file.', {
+          duration: 4000,
         });
         return;
       }
@@ -99,6 +96,15 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // Manual validation for agent_skill file upload
+    if (skillType === 'agent_skill' && !uploadedFile) {
+      toast.error(t('skills.pleaseUploadPackage'), {
+        duration: 4000,
+      });
+      return;
+    }
+    
     setIsSubmitting(true);
     
     try {
@@ -338,7 +344,9 @@ def my_tool(param: str) -> str:
                             document.body.removeChild(a);
                           } catch (error) {
                             console.error('下载失败:', error);
-                            alert(t('skills.downloadFailed'));
+                            toast.error(t('skills.downloadFailed'), {
+                              duration: 4000,
+                            });
                           }
                         }}
                         className="text-sm text-indigo-500 hover:text-indigo-600 dark:text-indigo-400 dark:hover:text-indigo-300 flex items-center gap-1.5 transition-all duration-300 hover:gap-2 font-medium"
@@ -363,7 +371,6 @@ def my_tool(param: str) -> str:
                         onChange={handleFileUpload}
                         className="hidden"
                         id="package-upload"
-                        required
                       />
                       <label htmlFor="package-upload" className="cursor-pointer block">
                         {uploadedFile ? (
