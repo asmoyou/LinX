@@ -2,11 +2,13 @@ name: Security Scanning
 
 on:
   push:
-    branches: [ main, develop ]
+    tags:
+      - 'v*'
   pull_request:
     branches: [ main, develop ]
   schedule:
     - cron: '0 2 * * 1'  # Weekly on Monday at 2 AM UTC
+  workflow_dispatch:  # Manual trigger
 
 jobs:
   trivy-repo-scan:
