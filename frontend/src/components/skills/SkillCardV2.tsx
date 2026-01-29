@@ -1,4 +1,4 @@
-import { Code2, Zap, Package, Layers, Trash2, Edit, Eye, Play, Power, PowerOff } from 'lucide-react';
+import { Code2, Zap, Package, Layers, Trash2, Edit, Eye, Play, Power, PowerOff, BookOpen, AlertCircle } from 'lucide-react';
 import type { Skill } from '@/api/skills';
 import { useTranslation } from 'react-i18next';
 
@@ -8,6 +8,24 @@ interface SkillCardV2Props {
     is_active?: boolean;
     execution_count?: number;
     average_execution_time?: number;
+    homepage?: string;
+    metadata?: {
+      emoji?: string;
+      requires?: {
+        bins?: string[];
+        env?: string[];
+        config?: string[];
+      };
+      os?: string[];
+    };
+    gating_status?: {
+      eligible: boolean;
+      missing_bins?: string[];
+      missing_env?: string[];
+      missing_config?: string[];
+      os_compatible?: boolean;
+      reason?: string;
+    };
   };
   onEdit: (skill: Skill) => void;
   onDelete: (skillId: string) => void;
@@ -19,15 +37,29 @@ interface SkillCardV2Props {
 const getSkillTypeInfo = (type: string, t: any) => {
   switch (type) {
     case 'langchain_tool':
-      return { icon: Zap, label: t('skills.langchainTool'), color: 'text-green-400', bgColor: 'bg-green-500/10' };
+      return { 
+        icon: Code2, 
+        label: t('skills.langchainTool'), 
+        color: 'text-blue-400', 
+        bgColor: 'bg-blue-500/10',
+        badge: 'Executable'
+      };
+    case 'agent_skill':
+      return { 
+        icon: BookOpen, 
+        label: t('skills.agentSkill'), 
+        color: 'text-purple-400', 
+        bgColor: 'bg-purple-500/10',
+        badge: 'Instructions'
+      };
     case 'agent_skill_simple':
-      return { icon: Code2, label: t('skills.agentSkill'), color: 'text-blue-400', bgColor: 'bg-blue-500/10' };
+      return { icon: Code2, label: t('skills.agentSkill'), color: 'text-blue-400', bgColor: 'bg-blue-500/10', badge: 'Simple' };
     case 'agent_skill_module':
-      return { icon: Layers, label: 'Module', color: 'text-purple-400', bgColor: 'bg-purple-500/10' };
+      return { icon: Layers, label: 'Module', color: 'text-purple-400', bgColor: 'bg-purple-500/10', badge: 'Module' };
     case 'agent_skill_package':
-      return { icon: Package, label: 'Package', color: 'text-orange-400', bgColor: 'bg-orange-500/10' };
+      return { icon: Package, label: 'Package', color: 'text-orange-400', bgColor: 'bg-orange-500/10', badge: 'Package' };
     default:
-      return { icon: Code2, label: 'Skill', color: 'text-white/60', bgColor: 'bg-white/10' };
+      return { icon: Code2, label: 'Skill', color: 'text-white/60', bgColor: 'bg-white/10', badge: 'Unknown' };
   }
 };
 
@@ -54,7 +86,11 @@ export default function SkillCardV2({
         <div className="flex items-start justify-between mb-4">
           <div className="flex items-start gap-3 flex-1">
             <div className={`p-3 rounded-xl ${typeInfo.bgColor} shadow-lg group-hover:shadow-xl transition-shadow duration-300`}>
-              <TypeIcon className={`w-6 h-6 ${typeInfo.color}`} />
+              {skill.metadata?.emoji ? (
+                <span className="text-2xl">{skill.metadata.emoji}</span>
+              ) : (
+                <TypeIcon className={`w-6 h-6 ${typeInfo.color}`} />
+              )}
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -62,7 +98,7 @@ export default function SkillCardV2({
                   {skill.name}
                 </h3>
                 <span className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${typeInfo.bgColor} ${typeInfo.color}`}>
-                  {typeInfo.label}
+                  {typeInfo.badge}
                 </span>
                 {skill.is_active !== undefined && (
                   <span
@@ -79,9 +115,52 @@ export default function SkillCardV2({
               <p className="text-sm text-muted-foreground line-clamp-2">
                 {skill.description}
               </p>
+              
+              {/* Homepage link for agent_skill */}
+              {skill.skill_type === 'agent_skill' && skill.homepage && (
+                <a
+                  href={skill.homepage}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-primary hover:underline mt-1 inline-block"
+                >
+                  🔗 {skill.homepage}
+                </a>
+              )}
             </div>
           </div>
         </div>
+
+        {/* Gating requirements for agent_skill */}
+        {skill.skill_type === 'agent_skill' && skill.metadata?.requires && (
+          <div className="mb-4 p-3 rounded-xl bg-muted/30">
+            <div className="text-xs font-medium text-muted-foreground mb-2">
+              {t('skills.requirements')}:
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {skill.metadata.requires.bins && skill.metadata.requires.bins.length > 0 && (
+                <div className="flex items-center gap-1 text-xs">
+                  <span className="text-muted-foreground">Bins:</span>
+                  <span className="text-foreground">{skill.metadata.requires.bins.join(', ')}</span>
+                </div>
+              )}
+              {skill.metadata.requires.env && skill.metadata.requires.env.length > 0 && (
+                <div className="flex items-center gap-1 text-xs">
+                  <span className="text-muted-foreground">Env:</span>
+                  <span className="text-foreground">{skill.metadata.requires.env.join(', ')}</span>
+                </div>
+              )}
+            </div>
+            
+            {/* Gating status indicator */}
+            {skill.gating_status && !skill.gating_status.eligible && (
+              <div className="mt-2 flex items-center gap-2 text-xs text-orange-400">
+                <AlertCircle className="w-3 h-3" />
+                <span>{t('skills.requirementsNotMet')}</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-3 gap-3 mb-4 flex-shrink-0">

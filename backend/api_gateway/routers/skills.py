@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi import APIRouter, Depends, HTTPException, Query, Body, UploadFile, File, Form
 from pydantic import BaseModel, Field
 
 from access_control.permissions import get_current_user, CurrentUser
@@ -19,6 +19,11 @@ from skill_library.skill_types import SkillType, StorageType
 from skill_library.templates import get_skill_templates, get_template_by_id
 from skill_library.execution_engine import get_execution_engine
 from skill_library.langchain_parser import parse_langchain_tool
+from skill_library.skill_md_parser import SkillMdParser
+from skill_library.gating_engine import GatingEngine
+from skill_library.package_handler import PackageHandler
+from skill_library.nl_tester import NaturalLanguageTester
+from object_storage.minio_client import get_minio_client
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +78,10 @@ class SkillResponse(BaseModel):
     last_executed_at: Optional[str] = None
     created_at: Optional[str] = None
     created_by: Optional[str] = None
+    skill_md_content: Optional[str] = None
+    homepage: Optional[str] = None
+    metadata: Optional[dict] = None
+    gating_status: Optional[dict] = None
 
     @classmethod
     def from_skill_info(cls, skill_info: SkillInfo, include_code: bool = False) -> "SkillResponse":
@@ -82,6 +91,21 @@ class SkillResponse(BaseModel):
             skill_info: Skill information
             include_code: Whether to include code in response
         """
+        # Get additional fields from database if available
+        skill_md_content = None
+        homepage = None
+        metadata = None
+        gating_status = None
+        
+        if hasattr(skill_info, 'skill_md_content'):
+            skill_md_content = skill_info.skill_md_content
+        if hasattr(skill_info, 'homepage'):
+            homepage = skill_info.homepage
+        if hasattr(skill_info, 'metadata'):
+            metadata = skill_info.metadata
+        if hasattr(skill_info, 'gating_status'):
+            gating_status = skill_info.gating_status
+        
         return cls(
             skill_id=str(skill_info.skill_id),
             name=skill_info.name,
@@ -102,6 +126,10 @@ class SkillResponse(BaseModel):
             last_executed_at=skill_info.last_executed_at.isoformat() if skill_info.last_executed_at else None,
             created_at=skill_info.created_at.isoformat() if skill_info.created_at else None,
             created_by=str(skill_info.created_by) if skill_info.created_by else None,
+            skill_md_content=skill_md_content,
+            homepage=homepage,
+            metadata=metadata,
+            gating_status=gating_status,
         )
 
 
@@ -201,154 +229,27 @@ async def download_package_template(
     """Download a reference package template for Agent Skills.
     
     Returns a ZIP file containing:
-    - main.py: Entry point with @tool decorated function
-    - requirements.txt: Dependencies
-    - config.yaml: Optional configuration
-    - README.md: Usage instructions
+    - SKILL.md: Main skill definition with natural language instructions (required)
+    - weather_helper.py: Python helper script for API calls
+    - utils.py: Utility functions for data processing
+    - requirements.txt: Python dependencies
+    - README.md: Documentation and usage guide (optional)
+    - config.yaml: Configuration template (optional)
+    - assets/: Additional resources folder (optional)
+    
+    The template follows the AgentSkills.io standard format and includes
+    working Python code that can be executed by agents.
     """
-    import io
-    import zipfile
+    from skill_library.template_generator import generate_agent_skill_template
     from fastapi.responses import StreamingResponse
+    import io
     
     try:
-        # Create in-memory ZIP file
-        zip_buffer = io.BytesIO()
-        
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            # main.py
-            main_py = '''"""Agent Skill Package Example
-
-This is a reference template for creating Agent Skill packages.
-"""
-
-from langchain_core.tools import tool
-import requests
-from typing import Dict, Any, Optional
-
-
-@tool
-def my_agent_skill(
-    url: str,
-    method: str = "GET",
-    headers: Optional[Dict[str, str]] = None,
-    timeout: int = 30
-) -> str:
-    """Example agent skill that makes HTTP requests.
-    
-    This is a flexible agent skill that can be customized for your needs.
-    
-    Args:
-        url: The API endpoint URL
-        method: HTTP method (GET, POST, PUT, DELETE)
-        headers: Optional request headers
-        timeout: Request timeout in seconds
-        
-    Returns:
-        API response as string
-    """
-    try:
-        response = requests.request(
-            method=method.upper(),
-            url=url,
-            headers=headers or {},
-            timeout=timeout
-        )
-        response.raise_for_status()
-        return response.text
-    except requests.exceptions.Timeout:
-        return f"Error: Request timed out after {timeout} seconds"
-    except requests.exceptions.RequestException as e:
-        return f"Error: {str(e)}"
-
-
-# You can add more functions and helper code here
-def helper_function():
-    """Helper functions don't need @tool decorator."""
-    pass
-'''
-            zip_file.writestr('main.py', main_py)
-            
-            # requirements.txt
-            requirements = '''# Python dependencies for this skill
-requests>=2.31.0
-langchain-core>=0.1.0
-'''
-            zip_file.writestr('requirements.txt', requirements)
-            
-            # config.yaml (optional)
-            config = '''# Optional configuration file
-skill:
-  name: my_agent_skill
-  version: 1.0.0
-  timeout: 30
-  
-# Add your custom configuration here
-'''
-            zip_file.writestr('config.yaml', config)
-            
-            # README.md
-            readme = '''# Agent Skill Package Template
-
-This is a reference template for creating Agent Skill packages.
-
-## Structure
-
-```
-my-skill-package/
-├── main.py              # Main entry point with @tool decorated function
-├── requirements.txt     # Python dependencies
-├── config.yaml          # Optional configuration
-└── README.md           # This file
-```
-
-## Usage
-
-1. **Modify main.py**: Update the `my_agent_skill` function with your logic
-2. **Add dependencies**: List required packages in `requirements.txt`
-3. **Configure**: Add any configuration in `config.yaml`
-4. **Package**: Zip all files together
-5. **Upload**: Upload the ZIP file through the LinX interface
-
-## Requirements
-
-- The main file must contain at least one function decorated with `@tool`
-- Function must have proper docstring with Args and Returns sections
-- All dependencies must be listed in `requirements.txt`
-
-## Example
-
-```python
-from langchain_core.tools import tool
-
-@tool
-def my_skill(param: str) -> str:
-    """Skill description.
-    
-    Args:
-        param: Parameter description
-        
-    Returns:
-        Result description
-    """
-    # Your implementation
-    return result
-```
-
-## Tips
-
-- Keep the main function simple and focused
-- Use helper functions for complex logic
-- Add proper error handling
-- Test locally before uploading
-- Document all parameters clearly
-'''
-            zip_file.writestr('README.md', readme)
-        
-        # Prepare response
-        zip_buffer.seek(0)
+        # Generate template ZIP
+        zip_content = generate_agent_skill_template()
         
         return StreamingResponse(
-            io.BytesIO(zip_buffer.getvalue()),
+            io.BytesIO(zip_content),
             media_type="application/zip",
             headers={
                 "Content-Disposition": "attachment; filename=agent-skill-package-template.zip",
@@ -398,74 +299,191 @@ async def get_skill(
 
 @router.post("", response_model=SkillResponse, status_code=201)
 async def create_skill(
-    request: CreateSkillRequest,
+    name: str = Form(...),
+    description: str = Form(...),
+    skill_type: str = Form(default="langchain_tool"),
+    version: str = Form(default="1.0.0"),
+    package_file: Optional[UploadFile] = File(None),
+    code: Optional[str] = Form(None),
+    dependencies: Optional[str] = Form(None),  # JSON string
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Create a new skill.
+    
+    For agent_skill: package_file is required (ZIP/tar.gz with SKILL.md)
+    For langchain_tool: code is required
 
     Args:
-        request: Skill creation request
+        name: Skill name
+        description: Skill description
+        skill_type: Type of skill (langchain_tool or agent_skill)
+        version: Skill version
+        package_file: Package file for agent_skill (ZIP or tar.gz)
+        code: Python code for langchain_tool
+        dependencies: JSON string of dependencies list
         current_user: Authenticated user
 
     Returns:
         Created skill
     """
     try:
+        import json
+        
+        # Parse dependencies
+        deps_list = []
+        if dependencies:
+            try:
+                deps_list = json.loads(dependencies)
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid dependencies JSON")
+        
         registry = get_skill_registry()
 
-        # Parse interface from code first (for LangChain tools)
-        interface_def = None
-        if request.code:
-            # Parse interface from code (for LangChain tools)
-            interface_def = parse_langchain_tool(request.code)
-            logger.info(f"Parsed interface from code: {interface_def}")
+        # Handle agent_skill with package
+        if skill_type == "agent_skill":
+            if not package_file:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Package file required for agent_skill"
+                )
+            
+            # Read package file
+            file_data = await package_file.read()
+            
+            # Extract and validate package
+            handler = PackageHandler(get_minio_client())
+            try:
+                package_info = handler.extract_package(file_data)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid package: {str(e)}")
+            
+            # Validate package
+            validation_errors = handler.validate_package(package_info)
+            if validation_errors:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Package validation failed: {', '.join(validation_errors)}"
+                )
+            
+            # Parse SKILL.md
+            parser = SkillMdParser()
+            with open(package_info.skill_md_path, 'r', encoding='utf-8') as f:
+                skill_md_content = f.read()
+            
+            try:
+                parsed = parser.parse(skill_md_content)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid SKILL.md: {str(e)}")
+            
+            # Validate parsed skill
+            validation_errors = parser.validate(parsed)
+            if validation_errors:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"SKILL.md validation failed: {', '.join(validation_errors)}"
+                )
+            
+            # Check gating requirements
+            gating = GatingEngine()
+            gating_result = gating.check_eligibility(parsed.metadata)
+            
+            # Upload package to MinIO
+            try:
+                storage_path = await handler.upload_package(file_data, name, version)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Upload failed: {str(e)}")
+            
+            # Create skill with SKILL.md data
+            from dataclasses import asdict
+            
+            skill = registry.register_skill(
+                name=name,
+                description=description,
+                interface_definition={
+                    "inputs": {},
+                    "outputs": {"result": "string"},
+                    "required_inputs": [],
+                },
+                dependencies=deps_list,
+                version=version,
+                skill_type="agent_skill",
+                storage_type="minio",
+                storage_path=storage_path,
+                skill_md_content=skill_md_content,
+                homepage=parsed.metadata.homepage,
+                metadata=asdict(parsed.metadata),
+                gating_status=asdict(gating_result),
+                is_active=True,
+                is_system=False,
+                created_by=str(current_user.user_id),
+                validate=False,
+            )
+            
+            logger.info(
+                f"Agent skill created from package by user {current_user.user_id}",
+                extra={
+                    "skill_id": str(skill.skill_id),
+                    "skill_name": name,
+                    "storage_path": storage_path,
+                    "gating_eligible": gating_result.eligible,
+                },
+            )
+            
+            return SkillResponse.from_skill_info(skill)
         
-        # Fall back to explicit interface definition if no code or parsing failed
-        if not interface_def or not interface_def.get("inputs"):
-            if request.interface_definition:
-                interface_def = {
-                    "inputs": request.interface_definition.inputs,
-                    "outputs": request.interface_definition.outputs,
-                    "required_inputs": request.interface_definition.required_inputs or [],
-                }
-            else:
-                # Default interface for skills without explicit definition
+        # Handle langchain_tool with code
+        elif skill_type == "langchain_tool":
+            if not code:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Code required for langchain_tool"
+                )
+            
+            # Parse interface from code
+            interface_def = parse_langchain_tool(code)
+            logger.info(f"Parsed interface from code: {interface_def}")
+            
+            # Fall back to default interface if parsing failed
+            if not interface_def or not interface_def.get("inputs"):
                 interface_def = {
                     "inputs": {},
                     "outputs": {"result": "string"},
                     "required_inputs": [],
                 }
-
-        # Determine storage type based on code presence and size
-        storage_type = "inline"  # Default for now, MinIO support coming later
+            
+            skill = registry.register_skill(
+                name=name,
+                description=description,
+                interface_definition=interface_def,
+                dependencies=deps_list,
+                version=version,
+                skill_type="langchain_tool",
+                storage_type="inline",
+                code=code,
+                is_active=True,
+                is_system=False,
+                created_by=str(current_user.user_id),
+                validate=False,
+            )
+            
+            logger.info(
+                f"LangChain tool created by user {current_user.user_id}",
+                extra={"skill_id": str(skill.skill_id), "skill_name": name},
+            )
+            
+            return SkillResponse.from_skill_info(skill)
         
-        skill = registry.register_skill(
-            name=request.name,
-            description=request.description,
-            interface_definition=interface_def,
-            dependencies=request.dependencies or [],
-            version=request.version,
-            skill_type=request.skill_type or "langchain_tool",
-            storage_type=storage_type,
-            code=request.code,
-            is_active=True,
-            is_system=False,
-            created_by=str(current_user.user_id),
-            validate=False,  # Skip validation for now
-        )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid skill_type: {skill_type}"
+            )
 
-        logger.info(
-            f"Skill created by user {current_user.user_id}",
-            extra={"skill_id": str(skill.skill_id), "skill_name": request.name},
-        )
-
-        return SkillResponse.from_skill_info(skill)
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to create skill: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create skill")
+        logger.error(f"Failed to create skill: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create skill: {str(e)}")
 
 
 @router.put("/{skill_id}", response_model=SkillResponse)
@@ -654,14 +672,21 @@ async def create_from_template(
 @router.post("/{skill_id}/test")
 async def test_skill(
     skill_id: str,
-    inputs: Dict[str, Any] = Body(...),
+    inputs: Optional[Dict[str, Any]] = Body(None),
+    natural_language_input: Optional[str] = Body(None),
+    dry_run: bool = Body(True),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Test skill execution.
     
+    For langchain_tool: Use inputs dict with structured parameters
+    For agent_skill: Use natural_language_input with natural language
+    
     Args:
         skill_id: Skill UUID
-        inputs: Input parameters for the skill
+        inputs: Input parameters for langchain_tool (structured)
+        natural_language_input: Natural language input for agent_skill
+        dry_run: If True, simulate execution without running commands (agent_skill only)
         current_user: Authenticated user
         
     Returns:
@@ -678,27 +703,85 @@ async def test_skill(
         if not skill:
             raise HTTPException(status_code=404, detail="Skill not found")
         
-        # Execute skill
-        engine = get_execution_engine()
-        result = await engine.execute_skill(skill, inputs)
-        
-        logger.info(
-            f"Skill tested by user {current_user.user_id}",
-            extra={
-                "skill_id": skill_id,
+        # Handle agent_skill with natural language testing
+        if skill.skill_type == "agent_skill":
+            if not natural_language_input:
+                raise HTTPException(
+                    status_code=400,
+                    detail="natural_language_input required for agent_skill"
+                )
+            
+            if not skill.skill_md_content:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Skill has no SKILL.md content"
+                )
+            
+            # Test with natural language
+            tester = NaturalLanguageTester()
+            result = tester.test_skill(
+                skill.skill_md_content,
+                natural_language_input,
+                dry_run=dry_run
+            )
+            
+            logger.info(
+                f"Agent skill tested by user {current_user.user_id}",
+                extra={
+                    "skill_id": skill_id,
+                    "success": result.success,
+                    "execution_time": result.execution_time,
+                    "dry_run": dry_run,
+                }
+            )
+            
+            # Convert result to dict
+            from dataclasses import asdict
+            return {
                 "success": result.success,
-                "execution_time": result.execution_time
+                "input": result.input,
+                "parsed_commands": [asdict(cmd) for cmd in result.parsed_commands],
+                "simulated_output": result.simulated_output,
+                "actual_output": result.actual_output,
+                "execution_time": result.execution_time,
+                "error": result.error,
             }
-        )
         
-        return result.to_dict()
+        # Handle langchain_tool with structured testing
+        elif skill.skill_type == "langchain_tool":
+            if inputs is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="inputs required for langchain_tool"
+                )
+            
+            # Execute skill
+            engine = get_execution_engine()
+            result = await engine.execute_skill(skill, inputs)
+            
+            logger.info(
+                f"LangChain tool tested by user {current_user.user_id}",
+                extra={
+                    "skill_id": skill_id,
+                    "success": result.success,
+                    "execution_time": result.execution_time
+                }
+            )
+            
+            return result.to_dict()
+        
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown skill_type: {skill.skill_type}"
+            )
         
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to test skill: {e}")
+        logger.error(f"Failed to test skill: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to test skill: {str(e)}")
 
 

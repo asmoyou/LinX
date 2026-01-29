@@ -7,6 +7,7 @@ interface SkillTesterModalProps {
   onClose: () => void;
   skillId: string;
   skillName: string;
+  skillType?: string;
   interfaceDefinition: {
     inputs: Record<string, string>;
     outputs: Record<string, string>;
@@ -19,6 +20,7 @@ export default function SkillTesterModal({
   onClose,
   skillId,
   skillName,
+  skillType,
   interfaceDefinition,
 }: SkillTesterModalProps) {
   const { t } = useTranslation();
@@ -46,6 +48,7 @@ export default function SkillTesterModal({
           <SkillTester
             skillId={skillId}
             skillName={skillName}
+            skillType={skillType}
             interfaceDefinition={interfaceDefinition}
           />
         </div>

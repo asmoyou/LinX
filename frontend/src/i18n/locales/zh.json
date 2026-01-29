@@ -405,21 +405,21 @@
     "types": {
       "langchainTool": {
         "title": "LangChain Tool",
-        "description": "简单标准化工具",
+        "description": "可执行Python代码",
         "details": "单个Python函数，使用@tool装饰器，适合简单操作",
-        "badge": "简单",
+        "badge": "可执行",
         "example1": "计算器",
         "example2": "网页搜索",
         "example3": "数据转换"
       },
       "agentSkill": {
         "title": "Agent Skill",
-        "description": "灵活技能包",
-        "details": "可以是单文件或完整项目，存储方式自动优化",
-        "badge": "灵活",
-        "example1": "API客户端",
-        "example2": "数据分析",
-        "example3": "文件处理",
+        "description": "自然语言指令",
+        "details": "SKILL.md格式的自然语言指令，适合复杂工作流",
+        "badge": "指令",
+        "example1": "天气预报",
+        "example2": "API集成",
+        "example3": "数据分析",
         "example4": "多步骤工作流"
       }
     }

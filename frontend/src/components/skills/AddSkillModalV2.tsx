@@ -12,13 +12,12 @@ interface AddSkillModalV2Props {
   onSubmit: (data: any) => Promise<void>;
 }
 
-type AgentSkillMode = 'single' | 'package';
+type AgentSkillMode = 'package';
 
 export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillModalV2Props) {
   const { t } = useTranslation();
   const [step, setStep] = useState<'type' | 'template' | 'code'>('type');
   const [skillType, setSkillType] = useState<SkillType>('langchain_tool');
-  const [agentSkillMode, setAgentSkillMode] = useState<AgentSkillMode>('single');
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
@@ -35,7 +34,6 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
   const handleClose = () => {
     setStep('type');
     setSkillType('langchain_tool');
-    setAgentSkillMode('single');
     setSelectedTemplate(null);
     setUploadedFile(null);
     setFormData({ name: '', description: '', code: '', dependencies: [] });
@@ -63,9 +61,8 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
         skill_type: skillType,
       };
 
-      // For agent skills in package mode, include file upload
-      if (skillType === 'agent_skill' && agentSkillMode === 'package' && uploadedFile) {
-        // TODO: Handle file upload to MinIO
+      // For agent skills, include file upload (required)
+      if (skillType === 'agent_skill' && uploadedFile) {
         submitData.package_file = uploadedFile;
       }
 
@@ -99,100 +96,12 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
             <>
               <SkillTypeSelector selectedType={skillType} onTypeChange={setSkillType} />
               
-              {/* Agent Skill Mode Selection */}
-              {skillType === 'agent_skill' && (
-                <div className="space-y-3">
-                  <label className="block text-sm font-medium text-gray-800 dark:text-white">
-                    {t('skills.selectImplementation')}
-                  </label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <button
-                      type="button"
-                      onClick={() => setAgentSkillMode('single')}
-                      className={`
-                        relative p-6 rounded-xl transition-all duration-300 text-left
-                        ${
-                          agentSkillMode === 'single'
-                            ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/30'
-                            : 'glass text-gray-700 dark:text-gray-300 hover:bg-white/30 dark:hover:bg-black/30'
-                        }
-                      `}
-                    >
-                      <div className="flex items-start gap-4">
-                        <div className={`p-3 rounded-xl transition-all duration-300 ${
-                          agentSkillMode === 'single' 
-                            ? 'bg-white/20' 
-                            : 'bg-gray-100 dark:bg-gray-800'
-                        }`}>
-                          <FileCode className={`w-6 h-6 ${
-                            agentSkillMode === 'single' 
-                              ? 'text-white' 
-                              : 'text-gray-600 dark:text-gray-400'
-                          }`} />
-                        </div>
-                        <div className="flex-1">
-                          <h4 className="font-semibold mb-1">
-                            {t('skills.singleFileCode')}
-                          </h4>
-                          <p className={`text-sm ${
-                            agentSkillMode === 'single' 
-                              ? 'text-white/80' 
-                              : 'text-gray-600 dark:text-gray-400'
-                          }`}>
-                            {t('skills.singleFileDesc')}
-                          </p>
-                        </div>
-                      </div>
-                    </button>
-                    
-                    <button
-                      type="button"
-                      onClick={() => setAgentSkillMode('package')}
-                      className={`
-                        relative p-6 rounded-xl transition-all duration-300 text-left
-                        ${
-                          agentSkillMode === 'package'
-                            ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/30'
-                            : 'glass text-gray-700 dark:text-gray-300 hover:bg-white/30 dark:hover:bg-black/30'
-                        }
-                      `}
-                    >
-                      <div className="flex items-start gap-4">
-                        <div className={`p-3 rounded-xl transition-all duration-300 ${
-                          agentSkillMode === 'package' 
-                            ? 'bg-white/20' 
-                            : 'bg-gray-100 dark:bg-gray-800'
-                        }`}>
-                          <Upload className={`w-6 h-6 ${
-                            agentSkillMode === 'package' 
-                              ? 'text-white' 
-                              : 'text-gray-600 dark:text-gray-400'
-                          }`} />
-                        </div>
-                        <div className="flex-1">
-                          <h4 className="font-semibold mb-1">
-                            {t('skills.uploadPackage')}
-                          </h4>
-                          <p className={`text-sm ${
-                            agentSkillMode === 'package' 
-                              ? 'text-white/80' 
-                              : 'text-gray-600 dark:text-gray-400'
-                          }`}>
-                            {t('skills.uploadPackageDesc')}
-                          </p>
-                        </div>
-                      </div>
-                    </button>
-                  </div>
-                </div>
-              )}
-              
               <div className="flex justify-end pt-4">
                 <button
                   type="button"
                   onClick={() => {
-                    // Agent skill package mode skips template selection
-                    if (skillType === 'agent_skill' && agentSkillMode === 'package') {
+                    // Agent skill skips template selection (always package upload)
+                    if (skillType === 'agent_skill') {
                       setStep('code');
                     } else {
                       setStep('template');
@@ -274,8 +183,8 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
                   />
                 </div>
 
-                {/* Code Editor for Single File Mode */}
-                {(skillType === 'langchain_tool' || (skillType === 'agent_skill' && agentSkillMode === 'single')) && (
+                {/* Code Editor for LangChain Tool */}
+                {skillType === 'langchain_tool' && (
                   <div>
                     <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
                       {t('skills.pythonCode')} *
@@ -284,9 +193,7 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
                       value={formData.code}
                       onChange={(value) => setFormData({ ...formData, code: value })}
                       height="400px"
-                      placeholder={
-                        skillType === 'langchain_tool'
-                          ? `from langchain_core.tools import tool
+                      placeholder={`from langchain_core.tools import tool
 
 @tool
 def my_tool(param: str) -> str:
@@ -300,34 +207,13 @@ def my_tool(param: str) -> str:
     """
     # 你的代码
     return result
-`
-                          : `from langchain_core.tools import tool
-import requests
-from typing import Dict, Any
-
-@tool
-def my_skill(url: str, method: str = "GET") -> Dict[str, Any]:
-    """技能描述
-    
-    这是一个灵活的Agent Skill，可以包含更复杂的逻辑
-    
-    Args:
-        url: API地址
-        method: HTTP方法
-        
-    Returns:
-        API响应
-    """
-    response = requests.request(method, url)
-    return response.json()
-`
-                      }
+`}
                     />
                   </div>
                 )}
 
-                {/* File Upload for Package Mode */}
-                {skillType === 'agent_skill' && agentSkillMode === 'package' && (
+                {/* File Upload for Agent Skill (Package Only) */}
+                {skillType === 'agent_skill' && (
                   <div>
                     <div className="flex items-center justify-between mb-3">
                       <label className="block text-sm font-medium text-gray-800 dark:text-white">
@@ -402,9 +288,24 @@ def my_skill(url: str, method: str = "GET") -> Dict[str, Any]:
                         )}
                       </label>
                     </div>
-                    <div className="mt-3 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
-                      <p className="text-xs text-gray-800 dark:text-white">
-                        💡 {t('skills.packageNote')}
+                    <div className="mt-3 p-4 rounded-lg bg-purple-500/10 border border-purple-500/20 space-y-2">
+                      <p className="text-sm font-semibold text-gray-800 dark:text-white">
+                        📦 Package Structure:
+                      </p>
+                      <div className="text-xs text-gray-700 dark:text-gray-300 font-mono space-y-1 pl-4">
+                        <div>├── SKILL.md (required - skill definition)</div>
+                        <div>├── README.md (optional - documentation)</div>
+                        <div>├── requirements.txt (optional - Python deps)</div>
+                        <div>├── scripts/ (optional - executable scripts)</div>
+                        <div>│   ├── helper.py</div>
+                        <div>│   └── utils.py</div>
+                        <div>└── references/ (optional - reference docs)</div>
+                      </div>
+                      <p className="text-xs text-gray-600 dark:text-gray-400 pt-2">
+                        💡 SKILL.md = Instructions + Executable Code (scripts/src/)
+                      </p>
+                      <p className="text-xs text-gray-600 dark:text-gray-400">
+                        🔧 Use {'{baseDir}'} placeholder for script paths
                       </p>
                     </div>
                   </div>
@@ -415,8 +316,8 @@ def my_skill(url: str, method: str = "GET") -> Dict[str, Any]:
                 <button
                   type="button"
                   onClick={() => {
-                    // Agent skill package mode should go back to type selection
-                    if (skillType === 'agent_skill' && agentSkillMode === 'package') {
+                    // Agent skill goes back to type selection (skips template)
+                    if (skillType === 'agent_skill') {
                       setStep('type');
                     } else {
                       setStep('template');

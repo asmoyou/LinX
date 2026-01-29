@@ -3,6 +3,14 @@
 # Clean restart script for backend
 # This ensures all Python cache is cleared and backend runs with latest code
 
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Change to the backend directory
+cd "$SCRIPT_DIR"
+
+echo "📂 Working directory: $(pwd)"
+echo ""
 echo "🧹 Cleaning Python cache files..."
 find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find . -type f -name "*.pyc" -delete 2>/dev/null || true

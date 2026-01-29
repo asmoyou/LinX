@@ -29,6 +29,25 @@ export interface Skill {
   dependencies: string[];
   created_at: string;
   created_by?: string;
+  skill_md_content?: string;
+  homepage?: string;
+  metadata?: {
+    emoji?: string;
+    requires?: {
+      bins?: string[];
+      env?: string[];
+      config?: string[];
+    };
+    os?: string[];
+  };
+  gating_status?: {
+    eligible: boolean;
+    missing_bins?: string[];
+    missing_env?: string[];
+    missing_config?: string[];
+    os_compatible?: boolean;
+    reason?: string;
+  };
 }
 
 export interface CreateSkillRequest {
@@ -39,6 +58,7 @@ export interface CreateSkillRequest {
   config?: Record<string, any>;
   dependencies?: string[];
   version?: string;
+  package_file?: File;
 }
 
 export interface UpdateSkillRequest {
@@ -80,6 +100,26 @@ export const skillsApi = {
    * Create new skill
    */
   async create(data: CreateSkillRequest): Promise<Skill> {
+    // If package_file is provided, use multipart/form-data
+    if (data.package_file) {
+      const formData = new FormData();
+      formData.append('name', data.name);
+      formData.append('description', data.description);
+      if (data.skill_type) formData.append('skill_type', data.skill_type);
+      if (data.version) formData.append('version', data.version);
+      if (data.package_file) formData.append('package_file', data.package_file);
+      if (data.config) formData.append('config', JSON.stringify(data.config));
+      if (data.dependencies) formData.append('dependencies', JSON.stringify(data.dependencies));
+
+      const response = await apiClient.post<Skill>('/skills', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      return response.data;
+    }
+
+    // Otherwise use JSON
     const response = await apiClient.post<Skill>('/skills', data);
     return response.data;
   },
@@ -123,9 +163,14 @@ export const skillsApi = {
 
   /**
    * Test skill execution
+   * For langchain_tool: Pass structured inputs
+   * For agent_skill: Pass natural_language_input and optional dry_run
    */
-  async testSkill(skillId: string, inputs: Record<string, any>): Promise<any> {
-    const response = await apiClient.post(`/skills/${skillId}/test`, inputs);
+  async testSkill(
+    skillId: string,
+    params: { inputs?: Record<string, any>; natural_language_input?: string; dry_run?: boolean }
+  ): Promise<any> {
+    const response = await apiClient.post(`/skills/${skillId}/test`, params);
     return response.data;
   },
 

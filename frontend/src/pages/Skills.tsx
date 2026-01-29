@@ -283,6 +283,7 @@ export default function Skills() {
             }}
             skillId={selectedSkill.skill_id}
             skillName={selectedSkill.name}
+            skillType={selectedSkill.skill_type}
             interfaceDefinition={selectedSkill.interface_definition}
           />
         )}

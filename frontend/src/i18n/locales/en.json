@@ -405,21 +405,21 @@
     "types": {
       "langchainTool": {
         "title": "LangChain Tool",
-        "description": "Simple Standardized Tool",
+        "description": "Executable Python Code",
         "details": "Single Python function with @tool decorator, suitable for simple operations",
-        "badge": "Simple",
+        "badge": "Executable",
         "example1": "Calculator",
         "example2": "Web Search",
         "example3": "Data Conversion"
       },
       "agentSkill": {
         "title": "Agent Skill",
-        "description": "Flexible Skill Package",
-        "details": "Can be a single file or complete project, storage method automatically optimized",
-        "badge": "Flexible",
-        "example1": "API Client",
-        "example2": "Data Analysis",
-        "example3": "File Processing",
+        "description": "Natural Language Instructions",
+        "details": "SKILL.md format with natural language instructions, suitable for complex workflows",
+        "badge": "Instructions",
+        "example1": "Weather Forecast",
+        "example2": "API Integration",
+        "example3": "Data Analysis",
         "example4": "Multi-step Workflow"
       }
     }

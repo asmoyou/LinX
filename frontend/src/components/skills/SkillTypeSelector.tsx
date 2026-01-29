@@ -1,5 +1,5 @@
 import React from 'react';
-import { Code2, Zap } from 'lucide-react';
+import { Code2, Zap, BookOpen } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 export type SkillType = 'langchain_tool' | 'agent_skill';
@@ -29,7 +29,7 @@ const SkillTypeSelector: React.FC<SkillTypeSelectorProps> = ({
   const skillTypeOptions: SkillTypeOption[] = [
     {
       type: 'langchain_tool',
-      icon: <Zap className="w-6 h-6" />,
+      icon: <Code2 className="w-6 h-6" />,
       titleKey: 'skills.types.langchainTool.title',
       descriptionKey: 'skills.types.langchainTool.description',
       detailsKey: 'skills.types.langchainTool.details',
@@ -39,7 +39,7 @@ const SkillTypeSelector: React.FC<SkillTypeSelectorProps> = ({
     },
     {
       type: 'agent_skill',
-      icon: <Code2 className="w-6 h-6" />,
+      icon: <BookOpen className="w-6 h-6" />,
       titleKey: 'skills.types.agentSkill.title',
       descriptionKey: 'skills.types.agentSkill.description',
       detailsKey: 'skills.types.agentSkill.details',
