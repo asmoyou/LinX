@@ -192,6 +192,22 @@ class TestPackageHandler:
         # .gitignore should be allowed
         assert not any(".gitignore" in err for err in errors)
 
+    def test_validate_package_ds_store_allowed(self):
+        """Test that .DS_Store (macOS system file) is allowed."""
+        handler = PackageHandler()
+        
+        # Create ZIP with .DS_Store
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as zf:
+            zf.writestr('SKILL.md', '---\nname: test\ndescription: test\n---\n\n# Test')
+            zf.writestr('.DS_Store', 'binary data')
+        
+        package_info = handler.extract_package(buffer.getvalue())
+        errors = handler.validate_package(package_info)
+        
+        # .DS_Store should be allowed
+        assert not any(".DS_Store" in err for err in errors)
+
     @pytest.mark.asyncio
     async def test_upload_package_without_minio(self):
         """Test uploading package without MinIO client."""

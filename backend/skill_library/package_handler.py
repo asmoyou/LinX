@@ -249,8 +249,16 @@ class PackageHandler:
                 errors.append(f"Executable file not allowed: {file_path.name}")
 
             # Check for hidden files (starting with .)
-            # Allow common development files: .gitignore, .gitkeep
-            allowed_hidden = {".gitignore", ".gitkeep"}
+            # Allow common development and system files
+            allowed_hidden = {
+                ".gitignore",
+                ".gitkeep",
+                ".DS_Store",  # macOS system file
+                ".env.example",  # Example environment file
+                ".editorconfig",  # Editor configuration
+                ".prettierrc",  # Prettier configuration
+                ".eslintrc",  # ESLint configuration
+            }
             if file_path.name.startswith(".") and file_path.name not in allowed_hidden:
                 errors.append(f"Hidden file not allowed: {file_path.name}")
 
