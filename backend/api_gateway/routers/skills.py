@@ -18,6 +18,7 @@ from skill_library.skill_registry import SkillInfo, get_skill_registry
 from skill_library.skill_types import SkillType, StorageType
 from skill_library.templates import get_skill_templates, get_template_by_id
 from skill_library.execution_engine import get_execution_engine
+from skill_library.langchain_parser import parse_langchain_tool
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class UpdateSkillRequest(BaseModel):
     """Request to update a skill."""
 
     description: Optional[str] = Field(None, min_length=1, max_length=500)
+    code: Optional[str] = Field(None)
     interface_definition: Optional[InterfaceDefinition] = None
     dependencies: Optional[List[str]] = None
 
@@ -411,20 +413,28 @@ async def create_skill(
     try:
         registry = get_skill_registry()
 
-        # Convert interface definition to dict, or use default
-        if request.interface_definition:
-            interface_def = {
-                "inputs": request.interface_definition.inputs,
-                "outputs": request.interface_definition.outputs,
-                "required_inputs": request.interface_definition.required_inputs or [],
-            }
-        else:
-            # Default interface for skills without explicit definition
-            interface_def = {
-                "inputs": {},
-                "outputs": {"result": "string"},
-                "required_inputs": [],
-            }
+        # Parse interface from code first (for LangChain tools)
+        interface_def = None
+        if request.code:
+            # Parse interface from code (for LangChain tools)
+            interface_def = parse_langchain_tool(request.code)
+            logger.info(f"Parsed interface from code: {interface_def}")
+        
+        # Fall back to explicit interface definition if no code or parsing failed
+        if not interface_def or not interface_def.get("inputs"):
+            if request.interface_definition:
+                interface_def = {
+                    "inputs": request.interface_definition.inputs,
+                    "outputs": request.interface_definition.outputs,
+                    "required_inputs": request.interface_definition.required_inputs or [],
+                }
+            else:
+                # Default interface for skills without explicit definition
+                interface_def = {
+                    "inputs": {},
+                    "outputs": {"result": "string"},
+                    "required_inputs": [],
+                }
 
         # Determine storage type based on code presence and size
         storage_type = "inline"  # Default for now, MinIO support coming later
@@ -483,14 +493,32 @@ async def update_skill(
         if not existing:
             raise HTTPException(status_code=404, detail="Skill not found")
 
-        # Convert interface definition if provided
+        logger.info(f"Updating skill {skill_id}, request data: description={bool(request.description)}, code={bool(request.code)}, interface_def={bool(request.interface_definition)}, dependencies={bool(request.dependencies)}")
+
+        # If code is provided, re-parse interface (even if code didn't change, we should re-parse)
         interface_def = None
-        if request.interface_definition:
+        if request.code:
+            # Parse interface from code
+            parsed = parse_langchain_tool(request.code)
+            logger.info(f"Parsed interface from code: {parsed}")
+            
+            # Only use parsed result if it has inputs
+            if parsed and parsed.get("inputs"):
+                interface_def = parsed
+                logger.info(f"Using parsed interface with {len(parsed.get('inputs', {}))} inputs")
+            else:
+                logger.warning(f"Failed to parse interface from code or no inputs found")
+        
+        # Only use provided interface definition if code parsing failed
+        if not interface_def and request.interface_definition:
             interface_def = {
                 "inputs": request.interface_definition.inputs,
                 "outputs": request.interface_definition.outputs,
                 "required_inputs": request.interface_definition.required_inputs or [],
             }
+            logger.info(f"Using provided interface_definition")
+
+        logger.info(f"Final interface_def to update: {interface_def}")
 
         # Update skill via model
         from skill_library.skill_model import get_skill_model
@@ -499,6 +527,7 @@ async def update_skill(
         updated = skill_model.update_skill(
             skill_id=skill_uuid,
             description=request.description,
+            code=request.code,
             interface_definition=interface_def,
             dependencies=request.dependencies,
         )

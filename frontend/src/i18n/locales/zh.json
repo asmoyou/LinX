@@ -340,6 +340,7 @@
     "langchainTool": "LangChain工具",
     "agentSkill": "智能体技能",
     "test": "测试",
+    "testSkill": "测试技能",
     "viewCode": "查看代码",
     "edit": "编辑",
     "delete": "删除",

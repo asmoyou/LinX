@@ -3,7 +3,6 @@ import { useState } from 'react';
 import CodeEditor from './CodeEditor';
 import SkillTypeSelector, { type SkillType } from './SkillTypeSelector';
 import TemplateSelector from './TemplateSelector';
-import { ModalPanel } from '@/components/ModalPanel';
 import { skillsApi } from '@/api/skills';
 import { useTranslation } from 'react-i18next';
 
@@ -80,28 +79,21 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <ModalPanel className="w-full max-w-4xl max-h-[90vh] overflow-y-auto shadow-2xl p-0">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-200" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
+      <div className="w-full max-w-4xl max-h-[90vh] overflow-y-auto modal-panel rounded-[24px] shadow-2xl p-6 animate-in zoom-in-95 duration-200">
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-indigo-500/5 to-transparent">
-          <div>
-            <h2 className="text-2xl font-bold text-gray-800 dark:text-white">{t('skills.createNewSkill')}</h2>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-              {step === 'type' && t('skills.step1')}
-              {step === 'template' && t('skills.step2')}
-              {step === 'code' && t('skills.step3')}
-            </p>
-          </div>
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-2xl font-bold text-zinc-800 dark:text-white">{t('skills.createNewSkill')}</h2>
           <button 
             onClick={handleClose} 
-            className="p-2 rounded-xl hover:bg-white/30 dark:hover:bg-black/30 transition-all duration-300 hover:rotate-90"
+            className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
           >
-            <X className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+            <X className="w-6 h-6 text-zinc-700 dark:text-zinc-300" />
           </button>
         </div>
 
         {/* Content */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
+        <form onSubmit={handleSubmit} className="space-y-6">
           {/* Step 1: Select Type */}
           {step === 'type' && (
             <>
@@ -206,7 +198,7 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
                       setStep('template');
                     }
                   }}
-                  className="px-8 py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white transition-all duration-300 font-medium shadow-lg hover:shadow-indigo-500/25 hover:-translate-y-0.5"
+                  className="px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white transition-colors font-medium"
                 >
                   {t('skills.next')}
                 </button>
@@ -234,14 +226,14 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
                 <button
                   type="button"
                   onClick={() => setStep('type')}
-                  className="px-8 py-3 rounded-xl glass hover:bg-white/30 dark:hover:bg-black/30 text-gray-700 dark:text-gray-300 transition-all duration-300 font-medium hover:shadow-lg"
+                  className="px-6 py-2.5 rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 transition-colors font-medium"
                 >
                   {t('skills.previous')}
                 </button>
                 <button
                   type="button"
                   onClick={() => setStep('code')}
-                  className="px-8 py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white transition-all duration-300 font-medium shadow-lg hover:shadow-indigo-500/25 hover:-translate-y-0.5"
+                  className="px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white transition-colors font-medium"
                 >
                   {selectedTemplate ? t('skills.useTemplate') : t('skills.skip')}
                 </button>
@@ -419,7 +411,7 @@ def my_skill(url: str, method: str = "GET") -> Dict[str, Any]:
                 )}
               </div>
 
-              <div className="flex justify-between pt-6 border-t border-gray-200 dark:border-gray-700">
+              <div className="flex justify-between pt-6 border-t border-zinc-200 dark:border-zinc-700">
                 <button
                   type="button"
                   onClick={() => {
@@ -430,7 +422,7 @@ def my_skill(url: str, method: str = "GET") -> Dict[str, Any]:
                       setStep('template');
                     }
                   }}
-                  className="px-8 py-3 rounded-xl glass hover:bg-white/30 dark:hover:bg-black/30 text-gray-700 dark:text-gray-300 transition-all duration-300 font-medium hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-6 py-2.5 rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                   disabled={isSubmitting}
                 >
                   {t('skills.previous')}
@@ -439,14 +431,14 @@ def my_skill(url: str, method: str = "GET") -> Dict[str, Any]:
                   <button
                     type="button"
                     onClick={handleClose}
-                    className="px-8 py-3 rounded-xl glass hover:bg-white/30 dark:hover:bg-black/30 text-gray-700 dark:text-gray-300 transition-all duration-300 font-medium hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-6 py-2.5 rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                     disabled={isSubmitting}
                   >
                     {t('skills.cancel')}
                   </button>
                   <button
                     type="submit"
-                    className="px-8 py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white transition-all duration-300 font-medium shadow-lg hover:shadow-indigo-500/25 hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
+                    className="px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                     disabled={isSubmitting}
                   >
                     {isSubmitting ? (
@@ -466,7 +458,7 @@ def my_skill(url: str, method: str = "GET") -> Dict[str, Any]:
             </>
           )}
         </form>
-      </ModalPanel>
+      </div>
     </div>
   );
 }

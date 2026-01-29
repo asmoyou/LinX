@@ -1,7 +1,6 @@
 import { X } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import CodeEditor from './CodeEditor';
-import { ModalPanel } from '@/components/ModalPanel';
 import type { Skill } from '@/api/skills';
 import { useTranslation } from 'react-i18next';
 
@@ -43,7 +42,13 @@ export default function EditSkillModal({ isOpen, onClose, onSubmit, skill }: Edi
     e.preventDefault();
     setIsSubmitting(true);
     try {
-      await onSubmit(skill.skill_id, formData);
+      // Only send fields that can be updated (exclude name)
+      const updateData = {
+        description: formData.description,
+        code: formData.code,
+        dependencies: formData.dependencies,
+      };
+      await onSubmit(skill.skill_id, updateData);
       handleClose();
     } catch (error) {
       console.error('Failed to update skill:', error);
@@ -54,61 +59,59 @@ export default function EditSkillModal({ isOpen, onClose, onSubmit, skill }: Edi
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <ModalPanel className="w-full max-w-4xl max-h-[90vh] overflow-y-auto shadow-2xl p-0">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-200" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
+      <div className="w-full max-w-4xl max-h-[90vh] overflow-y-auto modal-panel rounded-[24px] shadow-2xl p-6 animate-in zoom-in-95 duration-200">
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-indigo-500/5 to-transparent">
-          <div>
-            <h2 className="text-2xl font-bold text-gray-800 dark:text-white">{t('skills.editSkill')}</h2>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{t('skills.editSkillDesc')}</p>
-          </div>
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-2xl font-bold text-zinc-800 dark:text-white">{t('skills.editSkill')}</h2>
           <button 
             onClick={handleClose} 
-            className="p-2 rounded-xl hover:bg-white/30 dark:hover:bg-black/30 transition-all duration-300 hover:rotate-90"
+            className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
+            disabled={isSubmitting}
           >
-            <X className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+            <X className="w-6 h-6 text-zinc-700 dark:text-zinc-300" />
           </button>
         </div>
 
         {/* Content */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
+        <form onSubmit={handleSubmit} className="space-y-6">
           <div className="space-y-5">
             {/* Basic Info */}
             <div>
-              <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
-                {t('skills.skillName')} *
+              <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                {t('skills.skillName')} <span className="text-red-500">*</span>
               </label>
               <input
                 type="text"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full px-4 py-3 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all"
+                className="w-full px-4 py-3 rounded-xl glass text-zinc-800 dark:text-white placeholder:text-zinc-500 dark:placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all"
                 placeholder="e.g., my_custom_skill"
                 required
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
-                {t('skills.description')} *
+              <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                {t('skills.description')} <span className="text-red-500">*</span>
               </label>
               <textarea
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                className="w-full px-4 py-3 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all resize-none"
+                className="w-full px-4 py-3 rounded-xl glass text-zinc-800 dark:text-white placeholder:text-zinc-500 dark:placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all resize-none"
                 placeholder={t('skills.description')}
                 rows={3}
                 required
               />
             </div>
 
-            {/* Code Editor */}
+            {/* Code Editor - Always show if code exists */}
             {formData.code && (
               <div>
-                <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
-                  {t('skills.pythonCode')} *
+                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t('skills.pythonCode')} <span className="text-red-500">*</span>
                 </label>
-                <div className="rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700">
+                <div className="rounded-xl overflow-hidden border border-zinc-200 dark:border-zinc-700">
                   <CodeEditor
                     value={formData.code}
                     onChange={(value) => setFormData({ ...formData, code: value })}
@@ -120,7 +123,7 @@ export default function EditSkillModal({ isOpen, onClose, onSubmit, skill }: Edi
 
             {/* Dependencies */}
             <div>
-              <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
+              <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
                 {t('skills.dependencies')}
               </label>
               <input
@@ -132,25 +135,25 @@ export default function EditSkillModal({ isOpen, onClose, onSubmit, skill }: Edi
                     dependencies: e.target.value.split(',').map((d) => d.trim()).filter(Boolean),
                   })
                 }
-                className="w-full px-4 py-3 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all font-mono text-sm"
+                className="w-full px-4 py-3 rounded-xl glass text-zinc-800 dark:text-white placeholder:text-zinc-500 dark:placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all font-mono text-sm"
                 placeholder={t('skills.dependenciesPlaceholder')}
               />
-              <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">{t('skills.dependenciesNote')}</p>
+              <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">{t('skills.dependenciesNote')}</p>
             </div>
           </div>
 
-          <div className="flex justify-end gap-3 pt-6 border-t border-gray-200 dark:border-gray-700">
+          <div className="flex justify-end gap-3 pt-6 border-t border-zinc-200 dark:border-zinc-700">
             <button
               type="button"
               onClick={handleClose}
-              className="px-8 py-3 rounded-xl glass hover:bg-white/30 dark:hover:bg-black/30 text-gray-700 dark:text-gray-300 transition-all duration-300 font-medium hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-6 py-2.5 rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={isSubmitting}
             >
               {t('skills.cancel')}
             </button>
             <button
               type="submit"
-              className="px-8 py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white transition-all duration-300 font-medium shadow-lg hover:shadow-indigo-500/25 hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
+              className="px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={isSubmitting}
             >
               {isSubmitting ? (
@@ -167,7 +170,7 @@ export default function EditSkillModal({ isOpen, onClose, onSubmit, skill }: Edi
             </button>
           </div>
         </form>
-      </ModalPanel>
+      </div>
     </div>
   );
 }

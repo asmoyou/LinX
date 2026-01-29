@@ -4,6 +4,7 @@ import SkillCardV2 from '@/components/skills/SkillCardV2';
 import AddSkillModalV2 from '@/components/skills/AddSkillModalV2';
 import EditSkillModal from '@/components/skills/EditSkillModal';
 import CodePreviewModal from '@/components/skills/CodePreviewModal';
+import SkillTesterModal from '@/components/skills/SkillTesterModal';
 import { skillsApi, type Skill, type CreateSkillRequest } from '@/api/skills';
 import { useTranslation } from 'react-i18next';
 
@@ -16,6 +17,7 @@ export default function Skills() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isCodePreviewOpen, setIsCodePreviewOpen] = useState(false);
+  const [isTesterModalOpen, setIsTesterModalOpen] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
   useEffect(() => {
     loadSkills();
@@ -90,6 +92,24 @@ export default function Skills() {
     } catch (error) {
       console.error('Failed to delete skill:', error);
     }
+  };
+
+  const handleToggleActive = async (skillId: string, currentlyActive: boolean) => {
+    try {
+      if (currentlyActive) {
+        await skillsApi.deactivateSkill(skillId);
+      } else {
+        await skillsApi.activateSkill(skillId);
+      }
+      await loadSkills();
+    } catch (error) {
+      console.error('Failed to toggle skill status:', error);
+    }
+  };
+
+  const handleTestSkill = (skill: Skill) => {
+    setSelectedSkill(skill);
+    setIsTesterModalOpen(true);
   };
 
   return (
@@ -213,7 +233,9 @@ export default function Skills() {
                 skill={skill}
                 onEdit={handleEditSkill}
                 onDelete={handleDeleteSkill}
+                onToggleActive={handleToggleActive}
                 onViewCode={handleViewCode}
+                onTest={handleTestSkill}
               />
             ))}
           </div>
@@ -248,6 +270,20 @@ export default function Skills() {
               setSelectedSkill(null);
             }}
             skill={selectedSkill}
+          />
+        )}
+
+        {/* Skill Tester Modal */}
+        {selectedSkill && (
+          <SkillTesterModal
+            isOpen={isTesterModalOpen}
+            onClose={() => {
+              setIsTesterModalOpen(false);
+              setSelectedSkill(null);
+            }}
+            skillId={selectedSkill.skill_id}
+            skillName={selectedSkill.name}
+            interfaceDefinition={selectedSkill.interface_definition}
           />
         )}
       </div>

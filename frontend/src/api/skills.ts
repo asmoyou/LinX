@@ -37,22 +37,13 @@ export interface CreateSkillRequest {
   skill_type?: string;
   code?: string;
   config?: Record<string, any>;
-  interface_definition?: {
-    inputs: Record<string, string>;
-    outputs: Record<string, string>;
-    required_inputs?: string[];
-  };
   dependencies?: string[];
   version?: string;
 }
 
 export interface UpdateSkillRequest {
   description?: string;
-  interface_definition?: {
-    inputs: Record<string, string>;
-    outputs: Record<string, string>;
-    required_inputs?: string[];
-  };
+  code?: string;
   dependencies?: string[];
 }
 

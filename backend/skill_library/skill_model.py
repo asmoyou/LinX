@@ -151,6 +151,7 @@ class SkillModel:
         self,
         skill_id: UUID,
         description: Optional[str] = None,
+        code: Optional[str] = None,
         interface_definition: Optional[dict] = None,
         dependencies: Optional[List[str]] = None,
     ) -> Optional[Skill]:
@@ -159,6 +160,7 @@ class SkillModel:
         Args:
             skill_id: Skill UUID
             description: New description
+            code: New code
             interface_definition: New interface definition
             dependencies: New dependencies
 
@@ -173,6 +175,8 @@ class SkillModel:
 
             if description is not None:
                 skill.description = description
+            if code is not None:
+                skill.code = code
             if interface_definition is not None:
                 skill.interface_definition = interface_definition
             if dependencies is not None:

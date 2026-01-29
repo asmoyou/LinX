@@ -1,7 +1,5 @@
-import { Code2, Zap, Package, Layers, Trash2, Edit, Eye, Play, Power, PowerOff, TrendingUp } from 'lucide-react';
-import { useState } from 'react';
+import { Code2, Zap, Package, Layers, Trash2, Edit, Eye, Play, Power, PowerOff } from 'lucide-react';
 import type { Skill } from '@/api/skills';
-import SkillTester from './SkillTester';
 import { useTranslation } from 'react-i18next';
 
 interface SkillCardV2Props {
@@ -15,6 +13,7 @@ interface SkillCardV2Props {
   onDelete: (skillId: string) => void;
   onToggleActive?: (skillId: string, isActive: boolean) => void;
   onViewCode?: (skill: Skill) => void;
+  onTest?: (skill: Skill) => void;
 }
 
 const getSkillTypeInfo = (type: string, t: any) => {
@@ -38,9 +37,9 @@ export default function SkillCardV2({
   onDelete,
   onToggleActive,
   onViewCode,
+  onTest,
 }: SkillCardV2Props) {
   const { t } = useTranslation();
-  const [showTester, setShowTester] = useState(false);
   const typeInfo = getSkillTypeInfo(skill.skill_type || 'langchain_tool', t);
   const TypeIcon = typeInfo.icon;
 
@@ -110,65 +109,58 @@ export default function SkillCardV2({
 
         {/* Actions */}
         <div className="flex items-center gap-2 mt-auto">
+          {/* Test button - prominent */}
           <button
-            onClick={() => setShowTester(!showTester)}
+            onClick={() => onTest?.(skill)}
             className="flex-1 px-4 py-2.5 rounded-xl bg-primary/10 hover:bg-primary/20 text-primary transition-all duration-300 flex items-center justify-center gap-2 text-sm font-medium hover:shadow-lg"
           >
             <Play className="w-4 h-4" />
             {t('skills.test')}
           </button>
           
-          {onViewCode && (
+          {/* Icon buttons - grouped together */}
+          <div className="flex items-center gap-2">
+            {onViewCode && (
+              <button
+                onClick={() => onViewCode(skill)}
+                className="p-2.5 rounded-xl bg-muted/30 hover:bg-muted/50 text-foreground transition-all duration-300 hover:shadow-lg"
+                title={t('skills.viewCode')}
+              >
+                <Eye className="w-4 h-4" />
+              </button>
+            )}
+            
+            {onToggleActive && (
+              <button
+                onClick={() => onToggleActive(skill.skill_id, skill.is_active || false)}
+                className={`p-2.5 rounded-xl transition-all duration-300 hover:shadow-lg ${
+                  skill.is_active
+                    ? 'bg-orange-500/10 hover:bg-orange-500/20 text-orange-400'
+                    : 'bg-green-500/10 hover:bg-green-500/20 text-green-400'
+                }`}
+                title={skill.is_active ? t('skills.deactivate') : t('skills.activate')}
+              >
+                {skill.is_active ? <PowerOff className="w-4 h-4" /> : <Power className="w-4 h-4" />}
+              </button>
+            )}
+            
             <button
-              onClick={() => onViewCode(skill)}
-              className="px-4 py-2.5 rounded-xl bg-muted/30 hover:bg-muted/50 text-foreground transition-all duration-300 hover:shadow-lg"
-              title={t('skills.viewCode')}
+              onClick={() => onEdit(skill)}
+              className="p-2.5 rounded-xl bg-muted/30 hover:bg-muted/50 text-foreground transition-all duration-300 hover:shadow-lg"
+              title={t('skills.edit')}
             >
-              <Eye className="w-4 h-4" />
+              <Edit className="w-4 h-4" />
             </button>
-          )}
-          
-          {onToggleActive && (
+            
             <button
-              onClick={() => onToggleActive(skill.skill_id, skill.is_active || false)}
-              className={`px-4 py-2.5 rounded-xl transition-all duration-300 hover:shadow-lg ${
-                skill.is_active
-                  ? 'bg-orange-500/10 hover:bg-orange-500/20 text-orange-400'
-                  : 'bg-green-500/10 hover:bg-green-500/20 text-green-400'
-              }`}
-              title={skill.is_active ? t('skills.deactivate') : t('skills.activate')}
+              onClick={() => onDelete(skill.skill_id)}
+              className="p-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-all duration-300 hover:shadow-lg"
+              title={t('skills.delete')}
             >
-              {skill.is_active ? <PowerOff className="w-4 h-4" /> : <Power className="w-4 h-4" />}
+              <Trash2 className="w-4 h-4" />
             </button>
-          )}
-          
-          <button
-            onClick={() => onEdit(skill)}
-            className="px-4 py-2.5 rounded-xl bg-muted/30 hover:bg-muted/50 text-foreground transition-all duration-300 hover:shadow-lg"
-            title={t('skills.edit')}
-          >
-            <Edit className="w-4 h-4" />
-          </button>
-          
-          <button
-            onClick={() => onDelete(skill.skill_id)}
-            className="px-4 py-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-all duration-300 hover:shadow-lg"
-            title={t('skills.delete')}
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Skill Tester */}
-        {showTester && (
-          <div className="mt-4 pt-4 border-t border-border/50">
-            <SkillTester
-              skillId={skill.skill_id}
-              skillName={skill.name}
-              interfaceDefinition={skill.interface_definition}
-            />
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

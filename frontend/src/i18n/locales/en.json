@@ -340,6 +340,7 @@
     "langchainTool": "LangChain Tool",
     "agentSkill": "Agent Skill",
     "test": "Test",
+    "testSkill": "Test Skill",
     "viewCode": "View Code",
     "edit": "Edit",
     "delete": "Delete",
