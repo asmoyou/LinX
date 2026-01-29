@@ -1,5 +1,7 @@
 ---
-name: Weather Forecast
+# NOTE: 'name' must contain only alphanumeric characters, underscores, and hyphens
+# Use snake_case or kebab-case (e.g., weather_forecast or weather-forecast)
+name: weather_forecast
 emoji: 🌤️
 version: 1.0.0
 author: LinX Team

@@ -47,7 +47,9 @@ def _create_inline_template(zf: zipfile.ZipFile) -> None:
     """
     # SKILL.md
     skill_md = """---
-name: My Custom Skill
+# NOTE: 'name' must contain only alphanumeric characters, underscores, and hyphens
+# Use snake_case or kebab-case (e.g., my_custom_skill or my-custom-skill)
+name: my_custom_skill
 emoji: ⚡
 version: 1.0.0
 author: Your Name
