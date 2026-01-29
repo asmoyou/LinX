@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { Play, Loader2, CheckCircle, XCircle, Clock, Terminal, Code } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { skillsApi } from '@/api/skills';
 
 interface SkillTesterProps {
@@ -190,16 +192,16 @@ const SkillTester: React.FC<SkillTesterProps> = ({
                       </div>
                       <div className="space-y-2">
                         {result.parsed_commands.map((cmd, i) => (
-                          <div key={i} className="p-3 bg-black/30 rounded-lg">
+                          <div key={i} className="p-3 bg-muted/30 rounded-lg border border-border/30">
                             <div className="flex items-start gap-2 mb-1">
                               <Code className="w-3 h-3 text-muted-foreground mt-0.5 flex-shrink-0" />
                               <div className="text-xs text-muted-foreground">{cmd.command_type}</div>
                             </div>
-                            <pre className="text-sm text-foreground font-mono mb-1 overflow-x-auto">
+                            <pre className="text-sm text-foreground font-mono mb-1 overflow-x-auto whitespace-pre-wrap break-words">
                               {cmd.command}
                             </pre>
                             {cmd.description && (
-                              <div className="text-xs text-muted-foreground">{cmd.description}</div>
+                              <div className="text-xs text-muted-foreground mt-2">{cmd.description}</div>
                             )}
                           </div>
                         ))}
@@ -211,20 +213,26 @@ const SkillTester: React.FC<SkillTesterProps> = ({
                       <div className="text-sm font-medium text-foreground mb-2">
                         {dryRun ? '模拟输出：' : '实际输出：'}
                       </div>
-                      <pre className="text-sm bg-black/30 p-3 rounded-lg overflow-x-auto text-foreground">
-                        {result.actual_output || result.simulated_output}
-                      </pre>
+                      <div className="prose prose-sm dark:prose-invert max-w-none bg-muted/30 p-4 rounded-lg overflow-x-auto">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {result.actual_output || result.simulated_output || ''}
+                        </ReactMarkdown>
+                      </div>
                     </div>
                   </div>
                 ) : (
                   // LangChain tool result display
                   <div className="space-y-2">
                     <div className="text-sm text-muted-foreground">输出：</div>
-                    <pre className="text-sm bg-black/30 p-3 rounded overflow-x-auto text-foreground">
-                      {typeof result.output === 'string'
-                        ? result.output
-                        : JSON.stringify(result.output, null, 2)}
-                    </pre>
+                    <div className="prose prose-sm dark:prose-invert max-w-none bg-muted/30 p-4 rounded-lg overflow-x-auto border border-border/30">
+                      {typeof result.output === 'string' ? (
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.output}</ReactMarkdown>
+                      ) : (
+                        <pre className="text-sm text-foreground font-mono whitespace-pre-wrap break-words">
+                          {JSON.stringify(result.output, null, 2)}
+                        </pre>
+                      )}
+                    </div>
                   </div>
                 )
               ) : (

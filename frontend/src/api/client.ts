@@ -121,48 +121,107 @@ apiClient.interceptors.response.use(
       }
     }
 
-    // Handle 403 Forbidden
-    if (error.response?.status === 403) {
-      useNotificationStore.getState().addNotification({
-        type: 'error',
-        title: 'Access Denied',
-        message: 'You do not have permission to perform this action.',
-      });
-    }
+    // Handle specific error status codes
+    if (error.response) {
+      const status = error.response.status;
+      const errorData = error.response.data as any;
+      
+      switch (status) {
+        case 400:
+          // Bad Request - Validation errors
+          useNotificationStore.getState().addNotification({
+            type: 'error',
+            title: 'Validation Error',
+            message: errorData?.message || errorData?.detail || 'Invalid request. Please check your input.',
+          });
+          break;
 
-    // Handle 404 Not Found
-    if (error.response?.status === 404) {
-      useNotificationStore.getState().addNotification({
-        type: 'error',
-        title: 'Not Found',
-        message: 'The requested resource was not found.',
-      });
-    }
+        case 403:
+          // Forbidden
+          useNotificationStore.getState().addNotification({
+            type: 'error',
+            title: 'Access Denied',
+            message: 'You do not have permission to perform this action.',
+          });
+          break;
 
-    // Handle 500 Server Error
-    if (error.response?.status === 500) {
-      useNotificationStore.getState().addNotification({
-        type: 'error',
-        title: 'Server Error',
-        message: 'An unexpected error occurred. Please try again later.',
-      });
-    }
+        case 404:
+          // Not Found
+          useNotificationStore.getState().addNotification({
+            type: 'error',
+            title: 'Not Found',
+            message: 'The requested resource was not found.',
+          });
+          break;
 
-    // Handle network errors
-    if (error.message === 'Network Error') {
+        case 422:
+          // Unprocessable Entity - Validation errors
+          useNotificationStore.getState().addNotification({
+            type: 'error',
+            title: 'Validation Error',
+            message: errorData?.message || errorData?.detail || 'Request validation failed.',
+          });
+          break;
+
+        case 500:
+          // Internal Server Error
+          useNotificationStore.getState().addNotification({
+            type: 'error',
+            title: 'Server Error',
+            message: 'An unexpected error occurred. Please try again later.',
+          });
+          break;
+
+        case 502:
+          // Bad Gateway
+          useNotificationStore.getState().addNotification({
+            type: 'error',
+            title: 'Service Unavailable',
+            message: 'The service is temporarily unavailable. Please try again later.',
+          });
+          break;
+
+        case 503:
+          // Service Unavailable
+          useNotificationStore.getState().addNotification({
+            type: 'error',
+            title: 'Service Unavailable',
+            message: 'The service is under maintenance. Please try again later.',
+          });
+          break;
+
+        default:
+          // Catch-all for other HTTP errors (4xx, 5xx)
+          if (status >= 400) {
+            const message = errorData?.message || errorData?.detail || `Request failed with status ${status}`;
+            useNotificationStore.getState().addNotification({
+              type: 'error',
+              title: status >= 500 ? 'Server Error' : 'Request Failed',
+              message: message,
+            });
+          }
+          break;
+      }
+    } else if (error.message === 'Network Error') {
+      // Handle network errors
       useNotificationStore.getState().addNotification({
         type: 'error',
         title: 'Network Error',
         message: 'Unable to connect to the server. Please check your connection.',
       });
-    }
-
-    // Handle timeout
-    if (error.code === 'ECONNABORTED') {
+    } else if (error.code === 'ECONNABORTED') {
+      // Handle timeout
       useNotificationStore.getState().addNotification({
         type: 'error',
         title: 'Request Timeout',
         message: 'The request took too long to complete. Please try again.',
+      });
+    } else {
+      // Catch-all for any other errors
+      useNotificationStore.getState().addNotification({
+        type: 'error',
+        title: 'Error',
+        message: error.message || 'An unexpected error occurred.',
       });
     }
 

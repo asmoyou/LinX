@@ -91,20 +91,19 @@ class SkillResponse(BaseModel):
             skill_info: Skill information
             include_code: Whether to include code in response
         """
-        # Get additional fields from database if available
+        # Get additional fields from manifest if available (only for agent_skill)
         skill_md_content = None
         homepage = None
         metadata = None
         gating_status = None
         
-        if hasattr(skill_info, 'skill_md_content'):
-            skill_md_content = skill_info.skill_md_content
-        if hasattr(skill_info, 'homepage'):
-            homepage = skill_info.homepage
-        if hasattr(skill_info, 'metadata'):
-            metadata = skill_info.metadata
-        if hasattr(skill_info, 'gating_status'):
-            gating_status = skill_info.gating_status
+        # Only process manifest for agent_skill type
+        if skill_info.skill_type == "agent_skill" and hasattr(skill_info, 'manifest') and skill_info.manifest:
+            # manifest is a dict for agent_skill
+            skill_md_content = skill_info.manifest.get('skill_md_content')
+            homepage = skill_info.manifest.get('homepage')
+            metadata = skill_info.manifest.get('metadata')  # Already a dict from asdict()
+            gating_status = skill_info.manifest.get('gating_status')  # Already a dict from asdict()
         
         return cls(
             skill_id=str(skill_info.skill_id),
@@ -262,6 +261,104 @@ async def download_package_template(
         raise HTTPException(status_code=500, detail="Failed to generate package template")
 
 
+# Environment Variable Management Endpoints
+# NOTE: These must be before /{skill_id} route to avoid path conflicts
+
+@router.get("/env-vars", response_model=List[str])
+async def list_env_vars(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """List environment variable keys for current user.
+    
+    Args:
+        current_user: Authenticated user
+        
+    Returns:
+        List of environment variable keys (not values for security)
+    """
+    try:
+        from skill_library.skill_env_manager import get_skill_env_manager
+        
+        env_manager = get_skill_env_manager()
+        keys = env_manager.list_env_keys_for_user(current_user.user_id)
+        
+        return keys
+        
+    except Exception as e:
+        logger.error(f"Failed to list env vars: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list environment variables")
+
+
+@router.post("/env-vars", status_code=201)
+async def set_env_var(
+    key: str = Body(..., embed=True),
+    value: str = Body(..., embed=True),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Set an environment variable for current user.
+    
+    Args:
+        key: Environment variable name
+        value: Environment variable value
+        current_user: Authenticated user
+        
+    Returns:
+        Success message
+    """
+    try:
+        from skill_library.skill_env_manager import get_skill_env_manager
+        
+        # Validate key format
+        if not key.isupper() or not key.replace('_', '').isalnum():
+            raise HTTPException(
+                status_code=400,
+                detail="Environment variable key must be uppercase alphanumeric with underscores"
+            )
+        
+        env_manager = get_skill_env_manager()
+        env_manager.set_env_for_user(current_user.user_id, key, value)
+        
+        logger.info(
+            f"Environment variable set by user {current_user.user_id}",
+            extra={"env_key": key}
+        )
+        
+        return {"message": f"Environment variable {key} set successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to set env var: {e}")
+        raise HTTPException(status_code=500, detail="Failed to set environment variable")
+
+
+@router.delete("/env-vars/{key}", status_code=204)
+async def delete_env_var(
+    key: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Delete an environment variable for current user.
+    
+    Args:
+        key: Environment variable name
+        current_user: Authenticated user
+    """
+    try:
+        from skill_library.skill_env_manager import get_skill_env_manager
+        
+        env_manager = get_skill_env_manager()
+        env_manager.delete_env_for_user(current_user.user_id, key)
+        
+        logger.info(
+            f"Environment variable deleted by user {current_user.user_id}",
+            extra={"env_key": key}
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to delete env var: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete environment variable")
+
+
 @router.get("/{skill_id}", response_model=SkillResponse)
 async def get_skill(
     skill_id: str,
@@ -329,6 +426,12 @@ async def create_skill(
     try:
         import json
         
+        # Debug logging
+        logger.info(
+            f"Creating skill: name={name}, skill_type={skill_type}, "
+            f"has_code={bool(code)}, has_package={bool(package_file)}"
+        )
+        
         # Parse dependencies
         deps_list = []
         if dependencies:
@@ -352,84 +455,100 @@ async def create_skill(
             
             # Extract and validate package
             handler = PackageHandler(get_minio_client())
+            package_info = None
+            temp_dir = None
+            
             try:
                 package_info = handler.extract_package(file_data)
+                temp_dir = package_info.skill_md_path.parent.parent  # Get temp directory root
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid package: {str(e)}")
             
-            # Validate package
-            validation_errors = handler.validate_package(package_info)
-            if validation_errors:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Package validation failed: {', '.join(validation_errors)}"
-                )
-            
-            # Parse SKILL.md
-            parser = SkillMdParser()
-            with open(package_info.skill_md_path, 'r', encoding='utf-8') as f:
-                skill_md_content = f.read()
-            
             try:
-                parsed = parser.parse(skill_md_content)
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=f"Invalid SKILL.md: {str(e)}")
-            
-            # Validate parsed skill
-            validation_errors = parser.validate(parsed)
-            if validation_errors:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"SKILL.md validation failed: {', '.join(validation_errors)}"
+                # Validate package
+                validation_errors = handler.validate_package(package_info)
+                if validation_errors:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Package validation failed: {', '.join(validation_errors)}"
+                    )
+                
+                # Parse SKILL.md
+                parser = SkillMdParser()
+                with open(package_info.skill_md_path, 'r', encoding='utf-8') as f:
+                    skill_md_content = f.read()
+                
+                try:
+                    parsed = parser.parse(skill_md_content)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid SKILL.md: {str(e)}")
+                
+                # Validate parsed skill
+                validation_errors = parser.validate(parsed)
+                if validation_errors:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"SKILL.md validation failed: {', '.join(validation_errors)}"
+                    )
+                
+                # Check gating requirements
+                gating = GatingEngine()
+                gating_result = gating.check_eligibility(parsed.metadata)
+                
+                # Upload package to MinIO
+                try:
+                    storage_path = await handler.upload_package(file_data, name, version)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=f"Upload failed: {str(e)}")
+                
+                # Create skill with SKILL.md data
+                from dataclasses import asdict
+                
+                # Note: skill_md_content, homepage, metadata, gating_status are not stored in DB
+                # They can be stored separately or in manifest/config if needed
+                skill = registry.register_skill(
+                    name=name,
+                    description=description,
+                    interface_definition={
+                        "inputs": {},
+                        "outputs": {"result": "string"},
+                        "required_inputs": [],
+                    },
+                    dependencies=deps_list,
+                    version=version,
+                    skill_type="agent_skill",
+                    storage_type="minio",
+                    storage_path=storage_path,
+                    manifest={
+                        "skill_md_content": skill_md_content,
+                        "homepage": parsed.metadata.homepage,
+                        "metadata": asdict(parsed.metadata),
+                        "gating_status": asdict(gating_result),
+                    },
+                    is_active=True,
+                    is_system=False,
+                    created_by=str(current_user.user_id),
+                    validate=False,
                 )
+                
+                logger.info(
+                    f"Agent skill created from package by user {current_user.user_id}",
+                    extra={
+                        "skill_id": str(skill.skill_id),
+                        "skill_name": name,
+                        "storage_path": storage_path,
+                        "gating_eligible": gating_result.eligible,
+                    },
+                )
+                
+                return SkillResponse.from_skill_info(skill)
             
-            # Check gating requirements
-            gating = GatingEngine()
-            gating_result = gating.check_eligibility(parsed.metadata)
-            
-            # Upload package to MinIO
-            try:
-                storage_path = await handler.upload_package(file_data, name, version)
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=f"Upload failed: {str(e)}")
-            
-            # Create skill with SKILL.md data
-            from dataclasses import asdict
-            
-            skill = registry.register_skill(
-                name=name,
-                description=description,
-                interface_definition={
-                    "inputs": {},
-                    "outputs": {"result": "string"},
-                    "required_inputs": [],
-                },
-                dependencies=deps_list,
-                version=version,
-                skill_type="agent_skill",
-                storage_type="minio",
-                storage_path=storage_path,
-                skill_md_content=skill_md_content,
-                homepage=parsed.metadata.homepage,
-                metadata=asdict(parsed.metadata),
-                gating_status=asdict(gating_result),
-                is_active=True,
-                is_system=False,
-                created_by=str(current_user.user_id),
-                validate=False,
-            )
-            
-            logger.info(
-                f"Agent skill created from package by user {current_user.user_id}",
-                extra={
-                    "skill_id": str(skill.skill_id),
-                    "skill_name": name,
-                    "storage_path": storage_path,
-                    "gating_eligible": gating_result.eligible,
-                },
-            )
-            
-            return SkillResponse.from_skill_info(skill)
+            finally:
+                # Clean up temporary directory
+                if temp_dir and temp_dir.exists():
+                    import shutil
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    logger.debug(f"Cleaned up temp directory: {temp_dir}")
         
         # Handle langchain_tool with code
         elif skill_type == "langchain_tool":
@@ -757,7 +876,11 @@ async def test_skill(
             
             # Execute skill
             engine = get_execution_engine()
-            result = await engine.execute_skill(skill, inputs)
+            result = await engine.execute_skill(
+                skill, 
+                inputs,
+                user_id=UUID(str(current_user.user_id))
+            )
             
             logger.info(
                 f"LangChain tool tested by user {current_user.user_id}",
@@ -981,3 +1104,85 @@ async def validate_skill_code(
     except Exception as e:
         logger.error(f"Failed to validate code: {e}")
         raise HTTPException(status_code=500, detail="Failed to validate code")
+
+
+@router.get("/cache/stats")
+async def get_cache_stats(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Get skill execution cache statistics.
+    
+    Requires admin role.
+    
+    Args:
+        current_user: Authenticated user
+        
+    Returns:
+        Cache statistics
+    """
+    # Only admins can view cache stats
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        engine = get_execution_engine()
+        stats = engine.get_cache_stats()
+        
+        return stats
+        
+    except Exception as e:
+        logger.error(f"Failed to get cache stats: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get cache stats")
+
+
+@router.post("/cache/clear")
+async def clear_cache(
+    skill_id: Optional[str] = Body(None, embed=True),
+    user_id: Optional[str] = Body(None, embed=True),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Clear skill execution cache.
+    
+    Requires admin role.
+    
+    Args:
+        skill_id: Optional skill ID to clear (clears all if not provided)
+        user_id: Optional user ID to clear (clears all if not provided)
+        current_user: Authenticated user
+        
+    Returns:
+        Success message
+    """
+    # Only admins can clear cache
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        engine = get_execution_engine()
+        
+        skill_uuid = UUID(skill_id) if skill_id else None
+        user_uuid = UUID(user_id) if user_id else None
+        
+        engine.clear_cache(skill_id=skill_uuid, user_id=user_uuid)
+        
+        if skill_uuid and user_uuid:
+            message = f"Cleared cache for skill {skill_id} and user {user_id}"
+        elif skill_uuid:
+            message = f"Cleared cache for skill {skill_id}"
+        elif user_uuid:
+            message = f"Cleared cache for user {user_id}"
+        else:
+            message = "Cleared all cache"
+        
+        logger.info(
+            f"Cache cleared by admin {current_user.user_id}",
+            extra={"skill_id": skill_id, "user_id": user_id}
+        )
+        
+        return {"message": message}
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid UUID: {str(e)}")
+    except Exception as e:
+        logger.error(f"Failed to clear cache: {e}")
+        raise HTTPException(status_code=500, detail="Failed to clear cache")

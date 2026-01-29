@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Settings as SettingsIcon, Cpu, User, Shield, Bell, Palette } from 'lucide-react';
+import { Settings as SettingsIcon, Cpu, User, Shield, Bell, Palette, Key } from 'lucide-react';
 import { LLMSettings } from '../components/settings/LLMSettings';
+import { EnvVarsSettings } from '../components/settings/EnvVarsSettings';
 
-type SettingsTab = 'llm' | 'profile' | 'security' | 'notifications' | 'appearance';
+type SettingsTab = 'llm' | 'envVars' | 'profile' | 'security' | 'notifications' | 'appearance';
 
 interface TabConfig {
   id: SettingsTab;
@@ -22,6 +23,12 @@ export const Settings: React.FC = () => {
       label: t('settings.tabs.llm', 'LLM Providers'),
       icon: <Cpu className="w-5 h-5" />,
       component: <LLMSettings />,
+    },
+    {
+      id: 'envVars',
+      label: t('settings.tabs.envVars', 'Environment Variables'),
+      icon: <Key className="w-5 h-5" />,
+      component: <EnvVarsSettings />,
     },
     {
       id: 'profile',

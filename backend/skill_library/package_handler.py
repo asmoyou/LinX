@@ -62,10 +62,12 @@ class PackageHandler:
         # Detect format
         package_format = self._detect_format(file_data)
 
-        # Extract to temporary directory
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+        # Create persistent temporary directory (caller must clean up)
+        import tempfile
+        temp_dir = tempfile.mkdtemp(prefix="skill_package_")
+        temp_path = Path(temp_dir)
 
+        try:
             if package_format == "zip":
                 self._extract_zip(file_data, temp_path)
             elif package_format == "tar.gz":
@@ -86,7 +88,8 @@ class PackageHandler:
 
             logger.info(
                 f"Extracted package: format={package_format}, "
-                f"files={len(additional_files) + 1}, size={total_size}"
+                f"files={len(additional_files) + 1}, size={total_size}, "
+                f"temp_dir={temp_dir}"
             )
 
             return PackageInfo(
@@ -95,6 +98,11 @@ class PackageHandler:
                 total_size=total_size,
                 format=package_format,
             )
+        except Exception as e:
+            # Clean up on error
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
 
     def _detect_format(self, file_data: bytes) -> str:
         """Detect package format.
@@ -241,7 +249,9 @@ class PackageHandler:
                 errors.append(f"Executable file not allowed: {file_path.name}")
 
             # Check for hidden files (starting with .)
-            if file_path.name.startswith(".") and file_path.name != ".gitignore":
+            # Allow common development files: .gitignore, .gitkeep
+            allowed_hidden = {".gitignore", ".gitkeep"}
+            if file_path.name.startswith(".") and file_path.name not in allowed_hidden:
                 errors.append(f"Hidden file not allowed: {file_path.name}")
 
         return errors

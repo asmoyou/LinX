@@ -5,6 +5,7 @@ import SkillTypeSelector, { type SkillType } from './SkillTypeSelector';
 import TemplateSelector from './TemplateSelector';
 import { skillsApi } from '@/api/skills';
 import { useTranslation } from 'react-i18next';
+import { useNotificationStore } from '@/stores/notificationStore';
 
 interface AddSkillModalV2Props {
   isOpen: boolean;
@@ -21,6 +22,7 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   
   const [formData, setFormData] = useState({
     name: '',
@@ -36,6 +38,7 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
     setSkillType('langchain_tool');
     setSelectedTemplate(null);
     setUploadedFile(null);
+    setIsDragging(false);
     setFormData({ name: '', description: '', code: '', dependencies: [] });
     onClose();
   };
@@ -52,9 +55,52 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
     }
   };
 
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      // Check file type
+      const validTypes = ['.zip', '.tar.gz'];
+      const isValid = validTypes.some(type => file.name.toLowerCase().endsWith(type));
+      
+      if (!isValid) {
+        // Show error via notification store
+        useNotificationStore.getState().addNotification({
+          type: 'error',
+          title: 'Invalid File Type',
+          message: 'Please upload a ZIP or TAR.GZ file.',
+        });
+        return;
+      }
+
+      setUploadedFile(file);
+      // Auto-fill name from filename
+      if (!formData.name) {
+        const nameWithoutExt = file.name.replace(/\.(zip|tar\.gz)$/, '');
+        setFormData({ ...formData, name: nameWithoutExt });
+      }
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
+    
     try {
       const submitData: any = {
         ...formData,
@@ -70,6 +116,7 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
       handleClose();
     } catch (error) {
       console.error('Failed to create skill:', error);
+      // Error notification is handled by apiClient interceptor
     } finally {
       setIsSubmitting(false);
     }
@@ -185,15 +232,16 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
 
                 {/* Code Editor for LangChain Tool */}
                 {skillType === 'langchain_tool' && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
-                      {t('skills.pythonCode')} *
-                    </label>
-                    <CodeEditor
-                      value={formData.code}
-                      onChange={(value) => setFormData({ ...formData, code: value })}
-                      height="400px"
-                      placeholder={`from langchain_core.tools import tool
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
+                        {t('skills.pythonCode')} *
+                      </label>
+                      <CodeEditor
+                        value={formData.code}
+                        onChange={(value) => setFormData({ ...formData, code: value })}
+                        height="400px"
+                        placeholder={`from langchain_core.tools import tool
 
 @tool
 def my_tool(param: str) -> str:
@@ -208,8 +256,64 @@ def my_tool(param: str) -> str:
     # 你的代码
     return result
 `}
-                    />
-                  </div>
+                      />
+                    </div>
+                    
+                    {/* Dependencies Field */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
+                        {t('skills.dependencies')}
+                      </label>
+                      <div className="space-y-2">
+                        <input
+                          type="text"
+                          placeholder="e.g., requests, pandas, numpy"
+                          className="w-full px-4 py-2.5 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              const input = e.currentTarget;
+                              const value = input.value.trim();
+                              if (value && !formData.dependencies.includes(value)) {
+                                setFormData({
+                                  ...formData,
+                                  dependencies: [...formData.dependencies, value]
+                                });
+                                input.value = '';
+                              }
+                            }
+                          }}
+                        />
+                        {formData.dependencies.length > 0 && (
+                          <div className="flex flex-wrap gap-2">
+                            {formData.dependencies.map((dep, index) => (
+                              <span
+                                key={index}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 text-sm"
+                              >
+                                {dep}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setFormData({
+                                      ...formData,
+                                      dependencies: formData.dependencies.filter((_, i) => i !== index)
+                                    });
+                                  }}
+                                  className="hover:text-indigo-700 dark:hover:text-indigo-300"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <p className="text-xs text-gray-600 dark:text-gray-400">
+                          {t('skills.dependenciesHint')}
+                        </p>
+                      </div>
+                    </div>
+                  </>
                 )}
 
                 {/* File Upload for Agent Skill (Package Only) */}
@@ -243,7 +347,16 @@ def my_tool(param: str) -> str:
                         {t('skills.downloadTemplate')}
                       </button>
                     </div>
-                    <div className="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-10 text-center hover:border-indigo-500 hover:bg-indigo-500/5 transition-all duration-300 glass">
+                    <div 
+                      className={`border-2 border-dashed rounded-xl p-10 text-center transition-all duration-300 glass ${
+                        isDragging 
+                          ? 'border-indigo-500 bg-indigo-500/10 scale-[1.02]' 
+                          : 'border-gray-300 dark:border-gray-600 hover:border-indigo-500 hover:bg-indigo-500/5'
+                      }`}
+                      onDragOver={handleDragOver}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleDrop}
+                    >
                       <input
                         type="file"
                         accept=".zip,.tar.gz"
@@ -277,11 +390,21 @@ def my_tool(param: str) -> str:
                           </div>
                         ) : (
                           <div className="space-y-3">
-                            <div className="w-16 h-16 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center mx-auto">
-                              <Upload className="w-8 h-8 text-gray-600 dark:text-gray-400" />
+                            <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto transition-colors ${
+                              isDragging 
+                                ? 'bg-indigo-500/20' 
+                                : 'bg-gray-100 dark:bg-gray-800'
+                            }`}>
+                              <Upload className={`w-8 h-8 transition-colors ${
+                                isDragging 
+                                  ? 'text-indigo-500' 
+                                  : 'text-gray-600 dark:text-gray-400'
+                              }`} />
                             </div>
                             <div>
-                              <p className="text-gray-800 dark:text-white font-medium mb-1">{t('skills.clickToUpload')}</p>
+                              <p className="text-gray-800 dark:text-white font-medium mb-1">
+                                {isDragging ? t('skills.dropHere') : t('skills.clickToUpload')}
+                              </p>
                               <p className="text-sm text-gray-600 dark:text-gray-400">{t('skills.supportedFormats')}</p>
                             </div>
                           </div>

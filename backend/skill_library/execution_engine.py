@@ -10,8 +10,10 @@ References:
 import ast
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from uuid import UUID
+from datetime import datetime, timedelta
+from collections import OrderedDict
 
 from langchain_core.tools import tool as langchain_tool
 
@@ -19,6 +21,21 @@ from skill_library.skill_types import SkillType, StorageType
 from database.models import Skill
 
 logger = logging.getLogger(__name__)
+
+
+class CacheEntry:
+    """Cache entry with timestamp for LRU eviction."""
+    
+    def __init__(self, tool: Any):
+        self.tool = tool
+        self.last_accessed = datetime.utcnow()
+        self.access_count = 0
+    
+    def access(self) -> Any:
+        """Access the tool and update stats."""
+        self.last_accessed = datetime.utcnow()
+        self.access_count += 1
+        return self.tool
 
 
 class ExecutionResult:
@@ -52,16 +69,22 @@ class ExecutionResult:
 class SkillExecutionEngine:
     """Execute skills of any type with proper isolation."""
     
+    # Cache configuration
+    MAX_CACHE_SIZE = 100  # Maximum number of cached tools
+    CACHE_TTL_MINUTES = 30  # Time-to-live for cached tools
+    
     def __init__(self):
         """Initialize execution engine."""
-        self._tool_cache: Dict[UUID, Any] = {}
-        logger.info("SkillExecutionEngine initialized")
+        # Use OrderedDict for LRU cache implementation
+        self._tool_cache: OrderedDict[Tuple[UUID, Optional[UUID]], CacheEntry] = OrderedDict()
+        logger.info("SkillExecutionEngine initialized with cache management")
     
     async def execute_skill(
         self,
         skill: Skill,
         inputs: Dict[str, Any],
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        user_id: Optional[UUID] = None
     ) -> ExecutionResult:
         """Execute skill based on its type.
         
@@ -69,6 +92,7 @@ class SkillExecutionEngine:
             skill: Skill model instance
             inputs: Input parameters for the skill
             context: Optional execution context
+            user_id: Optional user ID for environment variables
             
         Returns:
             ExecutionResult with output or error
@@ -86,9 +110,9 @@ class SkillExecutionEngine:
             
             # Route to appropriate executor based on storage type
             if skill.storage_type == StorageType.INLINE.value:
-                result = await self._execute_inline_skill(skill, inputs, context)
+                result = await self._execute_inline_skill(skill, inputs, context, user_id)
             elif skill.storage_type == StorageType.MINIO.value:
-                result = await self._execute_package_skill(skill, inputs, context)
+                result = await self._execute_package_skill(skill, inputs, context, user_id)
             else:
                 return ExecutionResult(
                     success=False,
@@ -114,7 +138,8 @@ class SkillExecutionEngine:
         self,
         skill: Skill,
         inputs: Dict[str, Any],
-        context: Optional[Dict[str, Any]]
+        context: Optional[Dict[str, Any]],
+        user_id: Optional[UUID] = None
     ) -> ExecutionResult:
         """Execute inline skill (LangChain Tool or Agent Skill Simple).
         
@@ -122,13 +147,14 @@ class SkillExecutionEngine:
             skill: Skill model instance
             inputs: Input parameters
             context: Optional context
+            user_id: Optional user ID for environment variables
             
         Returns:
             ExecutionResult
         """
         try:
             # Get or create LangChain tool from code
-            tool = self._get_or_create_tool(skill)
+            tool = self._get_or_create_tool(skill, user_id)
             
             # Execute the tool
             output = await tool.ainvoke(inputs)
@@ -153,7 +179,8 @@ class SkillExecutionEngine:
         self,
         skill: Skill,
         inputs: Dict[str, Any],
-        context: Optional[Dict[str, Any]]
+        context: Optional[Dict[str, Any]],
+        user_id: Optional[UUID] = None
     ) -> ExecutionResult:
         """Execute package skill from MinIO.
         
@@ -172,18 +199,36 @@ class SkillExecutionEngine:
             error="Package skill execution not yet implemented"
         )
     
-    def _get_or_create_tool(self, skill: Skill) -> Any:
+    def _get_or_create_tool(self, skill: Skill, user_id: Optional[UUID] = None) -> Any:
         """Get cached tool or create new one from code.
         
         Args:
             skill: Skill model instance
+            user_id: Optional user ID for environment variables
             
         Returns:
             LangChain tool instance
         """
+        # Create cache key based on skill_id and user_id
+        cache_key = (skill.skill_id, user_id)
+        
+        # Clean expired cache entries
+        self._cleanup_expired_cache()
+        
         # Check cache
-        if skill.skill_id in self._tool_cache:
-            return self._tool_cache[skill.skill_id]
+        if cache_key in self._tool_cache:
+            entry = self._tool_cache[cache_key]
+            # Check if entry is still valid (not expired)
+            age = datetime.utcnow() - entry.last_accessed
+            if age.total_seconds() < self.CACHE_TTL_MINUTES * 60:
+                # Move to end (most recently used)
+                self._tool_cache.move_to_end(cache_key)
+                logger.debug(f"Cache hit for skill {skill.skill_id}, user {user_id}")
+                return entry.access()
+            else:
+                # Entry expired, remove it
+                del self._tool_cache[cache_key]
+                logger.info(f"Cache entry expired for skill {skill.skill_id}, user {user_id}")
         
         # Validate code exists
         if not skill.code:
@@ -192,13 +237,40 @@ class SkillExecutionEngine:
         # Validate code safety
         self._validate_code_safety(skill.code)
         
-        # Create tool from code
-        tool = self._create_tool_from_code(skill.code, skill.name)
+        # Create tool from code with dependencies
+        tool = self._create_tool_from_code(
+            skill.code, 
+            skill.name,
+            dependencies=skill.dependencies or [],
+            user_id=user_id
+        )
+        
+        # Evict oldest entry if cache is full
+        if len(self._tool_cache) >= self.MAX_CACHE_SIZE:
+            # Remove least recently used (first item)
+            evicted_key = next(iter(self._tool_cache))
+            del self._tool_cache[evicted_key]
+            logger.info(f"Cache full, evicted entry: {evicted_key}")
         
         # Cache the tool
-        self._tool_cache[skill.skill_id] = tool
+        self._tool_cache[cache_key] = CacheEntry(tool)
+        logger.info(f"Cached new tool for skill {skill.skill_id}, user {user_id}")
         
         return tool
+    
+    def _cleanup_expired_cache(self) -> None:
+        """Remove expired cache entries."""
+        now = datetime.utcnow()
+        expired_keys = []
+        
+        for key, entry in self._tool_cache.items():
+            age = now - entry.last_accessed
+            if age.total_seconds() >= self.CACHE_TTL_MINUTES * 60:
+                expired_keys.append(key)
+        
+        for key in expired_keys:
+            del self._tool_cache[key]
+            logger.info(f"Removed expired cache entry: {key}")
     
     def _validate_code_safety(self, code: str) -> None:
         """Validate code for dangerous patterns.
@@ -238,41 +310,110 @@ class SkillExecutionEngine:
         if dangerous_patterns:
             raise ValueError(f"Code contains dangerous patterns: {', '.join(dangerous_patterns)}")
     
-    def _create_tool_from_code(self, code: str, skill_name: str) -> Any:
+    def _create_tool_from_code(
+        self, 
+        code: str, 
+        skill_name: str, 
+        dependencies: list = None,
+        user_id: Optional[UUID] = None
+    ) -> Any:
         """Create LangChain tool from Python code.
         
         Args:
             code: Python code containing @tool decorated function
             skill_name: Name of the skill
+            dependencies: List of required dependencies
+            user_id: Optional user ID for environment variables
             
         Returns:
             LangChain tool instance
         """
-        # Create execution namespace
-        namespace = {
-            '__name__': f'skill_{skill_name}',
-            '__builtins__': __builtins__,
-            'tool': langchain_tool,
-        }
+        # Install dependencies if needed
+        if dependencies:
+            self._ensure_dependencies_installed(dependencies)
         
-        # Execute code to define the tool
+        # Get user environment variables and temporarily inject into os.environ
+        import os
+        original_env = {}
+        user_env_vars = {}
+        
+        if user_id:
+            from skill_library.skill_env_manager import get_skill_env_manager
+            env_manager = get_skill_env_manager()
+            user_env_vars = env_manager.get_env_for_user(user_id)
+            
+            # Temporarily inject user env vars into os.environ
+            for key, value in user_env_vars.items():
+                if key in os.environ:
+                    original_env[key] = os.environ[key]
+                os.environ[key] = value
+        
         try:
-            exec(code, namespace)
-        except Exception as e:
-            raise ValueError(f"Error executing skill code: {e}")
+            # Create execution namespace
+            namespace = {
+                '__name__': f'skill_{skill_name}',
+                '__builtins__': __builtins__,
+                'tool': langchain_tool,
+            }
+            
+            # Execute code to define the tool
+            try:
+                exec(code, namespace)
+            except Exception as e:
+                raise ValueError(f"Error executing skill code: {e}")
+            
+            # Find the tool function (decorated with @tool)
+            tool_func = None
+            for name, obj in namespace.items():
+                if hasattr(obj, 'name') and hasattr(obj, 'description'):
+                    # This is likely a LangChain tool
+                    tool_func = obj
+                    break
+            
+            if tool_func is None:
+                raise ValueError("No @tool decorated function found in code")
+            
+            return tool_func
+            
+        finally:
+            # Restore original environment variables
+            if user_id:
+                for key in user_env_vars.keys():
+                    if key in original_env:
+                        os.environ[key] = original_env[key]
+                    else:
+                        os.environ.pop(key, None)
+    
+    def _ensure_dependencies_installed(self, dependencies: list) -> None:
+        """Ensure required dependencies are installed.
         
-        # Find the tool function (decorated with @tool)
-        tool_func = None
-        for name, obj in namespace.items():
-            if hasattr(obj, 'name') and hasattr(obj, 'description'):
-                # This is likely a LangChain tool
-                tool_func = obj
-                break
+        Args:
+            dependencies: List of package names to install
+            
+        Raises:
+            ValueError: If installation fails
+        """
+        import subprocess
+        import sys
         
-        if tool_func is None:
-            raise ValueError("No @tool decorated function found in code")
-        
-        return tool_func
+        for dep in dependencies:
+            try:
+                # Check if package is already installed
+                __import__(dep.replace('-', '_'))
+                logger.debug(f"Dependency {dep} already installed")
+            except ImportError:
+                # Install the package
+                logger.info(f"Installing dependency: {dep}")
+                try:
+                    subprocess.check_call(
+                        [sys.executable, "-m", "pip", "install", dep],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE
+                    )
+                    logger.info(f"Successfully installed {dep}")
+                except subprocess.CalledProcessError as e:
+                    error_msg = e.stderr.decode() if e.stderr else str(e)
+                    raise ValueError(f"Failed to install dependency {dep}: {error_msg}")
     
     async def _update_execution_stats(
         self,
@@ -316,18 +457,76 @@ class SkillExecutionEngine:
         except Exception as e:
             logger.error(f"Error updating execution stats: {e}")
     
-    def clear_cache(self, skill_id: Optional[UUID] = None) -> None:
+    def clear_cache(
+        self, 
+        skill_id: Optional[UUID] = None, 
+        user_id: Optional[UUID] = None
+    ) -> None:
         """Clear tool cache.
         
         Args:
-            skill_id: Optional specific skill to clear, or None for all
+            skill_id: Optional specific skill to clear
+            user_id: Optional specific user to clear
+            
+        If both skill_id and user_id are provided, clears that specific entry.
+        If only skill_id is provided, clears all entries for that skill.
+        If only user_id is provided, clears all entries for that user.
+        If neither is provided, clears all cache.
         """
-        if skill_id:
-            self._tool_cache.pop(skill_id, None)
-            logger.info(f"Cleared cache for skill {skill_id}")
+        if skill_id and user_id:
+            # Clear specific entry
+            cache_key = (skill_id, user_id)
+            if cache_key in self._tool_cache:
+                del self._tool_cache[cache_key]
+                logger.info(f"Cleared cache for skill {skill_id}, user {user_id}")
+        elif skill_id:
+            # Clear all entries for this skill
+            keys_to_remove = [k for k in self._tool_cache.keys() if k[0] == skill_id]
+            for key in keys_to_remove:
+                del self._tool_cache[key]
+            logger.info(f"Cleared {len(keys_to_remove)} cache entries for skill {skill_id}")
+        elif user_id:
+            # Clear all entries for this user
+            keys_to_remove = [k for k in self._tool_cache.keys() if k[1] == user_id]
+            for key in keys_to_remove:
+                del self._tool_cache[key]
+            logger.info(f"Cleared {len(keys_to_remove)} cache entries for user {user_id}")
         else:
+            # Clear all cache
+            count = len(self._tool_cache)
             self._tool_cache.clear()
-            logger.info("Cleared all tool cache")
+            logger.info(f"Cleared all {count} cache entries")
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache statistics.
+        
+        Returns:
+            Dictionary with cache statistics
+        """
+        now = datetime.utcnow()
+        total_entries = len(self._tool_cache)
+        
+        if total_entries == 0:
+            return {
+                "total_entries": 0,
+                "max_size": self.MAX_CACHE_SIZE,
+                "ttl_minutes": self.CACHE_TTL_MINUTES,
+                "utilization": 0.0,
+            }
+        
+        # Calculate statistics
+        access_counts = [entry.access_count for entry in self._tool_cache.values()]
+        ages = [(now - entry.last_accessed).total_seconds() / 60 for entry in self._tool_cache.values()]
+        
+        return {
+            "total_entries": total_entries,
+            "max_size": self.MAX_CACHE_SIZE,
+            "ttl_minutes": self.CACHE_TTL_MINUTES,
+            "utilization": total_entries / self.MAX_CACHE_SIZE,
+            "avg_access_count": sum(access_counts) / len(access_counts),
+            "avg_age_minutes": sum(ages) / len(ages),
+            "oldest_age_minutes": max(ages),
+        }
 
 
 # Singleton instance

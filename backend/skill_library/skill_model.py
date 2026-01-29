@@ -34,10 +34,6 @@ class SkillModel:
         is_active: bool = True,
         is_system: bool = False,
         created_by: Optional[str] = None,
-        skill_md_content: Optional[str] = None,
-        homepage: Optional[str] = None,
-        metadata: Optional[dict] = None,
-        gating_status: Optional[dict] = None,
     ) -> Skill:
         """Create a new skill in the database.
 
@@ -52,14 +48,10 @@ class SkillModel:
             code: Python code for inline skills
             config: Configuration for API/DB skills
             storage_path: MinIO path for package skills
-            manifest: Parsed manifest for package skills
+            manifest: Parsed manifest for package skills (can include skill_md_content, metadata, etc.)
             is_active: Whether skill is active
             is_system: Whether skill is system skill
             created_by: User ID who created the skill (string UUID)
-            skill_md_content: Full SKILL.md content (for agent_skill)
-            homepage: Homepage URL (for agent_skill)
-            metadata: Parsed metadata from SKILL.md (for agent_skill)
-            gating_status: Gating check results (for agent_skill)
 
         Returns:
             Created Skill object
@@ -90,10 +82,6 @@ class SkillModel:
                 is_active=is_active,
                 is_system=is_system,
                 created_by=created_by_uuid,
-                skill_md_content=skill_md_content,
-                homepage=homepage,
-                metadata=metadata,
-                gating_status=gating_status,
             )
             session.add(skill)
             session.commit()
@@ -166,10 +154,6 @@ class SkillModel:
         code: Optional[str] = None,
         interface_definition: Optional[dict] = None,
         dependencies: Optional[List[str]] = None,
-        skill_md_content: Optional[str] = None,
-        homepage: Optional[str] = None,
-        metadata: Optional[dict] = None,
-        gating_status: Optional[dict] = None,
     ) -> Optional[Skill]:
         """Update skill properties.
 
@@ -179,10 +163,6 @@ class SkillModel:
             code: New code
             interface_definition: New interface definition
             dependencies: New dependencies
-            skill_md_content: New SKILL.md content
-            homepage: New homepage URL
-            metadata: New metadata
-            gating_status: New gating status
 
         Returns:
             Updated Skill object or None if not found
@@ -201,14 +181,6 @@ class SkillModel:
                 skill.interface_definition = interface_definition
             if dependencies is not None:
                 skill.dependencies = dependencies
-            if skill_md_content is not None:
-                skill.skill_md_content = skill_md_content
-            if homepage is not None:
-                skill.homepage = homepage
-            if metadata is not None:
-                skill.metadata = metadata
-            if gating_status is not None:
-                skill.gating_status = gating_status
 
             session.commit()
             session.refresh(skill)

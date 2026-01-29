@@ -100,27 +100,24 @@ export const skillsApi = {
    * Create new skill
    */
   async create(data: CreateSkillRequest): Promise<Skill> {
-    // If package_file is provided, use multipart/form-data
-    if (data.package_file) {
-      const formData = new FormData();
-      formData.append('name', data.name);
-      formData.append('description', data.description);
-      if (data.skill_type) formData.append('skill_type', data.skill_type);
-      if (data.version) formData.append('version', data.version);
-      if (data.package_file) formData.append('package_file', data.package_file);
-      if (data.config) formData.append('config', JSON.stringify(data.config));
-      if (data.dependencies) formData.append('dependencies', JSON.stringify(data.dependencies));
-
-      const response = await apiClient.post<Skill>('/skills', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      });
-      return response.data;
+    // Always use multipart/form-data for consistency
+    const formData = new FormData();
+    formData.append('name', data.name);
+    formData.append('description', data.description);
+    if (data.skill_type) formData.append('skill_type', data.skill_type);
+    if (data.version) formData.append('version', data.version);
+    if (data.package_file) formData.append('package_file', data.package_file);
+    if (data.code) formData.append('code', data.code);
+    if (data.config) formData.append('config', JSON.stringify(data.config));
+    if (data.dependencies && data.dependencies.length > 0) {
+      formData.append('dependencies', JSON.stringify(data.dependencies));
     }
 
-    // Otherwise use JSON
-    const response = await apiClient.post<Skill>('/skills', data);
+    const response = await apiClient.post<Skill>('/skills', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
     return response.data;
   },
 
@@ -212,5 +209,31 @@ export const skillsApi = {
       responseType: 'blob',
     });
     return response.data;
+  },
+
+  /**
+   * List environment variable keys for current user
+   */
+  async listEnvVars(): Promise<string[]> {
+    const response = await apiClient.get<string[]>('/skills/env-vars');
+    return response.data;
+  },
+
+  /**
+   * Set environment variable for current user
+   */
+  async setEnvVar(key: string, value: string): Promise<{ message: string }> {
+    const response = await apiClient.post<{ message: string }>('/skills/env-vars', {
+      key,
+      value,
+    });
+    return response.data;
+  },
+
+  /**
+   * Delete environment variable for current user
+   */
+  async deleteEnvVar(key: string): Promise<void> {
+    await apiClient.delete(`/skills/env-vars/${key}`);
   },
 };

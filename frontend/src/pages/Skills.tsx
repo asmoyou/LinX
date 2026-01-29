@@ -57,6 +57,7 @@ export default function Skills() {
       await loadSkills();
     } catch (error) {
       console.error('Failed to create skill:', error);
+      // Error notification is handled by apiClient interceptor
       throw error;
     }
   };
