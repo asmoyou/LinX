@@ -264,6 +264,24 @@ export const skillsApi = {
     const response = await apiClient.get(`/skills/${skillId}/files/${filePath}`);
     return response.data;
   },
+
+  /**
+   * Update file content in agent_skill package (TODO: Backend implementation needed)
+   */
+  async updateFileContent(skillId: string, filePath: string, content: string): Promise<void> {
+    await apiClient.put(`/skills/${skillId}/files/${filePath}`, { content });
+  },
+
+  /**
+   * Re-upload package for agent_skill (TODO: Backend implementation needed)
+   */
+  async updatePackage(skillId: string, formData: FormData): Promise<void> {
+    await apiClient.put(`/skills/${skillId}/package`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+  },
 };
 
 export interface FileTreeItem {

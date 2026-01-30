@@ -289,30 +289,38 @@ class PackageHandler:
                 f"Package too large: {len(file_data)} bytes (max {self.max_size})"
             )
 
-        # Generate storage path
+        # Generate storage path (object key)
         storage_path = f"skills/{skill_name}/{version}/package.zip"
 
         try:
-            # Upload to MinIO
-            # Note: Actual MinIO upload would be implemented here
-            # For now, just return the path
+            # Upload to MinIO using upload_file method
             logger.info(
                 f"Uploading package to MinIO: {storage_path} ({len(file_data)} bytes)"
             )
 
-            # TODO: Implement actual MinIO upload
-            # self.minio_client.put_object(
-            #     bucket_name="skills",
-            #     object_name=storage_path,
-            #     data=io.BytesIO(file_data),
-            #     length=len(file_data),
-            #     metadata={
-            #         "skill_name": skill_name,
-            #         "version": version,
-            #     }
-            # )
+            # Use MinIO client's upload_file method
+            # Use artifacts bucket for skill packages (no file type restrictions)
+            bucket_name, object_key = self.minio_client.upload_file(
+                bucket_type="artifacts",  # Use artifacts bucket for skill packages
+                file_data=io.BytesIO(file_data),
+                filename=f"{skill_name}-{version}.zip",
+                user_id="system",  # System upload
+                task_id=None,
+                agent_id=None,
+                content_type="application/zip",
+                metadata={
+                    "skill_name": skill_name,
+                    "version": version,
+                    "package_type": "agent_skill",
+                }
+            )
 
-            return storage_path
+            logger.info(
+                f"Package uploaded successfully to {bucket_name}/{object_key}"
+            )
+
+            # Return the object key (storage path)
+            return object_key
 
         except Exception as e:
             logger.error(f"Failed to upload package to MinIO: {e}")
