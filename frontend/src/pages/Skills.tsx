@@ -4,6 +4,7 @@ import SkillCardV2 from '@/components/skills/SkillCardV2';
 import AddSkillModalV2 from '@/components/skills/AddSkillModalV2';
 import EditSkillModal from '@/components/skills/EditSkillModal';
 import CodePreviewModal from '@/components/skills/CodePreviewModal';
+import AgentSkillViewer from '@/components/skills/AgentSkillViewer';
 import SkillTesterModal from '@/components/skills/SkillTesterModal';
 import { skillsApi, type Skill, type CreateSkillRequest } from '@/api/skills';
 import { useTranslation } from 'react-i18next';
@@ -17,6 +18,7 @@ export default function Skills() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isCodePreviewOpen, setIsCodePreviewOpen] = useState(false);
+  const [isAgentSkillViewerOpen, setIsAgentSkillViewerOpen] = useState(false);
   const [isTesterModalOpen, setIsTesterModalOpen] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
   useEffect(() => {
@@ -79,7 +81,12 @@ export default function Skills() {
 
   const handleViewCode = (skill: Skill) => {
     setSelectedSkill(skill);
-    setIsCodePreviewOpen(true);
+    // Use different viewer based on skill type
+    if (skill.skill_type === 'agent_skill') {
+      setIsAgentSkillViewerOpen(true);
+    } else {
+      setIsCodePreviewOpen(true);
+    }
   };
 
   const handleDeleteSkill = async (skillId: string) => {
@@ -271,6 +278,19 @@ export default function Skills() {
               setSelectedSkill(null);
             }}
             skill={selectedSkill}
+          />
+        )}
+
+        {/* Agent Skill Viewer */}
+        {selectedSkill && (
+          <AgentSkillViewer
+            isOpen={isAgentSkillViewerOpen}
+            onClose={() => {
+              setIsAgentSkillViewerOpen(false);
+              setSelectedSkill(null);
+            }}
+            skillId={selectedSkill.skill_id}
+            skillName={selectedSkill.name}
           />
         )}
 

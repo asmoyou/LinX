@@ -428,7 +428,10 @@
         "example3": "Data Analysis",
         "example4": "Multi-step Workflow"
       }
-    }
+    },
+    "agentSkillPackageViewer": "Agent Skill Package Viewer",
+    "files": "Files",
+    "selectFileToView": "Select a file to view its content"
   },
   "settings": {
     "title": "Settings",

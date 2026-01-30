@@ -428,7 +428,10 @@
         "example3": "数据分析",
         "example4": "多步骤工作流"
       }
-    }
+    },
+    "agentSkillPackageViewer": "Agent Skill 包查看器",
+    "files": "文件",
+    "selectFileToView": "选择一个文件查看内容"
   },
   "settings": {
     "title": "设置",

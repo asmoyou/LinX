@@ -236,4 +236,41 @@ export const skillsApi = {
   async deleteEnvVar(key: string): Promise<void> {
     await apiClient.delete(`/skills/env-vars/${key}`);
   },
+
+  /**
+   * Get file list for agent_skill package
+   */
+  async getFiles(skillId: string): Promise<{
+    skill_id: string;
+    skill_name: string;
+    skill_type: string;
+    files: FileTreeItem[];
+  }> {
+    const response = await apiClient.get(`/skills/${skillId}/files`);
+    return response.data;
+  },
+
+  /**
+   * Get content of a specific file in agent_skill package
+   */
+  async getFileContent(skillId: string, filePath: string): Promise<{
+    skill_id: string;
+    file_path: string;
+    file_name: string;
+    content: string;
+    size: number;
+    extension: string;
+  }> {
+    const response = await apiClient.get(`/skills/${skillId}/files/${filePath}`);
+    return response.data;
+  },
 };
+
+export interface FileTreeItem {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  file_type?: 'python' | 'text' | 'config' | 'script' | 'other';
+  size?: number;
+  children?: FileTreeItem[];
+}
