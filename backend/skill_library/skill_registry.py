@@ -73,6 +73,10 @@ class SkillRegistry:
         config: Optional[dict] = None,
         storage_path: Optional[str] = None,
         manifest: Optional[dict] = None,
+        skill_md_content: Optional[str] = None,
+        homepage: Optional[str] = None,
+        skill_metadata: Optional[dict] = None,
+        gating_status: Optional[dict] = None,
         is_active: bool = True,
         is_system: bool = False,
         created_by: Optional[str] = None,
@@ -92,6 +96,10 @@ class SkillRegistry:
             config: Configuration for API/DB skills
             storage_path: MinIO path for package skills
             manifest: Parsed manifest for package skills
+            skill_md_content: SKILL.md content for agent_skill (required for agent_skill)
+            homepage: Homepage URL for agent_skill
+            skill_metadata: Additional metadata (emoji, tags, etc.)
+            gating_status: Gating check results
             is_active: Whether skill is active
             is_system: Whether skill is system skill
             created_by: User ID who created the skill
@@ -132,6 +140,10 @@ class SkillRegistry:
             config=config,
             storage_path=storage_path,
             manifest=manifest,
+            skill_md_content=skill_md_content,
+            homepage=homepage,
+            skill_metadata=skill_metadata,
+            gating_status=gating_status,
             is_active=is_active,
             is_system=is_system,
             created_by=created_by,

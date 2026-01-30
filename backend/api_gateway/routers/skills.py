@@ -80,7 +80,7 @@ class SkillResponse(BaseModel):
     created_by: Optional[str] = None
     skill_md_content: Optional[str] = None
     homepage: Optional[str] = None
-    metadata: Optional[dict] = None
+    skill_metadata: Optional[dict] = None
     gating_status: Optional[dict] = None
 
     @classmethod
@@ -94,7 +94,7 @@ class SkillResponse(BaseModel):
         # Get additional fields from manifest if available (only for agent_skill)
         skill_md_content = None
         homepage = None
-        metadata = None
+        skill_metadata = None
         gating_status = None
         
         # Only process manifest for agent_skill type
@@ -102,7 +102,7 @@ class SkillResponse(BaseModel):
             # manifest is a dict for agent_skill
             skill_md_content = skill_info.manifest.get('skill_md_content')
             homepage = skill_info.manifest.get('homepage')
-            metadata = skill_info.manifest.get('metadata')  # Already a dict from asdict()
+            skill_metadata = skill_info.manifest.get('skill_metadata')  # Renamed from 'metadata' to avoid SQLAlchemy conflict
             gating_status = skill_info.manifest.get('gating_status')  # Already a dict from asdict()
         
         return cls(
@@ -127,7 +127,7 @@ class SkillResponse(BaseModel):
             created_by=str(skill_info.created_by) if skill_info.created_by else None,
             skill_md_content=skill_md_content,
             homepage=homepage,
-            metadata=metadata,
+            skill_metadata=skill_metadata,
             gating_status=gating_status,
         )
 
@@ -504,8 +504,12 @@ async def create_skill(
                 # Create skill with SKILL.md data
                 from dataclasses import asdict
                 
-                # Note: skill_md_content, homepage, metadata, gating_status are not stored in DB
-                # They can be stored separately or in manifest/config if needed
+                # Extract fields from parsed SKILL.md
+                skill_md_content_str = skill_md_content
+                homepage_str = parsed.metadata.homepage
+                skill_metadata_dict = asdict(parsed.metadata)
+                gating_status_dict = asdict(gating_result)
+                
                 skill = registry.register_skill(
                     name=name,
                     description=description,
@@ -522,9 +526,13 @@ async def create_skill(
                     manifest={
                         "skill_md_content": skill_md_content,
                         "homepage": parsed.metadata.homepage,
-                        "metadata": asdict(parsed.metadata),
-                        "gating_status": asdict(gating_result),
+                        "skill_metadata": skill_metadata_dict,
+                        "gating_status": gating_status_dict,
                     },
+                    skill_md_content=skill_md_content_str,
+                    homepage=homepage_str,
+                    skill_metadata=skill_metadata_dict,
+                    gating_status=gating_status_dict,
                     is_active=True,
                     is_system=False,
                     created_by=str(current_user.user_id),

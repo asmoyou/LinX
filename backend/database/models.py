@@ -208,6 +208,12 @@ class Skill(Base):
     # Manifest (parsed from skill.yaml for packages)
     manifest = Column(JSONB, nullable=True)
     
+    # Agent skill specific fields (added for agent_skill support)
+    skill_md_content = Column(Text, nullable=True)  # SKILL.md content for agent_skill
+    homepage = Column(String(500), nullable=True)  # Homepage URL
+    skill_metadata = Column(JSONB, nullable=True)  # Additional metadata (emoji, tags, etc.) - renamed from 'metadata' to avoid SQLAlchemy conflict
+    gating_status = Column(JSONB, nullable=True)  # Gating check results
+    
     # Auto-extracted from code/config/manifest
     interface_definition = Column(JSONB, nullable=False)
     dependencies = Column(JSONB, nullable=True)

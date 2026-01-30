@@ -23,13 +23,13 @@ def upgrade() -> None:
     # Add new columns for agent_skill
     op.add_column('skills', sa.Column('skill_md_content', sa.Text(), nullable=True))
     op.add_column('skills', sa.Column('homepage', sa.String(500), nullable=True))
-    op.add_column('skills', sa.Column('metadata', sa.JSON(), nullable=True))
+    op.add_column('skills', sa.Column('skill_metadata', sa.JSON(), nullable=True))
     op.add_column('skills', sa.Column('gating_status', sa.JSON(), nullable=True))
 
 
 def downgrade() -> None:
     """Downgrade schema."""
     op.drop_column('skills', 'gating_status')
-    op.drop_column('skills', 'metadata')
+    op.drop_column('skills', 'skill_metadata')
     op.drop_column('skills', 'homepage')
     op.drop_column('skills', 'skill_md_content')
