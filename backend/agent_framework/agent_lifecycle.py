@@ -80,8 +80,8 @@ class AgentLifecycleManager:
         logger.info(f"Agent created: {name} ({agent_info.agent_id})")
         return agent
 
-    def initialize_agent(self, agent: BaseAgent) -> None:
-        """Initialize agent with LangChain components.
+    async def initialize_agent(self, agent: BaseAgent) -> None:
+        """Initialize agent with LangChain components and skills.
 
         Args:
             agent: BaseAgent instance
@@ -94,8 +94,8 @@ class AgentLifecycleManager:
             status="initializing",
         )
 
-        # Initialize agent
-        agent.initialize()
+        # Initialize agent (now async to load skills)
+        await agent.initialize()
 
         # Update status to active
         self.agent_registry.update_agent(

@@ -1141,8 +1141,8 @@ async def test_agent(
                     
                     agent.llm = llm
                     
-                    # Initialize agent
-                    await asyncio.to_thread(agent.initialize)
+                    # Initialize agent (now async)
+                    await agent.initialize()
                     
                     # Cache the initialized agent with 30 minute TTL
                     cache_agent(cache_key, agent, llm, ttl_minutes=30)
@@ -1768,7 +1768,7 @@ async def test_agent(
                     raise ValueError(f"Could not create LLM for provider: {provider_name}")
                 
                 agent.llm = llm
-                await asyncio.to_thread(agent.initialize)
+                await agent.initialize()
                 
                 # Execute without streaming
                 exec_context = ExecutionContext(
@@ -1800,4 +1800,187 @@ async def test_agent(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to test agent: {str(e)}",
+        )
+
+
+# ============================================================================
+# Agent Skills Configuration Endpoints
+# ============================================================================
+
+class AgentSkillsResponse(BaseModel):
+    """Response model for agent skills configuration."""
+    
+    agent_id: str
+    configured_skills: List[str] = Field(description="List of skill names configured for this agent")
+    available_skills: List[Dict[str, str]] = Field(description="List of all available skills")
+
+
+@router.get("/{agent_id}/skills", response_model=AgentSkillsResponse)
+async def get_agent_skills(
+    agent_id: str,
+    current_user: CurrentUser = Depends(get_current_user)
+):
+    """Get agent's configured skills and available skills.
+    
+    Returns:
+        - configured_skills: Skills currently configured for this agent (in capabilities)
+        - available_skills: All skills available in the system
+    """
+    try:
+        agent_uuid = UUID(agent_id)
+        registry = get_agent_registry()
+        
+        # Get agent info
+        agent_info = registry.get_agent(agent_uuid)
+        if not agent_info:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
+        # Check ownership
+        if str(agent_info.owner_user_id) != current_user.user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to access this agent")
+        
+        # Get all available skills from database
+        from database.connection import get_db_session
+        from database.models import Skill
+        
+        available_skills = []
+        with get_db_session() as session:
+            skills = session.query(Skill).filter(
+                Skill.is_active == True
+            ).order_by(Skill.name).all()
+            
+            for skill in skills:
+                available_skills.append({
+                    "skill_id": str(skill.skill_id),
+                    "name": skill.name,
+                    "description": skill.description,
+                    "skill_type": skill.skill_type,
+                    "version": skill.version,
+                })
+        
+        return AgentSkillsResponse(
+            agent_id=agent_id,
+            configured_skills=agent_info.capabilities or [],
+            available_skills=available_skills
+        )
+        
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid agent ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get agent skills: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get agent skills: {str(e)}"
+        )
+
+
+class UpdateAgentSkillsRequest(BaseModel):
+    """Request model for updating agent skills."""
+    
+    skill_names: List[str] = Field(description="List of skill names to configure for this agent")
+
+
+@router.put("/{agent_id}/skills", response_model=AgentResponse)
+async def update_agent_skills(
+    agent_id: str,
+    request: UpdateAgentSkillsRequest,
+    current_user: CurrentUser = Depends(get_current_user)
+):
+    """Update agent's configured skills.
+    
+    This updates the agent's capabilities list with the selected skills.
+    The agent will load these skills on next initialization.
+    """
+    try:
+        agent_uuid = UUID(agent_id)
+        registry = get_agent_registry()
+        
+        # Get agent info
+        agent_info = registry.get_agent(agent_uuid)
+        if not agent_info:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
+        # Check ownership
+        if str(agent_info.owner_user_id) != current_user.user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to modify this agent")
+        
+        # Validate that all skill names exist
+        from database.connection import get_db_session
+        from database.models import Skill
+        
+        with get_db_session() as session:
+            for skill_name in request.skill_names:
+                skill = session.query(Skill).filter(
+                    Skill.name == skill_name,
+                    Skill.is_active == True
+                ).first()
+                
+                if not skill:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Skill '{skill_name}' not found or not active"
+                    )
+        
+        # Update agent capabilities
+        updated_agent = registry.update_agent(
+            agent_uuid,
+            capabilities=request.skill_names
+        )
+        
+        if not updated_agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
+        # Clear agent from cache to force reload with new skills
+        cache_key = f"{agent_id}:{current_user.user_id}"
+        if cache_key in _agent_cache:
+            del _agent_cache[cache_key]
+            logger.info(f"Cleared agent cache after skills update: {agent_id}")
+        
+        logger.info(
+            f"Updated agent skills: {agent_id}",
+            extra={
+                "agent_id": agent_id,
+                "skill_count": len(request.skill_names),
+                "skills": request.skill_names
+            }
+        )
+        
+        # Return updated agent info
+        return AgentResponse(
+            agent_id=str(updated_agent.agent_id),
+            name=updated_agent.name,
+            agent_type=updated_agent.agent_type,
+            avatar=updated_agent.avatar,
+            owner_user_id=str(updated_agent.owner_user_id),
+            capabilities=updated_agent.capabilities,
+            status=updated_agent.status,
+            llm_provider=updated_agent.llm_provider,
+            llm_model=updated_agent.llm_model,
+            system_prompt=updated_agent.system_prompt,
+            temperature=updated_agent.temperature,
+            max_tokens=updated_agent.max_tokens,
+            top_p=updated_agent.top_p,
+            access_level=updated_agent.access_level,
+            allowed_knowledge=updated_agent.allowed_knowledge,
+            allowed_memory=updated_agent.allowed_memory,
+            embedding_model=updated_agent.embedding_model,
+            embedding_provider=updated_agent.embedding_provider,
+            vector_dimension=updated_agent.vector_dimension,
+            top_k=updated_agent.top_k,
+            similarity_threshold=updated_agent.similarity_threshold,
+            created_at=updated_agent.created_at,
+            updated_at=updated_agent.updated_at,
+        )
+        
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid agent ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update agent skills: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update agent skills: {str(e)}"
         )

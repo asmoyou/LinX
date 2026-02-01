@@ -284,4 +284,32 @@ export const agentsApi = {
       throw error;
     }
   },
+  
+  /**
+   * Get agent's configured skills and available skills
+   */
+  getAgentSkills: async (agentId: string): Promise<{
+    agent_id: string;
+    configured_skills: string[];
+    available_skills: Array<{
+      skill_id: string;
+      name: string;
+      description: string;
+      skill_type: string;
+      version: string;
+    }>;
+  }> => {
+    const response = await apiClient.get(`/agents/${agentId}/skills`);
+    return response.data;
+  },
+  
+  /**
+   * Update agent's configured skills
+   */
+  updateAgentSkills: async (agentId: string, skillNames: string[]): Promise<Agent> => {
+    const response = await apiClient.put<Agent>(`/agents/${agentId}/skills`, {
+      skill_names: skillNames
+    });
+    return response.data;
+  },
 };

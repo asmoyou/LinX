@@ -825,18 +825,21 @@ async def test_skill(
     inputs: Optional[Dict[str, Any]] = Body(None),
     natural_language_input: Optional[str] = Body(None),
     dry_run: bool = Body(True),
+    agent_id: Optional[str] = Body(None),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Test skill execution.
     
     For langchain_tool: Use inputs dict with structured parameters
     For agent_skill: Use natural_language_input with natural language
+                     Optionally provide agent_id for real execution with Agent
     
     Args:
         skill_id: Skill UUID
         inputs: Input parameters for langchain_tool (structured)
         natural_language_input: Natural language input for agent_skill
-        dry_run: If True, simulate execution without running commands (agent_skill only)
+        dry_run: If True, simulate execution without running commands (agent_skill only, ignored if agent_id provided)
+        agent_id: Optional Agent ID to execute the skill (agent_skill only)
         current_user: Authenticated user
         
     Returns:
@@ -867,35 +870,166 @@ async def test_skill(
                     detail="Skill has no SKILL.md content"
                 )
             
-            # Test with natural language
-            tester = NaturalLanguageTester()
-            result = tester.test_skill(
-                skill.skill_md_content,
-                natural_language_input,
-                dry_run=dry_run
-            )
+            # If agent_id is provided, use Agent framework to execute the skill
+            if agent_id:
+                logger.info(f"Executing agent_skill with Agent: agent_id={agent_id}")
+                
+                try:
+                    # Get agent info from registry
+                    from agent_framework.agent_registry import get_agent_registry
+                    from agent_framework.base_agent import BaseAgent, AgentConfig
+                    from llm_providers.custom_openai_provider import CustomOpenAIChat
+                    
+                    agent_uuid = UUID(agent_id)
+                    registry = get_agent_registry()
+                    
+                    # Get agent info (not async)
+                    agent_info = registry.get_agent(agent_uuid)
+                    if not agent_info:
+                        raise HTTPException(status_code=404, detail="Agent not found")
+                    
+                    # Create agent config
+                    config = AgentConfig(
+                        agent_id=agent_uuid,
+                        name=agent_info.name,
+                        agent_type=agent_info.agent_type,
+                        owner_user_id=agent_info.owner_user_id,
+                        capabilities=agent_info.capabilities or [],
+                        llm_model=agent_info.llm_model or "llama3.2:latest",
+                        temperature=agent_info.temperature or 0.7,
+                        system_prompt=agent_info.system_prompt,
+                    )
+                    
+                    # Create agent instance
+                    agent = BaseAgent(config)
+                    
+                    # Get LLM provider
+                    from database.connection import get_db_session
+                    from llm_providers.db_manager import ProviderDBManager
+                    
+                    provider_name = agent_info.llm_provider or "ollama"
+                    model_name = agent_info.llm_model or "llama3.2:latest"
+                    
+                    llm = None
+                    with get_db_session() as db:
+                        db_manager = ProviderDBManager(db)
+                        db_provider = db_manager.get_provider(provider_name)
+                        
+                        if db_provider and db_provider.enabled:
+                            if db_provider.protocol in ["openai_compatible", "ollama"]:
+                                api_key = None
+                                if db_provider.api_key_encrypted:
+                                    api_key = db_manager._decrypt_api_key(db_provider.api_key_encrypted)
+                                
+                                llm = CustomOpenAIChat(
+                                    base_url=db_provider.base_url,
+                                    model=model_name,
+                                    temperature=config.temperature,
+                                    api_key=api_key,
+                                    max_tokens=agent_info.max_tokens or 2000,
+                                    streaming=False,
+                                )
+                    
+                    if not llm:
+                        raise ValueError(f"Could not create LLM for provider: {provider_name}")
+                    
+                    agent.llm = llm
+                    
+                    # Initialize agent (loads skills)
+                    await agent.initialize()
+                    
+                    # Build task description that references the skill
+                    task_description = f"""The user wants to test the skill '{skill.name}'.
+
+User Request: {natural_language_input}
+
+Skill Information:
+- Name: {skill.name}
+- Description: {skill.description}
+
+The skill documentation is available in your system prompt. Please:
+1. Read the skill documentation carefully
+2. Understand what the user wants to accomplish
+3. Execute the skill according to the documentation
+4. Return the results
+
+If the skill requires code execution, use the code_execution tool."""
+                    
+                    # Execute the task
+                    import time
+                    start_time = time.time()
+                    
+                    result = agent.execute_task(
+                        task_description=task_description,
+                        context={}
+                    )
+                    
+                    execution_time = time.time() - start_time
+                    
+                    logger.info(
+                        f"Agent skill executed by Agent {agent_id}",
+                        extra={
+                            "skill_id": skill_id,
+                            "agent_id": agent_id,
+                            "execution_time": execution_time,
+                        }
+                    )
+                    
+                    return {
+                        "success": result.get("success", True),
+                        "input": natural_language_input,
+                        "agent_id": str(agent_id),
+                        "agent_name": agent_info.name,
+                        "output": result.get("output", ""),
+                        "error": result.get("error"),
+                        "execution_time": execution_time,
+                        "mode": "agent_execution",
+                    }
+                    
+                except Exception as e:
+                    logger.error(f"Agent execution failed: {e}", exc_info=True)
+                    return {
+                        "success": False,
+                        "input": natural_language_input,
+                        "agent_id": str(agent_id) if agent_id else None,
+                        "error": str(e),
+                        "execution_time": 0.0,  # Add default execution_time
+                        "mode": "agent_execution",
+                    }
             
-            logger.info(
-                f"Agent skill tested by user {current_user.user_id}",
-                extra={
-                    "skill_id": skill_id,
+            # Otherwise, use NaturalLanguageTester for dry-run or simulated execution
+            # Otherwise, use NaturalLanguageTester for dry-run or simulated execution
+            else:
+                # Test with natural language
+                tester = NaturalLanguageTester()
+                result = tester.test_skill(
+                    skill.skill_md_content,
+                    natural_language_input,
+                    dry_run=dry_run
+                )
+                
+                logger.info(
+                    f"Agent skill tested by user {current_user.user_id}",
+                    extra={
+                        "skill_id": skill_id,
+                        "success": result.success,
+                        "execution_time": result.execution_time,
+                        "dry_run": dry_run,
+                    }
+                )
+                
+                # Convert result to dict
+                from dataclasses import asdict
+                return {
                     "success": result.success,
+                    "input": result.input,
+                    "parsed_commands": [asdict(cmd) for cmd in result.parsed_commands],
+                    "simulated_output": result.simulated_output,
+                    "actual_output": result.actual_output,
                     "execution_time": result.execution_time,
-                    "dry_run": dry_run,
+                    "error": result.error,
+                    "mode": "dry_run" if dry_run else "direct_execution",
                 }
-            )
-            
-            # Convert result to dict
-            from dataclasses import asdict
-            return {
-                "success": result.success,
-                "input": result.input,
-                "parsed_commands": [asdict(cmd) for cmd in result.parsed_commands],
-                "simulated_output": result.simulated_output,
-                "actual_output": result.actual_output,
-                "execution_time": result.execution_time,
-                "error": result.error,
-            }
         
         # Handle langchain_tool with structured testing
         elif skill.skill_type == "langchain_tool":

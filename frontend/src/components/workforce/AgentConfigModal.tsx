@@ -32,6 +32,17 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [modelMetadata, setModelMetadata] = useState<ModelMetadata | null>(null);
   const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
   const [isAvatarCropModalOpen, setIsAvatarCropModalOpen] = useState(false);
+  
+  // Skills state
+  const [availableSkills, setAvailableSkills] = useState<Array<{
+    skill_id: string;
+    name: string;
+    description: string;
+    skill_type: string;
+    version: string;
+  }>>([]);
+  const [isLoadingSkills, setIsLoadingSkills] = useState(false);
+  const [skillsError, setSkillsError] = useState<string | null>(null);
 
   const [formData, setFormData] = useState<Partial<Agent>>({
     name: '',
@@ -89,6 +100,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     if (isOpen) {
       fetchAvailableProviders();
       fetchAvailableEmbeddingModels();
+      fetchAvailableSkills();
     }
   }, [isOpen]);
 
@@ -149,6 +161,47 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     } finally {
       setIsLoadingProviders(false);
     }
+  };
+  
+  const fetchAvailableSkills = async () => {
+    if (!agent?.id) return;
+    
+    console.log('[AgentConfigModal] Fetching available skills...');
+    setIsLoadingSkills(true);
+    setSkillsError(null);
+    try {
+      const response = await agentsApi.getAgentSkills(agent.id);
+      console.log('[AgentConfigModal] Skills loaded:', response);
+      setAvailableSkills(response.available_skills || []);
+      
+      // Update form data with configured skills if not already set
+      if (!formData.skills || formData.skills.length === 0) {
+        setFormData(prev => ({
+          ...prev,
+          skills: response.configured_skills || []
+        }));
+      }
+    } catch (error: any) {
+      console.error('Failed to fetch available skills:', error);
+      const errorMsg = error.response?.data?.message || error.message || 'Failed to load skills';
+      setSkillsError(errorMsg);
+    } finally {
+      setIsLoadingSkills(false);
+    }
+  };
+  
+  const toggleSkill = (skillName: string) => {
+    const currentSkills = formData.skills || [];
+    const isSelected = currentSkills.includes(skillName);
+    
+    const newSkills = isSelected
+      ? currentSkills.filter(s => s !== skillName)
+      : [...currentSkills, skillName];
+    
+    setFormData({
+      ...formData,
+      skills: newSkills
+    });
   };
 
   const fetchModelMetadata = async (provider: string, model: string) => {
@@ -386,14 +439,129 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.selectSkills')}
+                  {t('agent.selectSkills', '选择技能')}
                 </label>
-                <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-xl min-h-[200px]">
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {formData.skills?.length || 0} {t('agent.noSkillsSelected')}
-                  </p>
-                  {/* TODO: Add skill selection UI */}
-                </div>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
+                  {t('agent.skillsDescription', '选择此 Agent 可以使用的技能。技能将在 Agent 初始化时加载。')}
+                </p>
+                
+                {/* Skills Loading State */}
+                {isLoadingSkills && (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-6 h-6 animate-spin text-emerald-500" />
+                    <span className="ml-2 text-zinc-600 dark:text-zinc-400">
+                      {t('agent.loadingSkills', '加载技能中...')}
+                    </span>
+                  </div>
+                )}
+                
+                {/* Skills Error State */}
+                {skillsError && (
+                  <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-semibold text-red-700 dark:text-red-400">
+                        {skillsError}
+                      </p>
+                      <button
+                        onClick={fetchAvailableSkills}
+                        className="mt-2 text-sm text-red-600 dark:text-red-400 hover:underline"
+                      >
+                        {t('common.retry', '重试')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Skills List */}
+                {!isLoadingSkills && !skillsError && (
+                  <div className="space-y-3">
+                    {/* Selected Skills Count */}
+                    <div className="flex items-center justify-between p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+                      <span className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                        {t('agent.selectedSkills', '已选择技能')}
+                      </span>
+                      <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+                        {formData.skills?.length || 0} / {availableSkills.length}
+                      </span>
+                    </div>
+                    
+                    {/* Skills Grid */}
+                    {availableSkills.length === 0 ? (
+                      <div className="p-8 text-center bg-zinc-500/5 border border-zinc-500/10 rounded-xl">
+                        <Info className="w-8 h-8 text-zinc-400 mx-auto mb-2" />
+                        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                          {t('agent.noSkillsAvailable', '暂无可用技能')}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 gap-2 max-h-[400px] overflow-y-auto p-1">
+                        {availableSkills.map((skill) => {
+                          const isSelected = formData.skills?.includes(skill.name) || false;
+                          const isLangChainTool = skill.skill_type === 'langchain_tool';
+                          
+                          return (
+                            <button
+                              key={skill.skill_id}
+                              type="button"
+                              onClick={() => toggleSkill(skill.name)}
+                              className={`
+                                p-3 rounded-lg border-2 text-left transition-all
+                                ${isSelected
+                                  ? 'border-emerald-500 bg-emerald-500/10'
+                                  : 'border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:border-emerald-500/50'
+                                }
+                              `}
+                            >
+                              <div className="flex items-start gap-3">
+                                {/* Checkbox */}
+                                <div className={`
+                                  w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5
+                                  ${isSelected
+                                    ? 'border-emerald-500 bg-emerald-500'
+                                    : 'border-zinc-300 dark:border-zinc-600'
+                                  }
+                                `}>
+                                  {isSelected && (
+                                    <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                    </svg>
+                                  )}
+                                </div>
+                                
+                                {/* Skill Info */}
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <h4 className="font-medium text-zinc-900 dark:text-zinc-100">
+                                      {skill.name}
+                                    </h4>
+                                    <span className={`
+                                      px-2 py-0.5 text-xs font-medium rounded
+                                      ${isLangChainTool
+                                        ? 'bg-blue-500/10 text-blue-700 dark:text-blue-400'
+                                        : 'bg-purple-500/10 text-purple-700 dark:text-purple-400'
+                                      }
+                                    `}>
+                                      {isLangChainTool ? 'Tool' : 'Agent Skill'}
+                                    </span>
+                                  </div>
+                                  <p className="text-sm text-zinc-600 dark:text-zinc-400 line-clamp-2">
+                                    {skill.description}
+                                  </p>
+                                  {skill.version && (
+                                    <p className="text-xs text-zinc-500 dark:text-zinc-500 mt-1">
+                                      v{skill.version}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}

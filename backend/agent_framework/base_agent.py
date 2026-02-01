@@ -76,6 +76,7 @@ class BaseAgent:
         self.status = AgentStatus.INITIALIZING
         self.agent = None  # Will be CompiledGraph after initialization
         self.tools_by_name: Dict[str, Any] = {}
+        self.skill_manager = None  # Will be initialized in initialize()
 
         logger.info(
             f"BaseAgent initialized: {config.name}",
@@ -86,20 +87,67 @@ class BaseAgent:
             },
         )
 
-    def initialize(self) -> None:
-        """Initialize agent with LangGraph 1.0 components."""
+    async def initialize(self) -> None:
+        """Initialize agent with LangGraph 1.0 components and skills."""
         try:
             if not self.llm:
                 raise ValueError("LLM not configured for agent")
 
-            # Bind tools to LLM
+            # Initialize SkillManager
+            from agent_framework.skill_manager import get_skill_manager
+            self.skill_manager = get_skill_manager(
+                agent_id=self.config.agent_id,
+                user_id=self.config.owner_user_id
+            )
+            
+            # Discover and load skills based on agent's capabilities
+            skills = await self.skill_manager.discover_skills(
+                agent_capabilities=self.config.capabilities
+            )
+            
+            logger.info(
+                f"Discovered {len(skills)} skills for agent {self.config.name}",
+                extra={"agent_id": str(self.config.agent_id), "skill_count": len(skills)}
+            )
+            
+            # Load skills
+            for skill_info in skills:
+                if skill_info.skill_type == "langchain_tool":
+                    tool = await self.skill_manager.load_langchain_tool(skill_info)
+                    if tool:
+                        self.tools.append(tool)
+                elif skill_info.skill_type == "agent_skill":
+                    # Agent skills are loaded as documentation, not tools
+                    await self.skill_manager.load_agent_skill_doc(skill_info)
+            
+            # Add code execution tool (for agent to run generated code)
+            from agent_framework.tools.code_execution_tool import create_code_execution_tool
+            code_exec_tool = create_code_execution_tool(
+                agent_id=self.config.agent_id,
+                user_id=self.config.owner_user_id
+            )
+            self.tools.append(code_exec_tool)
+            
+            logger.info(
+                f"Loaded {len(self.tools)} tools for agent {self.config.name}",
+                extra={"agent_id": str(self.config.agent_id), "tool_count": len(self.tools)}
+            )
+
+            # Bind tools to LLM (if supported)
             if self.tools:
                 self.tools_by_name = {tool.name: tool for tool in self.tools}
-                self.llm_with_tools = self.llm.bind_tools(self.tools)
+                try:
+                    self.llm_with_tools = self.llm.bind_tools(self.tools)
+                except (NotImplementedError, AttributeError) as e:
+                    logger.warning(
+                        f"LLM does not support bind_tools, using without tool binding: {e}",
+                        extra={"agent_id": str(self.config.agent_id)}
+                    )
+                    self.llm_with_tools = self.llm
             else:
                 self.llm_with_tools = self.llm
 
-            # Create system prompt
+            # Create system prompt (includes Agent Skills documentation)
             system_prompt = self._create_system_prompt()
 
             # Build agent graph using LangGraph 1.0 StateGraph API
@@ -117,8 +165,11 @@ class BaseAgent:
                 response = self.llm_with_tools.invoke(messages)
                 return {"messages": [response]}
 
-            # Add tool execution node (only if tools are available)
-            if self.tools:
+            # Check if LLM supports tool calls
+            llm_supports_tools = self.tools and hasattr(self.llm, 'bind_tools')
+            
+            # Add tool execution node (only if tools are available and LLM supports them)
+            if llm_supports_tools:
                 def call_tools(state: MessagesState) -> Dict[str, List]:
                     """Tool node that executes tool calls."""
                     messages = state["messages"]
@@ -174,6 +225,10 @@ class BaseAgent:
                 builder.add_edge("tools", "llm")
             else:
                 # Build simple graph without tools
+                logger.info(
+                    f"Building agent without tool support",
+                    extra={"agent_id": str(self.config.agent_id)}
+                )
                 builder.add_node("llm", call_llm)
                 builder.add_edge(START, "llm")
                 builder.add_edge("llm", END)
@@ -305,6 +360,10 @@ class BaseAgent:
                     if not final_output and messages:
                         # Fallback to last message
                         final_output = str(messages[-1].content) if hasattr(messages[-1], 'content') else str(messages[-1])
+                
+                # Parse and execute tool calls if LLM doesn't support function calling
+                if self.tools and not hasattr(self.llm, 'bind_tools'):
+                    final_output = await self._parse_and_execute_tools(final_output)
 
                 self.status = AgentStatus.ACTIVE
                 logger.info(f"Task completed: {self.config.name}")
@@ -360,18 +419,87 @@ class BaseAgent:
             logger.info("Re-initializing agent with new tool")
             self.initialize()
 
+    async def _parse_and_execute_tools(self, output: str) -> str:
+        """Parse tool calls from LLM output and execute them.
+        
+        For LLMs that don't support function calling, we parse tool invocations
+        from the text output and execute them manually.
+        
+        Args:
+            output: LLM output text
+        
+        Returns:
+            Modified output with tool results
+        """
+        import re
+        import json
+        
+        # Pattern to match tool invocations: ```tool:tool_name\n{json}\n```
+        pattern = r'```tool:(\w+)\s*\n(.*?)\n```'
+        matches = re.findall(pattern, output, re.DOTALL)
+        
+        if not matches:
+            return output
+        
+        logger.info(
+            f"Found {len(matches)} tool invocations in output",
+            extra={"agent_id": str(self.config.agent_id)}
+        )
+        
+        modified_output = output
+        
+        for tool_name, args_json in matches:
+            tool = self.tools_by_name.get(tool_name)
+            if not tool:
+                logger.warning(f"Tool not found: {tool_name}")
+                continue
+            
+            try:
+                # Parse arguments
+                args = json.loads(args_json)
+                
+                logger.info(
+                    f"Executing tool: {tool_name}",
+                    extra={"agent_id": str(self.config.agent_id), "args": args}
+                )
+                
+                # Execute tool (handle both sync and async)
+                if hasattr(tool, '_arun'):
+                    result = await tool._arun(**args)
+                else:
+                    result = tool._run(**args)
+                
+                # Replace tool invocation with result in output
+                tool_block = f"```tool:{tool_name}\n{args_json}\n```"
+                result_block = f"```tool_result:{tool_name}\n{result}\n```"
+                modified_output = modified_output.replace(tool_block, result_block)
+                
+                logger.info(
+                    f"Tool executed successfully: {tool_name}",
+                    extra={"agent_id": str(self.config.agent_id)}
+                )
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse tool arguments: {e}")
+            except Exception as e:
+                logger.error(f"Tool execution failed: {e}", exc_info=True)
+        
+        return modified_output
+
     def _create_system_prompt(self) -> str:
         """Create system prompt for the agent.
+        
+        Includes Agent Skills documentation and available tools if available.
 
         Returns:
             System prompt string
         """
         # Use custom system prompt if provided
         if self.config.system_prompt:
-            return self.config.system_prompt
-        
-        # Otherwise, generate default system prompt
-        prompt = f"""You are {self.config.name}, a {self.config.agent_type} agent with the following capabilities: {', '.join(self.config.capabilities)}.
+            base_prompt = self.config.system_prompt
+        else:
+            # Generate default system prompt
+            base_prompt = f"""You are {self.config.name}, a {self.config.agent_type} agent with the following capabilities: {', '.join(self.config.capabilities)}.
 
 Your role is to help users accomplish tasks using your available tools and capabilities.
 
@@ -382,5 +510,44 @@ When solving problems:
 4. If you need more information, ask clarifying questions
 
 Always be professional, accurate, and helpful."""
+        
+        # Add tools description if LLM doesn't support function calling
+        if self.tools and not hasattr(self.llm, 'bind_tools'):
+            tools_prompt = "\n\n## Available Tools\n\n"
+            tools_prompt += "You have access to the following tools. To use a tool, you MUST write the exact tool invocation in your response:\n\n"
+            
+            for tool in self.tools:
+                tools_prompt += f"### {tool.name}\n"
+                tools_prompt += f"{tool.description}\n\n"
+                
+                # Add usage example for code_execution tool
+                if tool.name == "code_execution":
+                    tools_prompt += """**IMPORTANT**: To execute code, you MUST use this exact format:
 
-        return prompt
+```tool:code_execution
+{
+  "code": "your python code here",
+  "language": "python"
+}
+```
+
+Example:
+```tool:code_execution
+{
+  "code": "import os\\napi_key = os.environ.get('WEATHER_API_KEY')\\nprint(f'API Key: {api_key}')",
+  "language": "python"
+}
+```
+
+The code will be executed in a secure sandbox with access to environment variables.
+
+"""
+            
+            base_prompt += tools_prompt
+        
+        # Add Agent Skills documentation if available
+        if self.skill_manager:
+            skills_prompt = self.skill_manager.format_skills_for_prompt()
+            return base_prompt + skills_prompt
+        
+        return base_prompt

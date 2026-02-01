@@ -7,12 +7,33 @@ import toast from 'react-hot-toast';
  * API Client Configuration
  */
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
-const API_TIMEOUT = 30000; // 30 seconds
+const API_TIMEOUT = 120000; // 120 seconds (2 minutes) for long-running operations like skill testing
 
 /**
  * Request cancellation tokens
  */
 const cancelTokens = new Map<string, AbortController>();
+
+/**
+ * Token refresh state to prevent multiple refresh attempts
+ */
+let isRefreshing = false;
+let refreshSubscribers: Array<(token: string) => void> = [];
+
+/**
+ * Add subscriber to be notified when token refresh completes
+ */
+const subscribeTokenRefresh = (callback: (token: string) => void) => {
+  refreshSubscribers.push(callback);
+};
+
+/**
+ * Notify all subscribers that token refresh completed
+ */
+const onTokenRefreshed = (token: string) => {
+  refreshSubscribers.forEach((callback) => callback(token));
+  refreshSubscribers = [];
+};
 
 /**
  * Create axios instance with default configuration
@@ -96,33 +117,70 @@ apiClient.interceptors.response.use(
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
 
+      // If already refreshing, queue this request
+      if (isRefreshing) {
+        return new Promise((resolve) => {
+          subscribeTokenRefresh((token: string) => {
+            if (originalRequest.headers) {
+              originalRequest.headers.Authorization = `Bearer ${token}`;
+            }
+            resolve(apiClient(originalRequest));
+          });
+        });
+      }
+
+      isRefreshing = true;
+
       try {
         // Try to refresh token
         const refreshToken = localStorage.getItem('refresh_token');
-        if (refreshToken) {
-          const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {
-            refresh_token: refreshToken,
-          });
-
-          const { token } = response.data;
-          useAuthStore.getState().setToken(token);
-
-          // Retry original request with new token
-          if (originalRequest.headers) {
-            originalRequest.headers.Authorization = `Bearer ${token}`;
-          }
-          return apiClient(originalRequest);
+        if (!refreshToken) {
+          throw new Error('No refresh token available');
         }
+
+        const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {
+          refresh_token: refreshToken,
+        });
+
+        const { token } = response.data;
+        useAuthStore.getState().setToken(token);
+
+        // Notify all queued requests
+        onTokenRefreshed(token);
+
+        // Retry original request with new token
+        if (originalRequest.headers) {
+          originalRequest.headers.Authorization = `Bearer ${token}`;
+        }
+
+        isRefreshing = false;
+        return apiClient(originalRequest);
       } catch (refreshError) {
-        // Refresh failed, logout user
+        // Refresh failed, logout user (only once)
+        isRefreshing = false;
+        refreshSubscribers = [];
+        
+        // Show error toast only once
+        toast.error('Your session has expired. Please log in again.', {
+          id: 'session-expired', // Use ID to prevent duplicates
+          duration: 4000,
+        });
+
+        // Logout and redirect
         useAuthStore.getState().logout();
-        window.location.href = '/login';
+        
+        // Use setTimeout to avoid navigation during error handling
+        setTimeout(() => {
+          window.location.href = '/login';
+        }, 100);
+
         return Promise.reject(refreshError);
       }
     }
 
     // Handle specific error status codes
-    if (error.response) {
+    // Skip error toast for 401 (already handled above)
+    if (error.response && error.response.status !== 401) {
       const status = error.response.status;
       const errorData = error.response.data as any;
       
@@ -196,8 +254,8 @@ apiClient.interceptors.response.use(
       toast.error('The request took too long to complete. Please try again.', {
         duration: 5000,
       });
-    } else {
-      // Catch-all for any other errors
+    } else if (!error.response) {
+      // Catch-all for any other errors (but not HTTP errors)
       toast.error(error.message || 'An unexpected error occurred.', {
         duration: 4000,
       });
