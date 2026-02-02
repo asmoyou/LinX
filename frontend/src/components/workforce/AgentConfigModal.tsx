@@ -30,7 +30,9 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [availableEmbeddingModels, setAvailableEmbeddingModels] = useState<Record<string, string[]>>({});
   const [providersError, setProvidersError] = useState<string | null>(null);
   const [modelMetadata, setModelMetadata] = useState<ModelMetadata | null>(null);
+  const [embeddingModelMetadata, setEmbeddingModelMetadata] = useState<ModelMetadata | null>(null);
   const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
+  const [isLoadingEmbeddingMetadata, setIsLoadingEmbeddingMetadata] = useState(false);
   const [isAvatarCropModalOpen, setIsAvatarCropModalOpen] = useState(false);
   
   // Skills state
@@ -142,6 +144,15 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     }
   }, [isOpen, formData.provider, formData.model]);
 
+  // Fetch embedding model metadata when embedding provider and model are selected
+  useEffect(() => {
+    if (isOpen && formData.embeddingProvider && formData.embeddingModel && !isLoadingEmbeddingMetadata) {
+      fetchEmbeddingModelMetadata(formData.embeddingProvider, formData.embeddingModel);
+    } else if (!formData.embeddingProvider || !formData.embeddingModel) {
+      setEmbeddingModelMetadata(null);
+    }
+  }, [isOpen, formData.embeddingProvider, formData.embeddingModel]);
+
   const fetchAvailableProviders = async () => {
     console.log('[AgentConfigModal] Fetching available providers...');
     setIsLoadingProviders(true);
@@ -229,6 +240,36 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     }
   };
 
+  const fetchEmbeddingModelMetadata = async (provider: string, model: string) => {
+    // Prevent duplicate requests
+    if (isLoadingEmbeddingMetadata) {
+      console.log('[AgentConfigModal] Skipping embedding metadata fetch - already loading');
+      return;
+    }
+    
+    console.log(`[AgentConfigModal] Fetching embedding metadata for ${provider}/${model}`);
+    setIsLoadingEmbeddingMetadata(true);
+    try {
+      const metadata = await llmApi.getModelMetadata(provider, model);
+      console.log('[AgentConfigModal] Embedding metadata loaded:', metadata);
+      setEmbeddingModelMetadata(metadata);
+      
+      // Auto-update vector dimension if the model has dimension info
+      if (metadata.dimensions) {
+        console.log(`[AgentConfigModal] Auto-setting vector dimension to ${metadata.dimensions}`);
+        setFormData(prev => ({
+          ...prev,
+          vectorDimension: metadata.dimensions
+        }));
+      }
+    } catch (error: any) {
+      console.error('Failed to fetch embedding model metadata:', error);
+      setEmbeddingModelMetadata(null);
+    } finally {
+      setIsLoadingEmbeddingMetadata(false);
+    }
+  };
+
   // Update available models when provider changes
   const handleProviderChange = (newProvider: string) => {
     const models = availableProviders[newProvider] || [];
@@ -303,9 +344,19 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       console.error('[AgentConfigModal] Save failed:', error);
       
       let errorMessage = 'Failed to save agent configuration';
-      if (error.response?.data?.message) {
+      
+      // Handle validation errors from backend
+      if (error.response?.data?.details?.errors) {
+        // Backend validation error format: { details: { errors: [...] } }
+        const errors = error.response.data.details.errors;
+        errorMessage = errors
+          .map((err: any) => `${err.field}: ${err.message}`)
+          .join('; ');
+      } else if (error.response?.data?.message) {
+        // Generic error message
         errorMessage = error.response.data.message;
       } else if (error.response?.data?.detail) {
+        // FastAPI detail format
         if (typeof error.response.data.detail === 'string') {
           errorMessage = error.response.data.detail;
         } else if (Array.isArray(error.response.data.detail)) {
@@ -799,7 +850,11 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 </label>
                 <select
                   value={formData.embeddingModel || ''}
-                  onChange={(e) => setFormData({ ...formData, embeddingModel: e.target.value })}
+                  onChange={(e) => {
+                    const newModel = e.target.value;
+                    setFormData({ ...formData, embeddingModel: newModel });
+                    // Metadata will be fetched automatically by useEffect
+                  }}
                   disabled={!formData.embeddingProvider}
                   className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
@@ -816,6 +871,25 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                     {t('agent.selectProviderFirst', '请先选择提供商')}
                   </p>
                 )}
+                {isLoadingEmbeddingMetadata && (
+                  <div className="flex items-center gap-2 mt-2 text-xs text-blue-600 dark:text-blue-400">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>Loading model information...</span>
+                  </div>
+                )}
+                {embeddingModelMetadata && !isLoadingEmbeddingMetadata && (
+                  <div className="mt-2 p-2 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+                    <p className="text-xs text-blue-700 dark:text-blue-400">
+                      <strong>{embeddingModelMetadata.model_name}</strong>
+                      {embeddingModelMetadata.dimensions && (
+                        <span className="ml-2">• Dimensions: {embeddingModelMetadata.dimensions}</span>
+                      )}
+                      {embeddingModelMetadata.model_type && (
+                        <span className="ml-2">• Type: {embeddingModelMetadata.model_type}</span>
+                      )}
+                    </p>
+                  </div>
+                )}
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                   {t('agent.embeddingModelDesc', 'Embedding 模型用于将文本转换为向量，以便在知识库中进行语义搜索。')}
                 </p>
@@ -825,6 +899,11 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
                   {t('agent.vectorDimension', '向量维度')}
+                  {embeddingModelMetadata?.dimensions && (
+                    <span className="ml-2 text-xs text-emerald-600 dark:text-emerald-400">
+                      (Auto-detected: {embeddingModelMetadata.dimensions})
+                    </span>
+                  )}
                 </label>
                 <input
                   type="number"
@@ -837,6 +916,11 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 />
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                   {t('agent.vectorDimensionDesc', '嵌入向量的维度。必须与所选模型匹配（例如，OpenAI ada-002 为 1536）。')}
+                  {embeddingModelMetadata?.dimensions && (
+                    <span className="block mt-1 text-emerald-600 dark:text-emerald-400">
+                      ✓ Automatically set based on selected model
+                    </span>
+                  )}
                 </p>
               </div>
 

@@ -193,9 +193,10 @@ def invalidate_agent_cache(agent_id: str):
     """
     Invalidate all cache entries for a specific agent.
     
-    This removes all cached versions of an agent (different provider/model combinations).
+    This removes all cached versions of an agent (different provider/model/capabilities combinations).
     """
     global _agent_cache
+    # Match all cache keys that start with agent_id (handles old and new format)
     cache_keys_to_remove = [key for key in _agent_cache.keys() if key.startswith(f"{agent_id}_")]
     
     for key in cache_keys_to_remove:
@@ -647,6 +648,21 @@ async def upload_agent_avatar(
         
         # Upload to MinIO
         minio_client = get_minio_client()
+        
+        # Prepare metadata - only include ASCII-safe values
+        upload_metadata = {
+            "agent_id": agent_id,
+            "type": "agent_avatar",
+        }
+        
+        # Only add agent_name if it's ASCII-safe
+        try:
+            agent.name.encode('ascii')
+            upload_metadata["agent_name"] = agent.name
+        except UnicodeEncodeError:
+            # Skip non-ASCII agent names in metadata
+            logger.debug(f"Skipping non-ASCII agent name in metadata: {agent.name}")
+        
         bucket_name, object_key = minio_client.upload_file(
             bucket_type="images",
             file_data=file_stream,
@@ -655,10 +671,7 @@ async def upload_agent_avatar(
             task_id=None,
             agent_id=agent_id,
             content_type=file.content_type,
-            metadata={
-                "agent_id": agent_id,
-                "agent_name": agent.name,
-            }
+            metadata=upload_metadata
         )
         
         # Generate presigned URL (valid for 7 days)
@@ -1056,7 +1069,10 @@ async def test_agent(
                 output_tokens = 0
                 
                 # Check if agent is already cached
-                cache_key = f"{agent_id}_{agent_info.llm_provider}_{agent_info.llm_model}"
+                # Include capabilities in cache key to invalidate when skills change
+                # Use v2 prefix to invalidate all old caches
+                capabilities_hash = hash(tuple(sorted(agent_info.capabilities or [])))
+                cache_key = f"v2_{agent_id}_{agent_info.llm_provider}_{agent_info.llm_model}_{capabilities_hash}"
                 agent, llm = get_cached_agent(cache_key)
                 
                 if agent is not None and llm is not None:
@@ -1145,6 +1161,9 @@ async def test_agent(
                     await agent.initialize()
                     
                     # Cache the initialized agent with 30 minute TTL
+                    # Use same cache key format (includes capabilities hash)
+                    capabilities_hash = hash(tuple(sorted(agent_info.capabilities or [])))
+                    cache_key = f"{agent_id}_{agent_info.llm_provider}_{agent_info.llm_model}_{capabilities_hash}"
                     cache_agent(cache_key, agent, llm, ttl_minutes=30)
                 
                 model_info = f"{agent_info.llm_model or 'llama3.2:latest'} via {agent_info.llm_provider or 'ollama'}"
@@ -1446,106 +1465,23 @@ async def test_agent(
                 def execute_agent():
                     """Execute agent in a separate thread."""
                     try:
-                        # Stream tokens from LLM
-                        chunk_count = 0
-                        thinking_content = ""  # 单独追踪thinking内容
-                        content_content = ""   # 单独追踪content内容
+                        # Use agent.execute_task with streaming callback instead of direct LLM streaming
+                        # This ensures tools are executed properly
+                        result = agent.execute_task(
+                            task_description=user_message,
+                            context=context,
+                            stream_callback=stream_callback
+                        )
                         
-                        try:
-                            # Try streaming with metadata tracking
-                            for chunk in agent.llm.stream(messages):
-                                # 详细日志：打印chunk的完整结构
-                                if chunk_count == 0:
-                                    logger.info(f"[TOKEN-DEBUG] First chunk type: {type(chunk)}")
-                                    logger.info(f"[TOKEN-DEBUG] First chunk dir: {[attr for attr in dir(chunk) if not attr.startswith('_')]}")
-                                    if hasattr(chunk, '__dict__'):
-                                        logger.info(f"[TOKEN-DEBUG] First chunk __dict__: {chunk.__dict__}")
-                                
-                                if hasattr(chunk, 'content') and chunk.content:
-                                    # Check if this is thinking content
-                                    content_type = "content"  # default
-                                    
-                                    # Check additional_kwargs first (preferred location)
-                                    if hasattr(chunk, 'additional_kwargs') and chunk.additional_kwargs:
-                                        content_type = chunk.additional_kwargs.get('content_type', 'content')
-                                    # Fallback to generation_info
-                                    elif hasattr(chunk, 'generation_info') and chunk.generation_info:
-                                        content_type = chunk.generation_info.get('content_type', 'content')
-                                    
-                                    # Put both content and type in queue
-                                    stream_callback((chunk.content, content_type))
-                                    final_response[0] += chunk.content
-                                    
-                                    # 分别累积thinking和content
-                                    if content_type == "thinking":
-                                        thinking_content += chunk.content
-                                    else:
-                                        content_content += chunk.content
-                                    
-                                    chunk_count += 1
-                                
-                                # Try to get usage metadata from chunk
-                                # vLLM sends usage in the LAST chunk (after finish_reason="stop")
-                                if hasattr(chunk, 'response_metadata'):
-                                    if chunk.response_metadata:
-                                        logger.info(f"[TOKEN-DEBUG] Chunk {chunk_count} response_metadata: {chunk.response_metadata}")
-                                        response_metadata[0] = chunk.response_metadata
-                                elif hasattr(chunk, 'usage_metadata'):
-                                    if chunk.usage_metadata:
-                                        logger.info(f"[TOKEN-DEBUG] Chunk {chunk_count} usage_metadata: {chunk.usage_metadata}")
-                                        response_metadata[0] = {'usage': chunk.usage_metadata}
-                                
-                                # Check generation_info for usage data (some providers put it here)
-                                if hasattr(chunk, 'generation_info') and chunk.generation_info:
-                                    gen_info = chunk.generation_info
-                                    if 'usage' in gen_info or 'token_usage' in gen_info:
-                                        logger.info(f"[TOKEN-DEBUG] Chunk {chunk_count} generation_info has usage: {gen_info}")
-                                        if 'usage' in gen_info:
-                                            response_metadata[0] = {'usage': gen_info['usage']}
-                                        elif 'token_usage' in gen_info:
-                                            response_metadata[0] = {'token_usage': gen_info['token_usage']}
-                            
-                            # 流式结束后，打印最终的metadata
-                            logger.info(f"[TOKEN-DEBUG] Final response_metadata after streaming: {response_metadata[0]}")
-                            logger.info(f"[TOKEN-DEBUG] Total chunks: {chunk_count}, thinking_chars: {len(thinking_content)}, content_chars: {len(content_content)}")
-                            
-                            # If streaming didn't provide metadata, invoke once to get it
-                            if chunk_count > 0 and not response_metadata[0]:
-                                # We already have the response, just need metadata
-                                # Some providers don't send metadata in streaming mode
-                                pass
-                            elif chunk_count == 0:
-                                # Streaming failed, fall back to invoke
-                                logger.warning("LLM streaming returned no chunks")
-                                result = agent.llm.invoke(messages)
-                                if hasattr(result, 'content'):
-                                    final_response[0] = result.content
-                                    stream_callback((result.content, "content"))
-                                else:
-                                    final_response[0] = str(result)
-                                    stream_callback((str(result), "content"))
-                                
-                                # Get metadata from invoke result
-                                if hasattr(result, 'response_metadata'):
-                                    response_metadata[0] = result.response_metadata
-                                elif hasattr(result, 'usage_metadata'):
-                                    response_metadata[0] = {'usage': result.usage_metadata}
+                        # Store final response
+                        final_response[0] = result.get("output", "")
                         
-                        except Exception as stream_error:
-                            logger.warning(f"Streaming failed: {stream_error}")
-                            result = agent.llm.invoke(messages)
-                            if hasattr(result, 'content'):
-                                final_response[0] = result.content
-                                stream_callback((result.content, "content"))
-                            else:
-                                final_response[0] = str(result)
-                                stream_callback((str(result), "content"))
-                            
-                            # Get metadata
-                            if hasattr(result, 'response_metadata'):
-                                response_metadata[0] = result.response_metadata
-                            elif hasattr(result, 'usage_metadata'):
-                                response_metadata[0] = {'usage': result.usage_metadata}
+                        # Get metadata if available
+                        if result.get("messages"):
+                            for msg in reversed(result["messages"]):
+                                if hasattr(msg, 'response_metadata') and msg.response_metadata:
+                                    response_metadata[0] = msg.response_metadata
+                                    break
                         
                         # Signal completion
                         token_queue.put(None)
@@ -1583,11 +1519,21 @@ async def test_agent(
                         yield f"data: {json.dumps({'type': content_type, 'content': token})}\n\n"
                         
                     except queue.Empty:
+                        # Check if thread is still alive
+                        if not exec_thread.is_alive():
+                            # Thread finished but no None signal - something went wrong
+                            logger.warning("[STREAM] Thread finished without sending completion signal")
+                            break
                         # No token yet, continue waiting
                         continue
                 
-                # Wait for thread to complete
+                # Wait for thread to complete (should already be done)
                 exec_thread.join(timeout=5)
+                
+                # Check if there was an error
+                if error_holder[0]:
+                    logger.error(f"[STREAM] Agent execution error: {error_holder[0]}")
+                    yield f"data: {json.dumps({'type': 'error', 'content': f'Error: {error_holder[0]}'})}\n\n"
                 
                 # Calculate statistics
                 end_time = time.time()
@@ -1634,9 +1580,11 @@ async def test_agent(
                     
                     # 改进的token估算：中英文混合平均
                     input_tokens = int(input_chars * 0.5)
-                    output_tokens = int(len(final_response[0]) * 0.5)
+                    # 安全处理：如果final_response[0]是None，使用0
+                    output_text = final_response[0] if final_response[0] is not None else ""
+                    output_tokens = int(len(output_text) * 0.5)
                     
-                    logger.info(f"Token estimation (no metadata from streaming API): input={input_tokens} (chars={input_chars}), output={output_tokens} (chars={len(final_response[0])}), messages_count={len(messages)}")
+                    logger.info(f"Token estimation (no metadata from streaming API): input={input_tokens} (chars={input_chars}), output={output_tokens} (chars={len(output_text)}), messages_count={len(messages)}")
                 else:
                     logger.info(f"Token from metadata: input={input_tokens}, output={output_tokens}")
                 
