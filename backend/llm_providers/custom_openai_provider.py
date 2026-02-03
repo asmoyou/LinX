@@ -284,7 +284,29 @@ class CustomOpenAIChat(BaseChatModel):
                 }
             elif "choices" in result and len(result["choices"]) > 0:
                 # Standard OpenAI format
-                content = result["choices"][0]["message"]["content"]
+                choice = result["choices"][0]
+                message_data = choice["message"]
+                
+                # Check for reasoning/thinking content (for models like Qwen3-VL)
+                # Priority: reasoning_content > reasoning > thinking > content
+                content = (
+                    message_data.get("reasoning_content") or
+                    message_data.get("reasoning") or
+                    message_data.get("thinking") or
+                    message_data.get("content") or
+                    ""
+                )
+                
+                # If content is still empty but we have completion_tokens, log warning
+                token_usage = result.get("usage", {})
+                if not content and token_usage.get("completion_tokens", 0) > 0:
+                    logger.warning(
+                        f"LLM generated {token_usage.get('completion_tokens')} tokens but content is empty. "
+                        f"Response may have been truncated. Full message: {message_data}"
+                    )
+                    # Try to extract any text from the message
+                    content = str(message_data)
+                
                 token_usage = result.get("usage", {})
             else:
                 raise ValueError(f"Unexpected response format: {result}")

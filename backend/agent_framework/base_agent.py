@@ -111,14 +111,38 @@ class BaseAgent:
             )
             
             # Load skills
+            langchain_tool_count = 0
+            agent_skill_count = 0
+            
             for skill_info in skills:
                 if skill_info.skill_type == "langchain_tool":
                     tool = await self.skill_manager.load_langchain_tool(skill_info)
                     if tool:
                         self.tools.append(tool)
+                        langchain_tool_count += 1
+                        logger.info(
+                            f"✓ Loaded LangChain tool: {skill_info.name}",
+                            extra={"agent_id": str(self.config.agent_id), "skill_id": str(skill_info.skill_id)}
+                        )
+                    else:
+                        logger.error(
+                            f"✗ Failed to load LangChain tool: {skill_info.name}",
+                            extra={"agent_id": str(self.config.agent_id), "skill_id": str(skill_info.skill_id)}
+                        )
                 elif skill_info.skill_type == "agent_skill":
                     # Agent skills are loaded as documentation, not tools
-                    await self.skill_manager.load_agent_skill_doc(skill_info)
+                    skill_ref = await self.skill_manager.load_agent_skill_doc(skill_info)
+                    if skill_ref:
+                        agent_skill_count += 1
+                        logger.info(
+                            f"✓ Loaded Agent Skill doc: {skill_info.name}",
+                            extra={"agent_id": str(self.config.agent_id), "skill_id": str(skill_info.skill_id)}
+                        )
+                    else:
+                        logger.error(
+                            f"✗ Failed to load Agent Skill doc: {skill_info.name}",
+                            extra={"agent_id": str(self.config.agent_id), "skill_id": str(skill_info.skill_id)}
+                        )
             
             # Add code execution tool (for agent to run generated code)
             from agent_framework.tools.code_execution_tool import create_code_execution_tool
@@ -128,9 +152,27 @@ class BaseAgent:
             )
             self.tools.append(code_exec_tool)
             
+            # Add read_skill tool (for agent to read Agent Skill documentation)
+            if agent_skill_count > 0:
+                from agent_framework.tools.read_skill_tool import create_read_skill_tool
+                read_skill_tool = create_read_skill_tool(
+                    agent_id=self.config.agent_id,
+                    user_id=self.config.owner_user_id,
+                    skill_manager=self.skill_manager  # Pass the loaded skill_manager
+                )
+                self.tools.append(read_skill_tool)
+                logger.info(
+                    f"✓ Added read_skill tool for {agent_skill_count} Agent Skills",
+                    extra={"agent_id": str(self.config.agent_id)}
+                )
+            
             logger.info(
-                f"Loaded {len(self.tools)} tools for agent {self.config.name}",
-                extra={"agent_id": str(self.config.agent_id), "tool_count": len(self.tools)}
+                f"Skills loaded: {langchain_tool_count} LangChain tools, {agent_skill_count} Agent Skills",
+                extra={
+                    "agent_id": str(self.config.agent_id),
+                    "langchain_tools": langchain_tool_count,
+                    "agent_skills": agent_skill_count
+                }
             )
 
             # Bind tools to LLM (if supported)
@@ -284,61 +326,274 @@ class BaseAgent:
 
             # Invoke agent with streaming support
             if stream_callback:
-                # Stream mode - use LLM's native streaming
-                # Build messages manually to get token-by-token streaming
+                # Stream mode - use LLM's native streaming for token-by-token output
+                # Then check for tool calls and execute them
                 system_prompt = self._create_system_prompt()
                 messages = [
                     SystemMessage(content=system_prompt),
                     HumanMessage(content=user_message)
                 ]
                 
-                # Try streaming from LLM
-                final_output = ""
-                chunk_count = 0
-                stream_failed = False
+                # Multi-round conversation loop for tool execution
+                tool_calls_made = []
+                max_iterations = 20  # 最多20轮
+                iteration = 0
                 
-                try:
-                    for chunk in self.llm.stream(messages):
-                        if hasattr(chunk, 'content') and chunk.content:
-                            stream_callback(chunk.content)
-                            final_output += chunk.content
-                            chunk_count += 1
-                    
-                    # If no chunks were received, mark streaming as failed
-                    if chunk_count == 0:
-                        stream_failed = True
-                        logger.warning("LLM streaming returned no chunks")
-                    
-                except Exception as stream_error:
-                    stream_failed = True
-                    logger.warning(f"Streaming failed: {stream_error}")
+                logger.info(
+                    f"[TOOL-LOOP] Starting multi-round conversation (max {max_iterations} iterations)",
+                    extra={"agent_id": str(self.config.agent_id), "has_tools": len(self.tools) > 0}
+                )
                 
-                # If streaming failed, fall back to non-streaming
-                if stream_failed:
-                    logger.info("Falling back to non-streaming mode")
+                while iteration < max_iterations:
+                    iteration += 1
+                    
+                    logger.info(
+                        f"[TOOL-LOOP] Round {iteration}/{max_iterations}",
+                        extra={"agent_id": str(self.config.agent_id)}
+                    )
+                    
+                    # Stream LLM response for this round
+                    round_output = ""
+                    round_thinking = ""
+                    chunk_count = 0
+                    stream_failed = False
+                    
                     try:
-                        result = self.llm.invoke(messages)
-                        if hasattr(result, 'content'):
-                            final_output = result.content
-                        else:
-                            final_output = str(result)
+                        for chunk in self.llm.stream(messages):
+                            if hasattr(chunk, 'content') and chunk.content:
+                                # Check for content_type in additional_kwargs
+                                content_type = "content"  # default
+                                if hasattr(chunk, 'additional_kwargs') and chunk.additional_kwargs:
+                                    content_type = chunk.additional_kwargs.get('content_type', 'content')
+                                
+                                # Send to frontend immediately for real-time streaming
+                                stream_callback((chunk.content, content_type))
+                                
+                                # Also accumulate for tool detection
+                                if content_type == "thinking":
+                                    round_thinking += chunk.content
+                                else:
+                                    round_output += chunk.content
+                                chunk_count += 1
                         
-                        # Send the complete response as one chunk
-                        if final_output:
-                            stream_callback(final_output)
+                        # If no chunks were received, mark streaming as failed
+                        if chunk_count == 0:
+                            stream_failed = True
+                            logger.warning("LLM streaming returned no chunks")
+                        
+                    except Exception as stream_error:
+                        stream_failed = True
+                        logger.warning(f"Streaming failed: {stream_error}")
+                    
+                    # If streaming failed, fall back to non-streaming
+                    if stream_failed:
+                        logger.info("Falling back to non-streaming mode")
+                        try:
+                            result = self.llm.invoke(messages)
+                            if hasattr(result, 'content'):
+                                round_output = result.content
+                            else:
+                                round_output = str(result)
+                            
+                            if not round_output:
+                                raise ValueError("LLM returned empty content")
+                        except Exception as invoke_error:
+                            logger.error(f"Non-streaming fallback also failed: {invoke_error}")
+                            raise
+                    
+                    logger.info(
+                        f"[TOOL-LOOP] Round {iteration} LLM output: thinking={len(round_thinking)} chars, content={len(round_output)} chars",
+                        extra={"agent_id": str(self.config.agent_id)}
+                    )
+                    
+                    # Check if output contains tool calls
+                    import re
+                    import json
+                    
+                    # Pattern 1: JSON block with ```json wrapper
+                    json_pattern1 = r'```json\s*\n\s*(\{[^}]*"tool"\s*:\s*"([^"]+)"[^}]*\})\s*\n\s*```'
+                    
+                    # Pattern 2: Plain JSON without wrapper (more common)
+                    json_pattern2 = r'\{[^}]*"tool"\s*:\s*"([^"]+)"[^}]*\}'
+                    
+                    # Try pattern 1 first (with wrapper)
+                    matches1 = re.findall(json_pattern1, round_output, re.DOTALL)
+                    
+                    # Try pattern 2 (without wrapper)
+                    matches2 = re.findall(json_pattern2, round_output, re.DOTALL)
+                    
+                    # Combine matches
+                    tool_json_blocks = []
+                    
+                    # Process pattern 1 matches
+                    for json_str, tool_name in matches1:
+                        tool_json_blocks.append(json_str)
+                    
+                    # Process pattern 2 matches (only if pattern 1 didn't match)
+                    if not matches1 and matches2:
+                        for tool_name in matches2:
+                            # Extract the full JSON block
+                            match = re.search(r'\{[^}]*"tool"\s*:\s*"' + re.escape(tool_name) + r'"[^}]*\}', round_output)
+                            if match:
+                                tool_json_blocks.append(match.group(0))
+                    
+                    if tool_json_blocks:
+                        # This round contains tool calls
+                        logger.info(
+                            f"[TOOL-LOOP] Found {len(tool_json_blocks)} tool calls in round {iteration}",
+                            extra={"agent_id": str(self.config.agent_id)}
+                        )
+                        
+                        # Note: thinking and content already sent during streaming above
+                        # Now just execute tools and send tool execution info
+                        
+                        # Execute tools
+                        tool_results = []
+                        for json_str in tool_json_blocks:
+                            try:
+                                tool_data = json.loads(json_str)
+                                tool_name = tool_data.get("tool")
+                                
+                                # Find the tool
+                                tool = self.tools_by_name.get(tool_name)
+                                if tool:
+                                    # Prepare arguments based on tool
+                                    if tool_name == "calculator":
+                                        tool_args = {"expression": tool_data.get("expression", "")}
+                                    else:
+                                        # Generic args extraction
+                                        tool_args = {k: v for k, v in tool_data.items() if k != "tool"}
+                                    
+                                    # Send "calling tool" message BEFORE execution
+                                    stream_callback((
+                                        f"\n\n🔧 **调用工具: {tool_name}**\n参数: {tool_args}\n",
+                                        "tool_call"
+                                    ))
+                                    
+                                    logger.info(
+                                        f"Executing tool: {tool_name}",
+                                        extra={
+                                            "agent_id": str(self.config.agent_id),
+                                            "tool_name": tool_name,
+                                            "tool_args": str(tool_args)
+                                        }
+                                    )
+                                    
+                                    # Execute tool
+                                    try:
+                                        result = tool.invoke(tool_args)
+                                        tool_calls_made.append({
+                                            "name": tool_name,
+                                            "args": tool_args,
+                                            "result": str(result)
+                                        })
+                                        tool_results.append({
+                                            "tool": tool_name,
+                                            "args": tool_args,
+                                            "result": str(result)
+                                        })
+                                        
+                                        # Send tool execution result to frontend
+                                        stream_callback((
+                                            f"✅ **执行结果**: {result}\n",
+                                            "tool_result"
+                                        ))
+                                        
+                                        logger.info(
+                                            f"Tool executed successfully: {tool_name} = {result}",
+                                            extra={"agent_id": str(self.config.agent_id)}
+                                        )
+                                    except Exception as tool_error:
+                                        logger.error(f"Tool execution failed: {tool_error}", exc_info=True)
+                                        stream_callback((
+                                            f"❌ **执行失败**: {str(tool_error)}\n",
+                                            "tool_error"
+                                        ))
+                                        tool_results.append({
+                                            "tool": tool_name,
+                                            "args": tool_args,
+                                            "error": str(tool_error)
+                                        })
+                                else:
+                                    logger.warning(f"Tool not found: {tool_name}")
+                                    stream_callback((
+                                        f"⚠️ 工具未找到: {tool_name}\n",
+                                        "tool_error"
+                                    ))
+                            except json.JSONDecodeError as e:
+                                logger.warning(f"Failed to parse tool JSON: {e}")
+                                stream_callback((
+                                    f"⚠️ 工具调用格式错误: {e}\n",
+                                    "tool_error"
+                                ))
+                        
+                        # If tools were executed, continue to next round with tool results
+                        if tool_results:
+                            logger.info(
+                                f"[TOOL-LOOP] Executed {len(tool_results)} tools, continuing to round {iteration + 1}",
+                                extra={"agent_id": str(self.config.agent_id)}
+                            )
+                            
+                            # Send separator before continuation
+                            stream_callback((
+                                f"\n\n---\n\n💭 **根据工具结果生成最终回答...**\n\n",
+                                "info"
+                            ))
+                            
+                            # Build a message with tool results
+                            tool_results_text = "\n\n工具执行结果：\n"
+                            for tr in tool_results:
+                                if "error" in tr:
+                                    tool_results_text += f"- {tr['tool']}: 错误 - {tr['error']}\n"
+                                else:
+                                    tool_results_text += f"- {tr['tool']}: {tr['result']}\n"
+                            
+                            tool_results_text += "\n请根据以上工具执行结果，给出最终回答。不要再调用工具，直接回答用户。"
+                            
+                            # Add to conversation history
+                            messages.append(AIMessage(content=round_output))
+                            messages.append(HumanMessage(content=tool_results_text))
+                            
+                            # Continue to next round
+                            continue
                         else:
-                            raise ValueError("LLM returned empty content")
-                    except Exception as invoke_error:
-                        logger.error(f"Non-streaming fallback also failed: {invoke_error}")
-                        raise
+                            # No tools executed, but tool calls were found - shouldn't happen
+                            logger.warning(f"[TOOL-LOOP] Tool calls found but none executed")
+                            break
+                    else:
+                        # No tool calls in this round - this is the final answer
+                        logger.info(
+                            f"[TOOL-LOOP] No tool calls in round {iteration}, conversation complete",
+                            extra={"agent_id": str(self.config.agent_id)}
+                        )
+                        
+                        # Note: thinking and content already sent during streaming above
+                        # Exit loop - we have the final answer
+                        break
+                
+                logger.info(
+                    f"[TOOL-LOOP] Conversation completed after {iteration} rounds",
+                    extra={
+                        "agent_id": str(self.config.agent_id),
+                        "tool_calls_count": len(tool_calls_made)
+                    }
+                )
                 
                 self.status = AgentStatus.ACTIVE
-                logger.info(f"Task completed: {self.config.name}")
+                logger.info(
+                    f"Task completed: {self.config.name}",
+                    extra={
+                        "agent_id": str(self.config.agent_id),
+                        "tool_calls_count": len(tool_calls_made),
+                        "rounds": iteration
+                    }
+                )
                 
                 return {
                     "success": True,
-                    "output": final_output,
-                    "messages": [HumanMessage(content=user_message), AIMessage(content=final_output)],
+                    "output": "Conversation completed",  # Not used in streaming mode
+                    "messages": messages,
+                    "tool_calls": tool_calls_made,
                 }
             else:
                 # Non-streaming mode - invoke normally
@@ -363,7 +618,7 @@ class BaseAgent:
                 
                 # Parse and execute tool calls if LLM doesn't support function calling
                 if self.tools and not hasattr(self.llm, 'bind_tools'):
-                    final_output = await self._parse_and_execute_tools(final_output)
+                    final_output = self._parse_and_execute_tools_sync(final_output)
 
                 self.status = AgentStatus.ACTIVE
                 logger.info(f"Task completed: {self.config.name}")
@@ -419,8 +674,8 @@ class BaseAgent:
             logger.info("Re-initializing agent with new tool")
             self.initialize()
 
-    async def _parse_and_execute_tools(self, output: str) -> str:
-        """Parse tool calls from LLM output and execute them.
+    def _parse_and_execute_tools_sync(self, output: str) -> str:
+        """Parse tool calls from LLM output and execute them synchronously.
         
         For LLMs that don't support function calling, we parse tool invocations
         from the text output and execute them manually.
@@ -433,6 +688,7 @@ class BaseAgent:
         """
         import re
         import json
+        import asyncio
         
         # Pattern to match tool invocations: ```tool:tool_name\n{json}\n```
         pattern = r'```tool:(\w+)\s*\n(.*?)\n```'
@@ -465,7 +721,20 @@ class BaseAgent:
                 
                 # Execute tool (handle both sync and async)
                 if hasattr(tool, '_arun'):
-                    result = await tool._arun(**args)
+                    # Run async tool in new event loop
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # If loop is running, create new loop in thread
+                            import concurrent.futures
+                            with concurrent.futures.ThreadPoolExecutor() as executor:
+                                future = executor.submit(asyncio.run, tool._arun(**args))
+                                result = future.result()
+                        else:
+                            result = loop.run_until_complete(tool._arun(**args))
+                    except RuntimeError:
+                        # No event loop, create new one
+                        result = asyncio.run(tool._arun(**args))
                 else:
                     result = tool._run(**args)
                 
@@ -511,39 +780,49 @@ When solving problems:
 
 Always be professional, accurate, and helpful."""
         
-        # Add tools description if LLM doesn't support function calling
-        if self.tools and not hasattr(self.llm, 'bind_tools'):
-            tools_prompt = "\n\n## Available Tools\n\n"
-            tools_prompt += "You have access to the following tools. To use a tool, you MUST write the exact tool invocation in your response:\n\n"
+        # Add tools description for LangChain tools
+        # Include tools in prompt if:
+        # 1. LLM doesn't support bind_tools, OR
+        # 2. LLM supports bind_tools but we want tools visible in prompt anyway (for better awareness)
+        if self.tools:
+            # Filter out code_execution tool from the list (it's always available)
+            langchain_tools = [t for t in self.tools if t.name != "code_execution"]
             
-            for tool in self.tools:
-                tools_prompt += f"### {tool.name}\n"
-                tools_prompt += f"{tool.description}\n\n"
+            if langchain_tools:
+                tools_prompt = "\n\n## Available Tools\n\n"
+                tools_prompt += "You have access to the following tools:\n\n"
                 
-                # Add usage example for code_execution tool
-                if tool.name == "code_execution":
-                    tools_prompt += """**IMPORTANT**: To execute code, you MUST use this exact format:
-
-```tool:code_execution
-{
-  "code": "your python code here",
-  "language": "python"
-}
-```
-
-Example:
-```tool:code_execution
-{
-  "code": "import os\\napi_key = os.environ.get('WEATHER_API_KEY')\\nprint(f'API Key: {api_key}')",
-  "language": "python"
-}
-```
-
-The code will be executed in a secure sandbox with access to environment variables.
-
-"""
-            
-            base_prompt += tools_prompt
+                for tool in langchain_tools:
+                    tools_prompt += f"### {tool.name}\n"
+                    tools_prompt += f"{tool.description}\n\n"
+                
+                # Add note about how to use tools
+                if not hasattr(self.llm, 'bind_tools'):
+                    # LLM doesn't support function calling - need manual format
+                    tools_prompt += "\n**IMPORTANT - How to use tools**: To use a tool, you MUST write it in this EXACT format:\n\n"
+                    tools_prompt += "```json\n"
+                    tools_prompt += '{"tool": "tool_name", "arg_name": "arg_value"}\n'
+                    tools_prompt += "```\n\n"
+                    tools_prompt += "Example for calculator:\n"
+                    tools_prompt += "```json\n"
+                    tools_prompt += '{"tool": "calculator", "expression": "132 * 223"}\n'
+                    tools_prompt += "```\n\n"
+                    tools_prompt += "**DO NOT** just write about using the tool - you MUST use the exact JSON format above!\n\n"
+                else:
+                    # LLM supports function calling, but may not work properly
+                    # Provide both formats
+                    tools_prompt += "\n**How to use tools**: \n\n"
+                    tools_prompt += "**Method 1 (Preferred)**: Use function calling if supported.\n\n"
+                    tools_prompt += "**Method 2 (Fallback)**: If function calling doesn't work, use this JSON format:\n"
+                    tools_prompt += "```json\n"
+                    tools_prompt += '{"tool": "tool_name", "arg_name": "arg_value"}\n'
+                    tools_prompt += "```\n\n"
+                    tools_prompt += "Example for calculator:\n"
+                    tools_prompt += "```json\n"
+                    tools_prompt += '{"tool": "calculator", "expression": "2323 * 23"}\n'
+                    tools_prompt += "```\n\n"
+                
+                base_prompt += tools_prompt
         
         # Add Agent Skills documentation if available
         if self.skill_manager:

@@ -77,6 +77,9 @@ class LangChainToolLoader:
     async def _load_from_inline_code(self, skill_info) -> Optional[BaseTool]:
         """Load tool from inline Python code.
         
+        For LangChain tools stored inline, we should use the skill_library's
+        execution engine which already handles tool creation properly.
+        
         Args:
             skill_info: SkillInfo object
         
@@ -84,41 +87,42 @@ class LangChainToolLoader:
             BaseTool instance or None
         """
         try:
-            # Create a temporary module
-            module_name = f"skill_{skill_info.skill_id.hex}"
-            spec = importlib.util.spec_from_loader(module_name, loader=None)
-            module = importlib.util.module_from_spec(spec)
+            # Use skill_library's execution engine to create the tool
+            # This is the same mechanism used for skill testing
+            from skill_library.execution_engine import get_execution_engine
+            from database.connection import get_db_session
+            from database.models import Skill
             
-            # Execute the code in the module's namespace
-            exec(skill_info.code, module.__dict__)
+            execution_engine = get_execution_engine()
             
-            # Look for a tool instance or tool class
-            tool = None
-            
-            # Try to find a variable named 'tool' or 'Tool'
-            if hasattr(module, 'tool'):
-                tool = module.tool
-            elif hasattr(module, 'Tool'):
-                # If it's a class, instantiate it
-                Tool = module.Tool
-                tool = Tool()
-            else:
-                # Look for any BaseTool subclass
-                for attr_name in dir(module):
-                    attr = getattr(module, attr_name)
-                    if isinstance(attr, type) and issubclass(attr, BaseTool) and attr != BaseTool:
-                        tool = attr()
-                        break
+            # Get Skill object from database
+            with get_db_session() as session:
+                skill = session.query(Skill).filter(
+                    Skill.skill_id == skill_info.skill_id
+                ).first()
+                
+                if not skill:
+                    logger.error(
+                        f"Skill not found in database: {skill_info.name}",
+                        extra={"skill_id": str(skill_info.skill_id)}
+                    )
+                    return None
+                
+                # Get or create tool using the execution engine
+                tool = execution_engine._get_or_create_tool(
+                    skill=skill,
+                    user_id=self.user_id
+                )
             
             if tool and isinstance(tool, BaseTool):
                 logger.info(
-                    f"Loaded inline LangChain tool: {skill_info.name}",
+                    f"Loaded inline LangChain tool via execution engine: {skill_info.name}",
                     extra={"skill_id": str(skill_info.skill_id)}
                 )
                 return tool
             else:
                 logger.error(
-                    f"No valid LangChain tool found in inline code for {skill_info.name}",
+                    f"Execution engine returned invalid tool for {skill_info.name}",
                     extra={"skill_id": str(skill_info.skill_id)}
                 )
                 return None

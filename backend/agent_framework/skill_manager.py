@@ -45,14 +45,20 @@ class SkillInfo:
 class AgentSkillReference:
     """Reference to an Agent Skill for prompt inclusion.
     
-    Agent Skills are NOT wrapped as tools. Instead, they are included in the
-    system prompt as documentation. The agent reads the SKILL.md content and
-    decides how to use it (write code, follow workflow, use provided scripts, etc.)
+    Agent Skills are NOT wrapped as tools. Instead, only their name and description
+    are included in the system prompt. The agent can use the read_skill tool to
+    read the full SKILL.md content when needed.
+    
+    This follows the moltbot pattern:
+    1. List skills with name + description in prompt
+    2. Agent decides which skill to use
+    3. Agent calls read_skill to get full documentation
+    4. Agent follows the documentation to execute the skill
     """
     
     name: str
     description: str
-    skill_md_content: str  # Full SKILL.md content
+    skill_md_content: str  # Full SKILL.md content (loaded but not in prompt)
     has_scripts: bool  # Whether package contains Python scripts
     package_path: Optional[Path] = None  # Path to extracted package (if needed)
     package_files: Dict[str, str] = None  # filename -> content mapping for example code
@@ -64,32 +70,13 @@ class AgentSkillReference:
     def format_for_prompt(self) -> str:
         """Format skill for inclusion in agent prompt.
         
+        Only includes name and description - NOT the full SKILL.md content.
+        Agent must use read_skill tool to get full documentation.
+        
         Returns:
-            Formatted string for system prompt
+            Formatted string for system prompt (name + description only)
         """
-        script_info = (
-            "This skill includes executable Python scripts in the package."
-            if self.has_scripts
-            else "This is a workflow/documentation skill. Follow the instructions to accomplish the task."
-        )
-        
-        prompt = f"""
-## Skill: {self.name}
-
-{self.skill_md_content}
-
-{script_info}
-"""
-        
-        # Include example code files if available
-        if self.package_files:
-            prompt += "\n### Available Example Code:\n\n"
-            for filename, content in self.package_files.items():
-                # Only include Python files and config files
-                if filename.endswith(('.py', '.yaml', '.yml', '.json', '.txt')):
-                    prompt += f"**File: {filename}**\n```python\n{content}\n```\n\n"
-        
-        return prompt
+        return f"- {self.name}: {self.description}"
 
 
 class SkillManager:
@@ -465,33 +452,55 @@ class SkillManager:
     def format_skills_for_prompt(self) -> str:
         """Format Agent Skills for inclusion in agent prompt.
         
-        Similar to moltbot's formatSkillsForPrompt function.
+        Following moltbot pattern: Only include skill names and descriptions.
+        Agent must use read_skill tool to get full SKILL.md content.
         
         Returns:
             Formatted string for system prompt
         """
         agent_skills = self.get_agent_skill_docs()
         
+        logger.info(
+            f"Formatting {len(agent_skills)} agent skills for prompt",
+            extra={
+                "agent_id": str(self.agent_id),
+                "skill_count": len(agent_skills),
+                "skill_names": [skill.name for skill in agent_skills]
+            }
+        )
+        
         if not agent_skills:
+            logger.warning(
+                f"No agent skills loaded for agent {self.agent_id}",
+                extra={"agent_id": str(self.agent_id)}
+            )
             return ""
         
-        skills_section = "\n\n".join([
+        # Format: only name + description (NOT full SKILL.md content)
+        skills_list = "\n".join([
             skill.format_for_prompt() for skill in agent_skills
         ])
         
         prompt = f"""
 
-## Available Agent Skills (Documentation)
+## Skills (mandatory)
 
-The following skills are available as documentation and workflows. You can:
-1. Follow the instructions in the skill documentation
-2. Write Python code to execute the workflow
-3. Use the code_execution tool to run any code you write
+Before replying: scan available skills below.
+- If exactly one skill clearly applies: read its SKILL.md with `read_skill`, then follow it.
+- If multiple could apply: choose the most specific one, then read/follow it.
+- If none clearly apply: do not read any SKILL.md.
 
-{skills_section}
+Constraints: never read more than one skill up front; only read after selecting.
 
-When a user asks you to use one of these skills, read the documentation carefully and decide the best approach to accomplish the task.
+Available skills:
+{skills_list}
+
 """
+        
+        logger.debug(
+            f"Generated skills prompt section (length: {len(prompt)}, skills: {len(agent_skills)})",
+            extra={"agent_id": str(self.agent_id)}
+        )
         
         return prompt
     

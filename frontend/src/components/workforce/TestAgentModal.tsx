@@ -13,7 +13,7 @@ interface TestAgentModalProps {
 
 interface StatusMessage {
   content: string;
-  type: 'start' | 'info' | 'thinking' | 'done' | 'error';
+  type: 'start' | 'info' | 'thinking' | 'done' | 'error' | 'tool_call' | 'tool_result' | 'tool_error';
   timestamp: Date;
   duration?: number;  // 处理耗时（秒）
 }
@@ -220,7 +220,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
             }
           }
           
-          if (chunk.type === 'start' || chunk.type === 'info' || chunk.type === 'done') {
+          if (chunk.type === 'start' || chunk.type === 'info' || chunk.type === 'done' || 
+              chunk.type === 'tool_call' || chunk.type === 'tool_result' || chunk.type === 'tool_error') {
             const now = Date.now();
             const duration = (now - lastStatusTimeRef.current) / 1000;  // 转换为秒
             
@@ -242,7 +243,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
             // 添加新的状态消息
             const newStatus: StatusMessage = {
               content: chunk.content,
-              type: chunk.type as 'start' | 'info' | 'thinking' | 'done' | 'error',
+              type: chunk.type as 'start' | 'info' | 'thinking' | 'done' | 'error' | 'tool_call' | 'tool_result' | 'tool_error',
               timestamp: new Date(),
               duration: undefined,  // 将在下一条消息时计算
             };
@@ -508,12 +509,26 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                                       ? 'bg-cyan-500'
                                       : status.type === 'thinking'
                                       ? 'bg-purple-500 animate-pulse'
+                                      : status.type === 'tool_call'
+                                      ? 'bg-orange-500 animate-pulse'
+                                      : status.type === 'tool_result'
+                                      ? 'bg-green-500'
+                                      : status.type === 'tool_error'
+                                      ? 'bg-red-500'
                                       : status.type === 'done'
                                       ? 'bg-green-500'
                                       : 'bg-zinc-500'
                                   }`}
                                 />
-                                <span className="text-zinc-700 dark:text-zinc-300 flex-1 leading-relaxed">
+                                <span className={`flex-1 leading-relaxed ${
+                                  status.type === 'tool_call'
+                                    ? 'text-orange-700 dark:text-orange-300 font-medium'
+                                    : status.type === 'tool_result'
+                                    ? 'text-green-700 dark:text-green-300'
+                                    : status.type === 'tool_error'
+                                    ? 'text-red-700 dark:text-red-300'
+                                    : 'text-zinc-700 dark:text-zinc-300'
+                                }`}>
                                   {status.content}
                                 </span>
                                 {status.duration !== undefined && (
@@ -625,12 +640,26 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                               ? 'bg-cyan-500'
                               : status.type === 'thinking'
                               ? 'bg-purple-500 animate-pulse'
+                              : status.type === 'tool_call'
+                              ? 'bg-orange-500 animate-pulse'
+                              : status.type === 'tool_result'
+                              ? 'bg-green-500'
+                              : status.type === 'tool_error'
+                              ? 'bg-red-500'
                               : status.type === 'done'
                               ? 'bg-green-500'
                               : 'bg-zinc-500'
                           }`}
                         />
-                        <span className="text-zinc-700 dark:text-zinc-300 flex-1 leading-relaxed">
+                        <span className={`flex-1 leading-relaxed ${
+                          status.type === 'tool_call'
+                            ? 'text-orange-700 dark:text-orange-300 font-medium'
+                            : status.type === 'tool_result'
+                            ? 'text-green-700 dark:text-green-300'
+                            : status.type === 'tool_error'
+                            ? 'text-red-700 dark:text-red-300'
+                            : 'text-zinc-700 dark:text-zinc-300'
+                        }`}>
                           {status.content}
                         </span>
                         {status.duration !== undefined && (

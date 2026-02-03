@@ -926,8 +926,9 @@ async def test_skill(
                                     model=model_name,
                                     temperature=config.temperature,
                                     api_key=api_key,
-                                    max_tokens=agent_info.max_tokens or 2000,
+                                    max_tokens=agent_info.max_tokens or 4000,  # 增加到4000，避免被截断
                                     streaming=False,
+                                    timeout=120,  # 2 minutes timeout for skill testing
                                 )
                     
                     if not llm:
@@ -955,14 +956,22 @@ The skill documentation is available in your system prompt. Please:
 
 If the skill requires code execution, use the code_execution tool."""
                     
-                    # Execute the task
+                    # Execute the task in a background thread to avoid blocking
                     import time
+                    import asyncio
+                    from concurrent.futures import ThreadPoolExecutor
+                    
                     start_time = time.time()
                     
-                    result = agent.execute_task(
-                        task_description=task_description,
-                        context={}
-                    )
+                    # Run synchronous execute_task in thread pool
+                    loop = asyncio.get_event_loop()
+                    with ThreadPoolExecutor() as executor:
+                        result = await loop.run_in_executor(
+                            executor,
+                            agent.execute_task,
+                            task_description,
+                            {}  # context
+                        )
                     
                     execution_time = time.time() - start_time
                     
