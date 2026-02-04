@@ -4,6 +4,16 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Agent } from '@/types/agent';
 import { agentsApi } from '@/api';
+import type { 
+  ConversationRound, 
+  StatusMessage, 
+  RetryAttempt, 
+  ErrorFeedback,
+  AttachedFile 
+} from '@/types/streaming';
+import { ConversationRoundComponent } from './ConversationRound';
+import { RetryIndicator } from './RetryIndicator';
+import { ErrorFeedbackDisplay } from './ErrorFeedbackDisplay';
 
 interface TestAgentModalProps {
   agent: Agent | null;
@@ -28,18 +38,9 @@ interface AttachedFile {
 interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
-  thinkingContent?: string;  // 添加thinking内容字段
   timestamp: Date;
-  statusMessages?: StatusMessage[];
+  rounds?: ConversationRound[];  // Multi-round execution
   attachments?: AttachedFile[];
-  stats?: {
-    timeToFirstToken: number;
-    tokensPerSecond: number;
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-    totalTime: number;
-  };
 }
 
 export const TestAgentModal: React.FC<TestAgentModalProps> = ({
@@ -52,40 +53,55 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [currentResponse, setCurrentResponse] = useState('');
-  const [currentThinking, setCurrentThinking] = useState('');  // 添加当前thinking内容
-  const [currentStatusMessages, setCurrentStatusMessages] = useState<StatusMessage[]>([]);
-  const [collapsedStatus, setCollapsedStatus] = useState<{ [key: number]: boolean }>({});
-  const [collapsedThinking, setCollapsedThinking] = useState<{ [key: number]: boolean }>({});  // thinking 折叠状态
-  const [streamingStatusCollapsed, setStreamingStatusCollapsed] = useState(false);  // 流式输出时的状态折叠
-  const [streamingThinkingCollapsed, setStreamingThinkingCollapsed] = useState(false);  // 流式输出时的thinking折叠
-  const [currentStats, setCurrentStats] = useState<Message['stats'] | null>(null);
+  
+  // Current streaming state - tracks the current round being built
+  const [currentRounds, setCurrentRounds] = useState<ConversationRound[]>([]);
+  const [currentRoundData, setCurrentRoundData] = useState<{
+    thinking: string;
+    content: string;
+    statusMessages: StatusMessage[];
+    retryAttempts: RetryAttempt[];
+    errorFeedback: ErrorFeedback[];
+    stats: ConversationRound['stats'] | null;
+  }>({
+    thinking: '',
+    content: '',
+    statusMessages: [],
+    retryAttempts: [],
+    errorFeedback: [],
+    stats: null,
+  });
+  
+  const [currentRoundNumber, setCurrentRoundNumber] = useState(1);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const hasReceivedThinkingRef = useRef<boolean>(false);  // 跟踪是否已收到thinking
-  const hasReceivedContentRef = useRef<boolean>(false);  // 跟踪是否已收到content
-  const lastStatusTimeRef = useRef<number>(Date.now());  // 记录上一条状态消息的时间
-  const abortControllerRef = useRef<AbortController | null>(null);  // 用于终止流式输出
-  const messagesLengthRef = useRef<number>(0);  // 追踪messages数组长度
+  const lastStatusTimeRef = useRef<number>(Date.now());
+  const abortControllerRef = useRef<AbortController | null>(null);
   
   // Use refs to track streaming data for onComplete callback
   const streamingDataRef = useRef<{
-    content: string;
-    thinkingContent: string;  // 添加thinking内容追踪
-    statusMessages: StatusMessage[];
-    stats: Message['stats'] | null;
-  }>({ content: '', thinkingContent: '', statusMessages: [], stats: null });
-
-  // Update messagesLengthRef whenever messages change
-  useEffect(() => {
-    messagesLengthRef.current = messages.length;
-  }, [messages]);
+    rounds: ConversationRound[];
+    currentRound: typeof currentRoundData;
+    currentRoundNumber: number;
+  }>({ 
+    rounds: [], 
+    currentRound: {
+      thinking: '',
+      content: '',
+      statusMessages: [],
+      retryAttempts: [],
+      errorFeedback: [],
+      stats: null,
+    },
+    currentRoundNumber: 1,
+  });
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, currentResponse]);
+  }, [messages, currentRounds]);
 
   // Focus input when modal opens
   useEffect(() => {
@@ -109,14 +125,16 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
       setMessages([]);
       setInputMessage('');
       setAttachedFiles([]);
-      setCurrentResponse('');
-      setCurrentThinking('');
-      setCurrentStatusMessages([]);
-      setCurrentStats(null);
-      setCollapsedStatus({});
-      setCollapsedThinking({});  // 重置 thinking 折叠状态
-      setStreamingStatusCollapsed(false);  // 重置流式状态折叠
-      setStreamingThinkingCollapsed(false);  // 重置流式thinking折叠
+      setCurrentRounds([]);
+      setCurrentRoundData({
+        thinking: '',
+        content: '',
+        statusMessages: [],
+        retryAttempts: [],
+        errorFeedback: [],
+        stats: null,
+      });
+      setCurrentRoundNumber(1);
       setError(null);
       setIsStreaming(false);
     }
@@ -179,21 +197,36 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
     setAttachedFiles([]);
     setError(null);
     setIsStreaming(true);
-    setCurrentResponse('');
-    setCurrentThinking('');  // 重置thinking内容
-    setCurrentStatusMessages([]);
-    setCurrentStats(null);
-    hasReceivedThinkingRef.current = false;  // 重置thinking标志
-    hasReceivedContentRef.current = false;  // 重置content标志
-    lastStatusTimeRef.current = Date.now();  // 重置时间追踪
-    setStreamingStatusCollapsed(false);  // 重置流式状态折叠
-    setStreamingThinkingCollapsed(false);  // 重置流式thinking折叠
+    
+    // Reset streaming state
+    setCurrentRounds([]);
+    setCurrentRoundData({
+      thinking: '',
+      content: '',
+      statusMessages: [],
+      retryAttempts: [],
+      errorFeedback: [],
+      stats: null,
+    });
+    setCurrentRoundNumber(1);
+    lastStatusTimeRef.current = Date.now();
     
     // Create new AbortController for this request
     abortControllerRef.current = new AbortController();
     
     // Reset streaming data ref
-    streamingDataRef.current = { content: '', thinkingContent: '', statusMessages: [], stats: null };
+    streamingDataRef.current = { 
+      rounds: [], 
+      currentRound: {
+        thinking: '',
+        content: '',
+        statusMessages: [],
+        retryAttempts: [],
+        errorFeedback: [],
+        stats: null,
+      },
+      currentRoundNumber: 1,
+    };
 
     // Build conversation history (exclude system messages)
     const history = messages
@@ -201,113 +234,136 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
       .map(m => ({ role: m.role, content: m.content }));
 
     try {
-      // Note: File processing is handled by agent skills
-      // If agent has image_processing or document_processing skills, files will be processed
-      // Otherwise, files are skipped and only text is sent to the agent
-      
-      // Extract File objects from attachments
       const filesToUpload = attachedFiles.map(af => af.file);
       
       await agentsApi.testAgent(
         agent.id,
         userMessage.content,
         (chunk) => {
-          // 临时调试：只在类型变化时输出
-          if (chunk.type === 'thinking' || chunk.type === 'content') {
-            if (!window._lastChunkType || window._lastChunkType !== chunk.type) {
-              console.log(`[TYPE CHANGE] ${window._lastChunkType || 'START'} -> ${chunk.type}`);
-              window._lastChunkType = chunk.type;
-            }
-          }
-          
-          if (chunk.type === 'start' || chunk.type === 'info' || chunk.type === 'done' || 
-              chunk.type === 'tool_call' || chunk.type === 'tool_result' || chunk.type === 'tool_error') {
-            const now = Date.now();
-            const duration = (now - lastStatusTimeRef.current) / 1000;  // 转换为秒
-            
-            // 更新上一条消息的 duration
-            if (streamingDataRef.current.statusMessages.length > 0) {
-              const lastIndex = streamingDataRef.current.statusMessages.length - 1;
-              streamingDataRef.current.statusMessages[lastIndex].duration = duration;
+          // Handle different message types
+          if (chunk.type === 'info') {
+            // Round number info - start new round
+            const roundMatch = chunk.content.match(/第\s*(\d+)\s*轮/);
+            if (roundMatch) {
+              const newRoundNumber = parseInt(roundMatch[1], 10);
               
-              // 更新显示
-              setCurrentStatusMessages((prev) => {
-                const updated = [...prev];
-                if (updated.length > 0) {
-                  updated[updated.length - 1].duration = duration;
-                }
-                return updated;
-              });
+              // Save previous round if it has content
+              if (streamingDataRef.current.currentRound.content || 
+                  streamingDataRef.current.currentRound.thinking) {
+                const completedRound: ConversationRound = {
+                  roundNumber: streamingDataRef.current.currentRoundNumber,
+                  thinking: streamingDataRef.current.currentRound.thinking,
+                  content: streamingDataRef.current.currentRound.content,
+                  statusMessages: streamingDataRef.current.currentRound.statusMessages,
+                  retryAttempts: streamingDataRef.current.currentRound.retryAttempts.length > 0 
+                    ? streamingDataRef.current.currentRound.retryAttempts 
+                    : undefined,
+                  errorFeedback: streamingDataRef.current.currentRound.errorFeedback.length > 0 
+                    ? streamingDataRef.current.currentRound.errorFeedback 
+                    : undefined,
+                  stats: streamingDataRef.current.currentRound.stats || undefined,
+                };
+                
+                streamingDataRef.current.rounds.push(completedRound);
+                setCurrentRounds([...streamingDataRef.current.rounds]);
+              }
+              
+              // Start new round
+              streamingDataRef.current.currentRoundNumber = newRoundNumber;
+              streamingDataRef.current.currentRound = {
+                thinking: '',
+                content: '',
+                statusMessages: [],
+                retryAttempts: [],
+                errorFeedback: [],
+                stats: null,
+              };
+              setCurrentRoundNumber(newRoundNumber);
+              setCurrentRoundData({ ...streamingDataRef.current.currentRound });
             }
             
-            // 添加新的状态消息
+            // Add to status messages
+            const now = Date.now();
+            const duration = (now - lastStatusTimeRef.current) / 1000;
+            
+            if (streamingDataRef.current.currentRound.statusMessages.length > 0) {
+              const lastIndex = streamingDataRef.current.currentRound.statusMessages.length - 1;
+              streamingDataRef.current.currentRound.statusMessages[lastIndex].duration = duration;
+            }
+            
             const newStatus: StatusMessage = {
               content: chunk.content,
-              type: chunk.type as 'start' | 'info' | 'thinking' | 'done' | 'error' | 'tool_call' | 'tool_result' | 'tool_error',
+              type: 'info',
               timestamp: new Date(),
-              duration: undefined,  // 将在下一条消息时计算
+              duration: undefined,
             };
             
-            streamingDataRef.current.statusMessages.push(newStatus);
-            setCurrentStatusMessages((prev) => [...prev, newStatus]);
-            lastStatusTimeRef.current = now;  // 更新时间
+            streamingDataRef.current.currentRound.statusMessages.push(newStatus);
+            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            lastStatusTimeRef.current = now;
+            
+          } else if (chunk.type === 'retry_attempt') {
+            // Retry attempt
+            const retry: RetryAttempt = {
+              retryCount: chunk.retry_count,
+              maxRetries: chunk.max_retries,
+              errorType: chunk.error_type,
+              message: chunk.content,
+              timestamp: new Date(),
+            };
+            
+            streamingDataRef.current.currentRound.retryAttempts.push(retry);
+            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            
+          } else if (chunk.type === 'error_feedback') {
+            // Error feedback
+            const feedback: ErrorFeedback = {
+              errorType: chunk.error_type,
+              retryCount: chunk.retry_count,
+              maxRetries: chunk.max_retries,
+              message: chunk.content,
+              suggestions: chunk.suggestions,
+              timestamp: new Date(),
+            };
+            
+            streamingDataRef.current.currentRound.errorFeedback.push(feedback);
+            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            
+          } else if (chunk.type === 'start' || chunk.type === 'tool_call' || 
+                     chunk.type === 'tool_result' || chunk.type === 'tool_error' || 
+                     chunk.type === 'done') {
+            // Status messages
+            const now = Date.now();
+            const duration = (now - lastStatusTimeRef.current) / 1000;
+            
+            if (streamingDataRef.current.currentRound.statusMessages.length > 0) {
+              const lastIndex = streamingDataRef.current.currentRound.statusMessages.length - 1;
+              streamingDataRef.current.currentRound.statusMessages[lastIndex].duration = duration;
+            }
+            
+            const newStatus: StatusMessage = {
+              content: chunk.content,
+              type: chunk.type as StatusMessage['type'],
+              timestamp: new Date(),
+              duration: undefined,
+            };
+            
+            streamingDataRef.current.currentRound.statusMessages.push(newStatus);
+            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            lastStatusTimeRef.current = now;
+            
           } else if (chunk.type === 'thinking') {
-            // Thinking content (reasoning process)
-            // 第一次收到thinking内容时，自动折叠当前正在显示的 Agent Process
-            if (!hasReceivedThinkingRef.current) {
-              hasReceivedThinkingRef.current = true;
-              
-              // 计算最后一条状态消息的耗时
-              if (streamingDataRef.current.statusMessages.length > 0) {
-                const now = Date.now();
-                const duration = (now - lastStatusTimeRef.current) / 1000;
-                const lastIndex = streamingDataRef.current.statusMessages.length - 1;
-                streamingDataRef.current.statusMessages[lastIndex].duration = duration;
-                
-                setCurrentStatusMessages((prev) => {
-                  const updated = [...prev];
-                  if (updated.length > 0) {
-                    updated[updated.length - 1].duration = duration;
-                  }
-                  return updated;
-                });
-              }
-              
-              // 立即折叠流式输出的 Agent Process
-              setStreamingStatusCollapsed(true);
-            }
+            // Thinking content
+            streamingDataRef.current.currentRound.thinking += chunk.content;
+            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
             
-            streamingDataRef.current.thinkingContent += chunk.content;
-            setCurrentThinking(streamingDataRef.current.thinkingContent);
           } else if (chunk.type === 'content') {
-            // 第一次收到content内容时，自动折叠当前正在显示的 Agent Process 和 Thinking
-            if (!hasReceivedContentRef.current) {
-              hasReceivedContentRef.current = true;
-              
-              // 计算最后一条状态消息的耗时
-              if (streamingDataRef.current.statusMessages.length > 0) {
-                const now = Date.now();
-                const duration = (now - lastStatusTimeRef.current) / 1000;
-                const lastIndex = streamingDataRef.current.statusMessages.length - 1;
-                streamingDataRef.current.statusMessages[lastIndex].duration = duration;
-                
-                setCurrentStatusMessages((prev) => {
-                  const updated = [...prev];
-                  if (updated.length > 0) {
-                    updated[updated.length - 1].duration = duration;
-                  }
-                  return updated;
-                });
-              }
-              
-              // 立即折叠流式输出的 Agent Process 和 Thinking Process
-              setStreamingStatusCollapsed(true);
-              setStreamingThinkingCollapsed(true);
-            }
+            // Response content
+            streamingDataRef.current.currentRound.content += chunk.content;
+            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
             
-            streamingDataRef.current.content += chunk.content;
-            setCurrentResponse(streamingDataRef.current.content);
           } else if (chunk.type === 'stats') {
+            // Statistics
             const stats = {
               timeToFirstToken: chunk.timeToFirstToken,
               tokensPerSecond: chunk.tokensPerSecond,
@@ -316,59 +372,127 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
               totalTokens: chunk.totalTokens,
               totalTime: chunk.totalTime,
             };
-            streamingDataRef.current.stats = stats;
-            setCurrentStats(stats);
+            streamingDataRef.current.currentRound.stats = stats;
+            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            
           } else if (chunk.type === 'error') {
             setError(chunk.content);
             setIsStreaming(false);
-            setCurrentResponse('');
           }
         },
         (error) => {
           setError(error);
           setIsStreaming(false);
-          setCurrentResponse('');
-          setCurrentThinking('');
-          streamingDataRef.current = { content: '', thinkingContent: '', statusMessages: [], stats: null };
+          setCurrentRounds([]);
+          setCurrentRoundData({
+            thinking: '',
+            content: '',
+            statusMessages: [],
+            retryAttempts: [],
+            errorFeedback: [],
+            stats: null,
+          });
+          streamingDataRef.current = { 
+            rounds: [], 
+            currentRound: {
+              thinking: '',
+              content: '',
+              statusMessages: [],
+              retryAttempts: [],
+              errorFeedback: [],
+              stats: null,
+            },
+            currentRoundNumber: 1,
+          };
         },
         () => {
-          const { content, thinkingContent, statusMessages, stats } = streamingDataRef.current;
+          // On complete - save final round and create message
+          const { rounds, currentRound, currentRoundNumber } = streamingDataRef.current;
           
-          if (content || thinkingContent) {
-            const newMessage: Message = {
-              role: 'assistant',
-              content: content,
-              thinkingContent: thinkingContent || undefined,
-              timestamp: new Date(),
-              statusMessages: statusMessages.length > 0 ? statusMessages : undefined,
-              stats: stats || undefined,
+          // Save current round if it has content
+          if (currentRound.content || currentRound.thinking) {
+            const completedRound: ConversationRound = {
+              roundNumber: currentRoundNumber,
+              thinking: currentRound.thinking,
+              content: currentRound.content,
+              statusMessages: currentRound.statusMessages,
+              retryAttempts: currentRound.retryAttempts.length > 0 ? currentRound.retryAttempts : undefined,
+              errorFeedback: currentRound.errorFeedback.length > 0 ? currentRound.errorFeedback : undefined,
+              stats: currentRound.stats || undefined,
             };
             
-            // 只添加消息，不做任何其他操作
+            rounds.push(completedRound);
+          }
+          
+          // Create assistant message with all rounds
+          if (rounds.length > 0) {
+            // Use the last round's content as the main message content
+            const lastRound = rounds[rounds.length - 1];
+            
+            const newMessage: Message = {
+              role: 'assistant',
+              content: lastRound.content || lastRound.thinking || '',
+              timestamp: new Date(),
+              rounds: rounds,
+            };
+            
             setMessages((prev) => [...prev, newMessage]);
           }
           
-          setCurrentResponse('');
-          setCurrentThinking('');
-          setCurrentStatusMessages([]);
-          setCurrentStats(null);
+          // Reset streaming state
+          setCurrentRounds([]);
+          setCurrentRoundData({
+            thinking: '',
+            content: '',
+            statusMessages: [],
+            retryAttempts: [],
+            errorFeedback: [],
+            stats: null,
+          });
+          setCurrentRoundNumber(1);
           setIsStreaming(false);
-          hasReceivedThinkingRef.current = false;
-          hasReceivedContentRef.current = false;
           abortControllerRef.current = null;
-          streamingDataRef.current = { content: '', thinkingContent: '', statusMessages: [], stats: null };
+          streamingDataRef.current = { 
+            rounds: [], 
+            currentRound: {
+              thinking: '',
+              content: '',
+              statusMessages: [],
+              retryAttempts: [],
+              errorFeedback: [],
+              stats: null,
+            },
+            currentRoundNumber: 1,
+          };
         },
         history,
         filesToUpload.length > 0 ? filesToUpload : undefined,
-        abortControllerRef.current?.signal  // 传递 AbortSignal
+        abortControllerRef.current?.signal
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message');
       setIsStreaming(false);
-      setCurrentResponse('');
-      setCurrentStatusMessages([]);
-      setCurrentStats(null);
-      streamingDataRef.current = { content: '', statusMessages: [], stats: null };
+      setCurrentRounds([]);
+      setCurrentRoundData({
+        thinking: '',
+        content: '',
+        statusMessages: [],
+        retryAttempts: [],
+        errorFeedback: [],
+        stats: null,
+      });
+      streamingDataRef.current = { 
+        rounds: [], 
+        currentRound: {
+          thinking: '',
+          content: '',
+          statusMessages: [],
+          retryAttempts: [],
+          errorFeedback: [],
+          stats: null,
+        },
+        currentRoundNumber: 1,
+      };
     }
   };
 
@@ -377,20 +501,6 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
       e.preventDefault();
       handleSendMessage();
     }
-  };
-
-  const toggleStatusCollapse = (index: number) => {
-    setCollapsedStatus((prev) => ({
-      ...prev,
-      [index]: !prev[index],
-    }));
-  };
-
-  const toggleThinkingCollapse = (index: number) => {
-    setCollapsedThinking((prev) => ({
-      ...prev,
-      [index]: !prev[index],
-    }));
   };
 
   const handleAbortStreaming = () => {
@@ -477,264 +587,204 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                 </div>
               ) : message.role === 'assistant' ? (
                 <div className="flex justify-start">
-                  <div className="max-w-[85%] space-y-2">
-                    {/* Agent Process (Status Messages) */}
-                    {message.statusMessages && message.statusMessages.length > 0 && (
-                      <div className="rounded-xl overflow-hidden border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 shadow-sm">
-                        <button
-                          onClick={() => toggleStatusCollapse(index)}
-                          className="w-full flex items-center justify-between px-4 py-2.5 bg-gradient-to-r from-zinc-50 to-zinc-100 dark:from-zinc-800 dark:to-zinc-800/50 hover:from-zinc-100 hover:to-zinc-100 dark:hover:from-zinc-700 dark:hover:to-zinc-700/50 transition-all text-left"
-                        >
-                          <div className="flex items-center gap-2">
-                            <Brain className="w-4 h-4 text-purple-500" />
-                            <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                              Agent Process ({message.statusMessages.length} steps)
-                            </span>
-                          </div>
-                          {(collapsedStatus[index] ?? streamingStatusCollapsed) ? (
-                            <ChevronDown className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />
-                          ) : (
-                            <ChevronUp className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />
-                          )}
-                        </button>
-                        {!(collapsedStatus[index] ?? streamingStatusCollapsed) && (
-                          <div className="px-4 py-3 space-y-2 bg-zinc-50/50 dark:bg-zinc-900/50">
-                            {message.statusMessages.map((status, idx) => (
-                              <div key={idx} className="flex items-start gap-2.5 text-xs">
-                                <div
-                                  className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${
-                                    status.type === 'start'
-                                      ? 'bg-blue-500 animate-pulse'
-                                      : status.type === 'info'
-                                      ? 'bg-cyan-500'
-                                      : status.type === 'thinking'
-                                      ? 'bg-purple-500 animate-pulse'
-                                      : status.type === 'tool_call'
-                                      ? 'bg-orange-500 animate-pulse'
-                                      : status.type === 'tool_result'
-                                      ? 'bg-green-500'
-                                      : status.type === 'tool_error'
-                                      ? 'bg-red-500'
-                                      : status.type === 'done'
-                                      ? 'bg-green-500'
-                                      : 'bg-zinc-500'
-                                  }`}
-                                />
-                                <span className={`flex-1 leading-relaxed ${
-                                  status.type === 'tool_call'
-                                    ? 'text-orange-700 dark:text-orange-300 font-medium'
-                                    : status.type === 'tool_result'
-                                    ? 'text-green-700 dark:text-green-300'
-                                    : status.type === 'tool_error'
-                                    ? 'text-red-700 dark:text-red-300'
-                                    : 'text-zinc-700 dark:text-zinc-300'
-                                }`}>
-                                  {status.content}
-                                </span>
-                                {status.duration !== undefined && (
-                                  <span className="text-zinc-500 dark:text-zinc-400 text-[10px] font-mono ml-2">
-                                    {status.duration.toFixed(2)}s
-                                  </span>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
+                  <div className="max-w-[85%] space-y-3">
+                    {/* Multi-round display */}
+                    {message.rounds && message.rounds.length > 0 ? (
+                      <>
+                        {message.rounds.map((round, roundIdx) => (
+                          <ConversationRoundComponent
+                            key={roundIdx}
+                            round={round}
+                            isLatest={roundIdx === message.rounds!.length - 1}
+                            defaultCollapsed={roundIdx < message.rounds!.length - 1}
+                          />
+                        ))}
+                        
+                        {/* Timestamp footer */}
+                        <div className="flex justify-end">
+                          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                            {message.timestamp.toLocaleTimeString()}
+                          </p>
+                        </div>
+                      </>
+                    ) : (
+                      /* Fallback for old single-round messages */
+                      <div className="rounded-[24px] px-4 py-3 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-lg">
+                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 prose-pre:bg-zinc-900 prose-pre:text-zinc-100">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {message.content}
+                          </ReactMarkdown>
+                        </div>
+                        
+                        <div className="flex items-center justify-between mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-700">
+                          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                            {message.timestamp.toLocaleTimeString()}
+                          </p>
+                        </div>
                       </div>
                     )}
-                    
-                    {/* Thinking Content (if exists) */}
-                    {message.thinkingContent && (
-                      <div className="rounded-xl overflow-hidden border border-purple-200 dark:border-purple-700 bg-gradient-to-br from-purple-50 to-purple-100/50 dark:from-purple-900/20 dark:to-purple-800/10 shadow-sm mb-2">
-                        <button
-                          onClick={() => toggleThinkingCollapse(index)}
-                          className="w-full flex items-center justify-between gap-2 px-4 py-2.5 bg-purple-100/80 dark:bg-purple-900/30 border-b border-purple-200 dark:border-purple-700 hover:bg-purple-200/60 dark:hover:bg-purple-900/50 transition-colors"
-                        >
-                          <div className="flex items-center gap-2">
-                            <Brain className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-                            <span className="text-xs font-semibold text-purple-700 dark:text-purple-300">
-                              Thinking Process
-                            </span>
-                          </div>
-                          {(collapsedThinking[index] ?? streamingThinkingCollapsed) ? (
-                            <ChevronDown className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-                          ) : (
-                            <ChevronUp className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-                          )}
-                        </button>
-                        {!(collapsedThinking[index] ?? streamingThinkingCollapsed) && (
-                          <div className="px-4 py-3">
-                            <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 text-purple-900 dark:text-purple-100">
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                {message.thinkingContent}
-                              </ReactMarkdown>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    
-                    {/* Assistant Response */}
-                    <div className="rounded-[24px] px-4 py-3 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-lg">
-                      <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 prose-pre:bg-zinc-900 prose-pre:text-zinc-100">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {message.content}
-                        </ReactMarkdown>
-                      </div>
-                      
-                      {/* Stats footer */}
-                      <div className="flex items-center justify-between mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-700">
-                        <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                          {message.timestamp.toLocaleTimeString()}
-                        </p>
-                        {message.stats && (
-                          <div className="flex items-center gap-3 text-[10px] font-medium">
-                            <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400" title="Time to first token">
-                              ⚡ {message.stats.timeToFirstToken}s
-                            </span>
-                            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400" title="Tokens per second">
-                              🚀 {message.stats.tokensPerSecond} tok/s
-                            </span>
-                            <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400" title="Input / Output tokens">
-                              📊 {message.stats.inputTokens} / {message.stats.outputTokens}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
                   </div>
                 </div>
               ) : null}
             </div>
           ))}
 
-          {/* Current Status Messages (while streaming) */}
-          {isStreaming && currentStatusMessages.length > 0 && (
+          {/* Current streaming rounds */}
+          {isStreaming && (currentRounds.length > 0 || currentRoundData.thinking || currentRoundData.content) && (
             <div className="flex justify-start animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="max-w-[85%] rounded-xl overflow-hidden border border-purple-200 dark:border-purple-800 bg-white dark:bg-zinc-800 shadow-lg">
-                <button
-                  onClick={() => setStreamingStatusCollapsed(!streamingStatusCollapsed)}
-                  className="w-full flex items-center justify-between px-4 py-2.5 bg-gradient-to-r from-purple-50 to-purple-100 dark:from-purple-900/20 dark:to-purple-800/20 hover:from-purple-100 hover:to-purple-100 dark:hover:from-purple-900/30 dark:hover:to-purple-800/30 transition-all"
-                >
-                  <div className="flex items-center gap-2">
-                    <Brain className="w-4 h-4 text-purple-500 animate-pulse" />
-                    <span className="text-xs font-semibold text-purple-700 dark:text-purple-300">
-                      Processing... ({currentStatusMessages.length} steps)
-                    </span>
-                  </div>
-                  {streamingStatusCollapsed ? (
-                    <ChevronDown className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-                  ) : (
-                    <ChevronUp className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-                  )}
-                </button>
-                {!streamingStatusCollapsed && (
-                  <div className="px-4 py-3 space-y-2 bg-purple-50/30 dark:bg-purple-900/10">
-                    {currentStatusMessages.map((status, idx) => (
-                      <div key={idx} className="flex items-start gap-2.5 text-xs">
-                        <div
-                          className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${
-                            status.type === 'start'
-                              ? 'bg-blue-500 animate-pulse'
-                              : status.type === 'info'
-                              ? 'bg-cyan-500'
-                              : status.type === 'thinking'
-                              ? 'bg-purple-500 animate-pulse'
-                              : status.type === 'tool_call'
-                              ? 'bg-orange-500 animate-pulse'
-                              : status.type === 'tool_result'
-                              ? 'bg-green-500'
-                              : status.type === 'tool_error'
-                              ? 'bg-red-500'
-                              : status.type === 'done'
-                              ? 'bg-green-500'
-                              : 'bg-zinc-500'
-                          }`}
-                        />
-                        <span className={`flex-1 leading-relaxed ${
-                          status.type === 'tool_call'
-                            ? 'text-orange-700 dark:text-orange-300 font-medium'
-                            : status.type === 'tool_result'
-                            ? 'text-green-700 dark:text-green-300'
-                            : status.type === 'tool_error'
-                            ? 'text-red-700 dark:text-red-300'
-                            : 'text-zinc-700 dark:text-zinc-300'
-                        }`}>
-                          {status.content}
-                        </span>
-                        {status.duration !== undefined && (
-                          <span className="text-zinc-500 dark:text-zinc-400 text-[10px] font-mono ml-2">
-                            {status.duration.toFixed(2)}s
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+              <div className="max-w-[85%] space-y-3">
+                {/* Completed rounds */}
+                {currentRounds.map((round, idx) => (
+                  <ConversationRoundComponent
+                    key={idx}
+                    round={round}
+                    isLatest={false}
+                    defaultCollapsed={true}
+                  />
+                ))}
+                
+                {/* Current round being streamed */}
+                {(currentRoundData.thinking || currentRoundData.content || 
+                  currentRoundData.statusMessages.length > 0 ||
+                  currentRoundData.retryAttempts.length > 0 ||
+                  currentRoundData.errorFeedback.length > 0) && (
+                  <div className="space-y-2">
+                    {/* Round header */}
+                    <div className="flex items-center gap-2 px-2">
+                      <div className="h-px flex-1 bg-gradient-to-r from-transparent via-emerald-300 dark:via-emerald-700 to-transparent" />
+                      <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 rounded-full animate-pulse">
+                        第 {currentRoundNumber} 轮 (进行中)
+                      </span>
+                      <div className="h-px flex-1 bg-gradient-to-r from-transparent via-emerald-300 dark:via-emerald-700 to-transparent" />
+                    </div>
 
-          {/* Streaming Response */}
-          {(currentThinking || currentResponse) && (
-            <div className="flex justify-start animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="max-w-[85%] space-y-2">
-                {/* Streaming Thinking Content */}
-                {currentThinking && (
-                  <div className="rounded-xl overflow-hidden border-2 border-purple-300 dark:border-purple-700 bg-gradient-to-br from-purple-50 to-purple-100/50 dark:from-purple-900/20 dark:to-purple-800/10 shadow-lg shadow-purple-500/10">
-                    <button
-                      onClick={() => setStreamingThinkingCollapsed(!streamingThinkingCollapsed)}
-                      className="w-full flex items-center justify-between gap-2 px-4 py-2.5 bg-purple-100/80 dark:bg-purple-900/30 border-b border-purple-200 dark:border-purple-700 hover:bg-purple-200/60 dark:hover:bg-purple-900/50 transition-colors"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Brain className="w-4 h-4 text-purple-600 dark:text-purple-400 animate-pulse" />
-                        <span className="text-xs font-semibold text-purple-700 dark:text-purple-300">
-                          Thinking...
-                        </span>
+                    {/* Retry attempts */}
+                    {currentRoundData.retryAttempts.length > 0 && (
+                      <div className="space-y-1.5">
+                        {currentRoundData.retryAttempts.map((retry, idx) => (
+                          <RetryIndicator 
+                            key={idx} 
+                            retry={retry} 
+                            isActive={idx === currentRoundData.retryAttempts.length - 1}
+                          />
+                        ))}
                       </div>
-                      {streamingThinkingCollapsed ? (
-                        <ChevronDown className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-                      ) : (
-                        <ChevronUp className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-                      )}
-                    </button>
-                    {!streamingThinkingCollapsed && (
-                      <div className="px-4 py-3">
-                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 text-purple-900 dark:text-purple-100">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {currentThinking}
-                          </ReactMarkdown>
+                    )}
+
+                    {/* Error feedback */}
+                    {currentRoundData.errorFeedback.length > 0 && (
+                      <div className="space-y-1.5">
+                        {currentRoundData.errorFeedback.map((feedback, idx) => (
+                          <ErrorFeedbackDisplay 
+                            key={idx} 
+                            feedback={feedback}
+                            defaultCollapsed={idx < currentRoundData.errorFeedback.length - 1}
+                          />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Status messages */}
+                    {currentRoundData.statusMessages.length > 0 && (
+                      <div className="rounded-xl overflow-hidden border-2 border-emerald-300 dark:border-emerald-700 bg-white dark:bg-zinc-800 shadow-lg">
+                        <div className="px-4 py-2.5 bg-gradient-to-r from-emerald-50 to-emerald-100 dark:from-emerald-900/20 dark:to-emerald-800/20">
+                          <div className="flex items-center gap-2">
+                            <Brain className="w-4 h-4 text-emerald-500 animate-pulse" />
+                            <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+                              Processing... ({currentRoundData.statusMessages.length} steps)
+                            </span>
+                          </div>
+                        </div>
+                        <div className="px-4 py-3 space-y-2 bg-emerald-50/30 dark:bg-emerald-900/10">
+                          {currentRoundData.statusMessages.map((status, idx) => (
+                            <div key={idx} className="flex items-start gap-2.5 text-xs">
+                              <div
+                                className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${
+                                  status.type === 'start'
+                                    ? 'bg-blue-500 animate-pulse'
+                                    : status.type === 'info'
+                                    ? 'bg-cyan-500'
+                                    : status.type === 'tool_call'
+                                    ? 'bg-orange-500 animate-pulse'
+                                    : status.type === 'tool_result'
+                                    ? 'bg-green-500'
+                                    : status.type === 'tool_error'
+                                    ? 'bg-red-500'
+                                    : status.type === 'done'
+                                    ? 'bg-green-500'
+                                    : 'bg-zinc-500'
+                                }`}
+                              />
+                              <span className={`flex-1 leading-relaxed ${
+                                status.type === 'tool_call'
+                                  ? 'text-orange-700 dark:text-orange-300 font-medium'
+                                  : status.type === 'tool_result'
+                                  ? 'text-green-700 dark:text-green-300'
+                                  : status.type === 'tool_error'
+                                  ? 'text-red-700 dark:text-red-300'
+                                  : 'text-zinc-700 dark:text-zinc-300'
+                              }`}>
+                                {status.content}
+                              </span>
+                              {status.duration !== undefined && (
+                                <span className="text-zinc-500 dark:text-zinc-400 text-[10px] font-mono ml-2">
+                                  {status.duration.toFixed(2)}s
+                                </span>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       </div>
                     )}
-                  </div>
-                )}
-                
-                {/* Streaming Regular Content */}
-                {currentResponse && (
-                  <div className="rounded-[24px] px-4 py-3 bg-white dark:bg-zinc-800 border-2 border-emerald-300 dark:border-emerald-700 shadow-lg shadow-emerald-500/10">
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-                      <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                        Generating...
-                      </span>
-                    </div>
-                    <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {currentResponse}
-                      </ReactMarkdown>
-                    </div>
-                    {currentStats && (
-                      <div className="flex items-center gap-3 mt-3 pt-3 border-t border-emerald-200 dark:border-emerald-800 text-[10px] font-medium">
-                        <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
-                          ⚡ {currentStats.timeToFirstToken}s
-                        </span>
-                        <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-                          🚀 {currentStats.tokensPerSecond} tok/s
-                        </span>
-                        <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400">
-                          📊 {currentStats.inputTokens} / {currentStats.outputTokens}
-                        </span>
+
+                    {/* Thinking content */}
+                    {currentRoundData.thinking && (
+                      <div className="rounded-xl overflow-hidden border-2 border-purple-300 dark:border-purple-700 bg-gradient-to-br from-purple-50 to-purple-100/50 dark:from-purple-900/20 dark:to-purple-800/10 shadow-lg">
+                        <div className="px-4 py-2.5 bg-purple-100/80 dark:bg-purple-900/30 border-b border-purple-200 dark:border-purple-700">
+                          <div className="flex items-center gap-2">
+                            <Brain className="w-4 h-4 text-purple-600 dark:text-purple-400 animate-pulse" />
+                            <span className="text-xs font-semibold text-purple-700 dark:text-purple-300">
+                              Thinking...
+                            </span>
+                          </div>
+                        </div>
+                        <div className="px-4 py-3">
+                          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 text-purple-900 dark:text-purple-100">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {currentRoundData.thinking}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Response content */}
+                    {currentRoundData.content && (
+                      <div className="rounded-[24px] px-4 py-3 bg-white dark:bg-zinc-800 border-2 border-emerald-300 dark:border-emerald-700 shadow-lg shadow-emerald-500/10">
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                          <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                            Generating...
+                          </span>
+                        </div>
+                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {currentRoundData.content}
+                          </ReactMarkdown>
+                        </div>
+                        {currentRoundData.stats && (
+                          <div className="flex items-center gap-3 mt-3 pt-3 border-t border-emerald-200 dark:border-emerald-800 text-[10px] font-medium">
+                            <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                              ⚡ {currentRoundData.stats.timeToFirstToken}s
+                            </span>
+                            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                              🚀 {currentRoundData.stats.tokensPerSecond} tok/s
+                            </span>
+                            <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400">
+                              📊 {currentRoundData.stats.inputTokens} / {currentRoundData.stats.outputTokens}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

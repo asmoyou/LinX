@@ -34,7 +34,10 @@ export type WebSocketMessageType =
   | 'heartbeat'
   | 'pong'
   | 'error'
-  | 'echo';
+  | 'echo'
+  | 'retry_attempt'
+  | 'error_feedback'
+  | 'info';
 
 export interface WebSocketMessage {
   type: WebSocketMessageType;
