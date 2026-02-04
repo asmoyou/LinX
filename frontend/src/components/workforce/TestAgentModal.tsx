@@ -1,19 +1,20 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { X, Send, Loader2, AlertCircle, Bot, ChevronDown, ChevronUp, Brain, Paperclip, Image as ImageIcon, FileText, X as XIcon, Sparkles } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Agent } from '@/types/agent';
 import { agentsApi } from '@/api';
-import type { 
-  ConversationRound, 
-  StatusMessage, 
-  RetryAttempt, 
+import type {
+  ConversationRound,
+  StatusMessage,
+  RetryAttempt,
   ErrorFeedback,
-  AttachedFile 
+  AttachedFile
 } from '@/types/streaming';
 import { ConversationRoundComponent } from './ConversationRound';
 import { RetryIndicator } from './RetryIndicator';
 import { ErrorFeedbackDisplay } from './ErrorFeedbackDisplay';
+import { createMarkdownComponents } from './CodeBlock';
 
 interface TestAgentModalProps {
   agent: Agent | null;
@@ -85,8 +86,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
     rounds: ConversationRound[];
     currentRound: typeof currentRoundData;
     currentRoundNumber: number;
-  }>({ 
-    rounds: [], 
+  }>({
+    rounds: [],
     currentRound: {
       thinking: '',
       content: '',
@@ -97,6 +98,9 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
     },
     currentRoundNumber: 1,
   });
+
+  // Memoize markdown components to prevent re-creation on each render
+  const markdownComponents = useMemo(() => createMarkdownComponents(), []);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -610,8 +614,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                     ) : (
                       /* Fallback for old single-round messages */
                       <div className="rounded-[24px] px-4 py-3 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-lg">
-                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 prose-pre:bg-zinc-900 prose-pre:text-zinc-100 prose-pre:overflow-x-auto prose-code:break-all">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                             {message.content}
                           </ReactMarkdown>
                         </div>
@@ -749,8 +753,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                           </div>
                         </div>
                         <div className="px-4 py-3">
-                          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 text-purple-900 dark:text-purple-100 prose-pre:overflow-x-auto prose-code:break-all">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 text-purple-900 dark:text-purple-100">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                               {currentRoundData.thinking}
                             </ReactMarkdown>
                           </div>
@@ -767,8 +771,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                             Generating...
                           </span>
                         </div>
-                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:break-all">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                             {currentRoundData.content}
                           </ReactMarkdown>
                         </div>

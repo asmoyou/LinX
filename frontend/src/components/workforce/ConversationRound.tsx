@@ -9,13 +9,14 @@
  * - Documentation: docs/backend/agent-error-recovery.md
  */
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Brain, ChevronDown, ChevronUp } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConversationRound } from '@/types/streaming';
 import { RetryIndicator } from './RetryIndicator';
 import { ErrorFeedbackDisplay } from './ErrorFeedbackDisplay';
+import { createMarkdownComponents } from './CodeBlock';
 
 interface ConversationRoundProps {
   round: ConversationRound;
@@ -23,13 +24,16 @@ interface ConversationRoundProps {
   defaultCollapsed?: boolean;
 }
 
-export const ConversationRoundComponent: React.FC<ConversationRoundProps> = ({ 
-  round, 
+export const ConversationRoundComponent: React.FC<ConversationRoundProps> = ({
+  round,
   isLatest = false,
-  defaultCollapsed = false 
+  defaultCollapsed = false
 }) => {
   const [statusCollapsed, setStatusCollapsed] = useState(defaultCollapsed);
   const [thinkingCollapsed, setThinkingCollapsed] = useState(defaultCollapsed);
+
+  // Memoize markdown components to prevent re-creation on each render
+  const markdownComponents = useMemo(() => createMarkdownComponents(), []);
 
   return (
     <div className="space-y-2">
@@ -154,8 +158,8 @@ export const ConversationRoundComponent: React.FC<ConversationRoundProps> = ({
           </button>
           {!thinkingCollapsed && (
             <div className="px-4 py-3">
-              <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 text-purple-900 dark:text-purple-100 prose-pre:overflow-x-auto prose-code:break-all">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 text-purple-900 dark:text-purple-100">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                   {round.thinking}
                 </ReactMarkdown>
               </div>
@@ -167,8 +171,8 @@ export const ConversationRoundComponent: React.FC<ConversationRoundProps> = ({
       {/* Response Content */}
       {round.content && (
         <div className="rounded-[24px] px-4 py-3 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-lg">
-          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 prose-pre:bg-zinc-900 prose-pre:text-zinc-100 prose-pre:overflow-x-auto prose-code:break-all">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
               {round.content}
             </ReactMarkdown>
           </div>
