@@ -1593,6 +1593,18 @@ class BaseAgent:
                     # Estimate tokens (Chinese avg ~1.5 tokens/char, English ~0.25, mixed ~0.5)
                     output_tokens = int(round_output_chars * 0.5)
 
+                    # Estimate input tokens from messages
+                    input_chars = 0
+                    for msg in messages:
+                        if hasattr(msg, 'content'):
+                            if isinstance(msg.content, str):
+                                input_chars += len(msg.content)
+                            elif isinstance(msg.content, list):
+                                for item in msg.content:
+                                    if isinstance(item, dict) and item.get('type') == 'text':
+                                        input_chars += len(item.get('text', ''))
+                    input_tokens = int(input_chars * 0.5)
+
                     # Calculate time to first token
                     if round_first_token_time is not None:
                         time_to_first = round(round_first_token_time - round_start_time, 2)
@@ -1600,12 +1612,21 @@ class BaseAgent:
                         time_to_first = 0
 
                     # Calculate tokens per second (generation time only)
+                    # Use a minimum generation time of 0.1s to avoid unrealistic speeds
+                    # when LLM returns in "fake streaming" mode (all at once)
                     if round_first_token_time and round_last_token_time and output_tokens > 0:
                         generation_time = round_last_token_time - round_first_token_time
-                        if generation_time > 0:
-                            tokens_per_second = round(output_tokens / generation_time, 1)
+                        # If generation_time is too small, it's likely fake streaming
+                        # Use total_time as fallback to get more realistic speed
+                        if generation_time < 0.1:
+                            # Fake streaming detected - use total time minus time_to_first
+                            effective_time = (round_end_time - round_start_time) - time_to_first
+                            if effective_time > 0.1:
+                                tokens_per_second = round(output_tokens / effective_time, 1)
+                            else:
+                                tokens_per_second = 0
                         else:
-                            tokens_per_second = 0
+                            tokens_per_second = round(output_tokens / generation_time, 1)
                     else:
                         tokens_per_second = 0
 
@@ -1616,6 +1637,7 @@ class BaseAgent:
                         "roundNumber": state.round_number,
                         "timeToFirstToken": time_to_first,
                         "tokensPerSecond": tokens_per_second,
+                        "inputTokens": input_tokens,
                         "outputTokens": output_tokens,
                         "totalTime": total_time
                     }), "round_stats"))
@@ -1623,7 +1645,7 @@ class BaseAgent:
                     logger.info(
                         f"[RECOVERY] Round {state.round_number} stats: "
                         f"ttft={time_to_first}s, speed={tokens_per_second}tok/s, "
-                        f"tokens={output_tokens}, time={total_time}s",
+                        f"in={input_tokens}, out={output_tokens}, time={total_time}s",
                         extra={"agent_id": str(self.config.agent_id)}
                     )
 

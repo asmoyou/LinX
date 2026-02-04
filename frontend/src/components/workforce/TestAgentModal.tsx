@@ -371,9 +371,9 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
             const roundStats = {
               timeToFirstToken: chunk.timeToFirstToken,
               tokensPerSecond: chunk.tokensPerSecond,
-              inputTokens: 0,  // Not tracked per-round yet
+              inputTokens: chunk.inputTokens,
               outputTokens: chunk.outputTokens,
-              totalTokens: chunk.outputTokens,
+              totalTokens: (chunk.inputTokens || 0) + (chunk.outputTokens || 0),
               totalTime: chunk.totalTime,
             };
             streamingDataRef.current.currentRound.stats = roundStats;

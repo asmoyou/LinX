@@ -87,6 +87,7 @@ export interface RoundStatsChunk {
   roundNumber: number;
   timeToFirstToken: number;
   tokensPerSecond: number;
+  inputTokens: number;
   outputTokens: number;
   totalTime: number;
 }
