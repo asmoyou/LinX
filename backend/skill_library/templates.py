@@ -43,7 +43,7 @@ tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 def web_search(
     query: str,
     max_results: int = 10,
-    search_depth: str = "basic",
+    search_depth: str = "advanced",
     topic: str = "general",
     include_domains: Optional[List[str]] = None,
     exclude_domains: Optional[List[str]] = None
@@ -60,8 +60,9 @@ def web_search(
     Args:
         query: The search query string
         max_results: Number of results to return (default 10, max 20)
-        search_depth: "basic" (default, faster) or "advanced" (slower but more thorough).
-                     Use "advanced" only when basic search doesn't find relevant results.
+        search_depth: "advanced" (default, thorough with detailed content) or
+                     "basic" (faster, less detail). Use "basic" only for quick
+                     simple queries where brief answers are sufficient.
         topic: "general" (default) or "news" (for recent news articles)
         include_domains: [Advanced] Limit search to specific domains.
                         Only use when user explicitly requests specific sources.
@@ -73,24 +74,23 @@ def web_search(
         The agent should read through all results and provide a comprehensive summary.
 
     Usage Guidelines:
-        - For most queries, use default parameters (just query and max_results)
-        - Only use search_depth="advanced" if basic search fails to find relevant info
-        - Only use domain filters when explicitly requested by user
+        - Default "advanced" search provides richer content for thorough analysis
+        - Use "basic" only for simple factual queries needing quick answers
         - After receiving results, analyze ALL content and synthesize a complete answer
         - If results are insufficient, search again with different/refined queries
 
     Example:
-        # Simple search (recommended for most cases)
+        # Standard search (uses advanced depth by default)
         web_search("Python async programming best practices")
 
         # Get more results for comprehensive research
         web_search("machine learning frameworks comparison", max_results=15)
 
+        # Quick simple query (use basic for speed)
+        web_search("Python current version", search_depth="basic", max_results=3)
+
         # News search
         web_search("AI regulation updates 2024", topic="news")
-
-        # Domain-specific search (only when user requests)
-        web_search("React hooks", include_domains=["react.dev", "github.com"])
     """
     try:
         # Cap max_results
