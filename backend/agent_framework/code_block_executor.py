@@ -163,7 +163,7 @@ class CodeBlockExecutor:
 
             self.logger.debug(
                 f"Extracted {language} code block ({len(code)} chars)",
-                extra={"language": language, "filename": block.filename}
+                extra={"language": language, "script_name": block.filename}
             )
 
         return blocks
@@ -323,7 +323,7 @@ class CodeBlockExecutor:
             f"[CODE_BLOCK] Executing {block.language} block -> {block.filename}",
             extra={
                 "language": block.language,
-                "filename": block.filename,
+                "script_name": block.filename,
                 "code_length": len(block.code),
                 "workdir": str(workdir),
                 "source": block.source

@@ -116,46 +116,34 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
                 
                 # Provide execution instructions
                 output += "\n## How to Execute This Code\n\n"
-                
+                output += "**IMPORTANT: To execute code, simply output it as a markdown code block!**\n\n"
+                output += "The system will automatically detect and execute code blocks.\n\n"
+
                 python_code = skill_package.get_executable_code('python')
                 if python_code:
-                    output += """**For Python code:**
-1. You can execute it directly using the `bash` tool:
-   ```bash
-   python -c "$(cat <<'EOF'
-   [paste the code here]
-   EOF
-   )"
-   ```
+                    output += """**For Python code**, just output it like this:
+```python
+import requests
+# ... your code here ...
+print(result)
+```
 
-2. Or save it to a file and run:
-   ```bash
-   cat > /tmp/skill_code.py <<'EOF'
-   [paste the code here]
-   EOF
-   python /tmp/skill_code.py
-   ```
+The code block will be automatically executed and the result will be returned.
 
 """
-                
+
                 bash_code = skill_package.get_executable_code('bash')
                 if bash_code:
-                    output += """**For Bash code:**
-1. Execute directly:
-   ```bash
-   [paste the code here]
-   ```
+                    output += """**For Bash code**, just output it like this:
+```bash
+curl "https://api.example.com/..."
+```
 
-2. Or save to a script:
-   ```bash
-   cat > /tmp/skill_script.sh <<'EOF'
-   [paste the code here]
-   EOF
-   chmod +x /tmp/skill_script.sh
-   /tmp/skill_script.sh
-   ```
+The code block will be automatically executed and the result will be returned.
 
 """
+                output += "**DO NOT ask about API keys or credentials** - they are already configured in the environment.\n"
+                output += "**Just execute the code** and let the system handle the rest.\n\n"
             
             # Add package files if available
             if skill_ref.package_files:
@@ -167,11 +155,12 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
             
             # Add execution note
             if skill_ref.has_scripts or skill_package.code_blocks:
-                output += "\n## ⚠️ Important Execution Notes\n\n"
+                output += "\n## Execution Rules\n\n"
                 output += "- All code blocks above are REAL, EXECUTABLE code extracted from the skill\n"
-                output += "- You should DIRECTLY use this code, not write your own version\n"
-                output += "- If you encounter import errors, the code is self-contained and should work as-is\n"
-                output += "- Use the `bash` tool to execute the code in the sandbox environment\n"
+                output += "- You MUST directly output the code as a ```python or ```bash code block\n"
+                output += "- The system will automatically execute it and return the result\n"
+                output += "- DO NOT worry about API keys or credentials - they are pre-configured\n"
+                output += "- DO NOT explain or ask permission - just execute the code NOW\n"
             else:
                 output += "\n## Execution Note\n\nThis is a workflow/documentation skill. Follow the instructions to accomplish the task.\n"
             

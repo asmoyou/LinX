@@ -1171,6 +1171,19 @@ class BaseAgent:
 
         results = []
 
+        # Get user's skill environment variables
+        skill_env = {}
+        try:
+            from skill_library.skill_env_manager import get_skill_env_manager
+            env_manager = get_skill_env_manager()
+            skill_env = env_manager.get_env_for_user(self.config.owner_user_id)
+            logger.debug(
+                f"[CODE_BLOCK] Loaded {len(skill_env)} skill environment variables",
+                extra={"agent_id": str(self.config.agent_id)}
+            )
+        except Exception as e:
+            logger.warning(f"[CODE_BLOCK] Failed to load skill env vars: {e}")
+
         for i, block in enumerate(code_blocks):
             # Send execution indicator to frontend
             if stream_callback:
@@ -1189,10 +1202,11 @@ class BaseAgent:
                 }
             )
 
-            # Execute the code block
+            # Execute the code block with skill environment variables
             result = await self.code_executor.execute(
                 block,
-                timeout=self.config.tool_timeout_seconds
+                timeout=self.config.tool_timeout_seconds,
+                env=skill_env  # Inject user's skill env vars
             )
             results.append(result)
 
