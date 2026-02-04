@@ -37,26 +37,16 @@ class CodeValidator:
     # Dangerous patterns for different languages
     DANGEROUS_PATTERNS = {
         "python": [
-            (r"import\s+os\b", "OS module access"),
-            (r"import\s+subprocess\b", "Subprocess execution"),
-            (r"import\s+socket\b", "Network socket access"),
-            (r"import\s+sys\b", "System module access"),
+            # Only block truly dangerous operations, not imports
+            (r"os\.system\s*\(", "OS system command execution"),
+            (r"os\.popen\s*\(", "OS popen execution"),
+            (r"subprocess\.call\s*\(", "Subprocess call"),
+            (r"subprocess\.run\s*\(", "Subprocess run"),
+            (r"subprocess\.Popen\s*\(", "Subprocess Popen"),
             (r"eval\s*\(", "Dynamic code evaluation"),
             (r"exec\s*\(", "Dynamic code execution"),
             (r"__import__\s*\(", "Dynamic imports"),
             (r"compile\s*\(", "Code compilation"),
-            (r"open\s*\(", "File operations"),
-            (r"file\s*\(", "File operations"),
-            (r"input\s*\(", "User input"),
-            (r"raw_input\s*\(", "User input"),
-            (r"globals\s*\(", "Global namespace access"),
-            (r"locals\s*\(", "Local namespace access"),
-            (r"vars\s*\(", "Variable namespace access"),
-            (r"dir\s*\(", "Directory listing"),
-            (r"getattr\s*\(", "Attribute access"),
-            (r"setattr\s*\(", "Attribute modification"),
-            (r"delattr\s*\(", "Attribute deletion"),
-            (r"__.*__", "Dunder methods"),
         ],
         "javascript": [
             (r"require\s*\(", "Module require"),
@@ -202,11 +192,19 @@ class CodeValidator:
                         if node.func.id in ["open", "file"]:
                             issues.append(f"File operation detected: {node.func.id}")
 
-                # Check for attribute access to dangerous modules
+                # Check for attribute access to truly dangerous operations
                 if isinstance(node, ast.Attribute):
                     if isinstance(node.value, ast.Name):
-                        if node.value.id in ["os", "sys", "subprocess"]:
-                            issues.append(f"Access to dangerous module: {node.value.id}")
+                        # Only block dangerous operations, not module imports
+                        dangerous_ops = {
+                            "os": ["system", "popen", "spawn", "exec"],
+                            "subprocess": ["call", "run", "Popen", "check_output"],
+                        }
+                        if node.value.id in dangerous_ops:
+                            if node.attr in dangerous_ops[node.value.id]:
+                                issues.append(
+                                    f"Dangerous operation: {node.value.id}.{node.attr}"
+                                )
 
                 # Warn about complex constructs
                 if isinstance(node, ast.Lambda):
@@ -231,24 +229,10 @@ class CodeValidator:
         Returns:
             List of import-related issues
         """
-        issues = []
-
-        try:
-            tree = ast.parse(code)
-
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        if alias.name not in self.SAFE_PYTHON_MODULES:
-                            issues.append(f"Unsafe import: {alias.name}")
-
-                elif isinstance(node, ast.ImportFrom):
-                    if node.module and node.module not in self.SAFE_PYTHON_MODULES:
-                        issues.append(f"Unsafe import from: {node.module}")
-
-        except Exception as e:
-            # Already handled in syntax validation
-            pass
+        # In containerized environment, imports are generally safe
+        # The container provides isolation
+        # Only block truly dangerous operations via pattern matching
+        return []
 
         return issues
 

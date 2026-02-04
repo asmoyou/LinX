@@ -48,16 +48,22 @@ class ResourceLimits:
         Returns:
             Dictionary with Docker resource configuration
         """
-        return {
+        config = {
             "cpu_period": 100000,  # 100ms
             "cpu_quota": int(self.cpu_cores * 100000),
             "cpu_shares": self.cpu_shares,
             "mem_limit": f"{self.memory_mb}m",
             "memswap_limit": f"{self.memory_swap_mb}m",
-            "blkio_weight": 500,
-            "device_read_bps": [{"Path": "/dev/sda", "Rate": self.disk_read_bps}],
-            "device_write_bps": [{"Path": "/dev/sda", "Rate": self.disk_write_bps}],
         }
+        
+        # Only add I/O limits on Linux where cgroup controllers are available
+        import platform
+        if platform.system() == "Linux":
+            config["blkio_weight"] = 500
+            config["device_read_bps"] = [{"Path": "/dev/sda", "Rate": self.disk_read_bps}]
+            config["device_write_bps"] = [{"Path": "/dev/sda", "Rate": self.disk_write_bps}]
+        
+        return config
 
     def to_kubernetes_config(self) -> Dict[str, Any]:
         """Convert to Kubernetes resource configuration.

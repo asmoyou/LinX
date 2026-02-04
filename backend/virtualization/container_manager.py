@@ -10,11 +10,16 @@ References:
 
 import json
 import logging
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
+
+import docker
+from docker.errors import DockerException, NotFound
 
 from virtualization.resource_limits import ResourceLimits, ResourceUsage, get_default_limits
 from virtualization.sandbox_selector import SandboxType, get_sandbox_selector
@@ -43,7 +48,7 @@ class ContainerConfig:
 
     # Sandbox configuration
     sandbox_type: SandboxType = SandboxType.DOCKER_ENHANCED
-    image: str = "agent-runtime:latest"
+    image: str = "python:3.11-slim"  # Default to Python image with common tools
 
     # Resource limits
     resource_limits: ResourceLimits = field(default_factory=lambda: get_default_limits())
@@ -79,33 +84,43 @@ class ContainerConfig:
         Returns:
             Dictionary with Docker API configuration
         """
-        config = {
-            "name": self.name or f"agent-{self.container_id[:8]}",
-            "image": self.image,
-            "detach": True,
-            "environment": self.environment,
-            "network_mode": self.network_mode,
-            "network_disabled": self.network_disabled,
-            "read_only": self.read_only_root,
-            "tmpfs": self.tmpfs_mounts,
-            "host_config": {
-                **self.resource_limits.to_docker_config(),
-                "security_opt": [
-                    "no-new-privileges:true" if self.no_new_privileges else "",
-                ],
-                "cap_drop": self.drop_capabilities,
-                "cap_add": self.add_capabilities,
-            },
-        }
-
+        # Get resource limits config
+        resource_config = self.resource_limits.to_docker_config()
+        
+        # Build security options
+        security_opt = []
+        if self.no_new_privileges:
+            security_opt.append("no-new-privileges:true")
+        
         # Add Linux-specific security options
         import platform
-
         if platform.system() == "Linux":
             if self.seccomp_profile:
-                config["host_config"]["security_opt"].append(f"seccomp={self.seccomp_profile}")
+                security_opt.append(f"seccomp={self.seccomp_profile}")
             if self.apparmor_profile:
-                config["host_config"]["security_opt"].append(f"apparmor={self.apparmor_profile}")
+                security_opt.append(f"apparmor={self.apparmor_profile}")
+        
+        config = {
+            "image": self.image,
+            "name": self.name or f"agent-{self.container_id[:8]}",
+            "detach": True,
+            "command": ["/bin/sleep", "infinity"],  # Keep container running
+            "environment": self.environment,
+            "read_only": self.read_only_root,
+            "tmpfs": self.tmpfs_mounts,
+            "security_opt": security_opt,
+            "cap_drop": self.drop_capabilities,
+            "cap_add": self.add_capabilities,
+            # Add resource limits directly
+            **resource_config,
+        }
+        
+        # Handle network configuration
+        # network_disabled and network_mode are mutually exclusive
+        if self.network_disabled:
+            config["network_disabled"] = True
+        else:
+            config["network_mode"] = self.network_mode
 
         # Add runtime for gVisor
         if self.sandbox_type == SandboxType.GVISOR:
@@ -123,11 +138,26 @@ class ContainerManager:
         self.sandbox_selector = get_sandbox_selector()
         self.containers: Dict[str, Dict[str, Any]] = {}
 
+        # Initialize Docker client
+        try:
+            self.docker_client = docker.from_env()
+            # Test connection
+            self.docker_client.ping()
+            self.docker_available = True
+            self.logger.info("Docker client initialized successfully")
+        except DockerException as e:
+            self.logger.warning(f"Docker not available: {e}. Running in simulation mode.")
+            self.docker_client = None
+            self.docker_available = False
+
         # Detect best sandbox
         self.default_sandbox = self.sandbox_selector.detect_best_sandbox()
         self.logger.info(
             "ContainerManager initialized",
-            extra={"default_sandbox": self.default_sandbox.value},
+            extra={
+                "default_sandbox": self.default_sandbox.value,
+                "docker_available": self.docker_available,
+            },
         )
 
     def create_container(
@@ -165,17 +195,48 @@ class ContainerManager:
         )
 
         try:
-            # In a real implementation, this would call Docker API
-            # For now, we simulate container creation
-            self.containers[container_id] = {
-                "id": container_id,
-                "agent_id": str(agent_id),
-                "status": ContainerStatus.CREATING.value,
-                "config": config,
-                "created_at": datetime.utcnow().isoformat(),
-                "started_at": None,
-                "stopped_at": None,
-            }
+            if self.docker_available:
+                # Real Docker container creation
+                docker_config = config.to_docker_config()
+                
+                # Create container
+                container = self.docker_client.containers.create(
+                    **docker_config
+                )
+                
+                # Store container reference
+                self.containers[container_id] = {
+                    "id": container_id,
+                    "docker_id": container.id,
+                    "docker_container": container,
+                    "agent_id": str(agent_id),
+                    "status": ContainerStatus.CREATING.value,
+                    "config": config,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "started_at": None,
+                    "stopped_at": None,
+                }
+                
+                self.logger.info(
+                    "Docker container created",
+                    extra={
+                        "container_id": container_id,
+                        "docker_id": container.id,
+                    },
+                )
+            else:
+                # Simulation mode
+                self.containers[container_id] = {
+                    "id": container_id,
+                    "docker_id": None,
+                    "docker_container": None,
+                    "agent_id": str(agent_id),
+                    "status": ContainerStatus.CREATING.value,
+                    "config": config,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "started_at": None,
+                    "stopped_at": None,
+                }
 
             self.logger.info(
                 "Container created successfully",
@@ -187,6 +248,15 @@ class ContainerManager:
 
             return container_id
 
+        except DockerException as e:
+            self.logger.error(
+                "Failed to create Docker container",
+                extra={
+                    "agent_id": str(agent_id),
+                    "error": str(e),
+                },
+            )
+            raise RuntimeError(f"Container creation failed: {e}")
         except Exception as e:
             self.logger.error(
                 "Failed to create container",
@@ -214,7 +284,29 @@ class ContainerManager:
             return False
 
         try:
-            # In a real implementation, this would call Docker API
+            if self.docker_available:
+                # Real Docker container start
+                container = self.containers[container_id]["docker_container"]
+                container.start()
+                
+                # Reload container to get updated status
+                container.reload()
+                
+                # Check if container actually started
+                if container.status != "running":
+                    # Get container logs to see what went wrong
+                    logs = container.logs().decode('utf-8', errors='replace')
+                    self.logger.error(
+                        f"Container failed to start. Status: {container.status}",
+                        extra={
+                            "container_id": container_id,
+                            "docker_status": container.status,
+                            "logs": logs[:500] if logs else "No logs",
+                        },
+                    )
+                    self.containers[container_id]["status"] = ContainerStatus.FAILED.value
+                    return False
+                
             self.containers[container_id]["status"] = ContainerStatus.RUNNING.value
             self.containers[container_id]["started_at"] = datetime.utcnow().isoformat()
 
@@ -225,6 +317,17 @@ class ContainerManager:
 
             return True
 
+        except DockerException as e:
+            self.logger.error(
+                "Failed to start Docker container",
+                extra={
+                    "container_id": container_id,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
+            )
+            self.containers[container_id]["status"] = ContainerStatus.FAILED.value
+            return False
         except Exception as e:
             self.logger.error(
                 "Failed to start container",
@@ -254,7 +357,10 @@ class ContainerManager:
             return False
 
         try:
-            # In a real implementation, this would call Docker API
+            if self.docker_available:
+                container = self.containers[container_id]["docker_container"]
+                container.stop(timeout=timeout)
+            
             self.containers[container_id]["status"] = ContainerStatus.STOPPED.value
             self.containers[container_id]["stopped_at"] = datetime.utcnow().isoformat()
 
@@ -268,6 +374,15 @@ class ContainerManager:
 
             return True
 
+        except DockerException as e:
+            self.logger.error(
+                "Failed to stop Docker container",
+                extra={
+                    "container_id": container_id,
+                    "error": str(e),
+                },
+            )
+            return False
         except Exception as e:
             self.logger.error(
                 "Failed to stop container",
@@ -300,7 +415,11 @@ class ContainerManager:
             if status == ContainerStatus.RUNNING.value:
                 self.stop_container(container_id)
 
-            # In a real implementation, this would call Docker API to remove container
+            if self.docker_available:
+                # Remove Docker container
+                container = self.containers[container_id]["docker_container"]
+                container.remove(force=True)
+
             self.containers[container_id]["status"] = ContainerStatus.TERMINATED.value
 
             self.logger.info(
@@ -310,6 +429,15 @@ class ContainerManager:
 
             return True
 
+        except DockerException as e:
+            self.logger.error(
+                "Failed to terminate Docker container",
+                extra={
+                    "container_id": container_id,
+                    "error": str(e),
+                },
+            )
+            return False
         except Exception as e:
             self.logger.error(
                 "Failed to terminate container",
@@ -347,14 +475,207 @@ class ContainerManager:
         if container_id not in self.containers:
             return None
 
-        # In a real implementation, this would call Docker stats API
-        # For now, return mock data
+        if self.docker_available:
+            try:
+                container = self.containers[container_id]["docker_container"]
+                stats = container.stats(stream=False)
+                
+                # Parse Docker stats
+                cpu_percent = self._calculate_cpu_percent(stats)
+                memory_mb = stats['memory_stats'].get('usage', 0) / (1024 * 1024)
+                memory_limit = stats['memory_stats'].get('limit', 1)
+                memory_percent = (stats['memory_stats'].get('usage', 0) / memory_limit) * 100
+                
+                return ResourceUsage(
+                    cpu_percent=cpu_percent,
+                    memory_mb=memory_mb,
+                    memory_percent=memory_percent,
+                    execution_time_seconds=0.0,  # Will be set by caller
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to get container stats: {e}")
+                return None
+        
+        # Simulation mode - return mock data
         return ResourceUsage(
             cpu_percent=25.5,
             memory_mb=256.0,
             memory_percent=50.0,
             execution_time_seconds=5.0,
         )
+    
+    def _calculate_cpu_percent(self, stats: Dict[str, Any]) -> float:
+        """Calculate CPU percentage from Docker stats.
+        
+        Args:
+            stats: Docker stats dictionary
+            
+        Returns:
+            CPU percentage
+        """
+        try:
+            cpu_delta = stats['cpu_stats']['cpu_usage']['total_usage'] - \
+                       stats['precpu_stats']['cpu_usage']['total_usage']
+            system_delta = stats['cpu_stats']['system_cpu_usage'] - \
+                          stats['precpu_stats']['system_cpu_usage']
+            
+            if system_delta > 0:
+                cpu_percent = (cpu_delta / system_delta) * 100.0
+                return round(cpu_percent, 2)
+        except (KeyError, ZeroDivisionError):
+            pass
+        
+        return 0.0
+    
+    def exec_in_container(
+        self,
+        container_id: str,
+        command: str,
+        workdir: Optional[str] = None,
+        environment: Optional[Dict[str, str]] = None,
+    ) -> Tuple[int, str, str]:
+        """Execute a command in a running container.
+        
+        Args:
+            container_id: Container ID
+            command: Command to execute (string or list)
+            workdir: Working directory for command
+            environment: Environment variables
+            
+        Returns:
+            Tuple of (exit_code, stdout, stderr)
+            
+        Raises:
+            RuntimeError: If container not found or not running
+        """
+        if container_id not in self.containers:
+            raise RuntimeError(f"Container {container_id} not found")
+        
+        container_info = self.containers[container_id]
+        
+        if container_info["status"] != ContainerStatus.RUNNING.value:
+            raise RuntimeError(
+                f"Container {container_id} is not running (status: {container_info['status']})"
+            )
+        
+        if not self.docker_available:
+            # Simulation mode
+            self.logger.warning("Docker not available, simulating command execution")
+            return (0, "Simulated output", "")
+        
+        try:
+            container = container_info["docker_container"]
+            
+            # Prepare exec command
+            exec_config = {
+                "cmd": command if isinstance(command, list) else ["/bin/sh", "-c", command],
+                "stdout": True,
+                "stderr": True,
+            }
+            
+            if workdir:
+                exec_config["workdir"] = workdir
+            
+            if environment:
+                exec_config["environment"] = environment
+            
+            # Execute command
+            exec_instance = container.exec_run(**exec_config)
+            
+            exit_code = exec_instance.exit_code
+            output = exec_instance.output.decode('utf-8', errors='replace')
+            
+            # Docker exec_run combines stdout and stderr
+            # We'll return output in stdout and empty stderr
+            stdout = output
+            stderr = ""
+            
+            self.logger.debug(
+                "Command executed in container",
+                extra={
+                    "container_id": container_id,
+                    "command": command if isinstance(command, str) else " ".join(command),
+                    "exit_code": exit_code,
+                },
+            )
+            
+            return (exit_code, stdout, stderr)
+        
+        except DockerException as e:
+            self.logger.error(
+                f"Failed to execute command in container: {e}",
+                extra={"container_id": container_id},
+            )
+            raise RuntimeError(f"Command execution failed: {e}")
+    
+    def write_file_to_container(
+        self,
+        container_id: str,
+        file_path: str,
+        content: str,
+        mode: int = 0o644,
+    ) -> bool:
+        """Write a file to a container.
+        
+        Args:
+            container_id: Container ID
+            file_path: Path in container
+            content: File content
+            mode: File permissions (octal)
+            
+        Returns:
+            True if successful
+            
+        Raises:
+            RuntimeError: If operation fails
+        """
+        if container_id not in self.containers:
+            raise RuntimeError(f"Container {container_id} not found")
+        
+        if not self.docker_available:
+            self.logger.warning("Docker not available, simulating file write")
+            return True
+        
+        try:
+            # Use exec to write file (works with read-only root + tmpfs)
+            # Escape content for shell
+            import base64
+            content_b64 = base64.b64encode(content.encode('utf-8')).decode('ascii')
+            
+            # Write using base64 to avoid shell escaping issues
+            commands = [
+                f"echo '{content_b64}' | base64 -d > {file_path}",
+                f"chmod {oct(mode)[2:]} {file_path}"
+            ]
+            
+            for cmd in commands:
+                exit_code, stdout, stderr = self.exec_in_container(
+                    container_id,
+                    cmd
+                )
+                
+                if exit_code != 0:
+                    raise RuntimeError(
+                        f"Command failed with exit code {exit_code}: {stderr}"
+                    )
+            
+            self.logger.debug(
+                f"File written to container",
+                extra={
+                    "container_id": container_id,
+                    "file_path": file_path,
+                    "size": len(content),
+                },
+            )
+            
+            return True
+        
+        except Exception as e:
+            self.logger.error(
+                f"Failed to write file to container: {e}",
+                extra={"container_id": container_id, "file_path": file_path},
+            )
+            raise RuntimeError(f"File write failed: {e}")
 
     def list_containers(
         self,
