@@ -24,7 +24,8 @@ export type StreamingMessageType =
   | 'tool_error'      // Tool execution failed
   | 'retry_attempt'   // Error recovery retry
   | 'error_feedback'  // Error feedback to LLM
-  | 'stats';          // Performance statistics
+  | 'stats'           // Final performance statistics
+  | 'round_stats';    // Per-round performance statistics
 
 /**
  * Base streaming message chunk
@@ -66,7 +67,7 @@ export interface InfoChunk extends StreamingChunk {
 }
 
 /**
- * Statistics message
+ * Statistics message (final)
  */
 export interface StatsChunk extends StreamingChunk {
   type: 'stats';
@@ -75,6 +76,18 @@ export interface StatsChunk extends StreamingChunk {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  totalTime: number;
+}
+
+/**
+ * Per-round statistics message
+ */
+export interface RoundStatsChunk {
+  type: 'round_stats';
+  roundNumber: number;
+  timeToFirstToken: number;
+  tokensPerSecond: number;
+  outputTokens: number;
   totalTime: number;
 }
 

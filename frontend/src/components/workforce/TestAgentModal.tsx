@@ -365,9 +365,22 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
             // Response content
             streamingDataRef.current.currentRound.content += chunk.content;
             setCurrentRoundData({ ...streamingDataRef.current.currentRound });
-            
+
+          } else if (chunk.type === 'round_stats') {
+            // Per-round statistics - apply to current round
+            const roundStats = {
+              timeToFirstToken: chunk.timeToFirstToken,
+              tokensPerSecond: chunk.tokensPerSecond,
+              inputTokens: 0,  // Not tracked per-round yet
+              outputTokens: chunk.outputTokens,
+              totalTokens: chunk.outputTokens,
+              totalTime: chunk.totalTime,
+            };
+            streamingDataRef.current.currentRound.stats = roundStats;
+            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+
           } else if (chunk.type === 'stats') {
-            // Statistics
+            // Final statistics (legacy - apply to current round if no round_stats received)
             const stats = {
               timeToFirstToken: chunk.timeToFirstToken,
               tokensPerSecond: chunk.tokensPerSecond,
@@ -376,9 +389,12 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
               totalTokens: chunk.totalTokens,
               totalTime: chunk.totalTime,
             };
-            streamingDataRef.current.currentRound.stats = stats;
-            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
-            
+            // Only set if not already set by round_stats
+            if (!streamingDataRef.current.currentRound.stats) {
+              streamingDataRef.current.currentRound.stats = stats;
+              setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            }
+
           } else if (chunk.type === 'error') {
             setError(chunk.content);
             setIsStreaming(false);

@@ -1511,12 +1511,21 @@ async def test_agent(
                         else:
                             token = token_data
                             content_type = "content"
-                        
+
                         # Debug: Log what we're sending
-                        logger.debug(f"[STREAM] Sending to frontend: type='{content_type}', length={len(token)}")
-                        
-                        # Send token to client with type information
-                        yield f"data: {json.dumps({'type': content_type, 'content': token})}\n\n"
+                        logger.debug(f"[STREAM] Sending to frontend: type='{content_type}', length={len(str(token))}")
+
+                        # Handle round_stats specially - the token is already JSON
+                        if content_type == "round_stats":
+                            try:
+                                stats_data = json.loads(token)
+                                stats_data['type'] = 'round_stats'
+                                yield f"data: {json.dumps(stats_data)}\n\n"
+                            except json.JSONDecodeError:
+                                logger.warning(f"[STREAM] Invalid round_stats JSON: {token}")
+                        else:
+                            # Send token to client with type information
+                            yield f"data: {json.dumps({'type': content_type, 'content': token})}\n\n"
                         
                     except queue.Empty:
                         # Check if thread is still alive

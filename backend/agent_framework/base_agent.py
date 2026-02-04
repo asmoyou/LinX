@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -1523,33 +1524,46 @@ class BaseAgent:
         # Main conversation loop
         while state.round_number < state.max_rounds and not state.is_terminated:
             state.round_number += 1
-            
+
+            # Track per-round timing
+            round_start_time = time.time()
+            round_first_token_time = None
+            round_last_token_time = None
+            round_output_chars = 0
+
             logger.info(
                 f"[RECOVERY] Round {state.round_number}/{state.max_rounds}",
                 extra={"agent_id": str(self.config.agent_id)}
             )
-            
+
             # Send round indicator to frontend (only for rounds > 1)
             if state.round_number > 1 and stream_callback:
                 stream_callback((
                     f"\n\n💭 **第 {state.round_number} 轮对话**\n",
                     "info"
                 ))
-            
+
             # 1. Get LLM response
             round_output = ""
             round_thinking = ""
-            
+
             try:
                 for chunk in self.llm.stream(messages):
                     if hasattr(chunk, 'content') and chunk.content:
                         content_type = "content"
                         if hasattr(chunk, 'additional_kwargs') and chunk.additional_kwargs:
                             content_type = chunk.additional_kwargs.get('content_type', 'content')
-                        
+
+                        # Track round timing for content tokens only
+                        if content_type in ("content", "thinking"):
+                            if round_first_token_time is None:
+                                round_first_token_time = time.time()
+                            round_last_token_time = time.time()
+                            round_output_chars += len(chunk.content)
+
                         if stream_callback:
                             stream_callback((chunk.content, content_type))
-                        
+
                         if content_type == "thinking":
                             round_thinking += chunk.content
                         else:
@@ -1570,6 +1584,48 @@ class BaseAgent:
                 f"[RECOVERY] Round {state.round_number} output: thinking={len(round_thinking)} chars, content={len(round_output)} chars",
                 extra={"agent_id": str(self.config.agent_id)}
             )
+
+            # Helper function to send round stats
+            def send_round_stats():
+                """Calculate and send stats for this round."""
+                if stream_callback and round_output_chars > 0:
+                    round_end_time = time.time()
+                    # Estimate tokens (Chinese avg ~1.5 tokens/char, English ~0.25, mixed ~0.5)
+                    output_tokens = int(round_output_chars * 0.5)
+
+                    # Calculate time to first token
+                    if round_first_token_time is not None:
+                        time_to_first = round(round_first_token_time - round_start_time, 2)
+                    else:
+                        time_to_first = 0
+
+                    # Calculate tokens per second (generation time only)
+                    if round_first_token_time and round_last_token_time and output_tokens > 0:
+                        generation_time = round_last_token_time - round_first_token_time
+                        if generation_time > 0:
+                            tokens_per_second = round(output_tokens / generation_time, 1)
+                        else:
+                            tokens_per_second = 0
+                    else:
+                        tokens_per_second = 0
+
+                    total_time = round(round_end_time - round_start_time, 2)
+
+                    # Send round stats
+                    stream_callback((json.dumps({
+                        "roundNumber": state.round_number,
+                        "timeToFirstToken": time_to_first,
+                        "tokensPerSecond": tokens_per_second,
+                        "outputTokens": output_tokens,
+                        "totalTime": total_time
+                    }), "round_stats"))
+
+                    logger.info(
+                        f"[RECOVERY] Round {state.round_number} stats: "
+                        f"ttft={time_to_first}s, speed={tokens_per_second}tok/s, "
+                        f"tokens={output_tokens}, time={total_time}s",
+                        extra={"agent_id": str(self.config.agent_id)}
+                    )
 
             # 2. FIRST: Check for executable code blocks (```python, ```bash)
             # This takes priority over JSON tool calls for cleaner execution
@@ -1594,12 +1650,14 @@ class BaseAgent:
                     results_feedback = "\n".join([r.to_feedback() for r in code_results])
                     messages.append(AIMessage(content=round_output))
                     messages.append(HumanMessage(content=f"代码执行结果:\n{results_feedback}"))
+                    send_round_stats()
                     continue
                 else:
                     # All code blocks failed, let LLM try to fix
                     error_feedback = "\n".join([r.to_feedback() for r in code_results])
                     messages.append(AIMessage(content=round_output))
                     messages.append(HumanMessage(content=f"代码执行失败，请修正:\n{error_feedback}"))
+                    send_round_stats()
                     continue
 
             # 3. Parse JSON tool calls (fallback if no code blocks)
@@ -1628,24 +1686,26 @@ class BaseAgent:
                             f"\n\n{feedback.to_prompt()}",
                             "error_feedback"
                         ))
-                    
+
                     # Add to conversation and retry
                     messages.append(AIMessage(content=round_output))
                     messages.append(HumanMessage(content=feedback.to_prompt()))
+                    send_round_stats()
                     continue
                 else:
                     # Max retries exceeded
                     logger.error("[RECOVERY] Max parse retries exceeded, terminating")
                     state.is_terminated = True
                     state.termination_reason = "max_parse_retries_exceeded"
-                    
+
                     if stream_callback:
                         stream_callback((
                             "\n\n⛔ 工具调用格式错误次数过多，无法继续。请直接提供答案。\n",
                             "error"
                         ))
+                    send_round_stats()
                     break
-            
+
             # 5. No tool calls = final answer
             if not tool_calls:
                 logger.info(
@@ -1654,6 +1714,7 @@ class BaseAgent:
                 )
                 state.is_terminated = True
                 state.termination_reason = "final_answer_provided"
+                send_round_stats()
                 break
             
             # 6. Execute tool calls with recovery
@@ -1687,31 +1748,36 @@ class BaseAgent:
                             f"\n\n{feedback.to_prompt()}",
                             "error_feedback"
                         ))
-                    
+
                     # Add to conversation and retry
                     messages.append(AIMessage(content=round_output))
                     messages.append(HumanMessage(content=feedback.to_prompt()))
+                    send_round_stats()
                     continue
                 else:
                     # Max retries exceeded
                     logger.error("[RECOVERY] Max execution retries exceeded, terminating")
                     state.is_terminated = True
                     state.termination_reason = "max_execution_retries_exceeded"
-                    
+
                     if stream_callback:
                         stream_callback((
                             "\n\n⛔ 工具执行失败次数过多，无法继续。请根据已有信息提供答案。\n",
                             "error"
                         ))
+                    send_round_stats()
                     break
-            
+
             # 7. Add results to conversation and continue
             if stream_callback:
                 stream_callback((
                     f"\n\n---\n\n💭 **根据工具结果生成最终回答...**\n\n",
                     "info"
                 ))
-            
+
+            # Send round stats before continuing to next round
+            send_round_stats()
+
             messages.append(AIMessage(content=round_output))
             messages.append(HumanMessage(content=self._format_tool_results(tool_results)))
         
