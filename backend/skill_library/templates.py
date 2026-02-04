@@ -42,7 +42,7 @@ tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 @tool
 def web_search(
     query: str,
-    max_results: int = 5,
+    max_results: int = 10,
     search_depth: str = "basic",
     topic: str = "general",
     include_domains: Optional[List[str]] = None,
@@ -53,9 +53,13 @@ def web_search(
     This tool returns original search content. The agent should analyze
     and summarize the results based on the user's needs.
 
+    IMPORTANT: If search results are insufficient or don't fully answer the
+    question, perform additional searches with refined queries until you have
+    enough information to provide a comprehensive answer.
+
     Args:
         query: The search query string
-        max_results: Number of results to return (default 5, max 10 for efficiency)
+        max_results: Number of results to return (default 10, max 20)
         search_depth: "basic" (default, faster) or "advanced" (slower but more thorough).
                      Use "advanced" only when basic search doesn't find relevant results.
         topic: "general" (default) or "news" (for recent news articles)
@@ -73,13 +77,14 @@ def web_search(
         - Only use search_depth="advanced" if basic search fails to find relevant info
         - Only use domain filters when explicitly requested by user
         - After receiving results, analyze ALL content and synthesize a complete answer
+        - If results are insufficient, search again with different/refined queries
 
     Example:
         # Simple search (recommended for most cases)
         web_search("Python async programming best practices")
 
         # Get more results for comprehensive research
-        web_search("machine learning frameworks comparison", max_results=8)
+        web_search("machine learning frameworks comparison", max_results=15)
 
         # News search
         web_search("AI regulation updates 2024", topic="news")
@@ -88,8 +93,8 @@ def web_search(
         web_search("React hooks", include_domains=["react.dev", "github.com"])
     """
     try:
-        # Cap max_results for efficiency
-        max_results = min(max_results, 10)
+        # Cap max_results
+        max_results = min(max_results, 20)
 
         response = tavily_client.search(
             query=query,
@@ -102,7 +107,7 @@ def web_search(
 
         results = response.get("results", [])
         if not results:
-            return f"No results found for: {query}"
+            return f"No results found for: {query}\\n\\n[Tip: Try rephrasing the query or using different keywords.]"
 
         # Format raw results for agent analysis
         output_parts = [f"Search results for: {query}\\n"]
@@ -115,7 +120,7 @@ def web_search(
             output_parts.append(f"Content: {r['content']}")
             output_parts.append("-" * 40 + "\\n")
 
-        output_parts.append("\\n[Note: Please analyze all results above and provide a comprehensive summary based on the user\\'s question.]")
+        output_parts.append("\\n[Instructions: Analyze all results above and synthesize a comprehensive answer. If the information is insufficient, perform additional searches with refined queries.]")
 
         return "\\n".join(output_parts)
 
