@@ -395,7 +395,9 @@ class CodeBlockExecutor:
         timeout: int,
         workdir: Path
     ) -> ExecutionResult:
-        """Execute Python script file."""
+        """Execute Python script file with proper process group management."""
+        import signal
+
         exec_env = os.environ.copy()
         if env:
             exec_env.update(env)
@@ -409,12 +411,14 @@ class CodeBlockExecutor:
             cmd.extend(args)
 
         try:
+            # Create process in new process group for proper cleanup
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(workdir),
-                env=exec_env
+                env=exec_env,
+                start_new_session=True  # Creates new process group
             )
 
             try:
@@ -438,12 +442,29 @@ class CodeBlockExecutor:
                 )
 
             except asyncio.TimeoutError:
-                process.kill()
+                # Kill entire process group to ensure all child processes are terminated
+                try:
+                    pgid = os.getpgid(process.pid)
+                    os.killpg(pgid, signal.SIGTERM)
+                    await asyncio.sleep(0.5)
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                except (ProcessLookupError, PermissionError):
+                    process.kill()
+
                 await process.wait()
+
+                self.logger.warning(
+                    f"[CODE_BLOCK] Python execution timed out after {timeout}s, process group killed",
+                    extra={"script_path": str(script_path), "timeout": timeout}
+                )
+
                 return ExecutionResult(
                     success=False,
                     output="",
-                    error=f"Execution timed out after {timeout} seconds",
+                    error=f"⏱️ Execution timed out after {timeout} seconds. Process terminated.",
                     exit_code=-1,
                     language="python"
                 )
@@ -465,7 +486,9 @@ class CodeBlockExecutor:
         timeout: int,
         workdir: Path
     ) -> ExecutionResult:
-        """Execute Bash script file."""
+        """Execute Bash script file with proper process group management."""
+        import signal
+
         exec_env = os.environ.copy()
         if env:
             exec_env.update(env)
@@ -475,12 +498,14 @@ class CodeBlockExecutor:
             cmd.extend(args)
 
         try:
+            # Create process in new process group for proper cleanup
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(workdir),
-                env=exec_env
+                env=exec_env,
+                start_new_session=True  # Creates new process group
             )
 
             try:
@@ -504,12 +529,32 @@ class CodeBlockExecutor:
                 )
 
             except asyncio.TimeoutError:
-                process.kill()
+                # Kill entire process group to ensure all child processes are terminated
+                try:
+                    pgid = os.getpgid(process.pid)
+                    os.killpg(pgid, signal.SIGTERM)
+                    # Give processes a moment to terminate gracefully
+                    await asyncio.sleep(0.5)
+                    # Force kill if still running
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass  # Already terminated
+                except (ProcessLookupError, PermissionError):
+                    # Fallback to regular kill
+                    process.kill()
+
                 await process.wait()
+
+                self.logger.warning(
+                    f"[CODE_BLOCK] Bash execution timed out after {timeout}s, process group killed",
+                    extra={"script_path": str(script_path), "timeout": timeout}
+                )
+
                 return ExecutionResult(
                     success=False,
                     output="",
-                    error=f"Execution timed out after {timeout} seconds",
+                    error=f"⏱️ Execution timed out after {timeout} seconds. Process terminated.",
                     exit_code=-1,
                     language="bash"
                 )
