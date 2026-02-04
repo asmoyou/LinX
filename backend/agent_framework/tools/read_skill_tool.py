@@ -87,7 +87,12 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
                 storage_path=skill_ref.storage_path,
                 manifest=skill_ref.manifest,
             )
-            
+
+            # Replace {baseDir} placeholders with relative path hint
+            # Since skill files are copied to workdir, {baseDir} should be "."
+            skill_md_cleaned = skill_ref.skill_md_content.replace('{baseDir}/', '')
+            skill_md_cleaned = skill_md_cleaned.replace('{baseDir}', '.')
+
             # Format the skill documentation
             output = f"""# Skill: {skill_ref.name}
 
@@ -96,7 +101,7 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
 
 ## Documentation (SKILL.md)
 
-{skill_ref.skill_md_content}
+{skill_md_cleaned}
 
 """
             
@@ -116,34 +121,39 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
                 
                 # Provide execution instructions
                 output += "\n## How to Execute This Code\n\n"
-                output += "**IMPORTANT: To execute code, simply output it as a markdown code block!**\n\n"
-                output += "The system will automatically detect and execute code blocks.\n\n"
+                output += "**CRITICAL: All skill files are pre-loaded in the working directory!**\n\n"
+                output += "To execute code, simply output it as a markdown code block:\n\n"
 
                 python_code = skill_package.get_executable_code('python')
                 if python_code:
-                    output += """**For Python code**, just output it like this:
+                    output += """**For Python scripts in the skill package**, use RELATIVE paths:
+```bash
+python3 scripts/weather_helper.py current --location "Fuzhou"
+```
+
+**For inline Python code**:
 ```python
 import requests
 # ... your code here ...
 print(result)
 ```
 
-The code block will be automatically executed and the result will be returned.
-
 """
 
                 bash_code = skill_package.get_executable_code('bash')
                 if bash_code:
-                    output += """**For Bash code**, just output it like this:
+                    output += """**For Bash code**:
 ```bash
 curl "https://api.example.com/..."
 ```
 
-The code block will be automatically executed and the result will be returned.
-
 """
-                output += "**DO NOT ask about API keys or credentials** - they are already configured in the environment.\n"
-                output += "**Just execute the code** and let the system handle the rest.\n\n"
+                output += "**IMPORTANT RULES:**\n"
+                output += "- Use RELATIVE paths like `scripts/xxx.py`, NOT absolute paths\n"
+                output += "- DO NOT use placeholders like `{baseDir}` or `/path/to/...`\n"
+                output += "- All skill files are ALREADY in the current working directory\n"
+                output += "- API keys and credentials are pre-configured in the environment\n"
+                output += "- Just output the code block - it will be executed automatically\n\n"
             
             # Add package files if available
             if skill_ref.package_files:
@@ -156,11 +166,12 @@ The code block will be automatically executed and the result will be returned.
             # Add execution note
             if skill_ref.has_scripts or skill_package.code_blocks:
                 output += "\n## Execution Rules\n\n"
-                output += "- All code blocks above are REAL, EXECUTABLE code extracted from the skill\n"
-                output += "- You MUST directly output the code as a ```python or ```bash code block\n"
-                output += "- The system will automatically execute it and return the result\n"
-                output += "- DO NOT worry about API keys or credentials - they are pre-configured\n"
-                output += "- DO NOT explain or ask permission - just execute the code NOW\n"
+                output += "1. All skill files are PRE-LOADED in the working directory\n"
+                output += "2. Use RELATIVE paths: `python3 scripts/xxx.py` (NOT `/path/to/...`)\n"
+                output += "3. Output code as ```bash or ```python code blocks\n"
+                output += "4. The code will be executed automatically\n"
+                output += "5. DO NOT use {baseDir} placeholders - just use relative paths\n"
+                output += "6. API keys are pre-configured - just run the code\n"
             else:
                 output += "\n## Execution Note\n\nThis is a workflow/documentation skill. Follow the instructions to accomplish the task.\n"
             
