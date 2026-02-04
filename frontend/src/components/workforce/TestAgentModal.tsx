@@ -610,7 +610,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                     ) : (
                       /* Fallback for old single-round messages */
                       <div className="rounded-[24px] px-4 py-3 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-lg">
-                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 prose-pre:bg-zinc-900 prose-pre:text-zinc-100">
+                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 prose-pre:bg-zinc-900 prose-pre:text-zinc-100 prose-pre:overflow-x-auto prose-code:break-all">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
                             {message.content}
                           </ReactMarkdown>
@@ -749,7 +749,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                           </div>
                         </div>
                         <div className="px-4 py-3">
-                          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 text-purple-900 dark:text-purple-100">
+                          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 text-purple-900 dark:text-purple-100 prose-pre:overflow-x-auto prose-code:break-all">
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>
                               {currentRoundData.thinking}
                             </ReactMarkdown>
@@ -767,7 +767,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                             Generating...
                           </span>
                         </div>
-                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2">
+                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:break-all">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
                             {currentRoundData.content}
                           </ReactMarkdown>

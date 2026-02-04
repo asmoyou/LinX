@@ -154,7 +154,7 @@ export const ConversationRoundComponent: React.FC<ConversationRoundProps> = ({
           </button>
           {!thinkingCollapsed && (
             <div className="px-4 py-3">
-              <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 text-purple-900 dark:text-purple-100">
+              <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 text-purple-900 dark:text-purple-100 prose-pre:overflow-x-auto prose-code:break-all">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {round.thinking}
                 </ReactMarkdown>
@@ -167,7 +167,7 @@ export const ConversationRoundComponent: React.FC<ConversationRoundProps> = ({
       {/* Response Content */}
       {round.content && (
         <div className="rounded-[24px] px-4 py-3 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-lg">
-          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 prose-pre:bg-zinc-900 prose-pre:text-zinc-100">
+          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-pre:my-2 prose-pre:bg-zinc-900 prose-pre:text-zinc-100 prose-pre:overflow-x-auto prose-code:break-all">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
               {round.content}
             </ReactMarkdown>
