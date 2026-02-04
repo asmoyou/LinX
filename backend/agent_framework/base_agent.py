@@ -1168,6 +1168,8 @@ class BaseAgent:
             List of ExecutionResult objects
         """
         from agent_framework.code_block_executor import ExecutionResult
+        from pathlib import Path
+        from uuid import uuid4
 
         results = []
 
@@ -1183,6 +1185,34 @@ class BaseAgent:
             )
         except Exception as e:
             logger.warning(f"[CODE_BLOCK] Failed to load skill env vars: {e}")
+
+        # Create shared workdir for this execution session
+        session_id = uuid4().hex[:8]
+        workdir = self.code_executor.create_workdir(session_id)
+
+        # Copy skill package files to workdir (so scripts/weather_helper.py etc. are available)
+        if self.skill_manager:
+            try:
+                agent_skills = self.skill_manager.get_agent_skill_docs()
+                for skill_ref in agent_skills:
+                    if skill_ref.package_files:
+                        for filename, content in skill_ref.package_files.items():
+                            file_path = workdir / filename
+                            file_path.parent.mkdir(parents=True, exist_ok=True)
+                            file_path.write_text(content, encoding='utf-8')
+                            # Make scripts executable
+                            if filename.endswith(('.sh', '.py')):
+                                file_path.chmod(0o755)
+                        logger.info(
+                            f"[CODE_BLOCK] Copied {len(skill_ref.package_files)} skill files to workdir",
+                            extra={
+                                "agent_id": str(self.config.agent_id),
+                                "skill_name": skill_ref.name,
+                                "workdir": str(workdir)
+                            }
+                        )
+            except Exception as e:
+                logger.warning(f"[CODE_BLOCK] Failed to copy skill files: {e}")
 
         for i, block in enumerate(code_blocks):
             # Send execution indicator to frontend
@@ -1202,11 +1232,12 @@ class BaseAgent:
                 }
             )
 
-            # Execute the code block with skill environment variables
+            # Execute the code block with skill environment variables and shared workdir
             result = await self.code_executor.execute(
                 block,
                 timeout=self.config.tool_timeout_seconds,
-                env=skill_env  # Inject user's skill env vars
+                env=skill_env,
+                workdir=workdir  # Use shared workdir with skill files
             )
             results.append(result)
 
