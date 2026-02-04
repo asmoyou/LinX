@@ -91,3 +91,4 @@ secrets/
 
 # Examples and temporary reference files
 examples-of-reference/
+.claude
