@@ -1184,7 +1184,7 @@ class BaseAgent:
                 extra={
                     "agent_id": str(self.config.agent_id),
                     "language": block.language,
-                    "filename": block.filename,
+                    "script_name": block.filename,
                     "code_length": len(block.code)
                 }
             )
