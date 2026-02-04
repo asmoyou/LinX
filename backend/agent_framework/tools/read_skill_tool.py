@@ -4,9 +4,11 @@ This tool enables agents to:
 1. Read the complete SKILL.md documentation for a specific skill
 2. Access example code and configuration files from the skill package
 3. Load skills only when needed (lazy loading)
+4. Extract executable code blocks for direct use
 
 References:
 - Design: docs/backend/agent-skill-integration-design.md
+- Design: .kiro/specs/code-execution-improvement/design.md
 - Moltbot reference: examples-of-reference/moltbot/src/agents/system-prompt.ts
 """
 
@@ -16,6 +18,8 @@ from uuid import UUID
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
+
+from skill_library.skill_loader import SkillLoader, get_skill_loader
 
 logger = logging.getLogger(__name__)
 
@@ -30,25 +34,27 @@ class ReadSkillTool(BaseTool):
     """Tool for reading complete skill documentation.
     
     This tool allows the agent to read the full SKILL.md content and
-    example code for a specific skill when needed.
+    extract executable code for a specific skill when needed.
     """
     
     name: str = "read_skill"
-    description: str = """Read the complete documentation (SKILL.md) for a specific skill.
+    description: str = """Read the complete documentation (SKILL.md) for a specific skill and extract executable code.
 
 Use this tool when:
 - You've decided to use a specific skill
 - You need to understand how to use the skill
-- You need to see example code or configuration
+- You need to see example code or get executable code
+- You want to import and run skill code directly
 
 Input: skill_name (e.g., "my_cal", "weather-forcast")
-Output: Complete SKILL.md content with usage instructions and examples"""
+Output: Complete SKILL.md content with extracted code blocks ready for execution"""
     
     args_schema: type[BaseModel] = ReadSkillInput
     
     agent_id: UUID
     user_id: UUID
     skill_manager: Any  # SkillManager instance with loaded skills
+    skill_loader: SkillLoader  # SkillLoader for extracting code
     
     # Use model_config instead of Config class
     model_config = {"arbitrary_types_allowed": True}
@@ -73,6 +79,15 @@ Output: Complete SKILL.md content with usage instructions and examples"""
             if not skill_ref:
                 return f"❌ Error: Skill '{skill_name}' not found or not configured for this agent.\n\nAvailable skills: {', '.join([s.name for s in agent_skills])}"
             
+            # Load skill package with code extraction
+            skill_package = self.skill_loader.load_skill(
+                skill_id=skill_ref.skill_id,
+                skill_name=skill_ref.name,
+                skill_md_content=skill_ref.skill_md_content,
+                storage_path=skill_ref.storage_path,
+                manifest=skill_ref.manifest,
+            )
+            
             # Format the skill documentation
             output = f"""# Skill: {skill_ref.name}
 
@@ -85,7 +100,64 @@ Output: Complete SKILL.md content with usage instructions and examples"""
 
 """
             
-            # Add example code if available
+            # Add extracted executable code blocks
+            if skill_package.code_blocks:
+                output += "\n## Extracted Executable Code\n\n"
+                output += "The following code blocks have been extracted and are ready for execution:\n\n"
+                
+                for idx, code_block in enumerate(skill_package.code_blocks, 1):
+                    if code_block.is_executable:
+                        output += f"### Code Block {idx}: {code_block.language.upper()}"
+                        if code_block.filename:
+                            output += f" ({code_block.filename})"
+                        if code_block.description:
+                            output += f"\n**Description:** {code_block.description}"
+                        output += f"\n\n```{code_block.language}\n{code_block.code}\n```\n\n"
+                
+                # Provide execution instructions
+                output += "\n## How to Execute This Code\n\n"
+                
+                python_code = skill_package.get_executable_code('python')
+                if python_code:
+                    output += """**For Python code:**
+1. You can execute it directly using the `bash` tool:
+   ```bash
+   python -c "$(cat <<'EOF'
+   [paste the code here]
+   EOF
+   )"
+   ```
+
+2. Or save it to a file and run:
+   ```bash
+   cat > /tmp/skill_code.py <<'EOF'
+   [paste the code here]
+   EOF
+   python /tmp/skill_code.py
+   ```
+
+"""
+                
+                bash_code = skill_package.get_executable_code('bash')
+                if bash_code:
+                    output += """**For Bash code:**
+1. Execute directly:
+   ```bash
+   [paste the code here]
+   ```
+
+2. Or save to a script:
+   ```bash
+   cat > /tmp/skill_script.sh <<'EOF'
+   [paste the code here]
+   EOF
+   chmod +x /tmp/skill_script.sh
+   /tmp/skill_script.sh
+   ```
+
+"""
+            
+            # Add package files if available
             if skill_ref.package_files:
                 output += "\n## Available Files in Skill Package\n\n"
                 for filename, content in skill_ref.package_files.items():
@@ -94,8 +166,12 @@ Output: Complete SKILL.md content with usage instructions and examples"""
                         output += f"### File: {filename}\n\n```python\n{content}\n```\n\n"
             
             # Add execution note
-            if skill_ref.has_scripts:
-                output += "\n## Execution Note\n\nThis skill includes executable Python scripts. You can use the `code_execution` tool to run them.\n"
+            if skill_ref.has_scripts or skill_package.code_blocks:
+                output += "\n## ⚠️ Important Execution Notes\n\n"
+                output += "- All code blocks above are REAL, EXECUTABLE code extracted from the skill\n"
+                output += "- You should DIRECTLY use this code, not write your own version\n"
+                output += "- If you encounter import errors, the code is self-contained and should work as-is\n"
+                output += "- Use the `bash` tool to execute the code in the sandbox environment\n"
             else:
                 output += "\n## Execution Note\n\nThis is a workflow/documentation skill. Follow the instructions to accomplish the task.\n"
             
@@ -104,7 +180,8 @@ Output: Complete SKILL.md content with usage instructions and examples"""
                 extra={
                     "agent_id": str(self.agent_id),
                     "skill_name": skill_name,
-                    "doc_length": len(output)
+                    "doc_length": len(output),
+                    "code_blocks": len(skill_package.code_blocks),
                 }
             )
             
@@ -133,5 +210,6 @@ def create_read_skill_tool(agent_id: UUID, user_id: UUID, skill_manager: Any) ->
     return ReadSkillTool(
         agent_id=agent_id,
         user_id=user_id,
-        skill_manager=skill_manager
+        skill_manager=skill_manager,
+        skill_loader=get_skill_loader(),
     )

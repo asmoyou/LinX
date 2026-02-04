@@ -44,25 +44,28 @@ class SkillInfo:
 @dataclass
 class AgentSkillReference:
     """Reference to an Agent Skill for prompt inclusion.
-    
+
     Agent Skills are NOT wrapped as tools. Instead, only their name and description
     are included in the system prompt. The agent can use the read_skill tool to
     read the full SKILL.md content when needed.
-    
+
     This follows the moltbot pattern:
     1. List skills with name + description in prompt
     2. Agent decides which skill to use
     3. Agent calls read_skill to get full documentation
     4. Agent follows the documentation to execute the skill
     """
-    
+
+    skill_id: UUID  # Skill UUID for code loading
     name: str
     description: str
     skill_md_content: str  # Full SKILL.md content (loaded but not in prompt)
     has_scripts: bool  # Whether package contains Python scripts
+    storage_path: Optional[str] = None  # MinIO storage path for package skills
+    manifest: Optional[dict] = None  # Parsed manifest for package skills
     package_path: Optional[Path] = None  # Path to extracted package (if needed)
     package_files: Dict[str, str] = None  # filename -> content mapping for example code
-    
+
     def __post_init__(self):
         if self.package_files is None:
             self.package_files = {}
@@ -404,10 +407,13 @@ class SkillManager:
             
             # Create reference
             skill_ref = AgentSkillReference(
+                skill_id=skill_info.skill_id,
                 name=skill_info.name,
                 description=skill_info.description,
                 skill_md_content=skill_info.skill_md_content,
                 has_scripts=has_scripts,
+                storage_path=skill_info.storage_path,
+                manifest=skill_info.manifest,
                 package_path=None,  # Not needed - we include files directly
                 package_files=package_files  # Include all package files
             )
