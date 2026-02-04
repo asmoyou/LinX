@@ -59,7 +59,7 @@ def web_search(
 
     Args:
         query: The search query string
-        max_results: Number of results to return (default 10, max 20)
+        max_results: Number of results to return (default 10, min 5, max 20)
         search_depth: "advanced" (default, thorough with detailed content) or
                      "basic" (faster, less detail). Use "basic" only for quick
                      simple queries where brief answers are sufficient.
@@ -87,14 +87,14 @@ def web_search(
         web_search("machine learning frameworks comparison", max_results=15)
 
         # Quick simple query (use basic for speed)
-        web_search("Python current version", search_depth="basic", max_results=3)
+        web_search("Python current version", search_depth="basic")
 
         # News search
         web_search("AI regulation updates 2024", topic="news")
     """
     try:
-        # Cap max_results
-        max_results = min(max_results, 20)
+        # Enforce min 5, max 20 (API cost is per-call, not per-result)
+        max_results = max(5, min(max_results, 20))
 
         response = tavily_client.search(
             query=query,
