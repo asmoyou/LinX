@@ -12,7 +12,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 from uuid import UUID, uuid4
 
 from message_bus import (
@@ -76,6 +76,7 @@ class InterAgentCommunicator:
         # Message queue for offline handling
         self._message_queue: List[Message] = []
         self._is_online = True
+        # TODO: Enforce a max queue size and a flush strategy for offline messages.
 
         logger.info(
             "InterAgentCommunicator initialized",
@@ -498,6 +499,28 @@ class InterAgentCommunicator:
             extra={"agent_id": self.agent_id},
         )
 
+    def close(self, remove_from_registry: bool = True) -> None:
+        """Close communicator and release resources."""
+        self.stop_listening()
+
+        # Cancel pending requests to avoid leaked futures.
+        for future in self._pending_requests.values():
+            if not future.done():
+                future.cancel()
+        self._pending_requests.clear()
+
+        self._message_handlers.clear()
+        self._request_handlers.clear()
+        self._message_queue.clear()
+
+        if remove_from_registry:
+            remove_communicator(self.agent_id, self.task_id)
+
+        logger.info(
+            "InterAgentCommunicator closed",
+            extra={"agent_id": self.agent_id, "task_id": self.task_id},
+        )
+
     def _handle_incoming_message(self, message: Message) -> None:
         """Handle an incoming message.
 
@@ -657,11 +680,15 @@ class InterAgentCommunicator:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
-        self.stop_listening()
+        self.close()
 
 
 # Global communicator registry
 _communicators: Dict[str, InterAgentCommunicator] = {}
+
+
+def _communicator_key(agent_id: Union[UUID, str], task_id: Union[UUID, str]) -> str:
+    return f"{agent_id}:{task_id}"
 
 
 def get_communicator(
@@ -681,7 +708,7 @@ def get_communicator(
     Returns:
         InterAgentCommunicator instance
     """
-    key = f"{agent_id}:{task_id}"
+    key = _communicator_key(agent_id, task_id)
 
     if key not in _communicators:
         _communicators[key] = InterAgentCommunicator(
@@ -692,3 +719,12 @@ def get_communicator(
         )
 
     return _communicators[key]
+
+
+def remove_communicator(
+    agent_id: Union[UUID, str],
+    task_id: Union[UUID, str],
+) -> Optional[InterAgentCommunicator]:
+    """Remove communicator from registry without altering its state."""
+    key = _communicator_key(agent_id, task_id)
+    return _communicators.pop(key, None)

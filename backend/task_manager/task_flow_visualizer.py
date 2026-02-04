@@ -164,6 +164,7 @@ class TaskFlowVisualizer:
 
     def __init__(self):
         """Initialize task flow visualizer."""
+        # TODO: Add TTL/LRU eviction and size limits for cached graphs to avoid unbounded growth.
         self._graphs: Dict[UUID, TaskFlowGraph] = {}
         self._subscribers: Dict[UUID, Set] = {}
 

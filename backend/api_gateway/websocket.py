@@ -6,7 +6,7 @@ References:
 - Task 4.5: Task Flow Visualization
 """
 
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -21,6 +21,24 @@ active_connections: Dict[str, Set[WebSocket]] = {}
 
 # Store task flow subscriptions: task_id -> set of websockets
 task_flow_subscriptions: Dict[UUID, Set[WebSocket]] = {}
+
+
+def _remove_active_connection(user_id: str, websocket: WebSocket) -> None:
+    connections = active_connections.get(user_id)
+    if not connections:
+        return
+    connections.discard(websocket)
+    if not connections:
+        active_connections.pop(user_id, None)
+
+
+def _remove_task_flow_subscription(task_id: UUID, websocket: WebSocket) -> None:
+    subscriptions = task_flow_subscriptions.get(task_id)
+    if not subscriptions:
+        return
+    subscriptions.discard(websocket)
+    if not subscriptions:
+        task_flow_subscriptions.pop(task_id, None)
 
 
 @router.websocket("/tasks")
@@ -51,12 +69,14 @@ async def websocket_task_updates(websocket: WebSocket):
             await websocket.send_json({"type": "echo", "data": data})
 
     except WebSocketDisconnect:
-        # Remove connection
-        active_connections[user_id].discard(websocket)
-        if not active_connections[user_id]:
-            del active_connections[user_id]
-
         logger.info("WebSocket disconnected", extra={"user_id": user_id, "endpoint": "tasks"})
+    except Exception as e:
+        logger.error(
+            "WebSocket error",
+            extra={"user_id": user_id, "endpoint": "tasks", "error": str(e)},
+        )
+    finally:
+        _remove_active_connection(user_id, websocket)
 
 
 async def broadcast_task_update(user_id: str, task_update: dict):
@@ -66,14 +86,22 @@ async def broadcast_task_update(user_id: str, task_update: dict):
         user_id: User ID to broadcast to
         task_update: Task update data
     """
-    if user_id in active_connections:
-        for connection in active_connections[user_id]:
-            try:
-                await connection.send_json(task_update)
-            except Exception as e:
-                logger.error(
-                    f"Failed to send WebSocket message: {str(e)}", extra={"user_id": user_id}
-                )
+    connections = active_connections.get(user_id)
+    if not connections:
+        return
+
+    stale_connections = []
+    for connection in list(connections):
+        try:
+            await connection.send_json(task_update)
+        except Exception as e:
+            logger.error(
+                f"Failed to send WebSocket message: {str(e)}", extra={"user_id": user_id}
+            )
+            stale_connections.append(connection)
+
+    for connection in stale_connections:
+        _remove_active_connection(user_id, connection)
 
 
 @router.websocket("/tasks/{task_id}/flow")
@@ -92,6 +120,7 @@ async def websocket_task_flow(websocket: WebSocket, task_id: str):
     # TODO: Extract user_id from token
     user_id = "anonymous"
 
+    task_uuid: Optional[UUID] = None
     try:
         task_uuid = UUID(task_id)
     except ValueError:
@@ -152,15 +181,19 @@ async def websocket_task_flow(websocket: WebSocket, task_id: str):
                     )
 
     except WebSocketDisconnect:
-        # Remove connection
-        if task_uuid in task_flow_subscriptions:
-            task_flow_subscriptions[task_uuid].discard(websocket)
-            if not task_flow_subscriptions[task_uuid]:
-                del task_flow_subscriptions[task_uuid]
-
         logger.info(
             "WebSocket disconnected from task flow", extra={"user_id": user_id, "task_id": task_id}
         )
+    except Exception as e:
+        logger.error(
+            "WebSocket task flow error",
+            extra={"user_id": user_id, "task_id": task_id, "error": str(e)},
+        )
+    finally:
+        if task_uuid is not None:
+            _remove_task_flow_subscription(task_uuid, websocket)
+            # TODO: When task flow caching is fully implemented, clear cached graphs when no
+            # active subscribers remain for a task.
 
 
 async def broadcast_task_flow_update(task_id: UUID, update_type: str, data: dict):

@@ -121,8 +121,32 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # Shutdown
     logger.info("Shutting down API Gateway")
 
-    # TODO: Close database connections
-    # TODO: Close Redis connections
+    # Close database connections
+    try:
+        from database.connection import close_connection_pool
+
+        close_connection_pool()
+        logger.info("Database connection pool closed")
+    except Exception as e:
+        logger.error(f"Failed to close database connection pool: {e}")
+
+    # Close Redis connections
+    try:
+        from message_bus.redis_manager import close_redis_manager
+
+        close_redis_manager()
+        logger.info("Redis connection manager closed")
+    except Exception as e:
+        logger.error(f"Failed to close Redis connection manager: {e}")
+
+    # Close Milvus connections
+    try:
+        from memory_system.milvus_connection import close_milvus_connection
+
+        close_milvus_connection()
+        logger.info("Milvus connection closed")
+    except Exception as e:
+        logger.error(f"Failed to close Milvus connection: {e}")
 
     logger.info("API Gateway shutdown complete")
 
