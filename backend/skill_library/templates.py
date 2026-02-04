@@ -23,12 +23,12 @@ def get_skill_templates() -> List[Dict]:
     return [
         # === LangChain Tools (Simple Functions) ===
         # ============================================
-        # 1. Web Search - Tavily (Advanced)
+        # 1. Web Search - Tavily
         # ============================================
         {
             "id": "langchain_web_search",
             "name": "Web Search - Tavily (LangChain Tool)",
-            "description": "Advanced web search using Tavily API with full control over search parameters",
+            "description": "Web search using Tavily API - returns raw search results for agent to analyze",
             "category": "langchain_tool",
             "difficulty": "beginner",
             "skill_type": SkillType.LANGCHAIN_TOOL.value,
@@ -42,86 +42,82 @@ tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 @tool
 def web_search(
     query: str,
+    max_results: int = 5,
     search_depth: str = "basic",
-    max_results: int = 10,
+    topic: str = "general",
     include_domains: Optional[List[str]] = None,
-    exclude_domains: Optional[List[str]] = None,
-    include_answer: bool = False,
-    include_raw_content: bool = False,
-    include_images: bool = False,
-    topic: str = "general"
+    exclude_domains: Optional[List[str]] = None
 ) -> str:
-    """Search the internet for information using Tavily API.
+    """Search the web and return raw results for analysis.
+
+    This tool returns original search content. The agent should analyze
+    and summarize the results based on the user's needs.
 
     Args:
         query: The search query string
-        search_depth: Search depth - "basic" (faster) or "advanced" (more thorough)
-        max_results: Maximum number of results (1-20, default 10)
-        include_domains: List of domains to specifically include (e.g., ["github.com", "stackoverflow.com"])
-        exclude_domains: List of domains to exclude from results (e.g., ["pinterest.com"])
-        include_answer: Whether to include AI-generated answer summary
-        include_raw_content: Whether to include raw HTML content of pages
-        include_images: Whether to include relevant images in results
-        topic: Search topic category - "general" or "news"
+        max_results: Number of results to return (default 5, max 10 for efficiency)
+        search_depth: "basic" (default, faster) or "advanced" (slower but more thorough).
+                     Use "advanced" only when basic search doesn't find relevant results.
+        topic: "general" (default) or "news" (for recent news articles)
+        include_domains: [Advanced] Limit search to specific domains.
+                        Only use when user explicitly requests specific sources.
+        exclude_domains: [Advanced] Exclude specific domains from results.
+                        Only use when user wants to avoid certain sources.
 
     Returns:
-        Formatted search results with titles, URLs, snippets, and optional AI answer
+        Raw search results with titles, URLs, and content snippets.
+        The agent should read through all results and provide a comprehensive summary.
+
+    Usage Guidelines:
+        - For most queries, use default parameters (just query and max_results)
+        - Only use search_depth="advanced" if basic search fails to find relevant info
+        - Only use domain filters when explicitly requested by user
+        - After receiving results, analyze ALL content and synthesize a complete answer
 
     Example:
-        # Basic search
-        web_search("Python async programming")
+        # Simple search (recommended for most cases)
+        web_search("Python async programming best practices")
 
-        # Advanced search with domain filtering
-        web_search(
-            query="React hooks tutorial",
-            search_depth="advanced",
-            include_domains=["react.dev", "github.com"],
-            include_answer=True
-        )
+        # Get more results for comprehensive research
+        web_search("machine learning frameworks comparison", max_results=8)
 
         # News search
-        web_search("AI latest developments", topic="news", max_results=5)
+        web_search("AI regulation updates 2024", topic="news")
+
+        # Domain-specific search (only when user requests)
+        web_search("React hooks", include_domains=["react.dev", "github.com"])
     """
     try:
+        # Cap max_results for efficiency
+        max_results = min(max_results, 10)
+
         response = tavily_client.search(
             query=query,
             search_depth=search_depth,
-            max_results=min(max_results, 20),
+            max_results=max_results,
             include_domains=include_domains or [],
             exclude_domains=exclude_domains or [],
-            include_answer=include_answer,
-            include_raw_content=include_raw_content,
-            include_images=include_images,
             topic=topic
         )
 
-        output_parts = []
-
-        # Include AI answer if available and requested
-        if include_answer and response.get("answer"):
-            output_parts.append(f"## AI Summary\\n{response['answer']}\\n")
-
-        # Format search results
         results = response.get("results", [])
-        if results:
-            output_parts.append("## Search Results\\n")
-            for i, r in enumerate(results, 1):
-                result_text = f"### {i}. {r['title']}\\n"
-                result_text += f"**URL:** {r['url']}\\n"
-                if r.get("score"):
-                    result_text += f"**Relevance:** {r['score']:.2f}\\n"
-                result_text += f"\\n{r['content']}\\n"
-                if include_raw_content and r.get("raw_content"):
-                    result_text += f"\\n<details><summary>Raw Content</summary>\\n{r['raw_content'][:1000]}...\\n</details>\\n"
-                output_parts.append(result_text)
+        if not results:
+            return f"No results found for: {query}"
 
-        # Include images if available and requested
-        if include_images and response.get("images"):
-            output_parts.append("\\n## Related Images\\n")
-            for img in response["images"][:5]:
-                output_parts.append(f"- {img}\\n")
+        # Format raw results for agent analysis
+        output_parts = [f"Search results for: {query}\\n"]
+        output_parts.append(f"Found {len(results)} results:\\n")
+        output_parts.append("=" * 50 + "\\n")
 
-        return "\\n".join(output_parts) if output_parts else "No results found"
+        for i, r in enumerate(results, 1):
+            output_parts.append(f"[{i}] {r['title']}")
+            output_parts.append(f"URL: {r['url']}")
+            output_parts.append(f"Content: {r['content']}")
+            output_parts.append("-" * 40 + "\\n")
+
+        output_parts.append("\\n[Note: Please analyze all results above and provide a comprehensive summary based on the user\\'s question.]")
+
+        return "\\n".join(output_parts)
 
     except Exception as e:
         return f"Search error: {str(e)}"

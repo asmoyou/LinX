@@ -476,7 +476,7 @@
     "templates": {
       "langchain_web_search": {
         "name": "Web Search - Tavily",
-        "description": "Advanced web search using Tavily API with domain filtering, AI summary, image search"
+        "description": "Web search tool that returns raw results for agent to analyze and summarize"
       },
       "langchain_calculator": {
         "name": "Calculator",

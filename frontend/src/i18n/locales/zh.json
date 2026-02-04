@@ -476,7 +476,7 @@
     "templates": {
       "langchain_web_search": {
         "name": "网页搜索 - Tavily",
-        "description": "使用Tavily API进行高级网页搜索，支持域名过滤、AI摘要、图片搜索等"
+        "description": "网页搜索工具，返回原始搜索结果供Agent分析总结"
       },
       "langchain_calculator": {
         "name": "计算器",
