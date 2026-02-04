@@ -1546,9 +1546,29 @@ class BaseAgent:
             # 1. Get LLM response
             round_output = ""
             round_thinking = ""
+            round_usage = None  # Track usage from LLM response
 
             try:
                 for chunk in self.llm.stream(messages):
+                    # Check for usage info in the chunk
+                    # LangChain's stream() returns AIMessageChunk objects
+                    # The final chunk contains response_metadata with usage info
+                    if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
+                        meta = chunk.response_metadata
+                        if 'usage' in meta:
+                            round_usage = meta['usage']
+                            logger.info(f"[RECOVERY] Got usage from response_metadata: {round_usage}")
+                        elif 'token_usage' in meta:
+                            round_usage = meta['token_usage']
+                            logger.info(f"[RECOVERY] Got usage from token_usage: {round_usage}")
+                    if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
+                        um = chunk.usage_metadata
+                        round_usage = {
+                            'prompt_tokens': getattr(um, 'input_tokens', 0),
+                            'completion_tokens': getattr(um, 'output_tokens', 0),
+                        }
+                        logger.info(f"[RECOVERY] Got usage from usage_metadata: {round_usage}")
+
                     if hasattr(chunk, 'content') and chunk.content:
                         content_type = "content"
                         if hasattr(chunk, 'additional_kwargs') and chunk.additional_kwargs:
@@ -1579,9 +1599,9 @@ class BaseAgent:
                     state.is_terminated = True
                     state.termination_reason = "llm_failure"
                     break
-            
+
             logger.info(
-                f"[RECOVERY] Round {state.round_number} output: thinking={len(round_thinking)} chars, content={len(round_output)} chars",
+                f"[RECOVERY] Round {state.round_number} output: thinking={len(round_thinking)} chars, content={len(round_output)} chars, usage={round_usage}",
                 extra={"agent_id": str(self.config.agent_id)}
             )
 
@@ -1590,20 +1610,27 @@ class BaseAgent:
                 """Calculate and send stats for this round."""
                 if stream_callback and round_output_chars > 0:
                     round_end_time = time.time()
-                    # Estimate tokens (Chinese avg ~1.5 tokens/char, English ~0.25, mixed ~0.5)
-                    output_tokens = int(round_output_chars * 0.5)
 
-                    # Estimate input tokens from messages
-                    input_chars = 0
-                    for msg in messages:
-                        if hasattr(msg, 'content'):
-                            if isinstance(msg.content, str):
-                                input_chars += len(msg.content)
-                            elif isinstance(msg.content, list):
-                                for item in msg.content:
-                                    if isinstance(item, dict) and item.get('type') == 'text':
-                                        input_chars += len(item.get('text', ''))
-                    input_tokens = int(input_chars * 0.5)
+                    # Use actual usage from LLM if available, otherwise estimate
+                    if round_usage:
+                        input_tokens = round_usage.get('prompt_tokens', 0) or round_usage.get('input_tokens', 0)
+                        output_tokens = round_usage.get('completion_tokens', 0) or round_usage.get('output_tokens', 0)
+                        logger.info(f"[RECOVERY] Using actual token counts: in={input_tokens}, out={output_tokens}")
+                    else:
+                        # Estimate tokens (Chinese avg ~1.5 tokens/char, English ~0.25, mixed ~0.5)
+                        output_tokens = int(round_output_chars * 0.5)
+                        # Estimate input tokens from messages
+                        input_chars = 0
+                        for msg in messages:
+                            if hasattr(msg, 'content'):
+                                if isinstance(msg.content, str):
+                                    input_chars += len(msg.content)
+                                elif isinstance(msg.content, list):
+                                    for item in msg.content:
+                                        if isinstance(item, dict) and item.get('type') == 'text':
+                                            input_chars += len(item.get('text', ''))
+                        input_tokens = int(input_chars * 0.5)
+                        logger.info(f"[RECOVERY] Using estimated token counts: in={input_tokens}, out={output_tokens}")
 
                     # Calculate time to first token
                     if round_first_token_time is not None:
