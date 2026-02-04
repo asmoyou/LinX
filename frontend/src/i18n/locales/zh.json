@@ -466,7 +466,67 @@
     "parsedCommands": "解析的命令：",
     "simulatedOutput": "模拟输出：",
     "actualOutput": "实际输出：",
-    "output": "输出："
+    "output": "输出：",
+    "loadingTemplates": "加载模板中...",
+    "difficulty": {
+      "beginner": "初级",
+      "intermediate": "中级",
+      "advanced": "高级"
+    },
+    "templates": {
+      "langchain_web_search": {
+        "name": "网页搜索 - Tavily",
+        "description": "使用Tavily API进行高级网页搜索，支持域名过滤、AI摘要、图片搜索等"
+      },
+      "langchain_calculator": {
+        "name": "计算器",
+        "description": "安全的数学计算器，支持三角函数、对数、常量等"
+      },
+      "langchain_datetime": {
+        "name": "日期时间工具",
+        "description": "日期时间操作 - 解析、格式化、加减计算、时间戳转换"
+      },
+      "langchain_json": {
+        "name": "JSON工具",
+        "description": "JSON解析、查询、转换操作 - 支持路径查询、格式化、扁平化"
+      },
+      "langchain_text": {
+        "name": "文本处理工具",
+        "description": "文本操作与分析 - 大小写转换、替换、分割、词频统计"
+      },
+      "langchain_url": {
+        "name": "URL工具",
+        "description": "URL解析、构建、编码解码、参数操作"
+      },
+      "langchain_hash": {
+        "name": "哈希与编码工具",
+        "description": "哈希计算(MD5/SHA/HMAC)、Base64/Hex编解码"
+      },
+      "langchain_uuid": {
+        "name": "UUID生成器",
+        "description": "生成和验证UUID - 支持v1/v3/v4/v5版本"
+      },
+      "langchain_regex": {
+        "name": "正则表达式工具",
+        "description": "正则匹配、提取、替换操作 - 支持标志位"
+      },
+      "langchain_random": {
+        "name": "随机生成器",
+        "description": "生成随机数、字符串、密码，随机选择与洗牌"
+      },
+      "agent_api_call": {
+        "name": "HTTP API调用",
+        "description": "灵活的HTTP客户端 - 支持GET/POST/PUT/DELETE请求"
+      },
+      "agent_data_analysis": {
+        "name": "数据分析",
+        "description": "使用pandas进行高级数据分析操作"
+      },
+      "agent_file_operations": {
+        "name": "文件操作",
+        "description": "文件读写、追加、删除等操作"
+      }
+    }
   },
   "settings": {
     "title": "设置",

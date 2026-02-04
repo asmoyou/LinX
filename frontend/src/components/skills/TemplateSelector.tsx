@@ -22,10 +22,32 @@ interface TemplateSelectorProps {
 }
 
 const TemplateSelector: React.FC<TemplateSelectorProps> = ({ skillType, onSelect, onSkip, selectedId }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Get localized template name and description
+  const getLocalizedTemplate = (template: Template) => {
+    const templateKey = `skills.templates.${template.id}`;
+    const nameKey = `${templateKey}.name`;
+    const descKey = `${templateKey}.description`;
+
+    // Check if translation exists, fallback to original
+    const localizedName = i18n.exists(nameKey) ? t(nameKey) : template.name;
+    const localizedDesc = i18n.exists(descKey) ? t(descKey) : template.description;
+
+    return {
+      name: localizedName,
+      description: localizedDesc
+    };
+  };
+
+  // Get localized difficulty
+  const getLocalizedDifficulty = (difficulty: string) => {
+    const key = `skills.difficulty.${difficulty}`;
+    return i18n.exists(key) ? t(key) : difficulty;
+  };
 
   useEffect(() => {
     loadTemplates();
@@ -103,7 +125,9 @@ const TemplateSelector: React.FC<TemplateSelectorProps> = ({ skillType, onSelect
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-96 overflow-y-auto pr-2">
-          {templates.map((template) => (
+          {templates.map((template) => {
+            const localized = getLocalizedTemplate(template);
+            return (
             <button
               key={template.id}
               type="button"
@@ -119,33 +143,33 @@ const TemplateSelector: React.FC<TemplateSelectorProps> = ({ skillType, onSelect
             >
               <div className="flex items-start gap-3">
                 <div className={`p-2.5 rounded-lg transition-all duration-300 ${
-                  selectedId === template.id 
-                    ? 'bg-white/20' 
+                  selectedId === template.id
+                    ? 'bg-white/20'
                     : 'bg-gray-100 dark:bg-gray-800'
                 }`}>
                   <FileCode className="w-5 h-5" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <h3 className="font-semibold mb-1">
-                    {template.name}
+                    {localized.name}
                   </h3>
                   <p className={`text-sm mb-3 line-clamp-2 ${
-                    selectedId === template.id 
-                      ? 'text-white/80' 
+                    selectedId === template.id
+                      ? 'text-white/80'
                       : 'text-gray-600 dark:text-gray-400'
-                  }`}>{template.description}</p>
+                  }`}>{localized.description}</p>
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
                       selectedId === template.id
                         ? 'bg-white/20 text-white'
                         : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300'
                     }`}>
-                      {template.difficulty}
+                      {getLocalizedDifficulty(template.difficulty)}
                     </span>
                     {template.dependencies.length > 0 && (
                       <span className={`text-xs ${
-                        selectedId === template.id 
-                          ? 'text-white/70' 
+                        selectedId === template.id
+                          ? 'text-white/70'
                           : 'text-gray-600 dark:text-gray-400'
                       }`}>
                         {template.dependencies.length} {t('skills.dependencies')}
@@ -155,7 +179,7 @@ const TemplateSelector: React.FC<TemplateSelectorProps> = ({ skillType, onSelect
                 </div>
               </div>
             </button>
-          ))}
+          )})}
         </div>
       )}
     </div>

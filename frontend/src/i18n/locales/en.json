@@ -466,7 +466,67 @@
     "parsedCommands": "Parsed Commands:",
     "simulatedOutput": "Simulated Output:",
     "actualOutput": "Actual Output:",
-    "output": "Output:"
+    "output": "Output:",
+    "loadingTemplates": "Loading templates...",
+    "difficulty": {
+      "beginner": "Beginner",
+      "intermediate": "Intermediate",
+      "advanced": "Advanced"
+    },
+    "templates": {
+      "langchain_web_search": {
+        "name": "Web Search - Tavily",
+        "description": "Advanced web search using Tavily API with domain filtering, AI summary, image search"
+      },
+      "langchain_calculator": {
+        "name": "Calculator",
+        "description": "Safe mathematical calculator with support for trig functions, logarithms, constants"
+      },
+      "langchain_datetime": {
+        "name": "DateTime Tool",
+        "description": "Date and time operations - parsing, formatting, calculations, timestamp conversion"
+      },
+      "langchain_json": {
+        "name": "JSON Tool",
+        "description": "JSON parsing, querying, transformation - path queries, formatting, flattening"
+      },
+      "langchain_text": {
+        "name": "Text Processing",
+        "description": "Text manipulation and analysis - case conversion, replace, split, word frequency"
+      },
+      "langchain_url": {
+        "name": "URL Tool",
+        "description": "URL parsing, building, encoding/decoding, parameter manipulation"
+      },
+      "langchain_hash": {
+        "name": "Hash & Encoding",
+        "description": "Hashing (MD5/SHA/HMAC), Base64/Hex encoding and decoding"
+      },
+      "langchain_uuid": {
+        "name": "UUID Generator",
+        "description": "Generate and validate UUIDs - supports v1/v3/v4/v5 versions"
+      },
+      "langchain_regex": {
+        "name": "Regex Tool",
+        "description": "Regular expression matching, extraction, replacement with flags support"
+      },
+      "langchain_random": {
+        "name": "Random Generator",
+        "description": "Generate random numbers, strings, passwords, with selection and shuffle"
+      },
+      "agent_api_call": {
+        "name": "HTTP API Call",
+        "description": "Flexible HTTP client - supports GET/POST/PUT/DELETE requests"
+      },
+      "agent_data_analysis": {
+        "name": "Data Analysis",
+        "description": "Advanced data analysis with pandas operations"
+      },
+      "agent_file_operations": {
+        "name": "File Operations",
+        "description": "File read, write, append, delete operations"
+      }
+    }
   },
   "settings": {
     "title": "Settings",
