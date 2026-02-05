@@ -168,15 +168,17 @@ export const ProfileSection = () => {
                   profile?.username?.charAt(0).toUpperCase() || 'U'
                 )}
               </div>
-              {/* Avatar upload button - always visible */}
-              <button
-                type="button"
-                onClick={handleAvatarClick}
-                className="absolute bottom-0 right-0 p-2 bg-emerald-500 rounded-full hover:bg-emerald-600 transition-colors shadow-lg"
-                title={t('profileSettings.profile.uploadAvatar')}
-              >
-                <Camera className="w-4 h-4 text-white" />
-              </button>
+              {/* Avatar upload button - only visible in edit mode */}
+              {isEditing && (
+                <button
+                  type="button"
+                  onClick={handleAvatarClick}
+                  className="absolute bottom-0 right-0 p-2 bg-emerald-500 rounded-full hover:bg-emerald-600 transition-colors shadow-lg"
+                  title={t('profileSettings.profile.uploadAvatar')}
+                >
+                  <Camera className="w-4 h-4 text-white" />
+                </button>
+              )}
               <input
                 ref={fileInputRef}
                 type="file"

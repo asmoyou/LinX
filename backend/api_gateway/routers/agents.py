@@ -24,6 +24,32 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+def _resolve_agent_avatar(avatar_ref: Optional[str]) -> Optional[str]:
+    """
+    Resolve agent avatar reference to a presigned URL.
+
+    Args:
+        avatar_ref: Avatar reference (minio:bucket:key format) or legacy URL
+
+    Returns:
+        Presigned URL or original URL, or None if reference is empty
+    """
+    if not avatar_ref:
+        return None
+
+    # Check for minio reference format
+    if avatar_ref.startswith("minio:"):
+        try:
+            minio_client = get_minio_client()
+            return minio_client.resolve_avatar_url(avatar_ref)
+        except Exception as e:
+            logger.warning(f"Failed to resolve agent avatar URL: {e}")
+            return None
+
+    # Legacy: already a URL, return as-is (might be expired)
+    return avatar_ref
+
+
 # Agent cache with TTL (Time To Live) and memory-aware sizing
 class AgentCacheEntry:
     """Cache entry for an initialized agent with TTL."""
@@ -369,7 +395,7 @@ async def create_agent(
             id=str(agent_info.agent_id),
             name=agent_info.name,
             type=agent_info.agent_type,
-            avatar=agent_info.avatar,
+            avatar=_resolve_agent_avatar(agent_info.avatar),
             status=agent_info.status,
             currentTask=None,
             tasksCompleted=0,
@@ -415,7 +441,7 @@ async def list_agents(current_user: CurrentUser = Depends(get_current_user)):
                 id=str(agent.agent_id),
                 name=agent.name,
                 type=agent.agent_type,
-                avatar=agent.avatar,
+                avatar=_resolve_agent_avatar(agent.avatar),
                 status=agent.status,
                 currentTask=None,  # TODO: Get from task manager
                 tasksCompleted=0,  # TODO: Count from tasks table
@@ -473,7 +499,7 @@ async def get_agent(agent_id: str, current_user: CurrentUser = Depends(get_curre
             id=str(agent.agent_id),
             name=agent.name,
             type=agent.agent_type,
-            avatar=agent.avatar,
+            avatar=_resolve_agent_avatar(agent.avatar),
             status=agent.status,
             currentTask=None,
             tasksCompleted=0,
@@ -571,7 +597,7 @@ async def update_agent(
             id=str(updated_agent.agent_id),
             name=updated_agent.name,
             type=updated_agent.agent_type,
-            avatar=updated_agent.avatar,
+            avatar=_resolve_agent_avatar(updated_agent.avatar),
             status=updated_agent.status,
             currentTask=None,
             tasksCompleted=0,
@@ -673,19 +699,22 @@ async def upload_agent_avatar(
             content_type=file.content_type,
             metadata=upload_metadata
         )
-        
-        # Generate presigned URL (valid for 7 days)
+
+        # Store avatar reference (not presigned URL) for on-demand URL generation
+        avatar_ref = minio_client.create_avatar_reference(bucket_name, object_key)
+
+        # Generate presigned URL for immediate response (valid for 7 days)
         from datetime import timedelta
         avatar_url = minio_client.get_presigned_url(
             bucket_name=bucket_name,
             object_key=object_key,
             expires=timedelta(days=7)
         )
-        
-        # Update agent with avatar URL
+
+        # Update agent with avatar reference (store ref, not URL)
         updated_agent = registry.update_agent(
             agent_id=UUID(agent_id),
-            avatar=avatar_url,
+            avatar=avatar_ref,
         )
         
         logger.info(
@@ -2092,7 +2121,7 @@ async def update_agent_skills(
             agent_id=str(updated_agent.agent_id),
             name=updated_agent.name,
             agent_type=updated_agent.agent_type,
-            avatar=updated_agent.avatar,
+            avatar=_resolve_agent_avatar(updated_agent.avatar),
             owner_user_id=str(updated_agent.owner_user_id),
             capabilities=updated_agent.capabilities,
             status=updated_agent.status,

@@ -16,6 +16,39 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+def _resolve_user_avatar(attributes: dict) -> dict:
+    """
+    Resolve avatar reference in user attributes to a presigned URL.
+
+    Args:
+        attributes: User attributes dict
+
+    Returns:
+        New attributes dict with avatar_url resolved from avatar_ref
+    """
+    if not attributes or not isinstance(attributes, dict):
+        return attributes or {}
+
+    result = dict(attributes)
+
+    # Check for avatar_ref (new format)
+    avatar_ref = result.get("avatar_ref")
+    if avatar_ref:
+        try:
+            from object_storage.minio_client import get_minio_client
+            minio_client = get_minio_client()
+            avatar_url = minio_client.resolve_avatar_url(avatar_ref)
+            if avatar_url:
+                result["avatar_url"] = avatar_url
+        except Exception as e:
+            logger.warning(f"Failed to resolve avatar URL: {e}")
+
+    # Also handle legacy avatar_url (might be expired presigned URL)
+    # If there's no avatar_ref but there is avatar_url, keep it (backward compat)
+
+    return result
+
+
 class UserProfile(BaseModel):
     """User profile model."""
 
@@ -74,12 +107,15 @@ async def get_current_user_profile(current_user: CurrentUser = Depends(get_curre
         if user.attributes and isinstance(user.attributes, dict):
             display_name = user.attributes.get("display_name")
 
+        # Resolve avatar reference to presigned URL
+        resolved_attributes = _resolve_user_avatar(user.attributes)
+
         return UserProfile(
             user_id=str(user.user_id),
             username=user.username,
             email=user.email,
             role=user.role,
-            attributes=user.attributes if isinstance(user.attributes, dict) else {},
+            attributes=resolved_attributes,
             display_name=display_name,
         )
 
@@ -137,12 +173,15 @@ async def update_current_user_profile(
         if user.attributes and isinstance(user.attributes, dict):
             display_name = user.attributes.get("display_name")
 
+        # Resolve avatar reference to presigned URL
+        resolved_attributes = _resolve_user_avatar(user.attributes)
+
         return UserProfile(
             user_id=str(user.user_id),
             username=user.username,
             email=user.email,
             role=user.role,
-            attributes=user.attributes if isinstance(user.attributes, dict) else {},
+            attributes=resolved_attributes,
             display_name=display_name,
         )
 
@@ -329,28 +368,33 @@ async def upload_user_avatar(
                 "type": "user_avatar",
             }
         )
-        
-        # Generate presigned URL (valid for 7 days)
+
+        # Store avatar reference (not presigned URL) for on-demand URL generation
+        avatar_ref = minio_client.create_avatar_reference(bucket_name, object_key)
+
+        # Generate presigned URL for immediate response (valid for 7 days)
         avatar_url = minio_client.get_presigned_url(
             bucket_name=bucket_name,
             object_key=object_key,
             expires=timedelta(days=7)
         )
-        
-        # Update user avatar URL in database
+
+        # Update user avatar reference in database (store ref, not URL)
         with get_db_session() as session:
             user = session.query(User).filter(User.user_id == current_user.user_id).first()
             if not user:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-            # Update avatar URL in attributes
+            # Update avatar reference in attributes
             if user.attributes is None:
-                user.attributes = {"avatar_url": avatar_url}
+                user.attributes = {"avatar_ref": avatar_ref}
             else:
                 new_attributes = dict(user.attributes)
-                new_attributes["avatar_url"] = avatar_url
+                new_attributes["avatar_ref"] = avatar_ref
+                # Remove legacy avatar_url if present
+                new_attributes.pop("avatar_url", None)
                 user.attributes = new_attributes
-            
+
             flag_modified(user, "attributes")
             session.commit()
             session.refresh(user)

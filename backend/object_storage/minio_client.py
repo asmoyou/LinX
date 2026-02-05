@@ -579,6 +579,58 @@ class MinIOClient:
             logger.error(f"MinIO health check failed: {e}")
             return False
 
+    def create_avatar_reference(self, bucket_name: str, object_key: str) -> str:
+        """
+        Create a storage reference for avatar (not a presigned URL).
+
+        This returns a reference string that can be stored in the database
+        and later resolved to a presigned URL when needed.
+
+        Args:
+            bucket_name: Name of the bucket
+            object_key: Object key
+
+        Returns:
+            Reference string in format: minio:{bucket_name}:{object_key}
+        """
+        return f"minio:{bucket_name}:{object_key}"
+
+    def resolve_avatar_url(
+        self, avatar_reference: str, expires: timedelta = timedelta(days=7)
+    ) -> Optional[str]:
+        """
+        Resolve an avatar reference to a presigned URL.
+
+        If the reference is already a URL (legacy data), return it as-is.
+        If it's a minio: reference, generate a fresh presigned URL.
+
+        Args:
+            avatar_reference: Either a URL or a minio:{bucket}:{key} reference
+            expires: Expiration time for the presigned URL (default: 7 days)
+
+        Returns:
+            Presigned URL or original URL, or None if reference is empty
+        """
+        if not avatar_reference:
+            return None
+
+        # Check if it's a minio reference
+        if avatar_reference.startswith("minio:"):
+            try:
+                parts = avatar_reference.split(":", 2)
+                if len(parts) != 3:
+                    logger.warning(f"Invalid avatar reference format: {avatar_reference}")
+                    return None
+
+                _, bucket_name, object_key = parts
+                return self.get_presigned_url(bucket_name, object_key, expires)
+            except Exception as e:
+                logger.error(f"Failed to resolve avatar reference {avatar_reference}: {e}")
+                return None
+
+        # Legacy: already a URL, return as-is (will eventually expire)
+        return avatar_reference
+
 
 # Singleton instance
 _minio_client: Optional[MinIOClient] = None
