@@ -34,7 +34,7 @@ const SkillTypeSelector: React.FC<SkillTypeSelectorProps> = ({
       descriptionKey: 'skills.types.langchainTool.description',
       detailsKey: 'skills.types.langchainTool.details',
       badgeKey: 'skills.types.langchainTool.badge',
-      badgeColor: 'bg-blue-500/20 text-blue-400',
+      badgeColor: 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400',
       examplesKey: ['skills.types.langchainTool.example1', 'skills.types.langchainTool.example2', 'skills.types.langchainTool.example3'],
     },
     {
@@ -44,7 +44,7 @@ const SkillTypeSelector: React.FC<SkillTypeSelectorProps> = ({
       descriptionKey: 'skills.types.agentSkill.description',
       detailsKey: 'skills.types.agentSkill.details',
       badgeKey: 'skills.types.agentSkill.badge',
-      badgeColor: 'bg-purple-500/20 text-purple-400',
+      badgeColor: 'bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400',
       examplesKey: ['skills.types.agentSkill.example1', 'skills.types.agentSkill.example2', 'skills.types.agentSkill.example3', 'skills.types.agentSkill.example4'],
     },
   ];

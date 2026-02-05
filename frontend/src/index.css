@@ -16,15 +16,15 @@
   --color-primary-900: #0c4a6e;
   
   /* Background colors */
-  --color-background: #ffffff;
-  --color-foreground: #09090b;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
   
   /* Muted colors */
-  --color-muted: #f4f4f5;
-  --color-muted-foreground: #71717a;
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
   
   /* Border colors */
-  --color-border: #e4e4e7;
+  --color-border: var(--border);
 }
 
 @layer base {

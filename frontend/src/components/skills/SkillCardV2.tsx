@@ -40,26 +40,50 @@ const getSkillTypeInfo = (type: string, t: any) => {
       return { 
         icon: Code2, 
         label: t('skills.langchainTool'), 
-        color: 'text-blue-400', 
-        bgColor: 'bg-blue-500/10',
+        color: 'text-blue-600 dark:text-blue-400', 
+        bgColor: 'bg-blue-100 dark:bg-blue-500/20',
         badge: t('skills.langchainTool')
       };
     case 'agent_skill':
       return { 
         icon: BookOpen, 
         label: t('skills.agentSkill'), 
-        color: 'text-purple-400', 
-        bgColor: 'bg-purple-500/10',
+        color: 'text-purple-600 dark:text-purple-400', 
+        bgColor: 'bg-purple-100 dark:bg-purple-500/20',
         badge: t('skills.agentSkill')
       };
     case 'agent_skill_simple':
-      return { icon: Code2, label: t('skills.agentSkill'), color: 'text-blue-400', bgColor: 'bg-blue-500/10', badge: 'Simple' };
+      return { 
+        icon: Code2, 
+        label: t('skills.agentSkill'), 
+        color: 'text-blue-600 dark:text-blue-400', 
+        bgColor: 'bg-blue-100 dark:bg-blue-500/20', 
+        badge: 'Simple' 
+      };
     case 'agent_skill_module':
-      return { icon: Layers, label: 'Module', color: 'text-purple-400', bgColor: 'bg-purple-500/10', badge: 'Module' };
+      return { 
+        icon: Layers, 
+        label: 'Module', 
+        color: 'text-purple-600 dark:text-purple-400', 
+        bgColor: 'bg-purple-100 dark:bg-purple-500/20', 
+        badge: 'Module' 
+      };
     case 'agent_skill_package':
-      return { icon: Package, label: 'Package', color: 'text-orange-400', bgColor: 'bg-orange-500/10', badge: 'Package' };
+      return { 
+        icon: Package, 
+        label: 'Package', 
+        color: 'text-orange-600 dark:text-orange-400', 
+        bgColor: 'bg-orange-100 dark:bg-orange-500/20', 
+        badge: 'Package' 
+      };
     default:
-      return { icon: Code2, label: 'Skill', color: 'text-white/60', bgColor: 'bg-white/10', badge: 'Unknown' };
+      return { 
+        icon: Code2, 
+        label: 'Skill', 
+        color: 'text-zinc-600 dark:text-zinc-400', 
+        bgColor: 'bg-zinc-100 dark:bg-zinc-800', 
+        badge: 'Unknown' 
+      };
   }
 };
 
@@ -104,8 +128,8 @@ export default function SkillCardV2({
                   <span
                     className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${
                       skill.is_active
-                        ? 'bg-green-500/20 text-green-400'
-                        : 'bg-gray-500/20 text-gray-400'
+                        ? 'bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-400'
+                        : 'bg-zinc-100 dark:bg-zinc-500/20 text-zinc-600 dark:text-zinc-400'
                     }`}
                   >
                     {skill.is_active ? t('skills.active') : t('skills.inactive')}
@@ -154,7 +178,7 @@ export default function SkillCardV2({
             
             {/* Gating status indicator */}
             {skill.gating_status && !skill.gating_status.eligible && (
-              <div className="mt-2 flex items-center gap-2 text-xs text-orange-400">
+              <div className="mt-2 flex items-center gap-2 text-xs text-orange-600 dark:text-orange-400">
                 <AlertCircle className="w-3 h-3" />
                 <span>{t('skills.requirementsNotMet')}</span>
               </div>
@@ -214,8 +238,8 @@ export default function SkillCardV2({
                 onClick={() => onToggleActive(skill.skill_id, skill.is_active || false)}
                 className={`p-2.5 rounded-xl transition-all duration-300 hover:shadow-lg ${
                   skill.is_active
-                    ? 'bg-orange-500/10 hover:bg-orange-500/20 text-orange-400'
-                    : 'bg-green-500/10 hover:bg-green-500/20 text-green-400'
+                    ? 'bg-orange-100 dark:bg-orange-500/10 hover:bg-orange-200 dark:hover:bg-orange-500/20 text-orange-700 dark:text-orange-400'
+                    : 'bg-green-100 dark:bg-green-500/10 hover:bg-green-200 dark:hover:bg-green-500/20 text-green-700 dark:text-green-400'
                 }`}
                 title={skill.is_active ? t('skills.deactivate') : t('skills.activate')}
               >
@@ -233,7 +257,7 @@ export default function SkillCardV2({
             
             <button
               onClick={() => onDelete(skill.skill_id)}
-              className="p-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-all duration-300 hover:shadow-lg"
+              className="p-2.5 rounded-xl bg-red-100 dark:bg-red-500/10 hover:bg-red-200 dark:hover:bg-red-500/20 text-red-700 dark:text-red-400 transition-all duration-300 hover:shadow-lg"
               title={t('skills.delete')}
             >
               <Trash2 className="w-4 h-4" />
