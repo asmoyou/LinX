@@ -621,7 +621,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
             <div key={index} className="animate-in fade-in slide-in-from-bottom-2 duration-300">
               {message.role === 'user' ? (
                 <div className="flex justify-end">
-                  <div className="max-w-[75%] space-y-2">
+                  <div className="max-w-[75%] space-y-1">
                     {/* User message */}
                     <div className="rounded-[24px] px-4 py-3 bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-500/20">
                       <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
@@ -646,8 +646,11 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                           ))}
                         </div>
                       )}
-                      
-                      <p className="text-xs mt-2 text-emerald-100 opacity-80">
+                    </div>
+                    
+                    {/* Timestamp */}
+                    <div className="flex justify-end px-1">
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">
                         {message.timestamp.toLocaleTimeString()}
                       </p>
                     </div>
