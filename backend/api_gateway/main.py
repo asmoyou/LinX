@@ -116,10 +116,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 
     logger.info("API Gateway started successfully")
 
+    # Initialize session manager for persistent code execution
+    try:
+        from agent_framework.session_manager import initialize_session_manager
+        await initialize_session_manager()
+        logger.info("SessionManager initialized with background cleanup")
+    except Exception as e:
+        logger.warning(f"Failed to initialize SessionManager: {e}")
+
     yield
 
     # Shutdown
     logger.info("Shutting down API Gateway")
+
+    # Shutdown session manager (clean up all sessions and workdirs)
+    try:
+        from agent_framework.session_manager import shutdown_session_manager
+        await shutdown_session_manager()
+        logger.info("SessionManager shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown SessionManager: {e}")
 
     # Close database connections
     try:

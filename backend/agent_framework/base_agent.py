@@ -383,6 +383,15 @@ class BaseAgent:
                 user_id=self.config.owner_user_id
             )
             self.tools.append(code_exec_tool)
+
+            # Add file operation tools (read, edit, write, list files in workspace)
+            from agent_framework.tools.file_tools import create_file_tools
+            file_tools = create_file_tools()
+            self.tools.extend(file_tools)
+            logger.info(
+                f"✓ Added file tools (read_file, edit_file, write_file, list_files)",
+                extra={"agent_id": str(self.config.agent_id)}
+            )
             
             # Add read_skill tool (for agent to read Agent Skill documentation)
             if agent_skill_count > 0:
@@ -520,7 +529,9 @@ class BaseAgent:
 
     def execute_task(
         self, task_description: str, context: Optional[Dict[str, Any]] = None,
-        stream_callback: Optional[callable] = None
+        stream_callback: Optional[callable] = None,
+        session_workdir: Optional['Path'] = None,
+        container_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Execute a task using the agent.
 
@@ -528,6 +539,11 @@ class BaseAgent:
             task_description: Description of the task to execute
             context: Optional context information (e.g., memories)
             stream_callback: Optional callback for streaming tokens (callable(str))
+            session_workdir: Optional pre-existing workdir from a conversation session.
+                If provided, reuses the session workdir so files and state persist
+                across conversation rounds.
+            container_id: Optional Docker container ID for sandbox execution.
+                If provided, code blocks will be executed inside the container.
 
         Returns:
             Dict with execution results
@@ -542,29 +558,32 @@ class BaseAgent:
             self.status = AgentStatus.BUSY
             logger.info(f"Agent executing task: {self.config.name}")
 
+            # Set workspace root for file tools
+            if session_workdir:
+                from agent_framework.tools.file_tools import set_workspace_root
+                set_workspace_root(session_workdir)
+                logger.debug(f"Set workspace root to {session_workdir}")
+
             # Route to new implementation if error recovery is enabled
             if self.config.enable_error_recovery and stream_callback:
                 import asyncio
                 # Run async method in sync context
+                # Always create a new event loop for this thread to avoid conflicts
+                # with the main thread's FastAPI event loop
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # If loop is running, we're already in async context
-                        # This shouldn't happen in normal usage
-                        logger.warning("Event loop already running, using legacy implementation")
-                    else:
-                        result = loop.run_until_complete(
-                            self.execute_task_with_recovery(
-                                task_description, context, stream_callback
-                            )
-                        )
-                        self.status = AgentStatus.ACTIVE
-                        return result
+                    # Try to get the running loop - if it exists and is running,
+                    # we're being called from an async context (shouldn't happen normally)
+                    loop = asyncio.get_running_loop()
+                    # If we get here, there's a running loop - this is unusual
+                    logger.warning("Event loop already running in current thread, using legacy implementation")
                 except RuntimeError:
-                    # No event loop, create new one
+                    # No running loop - this is the expected case when called from a thread
+                    # Create a new event loop for this thread
                     result = asyncio.run(
                         self.execute_task_with_recovery(
-                            task_description, context, stream_callback
+                            task_description, context, stream_callback,
+                            session_workdir=session_workdir,
+                            container_id=container_id
                         )
                     )
                     self.status = AgentStatus.ACTIVE
@@ -1153,7 +1172,9 @@ class BaseAgent:
         self,
         code_blocks: List,
         state: 'ConversationState',
-        stream_callback: Optional[callable] = None
+        stream_callback: Optional[callable] = None,
+        session_workdir: Optional['Path'] = None,
+        container_id: Optional[str] = None
     ) -> List:
         """Execute code blocks extracted from LLM output.
 
@@ -1164,6 +1185,11 @@ class BaseAgent:
             code_blocks: List of CodeBlock objects to execute
             state: Current conversation state
             stream_callback: Optional callback for streaming updates
+            session_workdir: Optional pre-existing workdir from a conversation session.
+                If provided, reuses the session workdir so files and state persist
+                across conversation rounds.
+            container_id: Optional Docker container ID for sandbox execution.
+                If provided, code will be executed inside the container.
 
         Returns:
             List of ExecutionResult objects
@@ -1187,9 +1213,16 @@ class BaseAgent:
         except Exception as e:
             logger.warning(f"[CODE_BLOCK] Failed to load skill env vars: {e}")
 
-        # Create shared workdir for this execution session
-        session_id = uuid4().hex[:8]
-        workdir = self.code_executor.create_workdir(session_id)
+        # Use session workdir if available, otherwise create a new one
+        if session_workdir is not None:
+            workdir = session_workdir
+            logger.info(
+                f"[CODE_BLOCK] Reusing session workdir: {workdir}",
+                extra={"agent_id": str(self.config.agent_id)}
+            )
+        else:
+            session_id = uuid4().hex[:8]
+            workdir = self.code_executor.create_workdir(session_id)
 
         # Copy skill package files to workdir (so scripts/weather_helper.py etc. are available)
         if self.skill_manager:
@@ -1238,7 +1271,8 @@ class BaseAgent:
                 block,
                 timeout=self.config.tool_timeout_seconds,
                 env=skill_env,
-                workdir=workdir  # Use shared workdir with skill files
+                workdir=workdir,  # Use shared workdir with skill files
+                container_id=container_id  # Docker sandbox (None = subprocess)
             )
             results.append(result)
 
@@ -1476,15 +1510,22 @@ class BaseAgent:
         self,
         task_description: str,
         context: Optional[Dict[str, Any]] = None,
-        stream_callback: Optional[callable] = None
+        stream_callback: Optional[callable] = None,
+        session_workdir: Optional['Path'] = None,
+        container_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Execute task with error recovery (new implementation).
-        
+
         Args:
             task_description: Description of the task to execute
             context: Optional context information (e.g., memories)
             stream_callback: Optional callback for streaming tokens
-            
+            session_workdir: Optional pre-existing workdir from a conversation session.
+                If provided, reuses the session workdir so files and state persist
+                across conversation rounds.
+            container_id: Optional Docker container ID for sandbox execution.
+                If provided, code blocks will be executed inside the container.
+
         Returns:
             Dict with execution results including conversation state
         """
@@ -1688,7 +1729,9 @@ class BaseAgent:
 
                 # Execute code blocks
                 code_results = await self._execute_code_blocks(
-                    code_blocks, state, stream_callback
+                    code_blocks, state, stream_callback,
+                    session_workdir=session_workdir,
+                    container_id=container_id
                 )
 
                 # Check if any execution succeeded
@@ -2100,6 +2143,26 @@ Always be professional, accurate, and helpful."""
                     tools_prompt += "```\n\n"
                 
                 base_prompt += tools_prompt
+
+        # Add sandbox workspace documentation
+        workspace_prompt = """
+
+## Sandbox Workspace
+
+You are running inside a Docker sandbox with a persistent workspace at `/workspace`.
+Files persist throughout the conversation session.
+
+**File operation tools available:**
+- **read_file**: Read file contents. Supports `offset` (start line, 1-based) and `limit` (max lines) for large files.
+- **edit_file**: Replace exact string in a file (`old_string` -> `new_string`). The old_string must match exactly.
+- **write_file**: Create or overwrite a file. Creates parent directories automatically.
+- **list_files**: List files in a directory. Supports `recursive=true`.
+
+**You can also create/manipulate files through code blocks** (Python/Bash) that run in the same workspace.
+
+All file paths should use `/workspace/` as the root, e.g. `/workspace/main.py`.
+"""
+        base_prompt += workspace_prompt
         
         # Add Agent Skills documentation if available
         if self.skill_manager:

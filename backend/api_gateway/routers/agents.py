@@ -912,6 +912,7 @@ async def test_agent(
     history: Optional[str] = Body(None, embed=True),  # JSON string of conversation history
     files: List[UploadFile] = File(default=[]),
     stream: bool = Query(default=True),  # Query parameter to enable/disable streaming
+    session_id: Optional[str] = Query(None, description="Session ID for persistent execution environment"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """
@@ -940,7 +941,15 @@ async def test_agent(
         history: Optional JSON string of conversation history
         files: Optional list of uploaded files
         stream: Enable streaming (default: True)
+        session_id: Optional session ID for persistent execution environment
         current_user: Current authenticated user
+
+    Session Persistence:
+        - If session_id is provided, the session's working directory is reused
+        - Files created in previous rounds persist across conversation turns
+        - Installed dependencies (pip packages) persist within the session
+        - A new session is created if session_id is not provided or invalid
+        - Session events are emitted: {"type": "session", "session_id": "...", "new_session": true/false}
     """
     from fastapi.responses import StreamingResponse
     from agent_framework.agent_executor import get_agent_executor, ExecutionContext
@@ -1067,7 +1076,39 @@ async def test_agent(
                 last_token_time = None
                 input_tokens = 0
                 output_tokens = 0
-                
+
+                # Session management for persistent execution environment
+                from agent_framework.session_manager import get_session_manager
+                session_mgr = get_session_manager()
+                session, is_new_session = await session_mgr.get_or_create_session(
+                    agent_id=UUID(agent_id),
+                    user_id=UUID(current_user.user_id),
+                    session_id=session_id,
+                )
+
+                # Emit session event to frontend
+                session_event = {
+                    'type': 'session',
+                    'session_id': session.session_id,
+                    'new_session': is_new_session,
+                    'workdir': str(session.workdir),
+                    'use_sandbox': session.use_sandbox,
+                    'sandbox_id': session.sandbox_id,
+                }
+                yield f"data: {json.dumps(session_event)}\n\n"
+
+                logger.info(
+                    f"Session {'created' if is_new_session else 'resumed'}: {session.session_id}",
+                    extra={
+                        "session_id": session.session_id,
+                        "agent_id": agent_id,
+                        "new_session": is_new_session,
+                        "workdir": str(session.workdir),
+                        "use_sandbox": session.use_sandbox,
+                        "sandbox_id": session.sandbox_id,
+                    }
+                )
+
                 # Check if agent is already cached
                 # Include capabilities in cache key to invalidate when skills change
                 # Use v2 prefix to invalidate all old caches
@@ -1467,10 +1508,14 @@ async def test_agent(
                     try:
                         # Use agent.execute_task with streaming callback instead of direct LLM streaming
                         # This ensures tools are executed properly
+                        # Pass session workdir for persistent execution environment
+                        # Pass container_id for Docker sandbox execution (if session has one)
                         result = agent.execute_task(
                             task_description=user_message,
                             context=context,
-                            stream_callback=stream_callback
+                            stream_callback=stream_callback,
+                            session_workdir=session.workdir,
+                            container_id=session.sandbox_id  # Docker container for sandbox execution
                         )
                         
                         # Store final response
@@ -1757,6 +1802,144 @@ async def test_agent(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to test agent: {str(e)}",
+        )
+
+
+@router.delete("/{agent_id}/sessions/{session_id}")
+async def end_agent_session(
+    agent_id: str,
+    session_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    End an agent session and clean up its resources.
+
+    This endpoint explicitly ends a conversation session, cleaning up:
+    - Working directory and all files created during the session
+    - Sandbox container (if sandbox mode was enabled)
+    - Any cached state associated with the session
+
+    The session is also automatically cleaned up after TTL expiration (default: 30 minutes
+    of inactivity), so this endpoint is optional but recommended for explicit cleanup
+    when the user closes the test dialog.
+
+    Args:
+        agent_id: Agent ID
+        session_id: Session ID to end
+        current_user: Current authenticated user
+
+    Returns:
+        Success message with session details
+    """
+    try:
+        from agent_framework.session_manager import get_session_manager
+
+        session_mgr = get_session_manager()
+        session = session_mgr.get_session(session_id)
+
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found",
+            )
+
+        # Verify the session belongs to the requesting user
+        if session.user_id != UUID(current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to end this session",
+            )
+
+        # Verify the session is for the correct agent
+        if str(session.agent_id) != agent_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Session {session_id} does not belong to agent {agent_id}",
+            )
+
+        # End the session
+        ended = await session_mgr.end_session(session_id, UUID(current_user.user_id))
+
+        if ended:
+            logger.info(
+                f"Session ended by user: {session_id}",
+                extra={
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "user_id": current_user.user_id,
+                }
+            )
+            return {
+                "message": "Session ended successfully",
+                "session_id": session_id,
+                "agent_id": agent_id,
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to end session",
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to end session {session_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to end session: {str(e)}",
+        )
+
+
+@router.get("/{agent_id}/sessions")
+async def get_agent_sessions(
+    agent_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Get all active sessions for an agent.
+
+    Returns information about all sessions the current user has for the specified agent.
+    This is useful for debugging and monitoring session state.
+
+    Args:
+        agent_id: Agent ID
+        current_user: Current authenticated user
+
+    Returns:
+        List of session information
+    """
+    try:
+        from agent_framework.session_manager import get_session_manager
+
+        session_mgr = get_session_manager()
+        user_sessions = session_mgr.get_user_sessions(UUID(current_user.user_id))
+
+        # Filter to sessions for this agent
+        agent_sessions = [
+            {
+                "session_id": s.session_id,
+                "agent_id": str(s.agent_id),
+                "created_at": s.created_at.isoformat(),
+                "last_activity": s.last_activity.isoformat(),
+                "remaining_ttl_seconds": s.remaining_ttl_seconds(),
+                "use_sandbox": s.use_sandbox,
+                "workdir": str(s.workdir),
+            }
+            for s in user_sessions
+            if str(s.agent_id) == agent_id
+        ]
+
+        return {
+            "agent_id": agent_id,
+            "sessions": agent_sessions,
+            "total_count": len(agent_sessions),
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get sessions for agent {agent_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get sessions: {str(e)}",
         )
 
 

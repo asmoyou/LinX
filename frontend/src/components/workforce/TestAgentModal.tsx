@@ -74,7 +74,26 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
   });
   
   const [currentRoundNumber, setCurrentRoundNumber] = useState(1);
-  
+
+  // Session state for persistent execution environment
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  // Use ref to track sessionId for cleanup (avoids stale closure issues)
+  const sessionIdRef = useRef<string | null>(null);
+  // Use ref to track agentId for cleanup (agent may be null when modal closes)
+  const agentIdRef = useRef<string | null>(null);
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    // Only update ref with valid agent IDs - keep last valid ID for cleanup
+    if (agent?.id) {
+      agentIdRef.current = agent.id;
+    }
+  }, [agent?.id]);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -123,9 +142,25 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
     }
   }, [isOpen]);
 
-  // Reset state when modal closes
+  // Reset state when modal closes and clean up session
   useEffect(() => {
     if (!isOpen) {
+      // End the session to clean up resources (best-effort)
+      // Use refs to get the current values (avoids stale closure - agent may be null when closing)
+      const currentSessionId = sessionIdRef.current;
+      const currentAgentId = agentIdRef.current;
+
+      if (currentSessionId && currentAgentId) {
+        console.log(`Ending session: ${currentSessionId} for agent: ${currentAgentId}`);
+        agentsApi.endSession(currentAgentId, currentSessionId).then(() => {
+          console.log(`Session ended successfully: ${currentSessionId}`);
+        }).catch((err) => {
+          // Log but don't throw - session cleanup is best-effort
+          console.warn(`Failed to end session ${currentSessionId}:`, err);
+        });
+      }
+
+      // Reset all state
       setMessages([]);
       setInputMessage('');
       setAttachedFiles([]);
@@ -139,10 +174,13 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
         stats: null,
       });
       setCurrentRoundNumber(1);
+      setSessionId(null);  // Reset session ID
+      sessionIdRef.current = null;  // Also reset ref
+      agentIdRef.current = null;  // Also reset agent ID ref
       setError(null);
       setIsStreaming(false);
     }
-  }, [isOpen]);
+  }, [isOpen]);  // Only depend on isOpen - use refs for other values
 
   if (!isOpen || !agent) return null;
 
@@ -244,6 +282,23 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
         agent.id,
         userMessage.content,
         (chunk) => {
+          // Handle session event - track session ID for subsequent requests
+          if (chunk.type === 'session') {
+            const receivedSessionId = chunk.session_id;
+            if (receivedSessionId) {
+              setSessionId(receivedSessionId);
+              const sandboxInfo = chunk.use_sandbox
+                ? `[Docker sandbox: ${chunk.sandbox_id || 'pending'}]`
+                : '[subprocess mode]';
+              console.log(
+                chunk.new_session
+                  ? `New session created: ${receivedSessionId} ${sandboxInfo}`
+                  : `Resumed session: ${receivedSessionId} ${sandboxInfo}`
+              );
+            }
+            return;  // Don't process as other event types
+          }
+
           // Handle different message types
           if (chunk.type === 'info') {
             // Round number info - start new round
@@ -487,7 +542,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
         },
         history,
         filesToUpload.length > 0 ? filesToUpload : undefined,
-        abortControllerRef.current?.signal
+        abortControllerRef.current?.signal,
+        sessionId || undefined  // Pass existing session ID for subsequent requests
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message');

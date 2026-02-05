@@ -92,7 +92,7 @@ class CodeBlockExecutor:
     - Skill package code file support
     - Working directory isolation per execution
     - Automatic cleanup
-    - Sandbox integration
+    - Sandbox integration (Docker container execution)
     """
 
     EXECUTABLE_LANGUAGES = {'python', 'bash'}
@@ -119,6 +119,228 @@ class CodeBlockExecutor:
         self.base_workdir = Path(base_workdir or "/tmp/agent_code")
         self.base_workdir.mkdir(parents=True, exist_ok=True)
         self.logger = logging.getLogger(__name__)
+
+        # Container manager for Docker execution (lazy loaded)
+        self._container_manager = None
+
+    def _get_container_manager(self):
+        """Get container manager instance (lazy load)."""
+        if self._container_manager is None:
+            try:
+                from virtualization.container_manager import get_container_manager
+                self._container_manager = get_container_manager()
+            except ImportError:
+                self.logger.warning("ContainerManager not available")
+        return self._container_manager
+
+    # Common third-party packages that need pip install (not in stdlib)
+    # Maps import name -> pip package name (when different)
+    THIRD_PARTY_PACKAGES = {
+        # Data science
+        'numpy': 'numpy',
+        'np': 'numpy',
+        'pandas': 'pandas',
+        'pd': 'pandas',
+        'scipy': 'scipy',
+        'sklearn': 'scikit-learn',
+        'matplotlib': 'matplotlib',
+        'plt': 'matplotlib',
+        'seaborn': 'seaborn',
+        'sns': 'seaborn',
+        'plotly': 'plotly',
+        # Web/HTTP
+        'requests': 'requests',
+        'httpx': 'httpx',
+        'aiohttp': 'aiohttp',
+        'fastapi': 'fastapi',
+        'flask': 'flask',
+        'django': 'django',
+        'bs4': 'beautifulsoup4',
+        'BeautifulSoup': 'beautifulsoup4',
+        'lxml': 'lxml',
+        # Database
+        'sqlalchemy': 'sqlalchemy',
+        'pymongo': 'pymongo',
+        'redis': 'redis',
+        'psycopg2': 'psycopg2-binary',
+        # ML/AI
+        'torch': 'torch',
+        'tensorflow': 'tensorflow',
+        'tf': 'tensorflow',
+        'keras': 'keras',
+        'transformers': 'transformers',
+        'openai': 'openai',
+        'langchain': 'langchain',
+        # Utils
+        'PIL': 'pillow',
+        'Image': 'pillow',
+        'cv2': 'opencv-python',
+        'yaml': 'pyyaml',
+        'dotenv': 'python-dotenv',
+        'tqdm': 'tqdm',
+        'rich': 'rich',
+        'click': 'click',
+        'typer': 'typer',
+        'pydantic': 'pydantic',
+        'pytest': 'pytest',
+        'sympy': 'sympy',
+        'networkx': 'networkx',
+        'openpyxl': 'openpyxl',
+        'xlrd': 'xlrd',
+        'docx': 'python-docx',
+        'PyPDF2': 'PyPDF2',
+        'pypdf': 'pypdf',
+        'chardet': 'chardet',
+        'cryptography': 'cryptography',
+        'jwt': 'pyjwt',
+        'arrow': 'arrow',
+        'pendulum': 'pendulum',
+        'dateutil': 'python-dateutil',
+    }
+
+    def _extract_imports_from_code(self, code: str) -> set:
+        """Extract import statements from Python code.
+
+        Args:
+            code: Python source code
+
+        Returns:
+            Set of top-level module names
+        """
+        imports = set()
+
+        # Pattern for: import xxx, import xxx as yyy
+        import_pattern = r'^import\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        # Pattern for: from xxx import yyy
+        from_pattern = r'^from\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+
+        for line in code.split('\n'):
+            line = line.strip()
+            # Skip comments
+            if line.startswith('#'):
+                continue
+
+            match = re.match(import_pattern, line)
+            if match:
+                imports.add(match.group(1))
+                continue
+
+            match = re.match(from_pattern, line)
+            if match:
+                imports.add(match.group(1))
+
+        return imports
+
+    def _get_packages_to_install(self, imports: set) -> List[str]:
+        """Determine which packages need to be pip installed.
+
+        Args:
+            imports: Set of import names
+
+        Returns:
+            List of pip package names to install
+        """
+        packages = []
+        for imp in imports:
+            if imp in self.THIRD_PARTY_PACKAGES:
+                pkg = self.THIRD_PARTY_PACKAGES[imp]
+                if pkg not in packages:
+                    packages.append(pkg)
+        return packages
+
+    async def _auto_install_dependencies(
+        self,
+        container_id: str,
+        container_manager,
+        workdir: Path,
+        container_workdir: str,
+        script_path: Path
+    ) -> None:
+        """Auto-detect and install Python dependencies.
+
+        Strategy:
+        1. If requirements.txt exists, use it (highest priority)
+        2. Otherwise, parse imports from Python files and install known packages
+
+        Args:
+            container_id: Docker container ID
+            container_manager: ContainerManager instance
+            workdir: Host working directory
+            container_workdir: Container working directory
+            script_path: Path to the script being executed
+        """
+        packages_to_install = []
+
+        # Strategy 1: Check for requirements.txt
+        requirements_file = workdir / "requirements.txt"
+        if requirements_file.exists():
+            self.logger.info(
+                "[CODE_BLOCK] Found requirements.txt, installing dependencies",
+                extra={"container_id": container_id}
+            )
+            try:
+                exit_code, stdout, stderr = container_manager.exec_in_container(
+                    container_id,
+                    f"pip install -q -r {container_workdir}/requirements.txt",
+                )
+                if exit_code == 0:
+                    self.logger.info(
+                        "[CODE_BLOCK] Dependencies installed from requirements.txt",
+                        extra={"container_id": container_id}
+                    )
+                else:
+                    self.logger.warning(
+                        f"[CODE_BLOCK] Failed to install from requirements.txt: {stderr}",
+                        extra={"container_id": container_id}
+                    )
+            except Exception as e:
+                self.logger.warning(f"[CODE_BLOCK] Error installing requirements: {e}")
+            return  # Don't do import analysis if requirements.txt exists
+
+        # Strategy 2: Parse imports from all Python files
+        all_imports = set()
+        for py_file in workdir.glob("*.py"):
+            try:
+                code = py_file.read_text(encoding='utf-8')
+                imports = self._extract_imports_from_code(code)
+                all_imports.update(imports)
+            except Exception as e:
+                self.logger.debug(f"[CODE_BLOCK] Failed to parse {py_file.name}: {e}")
+
+        # Determine packages to install
+        packages_to_install = self._get_packages_to_install(all_imports)
+
+        if not packages_to_install:
+            self.logger.debug(
+                "[CODE_BLOCK] No third-party packages detected",
+                extra={"container_id": container_id, "imports": list(all_imports)}
+            )
+            return
+
+        self.logger.info(
+            f"[CODE_BLOCK] Auto-detected packages to install: {packages_to_install}",
+            extra={"container_id": container_id, "imports": list(all_imports)}
+        )
+
+        # Install packages
+        packages_str = " ".join(packages_to_install)
+        try:
+            exit_code, stdout, stderr = container_manager.exec_in_container(
+                container_id,
+                f"pip install -q {packages_str}",
+            )
+            if exit_code == 0:
+                self.logger.info(
+                    f"[CODE_BLOCK] Auto-installed packages: {packages_to_install}",
+                    extra={"container_id": container_id}
+                )
+            else:
+                self.logger.warning(
+                    f"[CODE_BLOCK] Some packages failed to install: {stderr}",
+                    extra={"container_id": container_id, "packages": packages_to_install}
+                )
+        except Exception as e:
+            self.logger.warning(f"[CODE_BLOCK] Error auto-installing packages: {e}")
 
     def extract_blocks(self, text: str) -> List[CodeBlock]:
         """Extract code blocks from LLM output text.
@@ -298,7 +520,8 @@ class CodeBlockExecutor:
         timeout: Optional[int] = None,
         workdir: Optional[Path] = None,
         env: Optional[Dict[str, str]] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        container_id: Optional[str] = None
     ) -> ExecutionResult:
         """Execute a code block by writing to file first.
 
@@ -308,6 +531,7 @@ class CodeBlockExecutor:
             workdir: Working directory (created if None)
             env: Environment variables
             session_id: Session ID for workdir naming
+            container_id: Docker container ID for sandbox execution
 
         Returns:
             ExecutionResult with output
@@ -319,14 +543,17 @@ class CodeBlockExecutor:
         if workdir is None:
             workdir = self.create_workdir(session_id)
 
+        execution_mode = "container" if container_id else "subprocess"
         self.logger.info(
-            f"[CODE_BLOCK] Executing {block.language} block -> {block.filename}",
+            f"[CODE_BLOCK] Executing {block.language} block -> {block.filename} (mode: {execution_mode})",
             extra={
                 "language": block.language,
                 "script_name": block.filename,
                 "code_length": len(block.code),
                 "workdir": str(workdir),
-                "source": block.source
+                "source": block.source,
+                "execution_mode": execution_mode,
+                "container_id": container_id
             }
         )
 
@@ -341,8 +568,13 @@ class CodeBlockExecutor:
 
             self.logger.debug(f"Wrote code to: {script_path}")
 
-            # Execute file
-            if block.language == 'python':
+            # Execute file - use container if provided
+            if container_id:
+                # Docker sandbox execution
+                result = await self._execute_in_container(
+                    container_id, block.language, script_path, env, timeout, workdir
+                )
+            elif block.language == 'python':
                 result = await self._execute_python_file(
                     script_path, None, env, timeout, workdir
                 )
@@ -385,6 +617,175 @@ class CodeBlockExecutor:
                 exit_code=-1,
                 execution_time=time.time() - start_time,
                 language=block.language
+            )
+
+    async def _execute_in_container(
+        self,
+        container_id: str,
+        language: str,
+        script_path: Path,
+        env: Optional[Dict[str, str]],
+        timeout: int,
+        workdir: Path
+    ) -> ExecutionResult:
+        """Execute code in a Docker container.
+
+        This method:
+        1. Copies the script file to the container
+        2. Auto-detects and installs dependencies (requirements.txt or imports)
+        3. Executes the script inside the container
+        4. Returns the output
+
+        Args:
+            container_id: Docker container ID
+            language: Programming language (python, bash)
+            script_path: Path to script file on host
+            env: Environment variables
+            timeout: Execution timeout in seconds
+            workdir: Working directory on host
+
+        Returns:
+            ExecutionResult with output
+        """
+        start_time = time.time()
+
+        container_manager = self._get_container_manager()
+        if container_manager is None or not container_manager.docker_available:
+            self.logger.warning(
+                "[CODE_BLOCK] Docker not available, falling back to subprocess",
+                extra={"container_id": container_id}
+            )
+            # Fallback to subprocess execution
+            if language == 'python':
+                return await self._execute_python_file(script_path, None, env, timeout, workdir)
+            elif language == 'bash':
+                return await self._execute_bash_file(script_path, None, env, timeout, workdir)
+            else:
+                return ExecutionResult(
+                    success=False,
+                    output="",
+                    error=f"Unsupported language: {language}",
+                    exit_code=-1,
+                    language=language
+                )
+
+        try:
+            # Container workdir - uses /workspace which is volume-mounted from host workdir
+            # Files (skills, scripts) written to host workdir are immediately available here
+            container_workdir = "/workspace"
+            container_script_name = script_path.name
+
+            # No need to create workdir or copy files - volume mount makes
+            # host workdir available at /workspace automatically.
+            # Scripts and skill files written to host workdir are immediately visible.
+
+            # Auto-install dependencies for Python scripts
+            if language == 'python':
+                await self._auto_install_dependencies(
+                    container_id, container_manager, workdir, container_workdir, script_path
+                )
+
+            # Build execution command
+            container_script_path = f"{container_workdir}/{container_script_name}"
+
+            if language == 'python':
+                cmd = f"cd {container_workdir} && python3 {container_script_path}"
+            elif language == 'bash':
+                cmd = f"cd {container_workdir} && bash {container_script_path}"
+            else:
+                return ExecutionResult(
+                    success=False,
+                    output="",
+                    error=f"Unsupported language for container execution: {language}",
+                    exit_code=-1,
+                    language=language
+                )
+
+            # Add environment variables to command
+            if env:
+                env_exports = " ".join([f"{k}='{v}'" for k, v in env.items()])
+                cmd = f"export {env_exports} && {cmd}"
+
+            self.logger.info(
+                f"[CODE_BLOCK] Executing in container: {cmd[:100]}...",
+                extra={
+                    "container_id": container_id,
+                    "language": language,
+                    "script": container_script_name
+                }
+            )
+
+            # Execute in container
+            # Note: container_manager.exec_in_container is synchronous, wrap for async
+            loop = asyncio.get_event_loop()
+            exit_code, stdout, stderr = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: container_manager.exec_in_container(
+                        container_id,
+                        cmd,
+                        workdir=container_workdir,
+                        environment=env
+                    )
+                ),
+                timeout=timeout
+            )
+
+            # Truncate output if needed
+            if len(stdout) > self.MAX_OUTPUT_LENGTH:
+                stdout = stdout[:self.MAX_OUTPUT_LENGTH] + "\n... [output truncated]"
+
+            execution_time = time.time() - start_time
+
+            self.logger.info(
+                f"[CODE_BLOCK] Container execution completed",
+                extra={
+                    "container_id": container_id,
+                    "exit_code": exit_code,
+                    "execution_time": execution_time,
+                    "output_length": len(stdout)
+                }
+            )
+
+            return ExecutionResult(
+                success=exit_code == 0,
+                output=stdout,
+                error=stderr if stderr else None,
+                exit_code=exit_code,
+                language=language,
+                execution_time=execution_time,
+                script_path=str(script_path)
+            )
+
+        except asyncio.TimeoutError:
+            execution_time = time.time() - start_time
+            self.logger.warning(
+                f"[CODE_BLOCK] Container execution timed out after {timeout}s",
+                extra={"container_id": container_id, "timeout": timeout}
+            )
+            return ExecutionResult(
+                success=False,
+                output="",
+                error=f"⏱️ Execution timed out after {timeout} seconds in container.",
+                exit_code=-1,
+                language=language,
+                execution_time=execution_time
+            )
+
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self.logger.error(
+                f"[CODE_BLOCK] Container execution error: {e}",
+                extra={"container_id": container_id},
+                exc_info=True
+            )
+            return ExecutionResult(
+                success=False,
+                output="",
+                error=f"Container execution error: {str(e)}",
+                exit_code=-1,
+                language=language,
+                execution_time=execution_time
             )
 
     async def _execute_python_file(

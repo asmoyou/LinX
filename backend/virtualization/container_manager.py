@@ -71,6 +71,9 @@ class ContainerConfig:
         }
     )
 
+    # Volume mounts: host_path -> container_path (persistent storage)
+    volume_mounts: Dict[str, str] = field(default_factory=dict)
+
     # Environment variables
     environment: Dict[str, str] = field(default_factory=dict)
 
@@ -114,7 +117,14 @@ class ContainerConfig:
             # Add resource limits directly
             **resource_config,
         }
-        
+
+        # Add volume mounts (persistent storage for pip cache, etc.)
+        if self.volume_mounts:
+            config["volumes"] = {
+                host_path: {"bind": container_path, "mode": "rw"}
+                for host_path, container_path in self.volume_mounts.items()
+            }
+
         # Handle network configuration
         # network_disabled and network_mode are mutually exclusive
         if self.network_disabled:
@@ -198,7 +208,29 @@ class ContainerManager:
             if self.docker_available:
                 # Real Docker container creation
                 docker_config = config.to_docker_config()
-                
+
+                # Auto-pull image if not available locally
+                image_name = docker_config.get("image", "python:3.11-bookworm")
+                try:
+                    self.docker_client.images.get(image_name)
+                except Exception:
+                    self.logger.info(
+                        f"Image {image_name} not found locally, pulling...",
+                        extra={"image": image_name, "agent_id": str(agent_id)},
+                    )
+                    try:
+                        self.docker_client.images.pull(image_name)
+                        self.logger.info(
+                            f"Successfully pulled image {image_name}",
+                            extra={"image": image_name},
+                        )
+                    except Exception as pull_error:
+                        self.logger.error(
+                            f"Failed to pull image {image_name}: {pull_error}",
+                            extra={"image": image_name, "error": str(pull_error)},
+                        )
+                        raise RuntimeError(f"Failed to pull image {image_name}: {pull_error}")
+
                 # Create container
                 container = self.docker_client.containers.create(
                     **docker_config
@@ -413,7 +445,8 @@ class ContainerManager:
             # Stop container first if running
             status = self.containers[container_id]["status"]
             if status == ContainerStatus.RUNNING.value:
-                self.stop_container(container_id)
+                # Use short timeout for sandbox - no need for graceful shutdown
+                self.stop_container(container_id, timeout=1)
 
             if self.docker_available:
                 # Remove Docker container
@@ -571,24 +604,29 @@ class ContainerManager:
                 "cmd": command if isinstance(command, list) else ["/bin/sh", "-c", command],
                 "stdout": True,
                 "stderr": True,
+                "demux": True,  # Separate stdout and stderr
             }
-            
+
             if workdir:
                 exec_config["workdir"] = workdir
-            
+
             if environment:
                 exec_config["environment"] = environment
-            
+
             # Execute command
             exec_instance = container.exec_run(**exec_config)
-            
+
             exit_code = exec_instance.exit_code
-            output = exec_instance.output.decode('utf-8', errors='replace')
-            
-            # Docker exec_run combines stdout and stderr
-            # We'll return output in stdout and empty stderr
-            stdout = output
-            stderr = ""
+
+            # With demux=True, output is a tuple (stdout_bytes, stderr_bytes)
+            raw_output = exec_instance.output
+            if isinstance(raw_output, tuple):
+                stdout = (raw_output[0] or b'').decode('utf-8', errors='replace')
+                stderr = (raw_output[1] or b'').decode('utf-8', errors='replace')
+            else:
+                # Fallback if demux didn't work
+                stdout = raw_output.decode('utf-8', errors='replace') if raw_output else ''
+                stderr = ''
             
             self.logger.debug(
                 "Command executed in container",

@@ -166,31 +166,38 @@ export const agentsApi = {
     onComplete?: () => void,
     history?: Array<{ role: string; content: string }>,
     files?: File[],
-    signal?: AbortSignal  // 添加 AbortSignal 支持
+    signal?: AbortSignal,  // AbortSignal support
+    sessionId?: string     // Session ID for persistent execution environment
   ): Promise<void> => {
     try {
       // Get token from auth store (same way apiClient does)
       const { useAuthStore } = await import('../stores/authStore');
       const token = useAuthStore.getState().token;
-      
+
       // Prepare form data for multipart/form-data request
       const formData = new FormData();
       formData.append('message', message);
-      
+
       // Add history as JSON string
       if (history && history.length > 0) {
         formData.append('history', JSON.stringify(history));
       }
-      
+
       // Add files
       if (files && files.length > 0) {
         files.forEach((file) => {
           formData.append('files', file);
         });
       }
-      
+
+      // Build URL with session_id query parameter
+      let url = `${apiClient.defaults.baseURL}/agents/${agentId}/test`;
+      if (sessionId) {
+        url += `?session_id=${encodeURIComponent(sessionId)}`;
+      }
+
       // Use native fetch for SSE streaming (axios doesn't support SSE well in browser)
-      const response = await fetch(`${apiClient.defaults.baseURL}/agents/${agentId}/test`, {
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Accept': 'text/event-stream',
@@ -310,6 +317,45 @@ export const agentsApi = {
     const response = await apiClient.put<Agent>(`/agents/${agentId}/skills`, {
       skill_names: skillNames
     });
+    return response.data;
+  },
+
+  /**
+   * End an agent session and clean up resources
+   *
+   * This should be called when the test dialog is closed to clean up:
+   * - Working directory and files created during the session
+   * - Sandbox container (if sandbox mode was enabled)
+   *
+   * The session is also automatically cleaned up after TTL expiration,
+   * so this is optional but recommended for explicit cleanup.
+   */
+  endSession: async (agentId: string, sessionId: string): Promise<void> => {
+    try {
+      await apiClient.delete(`/agents/${agentId}/sessions/${sessionId}`);
+    } catch (error) {
+      // Log but don't throw - session cleanup is best-effort
+      console.warn(`Failed to end session ${sessionId}:`, error);
+    }
+  },
+
+  /**
+   * Get all active sessions for an agent
+   */
+  getAgentSessions: async (agentId: string): Promise<{
+    agent_id: string;
+    sessions: Array<{
+      session_id: string;
+      agent_id: string;
+      created_at: string;
+      last_activity: string;
+      remaining_ttl_seconds: number;
+      use_sandbox: boolean;
+      workdir: string;
+    }>;
+    total_count: number;
+  }> => {
+    const response = await apiClient.get(`/agents/${agentId}/sessions`);
     return response.data;
   },
 };
