@@ -1,165 +1,150 @@
 # LinX (灵枢) - Python Dependencies
+# Use >= for flexibility, pip will resolve compatible versions
+
 # Core Framework and API
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-python-multipart==0.0.6
-pydantic==2.5.3
-pydantic-settings==2.1.0
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+pydantic>=2.7.4
+pydantic-settings>=2.1.0
 
 # Agent Framework
-langgraph==1.0.7
-langchain==1.2.7
-langchain-community==0.4.1
-langchain-core==1.2.7
-langchain-openai==1.1.7
-langchain-text-splitters==1.1.0
+langgraph>=1.0.7
+langchain>=1.2.0
+langchain-community>=0.4.0
+langchain-core>=1.2.0
+langchain-openai>=1.1.0
+langchain-text-splitters>=1.1.0
 
 # Database - PostgreSQL
-psycopg2-binary==2.9.9
-sqlalchemy==2.0.25
-alembic==1.13.1
-asyncpg==0.29.0
+psycopg2-binary>=2.9.9
+sqlalchemy>=2.0.25
+alembic>=1.13.1
+asyncpg>=0.29.0
 
 # Database - Vector Database (Milvus)
-pymilvus==2.3.5
+pymilvus>=2.3.5
 
 # Object Storage - MinIO
-minio==7.2.20
+minio>=7.2.0
 
-# Message Bus - Redis
-redis==5.0.1
-redis-py-cluster==2.1.3
+# Message Bus - Redis (redis-py 4.1+ has native cluster support)
+redis>=5.0.0
 
 # Authentication and Security
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-bcrypt==4.1.2
-cryptography==42.0.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.1.0
+cryptography>=42.0.0
 
 # LLM Providers
-# Ollama client
-ollama==0.1.6
-# OpenAI (optional)
-openai==1.10.0
-# Anthropic (optional)
-anthropic==0.8.1
+ollama>=0.1.6
+openai>=1.10.0
+anthropic>=0.8.0
 
 # Document Processing
-# PDF processing
-PyPDF2==3.0.1
-pdfplumber==0.10.3
-# DOCX processing
-python-docx==1.1.0
-# File type detection
-python-magic==0.4.27
-# OCR
-pytesseract==0.3.10
-Pillow==10.2.0
-# Audio transcription (Whisper)
-openai-whisper==20231117
-# Video processing
-moviepy==1.0.3
+PyPDF2>=3.0.1
+pdfplumber>=0.10.0
+python-docx>=1.1.0
+python-magic>=0.4.27
+pytesseract>=0.3.10
+Pillow>=10.2.0
+# openai-whisper>=20231117  # Requires LLVM, install separately if needed: brew install llvm && pip install openai-whisper
+moviepy>=1.0.3
 
 # Data Processing and Analysis
-pandas==2.1.4
-numpy==1.26.3
+pandas>=2.1.0
+numpy>=1.26.0
 
 # HTTP Client
-httpx==0.26.0
-aiohttp==3.9.1
+httpx>=0.25.0
+aiohttp>=3.9.0
 
 # Configuration Management
-python-dotenv==1.0.0
-pyyaml==6.0.1
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
 
 # Logging and Monitoring
-structlog==24.1.0
-python-json-logger==2.0.7
-prometheus-client==0.19.0
+structlog>=24.1.0
+python-json-logger>=2.0.7
+prometheus-client>=0.19.0
 
 # Distributed Tracing
-opentelemetry-api==1.22.0
-opentelemetry-sdk==1.22.0
-opentelemetry-instrumentation-fastapi==0.43b0
-opentelemetry-instrumentation-requests==0.43b0
-opentelemetry-instrumentation-sqlalchemy==0.43b0
-opentelemetry-exporter-jaeger==1.21.0
-opentelemetry-exporter-jaeger-thrift==1.21.0
+opentelemetry-api>=1.22.0
+opentelemetry-sdk>=1.22.0
+opentelemetry-instrumentation-fastapi>=0.43b0
+opentelemetry-instrumentation-requests>=0.43b0
+opentelemetry-instrumentation-sqlalchemy>=0.43b0
+opentelemetry-exporter-jaeger>=1.21.0
+opentelemetry-exporter-jaeger-thrift>=1.21.0
 
 # Task Queue and Background Jobs
-celery==5.3.6
-kombu==5.3.5
+celery>=5.3.0
+kombu>=5.3.0
 
 # Utilities
-python-dateutil==2.8.2
-pytz==2024.1
-uuid==1.30
+python-dateutil>=2.8.0
+pytz>=2024.1
+uuid>=1.30
 
 # Testing
-pytest==7.4.4
-pytest-asyncio==0.23.3
-pytest-cov==4.1.0
-pytest-mock==3.12.0
-httpx==0.26.0  # for testing FastAPI
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+pytest-mock>=3.12.0
 
 # Code Quality
-black==24.1.1
-flake8==7.0.0
-mypy==1.8.0
-isort==5.13.2
+black>=24.1.0
+flake8>=7.0.0
+mypy>=1.8.0
+isort>=5.13.0
 
 # Development Tools
-ipython==8.20.0
-ipdb==0.13.13
+ipython>=8.20.0
+ipdb>=0.13.0
 
 # WebSocket Support
-websockets==12.0
+websockets>=12.0
 
 # Rate Limiting
-slowapi==0.1.9
-
-# CORS
-# FastAPI has built-in CORS support via fastapi.middleware.cors
+slowapi>=0.1.9
 
 # Email (for alerts)
-aiosmtplib==3.0.1
-email-validator==2.1.0
+aiosmtplib>=3.0.0
+email-validator>=2.1.0
 
 # Markdown Processing
-markdown==3.5.2
+markdown>=3.5.0
 
 # JSON Schema Validation
-jsonschema==4.20.0
+jsonschema>=4.20.0
 
 # Retry Logic
-tenacity==8.2.3
-
-# File Type Detection
-python-magic==0.4.27
+tenacity>=8.2.0
 
 # Malware Scanning Integration
-clamd==1.0.2
+clamd>=1.0.2
 
 # Natural Language Processing
-nltk==3.8.1
-spacy==3.7.2
+nltk>=3.8.0
+spacy>=3.7.0
 
 # Code Execution Sandbox Support
-docker==7.0.0
+docker>=7.0.0
 
 # Metrics and Statistics
-scipy==1.11.4
-scikit-learn==1.4.0
+scipy>=1.11.0
+scikit-learn>=1.4.0
 
 # Caching
-cachetools==5.3.2
+cachetools>=5.3.0
 
 # Connection Pooling
-psycopg2-pool==1.1
+psycopg2-pool>=1.1
 
 # Async Support
-anyio==4.2.0
+anyio>=4.2.0
 psutil>=5.9.0
 
 # SKILL.md parsing
-python-frontmatter==1.1.0
+python-frontmatter>=1.1.0
