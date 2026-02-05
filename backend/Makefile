@@ -15,6 +15,11 @@ help:
 	@echo "  type-check       - Run mypy type checking"
 	@echo "  security-check   - Run security vulnerability checks"
 	@echo "  run              - Run API Gateway in development mode"
+	@echo "  run-debug        - Run with debug logging to console"
+	@echo "  run-log          - Run with debug logging to backend.log"
+	@echo "  restart          - Clean cache, stop and restart backend"
+	@echo "  restart-log      - Clean cache, stop and restart with logging"
+	@echo "  stop             - Stop running backend processes"
 	@echo "  docker-build     - Build Docker images"
 	@echo "  docker-up        - Start Docker services"
 	@echo "  docker-down      - Stop Docker services"
@@ -82,6 +87,27 @@ security-check:
 # Development
 run:
 	uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000
+
+run-debug:
+	uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000 --log-level debug
+
+run-log:
+	@echo "Starting backend with logs written to backend.log..."
+	@echo "Use 'tail -f backend.log' in another terminal to monitor"
+	uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000 --log-level debug >> backend.log 2>&1
+
+restart: clean stop run
+	@echo "Backend restarted"
+
+restart-log: clean stop run-log
+	@echo "Backend restarted with logging"
+
+stop:
+	@echo "Stopping backend processes on port 8000..."
+	@lsof -ti:8000 | xargs kill -9 2>/dev/null || true
+	@pkill -9 -f "uvicorn.*api_gateway" 2>/dev/null || true
+	@sleep 1
+	@echo "Backend stopped"
 
 run-worker:
 	python -m task_manager.worker
