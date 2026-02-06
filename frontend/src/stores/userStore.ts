@@ -6,6 +6,7 @@ export interface UserProfile {
   email: string;
   role: string;
   displayName?: string;
+  departmentId?: string;
   attributes?: Record<string, any>;
   createdAt?: string;
   updatedAt?: string;

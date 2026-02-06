@@ -1,5 +1,6 @@
 import React from 'react';
 import { Search, Filter } from 'lucide-react';
+import { DepartmentSelect } from '@/components/departments/DepartmentSelect';
 
 interface SearchBarProps {
   searchQuery: string;
@@ -8,6 +9,8 @@ interface SearchBarProps {
   onTypeFilterChange: (type: string) => void;
   accessFilter: string;
   onAccessFilterChange: (access: string) => void;
+  departmentFilter?: string;
+  onDepartmentFilterChange?: (departmentId: string | undefined) => void;
 }
 
 export const SearchBar: React.FC<SearchBarProps> = ({
@@ -17,6 +20,8 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   onTypeFilterChange,
   accessFilter,
   onAccessFilterChange,
+  departmentFilter,
+  onDepartmentFilterChange,
 }) => {
   return (
     <div className="glass rounded-lg p-4 mb-6">
@@ -66,6 +71,17 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             <option value="restricted">Restricted</option>
           </select>
         </div>
+
+        {/* Department Filter */}
+        {onDepartmentFilterChange && (
+          <div className="w-48">
+            <DepartmentSelect
+              value={departmentFilter}
+              onChange={onDepartmentFilterChange}
+              showAll
+            />
+          </div>
+        )}
       </div>
     </div>
   );

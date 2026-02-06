@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus, Search, Filter, Loader2 } from 'lucide-react';
+import { Plus, Search, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { Agent } from '@/types/agent';
 import { AgentCard } from '@/components/workforce/AgentCard';
@@ -9,6 +9,7 @@ import { AgentDetailsModal } from '@/components/workforce/AgentDetailsModal';
 import { AgentConfigModal } from '@/components/workforce/AgentConfigModal';
 import { TestAgentModal } from '@/components/workforce/TestAgentModal';
 import { agentsApi } from '@/api';
+import { DepartmentSelect } from '@/components/departments/DepartmentSelect';
 
 export const Workforce: React.FC = () => {
   const { t } = useTranslation();
@@ -16,6 +17,7 @@ export const Workforce: React.FC = () => {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [departmentFilter, setDepartmentFilter] = useState<string | undefined>();
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
@@ -44,10 +46,11 @@ export const Workforce: React.FC = () => {
   const filteredAgents = agents.filter((agent) => {
     const matchesSearch = agent.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                          agent.type.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesSearch;
+    const matchesDepartment = !departmentFilter || agent.departmentId === departmentFilter;
+    return matchesSearch && matchesDepartment;
   });
 
-  const handleAddAgent = async (name: string, systemPrompt: string) => {
+  const handleAddAgent = async (name: string, systemPrompt: string, departmentId?: string) => {
     try {
       const newAgent = await agentsApi.create({
         name,
@@ -55,6 +58,7 @@ export const Workforce: React.FC = () => {
         systemPrompt: systemPrompt || undefined,
         capabilities: [],
         config: {},
+        department_id: departmentId || undefined,
       });
       
       setAgents([...agents, newAgent]);
@@ -197,10 +201,13 @@ export const Workforce: React.FC = () => {
             className="w-full bg-transparent border-none py-3 pl-12 pr-4 focus:ring-0 text-sm placeholder:text-zinc-400 text-zinc-800 dark:text-zinc-200"
           />
         </div>
-        <button className="flex items-center gap-2 px-5 py-2.5 hover:bg-zinc-500/10 rounded-xl transition-all text-sm font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white">
-          <Filter className="w-4 h-4" />
-          {t('common.filter')}
-        </button>
+        <div className="w-48">
+          <DepartmentSelect
+            value={departmentFilter}
+            onChange={setDepartmentFilter}
+            showAll
+          />
+        </div>
       </div>
 
       {/* Loading State */}

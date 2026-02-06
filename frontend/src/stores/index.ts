@@ -8,6 +8,7 @@
 // Import stores for resetAllStores function
 import { useAuthStore } from './authStore';
 import { useUserStore } from './userStore';
+import { useDepartmentStore } from './departmentStore';
 import { useAgentStore } from './agentStore';
 import { useTaskStore } from './taskStore';
 import { useKnowledgeStore } from './knowledgeStore';
@@ -20,6 +21,9 @@ export type { User } from './authStore';
 
 export { useUserStore } from './userStore';
 export type { UserProfile, ResourceQuota } from './userStore';
+
+// Department management
+export { useDepartmentStore } from './departmentStore';
 
 // Core features
 export { useAgentStore } from './agentStore';
@@ -89,14 +93,16 @@ export type { Notification, NotificationType } from './notificationStore';
 export const resetAllStores = () => {
   const authStore = useAuthStore.getState();
   const userStore = useUserStore.getState();
+  const departmentStore = useDepartmentStore.getState();
   const agentStore = useAgentStore.getState();
   const taskStore = useTaskStore.getState();
   const knowledgeStore = useKnowledgeStore.getState();
   const memoryStore = useMemoryStore.getState();
   const preferencesStore = usePreferencesStore.getState();
-  
+
   authStore.logout();
   userStore.reset();
+  departmentStore.reset();
   agentStore.reset();
   taskStore.reset();
   knowledgeStore.reset();

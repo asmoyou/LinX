@@ -28,6 +28,58 @@ from sqlalchemy.sql import func
 Base = declarative_base()
 
 
+class Department(Base):
+    """Departments table.
+
+    Stores organizational department structure with tree hierarchy support.
+    """
+
+    __tablename__ = "departments"
+
+    department_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), nullable=False, index=True)
+    code = Column(String(50), unique=True, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    parent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("departments.department_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    manager_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    status = Column(
+        String(20), nullable=False, default="active", index=True
+    )  # active, archived
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    # Relationships
+    parent = relationship("Department", remote_side=[department_id], backref="children")
+    manager = relationship("User", foreign_keys=[manager_id])
+    members = relationship(
+        "User", back_populates="department", foreign_keys="User.department_id"
+    )
+    agents = relationship("Agent", back_populates="department")
+    knowledge_items = relationship("KnowledgeItem", back_populates="department")
+
+    # Indexes
+    __table_args__ = (Index("idx_department_parent_status", "parent_id", "status"),)
+
+    def __repr__(self):
+        return (
+            f"<Department(department_id={self.department_id}, "
+            f"name={self.name}, code={self.code})>"
+        )
+
+
 class User(Base):
     """User accounts table.
 
@@ -42,12 +94,21 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False, default="user", index=True)  # for RBAC
     attributes = Column(JSONB, nullable=True)  # for ABAC
+    department_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("departments.department_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
     # Relationships
+    department = relationship(
+        "Department", back_populates="members", foreign_keys=[department_id]
+    )
     agents = relationship("Agent", back_populates="owner", cascade="all, delete-orphan")
     tasks = relationship("Task", back_populates="creator", cascade="all, delete-orphan")
     permissions = relationship("Permission", back_populates="user", cascade="all, delete-orphan")
@@ -97,6 +158,12 @@ class Agent(Base):
     
     # Access Control
     access_level = Column(String(50), nullable=True, default="private")  # private, team, public
+    department_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("departments.department_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     allowed_knowledge = Column(JSONB, nullable=True)  # list of knowledge base IDs
     allowed_memory = Column(JSONB, nullable=True)  # list of memory collection IDs
     
@@ -114,6 +181,7 @@ class Agent(Base):
 
     # Relationships
     owner = relationship("User", back_populates="agents")
+    department = relationship("Department", back_populates="agents")
     tasks = relationship("Task", back_populates="assigned_agent")
     audit_logs = relationship("AuditLog", back_populates="agent")
 
@@ -299,6 +367,12 @@ class KnowledgeItem(Base):
     access_level = Column(
         String(50), nullable=False, default="private", index=True
     )  # private, team, public
+    department_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("departments.department_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     item_metadata = Column(
         JSONB, nullable=True
     )  # Renamed from 'metadata' to avoid SQLAlchemy conflict
@@ -309,6 +383,7 @@ class KnowledgeItem(Base):
 
     # Relationships
     owner = relationship("User", back_populates="knowledge_items")
+    department = relationship("Department", back_populates="knowledge_items")
 
     # Indexes
     __table_args__ = (

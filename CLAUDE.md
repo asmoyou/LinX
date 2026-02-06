@@ -512,6 +512,19 @@ Redesign of Agent Skills system. Key insight: Agent Skills = Instructions (SKILL
 
 **Completed**: Template restructuring (Phase 0), analysis of Moltbot's 54 skills format
 
+### Department Management (~80% complete)
+
+Spec files:
+- `.kiro/specs/department-management/requirements.md` - 5 user stories for department CRUD, assignment, and access control
+- `.kiro/specs/department-management/design.md` - DB schema, API design, frontend architecture, migration strategy
+- `.kiro/specs/department-management/tasks.md` - 8 phases, ~55 tasks
+
+Enterprise department management system for organizing users, agents, and knowledge bases into departments with hierarchical support.
+
+**Completed**: Department model with self-referencing FK (Phase 1), Alembic migrations with data migration (Phase 1), Full CRUD API with resource endpoints (Phase 2), ABAC/knowledge filter adaptation (Phase 3), Frontend infrastructure - types, API, store, DepartmentSelect (Phase 4), Department management page (Phase 5), Integration with Workforce/Knowledge/Profile pages (Phase 6), Backend + frontend tests (Phase 7), Tasks.md update (Phase 8)
+
+**Remaining**: Backend API adaptations for existing endpoints (2.3), agent/knowledge list server-side filtering (3.3), additional test coverage, API documentation
+
 ### Digital Workforce Platform (Foundation Spec)
 
 Spec files:

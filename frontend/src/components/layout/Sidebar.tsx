@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { 
-  LayoutDashboard, 
-  Users, 
-  Target, 
-  Database, 
+import {
+  LayoutDashboard,
+  Users,
+  Target,
+  Database,
   BrainCircuit,
   Code2,
+  Building2,
   Settings,
   ChevronLeft,
   ChevronRight,
@@ -43,6 +44,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
     { path: '/knowledge', icon: Database, label: t('nav.knowledge') },
     { path: '/memory', icon: BrainCircuit, label: t('nav.memory') },
     { path: '/skills', icon: Code2, label: t('nav.skills') },
+    { path: '/departments', icon: Building2, label: t('nav.departments') },
     { path: '/settings', icon: Settings, label: t('nav.settings') },
   ];
 

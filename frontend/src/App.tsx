@@ -17,6 +17,7 @@ const Tasks = lazy(() => import('./pages/Tasks').then(m => ({ default: m.Tasks }
 const Knowledge = lazy(() => import('./pages/Knowledge').then(m => ({ default: m.Knowledge })));
 const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memory })));
 const Skills = lazy(() => import('./pages/Skills'));
+const Departments = lazy(() => import('./pages/Departments').then(m => ({ default: m.Departments })));
 const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings })));
 const Profile = lazy(() => import('./pages/Profile').then(m => ({ default: m.Profile })));
 const Login = lazy(() => import('./pages/Login'));
@@ -169,6 +170,23 @@ const AnimatedRoutes = () => {
                     transition={{ duration: 0.3 }}
                   >
                     <Skills />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
+            }
+          />
+          <Route
+            path="departments"
+            element={
+              <PageErrorBoundary pageName="部门">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <Departments />
                   </motion.div>
                 </Suspense>
               </PageErrorBoundary>

@@ -18,6 +18,7 @@ export interface CreateAgentRequest {
   allowedMemory?: string[];
   capabilities?: string[];
   config?: Record<string, any>;
+  department_id?: string;
 }
 
 export interface UpdateAgentRequest {
@@ -34,6 +35,7 @@ export interface UpdateAgentRequest {
   allowedMemory?: string[];
   capabilities?: string[];
   config?: Record<string, any>;
+  department_id?: string;
 }
 
 export interface AgentTemplate {

@@ -7,6 +7,7 @@ import { llmApi, agentsApi } from '@/api';
 import type { ModelMetadata } from '@/api/llm';
 import { ModelMetadataCard } from '@/components/settings/ModelMetadataCard';
 import { ImageCropModal } from '@/components/common/ImageCropModal';
+import { DepartmentSelect } from '@/components/departments/DepartmentSelect';
 
 interface AgentConfigModalProps {
   agent: Agent | null;
@@ -57,6 +58,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     temperature: 0.7,
     maxTokens: 4096,
     topP: 0.9,
+    departmentId: '',
     accessLevel: 'private',
     allowedKnowledge: [],
     allowedMemory: [],
@@ -83,6 +85,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         temperature: agent.temperature ?? 0.7,
         maxTokens: agent.maxTokens ?? 4096,
         topP: agent.topP ?? 0.9,
+        departmentId: agent.departmentId || '',
         accessLevel: agent.accessLevel || 'private',
         allowedKnowledge: agent.allowedKnowledge || [],
         allowedMemory: agent.allowedMemory || [],
@@ -480,6 +483,16 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                   rows={8}
                   className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200 resize-none"
                   placeholder={t('agent.systemPromptPlaceholder')}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t('departments.label', 'Department')}
+                </label>
+                <DepartmentSelect
+                  value={formData.departmentId || undefined}
+                  onChange={(val) => setFormData({ ...formData, departmentId: val || '' })}
                 />
               </div>
             </div>

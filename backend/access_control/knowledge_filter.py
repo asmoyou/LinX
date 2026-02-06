@@ -115,7 +115,24 @@ def can_access_knowledge_item(
             return True
 
     elif access_level == KnowledgeAccessLevel.TEAM:
-        # Team knowledge requires matching department attribute
+        # Team knowledge requires matching department
+        # Primary check: department_id FK match (new model)
+        user_dept_id = (user_attributes or {}).get("department_id")
+        resource_dept_id = (resource_attributes or {}).get("department_id")
+
+        if user_dept_id and resource_dept_id and str(user_dept_id) == str(resource_dept_id):
+            if check_permission(role, ResourceType.KNOWLEDGE, action, "permitted"):
+                logger.debug(
+                    f"User {current_user.user_id} granted access via department_id match",
+                    extra={
+                        "user_id": current_user.user_id,
+                        "department_id": str(user_dept_id),
+                        "action": action.value,
+                    },
+                )
+                return True
+
+        # Fallback: string-based department attribute match (backward compat)
         if user_attributes and resource_attributes:
             user_dept = user_attributes.get("department")
             resource_dept = resource_attributes.get("department")
@@ -236,10 +253,17 @@ def filter_knowledge_query(
         conditions.append(KnowledgeItem.access_level == KnowledgeAccessLevel.PUBLIC)
 
         # Team knowledge accessible if department matches
-        if user_attributes and user_attributes.get("department"):
-            # For team knowledge, we need to check if user's department matches
-            # This requires the knowledge item to have department in metadata
-            # We'll include team knowledge and filter further in application logic
+        user_dept_id = (user_attributes or {}).get("department_id")
+        if user_dept_id:
+            # Use department_id FK for precise team filtering
+            conditions.append(
+                and_(
+                    KnowledgeItem.access_level == KnowledgeAccessLevel.TEAM,
+                    KnowledgeItem.department_id == user_dept_id,
+                )
+            )
+        elif user_attributes and user_attributes.get("department"):
+            # Fallback: include all team knowledge, filter in application logic
             conditions.append(KnowledgeItem.access_level == KnowledgeAccessLevel.TEAM)
 
     # Apply conditions
@@ -335,8 +359,15 @@ def build_milvus_filter_expr(
         conditions.append(f'access_level == "{KnowledgeAccessLevel.PUBLIC}"')
 
         # Team knowledge accessible if department matches
-        if user_attributes and user_attributes.get("department"):
-            # Include team knowledge (further filtering in application logic)
+        user_dept_id = (user_attributes or {}).get("department_id")
+        if user_dept_id:
+            # Use department_id for precise Milvus filtering
+            conditions.append(
+                f'(access_level == "{KnowledgeAccessLevel.TEAM}" '
+                f'and department_id == "{user_dept_id}")'
+            )
+        elif user_attributes and user_attributes.get("department"):
+            # Fallback: include team knowledge, filter in application logic
             conditions.append(f'access_level == "{KnowledgeAccessLevel.TEAM}"')
 
     # Combine conditions

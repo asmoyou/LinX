@@ -14,6 +14,7 @@ export type Agent = {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
+  departmentId?: string;
   accessLevel?: 'private' | 'team' | 'public';
   allowedKnowledge?: string[];
   allowedMemory?: string[];

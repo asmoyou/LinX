@@ -2,11 +2,12 @@ import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { DepartmentSelect } from '@/components/departments/DepartmentSelect';
 
 interface AddAgentModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAdd: (name: string, systemPrompt: string) => void;
+  onAdd: (name: string, systemPrompt: string, departmentId?: string) => void;
 }
 
 export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, onAdd }) => {
@@ -14,6 +15,7 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [name, setName] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [departmentId, setDepartmentId] = useState<string | undefined>();
   const [nameError, setNameError] = useState('');
 
   if (!isOpen) return null;
@@ -21,6 +23,7 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
   const handleClose = () => {
     setName('');
     setSystemPrompt('');
+    setDepartmentId(undefined);
     setNameError('');
     onClose();
   };
@@ -42,7 +45,7 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
     setIsSubmitting(true);
     
     try {
-      onAdd(name.trim(), systemPrompt.trim());
+      onAdd(name.trim(), systemPrompt.trim(), departmentId);
       toast.success(t('agent.success', 'Agent created successfully!'));
       handleClose();
     } catch (error: any) {
@@ -122,6 +125,18 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
             <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
               You can configure the model, temperature, and other settings after creating the agent.
             </p>
+          </div>
+
+          {/* Department */}
+          <div>
+            <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+              {t('departments.label', 'Department')} <span className="text-zinc-400 text-xs font-normal">({t('common.optional', 'Optional')})</span>
+            </label>
+            <DepartmentSelect
+              value={departmentId}
+              onChange={setDepartmentId}
+              disabled={isSubmitting}
+            />
           </div>
 
           {/* Actions */}

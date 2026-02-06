@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Camera, Save, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { GlassPanel } from '../GlassPanel';
-import { useUserStore } from '../../stores';
+import { useUserStore, useDepartmentStore } from '../../stores';
 import { usersApi } from '../../api/users';
 import { useNotificationStore } from '../../stores/notificationStore';
 
@@ -10,6 +10,7 @@ export const ProfileSection = () => {
   const { t } = useTranslation();
   const { profile, setProfile, setLoading } = useUserStore();
   const { addNotification } = useNotificationStore();
+  const { departments, fetchDepartments } = useDepartmentStore();
   const [isEditing, setIsEditing] = useState(false);
   const [formData, setFormData] = useState({
     displayName: '',
@@ -17,6 +18,13 @@ export const ProfileSection = () => {
   });
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Fetch departments for display
+  useEffect(() => {
+    if (departments.length === 0) {
+      fetchDepartments({ status: 'active' });
+    }
+  }, [departments.length, fetchDepartments]);
 
   // Sync formData with profile when profile changes
   useEffect(() => {
@@ -242,6 +250,20 @@ export const ProfileSection = () => {
                 {profile?.role || '—'}
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">{t('profileSettings.profile.roleHint')}</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
+                {t('departments.label', 'Department')}
+              </label>
+              <div className="w-full px-4 py-2 bg-zinc-100 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700/50 rounded-lg text-zinc-600 dark:text-zinc-400">
+                {(() => {
+                  if (!profile?.departmentId) return '—';
+                  const dept = departments.find(d => d.id === profile.departmentId);
+                  return dept?.name || profile.departmentId;
+                })()}
+              </div>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">{t('departments.assignedByAdmin', 'Assigned by administrator')}</p>
             </div>
           </div>
 

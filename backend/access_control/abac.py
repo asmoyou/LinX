@@ -654,6 +654,29 @@ def create_clearance_level_policy(
     )
 
 
+def build_user_attributes(user) -> Dict[str, Any]:
+    """Build user attributes for ABAC evaluation, merging FK-derived department info.
+
+    This ensures existing ABAC policies using `user.department` continue to work
+    after migration from attributes JSONB to department_id FK.
+
+    Args:
+        user: User SQLAlchemy model instance
+
+    Returns:
+        Merged attributes dict with department derived from FK relationship
+    """
+    attrs = dict(user.attributes or {})
+
+    # Override department from FK relationship if available
+    if hasattr(user, "department") and user.department:
+        attrs["department"] = user.department.code
+        attrs["department_id"] = str(user.department.department_id)
+        attrs["department_name"] = user.department.name
+
+    return attrs
+
+
 def create_business_hours_policy(
     policy_id: str,
     resource_type: str,

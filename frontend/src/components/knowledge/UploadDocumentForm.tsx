@@ -5,10 +5,11 @@ import { useTranslation } from 'react-i18next';
 import { Upload, File, X, AlertCircle } from 'lucide-react';
 import { SubmitButton } from '@/components/forms/SubmitButton';
 import { uploadDocumentSchema, type UploadDocumentFormData } from '@/schemas/authSchemas';
+import { DepartmentSelect } from '@/components/departments/DepartmentSelect';
 import toast from 'react-hot-toast';
 
 interface UploadDocumentFormProps {
-  onSubmit: (data: UploadDocumentFormData, file: File) => Promise<void>;
+  onSubmit: (data: UploadDocumentFormData & { departmentId?: string }, file: File) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -24,6 +25,7 @@ export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({ onSubmit
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [departmentId, setDepartmentId] = useState<string | undefined>();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const {
@@ -94,7 +96,7 @@ export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({ onSubmit
 
     setIsSubmitting(true);
     try {
-      await onSubmit(data, selectedFile);
+      await onSubmit({ ...data, departmentId }, selectedFile);
       toast.success(t('document.success', 'Document uploaded successfully!'));
     } catch (error: any) {
       console.error('Failed to upload document:', error);
@@ -251,6 +253,18 @@ export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({ onSubmit
           disabled={isSubmitting}
           className="w-full px-4 py-3 bg-white/50 dark:bg-zinc-800/50 border border-zinc-300 dark:border-zinc-700 rounded-lg text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           placeholder={t('document.tagsPlaceholder', 'Comma separated, e.g., report, data, Q4')}
+        />
+      </div>
+
+      {/* Department */}
+      <div>
+        <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
+          {t('departments.label', 'Department')} <span className="text-zinc-400 text-xs font-normal">({t('common.optional', 'Optional')})</span>
+        </label>
+        <DepartmentSelect
+          value={departmentId}
+          onChange={setDepartmentId}
+          disabled={isSubmitting}
         />
       </div>
 
