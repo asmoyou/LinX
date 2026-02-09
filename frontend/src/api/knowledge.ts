@@ -208,13 +208,31 @@ export const knowledgeApi = {
   },
 
   /**
-   * Download document
+   * Download document — returns blob and server-provided filename
    */
-  download: async (documentId: string): Promise<Blob> => {
+  download: async (documentId: string): Promise<{ blob: Blob; filename?: string }> => {
     const response = await apiClient.get(`/knowledge/${documentId}/download`, {
       responseType: 'blob',
     });
-    return response.data;
+
+    // Extract filename from Content-Disposition header
+    const disposition = response.headers['content-disposition'] as string | undefined;
+    let filename: string | undefined;
+    if (disposition) {
+      // RFC 5987: filename*=UTF-8''encoded_name
+      const utf8Match = disposition.match(/filename\*=UTF-8''(.+)/i);
+      if (utf8Match) {
+        filename = decodeURIComponent(utf8Match[1]);
+      } else {
+        // Fallback: filename="name"
+        const basicMatch = disposition.match(/filename="?([^";\n]+)"?/i);
+        if (basicMatch) {
+          filename = basicMatch[1].trim();
+        }
+      }
+    }
+
+    return { blob: response.data, filename };
   },
 
   /**

@@ -157,11 +157,11 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
 
     set({ isDownloading: true, downloadingId: id });
     try {
-      const blob = await knowledgeApi.download(id);
+      const { blob, filename: serverFilename } = await knowledgeApi.download(id);
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = filename || 'download';
+      link.download = serverFilename || filename || 'download';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);

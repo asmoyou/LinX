@@ -42,7 +42,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({ document, onDo
       }
 
       try {
-        const blob = await knowledgeApi.download(document.id);
+        const { blob } = await knowledgeApi.download(document.id);
 
         if (cancelled) return;
 
