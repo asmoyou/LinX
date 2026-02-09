@@ -1,7 +1,7 @@
 import { create } from 'zustand';
-import type { Document, DocumentType, DocumentStatus } from '../types/document';
+import type { Document, DocumentType, DocumentStatus, Collection } from '../types/document';
 import { knowledgeApi } from '../api/knowledge';
-import type { UploadDocumentRequest } from '../api/knowledge';
+import type { UploadDocumentRequest, ZipUploadResponse } from '../api/knowledge';
 
 interface KnowledgeState {
   documents: Document[];
@@ -11,6 +11,11 @@ interface KnowledgeState {
   totalDocuments: number;
   currentPage: number;
   pageSize: number;
+
+  // Collection state
+  collections: Collection[];
+  activeCollectionId: string | null; // null = root view
+  isLoadingCollections: boolean;
 
   // Upload state
   uploadQueue: Document[];
@@ -33,12 +38,19 @@ interface KnowledgeState {
     access_level?: string;
     department_id?: string;
   }) => Promise<void>;
-  uploadDocument: (data: UploadDocumentRequest) => Promise<Document>;
+  uploadDocument: (data: UploadDocumentRequest) => Promise<Document | ZipUploadResponse>;
   deleteDocument: (id: string) => Promise<void>;
   downloadDocument: (id: string, filename?: string) => Promise<void>;
   reprocessDocument: (id: string) => Promise<void>;
   pollProcessingStatus: (id: string) => Promise<void>;
   pollAllProcessing: () => void;
+
+  // Collection actions
+  fetchCollections: () => Promise<void>;
+  createCollection: (name: string, description?: string) => Promise<Collection>;
+  updateCollection: (id: string, data: { name?: string; description?: string }) => Promise<void>;
+  deleteCollection: (id: string) => Promise<void>;
+  setActiveCollection: (id: string | null) => void;
 
   // Actions - Documents
   setDocuments: (documents: Document[]) => void;
@@ -81,6 +93,9 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   totalDocuments: 0,
   currentPage: 1,
   pageSize: 20,
+  collections: [],
+  activeCollectionId: null,
+  isLoadingCollections: false,
   uploadQueue: [],
   isUploading: false,
   isDownloading: false,
@@ -93,6 +108,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   fetchDocuments: async (params) => {
     set({ isLoading: true, error: null });
     try {
+      const { activeCollectionId } = get();
       const response = await knowledgeApi.getAll({
         page: params?.page || get().currentPage,
         page_size: get().pageSize,
@@ -100,6 +116,8 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         type: params?.type,
         access_level: params?.access_level,
         department_id: params?.department_id,
+        // When at root level, only show items without a collection
+        collection_id: activeCollectionId === null ? 'none' : activeCollectionId,
       });
       set({
         documents: response.items,
@@ -116,19 +134,49 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   uploadDocument: async (data: UploadDocumentRequest) => {
     set({ isUploading: true, error: null });
     try {
-      const doc = await knowledgeApi.upload(data);
-      set((state) => ({
-        documents: [doc, ...state.documents],
-        totalDocuments: state.totalDocuments + 1,
-        isUploading: false,
-      }));
+      const { activeCollectionId } = get();
+      // If inside a collection, set collection_id on upload
+      const uploadData = {
+        ...data,
+        collection_id: activeCollectionId || data.collection_id,
+      };
+      const result = await knowledgeApi.upload(uploadData);
 
-      // Start polling for processing status if document is still processing
-      if (doc.status === 'processing' || doc.status === 'uploading') {
-        get().pollProcessingStatus(doc.id);
+      // Check if ZIP upload response
+      if ('collection' in result) {
+        // ZIP upload: add all extracted items + the new collection
+        const zipResult = result as ZipUploadResponse;
+        set((state) => ({
+          documents: [...zipResult.items, ...state.documents],
+          totalDocuments: state.totalDocuments + zipResult.items.length,
+          collections: [zipResult.collection, ...state.collections],
+          isUploading: false,
+        }));
+
+        // Start polling for each extracted item
+        zipResult.items.forEach((item) => {
+          if (item.status === 'processing' || item.status === 'uploading') {
+            get().pollProcessingStatus(item.id);
+          }
+        });
+
+        return result;
+      } else {
+        // Regular file upload
+        const doc = result as Document;
+        set((state) => ({
+          documents: [doc, ...state.documents],
+          totalDocuments: state.totalDocuments + 1,
+          isUploading: false,
+        }));
+
+        // Start polling for processing status if document is still processing
+        if (doc.status === 'processing' || doc.status === 'uploading') {
+          get().pollProcessingStatus(doc.id);
+        }
+
+        return doc;
       }
-
-      return doc;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Failed to upload document';
       set({ error: message, isUploading: false });
@@ -234,6 +282,63 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       .forEach((doc) => pollProcessingStatus(doc.id));
   },
 
+  // Collection actions
+  fetchCollections: async () => {
+    set({ isLoadingCollections: true });
+    try {
+      const response = await knowledgeApi.getCollections({ page_size: 100 });
+      set({ collections: response.collections, isLoadingCollections: false });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to fetch collections';
+      set({ error: message, isLoadingCollections: false });
+    }
+  },
+
+  createCollection: async (name: string, description?: string) => {
+    try {
+      const collection = await knowledgeApi.createCollection({ name, description });
+      set((state) => ({
+        collections: [collection, ...state.collections],
+      }));
+      return collection;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to create collection';
+      set({ error: message });
+      throw error;
+    }
+  },
+
+  updateCollection: async (id: string, data: { name?: string; description?: string }) => {
+    try {
+      const updated = await knowledgeApi.updateCollection(id, data);
+      set((state) => ({
+        collections: state.collections.map((c) => (c.id === id ? updated : c)),
+      }));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to update collection';
+      set({ error: message });
+      throw error;
+    }
+  },
+
+  deleteCollection: async (id: string) => {
+    try {
+      await knowledgeApi.deleteCollection(id);
+      set((state) => ({
+        collections: state.collections.filter((c) => c.id !== id),
+        activeCollectionId: state.activeCollectionId === id ? null : state.activeCollectionId,
+      }));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to delete collection';
+      set({ error: message });
+      throw error;
+    }
+  },
+
+  setActiveCollection: (id: string | null) => {
+    set({ activeCollectionId: id, documents: [], currentPage: 1 });
+  },
+
   setDocuments: (documents) => set({ documents }),
 
   addDocument: (document) => set((state) => ({
@@ -337,6 +442,9 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     isUploading: false,
     isDownloading: false,
     downloadingId: null,
+    collections: [],
+    activeCollectionId: null,
+    isLoadingCollections: false,
     typeFilter: 'all',
     statusFilter: 'all',
     searchQuery: '',

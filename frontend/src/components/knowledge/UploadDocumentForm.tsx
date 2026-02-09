@@ -11,16 +11,18 @@ import toast from 'react-hot-toast';
 interface UploadDocumentFormProps {
   onSubmit: (data: UploadDocumentFormData & { departmentId?: string }, file: File) => Promise<void>;
   onCancel: () => void;
+  collectionId?: string;
 }
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const SUPPORTED_FORMATS = [
   '.pdf', '.doc', '.docx', '.txt', '.md',
   '.jpg', '.jpeg', '.png', '.gif',
-  '.mp3', '.wav', '.mp4', '.avi'
+  '.mp3', '.wav', '.mp4', '.avi',
+  '.zip'
 ];
 
-export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({ onSubmit, onCancel }) => {
+export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({ onSubmit, onCancel, collectionId }) => {
   const { t } = useTranslation();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -168,7 +170,7 @@ export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({ onSubmit
             
             <div className="mt-6 text-xs text-zinc-500 dark:text-zinc-400 space-y-1">
               <p>
-                {t('document.supportedFormats', 'Supported Formats')}: PDF, DOC, DOCX, TXT, MD, Images, Audio, Video
+                {t('document.supportedFormats', 'Supported Formats')}: PDF, DOC, DOCX, TXT, MD, Images, Audio, Video, ZIP
               </p>
               <p>
                 {t('document.maxSize', 'Max File Size')}: 50MB
@@ -196,6 +198,20 @@ export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({ onSubmit
           </div>
         )}
       </div>
+
+      {/* ZIP Info Note */}
+      {selectedFile && selectedFile.name.toLowerCase().endsWith('.zip') && (
+        <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-sm text-amber-700 dark:text-amber-400">
+          ZIP files will be automatically extracted. Each file inside will be processed independently.
+        </div>
+      )}
+
+      {/* Collection Context */}
+      {collectionId && (
+        <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg text-sm text-blue-700 dark:text-blue-400">
+          Uploading into current collection.
+        </div>
+      )}
 
       {/* Title */}
       <div>

@@ -23,7 +23,7 @@ from access_control.knowledge_filter import (
 from access_control.permissions import CurrentUser, get_current_user
 from access_control.rbac import Action
 from database.connection import get_db_session
-from database.models import KnowledgeItem, User
+from database.models import KnowledgeCollection, KnowledgeItem, User
 from shared.logging import get_logger
 
 logger = get_logger(__name__)
@@ -59,6 +59,8 @@ MIME_TO_DOC_TYPE = {
     "audio/wav": "audio",
     "video/mp4": "video",
     "video/x-msvideo": "video",
+    "application/zip": "zip",
+    "application/x-zip-compressed": "zip",
 }
 
 # File extension to frontend DocumentType mapping (fallback)
@@ -76,6 +78,7 @@ EXT_TO_DOC_TYPE = {
     ".wav": "audio",
     ".mp4": "video",
     ".avi": "video",
+    ".zip": "zip",
 }
 
 
@@ -95,6 +98,7 @@ class KnowledgeItemResponse(BaseModel):
     description: Optional[str] = None
     fileReference: Optional[str] = None
     departmentId: Optional[str] = None
+    collectionId: Optional[str] = None
     chunkCount: Optional[int] = None
     tokenCount: Optional[int] = None
     errorMessage: Optional[str] = None
@@ -117,6 +121,7 @@ class KnowledgeUpdateRequest(BaseModel):
     tags: Optional[List[str]] = None
     access_level: Optional[str] = None
     department_id: Optional[str] = None
+    collection_id: Optional[str] = None
 
 
 class KnowledgeSearchRequest(BaseModel):
@@ -160,6 +165,56 @@ class ProcessingStatusResponse(BaseModel):
     chunk_count: Optional[int] = None
     token_count: Optional[int] = None
     processed_at: Optional[str] = None
+
+
+class CollectionCreateRequest(BaseModel):
+    """Request to create a knowledge collection."""
+
+    name: str
+    description: Optional[str] = None
+    access_level: Optional[str] = "private"
+    department_id: Optional[str] = None
+
+
+class CollectionUpdateRequest(BaseModel):
+    """Request to update a knowledge collection."""
+
+    name: Optional[str] = None
+    description: Optional[str] = None
+    access_level: Optional[str] = None
+    department_id: Optional[str] = None
+
+
+class CollectionResponse(BaseModel):
+    """Knowledge collection response."""
+
+    id: str
+    name: str
+    description: Optional[str] = None
+    itemCount: int
+    owner: str
+    accessLevel: str
+    departmentId: Optional[str] = None
+    createdAt: str
+    updatedAt: str
+
+
+class CollectionListResponse(BaseModel):
+    """Paginated collection list response."""
+
+    collections: List[CollectionResponse]
+    total: int
+    page: int
+    pageSize: int
+
+
+class ZipUploadResponse(BaseModel):
+    """Response for ZIP file upload."""
+
+    collection: CollectionResponse
+    items: List[KnowledgeItemResponse]
+    skipped: List[str]
+    errors: List[str]
 
 
 def _get_file_type(filename: str, content_type: Optional[str]) -> str:
@@ -239,6 +294,7 @@ def _build_item_response(item: KnowledgeItem, owner_username: str) -> KnowledgeI
         description=description,
         fileReference=item.file_reference,
         departmentId=str(item.department_id) if item.department_id else None,
+        collectionId=str(item.collection_id) if item.collection_id else None,
         chunkCount=chunk_count,
         tokenCount=token_count,
         errorMessage=error_message,
@@ -266,6 +322,237 @@ def _map_access_level_to_backend(level: str) -> str:
         "team": "team",
     }
     return mapping.get(level, "private")
+
+
+def _build_collection_response(
+    collection: KnowledgeCollection, owner_username: str
+) -> CollectionResponse:
+    """Convert a KnowledgeCollection DB model to an API response."""
+    return CollectionResponse(
+        id=str(collection.collection_id),
+        name=collection.name,
+        description=collection.description,
+        itemCount=collection.item_count,
+        owner=owner_username,
+        accessLevel=_map_access_level(collection.access_level),
+        departmentId=str(collection.department_id) if collection.department_id else None,
+        createdAt=collection.created_at.isoformat() if collection.created_at else "",
+        updatedAt=collection.updated_at.isoformat() if collection.updated_at else "",
+    )
+
+
+def _enqueue_processing(
+    item_id: str,
+    bucket_name: str,
+    object_key: str,
+    mime_type: str,
+    user_id: str,
+) -> None:
+    """Enqueue a knowledge item for processing via Redis or background thread."""
+    try:
+        from knowledge_base.processing_queue import get_processing_queue
+
+        queue = get_processing_queue()
+        queue.enqueue(
+            document_id=item_id,
+            file_key=object_key,
+            bucket=bucket_name,
+            mime_type=mime_type,
+            user_id=user_id,
+        )
+    except Exception as e:
+        logger.warning(f"Redis queue unavailable, using background thread: {e}")
+        import threading
+
+        thread = threading.Thread(
+            target=_process_document_background,
+            args=(item_id, bucket_name, object_key, mime_type, user_id),
+            daemon=True,
+        )
+        thread.start()
+
+
+def _is_zip_file(filename: str, content_type: Optional[str]) -> bool:
+    """Check if the uploaded file is a ZIP archive."""
+    import os
+
+    if content_type in ("application/zip", "application/x-zip-compressed"):
+        return True
+    ext = os.path.splitext(filename or "")[1].lower()
+    return ext == ".zip"
+
+
+def _handle_zip_upload(
+    file_data,
+    filename: str,
+    collection_id_str: str,
+    access_level: str,
+    department_id_str: str,
+    parsed_tags: list,
+    description: str,
+    current_user: CurrentUser,
+) -> ZipUploadResponse:
+    """Handle ZIP file upload: extract files, create collection if needed, upload each file."""
+    import os
+
+    from knowledge_base.zip_handler import extract_zip
+
+    # Extract ZIP
+    result = extract_zip(file_data)
+
+    if not result.extracted_files and result.errors:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"ZIP extraction failed: {'; '.join(result.errors)}",
+        )
+
+    if not result.extracted_files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ZIP archive contains no supported files",
+        )
+
+    backend_access_level = _map_access_level_to_backend(access_level)
+
+    # Parse department_id
+    parsed_dept_id = None
+    if department_id_str and department_id_str.strip():
+        try:
+            parsed_dept_id = UUID(department_id_str)
+        except ValueError:
+            pass
+
+    # Parse collection_id
+    parsed_collection_id = None
+    if collection_id_str and collection_id_str.strip():
+        try:
+            parsed_collection_id = UUID(collection_id_str)
+        except ValueError:
+            pass
+
+    with get_db_session() as session:
+        # Create or use existing collection
+        if parsed_collection_id:
+            collection = (
+                session.query(KnowledgeCollection)
+                .filter(KnowledgeCollection.collection_id == parsed_collection_id)
+                .first()
+            )
+            if not collection:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Collection not found",
+                )
+        else:
+            # Auto-create collection named after ZIP file (sans .zip extension)
+            collection_name = os.path.splitext(filename)[0] or "Untitled Collection"
+            collection = KnowledgeCollection(
+                name=collection_name,
+                description=description if description else None,
+                owner_user_id=UUID(current_user.user_id),
+                access_level=backend_access_level,
+                department_id=parsed_dept_id,
+                item_count=0,
+            )
+            session.add(collection)
+            session.flush()
+
+        items_response = []
+
+        try:
+            from object_storage.minio_client import get_minio_client
+
+            minio_client = get_minio_client()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Storage service unavailable: {str(e)}",
+            )
+
+        for extracted in result.extracted_files:
+            file_ext = os.path.splitext(extracted.filename)[1].lower()
+            doc_type = EXT_TO_DOC_TYPE.get(file_ext, "txt")
+            bucket_type = _get_bucket_type(extracted.filename, None)
+
+            # Guess MIME type
+            import mimetypes
+
+            mime_type = mimetypes.guess_type(extracted.filename)[0] or "application/octet-stream"
+
+            # Upload to MinIO
+            try:
+                extracted.data.seek(0)
+                bucket_name, object_key = minio_client.upload_file(
+                    bucket_type=bucket_type,
+                    file_data=extracted.data,
+                    filename=extracted.filename,
+                    user_id=current_user.user_id,
+                    content_type=mime_type,
+                )
+                file_reference = f"minio:{bucket_name}:{object_key}"
+            except Exception as e:
+                logger.warning(f"MinIO upload failed for {extracted.filename}: {e}")
+                result.errors.append(f"Upload failed: {extracted.filename}")
+                continue
+
+            # Create KnowledgeItem
+            knowledge_item = KnowledgeItem(
+                title=extracted.filename,
+                content_type="document",
+                file_reference=file_reference,
+                owner_user_id=UUID(current_user.user_id),
+                access_level=backend_access_level,
+                department_id=parsed_dept_id,
+                collection_id=collection.collection_id,
+                item_metadata={
+                    "file_size": extracted.size,
+                    "file_type": doc_type,
+                    "original_filename": extracted.filename,
+                    "mime_type": mime_type,
+                    "tags": parsed_tags,
+                    "description": None,
+                    "processing_status": "processing",
+                },
+            )
+            session.add(knowledge_item)
+            session.flush()
+
+            item_id = str(knowledge_item.knowledge_id)
+
+            # Enqueue processing
+            _enqueue_processing(item_id, bucket_name, object_key, mime_type, current_user.user_id)
+
+            items_response.append(KnowledgeItemResponse(
+                id=item_id,
+                name=extracted.filename,
+                type=doc_type,
+                size=extracted.size,
+                status="processing",
+                uploadedAt=knowledge_item.created_at.isoformat()
+                if knowledge_item.created_at
+                else "",
+                owner=current_user.username,
+                accessLevel=_map_access_level(backend_access_level),
+                tags=parsed_tags if parsed_tags else None,
+                collectionId=str(collection.collection_id),
+            ))
+
+        # Update item count
+        collection.item_count = (collection.item_count or 0) + len(items_response)
+        session.flush()
+
+        # Get owner username for collection response
+        owner = session.query(User).filter(User.user_id == collection.owner_user_id).first()
+        owner_name = owner.username if owner else current_user.username
+
+        collection_resp = _build_collection_response(collection, owner_name)
+
+    return ZipUploadResponse(
+        collection=collection_resp,
+        items=items_response,
+        skipped=result.skipped_files,
+        errors=result.errors,
+    )
 
 
 def _process_document_background(
@@ -322,7 +609,7 @@ def _process_document_background(
             pass
 
 
-@router.post("", response_model=KnowledgeItemResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED)
 async def upload_knowledge(
     file: UploadFile = File(...),
     title: str = Form(default=""),
@@ -330,11 +617,13 @@ async def upload_knowledge(
     tags: str = Form(default="[]"),
     access_level: str = Form(default="private"),
     department_id: str = Form(default=""),
+    collection_id: str = Form(default=""),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Upload a knowledge document.
 
     Saves file to MinIO, creates KnowledgeItem record, enqueues processing.
+    For ZIP files, extracts contents and creates a collection.
     """
     try:
         # Parse tags
@@ -343,6 +632,19 @@ async def upload_knowledge(
         except json.JSONDecodeError:
             # Handle comma-separated tags
             parsed_tags = [t.strip() for t in tags.split(",") if t.strip()]
+
+        # Check if ZIP file
+        if _is_zip_file(file.filename or "", file.content_type):
+            return _handle_zip_upload(
+                file_data=file.file,
+                filename=file.filename or "archive.zip",
+                collection_id_str=collection_id,
+                access_level=access_level,
+                department_id_str=department_id,
+                parsed_tags=parsed_tags,
+                description=description,
+                current_user=current_user,
+            )
 
         # Use filename as title if not provided
         doc_title = title if title else file.filename or "Untitled"
@@ -391,6 +693,14 @@ async def upload_knowledge(
             except ValueError:
                 pass
 
+        # Parse collection_id
+        parsed_collection_id = None
+        if collection_id and collection_id.strip():
+            try:
+                parsed_collection_id = UUID(collection_id)
+            except ValueError:
+                pass
+
         # Create database record
         with get_db_session() as session:
             knowledge_item = KnowledgeItem(
@@ -400,6 +710,7 @@ async def upload_knowledge(
                 owner_user_id=UUID(current_user.user_id),
                 access_level=backend_access_level,
                 department_id=parsed_dept_id,
+                collection_id=parsed_collection_id,
                 item_metadata={
                     "file_size": file_size,
                     "file_type": doc_type,
@@ -481,6 +792,7 @@ async def upload_knowledge(
                 description=description if description else None,
                 fileReference=file_reference,
                 departmentId=department_id if department_id and department_id.strip() else None,
+                collectionId=collection_id if collection_id and collection_id.strip() else None,
             )
 
         logger.info(
@@ -507,9 +819,16 @@ async def list_knowledge(
     access_level: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None),
     department_id: Optional[str] = Query(default=None),
+    collection_id: Optional[str] = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """List accessible knowledge items with filtering and pagination."""
+    """List accessible knowledge items with filtering and pagination.
+
+    collection_id filter:
+      - Not provided: return all items (backward compatible)
+      - "none": return only root-level items (no collection)
+      - UUID: return items in that specific collection
+    """
     try:
         with get_db_session() as session:
             query = session.query(KnowledgeItem)
@@ -517,6 +836,17 @@ async def list_knowledge(
             # Apply permission filtering
             user_attributes = {"department_id": department_id} if department_id else {}
             query = filter_knowledge_query(query, current_user, user_attributes=user_attributes)
+
+            # Apply collection filter
+            if collection_id is not None:
+                if collection_id == "none":
+                    query = query.filter(KnowledgeItem.collection_id.is_(None))
+                else:
+                    try:
+                        coll_uuid = UUID(collection_id)
+                        query = query.filter(KnowledgeItem.collection_id == coll_uuid)
+                    except ValueError:
+                        pass
 
             # Apply type filter
             if type_filter:
@@ -690,6 +1020,415 @@ async def update_kb_config(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update configuration: {str(e)}",
+        )
+
+
+# ============================================================
+# Collection endpoints
+# ============================================================
+
+
+@router.post("/collections", response_model=CollectionResponse, status_code=status.HTTP_201_CREATED)
+async def create_collection(
+    data: CollectionCreateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Create a new knowledge collection."""
+    try:
+        backend_access_level = _map_access_level_to_backend(data.access_level or "private")
+
+        parsed_dept_id = None
+        if data.department_id:
+            try:
+                parsed_dept_id = UUID(data.department_id)
+            except ValueError:
+                pass
+
+        with get_db_session() as session:
+            collection = KnowledgeCollection(
+                name=data.name,
+                description=data.description,
+                owner_user_id=UUID(current_user.user_id),
+                access_level=backend_access_level,
+                department_id=parsed_dept_id,
+                item_count=0,
+            )
+            session.add(collection)
+            session.flush()
+
+            return _build_collection_response(collection, current_user.username)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create collection: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create collection: {str(e)}",
+        )
+
+
+@router.get("/collections", response_model=CollectionListResponse)
+async def list_collections(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    search: Optional[str] = Query(default=None),
+    department_id: Optional[str] = Query(default=None),
+    access_level: Optional[str] = Query(default=None),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """List accessible knowledge collections with filtering and pagination."""
+    try:
+        with get_db_session() as session:
+            query = session.query(KnowledgeCollection)
+
+            # Apply permission filtering (reuse same pattern as knowledge items)
+            from access_control.rbac import ResourceType, Role, check_permission
+
+            try:
+                role = Role(current_user.role)
+            except ValueError:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid role")
+
+            # Admins see all, others see own + public + team
+            if not check_permission(role, ResourceType.KNOWLEDGE, Action.READ, None):
+                from sqlalchemy import or_
+
+                conditions = [
+                    KnowledgeCollection.owner_user_id == UUID(current_user.user_id),
+                    KnowledgeCollection.access_level == "public",
+                ]
+                if department_id:
+                    conditions.append(
+                        (KnowledgeCollection.access_level == "team")
+                        & (KnowledgeCollection.department_id == UUID(department_id))
+                    )
+                query = query.filter(or_(*conditions))
+
+            # Apply filters
+            if search:
+                query = query.filter(KnowledgeCollection.name.ilike(f"%{search}%"))
+
+            if department_id:
+                try:
+                    dept_uuid = UUID(department_id)
+                    query = query.filter(KnowledgeCollection.department_id == dept_uuid)
+                except ValueError:
+                    pass
+
+            if access_level:
+                backend_level = _map_access_level_to_backend(access_level)
+                query = query.filter(KnowledgeCollection.access_level == backend_level)
+
+            total = query.count()
+
+            offset = (page - 1) * page_size
+            collections = (
+                query.order_by(KnowledgeCollection.created_at.desc())
+                .offset(offset)
+                .limit(page_size)
+                .all()
+            )
+
+            # Build owner username cache
+            owner_ids = {c.owner_user_id for c in collections}
+            owners = {}
+            if owner_ids:
+                users = session.query(User).filter(User.user_id.in_(owner_ids)).all()
+                owners = {str(u.user_id): u.username for u in users}
+
+            response_items = []
+            for c in collections:
+                owner_name = owners.get(str(c.owner_user_id), "Unknown")
+                response_items.append(_build_collection_response(c, owner_name))
+
+            return CollectionListResponse(
+                collections=response_items,
+                total=total,
+                page=page,
+                pageSize=page_size,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list collections: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list collections: {str(e)}",
+        )
+
+
+@router.get("/collections/{collection_id}", response_model=CollectionResponse)
+async def get_collection(
+    collection_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Get a single collection by ID."""
+    try:
+        with get_db_session() as session:
+            try:
+                cid = UUID(collection_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid collection ID format"
+                )
+
+            collection = (
+                session.query(KnowledgeCollection)
+                .filter(KnowledgeCollection.collection_id == cid)
+                .first()
+            )
+            if not collection:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found"
+                )
+
+            owner = session.query(User).filter(User.user_id == collection.owner_user_id).first()
+            owner_name = owner.username if owner else "Unknown"
+
+            return _build_collection_response(collection, owner_name)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get collection: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get collection: {str(e)}",
+        )
+
+
+@router.put("/collections/{collection_id}", response_model=CollectionResponse)
+async def update_collection(
+    collection_id: str,
+    update_data: CollectionUpdateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Update a collection's metadata."""
+    try:
+        with get_db_session() as session:
+            try:
+                cid = UUID(collection_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid collection ID format"
+                )
+
+            collection = (
+                session.query(KnowledgeCollection)
+                .filter(KnowledgeCollection.collection_id == cid)
+                .first()
+            )
+            if not collection:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found"
+                )
+
+            # Check ownership or admin
+            if not check_knowledge_write_permission(
+                current_user=current_user,
+                owner_user_id=str(collection.owner_user_id),
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to update this collection",
+                )
+
+            if update_data.name is not None:
+                collection.name = update_data.name
+            if update_data.description is not None:
+                collection.description = update_data.description
+            if update_data.access_level is not None:
+                collection.access_level = _map_access_level_to_backend(update_data.access_level)
+            if update_data.department_id is not None:
+                try:
+                    collection.department_id = (
+                        UUID(update_data.department_id) if update_data.department_id else None
+                    )
+                except ValueError:
+                    pass
+
+            session.flush()
+
+            owner = session.query(User).filter(User.user_id == collection.owner_user_id).first()
+            owner_name = owner.username if owner else "Unknown"
+
+            return _build_collection_response(collection, owner_name)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update collection: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update collection: {str(e)}",
+        )
+
+
+@router.delete("/collections/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_collection(
+    collection_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Delete a collection and all its items (cascade)."""
+    try:
+        with get_db_session() as session:
+            try:
+                cid = UUID(collection_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid collection ID format"
+                )
+
+            collection = (
+                session.query(KnowledgeCollection)
+                .filter(KnowledgeCollection.collection_id == cid)
+                .first()
+            )
+            if not collection:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found"
+                )
+
+            if not check_knowledge_delete_permission(
+                current_user=current_user,
+                owner_user_id=str(collection.owner_user_id),
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to delete this collection",
+                )
+
+            # Get all items in collection for cleanup
+            items = (
+                session.query(KnowledgeItem)
+                .filter(KnowledgeItem.collection_id == cid)
+                .all()
+            )
+
+            for item in items:
+                kid = str(item.knowledge_id)
+
+                # Delete Milvus embeddings
+                try:
+                    from pymilvus import Collection, utility
+
+                    if utility.has_collection("knowledge_embeddings"):
+                        milvus_coll = Collection("knowledge_embeddings")
+                        milvus_coll.delete(f'document_id == "{kid}"')
+                except Exception as e:
+                    logger.warning(f"Failed to delete Milvus embeddings for {kid}: {e}")
+
+                # Delete chunks
+                try:
+                    session.execute(
+                        text("DELETE FROM knowledge_chunks WHERE knowledge_id = :kid"),
+                        {"kid": kid},
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to delete chunks for {kid}: {e}")
+
+                # Delete MinIO file
+                if item.file_reference and item.file_reference.startswith("minio:"):
+                    try:
+                        from object_storage.minio_client import get_minio_client
+
+                        minio_client = get_minio_client()
+                        parts = item.file_reference.split(":", 2)
+                        if len(parts) == 3:
+                            _, bucket_name, object_key = parts
+                            minio_client.delete_file(bucket_name, object_key)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete MinIO file for {kid}: {e}")
+
+            # Delete collection (cascades to items)
+            session.delete(collection)
+
+        logger.info(
+            f"Collection deleted: {collection_id} ({len(items)} items)",
+            extra={"user_id": current_user.user_id},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete collection: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete collection: {str(e)}",
+        )
+
+
+@router.get("/collections/{collection_id}/items", response_model=KnowledgeListResponse)
+async def list_collection_items(
+    collection_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """List items in a specific collection."""
+    try:
+        with get_db_session() as session:
+            try:
+                cid = UUID(collection_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid collection ID format"
+                )
+
+            # Verify collection exists
+            collection = (
+                session.query(KnowledgeCollection)
+                .filter(KnowledgeCollection.collection_id == cid)
+                .first()
+            )
+            if not collection:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found"
+                )
+
+            query = session.query(KnowledgeItem).filter(KnowledgeItem.collection_id == cid)
+
+            # Apply permission filtering
+            query = filter_knowledge_query(query, current_user)
+
+            total = query.count()
+
+            offset = (page - 1) * page_size
+            items = (
+                query.order_by(KnowledgeItem.created_at.desc())
+                .offset(offset)
+                .limit(page_size)
+                .all()
+            )
+
+            # Build owner username cache
+            owner_ids = {item.owner_user_id for item in items}
+            owners = {}
+            if owner_ids:
+                users = session.query(User).filter(User.user_id.in_(owner_ids)).all()
+                owners = {str(u.user_id): u.username for u in users}
+
+            response_items = []
+            for item in items:
+                owner_name = owners.get(str(item.owner_user_id), "Unknown")
+                response_items.append(_build_item_response(item, owner_name))
+
+            return KnowledgeListResponse(
+                items=response_items,
+                total=total,
+                page=page,
+                pageSize=page_size,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list collection items: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list collection items: {str(e)}",
         )
 
 
@@ -984,6 +1723,12 @@ async def update_knowledge(
             if update_data.department_id is not None:
                 try:
                     item.department_id = UUID(update_data.department_id) if update_data.department_id else None
+                except ValueError:
+                    pass
+
+            if update_data.collection_id is not None:
+                try:
+                    item.collection_id = UUID(update_data.collection_id) if update_data.collection_id else None
                 except ValueError:
                     pass
 

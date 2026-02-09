@@ -1,6 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { FileText, Image, Music, Video, File, Eye, Download, Trash2, MoreVertical, Clock, CheckCircle, XCircle, Loader2, Layers, Hash, RotateCcw } from 'lucide-react';
+import { FileText, Image, Music, Video, File, Eye, Download, Trash2, MoreVertical, Clock, CheckCircle, XCircle, Loader2, Layers, Hash, RotateCcw, Pencil } from 'lucide-react';
 import { GlassPanel } from '@/components/GlassPanel';
 import type { Document } from '@/types/document';
 
@@ -9,10 +9,11 @@ interface DocumentCardProps {
   onView: (document: Document) => void;
   onDownload: (document: Document) => void;
   onDelete: (document: Document) => void;
+  onEdit?: (document: Document) => void;
   onReprocess?: (document: Document) => void;
 }
 
-export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, onDownload, onDelete, onReprocess }) => {
+export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, onDownload, onDelete, onEdit, onReprocess }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = React.useState(false);
 
@@ -175,7 +176,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
           disabled={document.status === 'uploading' || document.status === 'processing'}
           className="flex-1 px-3 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          View
+          {t('document.view')}
         </button>
         <div className="relative">
           <button
@@ -201,8 +202,20 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
                   className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2 disabled:opacity-50"
                 >
                   <Eye className="w-4 h-4" />
-                  View Details
+                  {t('document.viewDetails')}
                 </button>
+                {onEdit && (
+                  <button
+                    onClick={() => {
+                      onEdit(document);
+                      setShowMenu(false);
+                    }}
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2"
+                  >
+                    <Pencil className="w-4 h-4" />
+                    {t('common.edit')}
+                  </button>
+                )}
                 <button
                   onClick={() => {
                     onDownload(document);
@@ -212,7 +225,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
                   className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2 disabled:opacity-50"
                 >
                   <Download className="w-4 h-4" />
-                  Download
+                  {t('document.download')}
                 </button>
                 <button
                   onClick={() => {
@@ -222,7 +235,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
                   className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2 text-red-500"
                 >
                   <Trash2 className="w-4 h-4" />
-                  Delete
+                  {t('common.delete')}
                 </button>
               </div>
             </>

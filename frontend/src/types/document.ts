@@ -21,7 +21,20 @@ export type Document = {
   error?: string;
   fileReference?: string;
   departmentId?: string;
+  collectionId?: string;
   chunkCount?: number;
   tokenCount?: number;
   errorMessage?: string;
+};
+
+export type Collection = {
+  id: string;
+  name: string;
+  description?: string;
+  itemCount: number;
+  owner: string;
+  accessLevel: 'public' | 'internal' | 'confidential' | 'restricted';
+  departmentId?: string;
+  createdAt: string;
+  updatedAt: string;
 };

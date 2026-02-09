@@ -354,6 +354,61 @@ class Permission(Base):
         return f"<Permission(permission_id={self.permission_id}, user_id={self.user_id}, resource_type={self.resource_type}, access_level={self.access_level})>"
 
 
+class KnowledgeCollection(Base):
+    """Knowledge collections table.
+
+    Groups related knowledge items (e.g., files extracted from a ZIP archive).
+    Collections are flat (non-nesting, one level only).
+    """
+
+    __tablename__ = "knowledge_collections"
+
+    collection_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(500), nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    owner_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    access_level = Column(
+        String(50), nullable=False, default="private", index=True
+    )  # private, team, public
+    department_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("departments.department_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    item_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    # Relationships
+    owner = relationship("User")
+    department = relationship("Department")
+    items = relationship(
+        "KnowledgeItem",
+        back_populates="collection",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    # Indexes
+    __table_args__ = (
+        Index("idx_collection_owner_access", "owner_user_id", "access_level"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<KnowledgeCollection(collection_id={self.collection_id}, "
+            f"name={self.name}, item_count={self.item_count})>"
+        )
+
+
 class KnowledgeItem(Base):
     """Knowledge items table.
 
@@ -383,6 +438,12 @@ class KnowledgeItem(Base):
         nullable=True,
         index=True,
     )
+    collection_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_collections.collection_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     item_metadata = Column(
         JSONB, nullable=True
     )  # Renamed from 'metadata' to avoid SQLAlchemy conflict
@@ -394,6 +455,7 @@ class KnowledgeItem(Base):
     # Relationships
     owner = relationship("User", back_populates="knowledge_items")
     department = relationship("Department", back_populates="knowledge_items")
+    collection = relationship("KnowledgeCollection", back_populates="items")
     chunks = relationship(
         "KnowledgeChunk",
         back_populates="knowledge_item",

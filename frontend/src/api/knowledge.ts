@@ -1,5 +1,5 @@
 import apiClient from './client';
-import type { Document } from '../types/document';
+import type { Document, Collection } from '../types/document';
 
 export interface KnowledgeListResponse {
   items: Document[];
@@ -15,6 +15,7 @@ export interface UploadDocumentRequest {
   tags?: string[];
   access_level?: string;
   department_id?: string;
+  collection_id?: string;
 }
 
 export interface SearchKnowledgeRequest {
@@ -63,6 +64,7 @@ export interface UpdateDocumentRequest {
   tags?: string[];
   access_level?: string;
   department_id?: string;
+  collection_id?: string;
 }
 
 export interface ProcessingStatusResponse {
@@ -127,6 +129,34 @@ export interface KBConfigUpdateRequest {
   search?: Partial<KBConfigResponse['search']>;
 }
 
+export interface CollectionListResponse {
+  collections: Collection[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface CollectionCreateRequest {
+  name: string;
+  description?: string;
+  access_level?: string;
+  department_id?: string;
+}
+
+export interface CollectionUpdateRequest {
+  name?: string;
+  description?: string;
+  access_level?: string;
+  department_id?: string;
+}
+
+export interface ZipUploadResponse {
+  collection: Collection;
+  items: Document[];
+  skipped: string[];
+  errors: string[];
+}
+
 /**
  * Knowledge Base API
  */
@@ -141,6 +171,7 @@ export const knowledgeApi = {
     access_level?: string;
     search?: string;
     department_id?: string;
+    collection_id?: string;
   }): Promise<KnowledgeListResponse> => {
     const response = await apiClient.get<KnowledgeListResponse>('/knowledge', { params });
     return response.data;
@@ -155,9 +186,9 @@ export const knowledgeApi = {
   },
 
   /**
-   * Upload document
+   * Upload document (returns Document for regular files, ZipUploadResponse for ZIPs)
    */
-  upload: async (data: UploadDocumentRequest): Promise<Document> => {
+  upload: async (data: UploadDocumentRequest): Promise<Document | ZipUploadResponse> => {
     const formData = new FormData();
     formData.append('file', data.file);
     if (data.title) formData.append('title', data.title);
@@ -165,8 +196,9 @@ export const knowledgeApi = {
     if (data.tags) formData.append('tags', JSON.stringify(data.tags));
     if (data.access_level) formData.append('access_level', data.access_level);
     if (data.department_id) formData.append('department_id', data.department_id);
+    if (data.collection_id) formData.append('collection_id', data.collection_id);
 
-    const response = await apiClient.post<Document>('/knowledge', formData, {
+    const response = await apiClient.post('/knowledge', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
@@ -271,6 +303,78 @@ export const knowledgeApi = {
    */
   updateConfig: async (data: KBConfigUpdateRequest): Promise<KBConfigResponse> => {
     const response = await apiClient.put<KBConfigResponse>('/knowledge/config', data);
+    return response.data;
+  },
+
+  // ============================================================
+  // Collection API
+  // ============================================================
+
+  /**
+   * Get all collections (paginated)
+   */
+  getCollections: async (params?: {
+    page?: number;
+    page_size?: number;
+    search?: string;
+    department_id?: string;
+    access_level?: string;
+  }): Promise<CollectionListResponse> => {
+    const response = await apiClient.get<CollectionListResponse>('/knowledge/collections', {
+      params,
+    });
+    return response.data;
+  },
+
+  /**
+   * Create a new collection
+   */
+  createCollection: async (data: CollectionCreateRequest): Promise<Collection> => {
+    const response = await apiClient.post<Collection>('/knowledge/collections', data);
+    return response.data;
+  },
+
+  /**
+   * Get a single collection
+   */
+  getCollection: async (collectionId: string): Promise<Collection> => {
+    const response = await apiClient.get<Collection>(`/knowledge/collections/${collectionId}`);
+    return response.data;
+  },
+
+  /**
+   * Update a collection
+   */
+  updateCollection: async (
+    collectionId: string,
+    data: CollectionUpdateRequest
+  ): Promise<Collection> => {
+    const response = await apiClient.put<Collection>(
+      `/knowledge/collections/${collectionId}`,
+      data
+    );
+    return response.data;
+  },
+
+  /**
+   * Delete a collection (cascades to items)
+   */
+  deleteCollection: async (collectionId: string): Promise<void> => {
+    await apiClient.delete(`/knowledge/collections/${collectionId}`);
+  },
+
+  /**
+   * Get items in a collection
+   */
+  getCollectionItems: async (
+    collectionId: string,
+    page: number = 1,
+    pageSize: number = 20
+  ): Promise<KnowledgeListResponse> => {
+    const response = await apiClient.get<KnowledgeListResponse>(
+      `/knowledge/collections/${collectionId}/items`,
+      { params: { page, page_size: pageSize } }
+    );
     return response.data;
   },
 };
