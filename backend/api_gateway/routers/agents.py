@@ -46,8 +46,45 @@ def _resolve_agent_avatar(avatar_ref: Optional[str]) -> Optional[str]:
             logger.warning(f"Failed to resolve agent avatar URL: {e}")
             return None
 
-    # Legacy: already a URL, return as-is (might be expired)
+    # Legacy: detect expired presigned MinIO URLs (localhost:9000/bucket/key?X-Amz-...)
+    # and auto-convert them to minio: references for fresh presigned URLs
+    if "X-Amz-" in avatar_ref and "localhost:9000/" in avatar_ref:
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(avatar_ref)
+            # path is like /images/agent-id/filename.webp
+            path_parts = parsed.path.lstrip("/").split("/", 1)
+            if len(path_parts) == 2:
+                bucket_name, object_key = path_parts
+                minio_ref = f"minio:{bucket_name}:{object_key}"
+                minio_client = get_minio_client()
+                url = minio_client.resolve_avatar_url(minio_ref)
+                if url:
+                    # Auto-fix the DB record in background
+                    _auto_fix_avatar_ref(avatar_ref, minio_ref)
+                    return url
+        except Exception as e:
+            logger.warning(f"Failed to convert legacy avatar URL: {e}")
+
+    # Legacy: already a URL, return as-is
     return avatar_ref
+
+
+def _auto_fix_avatar_ref(old_ref: str, new_ref: str):
+    """Auto-fix legacy avatar references in the database."""
+    try:
+        from database.connection import get_db_session
+        from database.models import Agent
+
+        with get_db_session() as session:
+            agent = session.query(Agent).filter(Agent.avatar == old_ref).first()
+            if agent:
+                agent.avatar = new_ref
+                session.commit()
+                logger.info(f"Auto-fixed avatar for agent {agent.agent_id}: minio ref")
+    except Exception as e:
+        logger.warning(f"Failed to auto-fix avatar reference: {e}")
 
 
 # Agent cache with TTL (Time To Live) and memory-aware sizing
@@ -307,6 +344,7 @@ class AgentResponse(BaseModel):
     vectorDimension: Optional[int] = None
     topK: Optional[int] = None
     similarityThreshold: Optional[float] = None
+    departmentId: Optional[str] = None
     createdAt: datetime
     updatedAt: datetime
 
@@ -421,10 +459,10 @@ async def create_agent(
             vectorDimension=agent_info.vector_dimension,
             topK=agent_info.top_k,
             similarityThreshold=agent_info.similarity_threshold,
+            departmentId=str(agent_info.department_id) if agent_info.department_id else None,
             createdAt=agent_info.created_at,
             updatedAt=agent_info.updated_at,
         )
-
     except Exception as e:
         logger.error(f"Failed to create agent: {e}")
         raise HTTPException(
@@ -467,6 +505,7 @@ async def list_agents(current_user: CurrentUser = Depends(get_current_user)):
                 vectorDimension=agent.vector_dimension,
                 topK=agent.top_k,
                 similarityThreshold=agent.similarity_threshold,
+                departmentId=str(agent.department_id) if agent.department_id else None,
                 createdAt=agent.created_at,
                 updatedAt=agent.updated_at,
             )
@@ -525,6 +564,7 @@ async def get_agent(agent_id: str, current_user: CurrentUser = Depends(get_curre
             vectorDimension=agent.vector_dimension,
             topK=agent.top_k,
             similarityThreshold=agent.similarity_threshold,
+            departmentId=str(agent.department_id) if agent.department_id else None,
             createdAt=agent.created_at,
             updatedAt=agent.updated_at,
         )
@@ -624,10 +664,10 @@ async def update_agent(
             vectorDimension=updated_agent.vector_dimension,
             topK=updated_agent.top_k,
             similarityThreshold=updated_agent.similarity_threshold,
+            departmentId=str(updated_agent.department_id) if updated_agent.department_id else None,
             createdAt=updated_agent.created_at,
             updatedAt=updated_agent.updated_at,
         )
-
     except HTTPException:
         raise
     except Exception as e:

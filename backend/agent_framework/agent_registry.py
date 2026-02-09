@@ -49,7 +49,10 @@ class AgentInfo:
     vector_dimension: Optional[int] = None
     top_k: Optional[int] = None
     similarity_threshold: Optional[float] = None
-    
+
+    # Department
+    department_id: Optional[UUID] = None
+
     created_at: datetime = None
     updated_at: datetime = None
     
@@ -353,6 +356,7 @@ class AgentRegistry:
             vector_dimension=getattr(agent, 'vector_dimension', None),
             top_k=getattr(agent, 'top_k', None),
             similarity_threshold=getattr(agent, 'similarity_threshold', None),
+            department_id=getattr(agent, 'department_id', None),
             created_at=agent.created_at,
             updated_at=agent.updated_at,
         )
