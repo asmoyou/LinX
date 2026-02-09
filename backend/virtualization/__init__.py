@@ -31,7 +31,9 @@ from virtualization.container_manager import (
     ContainerConfig,
     ContainerManager,
     ContainerStatus,
+    DockerCleanupManager,
     get_container_manager,
+    get_docker_cleanup_manager,
 )
 from virtualization.resource_limits import (
     ResourceLimits,
@@ -57,7 +59,9 @@ __all__ = [
     "ContainerManager",
     "ContainerConfig",
     "ContainerStatus",
+    "DockerCleanupManager",
     "get_container_manager",
+    "get_docker_cleanup_manager",
     # Resource limits
     "ResourceLimits",
     "ResourceUsage",

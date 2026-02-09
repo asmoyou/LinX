@@ -69,27 +69,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     try:
         from database.connection import get_db_session
         from llm_providers.db_manager import ProviderDBManager
-        
+
         llm_config = config.get_section("llm")
         providers_config = llm_config.get("providers", {})
-        
+
         with get_db_session() as db:
             db_manager = ProviderDBManager(db)
-            
+
             for provider_name, provider_config in providers_config.items():
                 if not provider_config.get("enabled", False):
                     continue
-                
+
                 # Check if provider exists in database
                 existing = db_manager.get_provider(provider_name)
-                
+
                 if existing:
-                    logger.info(f"Provider '{provider_name}' already exists in database, skipping sync")
+                    logger.info(
+                        f"Provider '{provider_name}' already exists in database, skipping sync"
+                    )
                     continue
-                
+
                 # Determine protocol
                 protocol = "ollama" if provider_name == "ollama" else "openai_compatible"
-                
+
                 # Get models
                 models = []
                 if "models" in provider_config:
@@ -99,14 +101,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                         models = list(set(models_dict.values()))
                     elif isinstance(models_dict, list):
                         models = models_dict
-                
+
                 # Create provider in database
                 try:
                     from llm_providers.models import ProviderProtocol
-                    
+
                     # Convert protocol string to enum
-                    protocol_enum = ProviderProtocol.OLLAMA if protocol == "ollama" else ProviderProtocol.OPENAI_COMPATIBLE
-                    
+                    protocol_enum = (
+                        ProviderProtocol.OLLAMA
+                        if protocol == "ollama"
+                        else ProviderProtocol.OPENAI_COMPATIBLE
+                    )
+
                     db_manager.create_provider(
                         name=provider_name,
                         protocol=protocol_enum,
@@ -118,9 +124,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                     logger.info(f"Synced provider '{provider_name}' from config.yaml to database")
                 except Exception as create_error:
                     logger.error(f"Failed to sync provider '{provider_name}': {create_error}")
-        
+
         logger.info("Config.yaml provider sync completed")
-        
+
     except Exception as sync_error:
         logger.error(f"Failed to sync config.yaml providers: {sync_error}", exc_info=True)
 
@@ -129,6 +135,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # Initialize session manager for persistent code execution
     try:
         from agent_framework.session_manager import initialize_session_manager
+
         await initialize_session_manager()
         logger.info("SessionManager initialized with background cleanup")
     except Exception as e:
@@ -137,6 +144,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # Start document processing worker
     try:
         from knowledge_base.document_processor_worker import start_worker
+
         start_worker()
         logger.info("Document processor worker started")
     except Exception as e:
@@ -150,6 +158,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # Stop document processor worker
     try:
         from knowledge_base.document_processor_worker import stop_worker
+
         stop_worker()
         logger.info("Document processor worker stopped")
     except Exception as e:
@@ -158,10 +167,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # Shutdown session manager (clean up all sessions and workdirs)
     try:
         from agent_framework.session_manager import shutdown_session_manager
+
         await shutdown_session_manager()
         logger.info("SessionManager shutdown complete")
     except Exception as e:
         logger.error(f"Failed to shutdown SessionManager: {e}")
+
+    # Final Docker sandbox cleanup (catch anything SessionManager missed)
+    try:
+        from virtualization.container_manager import get_docker_cleanup_manager
+
+        cleanup_manager = get_docker_cleanup_manager()
+        stats = cleanup_manager.run_full_cleanup()
+        logger.info("Docker sandbox cleanup completed", extra=stats)
+    except Exception as e:
+        logger.error(f"Failed to run Docker cleanup: {e}")
 
     # Close database connections
     try:
@@ -249,6 +269,7 @@ def create_app() -> FastAPI:
 
     # Mount static files for uploads
     from pathlib import Path
+
     uploads_dir = Path("uploads")
     uploads_dir.mkdir(exist_ok=True)
     app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
@@ -257,9 +278,7 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
     app.include_router(users.router, prefix="/api/v1/users", tags=["Users"])
-    app.include_router(
-        departments.router, prefix="/api/v1/departments", tags=["Departments"]
-    )
+    app.include_router(departments.router, prefix="/api/v1/departments", tags=["Departments"])
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
     app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["Tasks"])
     app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["Knowledge"])

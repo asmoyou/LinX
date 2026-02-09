@@ -331,13 +331,16 @@ export const agentsApi = {
    *
    * The session is also automatically cleaned up after TTL expiration,
    * so this is optional but recommended for explicit cleanup.
+   *
+   * Note: The backend DELETE endpoint is idempotent — it returns 200
+   * even if the session is already gone, so no 404 toast will appear.
    */
   endSession: async (agentId: string, sessionId: string): Promise<void> => {
     try {
       await apiClient.delete(`/agents/${agentId}/sessions/${sessionId}`);
-    } catch (error) {
-      // Log but don't throw - session cleanup is best-effort
-      console.warn(`Failed to end session ${sessionId}:`, error);
+    } catch {
+      // Swallow errors — session cleanup is best-effort.
+      // The backend TTL cleanup will catch anything we miss.
     }
   },
 

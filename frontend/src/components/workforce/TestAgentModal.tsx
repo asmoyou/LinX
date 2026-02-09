@@ -145,19 +145,21 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
   // Reset state when modal closes and clean up session
   useEffect(() => {
     if (!isOpen) {
+      // Abort any in-flight streaming connection FIRST
+      // This stops the SSE fetch and the backend exec_thread from running
+      // after the session/container is deleted below.
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+
       // End the session to clean up resources (best-effort)
       // Use refs to get the current values (avoids stale closure - agent may be null when closing)
       const currentSessionId = sessionIdRef.current;
       const currentAgentId = agentIdRef.current;
 
       if (currentSessionId && currentAgentId) {
-        console.log(`Ending session: ${currentSessionId} for agent: ${currentAgentId}`);
-        agentsApi.endSession(currentAgentId, currentSessionId).then(() => {
-          console.log(`Session ended successfully: ${currentSessionId}`);
-        }).catch((err) => {
-          // Log but don't throw - session cleanup is best-effort
-          console.warn(`Failed to end session ${currentSessionId}:`, err);
-        });
+        agentsApi.endSession(currentAgentId, currentSessionId);
       }
 
       // Reset all state

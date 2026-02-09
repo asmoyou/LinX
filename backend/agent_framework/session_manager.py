@@ -48,6 +48,7 @@ class ConversationSession:
     def is_expired(self) -> bool:
         """Check if session has exceeded its TTL."""
         from datetime import timedelta
+
         return datetime.now() - self.last_activity > timedelta(minutes=self.ttl_minutes)
 
     def touch(self) -> None:
@@ -57,6 +58,7 @@ class ConversationSession:
     def remaining_ttl_seconds(self) -> float:
         """Get remaining TTL in seconds."""
         from datetime import timedelta
+
         elapsed = datetime.now() - self.last_activity
         remaining = timedelta(minutes=self.ttl_minutes) - elapsed
         return max(0, remaining.total_seconds())
@@ -137,13 +139,14 @@ class SessionManager:
                 "max_sessions_per_user": max_sessions_per_user,
                 "use_sandbox_by_default": use_sandbox_by_default,
                 "docker_available": self._docker_available,
-            }
+            },
         )
 
     def _check_docker_availability(self) -> bool:
         """Check if Docker is available for sandbox execution."""
         try:
             import docker
+
             client = docker.from_env()
             client.ping()
             logger.info("Docker is available for sandbox execution")
@@ -171,15 +174,55 @@ class SessionManager:
         logger.info("Session cleanup task stopped")
 
     async def _cleanup_loop(self) -> None:
-        """Background loop to clean up expired sessions."""
+        """Background loop to clean up expired sessions and Docker resources.
+
+        Session cleanup runs every cycle (default 5 min).
+        Docker cleanup runs every 6 cycles (~30 min).
+        """
+        docker_cleanup_counter = 0
+        docker_cleanup_every = 6  # Run Docker cleanup every 6th cycle
+
         while not self._shutdown:
             try:
                 await asyncio.sleep(self.cleanup_interval_seconds)
+
+                # Session cleanup (every cycle)
                 await self._cleanup_expired_sessions()
+
+                # Docker resource cleanup (every 6th cycle)
+                docker_cleanup_counter += 1
+                if docker_cleanup_counter >= docker_cleanup_every:
+                    docker_cleanup_counter = 0
+                    await self._run_docker_cleanup()
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in cleanup loop: {e}", exc_info=True)
+
+    async def _run_docker_cleanup(self) -> None:
+        """Run Docker resource cleanup (containers, images, build cache)."""
+        try:
+            from virtualization.container_manager import (
+                get_container_manager,
+                get_docker_cleanup_manager,
+            )
+
+            # Clean terminated containers from in-memory tracking
+            container_manager = get_container_manager()
+            tracked_cleaned = container_manager.cleanup_terminated_containers()
+            if tracked_cleaned > 0:
+                logger.info(f"Cleaned {tracked_cleaned} terminated containers from tracking")
+
+            # Run full Docker cleanup
+            cleanup_manager = get_docker_cleanup_manager()
+            stats = cleanup_manager.run_full_cleanup()
+            logger.debug("Docker cleanup cycle completed", extra=stats)
+
+        except ImportError:
+            logger.debug("Docker cleanup skipped: virtualization module not available")
+        except Exception as e:
+            logger.error(f"Error during Docker cleanup: {e}", exc_info=True)
 
     async def _cleanup_expired_sessions(self) -> int:
         """Clean up all expired sessions.
@@ -187,10 +230,7 @@ class SessionManager:
         Returns:
             Number of sessions cleaned up
         """
-        expired_ids = [
-            sid for sid, session in self._sessions.items()
-            if session.is_expired()
-        ]
+        expired_ids = [sid for sid, session in self._sessions.items() if session.is_expired()]
 
         cleaned = 0
         for session_id in expired_ids:
@@ -205,8 +245,9 @@ class SessionManager:
                         extra={
                             "session_id": session_id,
                             "agent_id": str(session.agent_id),
-                            "age_minutes": (datetime.now() - session.created_at).total_seconds() / 60,
-                        }
+                            "age_minutes": (datetime.now() - session.created_at).total_seconds()
+                            / 60,
+                        },
                     )
             except Exception as e:
                 logger.error(f"Error cleaning up session {session_id}: {e}", exc_info=True)
@@ -226,7 +267,9 @@ class SessionManager:
         if session.sandbox_id:
             try:
                 await self._release_sandbox(session.sandbox_id)
-                logger.debug(f"Released sandbox {session.sandbox_id} for session {session.session_id}")
+                logger.debug(
+                    f"Released sandbox {session.sandbox_id} for session {session.session_id}"
+                )
             except Exception as e:
                 logger.warning(f"Failed to release sandbox {session.sandbox_id}: {e}")
 
@@ -245,8 +288,7 @@ class SessionManager:
             user_id_str = str(session.user_id)
             if user_id_str in self._user_sessions:
                 self._user_sessions[user_id_str] = [
-                    sid for sid in self._user_sessions[user_id_str]
-                    if sid != session_id
+                    sid for sid in self._user_sessions[user_id_str] if sid != session_id
                 ]
 
     async def get_or_create_session(
@@ -277,7 +319,7 @@ class SessionManager:
             if session.user_id != user_id:
                 logger.warning(
                     f"Session {session_id} belongs to different user",
-                    extra={"session_user": str(session.user_id), "request_user": str(user_id)}
+                    extra={"session_user": str(session.user_id), "request_user": str(user_id)},
                 )
                 # Create new session instead
             elif session.is_expired():
@@ -292,17 +334,20 @@ class SessionManager:
                         "session_id": session_id,
                         "agent_id": str(agent_id),
                         "remaining_ttl": session.remaining_ttl_seconds(),
-                    }
+                    },
                 )
                 return session, False
 
         # Create new session
-        return await self._create_session(
-            agent_id=agent_id,
-            user_id=user_id,
-            use_sandbox=use_sandbox if use_sandbox is not None else self.use_sandbox_by_default,
-            ttl_minutes=ttl_minutes if ttl_minutes is not None else self.default_ttl_minutes,
-        ), True
+        return (
+            await self._create_session(
+                agent_id=agent_id,
+                user_id=user_id,
+                use_sandbox=use_sandbox if use_sandbox is not None else self.use_sandbox_by_default,
+                ttl_minutes=ttl_minutes if ttl_minutes is not None else self.default_ttl_minutes,
+            ),
+            True,
+        )
 
     async def _create_session(
         self,
@@ -345,7 +390,7 @@ class SessionManager:
             if not self._docker_available:
                 logger.info(
                     f"Docker not available, session {session_id} will use subprocess execution",
-                    extra={"session_id": session_id}
+                    extra={"session_id": session_id},
                 )
                 use_sandbox = False
             else:
@@ -354,10 +399,12 @@ class SessionManager:
                     if sandbox_id:
                         logger.info(
                             f"Acquired sandbox for session {session_id}: {sandbox_id}",
-                            extra={"session_id": session_id, "sandbox_id": sandbox_id}
+                            extra={"session_id": session_id, "sandbox_id": sandbox_id},
                         )
                     else:
-                        logger.warning(f"Failed to acquire sandbox for session {session_id}, using subprocess")
+                        logger.warning(
+                            f"Failed to acquire sandbox for session {session_id}, using subprocess"
+                        )
                         use_sandbox = False
                 except Exception as e:
                     logger.warning(f"Failed to acquire sandbox, using subprocess: {e}")
@@ -392,7 +439,7 @@ class SessionManager:
                 "use_sandbox": use_sandbox,
                 "sandbox_id": sandbox_id,
                 "ttl_minutes": ttl_minutes,
-            }
+            },
         )
 
         return session
@@ -472,7 +519,7 @@ class SessionManager:
                 extra={
                     "container_id": container_id,
                     "agent_id": str(agent_id),
-                }
+                },
             )
             return container_id
 
@@ -491,6 +538,7 @@ class SessionManager:
         """
         try:
             from virtualization.container_manager import get_container_manager
+
             container_manager = get_container_manager()
             container_manager.terminate_container(sandbox_id)
             logger.info(f"Released sandbox container: {sandbox_id}")
@@ -516,7 +564,7 @@ class SessionManager:
         if session.user_id != user_id:
             logger.warning(
                 f"Unauthorized attempt to end session {session_id}",
-                extra={"session_user": str(session.user_id), "request_user": str(user_id)}
+                extra={"session_user": str(session.user_id), "request_user": str(user_id)},
             )
             return False
 
@@ -530,7 +578,7 @@ class SessionManager:
                 "session_id": session_id,
                 "agent_id": str(session.agent_id),
                 "lifetime_seconds": (datetime.now() - session.created_at).total_seconds(),
-            }
+            },
         )
 
         return True
@@ -557,11 +605,7 @@ class SessionManager:
         """
         user_id_str = str(user_id)
         session_ids = self._user_sessions.get(user_id_str, [])
-        return [
-            self._sessions[sid]
-            for sid in session_ids
-            if sid in self._sessions
-        ]
+        return [self._sessions[sid] for sid in session_ids if sid in self._sessions]
 
     def get_stats(self) -> dict:
         """Get session manager statistics.
@@ -602,6 +646,9 @@ class SessionManager:
 
         self._sessions.clear()
         self._user_sessions.clear()
+
+        # Final Docker cleanup
+        await self._run_docker_cleanup()
 
         logger.info("SessionManager shutdown complete")
 

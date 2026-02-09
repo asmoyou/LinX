@@ -89,20 +89,21 @@ class ContainerConfig:
         """
         # Get resource limits config
         resource_config = self.resource_limits.to_docker_config()
-        
+
         # Build security options
         security_opt = []
         if self.no_new_privileges:
             security_opt.append("no-new-privileges:true")
-        
+
         # Add Linux-specific security options
         import platform
+
         if platform.system() == "Linux":
             if self.seccomp_profile:
                 security_opt.append(f"seccomp={self.seccomp_profile}")
             if self.apparmor_profile:
                 security_opt.append(f"apparmor={self.apparmor_profile}")
-        
+
         config = {
             "image": self.image,
             "name": self.name or f"agent-{self.container_id[:8]}",
@@ -114,6 +115,10 @@ class ContainerConfig:
             "security_opt": security_opt,
             "cap_drop": self.drop_capabilities,
             "cap_add": self.add_capabilities,
+            "labels": {
+                "com.linx.managed": "true",
+                "com.linx.type": "sandbox",
+            },
             # Add resource limits directly
             **resource_config,
         }
@@ -232,10 +237,8 @@ class ContainerManager:
                         raise RuntimeError(f"Failed to pull image {image_name}: {pull_error}")
 
                 # Create container
-                container = self.docker_client.containers.create(
-                    **docker_config
-                )
-                
+                container = self.docker_client.containers.create(**docker_config)
+
                 # Store container reference
                 self.containers[container_id] = {
                     "id": container_id,
@@ -248,7 +251,7 @@ class ContainerManager:
                     "started_at": None,
                     "stopped_at": None,
                 }
-                
+
                 self.logger.info(
                     "Docker container created",
                     extra={
@@ -320,14 +323,14 @@ class ContainerManager:
                 # Real Docker container start
                 container = self.containers[container_id]["docker_container"]
                 container.start()
-                
+
                 # Reload container to get updated status
                 container.reload()
-                
+
                 # Check if container actually started
                 if container.status != "running":
                     # Get container logs to see what went wrong
-                    logs = container.logs().decode('utf-8', errors='replace')
+                    logs = container.logs().decode("utf-8", errors="replace")
                     self.logger.error(
                         f"Container failed to start. Status: {container.status}",
                         extra={
@@ -338,7 +341,7 @@ class ContainerManager:
                     )
                     self.containers[container_id]["status"] = ContainerStatus.FAILED.value
                     return False
-                
+
             self.containers[container_id]["status"] = ContainerStatus.RUNNING.value
             self.containers[container_id]["started_at"] = datetime.utcnow().isoformat()
 
@@ -392,7 +395,7 @@ class ContainerManager:
             if self.docker_available:
                 container = self.containers[container_id]["docker_container"]
                 container.stop(timeout=timeout)
-            
+
             self.containers[container_id]["status"] = ContainerStatus.STOPPED.value
             self.containers[container_id]["stopped_at"] = datetime.utcnow().isoformat()
 
@@ -512,13 +515,13 @@ class ContainerManager:
             try:
                 container = self.containers[container_id]["docker_container"]
                 stats = container.stats(stream=False)
-                
+
                 # Parse Docker stats
                 cpu_percent = self._calculate_cpu_percent(stats)
-                memory_mb = stats['memory_stats'].get('usage', 0) / (1024 * 1024)
-                memory_limit = stats['memory_stats'].get('limit', 1)
-                memory_percent = (stats['memory_stats'].get('usage', 0) / memory_limit) * 100
-                
+                memory_mb = stats["memory_stats"].get("usage", 0) / (1024 * 1024)
+                memory_limit = stats["memory_stats"].get("limit", 1)
+                memory_percent = (stats["memory_stats"].get("usage", 0) / memory_limit) * 100
+
                 return ResourceUsage(
                     cpu_percent=cpu_percent,
                     memory_mb=memory_mb,
@@ -528,7 +531,7 @@ class ContainerManager:
             except Exception as e:
                 self.logger.warning(f"Failed to get container stats: {e}")
                 return None
-        
+
         # Simulation mode - return mock data
         return ResourceUsage(
             cpu_percent=25.5,
@@ -536,30 +539,33 @@ class ContainerManager:
             memory_percent=50.0,
             execution_time_seconds=5.0,
         )
-    
+
     def _calculate_cpu_percent(self, stats: Dict[str, Any]) -> float:
         """Calculate CPU percentage from Docker stats.
-        
+
         Args:
             stats: Docker stats dictionary
-            
+
         Returns:
             CPU percentage
         """
         try:
-            cpu_delta = stats['cpu_stats']['cpu_usage']['total_usage'] - \
-                       stats['precpu_stats']['cpu_usage']['total_usage']
-            system_delta = stats['cpu_stats']['system_cpu_usage'] - \
-                          stats['precpu_stats']['system_cpu_usage']
-            
+            cpu_delta = (
+                stats["cpu_stats"]["cpu_usage"]["total_usage"]
+                - stats["precpu_stats"]["cpu_usage"]["total_usage"]
+            )
+            system_delta = (
+                stats["cpu_stats"]["system_cpu_usage"] - stats["precpu_stats"]["system_cpu_usage"]
+            )
+
             if system_delta > 0:
                 cpu_percent = (cpu_delta / system_delta) * 100.0
                 return round(cpu_percent, 2)
         except (KeyError, ZeroDivisionError):
             pass
-        
+
         return 0.0
-    
+
     def exec_in_container(
         self,
         container_id: str,
@@ -568,37 +574,37 @@ class ContainerManager:
         environment: Optional[Dict[str, str]] = None,
     ) -> Tuple[int, str, str]:
         """Execute a command in a running container.
-        
+
         Args:
             container_id: Container ID
             command: Command to execute (string or list)
             workdir: Working directory for command
             environment: Environment variables
-            
+
         Returns:
             Tuple of (exit_code, stdout, stderr)
-            
+
         Raises:
             RuntimeError: If container not found or not running
         """
         if container_id not in self.containers:
             raise RuntimeError(f"Container {container_id} not found")
-        
+
         container_info = self.containers[container_id]
-        
+
         if container_info["status"] != ContainerStatus.RUNNING.value:
             raise RuntimeError(
                 f"Container {container_id} is not running (status: {container_info['status']})"
             )
-        
+
         if not self.docker_available:
             # Simulation mode
             self.logger.warning("Docker not available, simulating command execution")
             return (0, "Simulated output", "")
-        
+
         try:
             container = container_info["docker_container"]
-            
+
             # Prepare exec command
             exec_config = {
                 "cmd": command if isinstance(command, list) else ["/bin/sh", "-c", command],
@@ -621,13 +627,13 @@ class ContainerManager:
             # With demux=True, output is a tuple (stdout_bytes, stderr_bytes)
             raw_output = exec_instance.output
             if isinstance(raw_output, tuple):
-                stdout = (raw_output[0] or b'').decode('utf-8', errors='replace')
-                stderr = (raw_output[1] or b'').decode('utf-8', errors='replace')
+                stdout = (raw_output[0] or b"").decode("utf-8", errors="replace")
+                stderr = (raw_output[1] or b"").decode("utf-8", errors="replace")
             else:
                 # Fallback if demux didn't work
-                stdout = raw_output.decode('utf-8', errors='replace') if raw_output else ''
-                stderr = ''
-            
+                stdout = raw_output.decode("utf-8", errors="replace") if raw_output else ""
+                stderr = ""
+
             self.logger.debug(
                 "Command executed in container",
                 extra={
@@ -636,16 +642,16 @@ class ContainerManager:
                     "exit_code": exit_code,
                 },
             )
-            
+
             return (exit_code, stdout, stderr)
-        
+
         except DockerException as e:
             self.logger.error(
                 f"Failed to execute command in container: {e}",
                 extra={"container_id": container_id},
             )
             raise RuntimeError(f"Command execution failed: {e}")
-    
+
     def write_file_to_container(
         self,
         container_id: str,
@@ -654,49 +660,45 @@ class ContainerManager:
         mode: int = 0o644,
     ) -> bool:
         """Write a file to a container.
-        
+
         Args:
             container_id: Container ID
             file_path: Path in container
             content: File content
             mode: File permissions (octal)
-            
+
         Returns:
             True if successful
-            
+
         Raises:
             RuntimeError: If operation fails
         """
         if container_id not in self.containers:
             raise RuntimeError(f"Container {container_id} not found")
-        
+
         if not self.docker_available:
             self.logger.warning("Docker not available, simulating file write")
             return True
-        
+
         try:
             # Use exec to write file (works with read-only root + tmpfs)
             # Escape content for shell
             import base64
-            content_b64 = base64.b64encode(content.encode('utf-8')).decode('ascii')
-            
+
+            content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+
             # Write using base64 to avoid shell escaping issues
             commands = [
                 f"echo '{content_b64}' | base64 -d > {file_path}",
-                f"chmod {oct(mode)[2:]} {file_path}"
+                f"chmod {oct(mode)[2:]} {file_path}",
             ]
-            
+
             for cmd in commands:
-                exit_code, stdout, stderr = self.exec_in_container(
-                    container_id,
-                    cmd
-                )
-                
+                exit_code, stdout, stderr = self.exec_in_container(container_id, cmd)
+
                 if exit_code != 0:
-                    raise RuntimeError(
-                        f"Command failed with exit code {exit_code}: {stderr}"
-                    )
-            
+                    raise RuntimeError(f"Command failed with exit code {exit_code}: {stderr}")
+
             self.logger.debug(
                 f"File written to container",
                 extra={
@@ -705,9 +707,9 @@ class ContainerManager:
                     "size": len(content),
                 },
             )
-            
+
             return True
-        
+
         except Exception as e:
             self.logger.error(
                 f"Failed to write file to container: {e}",
@@ -763,6 +765,227 @@ class ContainerManager:
         return len(terminated)
 
 
+class DockerCleanupManager:
+    """Manages cleanup of Docker resources created by LinX sandbox system.
+
+    Handles cleanup of:
+    - Orphaned containers (exited LinX sandbox containers)
+    - Sandbox-derived images (tagged with com.linx labels)
+    - Dangling images (<none>:<none>)
+    - Docker build cache
+
+    Protects infrastructure and base images from accidental deletion.
+    """
+
+    # Image prefixes that must never be deleted
+    PROTECTED_IMAGE_PREFIXES = [
+        "postgres:",
+        "redis:",
+        "minio/",
+        "milvusdb/",
+        "quay.io/coreos/etcd:",
+        "python:",
+    ]
+
+    LINX_LABEL_FILTER = {"label": "com.linx.managed=true"}
+
+    def __init__(self):
+        """Initialize DockerCleanupManager."""
+        self.logger = logging.getLogger(__name__)
+        try:
+            self.docker_client = docker.from_env()
+            self.docker_client.ping()
+            self.docker_available = True
+        except DockerException:
+            self.docker_client = None
+            self.docker_available = False
+            self.logger.warning("DockerCleanupManager: Docker not available")
+
+    def _is_protected_image(self, image_tags: List[str]) -> bool:
+        """Check if an image matches any protected prefix.
+
+        Args:
+            image_tags: List of image tags (e.g. ["python:3.11-slim"])
+
+        Returns:
+            True if the image should be protected from deletion
+        """
+        for tag in image_tags:
+            for prefix in self.PROTECTED_IMAGE_PREFIXES:
+                if tag.startswith(prefix):
+                    return True
+        return False
+
+    def cleanup_orphaned_containers(self) -> int:
+        """Remove exited containers created by LinX sandbox.
+
+        Only removes containers with the com.linx.managed=true label
+        that are in 'exited' or 'dead' status.
+
+        Returns:
+            Number of containers removed
+        """
+        if not self.docker_available:
+            return 0
+
+        removed = 0
+        try:
+            # Find exited containers with LinX label
+            containers = self.docker_client.containers.list(
+                all=True,
+                filters={
+                    **self.LINX_LABEL_FILTER,
+                    "status": ["exited", "dead"],
+                },
+            )
+
+            for container in containers:
+                try:
+                    container_name = container.name
+                    container.remove(force=True)
+                    removed += 1
+                    self.logger.debug(
+                        f"Removed orphaned container: {container_name}",
+                    )
+                except DockerException as e:
+                    self.logger.warning(f"Failed to remove container {container.id[:12]}: {e}")
+
+        except DockerException as e:
+            self.logger.error(f"Error listing orphaned containers: {e}")
+
+        return removed
+
+    def cleanup_sandbox_images(self) -> int:
+        """Remove sandbox-derived images tagged with LinX labels.
+
+        Only removes images with com.linx.managed=true label,
+        and never removes protected base/infrastructure images.
+
+        Returns:
+            Number of images removed
+        """
+        if not self.docker_available:
+            return 0
+
+        removed = 0
+        try:
+            images = self.docker_client.images.list(filters=self.LINX_LABEL_FILTER)
+
+            for image in images:
+                tags = image.tags or []
+
+                if self._is_protected_image(tags):
+                    self.logger.debug(f"Skipping protected image: {tags}")
+                    continue
+
+                try:
+                    image_id = image.short_id
+                    self.docker_client.images.remove(image.id, force=True)
+                    removed += 1
+                    self.logger.debug(f"Removed sandbox image: {image_id} ({tags})")
+                except DockerException as e:
+                    self.logger.warning(f"Failed to remove image {image.short_id}: {e}")
+
+        except DockerException as e:
+            self.logger.error(f"Error listing sandbox images: {e}")
+
+        return removed
+
+    def cleanup_dangling_images(self) -> int:
+        """Remove dangling images (<none>:<none>).
+
+        Dangling images are safe to remove — they are not referenced
+        by any container or tagged image. Protected images are still
+        checked as a safety measure.
+
+        Returns:
+            Number of dangling images removed
+        """
+        if not self.docker_available:
+            return 0
+
+        removed = 0
+        try:
+            images = self.docker_client.images.list(filters={"dangling": True})
+
+            for image in images:
+                tags = image.tags or []
+
+                if self._is_protected_image(tags):
+                    continue
+
+                try:
+                    image_id = image.short_id
+                    self.docker_client.images.remove(image.id, force=True)
+                    removed += 1
+                    self.logger.debug(f"Removed dangling image: {image_id}")
+                except DockerException as e:
+                    self.logger.warning(f"Failed to remove dangling image {image.short_id}: {e}")
+
+        except DockerException as e:
+            self.logger.error(f"Error listing dangling images: {e}")
+
+        return removed
+
+    def cleanup_build_cache(self) -> int:
+        """Prune Docker build cache.
+
+        Returns:
+            Amount of space reclaimed in bytes, or -1 on error
+        """
+        if not self.docker_available:
+            return 0
+
+        try:
+            result = self.docker_client.api.prune_builds()
+            space_reclaimed = result.get("SpaceReclaimed", 0)
+            self.logger.debug(
+                f"Build cache pruned, reclaimed {space_reclaimed / (1024 * 1024):.1f} MB"
+            )
+            return space_reclaimed
+        except DockerException as e:
+            self.logger.error(f"Error pruning build cache: {e}")
+            return -1
+
+    def run_full_cleanup(self) -> Dict[str, Any]:
+        """Execute full Docker cleanup and return statistics.
+
+        Returns:
+            Dictionary with cleanup statistics
+        """
+        stats: Dict[str, Any] = {
+            "containers_removed": 0,
+            "sandbox_images_removed": 0,
+            "dangling_images_removed": 0,
+            "build_cache_bytes_reclaimed": 0,
+        }
+
+        if not self.docker_available:
+            self.logger.info("Docker cleanup skipped: Docker not available")
+            return stats
+
+        stats["containers_removed"] = self.cleanup_orphaned_containers()
+        stats["sandbox_images_removed"] = self.cleanup_sandbox_images()
+        stats["dangling_images_removed"] = self.cleanup_dangling_images()
+        stats["build_cache_bytes_reclaimed"] = self.cleanup_build_cache()
+
+        total_cleaned = (
+            stats["containers_removed"]
+            + stats["sandbox_images_removed"]
+            + stats["dangling_images_removed"]
+        )
+
+        if total_cleaned > 0 or stats["build_cache_bytes_reclaimed"] > 0:
+            self.logger.info(
+                "Docker cleanup completed",
+                extra=stats,
+            )
+        else:
+            self.logger.debug("Docker cleanup completed: nothing to clean")
+
+        return stats
+
+
 # Global container manager instance
 _container_manager: Optional[ContainerManager] = None
 
@@ -777,3 +1000,19 @@ def get_container_manager() -> ContainerManager:
     if _container_manager is None:
         _container_manager = ContainerManager()
     return _container_manager
+
+
+# Global Docker cleanup manager instance
+_docker_cleanup_manager: Optional[DockerCleanupManager] = None
+
+
+def get_docker_cleanup_manager() -> DockerCleanupManager:
+    """Get the global DockerCleanupManager instance.
+
+    Returns:
+        DockerCleanupManager instance
+    """
+    global _docker_cleanup_manager
+    if _docker_cleanup_manager is None:
+        _docker_cleanup_manager = DockerCleanupManager()
+    return _docker_cleanup_manager
