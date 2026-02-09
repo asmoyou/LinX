@@ -1324,6 +1324,7 @@ class ModelMetadataResponse(BaseModel):
     capabilities: List[str] = []
     context_window: Optional[int] = None
     max_output_tokens: Optional[int] = None
+    embedding_dimension: Optional[int] = None  # Vector dimension for embedding models
     default_temperature: float = 0.7
     temperature_range: tuple[float, float] = (0.0, 2.0)
     supports_streaming: bool = True
@@ -1450,6 +1451,7 @@ async def get_provider_models_metadata(
                     capabilities=capabilities_str,
                     context_window=detected_metadata.context_window,
                     max_output_tokens=detected_metadata.max_output_tokens,
+                    embedding_dimension=detected_metadata.embedding_dimension,
                     default_temperature=detected_metadata.default_temperature,
                     temperature_range=detected_metadata.temperature_range,
                     supports_streaming=detected_metadata.supports_streaming,
@@ -1736,6 +1738,8 @@ async def refresh_models_metadata(
                         detected_metadata.context_window = provider_metadata["context_window"]
                     if "max_output_tokens" in provider_metadata:
                         detected_metadata.max_output_tokens = provider_metadata["max_output_tokens"]
+                    if "embedding_dimension" in provider_metadata:
+                        detected_metadata.embedding_dimension = provider_metadata["embedding_dimension"]
                     if "size" in provider_metadata:
                         detected_metadata.size = provider_metadata["size"]
                     if "quantization" in provider_metadata:

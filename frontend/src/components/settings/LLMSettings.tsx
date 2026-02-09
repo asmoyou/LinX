@@ -639,31 +639,41 @@ export const LLMSettings: React.FC = () => {
 
                           {/* Embedding/Rerank Model Properties */}
                           {isEmbeddingOrRerank && (
-                            <div className="mb-3 p-3 bg-zinc-50 dark:bg-zinc-800/50 rounded">
-                              <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-2">
-                                {t('settings.modelDetails.modelInfo')}
-                              </div>
-                              <div className="space-y-1 text-sm">
-                                <div className="flex justify-between">
-                                  <span className="text-zinc-600 dark:text-zinc-400">{t('settings.modelDetails.type')}:</span>
-                                  <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                            <div className="mb-3">
+                              <div className="grid grid-cols-2 gap-3 mb-3">
+                                <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
+                                  <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">{t('settings.modelDetails.type')}</div>
+                                  <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                                     {metadata.model_type === 'embedding' ? t('settings.modelDetails.textEmbedding') : t('settings.modelDetails.reranking')}
-                                  </span>
+                                  </div>
                                 </div>
+                                {metadata.model_type === 'embedding' && metadata.embedding_dimension && (
+                                  <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
+                                    <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">{t('settings.modelDetails.embeddingDimension')}</div>
+                                    <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                      {metadata.embedding_dimension.toLocaleString()}
+                                    </div>
+                                    <div className="text-xs text-zinc-500 dark:text-zinc-400">{t('settings.modelDetails.dimensions')}</div>
+                                  </div>
+                                )}
                                 {metadata.context_window && (
-                                  <div className="flex justify-between">
-                                    <span className="text-zinc-600 dark:text-zinc-400">{t('settings.modelDetails.maxInput')}:</span>
-                                    <span className="font-semibold text-zinc-900 dark:text-zinc-100">
-                                      {metadata.context_window.toLocaleString()} {t('settings.modelDetails.tokens')}
-                                    </span>
+                                  <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
+                                    <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">{t('settings.modelDetails.maxInputTokens')}</div>
+                                    <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                      {metadata.context_window.toLocaleString()}
+                                    </div>
+                                    <div className="text-xs text-zinc-500 dark:text-zinc-400">{t('settings.modelDetails.tokens')}</div>
                                   </div>
                                 )}
                                 {metadata.version && (
-                                  <div className="flex justify-between">
-                                    <span className="text-zinc-600 dark:text-zinc-400">{t('settings.modelDetails.version')}:</span>
-                                    <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                                  <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
+                                    <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">{t('settings.modelDetails.version')}</div>
+                                    <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                                       {metadata.version}
-                                    </span>
+                                    </div>
+                                    {metadata.release_date && (
+                                      <div className="text-xs text-zinc-500 dark:text-zinc-400">{metadata.release_date}</div>
+                                    )}
                                   </div>
                                 )}
                               </div>

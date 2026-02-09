@@ -67,6 +67,7 @@ class ModelMetadata(BaseModel):
     # Context and tokens
     context_window: Optional[int] = None
     max_output_tokens: Optional[int] = None
+    embedding_dimension: Optional[int] = None  # Vector dimension for embedding models (e.g., 1536, 768)
     
     # Thinking/Reasoning tokens (for reasoning models)
     min_thinking_tokens: Optional[int] = None
@@ -237,15 +238,69 @@ class EnhancedModelCapabilityDetector:
     # Embedding model patterns (from cherry-studio/embedding.ts)
     EMBEDDING_PATTERNS = [
         r'^text-', r'embed', r'bge-', r'e5-',
-        r'LLM2Vec', r'retrieval', r'uae-', r'gte-',
+        r'LLM2Vec', r'uae-', r'gte-',
         r'jina-clip', r'jina-embeddings', r'voyage-',
     ]
-    
+
     # Rerank model patterns
     RERANK_PATTERNS = [
         r'rerank', r're-rank', r're-ranker', r're-ranking',
-        r'retrieval', r'retriever',
     ]
+
+    # Known embedding model metadata: {pattern: (max_context, dimension)}
+    KNOWN_EMBEDDING_MODELS = {
+        # OpenAI
+        'text-embedding-3-small': (8191, 1536),
+        'text-embedding-3-large': (8191, 3072),
+        'text-embedding-ada-002': (8191, 1536),
+        'text-embedding-004': (2048, 768),
+        # Alibaba / Dashscope
+        'text-embedding-v3': (8192, 1024),
+        'text-embedding-v2': (2048, 1536),
+        'text-embedding-v1': (2048, 1536),
+        # BGE models (BAAI)
+        'bge-m3': (8192, 1024),
+        'bge-large-zh': (512, 1024),
+        'bge-large-en': (512, 1024),
+        'bge-base-zh': (512, 768),
+        'bge-base-en': (512, 768),
+        'bge-small-zh': (512, 512),
+        'bge-small-en': (512, 384),
+        # Nomic
+        'nomic-embed-text': (8192, 768),
+        # Jina
+        'jina-embeddings-v2': (8191, 768),
+        'jina-embeddings-v3': (8191, 1024),
+        'jina-clip-v1': (8191, 768),
+        # Voyage
+        'voyage-3-large': (2048, 1024),
+        'voyage-3': (1024, 1024),
+        'voyage-3-lite': (512, 512),
+        'voyage-code-3': (1024, 1024),
+        # GTE
+        'gte-multilingual-base': (8192, 768),
+        # Cohere
+        'embed-english-v3.0': (512, 1024),
+        'embed-multilingual-v3.0': (512, 1024),
+        'embed-english-light-v3.0': (512, 384),
+        'embed-multilingual-light-v3.0': (512, 384),
+        # Mistral
+        'mistral-embed': (8000, 1024),
+        # Mxbai
+        'mxbai-embed-large': (512, 1024),
+        # Doubao
+        'doubao-embedding': (4095, 2560),
+        'doubao-embedding-large': (4095, 2560),
+    }
+
+    # Known rerank model metadata: {pattern: max_context}
+    KNOWN_RERANK_MODELS = {
+        'bge-reranker-v2-m3': 8192,
+        'bge-reranker-large': 512,
+        'bge-reranker-base': 512,
+        'jina-reranker-v2': 8191,
+        'jina-reranker-v1': 8191,
+    }
     
     # Image generation model patterns
     IMAGE_GENERATION_PATTERNS = [
@@ -346,9 +401,12 @@ class EnhancedModelCapabilityDetector:
     
     @classmethod
     def is_embedding_model(cls, model_id: str) -> bool:
-        """Detect if model is an embedding model."""
+        """Detect if model is an embedding model (mutually exclusive with rerank)."""
+        # Rerank takes priority - if it's a rerank model, it's NOT an embedding model
+        if cls.is_rerank_model(model_id):
+            return False
         return cls._matches_pattern(model_id, cls.EMBEDDING_PATTERNS)
-    
+
     @classmethod
     def is_rerank_model(cls, model_id: str) -> bool:
         """Detect if model is a rerank model."""
@@ -428,11 +486,11 @@ class EnhancedModelCapabilityDetector:
         """
         model_lower = model_id.lower()
         
-        # Detect model type
-        if cls.is_embedding_model(model_id):
-            model_type = ModelType.EMBEDDING
-        elif cls.is_rerank_model(model_id):
+        # Detect model type (rerank checked before embedding for mutual exclusion)
+        if cls.is_rerank_model(model_id):
             model_type = ModelType.RERANK
+        elif cls.is_embedding_model(model_id):
+            model_type = ModelType.EMBEDDING
         elif cls.is_image_generation_model(model_id):
             model_type = ModelType.IMAGE_GENERATION
         elif cls.is_reasoning_model(model_id, model_name):
@@ -481,7 +539,19 @@ class EnhancedModelCapabilityDetector:
         # Detect context window based on model family
         context_window = cls._detect_context_window(model_id)
         max_output_tokens = cls._detect_max_output_tokens(model_id)
-        
+
+        # Detect embedding/rerank specific metadata from known models
+        embedding_dimension = None
+        if model_type == ModelType.EMBEDDING:
+            emb_meta = cls._lookup_embedding_metadata(model_id)
+            if emb_meta:
+                context_window = context_window or emb_meta[0]
+                embedding_dimension = emb_meta[1]
+        elif model_type == ModelType.RERANK:
+            rerank_ctx = cls._lookup_rerank_metadata(model_id)
+            if rerank_ctx:
+                context_window = context_window or rerank_ctx
+
         # Build metadata
         metadata = ModelMetadata(
             model_id=model_id,
@@ -494,6 +564,7 @@ class EnhancedModelCapabilityDetector:
             quantization=cls.extract_quantization(model_id),
             context_window=context_window,
             max_output_tokens=max_output_tokens,
+            embedding_dimension=embedding_dimension,
             min_thinking_tokens=min_thinking,
             max_thinking_tokens=max_thinking,
             supports_streaming=model_type not in [ModelType.EMBEDDING, ModelType.RERANK],
@@ -505,6 +576,28 @@ class EnhancedModelCapabilityDetector:
         
         return metadata
     
+    @classmethod
+    def _lookup_embedding_metadata(cls, model_id: str) -> Optional[Tuple[int, int]]:
+        """Look up known embedding model metadata (max_context, dimension).
+
+        Uses substring matching so 'bge-m3' matches 'BAAI/bge-m3' etc.
+        """
+        model_lower = model_id.lower()
+        # Try exact match first, then substring match
+        for pattern, meta in cls.KNOWN_EMBEDDING_MODELS.items():
+            if pattern.lower() in model_lower:
+                return meta
+        return None
+
+    @classmethod
+    def _lookup_rerank_metadata(cls, model_id: str) -> Optional[int]:
+        """Look up known rerank model max_context."""
+        model_lower = model_id.lower()
+        for pattern, max_ctx in cls.KNOWN_RERANK_MODELS.items():
+            if pattern.lower() in model_lower:
+                return max_ctx
+        return None
+
     @classmethod
     def _detect_context_window(cls, model_id: str) -> Optional[int]:
         """Detect context window size based on model patterns."""

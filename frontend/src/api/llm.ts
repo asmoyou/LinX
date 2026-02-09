@@ -94,6 +94,7 @@ export interface ModelMetadata {
   capabilities: string[];
   context_window?: number;
   max_output_tokens?: number;
+  embedding_dimension?: number;  // Vector dimension for embedding models (e.g., 1536, 768)
   default_temperature: number;
   temperature_range: [number, number];
   supports_streaming: boolean;
