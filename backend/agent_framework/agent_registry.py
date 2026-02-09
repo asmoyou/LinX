@@ -202,6 +202,7 @@ class AgentRegistry:
         vector_dimension: Optional[int] = None,
         top_k: Optional[int] = None,
         similarity_threshold: Optional[float] = None,
+        department_id: Optional[str] = None,
     ) -> Optional[AgentInfo]:
         """Update agent properties.
 
@@ -226,6 +227,7 @@ class AgentRegistry:
             vector_dimension: Vector dimension
             top_k: Top K results for retrieval
             similarity_threshold: Similarity threshold for retrieval
+            department_id: Department UUID string (empty string or None to clear)
 
         Returns:
             Updated AgentInfo or None if not found
@@ -274,6 +276,8 @@ class AgentRegistry:
                 agent.top_k = top_k
             if similarity_threshold is not None:
                 agent.similarity_threshold = similarity_threshold
+            if department_id is not None:
+                agent.department_id = UUID(department_id) if department_id else None
 
             session.commit()
             session.refresh(agent)

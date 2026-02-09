@@ -107,6 +107,7 @@ export const Workforce: React.FC = () => {
         vectorDimension: updatedAgent.vectorDimension,
         topK: updatedAgent.topK,
         similarityThreshold: updatedAgent.similarityThreshold,
+        department_id: updatedAgent.departmentId || null,
       });
       
       console.log('[Workforce] Update successful:', saved);
