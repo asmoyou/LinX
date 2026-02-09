@@ -33,6 +33,8 @@ export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({ onSubmit
     handleSubmit,
     formState: { errors },
     watch,
+    setValue,
+    getValues,
   } = useForm<UploadDocumentFormData>({
     resolver: zodResolver(uploadDocumentSchema),
     mode: 'onBlur',
@@ -59,6 +61,13 @@ export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({ onSubmit
     }
 
     setSelectedFile(file);
+
+    // Auto-fill title from filename (without extension) if title is empty
+    const currentTitle = getValues('title');
+    if (!currentTitle) {
+      const nameWithoutExt = file.name.replace(/\.[^/.]+$/, '');
+      setValue('title', nameWithoutExt);
+    }
   };
 
   const handleDragOver = (e: React.DragEvent) => {

@@ -53,6 +53,7 @@ class OllamaProvider(BaseLLMProvider):
         model: str,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
+        images: Optional[List[str]] = None,
         **kwargs,
     ) -> LLMResponse:
         """
@@ -63,6 +64,7 @@ class OllamaProvider(BaseLLMProvider):
             model: Ollama model name (e.g., "llama3", "mistral")
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            images: Optional list of base64-encoded images for vision models
             **kwargs: Additional Ollama parameters
 
         Returns:
@@ -81,6 +83,10 @@ class OllamaProvider(BaseLLMProvider):
 
         if max_tokens:
             payload["options"]["num_predict"] = max_tokens
+
+        # Add images for vision models (e.g., qwen3-vl)
+        if images:
+            payload["images"] = images
 
         # Add any additional options
         payload["options"].update(kwargs)

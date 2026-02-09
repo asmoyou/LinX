@@ -1,5 +1,6 @@
 import React from 'react';
-import { FileText, Image, Music, Video, File, Eye, Download, Trash2, MoreVertical, Clock, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { FileText, Image, Music, Video, File, Eye, Download, Trash2, MoreVertical, Clock, CheckCircle, XCircle, Loader2, Layers, Hash, RotateCcw } from 'lucide-react';
 import { GlassPanel } from '@/components/GlassPanel';
 import type { Document } from '@/types/document';
 
@@ -8,9 +9,11 @@ interface DocumentCardProps {
   onView: (document: Document) => void;
   onDownload: (document: Document) => void;
   onDelete: (document: Document) => void;
+  onReprocess?: (document: Document) => void;
 }
 
-export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, onDownload, onDelete }) => {
+export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, onDownload, onDelete, onReprocess }) => {
+  const { t } = useTranslation();
   const [showMenu, setShowMenu] = React.useState(false);
 
   const getFileIcon = (type: Document['type']) => {
@@ -96,7 +99,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
         <div className="mb-4">
           <div className="flex items-center justify-between text-xs mb-1">
             <span className="text-gray-600 dark:text-gray-400">
-              {document.status === 'uploading' ? 'Uploading' : 'Processing'}
+              {document.status === 'uploading' ? 'Uploading' : 'Processing...'}
             </span>
             <span className="text-gray-800 dark:text-white font-medium">
               {document.status === 'uploading' ? document.uploadProgress : document.processingProgress}%
@@ -105,12 +108,48 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
           <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
             <div
               className="h-full bg-blue-500 transition-all duration-300"
-              style={{ 
-                width: `${document.status === 'uploading' ? document.uploadProgress : document.processingProgress}%` 
+              style={{
+                width: `${document.status === 'uploading' ? document.uploadProgress : document.processingProgress}%`
               }}
             />
           </div>
         </div>
+      )}
+
+      {/* Processing Result Details */}
+      {document.status === 'completed' && (document.chunkCount || document.tokenCount) && (
+        <div className="mb-4 flex items-center gap-3 text-xs text-gray-600 dark:text-gray-400">
+          {document.chunkCount != null && (
+            <span className="flex items-center gap-1">
+              <Layers className="w-3 h-3" />
+              {document.chunkCount} chunks
+            </span>
+          )}
+          {document.tokenCount != null && (
+            <span className="flex items-center gap-1">
+              <Hash className="w-3 h-3" />
+              {document.tokenCount.toLocaleString()} tokens
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Failed Error Banner */}
+      {document.status === 'failed' && (document.errorMessage || document.error) && (
+        <div className="mb-4 p-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-700 dark:text-red-400">
+          {document.errorMessage || document.error}
+        </div>
+      )}
+
+      {/* Reprocess Button for failed/completed documents */}
+      {onReprocess && (document.status === 'failed' || document.status === 'completed') && (
+        <button
+          onClick={() => onReprocess(document)}
+          className="mb-4 w-full flex items-center justify-center gap-2 px-3 py-1.5 bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30 rounded-lg hover:bg-amber-500/30 transition-colors text-xs font-medium"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+          {document.status === 'failed' ? t('kbConfig.retryProcessing') : t('kbConfig.reprocess')}
+        </button>
       )}
 
       {/* Tags */}
@@ -129,18 +168,11 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
         </div>
       )}
 
-      {/* Error Message */}
-      {document.error && (
-        <div className="mb-4 p-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-700 dark:text-red-400">
-          {document.error}
-        </div>
-      )}
-
       {/* Actions */}
       <div className="flex items-center gap-2">
         <button
           onClick={() => onView(document)}
-          disabled={document.status !== 'completed'}
+          disabled={document.status === 'uploading' || document.status === 'processing'}
           className="flex-1 px-3 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
         >
           View
@@ -165,7 +197,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
                     onView(document);
                     setShowMenu(false);
                   }}
-                  disabled={document.status !== 'completed'}
+                  disabled={document.status === 'uploading' || document.status === 'processing'}
                   className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2 disabled:opacity-50"
                 >
                   <Eye className="w-4 h-4" />
@@ -176,7 +208,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
                     onDownload(document);
                     setShowMenu(false);
                   }}
-                  disabled={document.status !== 'completed'}
+                  disabled={document.status === 'uploading' || document.status === 'processing'}
                   className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2 disabled:opacity-50"
                 >
                   <Download className="w-4 h-4" />

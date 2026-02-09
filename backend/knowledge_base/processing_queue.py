@@ -13,7 +13,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from message_bus.redis_manager import RedisManager, get_redis_manager
+from message_bus.redis_manager import RedisConnectionManager, get_redis_manager
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ class ProcessingJob:
 class ProcessingQueue:
     """Manage document processing job queue."""
 
-    def __init__(self, redis_manager: Optional[RedisManager] = None):
+    def __init__(self, redis_manager: Optional[RedisConnectionManager] = None):
         """Initialize processing queue.
 
         Args:
@@ -58,6 +58,11 @@ class ProcessingQueue:
         self.queue_key = "document_processing_queue"
         self.job_prefix = "processing_job:"
         logger.info("ProcessingQueue initialized")
+
+    @property
+    def _client(self):
+        """Get the underlying redis.Redis client."""
+        return self.redis_manager.get_client()
 
     def enqueue(
         self,
@@ -94,12 +99,16 @@ class ProcessingQueue:
             created_at=datetime.utcnow().isoformat(),
         )
 
+        # Serialize status enum to string for JSON
+        job_dict = asdict(job)
+        job_dict["status"] = job_dict["status"].value if isinstance(job_dict["status"], JobStatus) else job_dict["status"]
+
         # Store job data
         job_key = f"{self.job_prefix}{job_id}"
-        self.redis_manager.set(job_key, json.dumps(asdict(job)))
+        self._client.set(job_key, json.dumps(job_dict))
 
         # Add to queue
-        self.redis_manager.lpush(self.queue_key, job_id)
+        self._client.lpush(self.queue_key, job_id)
 
         logger.info(f"Job enqueued: {job_id}", extra={"document_id": document_id})
         return job
@@ -113,13 +122,16 @@ class ProcessingQueue:
         Returns:
             ProcessingJob or None if queue is empty
         """
-        result = self.redis_manager.brpop(self.queue_key, timeout=timeout)
+        result = self._client.brpop(self.queue_key, timeout=timeout)
         if not result:
             return None
 
         _, job_id = result
-        job_key = f"{self.job_prefix}{job_id.decode()}"
-        job_data = self.redis_manager.get(job_key)
+        # decode_responses=True means job_id is already a string
+        if isinstance(job_id, bytes):
+            job_id = job_id.decode()
+        job_key = f"{self.job_prefix}{job_id}"
+        job_data = self._client.get(job_key)
 
         if not job_data:
             return None
@@ -142,7 +154,7 @@ class ProcessingQueue:
             error_message: Optional error message
         """
         job_key = f"{self.job_prefix}{job_id}"
-        job_data = self.redis_manager.get(job_key)
+        job_data = self._client.get(job_key)
 
         if not job_data:
             logger.warning(f"Job not found: {job_id}")
@@ -159,7 +171,7 @@ class ProcessingQueue:
         if error_message:
             job_dict["error_message"] = error_message
 
-        self.redis_manager.set(job_key, json.dumps(job_dict))
+        self._client.set(job_key, json.dumps(job_dict))
         logger.info(f"Job status updated: {job_id} -> {status.value}")
 
     def get_job(self, job_id: str) -> Optional[ProcessingJob]:
@@ -172,7 +184,7 @@ class ProcessingQueue:
             ProcessingJob or None if not found
         """
         job_key = f"{self.job_prefix}{job_id}"
-        job_data = self.redis_manager.get(job_key)
+        job_data = self._client.get(job_key)
 
         if not job_data:
             return None

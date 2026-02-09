@@ -1,77 +1,64 @@
-# LinX (灵枢) Configuration
-# Development Configuration
-# For production, copy config.yaml.example and customize with secure values
-
-# ============================================================================
-# Platform Settings
-# ============================================================================
 platform:
-  name: "LinX Platform"
-  version: "1.0.0"
-  environment: "development"
+  name: LinX Platform
+  version: 1.0.0
+  environment: development
   debug: true
-
-# ============================================================================
-# API Gateway Configuration
-# ============================================================================
 api:
-  host: "0.0.0.0"
+  host: 0.0.0.0
   port: 8000
   workers: 4
-  
   cors:
     enabled: true
     origins:
-      - "http://localhost:3000"
-      - "http://localhost:5173"
+    - http://localhost:3000
+    - http://localhost:5173
     allow_credentials: true
-    allow_methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
-    allow_headers: ["*"]
-  
+    allow_methods:
+    - GET
+    - POST
+    - PUT
+    - DELETE
+    - PATCH
+    - OPTIONS
+    allow_headers:
+    - '*'
   rate_limit:
     enabled: true
-    requests_per_minute: 300  # 增加到300请求/分钟，避免开发时触发限流
+    requests_per_minute: 300
     requests_per_hour: 1000
     burst: 10
-  
   jwt:
-    secret_key: "dev-secret-key-change-in-production"
-    algorithm: "HS256"
+    secret_key: dev-secret-key-change-in-production
+    algorithm: HS256
     expiration_hours: 24
     refresh_expiration_days: 7
-  
   max_request_size_mb: 100
   timeout_seconds: 300
-
-# ============================================================================
-# Database Configuration
-# ============================================================================
 database:
   postgres:
-    host: "localhost"
+    host: localhost
     port: 5432
-    database: "digital_workforce"
-    username: "dwp_user"
-    password: "dwp_password_change_me"
+    database: digital_workforce
+    username: dwp_user
+    password: dwp_password_change_me
     pool_size: 20
     max_overflow: 10
     pool_timeout: 30
     pool_recycle: 3600
     echo: false
     echo_pool: false
-    ssl_mode: "prefer"
+    ssl_mode: prefer
     ssl_cert: null
     ssl_key: null
     ssl_root_cert: null
-  
   milvus:
-    host: "localhost"
+    host: localhost
     port: 19530
-    user: ""
-    password: ""
-    collection_prefix: "workforce_"
-    index_type: "IVF_FLAT"
-    metric_type: "L2"
+    user: ''
+    password: ''
+    collection_prefix: workforce_
+    index_type: IVF_FLAT
+    metric_type: L2
     nlist: 1024
     nprobe: 16
     hnsw_m: 16
@@ -79,12 +66,11 @@ database:
     hnsw_ef: 64
     timeout: 30
     enable_partitioning: true
-    partition_by: "user_id"
-  
+    partition_by: user_id
   redis:
-    host: "localhost"
+    host: localhost
     port: 6379
-    password: ""
+    password: ''
     db: 0
     max_connections: 50
     socket_timeout: 5
@@ -92,79 +78,73 @@ database:
     retry_on_timeout: true
     max_retries: 3
     ssl: false
-    ssl_cert_reqs: "required"
+    ssl_cert_reqs: required
     ssl_ca_certs: null
-
-# ============================================================================
-# Object Storage Configuration (MinIO)
-# ============================================================================
 storage:
   minio:
-    endpoint: "localhost:9000"
-    access_key: "minioadmin"
-    secret_key: "minioadmin_change_me"
+    endpoint: localhost:9000
+    access_key: minioadmin
+    secret_key: minioadmin_change_me
     secure: false
-    region: "us-east-1"
+    region: us-east-1
     buckets:
-      documents: "documents"
-      audio: "audio"
-      video: "video"
-      images: "images"
-      artifacts: "agent-artifacts"
-      backups: "backups"
+      documents: documents
+      audio: audio
+      video: video
+      images: images
+      artifacts: agent-artifacts
+      backups: backups
     max_file_size_mb: 500
-    allowed_document_types: ["pdf", "docx", "txt", "md", "html"]
-    allowed_audio_types: ["mp3", "wav", "m4a", "flac"]
-    allowed_video_types: ["mp4", "avi", "mov", "mkv"]
-    allowed_image_types: ["png", "jpg", "jpeg", "gif", "bmp", "webp"]
+    allowed_document_types:
+    - pdf
+    - docx
+    - txt
+    - md
+    - html
+    allowed_audio_types:
+    - mp3
+    - wav
+    - m4a
+    - flac
+    allowed_video_types:
+    - mp4
+    - avi
+    - mov
+    - mkv
+    allowed_image_types:
+    - png
+    - jpg
+    - jpeg
+    - gif
+    - bmp
+    - webp
     enable_versioning: true
     temp_file_retention_days: 7
     backup_retention_days: 90
-
-# ============================================================================
-# LLM Provider Configuration
-# ============================================================================
 llm:
-  default_provider: "ollama"
+  default_provider: ollama
   enable_fallback: false
-  fallback_order: ["ollama", "vllm"]
+  fallback_order:
+  - ollama
+  - vllm
   timeout_seconds: 120
   max_retries: 3
   retry_delay_seconds: 2
-  cache_ttl: 30  # Provider cache TTL in seconds (0 to disable, default: 300)
-  
+  cache_ttl: 30
+  # providers below are only used for initial DB seeding on first boot.
+  # At runtime, all provider info is read from the llm_providers DB table.
   providers:
     ollama:
       enabled: true
-      host: "192.168.0.29"
-      port: 11434
-      base_url: "http://192.168.0.29:11434"
+      base_url: http://192.168.0.29:11434
       models:
-        chat: "qwen3-vl:30b"
-        embedding: "bge-m3"
-      temperature: 0.7
-      top_p: 0.9
-      top_k: 40
-      num_predict: 2048
-      repeat_penalty: 1.1
-      context_window: 8192
-      num_ctx: 8192
-    
+        chat: qwen3-vl:30b
+        embedding: bge-m3
     vllm:
       enabled: true
-      host: "192.168.0.29"
-      port: 8000
-      base_url: "http://192.168.0.29:6006"
+      base_url: http://192.168.0.29:6006
       models:
-        chat: "Qwen3-Next-80B-A3B-Instruct-AWQ-4bit"
-      gpu_memory_utilization: 0.9
-      max_num_seqs: 256
-      max_model_len: 8192
-
-
-# ============================================================================
-# Agent Framework Configuration
-# ============================================================================
+        chat: Qwen3-Next-80B-A3B-Instruct-AWQ-4bit
 agents:
   pool:
     min_size: 10
@@ -172,7 +152,6 @@ agents:
     idle_timeout_minutes: 5
     warmup_enabled: true
     warmup_count: 5
-  
   resources:
     default_cpu_cores: 1.0
     default_memory_gb: 2
@@ -180,63 +159,70 @@ agents:
     max_memory_gb: 8
     default_disk_gb: 10
     max_disk_gb: 50
-  
   templates:
-    - name: "data_analyst"
-      display_name: "Data Analyst"
-      description: "Analyzes data, creates visualizations, and generates reports"
-      skills: ["data_processing", "statistical_analysis", "visualization", "sql_query"]
-      default_cpu: 2.0
-      default_memory: 4
-    
-    - name: "content_writer"
-      display_name: "Content Writer"
-      description: "Creates, edits, and summarizes written content"
-      skills: ["writing", "editing", "summarization", "translation"]
-      default_cpu: 1.0
-      default_memory: 2
-    
-    - name: "code_assistant"
-      display_name: "Code Assistant"
-      description: "Writes, debugs, and reviews code"
-      skills: ["code_generation", "debugging", "code_review", "testing"]
-      default_cpu: 2.0
-      default_memory: 4
-    
-    - name: "research_assistant"
-      display_name: "Research Assistant"
-      description: "Gathers information, conducts research, and compiles reports"
-      skills: ["information_gathering", "web_search", "summarization", "citation"]
-      default_cpu: 1.0
-      default_memory: 2
-  
+  - name: data_analyst
+    display_name: Data Analyst
+    description: Analyzes data, creates visualizations, and generates reports
+    skills:
+    - data_processing
+    - statistical_analysis
+    - visualization
+    - sql_query
+    default_cpu: 2.0
+    default_memory: 4
+  - name: content_writer
+    display_name: Content Writer
+    description: Creates, edits, and summarizes written content
+    skills:
+    - writing
+    - editing
+    - summarization
+    - translation
+    default_cpu: 1.0
+    default_memory: 2
+  - name: code_assistant
+    display_name: Code Assistant
+    description: Writes, debugs, and reviews code
+    skills:
+    - code_generation
+    - debugging
+    - code_review
+    - testing
+    default_cpu: 2.0
+    default_memory: 4
+  - name: research_assistant
+    display_name: Research Assistant
+    description: Gathers information, conducts research, and compiles reports
+    skills:
+    - information_gathering
+    - web_search
+    - summarization
+    - citation
+    default_cpu: 1.0
+    default_memory: 2
   execution:
     max_task_duration_minutes: 60
     heartbeat_interval_seconds: 30
     max_retries: 3
     retry_delay_seconds: 5
-
-# ============================================================================
-# Code Execution Sandbox Configuration
-# ============================================================================
 code_execution:
-  sandbox_mode: "auto"
+  sandbox_mode: auto
   fallback_enabled: true
   fallback_to_docker: true
   warn_on_fallback: true
-  require_minimum_security: "medium"
-  
+  require_minimum_security: medium
   platform_overrides:
     linux:
-      preferred: "gvisor"
-      fallback: ["firecracker", "docker"]
+      preferred: gvisor
+      fallback:
+      - firecracker
+      - docker
     darwin:
-      preferred: "docker"
+      preferred: docker
       fallback: []
     windows:
-      preferred: "docker"
+      preferred: docker
       fallback: []
-  
   resources:
     default_cpu_cores: 0.5
     max_cpu_cores: 2.0
@@ -247,47 +233,51 @@ code_execution:
     max_disk_io_mbps: 10
     max_network_bandwidth_mbps: 1
     max_network_connections: 5
-  
   security:
     enable_network: false
     allowed_domains: []
     block_dangerous_imports: true
     enable_static_analysis: true
     read_only_filesystem: true
-  
   pool:
     enabled: true
     size: 10
     warmup_on_startup: true
-
-# ============================================================================
-# Security Configuration
-# ============================================================================
 security:
   encryption:
     at_rest: true
     in_transit: true
-    algorithm: "AES-256-GCM"
-  
+    algorithm: AES-256-GCM
   data_classification:
     enabled: true
     auto_classify: true
-    levels: ["public", "internal", "confidential", "restricted"]
-    default_level: "internal"
-  
+    levels:
+    - public
+    - internal
+    - confidential
+    - restricted
+    default_level: internal
   container_isolation:
-    drop_capabilities: ["NET_RAW", "SYS_ADMIN", "SYS_PTRACE", "SYS_MODULE", "DAC_OVERRIDE"]
+    drop_capabilities:
+    - NET_RAW
+    - SYS_ADMIN
+    - SYS_PTRACE
+    - SYS_MODULE
+    - DAC_OVERRIDE
     read_only_root: true
     no_new_privileges: true
-    seccomp_profile: "default"
-    apparmor_profile: "docker-default"
-  
+    seccomp_profile: default
+    apparmor_profile: docker-default
   network:
     enable_firewall: true
-    default_policy: "deny"
-    allowed_internal_ports: [8000, 5432, 19530, 6379, 9000]
+    default_policy: deny
+    allowed_internal_ports:
+    - 8000
+    - 5432
+    - 19530
+    - 6379
+    - 9000
     block_external_access: true
-  
   authentication:
     password_min_length: 12
     password_require_uppercase: true
@@ -296,15 +286,10 @@ security:
     password_require_special: true
     max_login_attempts: 5
     lockout_duration_minutes: 30
-  
   session:
     max_concurrent_sessions: 5
     idle_timeout_minutes: 30
     absolute_timeout_hours: 24
-
-# ============================================================================
-# Resource Quotas
-# ============================================================================
 quotas:
   default:
     max_agents: 10
@@ -313,7 +298,6 @@ quotas:
     max_memory_gb: 20
     max_concurrent_tasks: 50
     max_knowledge_items: 1000
-  
   admin:
     max_agents: 100
     max_storage_gb: 1000
@@ -321,61 +305,53 @@ quotas:
     max_memory_gb: 200
     max_concurrent_tasks: 500
     max_knowledge_items: 10000
-  
   enforcement:
     enabled: true
     warn_at_percentage: 80
     block_at_percentage: 100
-
-# ============================================================================
-# Monitoring and Observability
-# ============================================================================
 monitoring:
   prometheus:
     enabled: true
     port: 9090
-    path: "/metrics"
+    path: /metrics
     collect_system_metrics: true
     collect_application_metrics: true
     collect_business_metrics: true
     scrape_interval_seconds: 15
-  
   logging:
-    level: "INFO"
-    format: "json"
-    output: "stdout"
+    level: INFO
+    format: json
+    output: stdout
     file:
-      path: "/var/log/linx-platform"
-      filename: "platform.log"
+      path: /var/log/linx-platform
+      filename: platform.log
       max_size_mb: 100
       max_files: 10
-      rotation: "daily"
+      rotation: daily
     include_timestamp: true
     include_level: true
     include_caller: true
     include_correlation_id: true
     components:
-      api_gateway: "INFO"
-      task_manager: "INFO"
-      agent_framework: "INFO"
-      memory_system: "INFO"
-      llm_providers: "WARNING"
-      database: "WARNING"
-  
+      api_gateway: INFO
+      task_manager: INFO
+      agent_framework: INFO
+      memory_system: INFO
+      llm_providers: WARNING
+      database: WARNING
   tracing:
     enabled: true
-    provider: "jaeger"
+    provider: jaeger
     jaeger:
-      agent_host: "localhost"
+      agent_host: localhost
       agent_port: 6831
-      collector_endpoint: "http://localhost:14268/api/traces"
+      collector_endpoint: http://localhost:14268/api/traces
     sample_rate: 0.1
     sample_errors: true
     propagate_context: true
-  
   health:
     enabled: true
-    endpoint: "/health"
+    endpoint: /health
     interval_seconds: 30
     timeout_seconds: 5
     check_database: true
@@ -383,40 +359,32 @@ monitoring:
     check_minio: true
     check_milvus: true
     check_llm: true
-
-# ============================================================================
-# Alerting Configuration
-# ============================================================================
 alerting:
   enabled: false
-  
   channels:
     email:
       enabled: false
-      smtp_host: "smtp.gmail.com"
+      smtp_host: smtp.gmail.com
       smtp_port: 587
-      smtp_user: ""
-      smtp_password: ""
-      from_address: "alerts@company.com"
-      to_addresses: ["admin@company.com"]
+      smtp_user: ''
+      smtp_password: ''
+      from_address: alerts@company.com
+      to_addresses:
+      - admin@company.com
       use_tls: true
-    
     slack:
       enabled: false
-      webhook_url: ""
-      channel: "#workforce-alerts"
-      username: "Workforce Platform"
-      icon_emoji: ":robot_face:"
-    
+      webhook_url: ''
+      channel: '#workforce-alerts'
+      username: Workforce Platform
+      icon_emoji: ':robot_face:'
     teams:
       enabled: false
-      webhook_url: ""
-    
+      webhook_url: ''
     pagerduty:
       enabled: false
-      integration_key: ""
-      severity_threshold: "critical"
-  
+      integration_key: ''
+      severity_threshold: critical
   rules:
     system:
       cpu_threshold: 90
@@ -432,51 +400,44 @@ alerting:
     business:
       task_queue_depth_threshold: 100
       agent_pool_exhausted: true
-  
   routing:
-    critical: ["pagerduty", "slack", "email"]
-    high: ["slack", "email"]
-    medium: ["slack"]
-    low: ["email"]
-  
+    critical:
+    - pagerduty
+    - slack
+    - email
+    high:
+    - slack
+    - email
+    medium:
+    - slack
+    low:
+    - email
   deduplication:
     enabled: true
     window_minutes: 5
-  
   throttling:
     enabled: true
     max_alerts_per_hour: 10
-
-# ============================================================================
-# Task Management Configuration
-# ============================================================================
 task_management:
   decomposition:
     max_depth: 5
     max_subtasks: 20
     use_llm: true
-    llm_model: "chat"
-  
+    llm_model: chat
   execution:
     default_timeout_minutes: 60
     max_timeout_minutes: 480
     enable_parallel: true
     max_parallel_tasks: 10
-  
   retry:
     enabled: true
     max_attempts: 3
-    backoff_strategy: "exponential"
+    backoff_strategy: exponential
     initial_delay_seconds: 5
     max_delay_seconds: 300
-  
   aggregation:
-    default_strategy: "concatenation"
+    default_strategy: concatenation
     use_llm_for_summarization: true
-
-# ============================================================================
-# Memory System Configuration
-# ============================================================================
 memory:
   types:
     agent_memory:
@@ -491,12 +452,10 @@ memory:
       enabled: true
       retention_days: 365
       max_items_per_user: 5000
-  
   embedding:
-    model: "embedding"
-    dimension: 1024  # bge-m3 uses 1024 dimensions
+    model: embedding
+    dimension: 1024
     batch_size: 32
-  
   retrieval:
     top_k: 10
     similarity_threshold: 0.7
@@ -504,99 +463,106 @@ memory:
     rerank_top_k: 5
     similarity_weight: 0.7
     recency_weight: 0.3
-  
   sharing:
     enable_automatic: true
     enable_explicit: true
-    default_scope: "user_context"
-
-# ============================================================================
-# Knowledge Base Configuration
-# ============================================================================
+    default_scope: user_context
 knowledge_base:
   processing:
     chunk_size_tokens: 512
     chunk_overlap_tokens: 50
     ocr:
       enabled: true
-      engine: "tesseract"
-      languages: ["eng", "chi_sim"]
+      engine: tesseract
+      languages:
+      - eng
+      - chi_sim
       confidence_threshold: 0.7
     transcription:
       enabled: true
-      engine: "whisper"
-      model: "base"
-      language: "auto"
+      engine: whisper
+      model: base
+      language: auto
     video:
       extract_audio: true
       extract_frames: false
       frame_interval_seconds: 10
-  
+  chunking:
+    strategy: semantic
+    chunk_token_num: 512
+    overlap_percent: 10
+    delimiters: '
+
+      。；！？.!?'
+  parsing:
+    method: auto
+    vision_model: Qwen/Qwen3-VL-32B-Instruct
+    vision_provider: llm-pool
+  embedding:
+    provider: ollama
+    model: bge-m3
+    dimension: 1024
+  enrichment:
+    enabled: true
+    provider: llm-pool
+    model: Qwen/Qwen3-Next-80B-A3B-Instruct
+    keywords_topn: 5
+    questions_topn: 3
+    generate_summary: true
+    temperature: 0.2
+    batch_size: 5
   queue:
     max_concurrent_jobs: 5
     job_timeout_minutes: 60
     retry_failed_jobs: true
     max_retries: 3
-  
   search:
     enable_semantic: true
     enable_fulltext: true
     combine_results: true
     semantic_weight: 0.7
     fulltext_weight: 0.3
-
-# ============================================================================
-# Message Bus Configuration
-# ============================================================================
+    fusion_method: rrf
+    rrf_k: 60
+    rerank_enabled: true
+    rerank_provider: ollama
+    rerank_model: qllama/bge-reranker-v2-m3:latest
+    rerank_top_k: 5
 message_bus:
   enable_pubsub: true
   enable_streams: true
   enable_queues: true
-  
   retention:
     pubsub_ttl_seconds: 3600
     stream_max_length: 10000
     stream_ttl_days: 7
-  
   consumer_groups:
     enabled: true
     max_consumers_per_group: 10
-  
-  serialization: "json"
+  serialization: json
   audit_messages: true
-
-# ============================================================================
-# Deployment Configuration
-# ============================================================================
 deployment:
-  mode: "docker-compose"
-  
+  mode: docker-compose
   docker_compose:
-    project_name: "linx-platform"
-    network_name: "workforce-network"
-  
+    project_name: linx-platform
+    network_name: workforce-network
   kubernetes:
-    namespace: "linx-platform"
+    namespace: linx-platform
     enable_autoscaling: true
     min_replicas: 2
     max_replicas: 10
     target_cpu_utilization: 70
     use_gvisor: true
-    runtime_class: "gvisor"
-  
+    runtime_class: gvisor
   backup:
     enabled: true
-    schedule: "0 2 * * *"
+    schedule: 0 2 * * *
     retention_days: 30
-    backup_location: "backups"
+    backup_location: backups
     backup_postgres: true
     backup_milvus: true
     backup_minio: true
     backup_redis: false
-
-# ============================================================================
-# Feature Flags
-# ============================================================================
 features:
   enable_task_flow_visualization: true
   enable_real_time_updates: true
@@ -607,10 +573,6 @@ features:
   enable_advanced_analytics: false
   enable_cost_tracking: false
   enable_anomaly_detection: false
-
-# ============================================================================
-# Development Settings
-# ============================================================================
 development:
   debug_mode: true
   verbose_logging: true

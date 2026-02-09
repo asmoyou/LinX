@@ -19,4 +19,9 @@ export type Document = {
   thumbnailUrl?: string;
   url?: string;
   error?: string;
+  fileReference?: string;
+  departmentId?: string;
+  chunkCount?: number;
+  tokenCount?: number;
+  errorMessage?: string;
 };

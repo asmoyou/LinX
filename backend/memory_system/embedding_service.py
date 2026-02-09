@@ -48,27 +48,29 @@ class OllamaEmbeddingService(EmbeddingServiceInterface):
         """
         self._config = get_config()
 
-        # Load configuration - check both old and new config structure
-        llm_config = self._config.get_section("llm")
-        
-        # Try new structure first (llm.providers.ollama)
-        providers = llm_config.get("providers", {})
-        ollama_config = providers.get("ollama", {})
-        
-        # Fallback to old structure (llm.ollama)
-        if not ollama_config:
-            ollama_config = llm_config.get("ollama", {})
+        # Read knowledge_base.embedding config first
+        kb_config = self._config.get_section("knowledge_base") if self._config else {}
+        kb_embedding = kb_config.get("embedding", {})
 
-        self._base_url = base_url or ollama_config.get("base_url", "http://localhost:11434")
-        
-        # Try to get embedding model from models.embedding first, then embedding_model
-        models = ollama_config.get("models", {})
-        self._model = model or models.get("embedding") or ollama_config.get("embedding_model", "nomic-embed-text")
-        
+        # Resolve provider config from DB (primary) or config.yaml (fallback)
+        embedding_provider = kb_embedding.get("provider", "ollama")
+        from llm_providers.provider_resolver import resolve_provider
+
+        provider_cfg = resolve_provider(embedding_provider)
+
+        self._base_url = base_url or provider_cfg.get("base_url", "http://localhost:11434")
+
+        # Model priority: explicit param > kb.embedding.model > provider default
+        self._model = (
+            model
+            or kb_embedding.get("model")
+            or "nomic-embed-text"
+        )
+
         self._timeout = timeout
-        # bge-m3 uses 1024 dimensions, nomic-embed-text uses 768
+        # Dimension priority: kb.embedding.dimension > provider config > auto-detect
         default_dim = 1024 if "bge" in self._model else 768
-        self._embedding_dim = ollama_config.get("embedding_dimension", default_dim)
+        self._embedding_dim = kb_embedding.get("dimension") or ollama_config.get("embedding_dimension", default_dim)
 
         logger.info(
             f"Initialized Ollama embedding service: "
@@ -191,21 +193,15 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
         """
         self._config = get_config()
 
-        # Load configuration - check both old and new config structure
-        llm_config = self._config.get_section("llm")
-        
-        # Try new structure first (llm.providers.vllm)
-        providers = llm_config.get("providers", {})
-        vllm_config = providers.get("vllm", {})
-        
-        # Fallback to old structure (llm.vllm)
-        if not vllm_config:
-            vllm_config = llm_config.get("vllm", {})
+        # Resolve provider config from DB (primary) or config.yaml (fallback)
+        from llm_providers.provider_resolver import resolve_provider
 
-        self._base_url = base_url or vllm_config.get("base_url", "http://localhost:8000")
-        self._model = model or vllm_config.get("embedding_model", "BAAI/bge-large-en-v1.5")
+        provider_cfg = resolve_provider("vllm")
+
+        self._base_url = base_url or provider_cfg.get("base_url", "http://localhost:8000")
+        self._model = model or "BAAI/bge-large-en-v1.5"
         self._timeout = timeout
-        self._embedding_dim = vllm_config.get("embedding_dimension", 1024)
+        self._embedding_dim = 1024
 
         logger.info(
             f"Initialized vLLM embedding service: "
@@ -313,7 +309,8 @@ def get_embedding_service() -> EmbeddingServiceInterface:
     Get the global embedding service instance.
 
     This function returns the singleton embedding service instance.
-    The service type (Ollama/vLLM) is determined by configuration.
+    The service type (Ollama/vLLM) is determined by knowledge_base.embedding.provider
+    in config, falling back to llm.embedding_provider.
 
     Returns:
         EmbeddingServiceInterface: Global embedding service instance
@@ -322,16 +319,27 @@ def get_embedding_service() -> EmbeddingServiceInterface:
 
     if _embedding_service is None:
         config = get_config()
-        llm_config = config.get_section("llm")
 
-        # Determine which provider to use
-        provider = llm_config.get("embedding_provider", "ollama").lower()
+        # Prefer knowledge_base.embedding.provider, fallback to llm.embedding_provider
+        kb_config = config.get_section("knowledge_base") if config else {}
+        kb_embedding = kb_config.get("embedding", {})
+        provider = kb_embedding.get("provider", "").lower()
 
-        if provider == "vllm":
-            _embedding_service = VLLMEmbeddingService()
-        else:
-            # Default to Ollama
+        if not provider:
+            llm_config = config.get_section("llm") if config else {}
+            provider = llm_config.get("embedding_provider", "ollama").lower()
+
+        # Determine which service to use based on provider protocol
+        from llm_providers.provider_resolver import resolve_provider
+
+        provider_cfg = resolve_provider(provider)
+        protocol = provider_cfg.get("protocol", "ollama" if provider == "ollama" else "openai_compatible")
+
+        if protocol == "ollama":
             _embedding_service = OllamaEmbeddingService()
+        else:
+            # openai_compatible (vLLM, llm-pool, etc.) uses /v1/embeddings
+            _embedding_service = VLLMEmbeddingService()
 
         logger.info(f"Initialized embedding service: {provider}")
 

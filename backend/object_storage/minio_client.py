@@ -335,6 +335,61 @@ class MinIOClient:
                 response.close()
                 response.release_conn()
 
+    def download_file_streaming(
+        self, bucket_name: str, object_key: str, chunk_size: int = 8192
+    ) -> Tuple[callable, Dict]:
+        """
+        Download a file from MinIO as a streaming generator.
+
+        Unlike download_file() which reads the entire file into memory,
+        this method yields chunks for efficient streaming to HTTP responses.
+
+        Args:
+            bucket_name: Name of the bucket
+            object_key: Object key
+            chunk_size: Size of each chunk in bytes
+
+        Returns:
+            Tuple of (generator_function, metadata)
+
+        Raises:
+            S3Error: If download fails
+        """
+        try:
+            response = self.client.get_object(
+                bucket_name=bucket_name, object_name=object_key
+            )
+
+            # Get metadata from headers
+            metadata = {
+                "content_type": response.headers.get("Content-Type"),
+                "size": int(response.headers.get("Content-Length", 0)),
+                "etag": response.headers.get("ETag", "").strip('"'),
+                "last_modified": response.headers.get("Last-Modified"),
+            }
+
+            # Add custom metadata
+            for key, value in response.headers.items():
+                if key.startswith("X-Amz-Meta-"):
+                    metadata_key = key.replace("X-Amz-Meta-", "").lower()
+                    metadata[metadata_key] = value
+
+            def generate():
+                try:
+                    for chunk in response.stream(chunk_size):
+                        yield chunk
+                finally:
+                    response.close()
+                    response.release_conn()
+
+            logger.info(f"Streaming download started: {bucket_name}/{object_key}")
+
+            return generate(), metadata
+
+        except S3Error as e:
+            logger.error(f"Error streaming file {bucket_name}/{object_key}: {e}")
+            raise
+
     def get_file_metadata(
         self, bucket_name: str, object_key: str, version_id: Optional[str] = None
     ) -> Dict:

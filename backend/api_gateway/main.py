@@ -134,10 +134,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.warning(f"Failed to initialize SessionManager: {e}")
 
+    # Start document processing worker
+    try:
+        from knowledge_base.document_processor_worker import start_worker
+        start_worker()
+        logger.info("Document processor worker started")
+    except Exception as e:
+        logger.warning(f"Failed to start document processor worker: {e}")
+
     yield
 
     # Shutdown
     logger.info("Shutting down API Gateway")
+
+    # Stop document processor worker
+    try:
+        from knowledge_base.document_processor_worker import stop_worker
+        stop_worker()
+        logger.info("Document processor worker stopped")
+    except Exception as e:
+        logger.error(f"Failed to stop document processor worker: {e}")
 
     # Shutdown session manager (clean up all sessions and workdirs)
     try:

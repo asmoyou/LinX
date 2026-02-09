@@ -20,12 +20,22 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from sqlalchemy.types import UserDefinedType
 
 Base = declarative_base()
+
+
+class TSVector(UserDefinedType):
+    """Custom type for PostgreSQL tsvector."""
+
+    cache_ok = True
+
+    def get_col_spec(self):
+        return "TSVECTOR"
 
 
 class Department(Base):
@@ -384,6 +394,12 @@ class KnowledgeItem(Base):
     # Relationships
     owner = relationship("User", back_populates="knowledge_items")
     department = relationship("Department", back_populates="knowledge_items")
+    chunks = relationship(
+        "KnowledgeChunk",
+        back_populates="knowledge_item",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     # Indexes
     __table_args__ = (
@@ -393,6 +409,48 @@ class KnowledgeItem(Base):
 
     def __repr__(self):
         return f"<KnowledgeItem(knowledge_id={self.knowledge_id}, title={self.title}, content_type={self.content_type})>"
+
+
+class KnowledgeChunk(Base):
+    """Knowledge chunks table.
+
+    Stores individual document chunks with full-text search support (BM25 via tsvector).
+    Each chunk belongs to a KnowledgeItem and contains enrichment metadata.
+    """
+
+    __tablename__ = "knowledge_chunks"
+
+    chunk_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    knowledge_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_items.knowledge_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chunk_index = Column(Integer, nullable=False, default=0)
+    content = Column(Text, nullable=False)
+    keywords = Column(ARRAY(String), nullable=True)
+    questions = Column(ARRAY(String), nullable=True)
+    summary = Column(Text, nullable=True)
+    token_count = Column(Integer, nullable=True)
+    search_vector = Column(TSVector(), nullable=True)
+    chunk_metadata = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Relationships
+    knowledge_item = relationship("KnowledgeItem", back_populates="chunks")
+
+    # Indexes
+    __table_args__ = (
+        Index("idx_chunk_knowledge_index", "knowledge_id", "chunk_index"),
+        Index("idx_chunk_search_vector", "search_vector", postgresql_using="gin"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<KnowledgeChunk(chunk_id={self.chunk_id}, "
+            f"knowledge_id={self.knowledge_id}, chunk_index={self.chunk_index})>"
+        )
 
 
 # AgentTemplate model is defined in agent_framework/agent_template.py

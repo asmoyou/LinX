@@ -1,16 +1,21 @@
 """Document chunking for efficient embedding generation.
 
+Supports fixed-size, paragraph, and semantic chunking strategies.
+
 References:
 - Requirements 16: Document Processing
 - Design Section 14.1: Processing Workflow
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional
 
 import tiktoken
+
+from shared.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +26,7 @@ class ChunkingStrategy(Enum):
     FIXED_SIZE = "fixed_size"
     SENTENCE = "sentence"
     PARAGRAPH = "paragraph"
+    SEMANTIC = "semantic"
     HIERARCHICAL = "hierarchical"
 
 
@@ -54,6 +60,13 @@ class DocumentChunker:
         self.chunk_overlap = chunk_overlap
         self.encoding = tiktoken.get_encoding(encoding_name)
 
+        # Load semantic chunking config
+        config = get_config()
+        kb_config = config.get_section("knowledge_base") if config else {}
+        chunking_cfg = kb_config.get("chunking", {})
+        self.delimiters = chunking_cfg.get("delimiters", "\n。；！？.!?")
+        self.overlap_percent = chunking_cfg.get("overlap_percent", 10)
+
         logger.info(
             "DocumentChunker initialized",
             extra={
@@ -85,6 +98,8 @@ class DocumentChunker:
             return self._chunk_fixed_size(text, document_id, metadata)
         elif strategy == ChunkingStrategy.PARAGRAPH:
             return self._chunk_by_paragraph(text, document_id, metadata)
+        elif strategy == ChunkingStrategy.SEMANTIC:
+            return self._chunk_semantic(text, document_id, metadata)
         else:
             # Default to fixed size
             return self._chunk_fixed_size(text, document_id, metadata)
@@ -222,6 +237,251 @@ class DocumentChunker:
             total_tokens=total_tokens,
             chunk_count=len(chunks),
         )
+
+    def _chunk_semantic(
+        self,
+        text: str,
+        document_id: str,
+        metadata: Optional[dict] = None,
+    ) -> ChunkResult:
+        """Semantic-aware chunking that respects delimiters, tables, and code blocks.
+
+        Splits by configurable delimiters, accumulates until chunk_token_num,
+        carries overlap from previous chunk, and keeps tables/code blocks intact.
+
+        Inspired by RAGFlow's naive_merge() approach.
+
+        Args:
+            text: Text to chunk
+            document_id: Document identifier
+            metadata: Additional metadata
+
+        Returns:
+            ChunkResult with semantically-aware chunks
+        """
+        # Split text into segments respecting special blocks
+        segments = self._split_into_segments(text)
+
+        chunks = []
+        chunk_metadata = []
+        chunk_index = 0
+        total_tokens = 0
+
+        current_segments = []
+        current_tokens = 0
+        overlap_text = ""
+
+        for segment in segments:
+            seg_tokens = self.encoding.encode(segment)
+            seg_token_count = len(seg_tokens)
+            total_tokens += seg_token_count
+
+            # If a single segment exceeds chunk size, emit it as its own chunk
+            if seg_token_count > self.chunk_size:
+                # First, emit accumulated segments
+                if current_segments:
+                    chunk_text = "".join(current_segments)
+                    if overlap_text:
+                        chunk_text = overlap_text + chunk_text
+                    chunks.append(chunk_text.strip())
+                    chunk_metadata.append(
+                        {
+                            "document_id": document_id,
+                            "chunk_index": chunk_index,
+                            "token_count": current_tokens,
+                            **(metadata or {}),
+                        }
+                    )
+                    chunk_index += 1
+                    overlap_text = self._compute_overlap("".join(current_segments))
+                    current_segments = []
+                    current_tokens = 0
+
+                # Emit the large segment
+                large_text = segment
+                if overlap_text:
+                    large_text = overlap_text + large_text
+                chunks.append(large_text.strip())
+                chunk_metadata.append(
+                    {
+                        "document_id": document_id,
+                        "chunk_index": chunk_index,
+                        "token_count": seg_token_count,
+                        **(metadata or {}),
+                    }
+                )
+                chunk_index += 1
+                overlap_text = self._compute_overlap(segment)
+                continue
+
+            # Check if adding this segment would exceed chunk size
+            if current_tokens + seg_token_count > self.chunk_size and current_segments:
+                # Emit current chunk
+                chunk_text = "".join(current_segments)
+                if overlap_text:
+                    chunk_text = overlap_text + chunk_text
+                chunks.append(chunk_text.strip())
+                chunk_metadata.append(
+                    {
+                        "document_id": document_id,
+                        "chunk_index": chunk_index,
+                        "token_count": current_tokens,
+                        **(metadata or {}),
+                    }
+                )
+                chunk_index += 1
+
+                # Compute overlap from previous chunk
+                overlap_text = self._compute_overlap("".join(current_segments))
+                current_segments = [segment]
+                current_tokens = seg_token_count
+            else:
+                current_segments.append(segment)
+                current_tokens += seg_token_count
+
+        # Emit remaining segments
+        if current_segments:
+            chunk_text = "".join(current_segments)
+            if overlap_text:
+                chunk_text = overlap_text + chunk_text
+            chunks.append(chunk_text.strip())
+            chunk_metadata.append(
+                {
+                    "document_id": document_id,
+                    "chunk_index": chunk_index,
+                    "token_count": current_tokens,
+                    **(metadata or {}),
+                }
+            )
+
+        logger.info(
+            "Document chunked (semantic)",
+            extra={
+                "document_id": document_id,
+                "total_tokens": total_tokens,
+                "chunk_count": len(chunks),
+            },
+        )
+
+        return ChunkResult(
+            chunks=chunks,
+            chunk_metadata=chunk_metadata,
+            total_tokens=total_tokens,
+            chunk_count=len(chunks),
+        )
+
+    def _split_into_segments(self, text: str) -> List[str]:
+        """Split text into segments respecting tables, code blocks, and delimiters.
+
+        Tables (lines with | markers) and code blocks (triple backticks) are
+        kept as single segments. Other text is split by delimiters.
+
+        Args:
+            text: Input text
+
+        Returns:
+            List of text segments
+        """
+        segments = []
+        lines = text.split("\n")
+        i = 0
+
+        while i < len(lines):
+            line = lines[i]
+
+            # Detect code blocks (triple backticks)
+            if line.strip().startswith("```"):
+                block_lines = [line]
+                i += 1
+                while i < len(lines):
+                    block_lines.append(lines[i])
+                    if lines[i].strip().startswith("```") and len(block_lines) > 1:
+                        i += 1
+                        break
+                    i += 1
+                segments.append("\n".join(block_lines) + "\n")
+                continue
+
+            # Detect table rows (lines with | markers)
+            if "|" in line and line.strip().startswith("|"):
+                table_lines = [line]
+                i += 1
+                while i < len(lines) and "|" in lines[i] and lines[i].strip().startswith("|"):
+                    table_lines.append(lines[i])
+                    i += 1
+                segments.append("\n".join(table_lines) + "\n")
+                continue
+
+            # Regular text: split by delimiters
+            text_line = line + "\n"
+            if self.delimiters:
+                # Build regex pattern from delimiters
+                parts = self._split_by_delimiters(text_line)
+                segments.extend(parts)
+            else:
+                segments.append(text_line)
+
+            i += 1
+
+        # Filter empty segments
+        return [s for s in segments if s.strip()]
+
+    def _split_by_delimiters(self, text: str) -> List[str]:
+        """Split text by configured delimiters, keeping delimiters attached.
+
+        Args:
+            text: Text to split
+
+        Returns:
+            List of text segments with delimiters attached to preceding segment
+        """
+        if not self.delimiters:
+            return [text] if text.strip() else []
+
+        # Escape special regex chars and build pattern
+        escaped = [re.escape(d) for d in self.delimiters if d != "\n"]
+        if not escaped:
+            return [text] if text.strip() else []
+
+        pattern = "(" + "|".join(escaped) + ")"
+        parts = re.split(pattern, text)
+
+        # Rejoin: attach delimiter to preceding text
+        segments = []
+        current = ""
+        for part in parts:
+            current += part
+            # If part is a delimiter, the segment ends here
+            if len(part) == 1 and part in self.delimiters:
+                if current.strip():
+                    segments.append(current)
+                current = ""
+
+        if current.strip():
+            segments.append(current)
+
+        return segments
+
+    def _compute_overlap(self, text: str) -> str:
+        """Compute overlap text from end of previous chunk.
+
+        Takes overlap_percent of the text from the end.
+
+        Args:
+            text: Previous chunk text
+
+        Returns:
+            Overlap text to prepend to next chunk
+        """
+        if self.overlap_percent <= 0:
+            return ""
+
+        tokens = self.encoding.encode(text)
+        overlap_tokens = max(1, int(len(tokens) * self.overlap_percent / 100))
+        overlap_tokens = min(overlap_tokens, len(tokens))
+
+        overlap = self.encoding.decode(tokens[-overlap_tokens:])
+        return overlap
 
 
 # Singleton instance
