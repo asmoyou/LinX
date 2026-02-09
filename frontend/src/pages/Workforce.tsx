@@ -91,7 +91,6 @@ export const Workforce: React.FC = () => {
       console.log('[Workforce] Calling agentsApi.update...');
       const saved = await agentsApi.update(updatedAgent.id, {
         name: updatedAgent.name,
-        avatar: updatedAgent.avatar,
         systemPrompt: updatedAgent.systemPrompt,
         skills: updatedAgent.skills,
         model: updatedAgent.model,

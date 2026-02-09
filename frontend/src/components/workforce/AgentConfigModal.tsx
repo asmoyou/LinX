@@ -35,6 +35,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
   const [isLoadingEmbeddingMetadata, setIsLoadingEmbeddingMetadata] = useState(false);
   const [isAvatarCropModalOpen, setIsAvatarCropModalOpen] = useState(false);
+  const [avatarPreview, setAvatarPreview] = useState<string>('');  // presigned URL for display
   
   // Skills state
   const [availableSkills, setAvailableSkills] = useState<Array<{
@@ -95,6 +96,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         topK: agent.topK || 5,
         similarityThreshold: agent.similarityThreshold || 0.7,
       });
+      setAvatarPreview(agent.avatar || '');
       setSaveError(null);
       setModelMetadata(null);
     }
@@ -290,9 +292,10 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       
       // Upload to MinIO via API
       const result = await agentsApi.uploadAvatar(agent.id, croppedBlob);
-      
-      // Update form data with the MinIO URL
-      setFormData({ ...formData, avatar: result.avatar_url });
+
+      // Store minio reference for DB persistence, presigned URL for display
+      setFormData({ ...formData, avatar: result.avatar_ref });
+      setAvatarPreview(result.avatar_url);
       
       toast.success('Avatar uploaded successfully');
     } catch (error: any) {
@@ -436,9 +439,9 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 <div className="flex items-center gap-4">
                   {/* Avatar Preview */}
                   <div className="relative w-24 h-24 rounded-full overflow-hidden bg-gradient-to-br from-emerald-400 to-cyan-500 flex items-center justify-center">
-                    {formData.avatar ? (
+                    {avatarPreview ? (
                       <img
-                        src={formData.avatar}
+                        src={avatarPreview}
                         alt={formData.name}
                         className="w-full h-full object-cover"
                       />
@@ -448,14 +451,14 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                       </span>
                     )}
                   </div>
-                  
+
                   {/* Upload Button */}
                   <button
                     type="button"
                     onClick={() => setIsAvatarCropModalOpen(true)}
                     className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg font-semibold transition-colors"
                   >
-                    {formData.avatar ? t('agent.changeAvatar') : t('agent.uploadAvatar')}
+                    {avatarPreview ? t('agent.changeAvatar') : t('agent.uploadAvatar')}
                   </button>
                 </div>
               </div>

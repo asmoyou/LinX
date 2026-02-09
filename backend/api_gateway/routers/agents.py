@@ -770,6 +770,7 @@ async def upload_agent_avatar(
 
         return {
             "avatar_url": avatar_url,
+            "avatar_ref": avatar_ref,
             "bucket": bucket_name,
             "key": object_key,
         }

@@ -140,11 +140,11 @@ export const agentsApi = {
   /**
    * Upload agent avatar
    */
-  uploadAvatar: async (agentId: string, file: Blob): Promise<{ avatar_url: string }> => {
+  uploadAvatar: async (agentId: string, file: Blob): Promise<{ avatar_url: string; avatar_ref: string }> => {
     const formData = new FormData();
     formData.append('file', file, 'avatar.webp');
-    
-    const response = await apiClient.post<{ avatar_url: string }>(
+
+    const response = await apiClient.post<{ avatar_url: string; avatar_ref: string }>(
       `/agents/${agentId}/avatar`,
       formData,
       {
