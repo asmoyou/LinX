@@ -44,8 +44,12 @@ class CustomOpenAIChat(BaseChatModel):
         """Return type of LLM."""
         return "custom-openai-chat"
     
-    def _convert_messages_to_dicts(self, messages: List[BaseMessage]) -> List[Dict[str, str]]:
-        """Convert LangChain messages to API format."""
+    def _convert_messages_to_dicts(self, messages: List[BaseMessage]) -> List[Dict[str, Any]]:
+        """Convert LangChain messages to API format.
+
+        Handles both plain text content (str) and multimodal content (list of dicts)
+        for vision models.
+        """
         result = []
         for msg in messages:
             if isinstance(msg, HumanMessage):

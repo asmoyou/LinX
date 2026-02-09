@@ -531,7 +531,8 @@ class BaseAgent:
         self, task_description: str, context: Optional[Dict[str, Any]] = None,
         stream_callback: Optional[callable] = None,
         session_workdir: Optional['Path'] = None,
-        container_id: Optional[str] = None
+        container_id: Optional[str] = None,
+        message_content: Optional[Any] = None
     ) -> Dict[str, Any]:
         """Execute a task using the agent.
 
@@ -544,6 +545,8 @@ class BaseAgent:
                 across conversation rounds.
             container_id: Optional Docker container ID for sandbox execution.
                 If provided, code blocks will be executed inside the container.
+            message_content: Optional multimodal content (list of dicts) for vision models.
+                When provided, used as HumanMessage content instead of plain text.
 
         Returns:
             Dict with execution results
@@ -583,7 +586,8 @@ class BaseAgent:
                         self.execute_task_with_recovery(
                             task_description, context, stream_callback,
                             session_workdir=session_workdir,
-                            container_id=container_id
+                            container_id=container_id,
+                            message_content=message_content
                         )
                     )
                     self.status = AgentStatus.ACTIVE
@@ -600,18 +604,27 @@ class BaseAgent:
                     context_info.append(f"Relevant memories: {', '.join(context['agent_memories'][:3])}")
                 if context.get("company_memories"):
                     context_info.append(f"Company knowledge: {', '.join(context['company_memories'][:3])}")
-                
+
                 if context_info:
                     user_message = f"{task_description}\n\nContext:\n" + "\n".join(context_info)
+                    # Also inject context into multimodal content if present
+                    if message_content is not None and isinstance(message_content, list):
+                        context_text = "\n\nContext:\n" + "\n".join(context_info)
+                        for item in message_content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                item["text"] += context_text
+                                break
 
             # Invoke agent with streaming support
             if stream_callback:
                 # Stream mode - use LLM's native streaming for token-by-token output
                 # Then check for tool calls and execute them
                 system_prompt = self._create_system_prompt()
+                # Use multimodal content (with images) if provided, otherwise plain text
+                human_content = message_content if message_content is not None else user_message
                 messages = [
                     SystemMessage(content=system_prompt),
-                    HumanMessage(content=user_message)
+                    HumanMessage(content=human_content)
                 ]
                 
                 # Multi-round conversation loop for tool execution
@@ -1512,7 +1525,8 @@ class BaseAgent:
         context: Optional[Dict[str, Any]] = None,
         stream_callback: Optional[callable] = None,
         session_workdir: Optional['Path'] = None,
-        container_id: Optional[str] = None
+        container_id: Optional[str] = None,
+        message_content: Optional[Any] = None
     ) -> Dict[str, Any]:
         """Execute task with error recovery (new implementation).
 
@@ -1525,6 +1539,8 @@ class BaseAgent:
                 across conversation rounds.
             container_id: Optional Docker container ID for sandbox execution.
                 If provided, code blocks will be executed inside the container.
+            message_content: Optional multimodal content (list of dicts) for vision models.
+                When provided, used as HumanMessage content instead of plain text.
 
         Returns:
             Dict with execution results including conversation state
@@ -1537,7 +1553,7 @@ class BaseAgent:
         # Prepare system prompt and initial messages
         system_prompt = self._create_system_prompt()
         user_message = task_description
-        
+
         # Add context information if provided
         if context:
             context_info = []
@@ -1545,13 +1561,22 @@ class BaseAgent:
                 context_info.append(f"Relevant memories: {', '.join(context['agent_memories'][:3])}")
             if context.get("company_memories"):
                 context_info.append(f"Company knowledge: {', '.join(context['company_memories'][:3])}")
-            
+
             if context_info:
                 user_message = f"{task_description}\n\nContext:\n" + "\n".join(context_info)
-        
+                # Also inject context into multimodal content if present
+                if message_content is not None and isinstance(message_content, list):
+                    context_text = "\n\nContext:\n" + "\n".join(context_info)
+                    for item in message_content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            item["text"] += context_text
+                            break
+
+        # Use multimodal content (with images) if provided, otherwise plain text
+        human_content = message_content if message_content is not None else user_message
         messages = [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=user_message)
+            HumanMessage(content=human_content)
         ]
         
         logger.info(

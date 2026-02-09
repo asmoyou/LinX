@@ -276,6 +276,8 @@ class UpdateAgentRequest(BaseModel):
     vectorDimension: Optional[int] = Field(None, ge=128, le=4096)
     topK: Optional[int] = Field(None, ge=1, le=20)
     similarityThreshold: Optional[float] = Field(None, ge=0.0, le=1.0)
+    # Department
+    department_id: Optional[str] = None
 
 
 class AgentResponse(BaseModel):
@@ -581,6 +583,7 @@ async def update_agent(
             vector_dimension=request.vectorDimension,
             top_k=request.topK,
             similarity_threshold=request.similarityThreshold,
+            department_id=request.department_id,
         )
 
         if not updated_agent:
@@ -1527,13 +1530,14 @@ async def test_agent(
                     model_supports_vision = False
 
                 # Build message content based on model capabilities
+                multimodal_content = None  # Will be passed to agent for vision models
                 if model_supports_vision and file_refs:
                     # For vision models, use multimodal content format
-                    message_content = []
+                    multimodal_content = []
 
                     # Add text content
                     if user_message:
-                        message_content.append({"type": "text", "text": user_message})
+                        multimodal_content.append({"type": "text", "text": user_message})
 
                     # Add image content
                     minio_client = get_minio_client()
@@ -1565,7 +1569,7 @@ async def test_agent(
                                         image_format = "gif"
 
                                 # Add image to message content
-                                message_content.append(
+                                multimodal_content.append(
                                     {
                                         "type": "image_url",
                                         "image_url": {
@@ -1580,16 +1584,16 @@ async def test_agent(
                                 logger.error(f"Failed to load image {file_ref.name}: {img_error}")
                                 yield f"data: {json.dumps({'type': 'info', 'content': f'Failed to load image {file_ref.name}'})}\n\n"
 
-                    # Create HumanMessage with multimodal content
-                    messages.append(HumanMessage(content=message_content))
+                    logger.info(
+                        f"Built multimodal content with {len(multimodal_content)} parts "
+                        f"for vision model"
+                    )
 
                 else:
                     # For non-vision models or no images, use text-only format
                     # Append file processing results to message
                     if file_processing_results:
                         user_message += "\n\nAttached files:\n" + "\n".join(file_processing_results)
-
-                    messages.append(HumanMessage(content=user_message))
 
                 # Send status message before generating content
                 yield f"data: {json.dumps({'type': 'info', 'content': 'Generating response...'})}\n\n"
@@ -1622,6 +1626,7 @@ async def test_agent(
                             stream_callback=stream_callback,
                             session_workdir=session.workdir,
                             container_id=session.sandbox_id,  # Docker container for sandbox execution
+                            message_content=multimodal_content,
                         )
 
                         # Store final response
