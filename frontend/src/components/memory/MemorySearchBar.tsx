@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Search, Filter, Calendar, Tag } from 'lucide-react';
 
 interface MemorySearchBarProps {
@@ -24,6 +25,7 @@ export const MemorySearchBar: React.FC<MemorySearchBarProps> = ({
   availableTags,
   onTagToggle,
 }) => {
+  const { t } = useTranslation();
   const [showFilters, setShowFilters] = React.useState(false);
 
   return (
@@ -37,7 +39,7 @@ export const MemorySearchBar: React.FC<MemorySearchBarProps> = ({
               type="text"
               value={searchQuery}
               onChange={(e) => onSearchChange(e.target.value)}
-              placeholder="Search memories by content or tags..."
+              placeholder={t('memory.search.placeholder')}
               className="w-full pl-10 pr-4 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-800 dark:text-white"
             />
           </div>
@@ -50,7 +52,7 @@ export const MemorySearchBar: React.FC<MemorySearchBarProps> = ({
             }`}
           >
             <Filter className="w-5 h-5" />
-            Filters
+            {t('common.filter')}
           </button>
         </div>
 
@@ -61,11 +63,11 @@ export const MemorySearchBar: React.FC<MemorySearchBarProps> = ({
             <div>
               <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                 <Calendar className="w-4 h-4" />
-                Date Range
+                {t('memory.search.dateFrom')}
               </label>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 <div>
-                  <label className="text-xs text-gray-600 dark:text-gray-400 mb-1 block">From</label>
+                  <label className="text-xs text-gray-600 dark:text-gray-400 mb-1 block">{t('memory.search.dateFrom')}</label>
                   <input
                     type="date"
                     value={dateFrom}
@@ -74,7 +76,7 @@ export const MemorySearchBar: React.FC<MemorySearchBarProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-600 dark:text-gray-400 mb-1 block">To</label>
+                  <label className="text-xs text-gray-600 dark:text-gray-400 mb-1 block">{t('memory.search.dateTo')}</label>
                   <input
                     type="date"
                     value={dateTo}
@@ -90,7 +92,7 @@ export const MemorySearchBar: React.FC<MemorySearchBarProps> = ({
               <div>
                 <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   <Tag className="w-4 h-4" />
-                  Filter by Tags
+                  {t('memory.search.tags')}
                 </label>
                 <div className="flex flex-wrap gap-2">
                   {availableTags.map((tag) => (

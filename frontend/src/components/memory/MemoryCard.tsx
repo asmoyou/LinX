@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Brain, User, Building, Clock, Tag, Share2, TrendingUp } from 'lucide-react';
 import { GlassPanel } from '@/components/GlassPanel';
 import type { Memory } from '@/types/memory';
@@ -10,6 +11,8 @@ interface MemoryCardProps {
 }
 
 export const MemoryCard: React.FC<MemoryCardProps> = ({ memory, onClick, showRelevance = false }) => {
+  const { t } = useTranslation();
+
   const getTypeIcon = (type: Memory['type']) => {
     switch (type) {
       case 'agent':
@@ -24,11 +27,11 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({ memory, onClick, showRel
   const getTypeLabel = (type: Memory['type']) => {
     switch (type) {
       case 'agent':
-        return 'Agent Memory';
+        return t('memory.tabs.agent');
       case 'company':
-        return 'Company Memory';
+        return t('memory.tabs.company');
       case 'user_context':
-        return 'User Context';
+        return t('memory.tabs.userContext');
     }
   };
 
@@ -107,7 +110,7 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({ memory, onClick, showRel
           {memory.isShared && (
             <div className="flex items-center gap-1 text-indigo-500">
               <Share2 className="w-3 h-3" />
-              <span>Shared</span>
+              <span>{t('memory.card.shared')}</span>
             </div>
           )}
         </div>

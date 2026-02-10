@@ -138,6 +138,42 @@ class AgentMemoryInterface:
         logger.info(f"Retrieved {len(results)} company memories")
         return results
 
+    def store_user_context(
+        self,
+        user_id: UUID,
+        agent_id: UUID,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Store user context memory (auto-generated from conversations).
+
+        Captures user preferences, communication style, and interaction patterns.
+
+        Args:
+            user_id: User UUID
+            agent_id: Agent UUID that interacted with user
+            content: User context content
+            metadata: Optional metadata
+
+        Returns:
+            Memory ID
+        """
+        meta = metadata or {}
+        meta["auto_generated"] = True
+        meta["source"] = "conversation"
+
+        memory_item = MemoryItem(
+            content=content,
+            memory_type=MemoryType.USER_CONTEXT,
+            agent_id=str(agent_id),
+            user_id=str(user_id),
+            metadata=meta,
+        )
+
+        memory_id = self.memory_system.store_memory(memory_item)
+        logger.info(f"User context stored: {memory_id}")
+        return memory_id
+
 
 # Singleton instance
 _agent_memory_interface: Optional[AgentMemoryInterface] = None

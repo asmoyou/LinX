@@ -1,150 +1,324 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Brain, Building, User } from 'lucide-react';
+import { Brain, Building, User, Plus, Loader2, AlertCircle, X } from 'lucide-react';
 import { MemoryCard } from '@/components/memory/MemoryCard';
 import { MemorySearchBar } from '@/components/memory/MemorySearchBar';
 import { MemoryDetailView } from '@/components/memory/MemoryDetailView';
 import { MemorySharingModal } from '@/components/memory/MemorySharingModal';
+import { memoriesApi } from '@/api/memories';
+import { agentsApi } from '@/api/agents';
+import { useMemoryStore } from '@/stores/memoryStore';
+import { ModalPanel } from '@/components/ModalPanel';
 import type { Memory as MemoryType, MemoryType as MemoryCategory } from '@/types/memory';
+import type { Agent } from '@/types/agent';
+
+const CreateMemoryModal: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  onCreated: (memory: MemoryType) => void;
+  defaultType: MemoryCategory;
+}> = ({ isOpen, onClose, onCreated, defaultType }) => {
+  const { t } = useTranslation();
+  // Only allow company type for manual creation
+  const [type] = useState<MemoryCategory>('company');
+  const [content, setContent] = useState('');
+  const [summary, setSummary] = useState('');
+  const [tags, setTags] = useState('');
+  const [agentId, setAgentId] = useState('');
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [isLoadingAgents, setIsLoadingAgents] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Fetch agents for the selector
+  useEffect(() => {
+    if (!isOpen) return;
+    const fetchAgents = async () => {
+      setIsLoadingAgents(true);
+      try {
+        const data = await agentsApi.getAll();
+        setAgents(data);
+      } catch {
+        setAgents([]);
+      } finally {
+        setIsLoadingAgents(false);
+      }
+    };
+    fetchAgents();
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = async () => {
+    if (!content.trim()) return;
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      const tagList = tags.split(',').map((t) => t.trim()).filter(Boolean);
+      const memory = await memoriesApi.create({
+        type,
+        content: content.trim(),
+        summary: summary.trim() || undefined,
+        agent_id: agentId || undefined,
+        tags: tagList.length > 0 ? tagList : undefined,
+      });
+      onCreated(memory);
+      setContent('');
+      setSummary('');
+      setTags('');
+      setAgentId('');
+      onClose();
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || t('memory.create.error'));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
+      <ModalPanel className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-2xl font-bold text-gray-800 dark:text-white">{t('memory.create.title')}</h2>
+          <button onClick={onClose} className="p-2 hover:bg-white/20 rounded-lg transition-colors">
+            <X className="w-6 h-6 text-gray-700 dark:text-gray-300" />
+          </button>
+        </div>
+
+        {/* Info banner: only company memory can be manually created */}
+        <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg text-blue-700 dark:text-blue-400 text-sm">
+          {t('memory.create.companyOnly')}
+        </div>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-600 dark:text-red-400 text-sm">
+            {error}
+          </div>
+        )}
+
+        <div className="space-y-4">
+          {/* Agent selector */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('memory.create.agent')}</label>
+            {isLoadingAgents ? (
+              <div className="flex items-center gap-2 px-3 py-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className="text-sm text-gray-500">{t('common.loading')}</span>
+              </div>
+            ) : (
+              <select
+                value={agentId}
+                onChange={(e) => setAgentId(e.target.value)}
+                className="w-full px-3 py-2 bg-white/10 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-800 dark:text-white"
+              >
+                <option value="">{t('memory.create.agentNone')}</option>
+                {agents.map((agent) => (
+                  <option key={agent.agentId || agent.id} value={agent.agentId || agent.id}>
+                    {agent.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('memory.create.summary')}</label>
+            <input
+              type="text"
+              value={summary}
+              onChange={(e) => setSummary(e.target.value)}
+              placeholder={t('memory.create.summaryPlaceholder')}
+              className="w-full px-3 py-2 bg-white/10 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-800 dark:text-white placeholder-gray-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('memory.create.contentRequired')}</label>
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder={t('memory.create.contentPlaceholder')}
+              rows={5}
+              className="w-full px-3 py-2 bg-white/10 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-800 dark:text-white placeholder-gray-500 resize-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t('memory.create.tags')}</label>
+            <input
+              type="text"
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              placeholder={t('memory.create.tagsPlaceholder')}
+              className="w-full px-3 py-2 bg-white/10 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-800 dark:text-white placeholder-gray-500"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 mt-6">
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-3 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-white rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors font-medium"
+          >
+            {t('memory.create.cancel')}
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={!content.trim() || isSubmitting}
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <Plus className="w-5 h-5" />}
+            {t('memory.create.submit')}
+          </button>
+        </div>
+      </ModalPanel>
+    </div>
+  );
+};
 
 export const Memory: React.FC = () => {
   const { t } = useTranslation();
+  const {
+    memories,
+    isLoading,
+    error,
+    setMemoriesByType,
+    addMemory,
+    removeMemory,
+    setLoading,
+    setError,
+    clearError,
+  } = useMemoryStore();
+
   const [activeTab, setActiveTab] = useState<MemoryCategory>('agent');
-  const [memories, setMemories] = useState<MemoryType[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
+  const [selectedMemory, setSelectedMemory] = useState<MemoryType | null>(null);
   const [isDetailViewOpen, setIsDetailViewOpen] = useState(false);
-  const [sharingMemory, setSharingMemory] = useState<Memory | null>(null);
+  const [sharingMemory, setSharingMemory] = useState<MemoryType | null>(null);
   const [isSharingModalOpen, setIsSharingModalOpen] = useState(false);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
-  // Mock data for demonstration
-  useEffect(() => {
-    const mockMemories: Memory[] = [
-      {
-        id: '1',
-        type: 'agent',
-        content: 'Successfully completed data analysis task. Identified key trends in Q4 sales data showing 15% growth in enterprise segment.',
-        summary: 'Q4 Sales Analysis Complete',
-        agentId: 'agent-1',
-        agentName: 'Data Analyst #1',
-        createdAt: new Date(Date.now() - 3600000).toISOString(),
-        tags: ['sales', 'analysis', 'Q4'],
-        relevanceScore: 0.95,
-        metadata: {
-          taskId: 't1',
-          goalId: 'g1',
-        },
-      },
-      {
-        id: '2',
-        type: 'company',
-        content: 'Company-wide policy update: All reports must include executive summary and key metrics dashboard.',
-        summary: 'Report Format Policy Update',
-        userId: 'admin',
-        userName: 'Admin',
-        createdAt: new Date(Date.now() - 86400000).toISOString(),
-        tags: ['policy', 'reporting', 'standards'],
-        isShared: true,
-        sharedWith: ['All Agents'],
-      },
-      {
-        id: '3',
-        type: 'user_context',
-        content: 'User prefers detailed technical explanations with code examples. Interested in Python and TypeScript.',
-        summary: 'User Communication Preferences',
-        userId: 'user-1',
-        userName: 'John Doe',
-        createdAt: new Date(Date.now() - 172800000).toISOString(),
-        tags: ['preferences', 'communication', 'technical'],
-      },
-      {
-        id: '4',
-        type: 'agent',
-        content: 'Learned new pattern for handling large datasets: Use chunking with 10k records per batch for optimal performance.',
-        summary: 'Data Processing Optimization',
-        agentId: 'agent-1',
-        agentName: 'Data Analyst #1',
-        createdAt: new Date(Date.now() - 259200000).toISOString(),
-        tags: ['optimization', 'performance', 'data-processing'],
-        relevanceScore: 0.87,
-      },
-      {
-        id: '5',
-        type: 'company',
-        content: 'New security protocol: All confidential documents must be encrypted and access logged.',
-        summary: 'Security Protocol Update',
-        userId: 'admin',
-        userName: 'Admin',
-        createdAt: new Date(Date.now() - 345600000).toISOString(),
-        tags: ['security', 'compliance', 'policy'],
-        isShared: true,
-        sharedWith: ['All Agents', 'All Users'],
-      },
-      {
-        id: '6',
-        type: 'user_context',
-        content: 'User works in Pacific timezone (PST). Prefers morning meetings between 9-11 AM.',
-        summary: 'User Schedule Preferences',
-        userId: 'user-1',
-        userName: 'John Doe',
-        createdAt: new Date(Date.now() - 432000000).toISOString(),
-        tags: ['schedule', 'timezone', 'preferences'],
-      },
-    ];
-    setMemories(mockMemories);
-  }, []);
+  const tabDescriptionKey: Record<MemoryCategory, string> = {
+    agent: 'memory.description.agent',
+    company: 'memory.description.company',
+    user_context: 'memory.description.userContext',
+  };
 
-  // Get all unique tags
-  const allTags = Array.from(new Set(memories.flatMap((m) => m.tags)));
+  const emptyKey: Record<MemoryCategory, string> = {
+    agent: 'memory.empty.agent',
+    company: 'memory.empty.company',
+    user_context: 'memory.empty.userContext',
+  };
 
-  // Filter memories
-  const filteredMemories = memories.filter((memory) => {
-    // Filter by tab
-    if (memory.type !== activeTab) return false;
-
-    // Filter by search query
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      const matchesContent = memory.content.toLowerCase().includes(query);
-      const matchesSummary = memory.summary?.toLowerCase().includes(query);
-      const matchesTags = memory.tags.some((tag) => tag.toLowerCase().includes(query));
-      if (!matchesContent && !matchesSummary && !matchesTags) return false;
+  // Fetch memories for a specific type (merges into store without clearing other types)
+  const fetchMemoriesByType = useCallback(async (type: MemoryCategory) => {
+    try {
+      const data = await memoriesApi.getByType(type);
+      setMemoriesByType(type, data);
+    } catch {
+      // Silently fail for background tab loading
     }
+  }, [setMemoriesByType]);
 
-    // Filter by date range
+  // Load all tab counts on mount
+  useEffect(() => {
+    const types: MemoryCategory[] = ['agent', 'company', 'user_context'];
+    types.forEach((type) => fetchMemoriesByType(type));
+  }, [fetchMemoriesByType]);
+
+  // Fetch active tab memories when tab changes
+  const fetchActiveTabMemories = useCallback(async () => {
+    setLoading(true);
+    clearError();
+    try {
+      const data = await memoriesApi.getByType(activeTab);
+      setMemoriesByType(activeTab, data);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || t('memory.loadError'));
+    } finally {
+      setLoading(false);
+    }
+  }, [activeTab, setMemoriesByType, setLoading, setError, clearError, t]);
+
+  useEffect(() => {
+    fetchActiveTabMemories();
+  }, [fetchActiveTabMemories]);
+
+  // Debounced search
+  useEffect(() => {
+    if (!searchQuery.trim()) return;
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const data = await memoriesApi.search({
+          query: searchQuery,
+          type: activeTab,
+          limit: 50,
+        });
+        setMemoriesByType(activeTab, data);
+      } catch {
+        // Fallback to local filter if search fails
+      } finally {
+        setLoading(false);
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [searchQuery, activeTab, setMemoriesByType, setLoading]);
+
+  // Re-fetch when search is cleared
+  useEffect(() => {
+    if (searchQuery === '') {
+      fetchActiveTabMemories();
+    }
+  }, [searchQuery, fetchActiveTabMemories]);
+
+  // Get all unique tags for the current type
+  const allTags = Array.from(
+    new Set(memories.filter((m) => m.type === activeTab).flatMap((m) => m.tags))
+  );
+
+  // Filter memories locally (for date/tag filters)
+  const filteredMemories = memories.filter((memory) => {
+    if (memory.type !== activeTab) return false;
     if (dateFrom && new Date(memory.createdAt) < new Date(dateFrom)) return false;
     if (dateTo && new Date(memory.createdAt) > new Date(dateTo)) return false;
-
-    // Filter by tags
     if (selectedTags.length > 0) {
       if (!selectedTags.some((tag) => memory.tags.includes(tag))) return false;
     }
-
     return true;
   });
 
-  const handleMemoryClick = (memory: Memory) => {
+  const handleMemoryClick = (memory: MemoryType) => {
     setSelectedMemory(memory);
     setIsDetailViewOpen(true);
   };
 
-  const handleShare = (memory: Memory) => {
+  const handleShare = (memory: MemoryType) => {
     setSharingMemory(memory);
     setIsSharingModalOpen(true);
   };
 
-  const handleShareSubmit = (memoryId: string, shareWith: string[]) => {
-    // Update memory sharing status
-    setMemories((prev) =>
-      prev.map((m) =>
-        m.id === memoryId
-          ? { ...m, isShared: true, sharedWith: shareWith }
-          : m
-      )
-    );
+  const handleShareSubmit = async (memoryId: string, shareWith: string[]) => {
+    try {
+      await memoriesApi.share(memoryId, { user_ids: shareWith });
+      fetchActiveTabMemories();
+    } catch {
+      // Share failed silently
+    }
+  };
+
+  const handleDelete = async (memory: MemoryType) => {
+    try {
+      await memoriesApi.delete(memory.id);
+      removeMemory(memory.id);
+      setIsDetailViewOpen(false);
+      setSelectedMemory(null);
+    } catch {
+      // Delete failed
+    }
   };
 
   const handleTagToggle = (tag: string) => {
@@ -153,20 +327,45 @@ export const Memory: React.FC = () => {
     );
   };
 
+  const handleMemoryCreated = (memory: MemoryType) => {
+    addMemory(memory);
+    fetchActiveTabMemories();
+  };
+
   const tabs = [
-    { id: 'agent' as MemoryType, label: 'Agent Memory', icon: Brain, color: 'text-blue-500' },
-    { id: 'company' as MemoryType, label: 'Company Memory', icon: Building, color: 'text-green-500' },
-    { id: 'user_context' as MemoryType, label: 'User Context', icon: User, color: 'text-purple-500' },
+    { id: 'agent' as MemoryCategory, label: t('memory.tabs.agent'), icon: Brain, color: 'text-blue-500' },
+    { id: 'company' as MemoryCategory, label: t('memory.tabs.company'), icon: Building, color: 'text-green-500' },
+    { id: 'user_context' as MemoryCategory, label: t('memory.tabs.userContext'), icon: User, color: 'text-purple-500' },
   ];
 
   return (
     <div>
-      <h1 className="text-3xl font-bold text-zinc-800 dark:text-white mb-6">
-        {t('nav.memory')}
-      </h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-3xl font-bold text-zinc-800 dark:text-white">
+          {t('memory.title')}
+        </h1>
+        <button
+          onClick={() => setIsCreateModalOpen(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium"
+        >
+          <Plus className="w-5 h-5" />
+          {t('memory.newMemory')}
+        </button>
+      </div>
+
+      {/* Error Banner */}
+      {error && (
+        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-2 text-red-600 dark:text-red-400">
+          <AlertCircle className="w-5 h-5 flex-shrink-0" />
+          <span className="text-sm">{error}</span>
+          <button onClick={clearError} className="ml-auto">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Tabs */}
-      <div className="flex gap-2 mb-6 overflow-x-auto">
+      <div className="flex gap-2 mb-4 overflow-x-auto">
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const count = memories.filter((m) => m.type === tab.id).length;
@@ -194,6 +393,11 @@ export const Memory: React.FC = () => {
         })}
       </div>
 
+      {/* Tab description */}
+      <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+        {t(tabDescriptionKey[activeTab])}
+      </p>
+
       {/* Search Bar */}
       <MemorySearchBar
         searchQuery={searchQuery}
@@ -207,27 +411,36 @@ export const Memory: React.FC = () => {
         onTagToggle={handleTagToggle}
       />
 
+      {/* Loading State */}
+      {isLoading && (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
+        </div>
+      )}
+
       {/* Memory Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filteredMemories.length === 0 ? (
-          <div className="col-span-full text-center py-12">
-            <p className="text-gray-500 dark:text-gray-400">
-              {memories.filter((m) => m.type === activeTab).length === 0
-                ? `No ${tabs.find((t) => t.id === activeTab)?.label.toLowerCase()} yet.`
-                : 'No memories match your search criteria.'}
-            </p>
-          </div>
-        ) : (
-          filteredMemories.map((memory) => (
-            <MemoryCard
-              key={memory.id}
-              memory={memory}
-              onClick={handleMemoryClick}
-              showRelevance={memory.type === 'agent'}
-            />
-          ))
-        )}
-      </div>
+      {!isLoading && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filteredMemories.length === 0 ? (
+            <div className="col-span-full text-center py-12">
+              <p className="text-gray-500 dark:text-gray-400">
+                {memories.filter((m) => m.type === activeTab).length === 0
+                  ? t(emptyKey[activeTab])
+                  : t('memory.noResults')}
+              </p>
+            </div>
+          ) : (
+            filteredMemories.map((memory) => (
+              <MemoryCard
+                key={memory.id}
+                memory={memory}
+                onClick={handleMemoryClick}
+                showRelevance={memory.type === 'agent'}
+              />
+            ))
+          )}
+        </div>
+      )}
 
       {/* Modals */}
       <MemoryDetailView
@@ -238,6 +451,7 @@ export const Memory: React.FC = () => {
           setSelectedMemory(null);
         }}
         onShare={handleShare}
+        onDelete={handleDelete}
       />
       <MemorySharingModal
         memory={sharingMemory}
@@ -247,6 +461,12 @@ export const Memory: React.FC = () => {
           setSharingMemory(null);
         }}
         onShare={handleShareSubmit}
+      />
+      <CreateMemoryModal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        onCreated={handleMemoryCreated}
+        defaultType={activeTab}
       />
     </div>
   );

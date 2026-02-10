@@ -1,5 +1,6 @@
 import React from 'react';
-import { X, Brain, User, Building, Clock, Tag, Share2, TrendingUp, Link as LinkIcon } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { X, Brain, User, Building, Clock, Tag, Share2, TrendingUp, Link as LinkIcon, Trash2 } from 'lucide-react';
 import { ModalPanel } from '@/components/ModalPanel';
 import type { Memory } from '@/types/memory';
 
@@ -8,14 +9,18 @@ interface MemoryDetailViewProps {
   isOpen: boolean;
   onClose: () => void;
   onShare?: (memory: Memory) => void;
+  onDelete?: (memory: Memory) => void;
 }
 
-export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({ 
-  memory, 
-  isOpen, 
+export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
+  memory,
+  isOpen,
   onClose,
-  onShare 
+  onShare,
+  onDelete,
 }) => {
+  const { t } = useTranslation();
+
   if (!isOpen || !memory) return null;
 
   const getTypeIcon = (type: Memory['type']) => {
@@ -32,11 +37,11 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
   const getTypeLabel = (type: Memory['type']) => {
     switch (type) {
       case 'agent':
-        return 'Agent Memory';
+        return t('memory.tabs.agent');
       case 'company':
-        return 'Company Memory';
+        return t('memory.tabs.company');
       case 'user_context':
-        return 'User Context';
+        return t('memory.tabs.userContext');
     }
   };
 
@@ -52,11 +57,24 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
             </h2>
           </div>
           <div className="flex items-center gap-2">
+            {onDelete && (
+              <button
+                onClick={() => {
+                  if (window.confirm(t('memory.detail.deleteConfirm'))) {
+                    onDelete(memory);
+                  }
+                }}
+                className="p-2 hover:bg-red-500/20 rounded-lg transition-colors"
+                title={t('common.delete')}
+              >
+                <Trash2 className="w-5 h-5 text-red-500" />
+              </button>
+            )}
             {onShare && (
               <button
                 onClick={() => onShare(memory)}
                 className="p-2 hover:bg-white/20 rounded-lg transition-colors"
-                title="Share Memory"
+                title={t('memory.share.title')}
               >
                 <Share2 className="w-5 h-5 text-gray-700 dark:text-gray-300" />
               </button>
@@ -77,7 +95,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
               <div className="flex items-center gap-2">
                 <TrendingUp className="w-5 h-5 text-indigo-500" />
                 <span className="text-sm font-medium text-gray-800 dark:text-white">
-                  Relevance Score
+                  {t('memory.detail.relevanceScore')}
                 </span>
               </div>
               <span className="text-2xl font-bold text-indigo-500">
@@ -96,7 +114,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
         {/* Summary */}
         {memory.summary && (
           <div className="mb-6">
-            <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-2">Summary</h3>
+            <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-2">{t('memory.detail.summary')}</h3>
             <p className="text-gray-700 dark:text-gray-300 bg-white/10 p-4 rounded-lg">
               {memory.summary}
             </p>
@@ -105,7 +123,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
 
         {/* Content */}
         <div className="mb-6">
-          <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-2">Content</h3>
+          <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-2">{t('memory.detail.content')}</h3>
           <div className="text-gray-700 dark:text-gray-300 bg-white/10 p-4 rounded-lg whitespace-pre-wrap">
             {memory.content}
           </div>
@@ -116,7 +134,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
           <div className="p-4 bg-white/10 rounded-lg">
             <div className="flex items-center gap-2 mb-2">
               <Clock className="w-5 h-5 text-blue-500" />
-              <span className="text-sm text-gray-600 dark:text-gray-400">Created</span>
+              <span className="text-sm text-gray-600 dark:text-gray-400">{t('memory.detail.created')}</span>
             </div>
             <p className="text-gray-800 dark:text-white font-medium">
               {new Date(memory.createdAt).toLocaleString()}
@@ -127,7 +145,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
             <div className="p-4 bg-white/10 rounded-lg">
               <div className="flex items-center gap-2 mb-2">
                 <Clock className="w-5 h-5 text-green-500" />
-                <span className="text-sm text-gray-600 dark:text-gray-400">Updated</span>
+                <span className="text-sm text-gray-600 dark:text-gray-400">{t('memory.detail.updated')}</span>
               </div>
               <p className="text-gray-800 dark:text-white font-medium">
                 {new Date(memory.updatedAt).toLocaleString()}
@@ -139,7 +157,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
             <div className="p-4 bg-white/10 rounded-lg">
               <div className="flex items-center gap-2 mb-2">
                 <Brain className="w-5 h-5 text-blue-500" />
-                <span className="text-sm text-gray-600 dark:text-gray-400">Agent</span>
+                <span className="text-sm text-gray-600 dark:text-gray-400">{t('memory.detail.agent')}</span>
               </div>
               <p className="text-gray-800 dark:text-white font-medium">{memory.agentName}</p>
             </div>
@@ -149,7 +167,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
             <div className="p-4 bg-white/10 rounded-lg">
               <div className="flex items-center gap-2 mb-2">
                 <User className="w-5 h-5 text-purple-500" />
-                <span className="text-sm text-gray-600 dark:text-gray-400">User</span>
+                <span className="text-sm text-gray-600 dark:text-gray-400">{t('memory.detail.user')}</span>
               </div>
               <p className="text-gray-800 dark:text-white font-medium">{memory.userName}</p>
             </div>
@@ -159,7 +177,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
         {/* Tags */}
         {memory.tags.length > 0 && (
           <div className="mb-6">
-            <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">Tags</h3>
+            <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">{t('memory.detail.tags')}</h3>
             <div className="flex flex-wrap gap-2">
               {memory.tags.map((tag) => (
                 <span
@@ -178,14 +196,14 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
         {memory.metadata && Object.keys(memory.metadata).length > 0 && (
           <div className="mb-6">
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">
-              Related Items
+              {t('memory.detail.relatedItems')}
             </h3>
             <div className="space-y-2">
               {memory.metadata.taskId && (
                 <div className="flex items-center gap-2 p-3 bg-white/10 rounded-lg">
                   <LinkIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
                   <span className="text-sm text-gray-700 dark:text-gray-300">
-                    Task: {memory.metadata.taskId}
+                    {t('memory.detail.task')}: {memory.metadata.taskId}
                   </span>
                 </div>
               )}
@@ -193,7 +211,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
                 <div className="flex items-center gap-2 p-3 bg-white/10 rounded-lg">
                   <LinkIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
                   <span className="text-sm text-gray-700 dark:text-gray-300">
-                    Goal: {memory.metadata.goalId}
+                    {t('memory.detail.goal')}: {memory.metadata.goalId}
                   </span>
                 </div>
               )}
@@ -201,7 +219,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
                 <div className="flex items-center gap-2 p-3 bg-white/10 rounded-lg">
                   <LinkIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
                   <span className="text-sm text-gray-700 dark:text-gray-300">
-                    Document: {memory.metadata.documentId}
+                    {t('memory.detail.document')}: {memory.metadata.documentId}
                   </span>
                 </div>
               )}
@@ -215,12 +233,12 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
             <div className="flex items-center gap-2 mb-2">
               <Share2 className="w-5 h-5 text-indigo-500" />
               <span className="text-sm font-medium text-gray-800 dark:text-white">
-                Shared Memory
+                {t('memory.detail.sharedMemory')}
               </span>
             </div>
             {memory.sharedWith && memory.sharedWith.length > 0 && (
               <p className="text-sm text-gray-600 dark:text-gray-400">
-                Shared with: {memory.sharedWith.join(', ')}
+                {t('memory.detail.sharedWith')}: {memory.sharedWith.join(', ')}
               </p>
             )}
           </div>

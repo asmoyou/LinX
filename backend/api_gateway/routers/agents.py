@@ -1849,6 +1849,33 @@ async def test_agent(
                     yield f"data: {json.dumps(stats)}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'content': 'Agent execution completed'})}\n\n"
 
+                    # Auto-generate user context memory from conversation
+                    if final_response[0]:
+                        try:
+                            from agent_framework.agent_memory_interface import (
+                                get_agent_memory_interface,
+                            )
+
+                            mem_interface = get_agent_memory_interface()
+                            user_context_content = (
+                                f"User discussed: {message[:200]}\n"
+                                f"Agent {agent_info.name} responded about this topic."
+                            )
+                            mem_interface.store_user_context(
+                                user_id=UUID(current_user.user_id),
+                                agent_id=UUID(agent_id),
+                                content=user_context_content,
+                                metadata={
+                                    "agent_name": agent_info.name,
+                                    "session_id": session.session_id,
+                                },
+                            )
+                            logger.debug("User context memory stored for conversation")
+                        except Exception as uc_error:
+                            logger.warning(
+                                f"Failed to store user context (continuing): {uc_error}"
+                            )
+
                 logger.info(
                     f"Agent test completed: {agent_info.name} (tokens: {input_tokens}/{output_tokens}, speed: {tokens_per_second:.1f} tok/s)"
                 )
