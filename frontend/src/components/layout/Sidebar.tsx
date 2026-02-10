@@ -10,8 +10,6 @@ import {
   Code2,
   Building2,
   Settings,
-  ChevronLeft,
-  ChevronRight,
   Mail,
   Shield
 } from 'lucide-react';
@@ -69,20 +67,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
           </span>
         )}
       </div>
-
-      {/* Collapse Toggle Button */}
-      <button
-        onClick={onToggle}
-        className="absolute -right-3.5 top-24 w-7 h-7 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 shadow-lg shadow-emerald-500/25 flex items-center justify-center text-white hover:shadow-xl hover:shadow-emerald-500/40 transition-all duration-300 hover:scale-105 z-10 group"
-        aria-label={isCollapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')}
-        title={isCollapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')}
-      >
-        {isCollapsed ? (
-          <ChevronRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
-        ) : (
-          <ChevronLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" />
-        )}
-      </button>
 
       {/* Navigation */}
       <nav className="flex-1 px-4 space-y-1.5 mt-2" aria-label="Primary navigation">

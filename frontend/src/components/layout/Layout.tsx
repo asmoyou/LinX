@@ -77,7 +77,10 @@ export const Layout: React.FC = () => {
       >
         <div className="absolute inset-0 scan-line pointer-events-none"></div>
         
-        <Header />
+        <Header 
+          isCollapsed={sidebarCollapsed} 
+          onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} 
+        />
         
         <div className="flex-1 overflow-y-auto p-6 lg:p-10 z-10 custom-scrollbar scroll-smooth">
           <div className="max-w-7xl mx-auto">

@@ -1,10 +1,15 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Sun, Moon, Monitor, Bell, ShieldCheck } from 'lucide-react';
+import { Sun, Moon, Monitor, Bell, ShieldCheck, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { useThemeStore } from '@/stores/themeStore';
 import { usersApi } from '@/api/users';
 
-export const Header: React.FC = () => {
+interface HeaderProps {
+  isCollapsed: boolean;
+  onToggle: () => void;
+}
+
+export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
   const { i18n, t } = useTranslation();
   const { theme, setTheme } = useThemeStore();
   const [showNotifications, setShowNotifications] = React.useState(false);
@@ -57,6 +62,20 @@ export const Header: React.FC = () => {
       role="banner"
     >
       <div className="flex items-center gap-4">
+        {/* Sidebar Toggle Button */}
+        <button
+          onClick={onToggle}
+          className="p-2 rounded-xl hover:bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 transition-all duration-300 active:scale-95 group"
+          aria-label={isCollapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')}
+          title={isCollapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')}
+        >
+          {isCollapsed ? (
+            <PanelLeftOpen className="w-5 h-5 transition-all duration-300 group-hover:text-emerald-500" />
+          ) : (
+            <PanelLeftClose className="w-5 h-5 transition-all duration-300 group-hover:text-emerald-500" />
+          )}
+        </button>
+
         <div className="hidden md:flex items-center gap-2 text-[11px] font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-widest">
           <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
           <span>
