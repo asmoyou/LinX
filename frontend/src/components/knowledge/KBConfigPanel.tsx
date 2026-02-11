@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Loader2 } from 'lucide-react';
+import { X, Save, Loader2, Sparkles, SlidersHorizontal } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { ModalPanel } from '@/components/ModalPanel';
 import { knowledgeApi } from '@/api/knowledge';
@@ -12,11 +12,60 @@ interface KBConfigPanelProps {
   onClose: () => void;
 }
 
+const isLikelyRerankModel = (model: string) =>
+  /rerank|reranker|bge-reranker|jina-reranker|gte-rerank|cohere-rerank/i.test(model);
+
+const QUALITY_FIRST_DEFAULTS = {
+  chunking: {
+    strategy: 'semantic',
+    chunk_token_num: 512,
+    overlap_percent: 10,
+  },
+  parsing: {
+    method: 'auto',
+  },
+  enrichment: {
+    enabled: true,
+    keywords_topn: 5,
+    questions_topn: 3,
+    generate_summary: true,
+    temperature: 0.2,
+    batch_size: 5,
+  },
+  embedding: {
+    dimension: 1024,
+  },
+  search: {
+    max_concurrent_requests: 4,
+    request_timeout_seconds: 30,
+    enable_semantic: true,
+    enable_fulltext: true,
+    combine_results: true,
+    semantic_weight: 0.7,
+    fulltext_weight: 0.3,
+    fusion_method: 'rrf',
+    rrf_k: 60,
+    min_relevance_score: 0.3,
+    hybrid_score_scale: 0.02,
+    keyword_min_rank: 4.0,
+    keyword_max_terms: 16,
+    semantic_timeout_seconds: 8,
+    embedding_failure_backoff_seconds: 30,
+    rerank_enabled: true,
+    rerank_weight: 0.85,
+    rerank_top_k: 30,
+    rerank_timeout_seconds: 10,
+    rerank_failure_backoff_seconds: 60,
+    rerank_doc_max_chars: 1600,
+  },
+};
+
 export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose }) => {
   const { t } = useTranslation();
   const [config, setConfig] = useState<KBConfigResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Provider/model state
   const [availableProviders, setAvailableProviders] = useState<Record<string, string[]>>({});
@@ -26,6 +75,7 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
     if (isOpen) {
       loadConfig();
       fetchProviders();
+      setShowAdvanced(false);
     }
   }, [isOpen]);
 
@@ -145,6 +195,121 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
     });
   };
 
+  const pickRerankTarget = () => {
+    const providers = Object.keys(availableProviders);
+    const preferredProviders = [
+      config?.search?.rerank_provider || '',
+      'llm-pool',
+      'vllm',
+      'ollama',
+      ...providers,
+    ].filter(Boolean);
+
+    for (const provider of preferredProviders) {
+      const models = availableProviders[provider] || [];
+      const matchedModel = models.find(isLikelyRerankModel);
+      if (matchedModel) {
+        return { provider, model: matchedModel };
+      }
+    }
+
+    for (const provider of preferredProviders) {
+      const models = availableProviders[provider] || [];
+      if (models.length > 0) {
+        return { provider, model: models[0] };
+      }
+    }
+
+    return {
+      provider: config?.search?.rerank_provider || '',
+      model: config?.search?.rerank_model || '',
+    };
+  };
+
+  const recommendedChunking = {
+    ...QUALITY_FIRST_DEFAULTS.chunking,
+    ...(config?.recommended?.chunking || {}),
+  };
+  const recommendedParsing = {
+    ...QUALITY_FIRST_DEFAULTS.parsing,
+    ...(config?.recommended?.parsing || {}),
+  };
+  const recommendedEnrichment = {
+    ...QUALITY_FIRST_DEFAULTS.enrichment,
+    ...(config?.recommended?.enrichment || {}),
+  };
+  const recommendedEmbedding = {
+    ...QUALITY_FIRST_DEFAULTS.embedding,
+    ...(config?.recommended?.embedding || {}),
+  };
+  const recommendedSearch = {
+    ...QUALITY_FIRST_DEFAULTS.search,
+    ...(config?.recommended?.search || {}),
+  };
+
+  const applyRecommendedDefaults = () => {
+    if (!config) return;
+
+    const rerankTarget = pickRerankTarget();
+    setConfig({
+      ...config,
+      chunking: {
+        ...config.chunking,
+        strategy: String(recommendedChunking.strategy || 'semantic'),
+        chunk_token_num: Number(recommendedChunking.chunk_token_num || 512),
+        overlap_percent: Number(recommendedChunking.overlap_percent || 10),
+      },
+      parsing: {
+        ...config.parsing,
+        method: String(recommendedParsing.method || 'auto'),
+      },
+      enrichment: {
+        ...config.enrichment,
+        enabled: Boolean(recommendedEnrichment.enabled ?? true),
+        keywords_topn: Number(recommendedEnrichment.keywords_topn || 5),
+        questions_topn: Number(recommendedEnrichment.questions_topn || 3),
+        generate_summary: Boolean(recommendedEnrichment.generate_summary ?? true),
+        temperature: Number(recommendedEnrichment.temperature || 0.2),
+        batch_size: Number(recommendedEnrichment.batch_size || 5),
+      },
+      embedding: {
+        ...config.embedding,
+        dimension: Number(recommendedEmbedding.dimension || 1024),
+      },
+      search: {
+        ...config.search,
+        max_concurrent_requests: Number(recommendedSearch.max_concurrent_requests || 4),
+        request_timeout_seconds: Number(recommendedSearch.request_timeout_seconds || 30),
+        enable_semantic: Boolean(recommendedSearch.enable_semantic ?? true),
+        enable_fulltext: Boolean(recommendedSearch.enable_fulltext ?? true),
+        combine_results: Boolean(recommendedSearch.combine_results ?? true),
+        semantic_weight: Number(recommendedSearch.semantic_weight || 0.7),
+        fulltext_weight: Number(recommendedSearch.fulltext_weight || 0.3),
+        fusion_method: String(recommendedSearch.fusion_method || 'rrf'),
+        rrf_k: Number(recommendedSearch.rrf_k || 60),
+        min_relevance_score: Number(recommendedSearch.min_relevance_score || 0.3),
+        keyword_min_rank: Number(recommendedSearch.keyword_min_rank || 4.0),
+        keyword_max_terms: Number(recommendedSearch.keyword_max_terms || 16),
+        hybrid_score_scale: Number(recommendedSearch.hybrid_score_scale || 0.02),
+        semantic_timeout_seconds: Number(recommendedSearch.semantic_timeout_seconds || 8),
+        embedding_failure_backoff_seconds: Number(
+          recommendedSearch.embedding_failure_backoff_seconds || 30
+        ),
+        rerank_enabled: Boolean(recommendedSearch.rerank_enabled ?? true),
+        rerank_weight: Number(recommendedSearch.rerank_weight || 0.85),
+        rerank_provider: rerankTarget.provider,
+        rerank_model: rerankTarget.model,
+        rerank_top_k: Number(recommendedSearch.rerank_top_k || 30),
+        rerank_timeout_seconds: Number(recommendedSearch.rerank_timeout_seconds || 10),
+        rerank_failure_backoff_seconds: Number(
+          recommendedSearch.rerank_failure_backoff_seconds || 60
+        ),
+        rerank_doc_max_chars: Number(recommendedSearch.rerank_doc_max_chars || 1600),
+      },
+    });
+    toast.success(t('kbConfig.recommendedApplied'));
+  };
+
   const visionProvider = config?.parsing?.vision_provider || '';
   const visionModels = availableProviders[visionProvider] || [];
   const embeddingProvider = config?.embedding?.provider || '';
@@ -153,6 +318,13 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
   const enrichmentModels = availableProviders[enrichmentProvider] || [];
   const rerankProvider = config?.search?.rerank_provider || '';
   const rerankModels = availableProviders[rerankProvider] || [];
+  const chunkingStrategy = config?.chunking?.strategy || 'semantic';
+  const chunkingStrategyHintKey =
+    chunkingStrategy === 'fixed_size'
+      ? 'kbConfig.strategyFixedHint'
+      : chunkingStrategy === 'paragraph'
+        ? 'kbConfig.strategyParagraphHint'
+        : 'kbConfig.strategySemanticHint';
 
   if (!isOpen) return null;
 
@@ -221,6 +393,61 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
           </div>
         ) : config ? (
           <div className="space-y-8">
+            <section className="rounded-xl border border-indigo-200/80 dark:border-indigo-500/30 bg-indigo-50/70 dark:bg-indigo-500/10 p-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h3 className="text-base font-semibold text-indigo-700 dark:text-indigo-200 flex items-center gap-2">
+                    <Sparkles className="w-4 h-4" />
+                    {t('kbConfig.recommendedTitle')}
+                  </h3>
+                  <p className="text-xs text-indigo-700/90 dark:text-indigo-200/90 mt-1">
+                    {t('kbConfig.recommendedDescription')}
+                  </p>
+                  <p className="text-xs text-indigo-700/80 dark:text-indigo-200/80 mt-1">
+                    {t('kbConfig.recommendedSummary')}
+                  </p>
+                  <div className="mt-3 space-y-1 text-xs text-indigo-700/85 dark:text-indigo-200/85">
+                    <p className="font-medium">{t('kbConfig.defaultPreviewTitle')}</p>
+                    <p>
+                      {t('kbConfig.defaultPreviewChunking', {
+                        strategy: recommendedChunking.strategy,
+                        chunkSize: recommendedChunking.chunk_token_num,
+                        overlap: recommendedChunking.overlap_percent,
+                      })}
+                    </p>
+                    <p>
+                      {t('kbConfig.defaultPreviewSearch', {
+                        minScore: Number(recommendedSearch.min_relevance_score || 0.3).toFixed(2),
+                        timeout: recommendedSearch.semantic_timeout_seconds,
+                      })}
+                    </p>
+                    <p>
+                      {t('kbConfig.defaultPreviewRerank', {
+                        topK: recommendedSearch.rerank_top_k,
+                        timeout: recommendedSearch.rerank_timeout_seconds,
+                      })}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={applyRecommendedDefaults}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-sm bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    {t('kbConfig.applyRecommended')}
+                  </button>
+                  <button
+                    onClick={() => setShowAdvanced((prev) => !prev)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-sm border border-indigo-300/80 dark:border-indigo-400/40 text-indigo-700 dark:text-indigo-200 rounded-lg hover:bg-indigo-100/70 dark:hover:bg-indigo-500/20 transition-colors"
+                  >
+                    <SlidersHorizontal className="w-4 h-4" />
+                    {showAdvanced ? t('kbConfig.hideAdvanced') : t('kbConfig.showAdvanced')}
+                  </button>
+                </div>
+              </div>
+            </section>
+
             {/* Parsing */}
             <section>
               <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-4">
@@ -272,8 +499,13 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
                   >
                     <option value="fixed_size">{t('kbConfig.strategyFixed')}</option>
                     <option value="paragraph">{t('kbConfig.strategyParagraph')}</option>
-                    <option value="semantic">{t('kbConfig.strategySemantic')}</option>
+                    <option value="semantic">
+                      {t('kbConfig.strategySemantic')} ({t('kbConfig.recommendedShort')})
+                    </option>
                   </select>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {t(chunkingStrategyHintKey)}
+                  </p>
                 </div>
                 <div>
                   <label className={labelClass}>
@@ -340,26 +572,28 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
                         )}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className={labelClass}>{t('kbConfig.keywordsTopn')}</label>
-                        <input
-                          type="number" min={1} max={20}
-                          value={config.enrichment.keywords_topn || 5}
-                          onChange={(e) => updateEnrichment('keywords_topn', Number(e.target.value))}
-                          className={inputClass}
-                        />
+                    {showAdvanced && (
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className={labelClass}>{t('kbConfig.keywordsTopn')}</label>
+                          <input
+                            type="number" min={1} max={20}
+                            value={config.enrichment.keywords_topn || 5}
+                            onChange={(e) => updateEnrichment('keywords_topn', Number(e.target.value))}
+                            className={inputClass}
+                          />
+                        </div>
+                        <div>
+                          <label className={labelClass}>{t('kbConfig.questionsTopn')}</label>
+                          <input
+                            type="number" min={1} max={10}
+                            value={config.enrichment.questions_topn || 3}
+                            onChange={(e) => updateEnrichment('questions_topn', Number(e.target.value))}
+                            className={inputClass}
+                          />
+                        </div>
                       </div>
-                      <div>
-                        <label className={labelClass}>{t('kbConfig.questionsTopn')}</label>
-                        <input
-                          type="number" min={1} max={10}
-                          value={config.enrichment.questions_topn || 3}
-                          onChange={(e) => updateEnrichment('questions_topn', Number(e.target.value))}
-                          className={inputClass}
-                        />
-                      </div>
-                    </div>
+                    )}
                     <label className="flex items-center gap-3 cursor-pointer">
                       <input
                         type="checkbox"
@@ -397,15 +631,17 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
                     )}
                   </div>
                 </div>
-                <div>
-                  <label className={labelClass}>{t('kbConfig.embeddingDimension')}</label>
-                  <input
-                    type="number" min={128} max={4096}
-                    value={config.embedding.dimension || 1024}
-                    onChange={(e) => updateEmbedding('dimension', Number(e.target.value))}
-                    className={inputClass}
-                  />
-                </div>
+                {showAdvanced && (
+                  <div>
+                    <label className={labelClass}>{t('kbConfig.embeddingDimension')}</label>
+                    <input
+                      type="number" min={128} max={4096}
+                      value={config.embedding.dimension || 1024}
+                      onChange={(e) => updateEmbedding('dimension', Number(e.target.value))}
+                      className={inputClass}
+                    />
+                  </div>
+                )}
               </div>
             </section>
 
@@ -415,37 +651,94 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
                 {t('kbConfig.search')}
               </h3>
               <div className="space-y-4">
+                {showAdvanced && (
+                  <div>
+                    <label className={labelClass}>
+                      {t('kbConfig.semanticWeight')}: {config.search.semantic_weight ?? 0.7}
+                    </label>
+                    <input
+                      type="range" min={0} max={1} step={0.05}
+                      value={config.search.semantic_weight ?? 0.7}
+                      onChange={(e) => updateSearch('semantic_weight', Number(e.target.value))}
+                      className="w-full accent-indigo-500"
+                    />
+                  </div>
+                )}
+                {showAdvanced && (
+                  <div>
+                    <label className={labelClass}>
+                      {t('kbConfig.fulltextWeight')}: {config.search.fulltext_weight ?? 0.3}
+                    </label>
+                    <input
+                      type="range" min={0} max={1} step={0.05}
+                      value={config.search.fulltext_weight ?? 0.3}
+                      onChange={(e) => updateSearch('fulltext_weight', Number(e.target.value))}
+                      className="w-full accent-indigo-500"
+                    />
+                  </div>
+                )}
                 <div>
                   <label className={labelClass}>
-                    {t('kbConfig.semanticWeight')}: {config.search.semantic_weight ?? 0.7}
+                    {t('kbConfig.minRelevanceScore')}: {config.search.min_relevance_score ?? 0.3}
                   </label>
                   <input
-                    type="range" min={0} max={1} step={0.05}
-                    value={config.search.semantic_weight ?? 0.7}
-                    onChange={(e) => updateSearch('semantic_weight', Number(e.target.value))}
+                    type="range" min={0} max={1} step={0.01}
+                    value={config.search.min_relevance_score ?? 0.3}
+                    onChange={(e) => updateSearch('min_relevance_score', Number(e.target.value))}
                     className="w-full accent-indigo-500"
                   />
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {t('kbConfig.minRelevanceScoreHint')}
+                  </p>
                 </div>
-                <div>
-                  <label className={labelClass}>
-                    {t('kbConfig.fulltextWeight')}: {config.search.fulltext_weight ?? 0.3}
-                  </label>
-                  <input
-                    type="range" min={0} max={1} step={0.05}
-                    value={config.search.fulltext_weight ?? 0.3}
-                    onChange={(e) => updateSearch('fulltext_weight', Number(e.target.value))}
-                    className="w-full accent-indigo-500"
-                  />
-                </div>
-                <div>
-                  <label className={labelClass}>{t('kbConfig.rrfK')}</label>
-                  <input
-                    type="number" min={1} max={200}
-                    value={config.search.rrf_k || 60}
-                    onChange={(e) => updateSearch('rrf_k', Number(e.target.value))}
-                    className={inputClass}
-                  />
-                </div>
+                {showAdvanced && (
+                  <div>
+                    <label className={labelClass}>{t('kbConfig.rrfK')}</label>
+                    <input
+                      type="number" min={1} max={200}
+                      value={config.search.rrf_k || 60}
+                      onChange={(e) => updateSearch('rrf_k', Number(e.target.value))}
+                      className={inputClass}
+                    />
+                  </div>
+                )}
+                {showAdvanced && (
+                  <div>
+                    <label className={labelClass}>{t('kbConfig.keywordMinRank')}</label>
+                    <input
+                      type="number" min={0} max={30} step={0.5}
+                      value={config.search.keyword_min_rank ?? 4}
+                      onChange={(e) => updateSearch('keyword_min_rank', Number(e.target.value))}
+                      className={inputClass}
+                    />
+                  </div>
+                )}
+                {showAdvanced && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelClass}>{t('kbConfig.semanticTimeoutSeconds')}</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={60}
+                        value={config.search.semantic_timeout_seconds ?? 8}
+                        onChange={(e) => updateSearch('semantic_timeout_seconds', Number(e.target.value))}
+                        className={inputClass}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>{t('kbConfig.requestTimeoutSeconds')}</label>
+                      <input
+                        type="number"
+                        min={5}
+                        max={120}
+                        value={config.search.request_timeout_seconds ?? 30}
+                        onChange={(e) => updateSearch('request_timeout_seconds', Number(e.target.value))}
+                        className={inputClass}
+                      />
+                    </div>
+                  </div>
+                )}
 
                 {/* Rerank */}
                 <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
@@ -477,15 +770,28 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
                           )}
                         </div>
                       </div>
-                      <div>
-                        <label className={labelClass}>{t('kbConfig.rerankTopK')}</label>
-                        <input
-                          type="number" min={1} max={50}
-                          value={config.search.rerank_top_k || 5}
-                          onChange={(e) => updateSearch('rerank_top_k', Number(e.target.value))}
-                          className={inputClass}
-                        />
-                      </div>
+                      {showAdvanced && (
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className={labelClass}>{t('kbConfig.rerankTopK')}</label>
+                            <input
+                              type="number" min={1} max={50}
+                              value={config.search.rerank_top_k || 30}
+                              onChange={(e) => updateSearch('rerank_top_k', Number(e.target.value))}
+                              className={inputClass}
+                            />
+                          </div>
+                          <div>
+                            <label className={labelClass}>{t('kbConfig.rerankTimeoutSeconds')}</label>
+                            <input
+                              type="number" min={1} max={60}
+                              value={config.search.rerank_timeout_seconds || 10}
+                              onChange={(e) => updateSearch('rerank_timeout_seconds', Number(e.target.value))}
+                              className={inputClass}
+                            />
+                          </div>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>

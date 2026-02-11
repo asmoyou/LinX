@@ -8,12 +8,19 @@ References:
 - Design Section 14.1: Processing Workflow
 """
 
+import json
 import logging
+import re
+import time
+import unicodedata
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Tuple
+from uuid import UUID
 
 from memory_system.embedding_service import get_embedding_service
 from memory_system.milvus_connection import get_milvus_connection
+from llm_providers.provider_resolver import resolve_provider
 from shared.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -24,10 +31,13 @@ class SearchFilter:
     """Filter for knowledge search."""
 
     user_id: str
+    user_role: str = "user"
+    user_attributes: Optional[dict] = None
     access_levels: Optional[List[str]] = None
     document_ids: Optional[List[str]] = None
     department_ids: Optional[List[str]] = None
     top_k: int = 10
+    min_relevance_score: Optional[float] = None
 
 
 @dataclass
@@ -65,6 +75,27 @@ class KnowledgeSearch:
         self.fulltext_weight = search_cfg.get("fulltext_weight", 0.3)
         self.fusion_method = search_cfg.get("fusion_method", "rrf")
         self.rrf_k = search_cfg.get("rrf_k", 60)
+        self.semantic_timeout_seconds = search_cfg.get("semantic_timeout_seconds", 8)
+        self.embedding_failure_backoff_seconds = float(
+            search_cfg.get("embedding_failure_backoff_seconds", 30)
+        )
+        self.min_relevance_score = float(search_cfg.get("min_relevance_score", 0.3))
+        self.hybrid_score_scale = float(search_cfg.get("hybrid_score_scale", 0.02))
+        self.keyword_min_rank = float(search_cfg.get("keyword_min_rank", 4.0))
+        self.keyword_max_terms = int(search_cfg.get("keyword_max_terms", 16))
+        self.rerank_enabled = bool(search_cfg.get("rerank_enabled", True))
+        self.rerank_provider = str(search_cfg.get("rerank_provider", "") or "").strip()
+        self.rerank_model = str(search_cfg.get("rerank_model", "") or "").strip()
+        self.rerank_top_k = int(search_cfg.get("rerank_top_k", 30))
+        self.rerank_timeout_seconds = float(search_cfg.get("rerank_timeout_seconds", 10))
+        self.rerank_failure_backoff_seconds = float(
+            search_cfg.get("rerank_failure_backoff_seconds", 60)
+        )
+        self.rerank_weight = float(search_cfg.get("rerank_weight", 0.85))
+        self.rerank_doc_max_chars = int(search_cfg.get("rerank_doc_max_chars", 1600))
+        # Failure backoff timestamps to avoid repeated slow timeouts when upstream is unhealthy.
+        self._embedding_fail_until = 0.0
+        self._rerank_fail_until = 0.0
 
         logger.info(
             "KnowledgeSearch initialized (hybrid)",
@@ -72,6 +103,15 @@ class KnowledgeSearch:
                 "semantic": self.enable_semantic,
                 "fulltext": self.enable_fulltext,
                 "fusion": self.fusion_method,
+                "semantic_timeout_seconds": self.semantic_timeout_seconds,
+                "embedding_failure_backoff_seconds": self.embedding_failure_backoff_seconds,
+                "min_relevance_score": self.min_relevance_score,
+                "hybrid_score_scale": self.hybrid_score_scale,
+                "keyword_min_rank": self.keyword_min_rank,
+                "rerank_enabled": self.rerank_enabled,
+                "rerank_provider": self.rerank_provider,
+                "rerank_model": self.rerank_model,
+                "rerank_failure_backoff_seconds": self.rerank_failure_backoff_seconds,
             },
         )
 
@@ -89,19 +129,35 @@ class KnowledgeSearch:
         Returns:
             List of SearchResult ordered by relevance
         """
+        total_start = time.perf_counter()
+        stage_ms: Dict[str, float] = {}
+
+        def _stage_elapsed_ms(start_time: float) -> float:
+            return round((time.perf_counter() - start_time) * 1000.0, 2)
+
         try:
+            query_terms = self._extract_query_terms(query)
             vector_results = []
             bm25_results = []
 
             # Vector search via Milvus
             if self.enable_semantic:
+                vector_start = time.perf_counter()
                 vector_results = self._vector_search(query, search_filter)
+                stage_ms["vector"] = _stage_elapsed_ms(vector_start)
+            else:
+                stage_ms["vector"] = 0.0
 
             # BM25 search via PostgreSQL
             if self.enable_fulltext:
-                bm25_results = self._bm25_search(query, search_filter)
+                bm25_start = time.perf_counter()
+                bm25_results = self._bm25_search(query, search_filter, query_terms)
+                stage_ms["bm25"] = _stage_elapsed_ms(bm25_start)
+            else:
+                stage_ms["bm25"] = 0.0
 
             # Merge results
+            merge_start = time.perf_counter()
             if vector_results and bm25_results:
                 merged = self._rrf_merge(vector_results, bm25_results)
             elif vector_results:
@@ -110,20 +166,59 @@ class KnowledgeSearch:
                 merged = bm25_results
             else:
                 merged = []
+            stage_ms["merge"] = _stage_elapsed_ms(merge_start)
 
             # Apply permission filtering via access_control module
+            permission_start = time.perf_counter()
             filtered_results = self._apply_permission_filter(merged, search_filter)
+            stage_ms["permission"] = _stage_elapsed_ms(permission_start)
+
+            rerank_start = time.perf_counter()
+            filtered_results, model_rerank_applied = self._rerank_with_model(
+                query=query,
+                results=filtered_results,
+                top_k=search_filter.top_k,
+            )
+            stage_ms["rerank"] = _stage_elapsed_ms(rerank_start)
+
+            if not model_rerank_applied:
+                heuristic_rerank_start = time.perf_counter()
+                filtered_results = self._rerank_by_query_overlap(filtered_results, query_terms)
+                stage_ms["heuristic_rerank"] = _stage_elapsed_ms(heuristic_rerank_start)
+            else:
+                stage_ms["heuristic_rerank"] = 0.0
+
+            # Apply configurable relevance gate (similar to RAGFlow similarity_threshold).
+            relevance_gate_start = time.perf_counter()
+            effective_min_score = (
+                search_filter.min_relevance_score
+                if search_filter.min_relevance_score is not None
+                else self.min_relevance_score
+            )
+            filtered_results = [
+                result
+                for result in filtered_results
+                if float(result.similarity_score or 0.0) >= effective_min_score
+            ]
+            stage_ms["relevance_gate"] = _stage_elapsed_ms(relevance_gate_start)
 
             # Limit to top_k
+            topk_slice_start = time.perf_counter()
             filtered_results = filtered_results[: search_filter.top_k]
+            stage_ms["topk_slice"] = _stage_elapsed_ms(topk_slice_start)
+            stage_ms["total"] = _stage_elapsed_ms(total_start)
 
             logger.info(
                 "Hybrid knowledge search completed",
                 extra={
                     "query_length": len(query),
+                    "query_terms": len(query_terms),
                     "vector_hits": len(vector_results),
                     "bm25_hits": len(bm25_results),
+                    "min_relevance_score": effective_min_score,
+                    "model_rerank_applied": model_rerank_applied,
                     "merged_results": len(filtered_results),
+                    "stage_latency_ms": stage_ms,
                 },
             )
 
@@ -132,6 +227,63 @@ class KnowledgeSearch:
         except Exception as e:
             logger.error(f"Knowledge search failed: {e}", exc_info=True)
             raise
+
+    def _generate_query_embedding(self, query: str) -> Optional[List[float]]:
+        """Generate embedding with a strict timeout for search latency control."""
+        now = time.monotonic()
+        start = time.perf_counter()
+        if now < self._embedding_fail_until:
+            logger.warning(
+                "Embedding provider in backoff window, skipping vector retrieval",
+                extra={
+                    "backoff_remaining_seconds": round(self._embedding_fail_until - now, 2),
+                    "provider": type(self.embedding_service).__name__,
+                },
+            )
+            return None
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(self.embedding_service.generate_embedding, query)
+
+        try:
+            timeout = max(float(self.semantic_timeout_seconds), 1.0)
+            embedding = future.result(timeout=timeout)
+            self._embedding_fail_until = 0.0
+            logger.info(
+                "Embedding generated for retrieval query",
+                extra={
+                    "provider": type(self.embedding_service).__name__,
+                    "elapsed_ms": round((time.perf_counter() - start) * 1000.0, 2),
+                    "query_length": len(query or ""),
+                },
+            )
+            return embedding
+        except FuturesTimeoutError:
+            future.cancel()
+            self._embedding_fail_until = now + max(self.embedding_failure_backoff_seconds, 1.0)
+            logger.warning(
+                "Embedding generation timed out, falling back to non-vector retrieval",
+                extra={
+                    "timeout_seconds": self.semantic_timeout_seconds,
+                    "backoff_seconds": self.embedding_failure_backoff_seconds,
+                    "elapsed_ms": round((time.perf_counter() - start) * 1000.0, 2),
+                },
+            )
+            return None
+        except Exception as e:
+            self._embedding_fail_until = now + max(self.embedding_failure_backoff_seconds, 1.0)
+            logger.warning(
+                "Embedding generation failed, skipping vector search",
+                extra={
+                    "error": str(e),
+                    "elapsed_ms": round((time.perf_counter() - start) * 1000.0, 2),
+                    "provider": type(self.embedding_service).__name__,
+                },
+            )
+            return None
+        finally:
+            # Do not block current request on a stuck worker thread.
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _vector_search(
         self,
@@ -149,16 +301,33 @@ class KnowledgeSearch:
         """
         try:
             # Generate query embedding
-            query_embedding = self.embedding_service.generate_embedding(query)
+            query_embedding = self._generate_query_embedding(query)
+            if query_embedding is None:
+                return []
 
-            # Build Milvus search expression
-            expr_parts = [f'user_id == "{search_filter.user_id}"']
+            # Build Milvus search expression with RBAC-aware scope.
+            from access_control.knowledge_filter import build_milvus_filter_expr
+            from access_control.permissions import CurrentUser
+            from access_control.rbac import Action
 
+            current_user = CurrentUser(
+                user_id=search_filter.user_id,
+                username="knowledge_search_user",
+                role=search_filter.user_role or "user",
+            )
+            additional_filters = []
             if search_filter.document_ids:
                 doc_ids_str = '", "'.join(search_filter.document_ids)
-                expr_parts.append(f'document_id in ["{doc_ids_str}"]')
+                additional_filters.append(f'knowledge_id in ["{doc_ids_str}"]')
 
-            expr = " && ".join(expr_parts)
+            expr = build_milvus_filter_expr(
+                current_user=current_user,
+                action=Action.READ,
+                user_attributes=search_filter.user_attributes,
+                additional_filters=" and ".join(additional_filters) if additional_filters else None,
+            )
+            # Empty expression means unrestricted for privileged roles.
+            expr = expr or None
 
             # Search in Milvus
             from pymilvus import Collection
@@ -172,7 +341,14 @@ class KnowledgeSearch:
                 param=search_params,
                 limit=search_filter.top_k * 2,  # Fetch more for fusion
                 expr=expr,
-                output_fields=["document_id", "content", "chunk_index"],
+                output_fields=[
+                    "knowledge_id",
+                    "content",
+                    "chunk_index",
+                    "owner_user_id",
+                    "access_level",
+                ],
+                timeout=max(float(self.semantic_timeout_seconds), 1.0),
             )
 
             # Convert to SearchResult objects
@@ -182,12 +358,15 @@ class KnowledgeSearch:
                     search_results.append(
                         SearchResult(
                             chunk_id=str(hit.id),
-                            document_id=hit.entity.get("document_id"),
+                            document_id=hit.entity.get("knowledge_id"),
                             content=hit.entity.get("content"),
                             similarity_score=1.0
                             / (1.0 + hit.distance),  # Convert distance to similarity
                             chunk_index=hit.entity.get("chunk_index", 0),
-                            metadata={},
+                            metadata={
+                                "owner_user_id": hit.entity.get("owner_user_id"),
+                                "access_level": hit.entity.get("access_level", "private"),
+                            },
                             search_method="vector",
                         )
                     )
@@ -202,6 +381,7 @@ class KnowledgeSearch:
         self,
         query: str,
         search_filter: SearchFilter,
+        query_terms: Optional[List[str]] = None,
     ) -> List[SearchResult]:
         """Perform BM25 full-text search via PostgreSQL tsvector.
 
@@ -215,6 +395,9 @@ class KnowledgeSearch:
         try:
             from sqlalchemy import func, text
 
+            from access_control.knowledge_filter import filter_knowledge_query
+            from access_control.permissions import CurrentUser
+            from access_control.rbac import Action
             from database.connection import get_db_session
             from database.models import KnowledgeChunk, KnowledgeItem
 
@@ -232,6 +415,8 @@ class KnowledgeSearch:
                         KnowledgeChunk.keywords,
                         KnowledgeChunk.summary,
                         KnowledgeChunk.chunk_metadata,
+                        KnowledgeItem.owner_user_id,
+                        KnowledgeItem.access_level,
                         func.ts_rank(KnowledgeChunk.search_vector, ts_query).label("rank"),
                     )
                     .join(
@@ -239,48 +424,637 @@ class KnowledgeSearch:
                         KnowledgeItem.knowledge_id == KnowledgeChunk.knowledge_id,
                     )
                     .filter(KnowledgeChunk.search_vector.op("@@")(ts_query))
-                    .filter(KnowledgeItem.owner_user_id == search_filter.user_id)
+                )
+                current_user = CurrentUser(
+                    user_id=search_filter.user_id,
+                    username="knowledge_search_user",
+                    role=search_filter.user_role or "user",
+                )
+                q = filter_knowledge_query(
+                    q,
+                    current_user=current_user,
+                    action=Action.READ,
+                    user_attributes=search_filter.user_attributes,
                 )
 
                 # Apply document filter
                 if search_filter.document_ids:
-                    q = q.filter(
-                        KnowledgeChunk.knowledge_id.in_(search_filter.document_ids)
-                    )
+                    doc_uuids = []
+                    for doc_id in search_filter.document_ids:
+                        try:
+                            doc_uuids.append(UUID(doc_id))
+                        except ValueError:
+                            continue
+
+                    if not doc_uuids:
+                        return []
+
+                    q = q.filter(KnowledgeChunk.knowledge_id.in_(doc_uuids))
 
                 # Apply department filter
                 if search_filter.department_ids:
-                    q = q.filter(
-                        KnowledgeItem.department_id.in_(search_filter.department_ids)
-                    )
+                    dept_uuids = []
+                    for department_id in search_filter.department_ids:
+                        try:
+                            dept_uuids.append(UUID(department_id))
+                        except ValueError:
+                            continue
+
+                    if dept_uuids:
+                        q = q.filter(KnowledgeItem.department_id.in_(dept_uuids))
 
                 # Order by BM25 rank
                 q = q.order_by(text("rank DESC")).limit(search_filter.top_k * 2)
-
                 rows = q.all()
 
-                # Convert to SearchResult
-                search_results = []
-                for row in rows:
-                    search_results.append(
-                        SearchResult(
-                            chunk_id=str(row.chunk_id),
-                            document_id=str(row.knowledge_id),
-                            content=row.content,
-                            similarity_score=float(row.rank),
-                            chunk_index=row.chunk_index,
-                            metadata=row.chunk_metadata or {},
-                            keywords=row.keywords,
-                            summary=row.summary,
-                            search_method="bm25",
-                        )
+            # Convert to SearchResult
+            search_results = []
+            for row in rows:
+                row_metadata = dict(row.chunk_metadata or {})
+                row_metadata.setdefault("owner_user_id", str(row.owner_user_id))
+                row_metadata.setdefault("access_level", row.access_level or "private")
+                search_results.append(
+                    SearchResult(
+                        chunk_id=str(row.chunk_id),
+                        document_id=str(row.knowledge_id),
+                        content=row.content,
+                        similarity_score=float(row.rank),
+                        chunk_index=row.chunk_index,
+                        metadata=row_metadata,
+                        keywords=row.keywords,
+                        summary=row.summary,
+                        search_method="bm25",
                     )
+                )
 
-                return search_results
+            # If BM25 under-retrieves (especially for Chinese phrases),
+            # supplement with lightweight keyword fallback.
+            target_hits = search_filter.top_k * 2
+            if len(search_results) < target_hits:
+                fallback_results = self._keyword_fallback_search(
+                    query=query,
+                    query_terms=query_terms or self._extract_query_terms(query),
+                    search_filter=search_filter,
+                    exclude_chunk_ids={r.chunk_id for r in search_results},
+                    limit=target_hits - len(search_results),
+                )
+                search_results.extend(fallback_results)
+
+            return search_results
 
         except Exception as e:
             logger.error(f"BM25 search failed: {e}", exc_info=True)
             return []
+
+    def _extract_query_terms(self, query: str) -> List[str]:
+        """Extract normalized query terms for lexical matching and reranking."""
+        normalized_query = unicodedata.normalize("NFKC", (query or "")).strip().lower()
+        if len(normalized_query) < 2:
+            return []
+
+        stop_terms = {
+            "如何",
+            "怎么",
+            "怎样",
+            "请问",
+            "一下",
+            "一下子",
+            "可以",
+            "是否",
+            "这个",
+            "那个",
+            "what",
+            "how",
+            "why",
+            "who",
+            "where",
+            "when",
+            "the",
+            "and",
+            "for",
+            "with",
+            "from",
+            "that",
+            "this",
+            "are",
+            "is",
+            "to",
+            "of",
+            "in",
+            "on",
+        }
+        cjk_question_terms = {"如何", "怎么", "怎样", "请问"}
+        cjk_question_chars = {"如", "何", "怎", "样", "请", "问"}
+
+        raw_terms: Set[str] = set()
+        split_terms = re.split(
+            r"[\s,，。！？!?;；:：/\\|()\[\]{}【】\"'“”‘’]+",
+            normalized_query,
+        )
+        for term in split_terms:
+            term = term.strip()
+            if len(term) >= 2 and term not in stop_terms:
+                raw_terms.add(term)
+
+        # Preserve contiguous Chinese fragments and generate short n-grams for phrase recall.
+        cjk_fragments = re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]+", normalized_query)
+        for fragment in cjk_fragments:
+            if len(fragment) >= 2 and fragment not in stop_terms:
+                raw_terms.add(fragment)
+            for n in (2, 3):
+                if len(fragment) < n:
+                    continue
+                for idx in range(len(fragment) - n + 1):
+                    gram = fragment[idx: idx + n]
+                    if any(question_term in gram for question_term in cjk_question_terms):
+                        continue
+                    if gram and gram[0] in cjk_question_chars:
+                        continue
+                    if len(gram) >= 2 and gram not in stop_terms:
+                        raw_terms.add(gram)
+
+        if normalized_query not in stop_terms and len(normalized_query) >= 2:
+            raw_terms.add(normalized_query)
+
+        # Longer phrases first to favor specific matches.
+        return sorted(raw_terms, key=lambda item: (-len(item), item))[:24]
+
+    def _keyword_fallback_search(
+        self,
+        query: str,
+        query_terms: List[str],
+        search_filter: SearchFilter,
+        exclude_chunk_ids: Optional[Set[str]] = None,
+        limit: int = 10,
+    ) -> List[SearchResult]:
+        """Fallback lexical retrieval for cases where BM25 under-retrieves."""
+        if limit <= 0:
+            return []
+
+        try:
+            from sqlalchemy import case, func, literal, or_, text
+
+            from access_control.knowledge_filter import filter_knowledge_query
+            from access_control.permissions import CurrentUser
+            from access_control.rbac import Action
+            from database.connection import get_db_session
+            from database.models import KnowledgeChunk, KnowledgeItem
+
+            terms = [
+                t.strip()
+                for t in query_terms
+                if len(t.strip()) >= 2
+            ][: max(self.keyword_max_terms, 1)]
+            full_query = unicodedata.normalize("NFKC", (query or "")).strip().lower()
+            if len(full_query) >= 2 and full_query not in terms:
+                terms.insert(0, full_query)
+
+            if not terms:
+                return []
+
+            # Parse optional filters.
+            doc_uuids = []
+            if search_filter.document_ids:
+                for doc_id in search_filter.document_ids:
+                    try:
+                        doc_uuids.append(UUID(doc_id))
+                    except ValueError:
+                        continue
+                if not doc_uuids:
+                    return []
+
+            dept_uuids = []
+            if search_filter.department_ids:
+                for department_id in search_filter.department_ids:
+                    try:
+                        dept_uuids.append(UUID(department_id))
+                    except ValueError:
+                        continue
+
+            exclude_uuids = []
+            if exclude_chunk_ids:
+                for chunk_id in exclude_chunk_ids:
+                    try:
+                        exclude_uuids.append(UUID(chunk_id))
+                    except ValueError:
+                        continue
+
+            summary_expr = func.coalesce(KnowledgeChunk.summary, "")
+            keyword_expr = func.coalesce(func.array_to_string(KnowledgeChunk.keywords, " "), "")
+            title_expr = func.coalesce(KnowledgeItem.title, "")
+
+            score_expr = literal(0.0)
+            match_conditions = []
+            term_hits_expr = literal(0)
+            used_terms = set()
+            for term in terms:
+                term = term.strip()
+                if len(term) < 2 or term in used_terms:
+                    continue
+                used_terms.add(term)
+                pattern = f"%{term}%"
+                is_full_query = term == full_query
+
+                # Phrase match gets higher weight than short token matches.
+                content_weight = 6.0 if is_full_query else 2.0
+                summary_weight = 4.0 if is_full_query else 1.5
+                keyword_weight = 5.0 if is_full_query else 2.5
+                title_weight = 4.0 if is_full_query else 2.0
+
+                term_match_expr = or_(
+                    KnowledgeChunk.content.ilike(pattern),
+                    summary_expr.ilike(pattern),
+                    keyword_expr.ilike(pattern),
+                    title_expr.ilike(pattern),
+                )
+                match_conditions.append(term_match_expr)
+                term_hits_expr = term_hits_expr + case((term_match_expr, 1), else_=0)
+                score_expr = (
+                    score_expr
+                    + case((KnowledgeChunk.content.ilike(pattern), content_weight), else_=0.0)
+                    + case((summary_expr.ilike(pattern), summary_weight), else_=0.0)
+                    + case((keyword_expr.ilike(pattern), keyword_weight), else_=0.0)
+                    + case((title_expr.ilike(pattern), title_weight), else_=0.0)
+                )
+
+            rank_expr = score_expr.label("rank")
+            term_hits_label = term_hits_expr.label("term_hits")
+            min_term_hits = 1 if len(terms) <= 2 else 2
+
+            with get_db_session() as session:
+                q = (
+                    session.query(
+                        KnowledgeChunk.chunk_id,
+                        KnowledgeChunk.knowledge_id,
+                        KnowledgeChunk.content,
+                        KnowledgeChunk.chunk_index,
+                        KnowledgeChunk.keywords,
+                        KnowledgeChunk.summary,
+                        KnowledgeChunk.chunk_metadata,
+                        KnowledgeItem.owner_user_id,
+                        KnowledgeItem.access_level,
+                        rank_expr,
+                        term_hits_label,
+                    )
+                    .join(
+                        KnowledgeItem,
+                        KnowledgeItem.knowledge_id == KnowledgeChunk.knowledge_id,
+                    )
+                )
+                current_user = CurrentUser(
+                    user_id=search_filter.user_id,
+                    username="knowledge_search_user",
+                    role=search_filter.user_role or "user",
+                )
+                q = filter_knowledge_query(
+                    q,
+                    current_user=current_user,
+                    action=Action.READ,
+                    user_attributes=search_filter.user_attributes,
+                )
+
+                if doc_uuids:
+                    q = q.filter(KnowledgeChunk.knowledge_id.in_(doc_uuids))
+
+                if dept_uuids:
+                    q = q.filter(KnowledgeItem.department_id.in_(dept_uuids))
+
+                if exclude_uuids:
+                    q = q.filter(~KnowledgeChunk.chunk_id.in_(exclude_uuids))
+
+                if match_conditions:
+                    q = q.filter(or_(*match_conditions))
+
+                rows = (
+                    q.order_by(text("rank DESC"), KnowledgeChunk.chunk_index.asc())
+                    .limit(limit * 2)
+                    .all()
+                )
+
+            fallback_results = []
+            for row in rows:
+                rank = float(row.rank or 0.0)
+                term_hits = int(row.term_hits or 0)
+                if rank < self.keyword_min_rank or term_hits < min_term_hits:
+                    continue
+                row_metadata = dict(row.chunk_metadata or {})
+                row_metadata.setdefault("owner_user_id", str(row.owner_user_id))
+                row_metadata.setdefault("access_level", row.access_level or "private")
+                row_metadata["keyword_rank"] = rank
+                row_metadata["keyword_term_hits"] = term_hits
+                fallback_results.append(
+                    SearchResult(
+                        chunk_id=str(row.chunk_id),
+                        document_id=str(row.knowledge_id),
+                        content=row.content,
+                        similarity_score=rank,
+                        chunk_index=row.chunk_index,
+                        metadata=row_metadata,
+                        keywords=row.keywords,
+                        summary=row.summary,
+                        search_method="keyword",
+                    )
+                )
+                if len(fallback_results) >= limit:
+                    break
+
+            return fallback_results
+
+        except Exception as e:
+            logger.warning(f"Keyword fallback search failed: {e}")
+            return []
+
+    def _rerank_with_model(
+        self,
+        query: str,
+        results: List[SearchResult],
+        top_k: int,
+    ) -> Tuple[List[SearchResult], bool]:
+        """Apply model-based rerank when configured, otherwise return original order."""
+        if (
+            not self.rerank_enabled
+            or not self.rerank_provider
+            or not self.rerank_model
+            or len(results) <= 1
+        ):
+            return results, False
+
+        provider_cfg = resolve_provider(self.rerank_provider)
+        base_url = str(provider_cfg.get("base_url") or "").strip()
+        if not base_url:
+            logger.warning(
+                "Rerank provider not resolvable, fallback to heuristic rerank",
+                extra={"rerank_provider": self.rerank_provider},
+            )
+            return results, False
+
+        candidate_limit = min(
+            len(results),
+            max(int(self.rerank_top_k), int(top_k) * 3, int(top_k)),
+        )
+        candidates = results[:candidate_limit]
+        documents = [self._build_rerank_document(candidate) for candidate in candidates]
+        rerank_items = self._call_rerank_api(
+            base_url=base_url,
+            api_key=provider_cfg.get("api_key"),
+            query=query,
+            documents=documents,
+        )
+        if not rerank_items:
+            return results, False
+
+        rerank_weight = min(max(self.rerank_weight, 0.0), 1.0)
+        base_weight = 1.0 - rerank_weight
+
+        reranked_candidates: List[SearchResult] = []
+        for candidate_rank, (doc_index, rerank_score) in enumerate(rerank_items):
+            if doc_index < 0 or doc_index >= len(candidates):
+                continue
+
+            candidate = candidates[doc_index]
+            candidate.metadata = dict(candidate.metadata or {})
+            candidate.metadata["rerank_score"] = round(float(rerank_score), 4)
+            candidate.metadata["rerank_model"] = self.rerank_model
+            candidate.metadata["rerank_provider"] = self.rerank_provider
+            base_prior = 1.0 - (candidate_rank / max(candidate_limit, 1)) * 0.25
+            candidate.similarity_score = (
+                rerank_weight * float(rerank_score) + base_weight * base_prior
+            )
+            reranked_candidates.append(candidate)
+
+        if not reranked_candidates:
+            return results, False
+
+        # Keep any candidate missing rerank output at the tail in original order.
+        reranked_ids = {item.chunk_id for item in reranked_candidates}
+        reranked_candidates.extend(
+            [item for item in candidates if item.chunk_id not in reranked_ids]
+        )
+        reranked_candidates.extend(results[candidate_limit:])
+        return reranked_candidates, True
+
+    def _build_rerank_document(self, result: SearchResult) -> str:
+        """Build compact rerank input text from chunk content and enrichment fields."""
+        parts = [result.content or ""]
+        if result.summary:
+            parts.append(f"Summary: {result.summary}")
+        if result.keywords:
+            parts.append("Keywords: " + ", ".join(result.keywords))
+
+        text = "\n".join(part.strip() for part in parts if part and part.strip())
+        max_chars = max(int(self.rerank_doc_max_chars), 256)
+        return text[:max_chars]
+
+    def _call_rerank_api(
+        self,
+        base_url: str,
+        api_key: Optional[str],
+        query: str,
+        documents: List[str],
+    ) -> List[Tuple[int, float]]:
+        """Call OpenAI-compatible rerank API and return ordered (doc_index, score)."""
+        if not documents:
+            return []
+
+        now = time.monotonic()
+        if now < self._rerank_fail_until:
+            logger.warning(
+                "Rerank provider in backoff window, skipping model rerank",
+                extra={
+                    "backoff_remaining_seconds": round(self._rerank_fail_until - now, 2),
+                    "rerank_provider": self.rerank_provider,
+                },
+            )
+            return []
+
+        try:
+            import requests
+
+            total_timeout = max(float(self.rerank_timeout_seconds), 1.0)
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+
+            payload = {
+                "model": self.rerank_model,
+                "query": query,
+                "documents": documents,
+                "top_n": len(documents),
+            }
+            urls_to_try = [
+                f"{base_url.rstrip('/')}/v1/rerank",
+                f"{base_url.rstrip('/')}/rerank",
+            ]
+            per_attempt_timeout = max(total_timeout / max(len(urls_to_try), 1), 1.0)
+
+            last_error = None
+            for url in urls_to_try:
+                attempt_start = time.perf_counter()
+                try:
+                    response = requests.post(
+                        url,
+                        json=payload,
+                        headers=headers,
+                        timeout=per_attempt_timeout,
+                    )
+                    if response.status_code != 200:
+                        last_error = f"{url} -> HTTP {response.status_code}: {response.text[:200]}"
+                        continue
+                    data = response.json()
+                    parsed = self._parse_rerank_response(data, len(documents))
+                    if parsed:
+                        self._rerank_fail_until = 0.0
+                        logger.info(
+                            "Rerank API call succeeded",
+                            extra={
+                                "url": url,
+                                "elapsed_ms": round((time.perf_counter() - attempt_start) * 1000.0, 2),
+                                "rerank_provider": self.rerank_provider,
+                                "result_count": len(parsed),
+                            },
+                        )
+                        return parsed
+                    last_error = f"{url} -> empty/invalid rerank response"
+                except Exception as call_err:
+                    last_error = f"{url} -> {call_err}"
+
+            if last_error:
+                self._rerank_fail_until = now + max(self.rerank_failure_backoff_seconds, 1.0)
+                logger.warning(
+                    "Rerank API failed, fallback to heuristic rerank",
+                    extra={
+                        "error": last_error,
+                        "total_timeout_seconds": total_timeout,
+                        "per_attempt_timeout_seconds": per_attempt_timeout,
+                        "backoff_seconds": self.rerank_failure_backoff_seconds,
+                    },
+                )
+            return []
+
+        except Exception as e:
+            self._rerank_fail_until = now + max(self.rerank_failure_backoff_seconds, 1.0)
+            logger.warning(f"Unexpected rerank invocation failure: {e}")
+            return []
+
+    def _parse_rerank_response(
+        self,
+        response_data: object,
+        doc_count: int,
+    ) -> List[Tuple[int, float]]:
+        """Parse rerank API response into ordered (index, score) pairs."""
+        if isinstance(response_data, str):
+            try:
+                response_data = json.loads(response_data)
+            except Exception:
+                return []
+
+        if not isinstance(response_data, dict):
+            return []
+
+        raw_results = response_data.get("results")
+        if not isinstance(raw_results, list):
+            raw_results = response_data.get("data")
+        if not isinstance(raw_results, list):
+            raw_results = response_data.get("output")
+            if isinstance(raw_results, str):
+                try:
+                    wrapped_output = json.loads(raw_results)
+                except Exception:
+                    wrapped_output = None
+                if isinstance(wrapped_output, dict):
+                    raw_results = wrapped_output.get("results") or wrapped_output.get("data")
+        if not isinstance(raw_results, list):
+            return []
+
+        parsed: List[Tuple[int, float]] = []
+        for idx, item in enumerate(raw_results):
+            if isinstance(item, dict):
+                raw_index = (
+                    item.get("index")
+                    if item.get("index") is not None
+                    else item.get("document_index")
+                )
+                if raw_index is None and isinstance(item.get("document"), dict):
+                    raw_index = item.get("document", {}).get("index")
+                try:
+                    doc_index = int(raw_index if raw_index is not None else idx)
+                except (TypeError, ValueError):
+                    continue
+
+                raw_score = (
+                    item.get("relevance_score")
+                    if item.get("relevance_score") is not None
+                    else item.get("score")
+                )
+                if raw_score is None:
+                    raw_score = item.get("similarity", 0.0)
+            else:
+                doc_index = idx
+                raw_score = item
+
+            try:
+                score = float(raw_score)
+            except (TypeError, ValueError):
+                continue
+
+            if doc_index < 0 or doc_index >= doc_count:
+                continue
+            parsed.append((doc_index, max(min(score, 1.0), 0.0)))
+
+        parsed.sort(key=lambda pair: pair[1], reverse=True)
+        return parsed
+
+    def _rerank_by_query_overlap(
+        self,
+        results: List[SearchResult],
+        query_terms: List[str],
+    ) -> List[SearchResult]:
+        """Blend base score with query-term coverage to improve semantic intent matching."""
+        if not results or not query_terms:
+            return results
+
+        terms = [t.lower() for t in query_terms if len(t) >= 2][:16]
+        if not terms:
+            return results
+
+        def _method_score(result: SearchResult) -> float:
+            raw_score = max(float(result.similarity_score or 0.0), 0.0)
+            method = (result.search_method or "").lower()
+            if method == "vector":
+                return min(raw_score, 1.0)
+            if method == "bm25":
+                return raw_score / (1.0 + raw_score)
+            if method == "keyword":
+                keyword_scale = max(self.keyword_min_rank * 2.0, 1.0)
+                return min(raw_score / keyword_scale, 1.0)
+            if method == "hybrid":
+                hybrid_scale = max(self.hybrid_score_scale, 1e-6)
+                return min(raw_score / hybrid_scale, 1.0)
+            return raw_score / (1.0 + raw_score)
+
+        reranked = []
+        total_results = len(results)
+        for rank_index, result in enumerate(results):
+            lexical_text = " ".join(
+                [
+                    result.content or "",
+                    result.summary or "",
+                    " ".join(result.keywords or []),
+                ]
+            ).lower()
+            matched_terms = sum(1 for term in terms if term in lexical_text)
+            overlap_score = matched_terms / len(terms)
+            method_score = _method_score(result)
+            rank_prior = 1.0 - (rank_index / max(total_results, 1)) * 0.35
+            final_score = 0.65 * overlap_score + 0.25 * method_score + 0.10 * rank_prior
+            result.similarity_score = float(final_score)
+            result.metadata = dict(result.metadata or {})
+            result.metadata["query_overlap"] = round(overlap_score, 4)
+            result.metadata["method_score"] = round(method_score, 4)
+            reranked.append(result)
+
+        reranked.sort(key=lambda item: item.similarity_score, reverse=True)
+        return reranked
 
     def _apply_permission_filter(
         self,
@@ -309,7 +1083,7 @@ class KnowledgeSearch:
                 result_dicts.append({
                     "chunk_id": r.chunk_id,
                     "document_id": r.document_id,
-                    "owner_user_id": search_filter.user_id,
+                    "owner_user_id": r.metadata.get("owner_user_id", search_filter.user_id),
                     "access_level": r.metadata.get("access_level", "private"),
                     "content": r.content,
                     "similarity_score": r.similarity_score,
@@ -322,12 +1096,14 @@ class KnowledgeSearch:
 
             current_user = CurrentUser(
                 user_id=search_filter.user_id,
-                role="user",
+                username="knowledge_search_user",
+                role=search_filter.user_role or "user",
             )
 
             filtered_dicts = filter_knowledge_results(
                 results=result_dicts,
                 current_user=current_user,
+                user_attributes=search_filter.user_attributes,
             )
 
             # Convert back to SearchResult objects
@@ -398,6 +1174,21 @@ class KnowledgeSearch:
 
 # Singleton instance
 _knowledge_search: Optional[KnowledgeSearch] = None
+_knowledge_search_signature: Optional[str] = None
+
+
+def _build_search_signature() -> str:
+    """Build signature to refresh singleton when KB config changes."""
+    try:
+        config = get_config()
+        kb_config = config.get_section("knowledge_base") if config else {}
+        payload = {
+            "search": kb_config.get("search", {}),
+            "embedding": kb_config.get("embedding", {}),
+        }
+        return json.dumps(payload, sort_keys=True, ensure_ascii=True)
+    except Exception:
+        return ""
 
 
 def get_knowledge_search() -> KnowledgeSearch:
@@ -406,7 +1197,9 @@ def get_knowledge_search() -> KnowledgeSearch:
     Returns:
         KnowledgeSearch instance
     """
-    global _knowledge_search
-    if _knowledge_search is None:
+    global _knowledge_search, _knowledge_search_signature
+    signature = _build_search_signature()
+    if _knowledge_search is None or signature != _knowledge_search_signature:
         _knowledge_search = KnowledgeSearch()
+        _knowledge_search_signature = signature
     return _knowledge_search

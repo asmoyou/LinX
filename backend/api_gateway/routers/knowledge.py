@@ -5,8 +5,10 @@ References:
 - Task 2.1.9: Create knowledge endpoints
 """
 
+import asyncio
 import json
-from typing import List, Optional
+import time
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -24,10 +26,43 @@ from access_control.permissions import CurrentUser, get_current_user
 from access_control.rbac import Action
 from database.connection import get_db_session
 from database.models import KnowledgeCollection, KnowledgeItem, User
+from shared.config import get_config
 from shared.logging import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+_DEFAULT_SEARCH_MAX_CONCURRENT_REQUESTS = 4
+_DEFAULT_SEARCH_REQUEST_TIMEOUT_SECONDS = 30.0
+
+
+def _load_search_runtime_limits() -> tuple[int, float]:
+    """Load per-process search runtime limits from config."""
+    max_concurrent_requests = _DEFAULT_SEARCH_MAX_CONCURRENT_REQUESTS
+    request_timeout_seconds = _DEFAULT_SEARCH_REQUEST_TIMEOUT_SECONDS
+
+    try:
+        config = get_config()
+        kb_config = config.get_section("knowledge_base")
+        search_cfg = kb_config.get("search", {})
+        max_concurrent_requests = int(
+            search_cfg.get("max_concurrent_requests", max_concurrent_requests)
+        )
+        request_timeout_seconds = float(
+            search_cfg.get("request_timeout_seconds", request_timeout_seconds)
+        )
+    except Exception as e:
+        logger.warning(
+            f"Failed to load knowledge search runtime limits from config, using defaults: {e}"
+        )
+
+    max_concurrent_requests = max(max_concurrent_requests, 1)
+    request_timeout_seconds = max(request_timeout_seconds, 1.0)
+    return max_concurrent_requests, request_timeout_seconds
+
+
+_SEARCH_MAX_CONCURRENT_REQUESTS, _SEARCH_REQUEST_TIMEOUT_SECONDS = _load_search_runtime_limits()
+_SEARCH_REQUEST_SEMAPHORE = asyncio.Semaphore(_SEARCH_MAX_CONCURRENT_REQUESTS)
 
 # MIME type to document category mapping
 MIME_TYPE_MAP = {
@@ -124,12 +159,23 @@ class KnowledgeUpdateRequest(BaseModel):
     collection_id: Optional[str] = None
 
 
+class KnowledgeSearchFilters(BaseModel):
+    """Semantic search filters."""
+
+    type: Optional[List[str]] = None
+    access_level: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+    collection_id: Optional[str] = None
+    document_ids: Optional[List[str]] = None
+
+
 class KnowledgeSearchRequest(BaseModel):
     """Semantic search request."""
 
     query: str
     limit: int = Field(default=10, ge=1, le=100)
-    filters: Optional[dict] = None
+    min_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    filters: Optional[KnowledgeSearchFilters] = None
 
 
 class KnowledgeSearchResultItem(BaseModel):
@@ -919,6 +965,7 @@ class KBConfigResponse(BaseModel):
     enrichment: dict
     embedding: dict
     search: dict
+    recommended: Optional[dict] = None
 
 
 class KBConfigUpdateRequest(BaseModel):
@@ -929,6 +976,63 @@ class KBConfigUpdateRequest(BaseModel):
     enrichment: Optional[dict] = None
     embedding: Optional[dict] = None
     search: Optional[dict] = None
+
+
+_KB_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "chunking": {
+        "strategy": "semantic",
+        "chunk_token_num": 512,
+        "overlap_percent": 10,
+    },
+    "parsing": {
+        "method": "auto",
+    },
+    "enrichment": {
+        "enabled": True,
+        "keywords_topn": 5,
+        "questions_topn": 3,
+        "generate_summary": True,
+        "temperature": 0.2,
+        "batch_size": 5,
+    },
+    "embedding": {
+        "dimension": 1024,
+    },
+    "search": {
+        "max_concurrent_requests": 4,
+        "request_timeout_seconds": 30,
+        "enable_semantic": True,
+        "enable_fulltext": True,
+        "combine_results": True,
+        "semantic_weight": 0.7,
+        "fulltext_weight": 0.3,
+        "fusion_method": "rrf",
+        "rrf_k": 60,
+        "min_relevance_score": 0.3,
+        "hybrid_score_scale": 0.02,
+        "keyword_min_rank": 4.0,
+        "keyword_max_terms": 16,
+        "semantic_timeout_seconds": 8,
+        "embedding_failure_backoff_seconds": 30,
+        "rerank_enabled": True,
+        "rerank_weight": 0.85,
+        "rerank_top_k": 30,
+        "rerank_timeout_seconds": 10,
+        "rerank_failure_backoff_seconds": 60,
+        "rerank_doc_max_chars": 1600,
+    },
+}
+
+
+def _merge_kb_section_with_recommended(
+    section_name: str,
+    current_section: Optional[dict],
+) -> dict:
+    """Merge current config with recommended defaults for stable first-run experience."""
+    defaults = dict(_KB_RECOMMENDED_DEFAULTS.get(section_name, {}))
+    current = dict(current_section or {})
+    defaults.update(current)
+    return defaults
 
 
 @router.get("/config", response_model=KBConfigResponse)
@@ -943,11 +1047,14 @@ async def get_kb_config(
         kb_section = config.get_section("knowledge_base")
 
         return KBConfigResponse(
-            chunking=kb_section.get("chunking", {}),
-            parsing=kb_section.get("parsing", {}),
-            enrichment=kb_section.get("enrichment", {}),
-            embedding=kb_section.get("embedding", {}),
-            search=kb_section.get("search", {}),
+            chunking=_merge_kb_section_with_recommended("chunking", kb_section.get("chunking", {})),
+            parsing=_merge_kb_section_with_recommended("parsing", kb_section.get("parsing", {})),
+            enrichment=_merge_kb_section_with_recommended(
+                "enrichment", kb_section.get("enrichment", {})
+            ),
+            embedding=_merge_kb_section_with_recommended("embedding", kb_section.get("embedding", {})),
+            search=_merge_kb_section_with_recommended("search", kb_section.get("search", {})),
+            recommended=_KB_RECOMMENDED_DEFAULTS,
         )
     except Exception as e:
         logger.error(f"Failed to get KB config: {e}", exc_info=True)
@@ -974,7 +1081,7 @@ async def update_kb_config(
 
         import yaml
 
-        from shared.config import get_config, reload_config
+        from shared.config import reload_config
 
         config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config.yaml")
         config_path = os.path.abspath(config_path)
@@ -1006,11 +1113,14 @@ async def update_kb_config(
         updated = config.get_section("knowledge_base")
 
         return KBConfigResponse(
-            chunking=updated.get("chunking", {}),
-            parsing=updated.get("parsing", {}),
-            enrichment=updated.get("enrichment", {}),
-            embedding=updated.get("embedding", {}),
-            search=updated.get("search", {}),
+            chunking=_merge_kb_section_with_recommended("chunking", updated.get("chunking", {})),
+            parsing=_merge_kb_section_with_recommended("parsing", updated.get("parsing", {})),
+            enrichment=_merge_kb_section_with_recommended(
+                "enrichment", updated.get("enrichment", {})
+            ),
+            embedding=_merge_kb_section_with_recommended("embedding", updated.get("embedding", {})),
+            search=_merge_kb_section_with_recommended("search", updated.get("search", {})),
+            recommended=_KB_RECOMMENDED_DEFAULTS,
         )
 
     except HTTPException:
@@ -1840,68 +1950,167 @@ async def delete_knowledge(
         )
 
 
+def _search_knowledge_sync(
+    search_data: KnowledgeSearchRequest,
+    current_user: CurrentUser,
+) -> KnowledgeSearchResponse:
+    """Synchronous knowledge retrieval chain executed in threadpool."""
+    from knowledge_base.knowledge_search import SearchFilter, get_knowledge_search
+
+    search_service = get_knowledge_search()
+    candidate_document_ids: Optional[List[str]] = None
+
+    has_explicit_filters = bool(
+        search_data.filters
+        and any(
+            [
+                search_data.filters.collection_id,
+                search_data.filters.document_ids,
+            ]
+        )
+    )
+
+    if has_explicit_filters:
+        with get_db_session() as session:
+            query = session.query(KnowledgeItem.knowledge_id)
+            query = filter_knowledge_query(query, current_user)
+
+            if search_data.filters.collection_id:
+                if search_data.filters.collection_id == "none":
+                    query = query.filter(KnowledgeItem.collection_id.is_(None))
+                else:
+                    try:
+                        collection_uuid = UUID(search_data.filters.collection_id)
+                    except ValueError:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Invalid collection_id in search filters",
+                        )
+                    query = query.filter(KnowledgeItem.collection_id == collection_uuid)
+
+            if search_data.filters.document_ids:
+                parsed_doc_ids = []
+                for doc_id in search_data.filters.document_ids:
+                    try:
+                        parsed_doc_ids.append(UUID(doc_id))
+                    except ValueError:
+                        continue
+
+                if not parsed_doc_ids:
+                    return KnowledgeSearchResponse(
+                        results=[],
+                        query=search_data.query,
+                        total=0,
+                    )
+
+                query = query.filter(KnowledgeItem.knowledge_id.in_(parsed_doc_ids))
+
+            candidate_document_ids = [str(item[0]) for item in query.all()]
+
+        if not candidate_document_ids:
+            return KnowledgeSearchResponse(
+                results=[],
+                query=search_data.query,
+                total=0,
+            )
+
+    search_filter = SearchFilter(
+        user_id=current_user.user_id,
+        user_role=current_user.role,
+        document_ids=candidate_document_ids,
+        top_k=search_data.limit,
+        min_relevance_score=search_data.min_score,
+    )
+
+    results = search_service.search(
+        query=search_data.query,
+        search_filter=search_filter,
+    )
+
+    # Batch-fetch document titles
+    doc_ids = list({r.document_id for r in results})
+    doc_titles = {}
+    if doc_ids:
+        try:
+            with get_db_session() as session:
+                items = (
+                    session.query(
+                        KnowledgeItem.knowledge_id, KnowledgeItem.title
+                    )
+                    .filter(KnowledgeItem.knowledge_id.in_(doc_ids))
+                    .all()
+                )
+                doc_titles = {str(i.knowledge_id): i.title for i in items}
+        except Exception as e:
+            logger.warning(f"Failed to fetch document titles: {e}")
+
+    response_results = [
+        KnowledgeSearchResultItem(
+            document_id=r.document_id,
+            document_title=doc_titles.get(r.document_id),
+            content=r.content,
+            similarity_score=r.similarity_score,
+            chunk_index=r.chunk_index,
+            keywords=r.keywords,
+            summary=r.summary,
+            search_method=r.search_method,
+        )
+        for r in results
+    ]
+
+    return KnowledgeSearchResponse(
+        results=response_results,
+        query=search_data.query,
+        total=len(response_results),
+    )
+
+
 @router.post("/search", response_model=KnowledgeSearchResponse)
 async def search_knowledge(
     search_data: KnowledgeSearchRequest,
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Semantic search across knowledge base using vector embeddings."""
+    request_start = time.perf_counter()
     try:
-        from knowledge_base.knowledge_search import SearchFilter, get_knowledge_search
-
-        search_service = get_knowledge_search()
-
-        search_filter = SearchFilter(
-            user_id=current_user.user_id,
-            top_k=search_data.limit,
-        )
-
-        results = search_service.search(
-            query=search_data.query,
-            search_filter=search_filter,
-        )
-
-        # Batch-fetch document titles
-        doc_ids = list({r.document_id for r in results})
-        doc_titles = {}
-        if doc_ids:
-            try:
-                with get_db_session() as session:
-                    from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-
-                    items = (
-                        session.query(
-                            KnowledgeItem.knowledge_id, KnowledgeItem.title
-                        )
-                        .filter(KnowledgeItem.knowledge_id.in_(doc_ids))
-                        .all()
-                    )
-                    doc_titles = {str(i.knowledge_id): i.title for i in items}
-            except Exception as e:
-                logger.warning(f"Failed to fetch document titles: {e}")
-
-        response_results = [
-            KnowledgeSearchResultItem(
-                document_id=r.document_id,
-                document_title=doc_titles.get(r.document_id),
-                content=r.content,
-                similarity_score=r.similarity_score,
-                chunk_index=r.chunk_index,
-                keywords=r.keywords,
-                summary=r.summary,
-                search_method=r.search_method,
+        async with _SEARCH_REQUEST_SEMAPHORE:
+            semaphore_acquired_at = time.perf_counter()
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_search_knowledge_sync, search_data, current_user),
+                timeout=_SEARCH_REQUEST_TIMEOUT_SECONDS,
             )
-            for r in results
-        ]
-
-        return KnowledgeSearchResponse(
-            results=response_results,
-            query=search_data.query,
-            total=len(response_results),
+            completed_at = time.perf_counter()
+            logger.info(
+                "Knowledge search request executed",
+                extra={
+                    "queue_wait_ms": round((semaphore_acquired_at - request_start) * 1000.0, 2),
+                    "execution_ms": round((completed_at - semaphore_acquired_at) * 1000.0, 2),
+                    "total_ms": round((completed_at - request_start) * 1000.0, 2),
+                    "query_length": len(search_data.query or ""),
+                    "user_id": current_user.user_id,
+                },
+            )
+            return result
+    except HTTPException:
+        raise
+    except asyncio.TimeoutError:
+        timeout_at = time.perf_counter()
+        logger.warning(
+            "Knowledge search timed out",
+            extra={
+                "timeout_seconds": _SEARCH_REQUEST_TIMEOUT_SECONDS,
+                "user_id": current_user.user_id,
+                "query_length": len(search_data.query or ""),
+                "total_ms": round((timeout_at - request_start) * 1000.0, 2),
+            },
         )
-
+        return KnowledgeSearchResponse(
+            results=[],
+            query=search_data.query,
+            total=0,
+        )
     except Exception as e:
-        logger.warning(f"Knowledge search failed (Milvus may be unavailable): {e}")
+        logger.error(f"Knowledge search failed (Milvus may be unavailable): {e}", exc_info=True)
         # Gracefully degrade - return empty results if Milvus is unavailable
         return KnowledgeSearchResponse(
             results=[],

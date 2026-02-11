@@ -21,10 +21,13 @@ export interface UploadDocumentRequest {
 export interface SearchKnowledgeRequest {
   query: string;
   limit?: number;
+  min_score?: number;
   filters?: {
     type?: string[];
     access_level?: string[];
     tags?: string[];
+    collection_id?: string;
+    document_ids?: string[];
   };
 }
 
@@ -107,6 +110,8 @@ export interface KBConfigResponse {
     dimension?: number;
   };
   search: {
+    max_concurrent_requests?: number;
+    request_timeout_seconds?: number;
     enable_semantic?: boolean;
     enable_fulltext?: boolean;
     combine_results?: boolean;
@@ -114,10 +119,27 @@ export interface KBConfigResponse {
     fulltext_weight?: number;
     fusion_method?: string;
     rrf_k?: number;
+    min_relevance_score?: number;
+    keyword_min_rank?: number;
+    keyword_max_terms?: number;
+    hybrid_score_scale?: number;
+    semantic_timeout_seconds?: number;
+    embedding_failure_backoff_seconds?: number;
+    rerank_timeout_seconds?: number;
+    rerank_failure_backoff_seconds?: number;
+    rerank_weight?: number;
+    rerank_doc_max_chars?: number;
     rerank_enabled?: boolean;
     rerank_provider?: string;
     rerank_model?: string;
     rerank_top_k?: number;
+  };
+  recommended?: {
+    chunking?: Partial<KBConfigResponse['chunking']>;
+    parsing?: Partial<KBConfigResponse['parsing']>;
+    enrichment?: Partial<KBConfigResponse['enrichment']>;
+    embedding?: Partial<KBConfigResponse['embedding']>;
+    search?: Partial<KBConfigResponse['search']>;
   };
 }
 
