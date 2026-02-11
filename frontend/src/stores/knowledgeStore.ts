@@ -3,6 +3,59 @@ import type { Document, DocumentType, DocumentStatus, Collection } from '../type
 import { knowledgeApi } from '../api/knowledge';
 import type { UploadDocumentRequest, ZipUploadResponse } from '../api/knowledge';
 
+const MAX_POLL_ATTEMPTS = 60;
+const POLL_INTERVAL_MS = 2000;
+const pollState = new Map<string, { attempts: number; timer?: ReturnType<typeof setTimeout> }>();
+
+const clampProgress = (value: number): number => Math.max(0, Math.min(100, value));
+
+const fallbackProgressForStatus = (status: DocumentStatus): number => {
+  if (status === 'uploading') return 0;
+  if (status === 'processing') return 50;
+  if (status === 'completed') return 100;
+  return 100;
+};
+
+const normalizeStatus = (status: string): DocumentStatus => {
+  if (status === 'completed' || status === 'failed' || status === 'uploading') {
+    return status;
+  }
+  return 'processing';
+};
+
+const normalizeProcessingProgress = (doc: Document): Document => {
+  const status = doc.status;
+  const fallback = fallbackProgressForStatus(status);
+  const current =
+    doc.processingProgress != null ? clampProgress(doc.processingProgress) : fallback;
+
+  if (status === 'processing') {
+    return { ...doc, processingProgress: Math.max(1, Math.min(99, current)) };
+  }
+  if (status === 'uploading') {
+    return { ...doc, processingProgress: 0 };
+  }
+  if (status === 'completed') {
+    return { ...doc, processingProgress: 100 };
+  }
+  return { ...doc, processingProgress: current };
+};
+
+const stopPollingDocument = (id: string): void => {
+  const state = pollState.get(id);
+  if (state?.timer) {
+    clearTimeout(state.timer);
+  }
+  pollState.delete(id);
+};
+
+const stopAllPolling = (): void => {
+  pollState.forEach((state, id) => {
+    if (state.timer) clearTimeout(state.timer);
+    pollState.delete(id);
+  });
+};
+
 interface KnowledgeState {
   documents: Document[];
   selectedDocument: Document | null;
@@ -120,7 +173,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         collection_id: activeCollectionId === null ? 'none' : activeCollectionId,
       });
       set({
-        documents: response.items,
+        documents: response.items.map(normalizeProcessingProgress),
         totalDocuments: response.total,
         currentPage: response.page,
         isLoading: false,
@@ -147,7 +200,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         // ZIP upload: add all extracted items + the new collection
         const zipResult = result as ZipUploadResponse;
         set((state) => ({
-          documents: [...zipResult.items, ...state.documents],
+          documents: [...zipResult.items.map(normalizeProcessingProgress), ...state.documents],
           totalDocuments: state.totalDocuments + zipResult.items.length,
           collections: [zipResult.collection, ...state.collections],
           isUploading: false,
@@ -163,7 +216,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         return result;
       } else {
         // Regular file upload
-        const doc = result as Document;
+        const doc = normalizeProcessingProgress(result as Document);
         set((state) => ({
           documents: [doc, ...state.documents],
           totalDocuments: state.totalDocuments + 1,
@@ -187,6 +240,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   deleteDocument: async (id: string) => {
     try {
       await knowledgeApi.delete(id);
+      stopPollingDocument(id);
       set((state) => ({
         documents: state.documents.filter((doc) => doc.id !== id),
         selectedDocument: state.selectedDocument?.id === id ? null : state.selectedDocument,
@@ -225,9 +279,11 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
 
   reprocessDocument: async (id: string) => {
     try {
+      stopPollingDocument(id);
       const updated = await knowledgeApi.reprocess(id);
       get().updateDocument(id, {
-        status: updated.status as DocumentStatus,
+        status: normalizeStatus(updated.status),
+        processingProgress: 5,
         error: undefined,
         errorMessage: undefined,
         chunkCount: undefined,
@@ -243,36 +299,55 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   },
 
   pollProcessingStatus: async (id: string) => {
-    const maxAttempts = 30;
-    let attempts = 0;
+    // Avoid duplicate polling loops for the same document.
+    if (pollState.has(id)) return;
+    pollState.set(id, { attempts: 0 });
 
     const poll = async () => {
-      if (attempts >= maxAttempts) return;
-      attempts++;
+      const state = pollState.get(id);
+      if (!state) return;
+      const exists = get().documents.some((doc) => doc.id === id);
+      if (!exists) {
+        stopPollingDocument(id);
+        return;
+      }
+      if (state.attempts >= MAX_POLL_ATTEMPTS) {
+        stopPollingDocument(id);
+        return;
+      }
+      state.attempts += 1;
 
       try {
         const status = await knowledgeApi.getProcessingStatus(id);
+        const normalizedStatus = normalizeStatus(status.status);
+        const progress = clampProgress(
+          status.progress_percent ?? fallbackProgressForStatus(normalizedStatus)
+        );
 
-        if (status.status === 'completed' || status.status === 'failed') {
-          get().updateDocument(id, {
-            status: status.status as DocumentStatus,
-            processedAt: status.processed_at || status.completed_at || new Date().toISOString(),
-            error: status.error_message || undefined,
-            errorMessage: status.error_message || undefined,
-            chunkCount: status.chunk_count,
-            tokenCount: status.token_count,
-          });
+        get().updateDocument(id, {
+          status: normalizedStatus,
+          processingProgress: progress,
+          processedAt: status.processed_at || status.completed_at || undefined,
+          error: status.error_message || undefined,
+          errorMessage: status.error_message || undefined,
+          chunkCount: status.chunk_count,
+          tokenCount: status.token_count,
+        });
+
+        if (normalizedStatus === 'completed' || normalizedStatus === 'failed') {
+          stopPollingDocument(id);
           return;
         }
-
-        // Continue polling
-        setTimeout(poll, 2000);
       } catch {
-        // Stop polling on error
+        // Keep polling; transient network failures are common during heavy uploads.
       }
+
+      const next = pollState.get(id);
+      if (!next) return;
+      next.timer = setTimeout(poll, POLL_INTERVAL_MS);
     };
 
-    setTimeout(poll, 2000);
+    void poll();
   },
 
   pollAllProcessing: () => {
@@ -339,33 +414,37 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     set({ activeCollectionId: id, documents: [], currentPage: 1 });
   },
 
-  setDocuments: (documents) => set({ documents }),
+  setDocuments: (documents) => set({ documents: documents.map(normalizeProcessingProgress) }),
 
   addDocument: (document) => set((state) => ({
-    documents: [...state.documents, document],
+    documents: [...state.documents, normalizeProcessingProgress(document)],
   })),
 
   updateDocument: (id, updates) => set((state) => ({
     documents: state.documents.map((doc) =>
-      doc.id === id ? { ...doc, ...updates } : doc
+      doc.id === id ? normalizeProcessingProgress({ ...doc, ...updates }) : doc
     ),
     selectedDocument: state.selectedDocument?.id === id
-      ? { ...state.selectedDocument, ...updates }
+      ? normalizeProcessingProgress({ ...state.selectedDocument, ...updates })
       : state.selectedDocument,
     uploadQueue: state.uploadQueue.map((doc) =>
-      doc.id === id ? { ...doc, ...updates } : doc
+      doc.id === id ? normalizeProcessingProgress({ ...doc, ...updates }) : doc
     ),
   })),
 
-  removeDocument: (id) => set((state) => ({
-    documents: state.documents.filter((doc) => doc.id !== id),
-    selectedDocument: state.selectedDocument?.id === id ? null : state.selectedDocument,
-  })),
+  removeDocument: (id) => {
+    stopPollingDocument(id);
+    set((state) => ({
+      documents: state.documents.filter((doc) => doc.id !== id),
+      selectedDocument: state.selectedDocument?.id === id ? null : state.selectedDocument,
+    }));
+  },
 
-  setSelectedDocument: (document) => set({ selectedDocument: document }),
+  setSelectedDocument: (document) =>
+    set({ selectedDocument: document ? normalizeProcessingProgress(document) : null }),
 
   addToUploadQueue: (document) => set((state) => ({
-    uploadQueue: [...state.uploadQueue, document],
+    uploadQueue: [...state.uploadQueue, normalizeProcessingProgress(document)],
   })),
 
   removeFromUploadQueue: (id) => set((state) => ({
@@ -431,22 +510,25 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     return get().documents.filter((doc) => doc.status === status);
   },
 
-  reset: () => set({
-    documents: [],
-    selectedDocument: null,
-    isLoading: false,
-    error: null,
-    totalDocuments: 0,
-    currentPage: 1,
-    uploadQueue: [],
-    isUploading: false,
-    isDownloading: false,
-    downloadingId: null,
-    collections: [],
-    activeCollectionId: null,
-    isLoadingCollections: false,
-    typeFilter: 'all',
-    statusFilter: 'all',
-    searchQuery: '',
-  }),
+  reset: () => {
+    stopAllPolling();
+    set({
+      documents: [],
+      selectedDocument: null,
+      isLoading: false,
+      error: null,
+      totalDocuments: 0,
+      currentPage: 1,
+      uploadQueue: [],
+      isUploading: false,
+      isDownloading: false,
+      downloadingId: null,
+      collections: [],
+      activeCollectionId: null,
+      isLoadingCollections: false,
+      typeFilter: 'all',
+      statusFilter: 'all',
+      searchQuery: '',
+    });
+  },
 }));

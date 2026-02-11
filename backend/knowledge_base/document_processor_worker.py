@@ -11,7 +11,7 @@ References:
 import logging
 import tempfile
 import threading
-import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -37,31 +37,41 @@ class DocumentProcessorWorker:
         self.running = False
         self.worker_thread = None
 
-        # Load config for pipeline settings
-        config = get_config()
-        kb_config = config.get_section("knowledge_base") if config else {}
-
-        # Chunking config
-        chunking_cfg = kb_config.get("chunking", {})
-        strategy_str = chunking_cfg.get("strategy", "fixed_size")
-        self.chunking_strategy = ChunkingStrategy(strategy_str)
-
-        # Parsing config
-        parsing_cfg = kb_config.get("parsing", {})
-        self.parsing_method = parsing_cfg.get("method", "standard")
-
-        # Enrichment config
-        enrichment_cfg = kb_config.get("enrichment", {})
-        self.enrichment_enabled = enrichment_cfg.get("enabled", False)
+        self.chunking_strategy = ChunkingStrategy.FIXED_SIZE
+        self.parsing_method = "standard"
+        self.enrichment_enabled = False
+        self._load_runtime_config()
 
         logger.info(
             "DocumentProcessorWorker initialized",
             extra={
-                "chunking_strategy": strategy_str,
+                "chunking_strategy": self.chunking_strategy.value,
                 "parsing_method": self.parsing_method,
                 "enrichment_enabled": self.enrichment_enabled,
             },
         )
+
+    def _load_runtime_config(self) -> None:
+        """Refresh runtime configuration for each document process."""
+        config = get_config()
+        kb_config = config.get_section("knowledge_base") if config else {}
+
+        chunking_cfg = kb_config.get("chunking", {})
+        strategy_str = chunking_cfg.get("strategy", ChunkingStrategy.FIXED_SIZE.value)
+        try:
+            self.chunking_strategy = ChunkingStrategy(strategy_str)
+        except ValueError:
+            logger.warning(f"Unknown chunking strategy '{strategy_str}', fallback to fixed_size")
+            self.chunking_strategy = ChunkingStrategy.FIXED_SIZE
+
+        parsing_cfg = kb_config.get("parsing", {})
+        self.parsing_method = parsing_cfg.get("method", "standard")
+
+        enrichment_cfg = kb_config.get("enrichment", {})
+        self.enrichment_enabled = bool(enrichment_cfg.get("enabled", False))
+
+        # Chunker auto-refreshes internally when config signature changes.
+        self.chunker = get_document_chunker()
 
     def start(self) -> None:
         """Start the worker thread."""
@@ -98,6 +108,8 @@ class DocumentProcessorWorker:
                 self._update_knowledge_status(
                     job.document_id,
                     "processing",
+                    progress=5,
+                    stage="queued",
                 )
 
                 # Process document
@@ -111,6 +123,8 @@ class DocumentProcessorWorker:
                     "completed",
                     chunk_count=result_meta.get("chunk_count", 0),
                     token_count=result_meta.get("total_tokens", 0),
+                    progress=100,
+                    stage="completed",
                 )
 
                 logger.info(f"Job completed: {job.job_id}")
@@ -128,6 +142,8 @@ class DocumentProcessorWorker:
                         job.document_id,
                         "failed",
                         error_message=str(e),
+                        progress=100,
+                        stage="failed",
                     )
 
     def _process_document(self, job) -> dict:
@@ -139,6 +155,9 @@ class DocumentProcessorWorker:
         Returns:
             Dict with processing metadata (chunk_count, total_tokens, etc.)
         """
+        # Refresh config before each job so Settings updates take effect without restart.
+        self._load_runtime_config()
+
         # Download file from MinIO to temp file
         # download_file returns (data_stream, metadata), not a file path
         data_stream, _file_meta = self.minio_client.download_file(
@@ -151,8 +170,16 @@ class DocumentProcessorWorker:
             temp_path = Path(f.name)
 
         try:
+            self._update_processing_progress(job.document_id, progress=15, stage="extracting")
+
             # Step 1: Parse / extract text
             text = self._extract_text(temp_path, job.mime_type)
+            if not text or not text.strip():
+                raise ValueError(
+                    "No extractable text was found in the document. "
+                    "Please check parsing method and model configuration."
+                )
+            self._update_processing_progress(job.document_id, progress=40, stage="parsed")
 
             # Step 2: Chunk document
             chunk_result = self.chunker.chunk(
@@ -164,9 +191,19 @@ class DocumentProcessorWorker:
 
             chunks = chunk_result.chunks
             chunk_metadata = chunk_result.chunk_metadata
+            if not chunks:
+                raise ValueError(
+                    "Document parsing produced no chunks. "
+                    "Please adjust parsing/chunking settings and retry."
+                )
+            self._update_processing_progress(job.document_id, progress=65, stage="chunked")
 
             # Step 3: LLM enrichment (if enabled)
-            if self.enrichment_enabled and chunks:
+            # For image/video content, enrichment adds noticeable latency with limited recall gain.
+            skip_enrichment_for_media = job.mime_type.startswith("image/") or job.mime_type.startswith(
+                "video/"
+            )
+            if self.enrichment_enabled and chunks and not skip_enrichment_for_media:
                 try:
                     from knowledge_base.chunk_enricher import get_chunk_enricher
 
@@ -174,14 +211,21 @@ class DocumentProcessorWorker:
                     chunks, chunk_metadata = enricher.enrich_batch_sync(chunks, chunk_metadata)
                 except Exception as enrich_err:
                     logger.warning(f"Enrichment failed, continuing without: {enrich_err}")
+            elif self.enrichment_enabled and skip_enrichment_for_media:
+                logger.info(
+                    "Skipping chunk enrichment for media document",
+                    extra={"document_id": job.document_id, "mime_type": job.mime_type},
+                )
 
             # Step 4: Index chunks to Milvus + PostgreSQL
+            self._update_processing_progress(job.document_id, progress=85, stage="indexing")
             self.indexer.index_chunks(
                 document_id=job.document_id,
                 chunks=chunks,
                 chunk_metadata=chunk_metadata,
                 user_id=job.user_id,
             )
+            self._update_processing_progress(job.document_id, progress=95, stage="indexed")
 
             return {
                 "chunk_count": chunk_result.chunk_count,
@@ -191,6 +235,17 @@ class DocumentProcessorWorker:
         finally:
             # Clean up temp file
             temp_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _run_async(coro):
+        """Run async parser helpers in the worker's sync context."""
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
 
     def _extract_text(self, file_path: Path, mime_type: str) -> str:
         """Extract text from file based on type and parsing method.
@@ -202,29 +257,36 @@ class DocumentProcessorWorker:
         Returns:
             Extracted text
         """
-        # Vision parsing for images or when explicitly configured
-        if self.parsing_method == "vision" or (
-            self.parsing_method == "auto" and "image" in mime_type
+        strict_vision_mode = self.parsing_method == "vision"
+
+        # Vision parsing for images/PDFs when explicitly configured, and for images in auto mode.
+        should_try_vision = ("image" in mime_type) or ("pdf" in mime_type)
+        if should_try_vision and (
+            strict_vision_mode or (self.parsing_method == "auto" and "image" in mime_type)
         ):
             try:
                 from knowledge_base.vision_parser import get_vision_parser
 
                 parser = get_vision_parser()
-                # Run async parser in sync context
-                import asyncio
+                if "image" in mime_type:
+                    result = self._run_async(parser.parse_image(file_path))
+                else:
+                    result = self._run_async(parser.parse_pdf(file_path))
 
-                loop = asyncio.new_event_loop()
-                try:
-                    if "image" in mime_type:
-                        result = loop.run_until_complete(parser.parse_image(file_path))
-                    else:
-                        result = loop.run_until_complete(parser.parse_pdf(file_path))
-                    return result.text
-                finally:
-                    loop.close()
+                vision_text = (result.text or "").strip()
+                if vision_text:
+                    return vision_text
+                if strict_vision_mode:
+                    raise ValueError("Vision parsing returned empty text in vision mode")
+                logger.warning(
+                    "Vision parsing returned empty text, falling back to standard parser",
+                    extra={"file_path": str(file_path), "mime_type": mime_type},
+                )
             except Exception as vision_err:
-                if self.parsing_method == "vision":
-                    raise
+                if strict_vision_mode:
+                    raise ValueError(
+                        f"Vision parsing failed in vision mode: {vision_err}"
+                    ) from vision_err
                 logger.warning(f"Vision parsing failed, falling back to standard: {vision_err}")
 
         # Standard extraction
@@ -241,11 +303,38 @@ class DocumentProcessorWorker:
             result = audio_processor.transcribe(file_path)
             return result.text
         elif "video" in mime_type:
-            from knowledge_base.video_processor import get_video_processor
+            errors = []
 
-            video_processor = get_video_processor()
-            result = video_processor.process(file_path)
-            return result.transcription.text
+            # 1) Prefer audio transcription pipeline.
+            try:
+                from knowledge_base.video_processor import get_video_processor
+
+                video_processor = get_video_processor()
+                result = video_processor.process(file_path)
+                video_text = (result.transcription.text or "").strip()
+                if video_text:
+                    return video_text
+                errors.append("audio transcription returned empty text")
+            except Exception as video_err:
+                errors.append(f"audio transcription failed: {video_err}")
+
+            # 2) Fallback: sample frames and parse with vision LLM.
+            try:
+                vision_text = self._extract_video_with_vision(file_path).strip()
+                if vision_text:
+                    return vision_text
+                errors.append("vision frame parsing returned empty text")
+            except Exception as vision_err:
+                errors.append(f"vision frame parsing failed: {vision_err}")
+
+            logger.warning(
+                "Video extraction degraded to metadata fallback text",
+                extra={
+                    "file_path": str(file_path),
+                    "errors": errors,
+                },
+            )
+            return self._build_video_fallback_text(file_path, errors)
         else:
             extractor = get_extractor(mime_type)
             result = extractor.extract(file_path)
@@ -260,19 +349,72 @@ class DocumentProcessorWorker:
                     from knowledge_base.vision_parser import get_vision_parser
 
                     parser = get_vision_parser()
-                    import asyncio
-
-                    loop = asyncio.new_event_loop()
-                    try:
-                        vision_result = loop.run_until_complete(parser.parse_pdf(file_path))
-                        if len(vision_result.text.strip()) > len(result.text.strip()):
-                            return vision_result.text
-                    finally:
-                        loop.close()
+                    vision_result = self._run_async(parser.parse_pdf(file_path))
+                    if len(vision_result.text.strip()) > len(result.text.strip()):
+                        return vision_result.text
                 except Exception:
                     pass  # Fall through to standard result
 
             return result.text
+
+    def _extract_video_with_vision(self, file_path: Path) -> str:
+        """Fallback extraction for videos using sampled frames and vision model."""
+        import shutil
+        import subprocess
+        from tempfile import TemporaryDirectory
+
+        from knowledge_base.vision_parser import get_vision_parser
+
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            raise RuntimeError("ffmpeg is not available for video frame extraction")
+
+        with TemporaryDirectory(prefix="kb_video_frames_") as frame_dir:
+            frame_pattern = str(Path(frame_dir) / "frame_%03d.jpg")
+            command = [
+                ffmpeg_bin,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(file_path),
+                "-vf",
+                "fps=1/5",
+                "-frames:v",
+                "6",
+                frame_pattern,
+            ]
+            subprocess.run(command, check=True)
+
+            frames = sorted(Path(frame_dir).glob("frame_*.jpg"))
+            if not frames:
+                raise RuntimeError("no video frames were extracted")
+
+            parser = get_vision_parser()
+            prompt = (
+                "This image is a frame sampled from a video. "
+                "Extract visible text and summarize key scene actions/objects "
+                "that are useful for semantic retrieval."
+            )
+
+            frame_texts = []
+            for i, frame_path in enumerate(frames, start=1):
+                parsed = self._run_async(parser.parse_image(frame_path, prompt=prompt))
+                content = (parsed.text or "").strip()
+                if content:
+                    frame_texts.append(f"Frame {i}:\n{content}")
+
+            return "\n\n".join(frame_texts)
+
+    @staticmethod
+    def _build_video_fallback_text(file_path: Path, errors: list[str]) -> str:
+        """Build fallback text so videos without extractable content still index."""
+        error_summary = "; ".join(errors[:2]) if errors else "no details"
+        return (
+            f"Video file '{file_path.name}' was processed, but no transcribable audio or "
+            f"readable frame text was detected. Fallback reason: {error_summary}."
+        )
 
     def _update_knowledge_status(
         self,
@@ -281,6 +423,8 @@ class DocumentProcessorWorker:
         chunk_count: int = 0,
         token_count: int = 0,
         error_message: str = "",
+        progress: Optional[int] = None,
+        stage: Optional[str] = None,
     ) -> None:
         """Update KnowledgeItem processing status in PostgreSQL.
 
@@ -290,6 +434,8 @@ class DocumentProcessorWorker:
             chunk_count: Number of chunks produced
             token_count: Total token count
             error_message: Error message if failed
+            progress: Processing progress percentage
+            stage: Current processing stage label
         """
         try:
             from database.connection import get_db_session
@@ -303,26 +449,74 @@ class DocumentProcessorWorker:
                 )
                 if item:
                     meta = dict(item.item_metadata) if item.item_metadata else {}
+                    now_iso = datetime.now(timezone.utc).isoformat()
                     meta["processing_status"] = status
-                    meta["processed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    meta["processed_at"] = now_iso
 
-                    if status == "completed":
+                    existing_progress = meta.get("processing_progress")
+                    try:
+                        existing_progress_int = (
+                            int(existing_progress) if existing_progress is not None else None
+                        )
+                    except (TypeError, ValueError):
+                        existing_progress_int = None
+
+                    if status == "processing":
+                        meta.setdefault("created_at", now_iso)
+                        meta.setdefault("started_at", now_iso)
+                        meta["completed_at"] = None
+                    elif status == "completed":
+                        meta.pop("error_message", None)
+                        meta.setdefault("started_at", now_iso)
+                        meta["completed_at"] = now_iso
                         meta["chunk_count"] = chunk_count
                         meta["token_count"] = token_count
                     elif status == "failed":
+                        meta.setdefault("started_at", now_iso)
+                        meta["completed_at"] = now_iso
                         meta["error_message"] = error_message
+
+                    if progress is None:
+                        if status == "processing":
+                            progress_value = existing_progress_int if existing_progress_int is not None else 5
+                        elif status in {"completed", "failed"}:
+                            progress_value = 100
+                        else:
+                            progress_value = 0
+                    else:
+                        progress_value = int(progress)
+
+                    if status == "processing":
+                        progress_value = max(5, min(99, progress_value))
+                        if existing_progress_int is not None:
+                            progress_value = max(existing_progress_int, progress_value)
+                    else:
+                        progress_value = max(0, min(100, progress_value))
+
+                    meta["processing_progress"] = progress_value
+                    if stage:
+                        meta["processing_stage"] = stage
+                    elif status in {"completed", "failed"}:
+                        meta["processing_stage"] = status
 
                     item.item_metadata = meta
                     session.commit()
-                    logger.debug(
-                        f"Knowledge item {document_id} status updated to {status}"
-                    )
+                    logger.debug(f"Knowledge item {document_id} status updated to {status}")
                 else:
-                    logger.warning(
-                        f"Knowledge item {document_id} not found for status update"
-                    )
+                    logger.warning(f"Knowledge item {document_id} not found for status update")
         except Exception as e:
             logger.error(f"Failed to update knowledge status: {e}", exc_info=True)
+
+    def _update_processing_progress(
+        self, document_id: str, progress: int, stage: Optional[str] = None
+    ) -> None:
+        """Convenience wrapper for in-flight progress updates."""
+        self._update_knowledge_status(
+            document_id=document_id,
+            status="processing",
+            progress=progress,
+            stage=stage,
+        )
 
     @staticmethod
     def _get_suffix(mime_type: str) -> str:

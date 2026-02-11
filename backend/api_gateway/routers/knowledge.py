@@ -8,8 +8,9 @@ References:
 import asyncio
 import json
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
@@ -137,6 +138,7 @@ class KnowledgeItemResponse(BaseModel):
     chunkCount: Optional[int] = None
     tokenCount: Optional[int] = None
     errorMessage: Optional[str] = None
+    processingProgress: Optional[int] = None
 
 
 class KnowledgeListResponse(BaseModel):
@@ -211,6 +213,7 @@ class ProcessingStatusResponse(BaseModel):
     chunk_count: Optional[int] = None
     token_count: Optional[int] = None
     processed_at: Optional[str] = None
+    progress_percent: Optional[int] = None
 
 
 class CollectionCreateRequest(BaseModel):
@@ -325,6 +328,12 @@ def _build_item_response(item: KnowledgeItem, owner_username: str) -> KnowledgeI
     chunk_count = metadata.get("chunk_count")
     token_count = metadata.get("token_count")
     error_message = metadata.get("error_message")
+    processing_progress = metadata.get("processing_progress")
+    if processing_progress is not None:
+        try:
+            processing_progress = int(processing_progress)
+        except (TypeError, ValueError):
+            processing_progress = None
 
     return KnowledgeItemResponse(
         id=str(item.knowledge_id),
@@ -344,6 +353,7 @@ def _build_item_response(item: KnowledgeItem, owner_username: str) -> KnowledgeI
         chunkCount=chunk_count,
         tokenCount=token_count,
         errorMessage=error_message,
+        processingProgress=processing_progress,
     )
 
 
@@ -516,6 +526,7 @@ def _handle_zip_upload(
             )
 
         for extracted in result.extracted_files:
+            processing_started_at = datetime.now(timezone.utc).isoformat()
             file_ext = os.path.splitext(extracted.filename)[1].lower()
             doc_type = EXT_TO_DOC_TYPE.get(file_ext, "txt")
             bucket_type = _get_bucket_type(extracted.filename, None)
@@ -558,6 +569,11 @@ def _handle_zip_upload(
                     "tags": parsed_tags,
                     "description": None,
                     "processing_status": "processing",
+                    "processing_progress": 5,
+                    "job_id": str(uuid4()),
+                    "created_at": processing_started_at,
+                    "started_at": processing_started_at,
+                    "completed_at": None,
                 },
             )
             session.add(knowledge_item)
@@ -568,20 +584,23 @@ def _handle_zip_upload(
             # Enqueue processing
             _enqueue_processing(item_id, bucket_name, object_key, mime_type, current_user.user_id)
 
-            items_response.append(KnowledgeItemResponse(
-                id=item_id,
-                name=extracted.filename,
-                type=doc_type,
-                size=extracted.size,
-                status="processing",
-                uploadedAt=knowledge_item.created_at.isoformat()
-                if knowledge_item.created_at
-                else "",
-                owner=current_user.username,
-                accessLevel=_map_access_level(backend_access_level),
-                tags=parsed_tags if parsed_tags else None,
-                collectionId=str(collection.collection_id),
-            ))
+            items_response.append(
+                KnowledgeItemResponse(
+                    id=item_id,
+                    name=extracted.filename,
+                    type=doc_type,
+                    size=extracted.size,
+                    status="processing",
+                    processingProgress=5,
+                    uploadedAt=(
+                        knowledge_item.created_at.isoformat() if knowledge_item.created_at else ""
+                    ),
+                    owner=current_user.username,
+                    accessLevel=_map_access_level(backend_access_level),
+                    tags=parsed_tags if parsed_tags else None,
+                    collectionId=str(collection.collection_id),
+                )
+            )
 
         # Update item count
         collection.item_count = (collection.item_count or 0) + len(items_response)
@@ -607,6 +626,8 @@ def _process_document_background(
     object_key: str,
     mime_type: str,
     user_id: str,
+    job_id: Optional[str] = None,
+    job_created_at: Optional[str] = None,
 ) -> None:
     """Process document in background thread when Redis queue is unavailable."""
     try:
@@ -616,11 +637,11 @@ def _process_document_background(
         worker = get_processor_worker()
 
         # Create a minimal job-like object for the worker pipeline
-        import uuid
-        from datetime import datetime
+        local_job_id = job_id or str(uuid4())
+        local_created_at = job_created_at or datetime.now(timezone.utc).isoformat()
 
         job = ProcessingJob(
-            job_id=str(uuid.uuid4()),
+            job_id=local_job_id,
             document_id=document_id,
             file_key=object_key,
             bucket=bucket_name,
@@ -628,8 +649,10 @@ def _process_document_background(
             user_id=user_id,
             task_id=None,
             status=JobStatus.PROCESSING,
-            created_at=datetime.utcnow().isoformat(),
+            created_at=local_created_at,
         )
+        # Keep metadata timestamps coherent even without Redis queue worker.
+        worker._update_knowledge_status(document_id, "processing")
 
         result_meta = worker._process_document(job)
 
@@ -648,9 +671,7 @@ def _process_document_background(
             from knowledge_base.document_processor_worker import get_processor_worker
 
             worker = get_processor_worker()
-            worker._update_knowledge_status(
-                document_id, "failed", error_message=str(ex)
-            )
+            worker._update_knowledge_status(document_id, "failed", error_message=str(ex))
         except Exception:
             pass
 
@@ -765,6 +786,7 @@ async def upload_knowledge(
                     "tags": parsed_tags,
                     "description": description if description else None,
                     "processing_status": "uploading",
+                    "processing_progress": 0,
                 },
             )
             session.add(knowledge_item)
@@ -778,25 +800,36 @@ async def upload_knowledge(
                     from knowledge_base.processing_queue import get_processing_queue
 
                     queue = get_processing_queue()
-                    queue.enqueue(
+                    queue_job = queue.enqueue(
                         document_id=item_id,
                         file_key=object_key,
                         bucket=bucket_name,
                         mime_type=file.content_type or "application/octet-stream",
                         user_id=current_user.user_id,
                     )
+                    now_iso = datetime.now(timezone.utc).isoformat()
                     # Update status to processing
                     knowledge_item.item_metadata = {
                         **knowledge_item.item_metadata,
                         "processing_status": "processing",
+                        "processing_progress": 5,
+                        "job_id": queue_job.job_id,
+                        "created_at": queue_job.created_at,
+                        "started_at": queue_job.started_at or now_iso,
+                        "completed_at": None,
                     }
                 except Exception as e:
-                    logger.warning(
-                        f"Redis queue unavailable, falling back to sync processing: {e}"
-                    )
+                    logger.warning(f"Redis queue unavailable, falling back to sync processing: {e}")
+                    fallback_started_at = datetime.now(timezone.utc).isoformat()
+                    fallback_job_id = str(uuid4())
                     knowledge_item.item_metadata = {
                         **knowledge_item.item_metadata,
                         "processing_status": "processing",
+                        "processing_progress": 5,
+                        "job_id": fallback_job_id,
+                        "created_at": fallback_started_at,
+                        "started_at": fallback_started_at,
+                        "completed_at": None,
                     }
                     # Flush to save the "processing" status before starting background work
                     session.flush()
@@ -812,6 +845,8 @@ async def upload_knowledge(
                             object_key,
                             file.content_type or "application/octet-stream",
                             current_user.user_id,
+                            fallback_job_id,
+                            fallback_started_at,
                         ),
                         daemon=True,
                     )
@@ -829,9 +864,10 @@ async def upload_knowledge(
                 type=doc_type,
                 size=file_size,
                 status=knowledge_item.item_metadata.get("processing_status", "completed"),
-                uploadedAt=knowledge_item.created_at.isoformat()
-                if knowledge_item.created_at
-                else "",
+                processingProgress=knowledge_item.item_metadata.get("processing_progress"),
+                uploadedAt=(
+                    knowledge_item.created_at.isoformat() if knowledge_item.created_at else ""
+                ),
                 owner=current_user.username,
                 accessLevel=_map_access_level(backend_access_level),
                 tags=parsed_tags if parsed_tags else None,
@@ -960,6 +996,7 @@ async def list_knowledge(
 class KBConfigResponse(BaseModel):
     """Knowledge base pipeline configuration."""
 
+    processing: dict
     chunking: dict
     parsing: dict
     enrichment: dict
@@ -971,6 +1008,7 @@ class KBConfigResponse(BaseModel):
 class KBConfigUpdateRequest(BaseModel):
     """Request to update KB pipeline configuration."""
 
+    processing: Optional[dict] = None
     chunking: Optional[dict] = None
     parsing: Optional[dict] = None
     enrichment: Optional[dict] = None
@@ -979,6 +1017,15 @@ class KBConfigUpdateRequest(BaseModel):
 
 
 _KB_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "processing": {
+        "transcription": {
+            "enabled": True,
+            "engine": "whisper",
+            "model": "base",
+            "provider": "",
+            "language": "auto",
+        },
+    },
     "chunking": {
         "strategy": "semantic",
         "chunk_token_num": 512,
@@ -1031,8 +1078,17 @@ def _merge_kb_section_with_recommended(
     """Merge current config with recommended defaults for stable first-run experience."""
     defaults = dict(_KB_RECOMMENDED_DEFAULTS.get(section_name, {}))
     current = dict(current_section or {})
-    defaults.update(current)
-    return defaults
+
+    def _deep_merge(base: dict, override: dict) -> dict:
+        merged = dict(base)
+        for key, value in override.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = _deep_merge(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
+
+    return _deep_merge(defaults, current)
 
 
 @router.get("/config", response_model=KBConfigResponse)
@@ -1047,12 +1103,17 @@ async def get_kb_config(
         kb_section = config.get_section("knowledge_base")
 
         return KBConfigResponse(
+            processing=_merge_kb_section_with_recommended(
+                "processing", kb_section.get("processing", {})
+            ),
             chunking=_merge_kb_section_with_recommended("chunking", kb_section.get("chunking", {})),
             parsing=_merge_kb_section_with_recommended("parsing", kb_section.get("parsing", {})),
             enrichment=_merge_kb_section_with_recommended(
                 "enrichment", kb_section.get("enrichment", {})
             ),
-            embedding=_merge_kb_section_with_recommended("embedding", kb_section.get("embedding", {})),
+            embedding=_merge_kb_section_with_recommended(
+                "embedding", kb_section.get("embedding", {})
+            ),
             search=_merge_kb_section_with_recommended("search", kb_section.get("search", {})),
             recommended=_KB_RECOMMENDED_DEFAULTS,
         )
@@ -1093,6 +1154,14 @@ async def update_kb_config(
         kb = raw_config.setdefault("knowledge_base", {})
 
         # Merge updates into existing config
+        if update_data.processing is not None:
+            current_processing = dict(kb.get("processing", {}))
+            for key, value in update_data.processing.items():
+                if isinstance(value, dict) and isinstance(current_processing.get(key), dict):
+                    current_processing[key] = {**current_processing.get(key, {}), **value}
+                else:
+                    current_processing[key] = value
+            kb["processing"] = current_processing
         if update_data.chunking is not None:
             kb["chunking"] = {**kb.get("chunking", {}), **update_data.chunking}
         if update_data.parsing is not None:
@@ -1113,6 +1182,9 @@ async def update_kb_config(
         updated = config.get_section("knowledge_base")
 
         return KBConfigResponse(
+            processing=_merge_kb_section_with_recommended(
+                "processing", updated.get("processing", {})
+            ),
             chunking=_merge_kb_section_with_recommended("chunking", updated.get("chunking", {})),
             parsing=_merge_kb_section_with_recommended("parsing", updated.get("parsing", {})),
             enrichment=_merge_kb_section_with_recommended(
@@ -1411,11 +1483,7 @@ async def delete_collection(
                 )
 
             # Get all items in collection for cleanup
-            items = (
-                session.query(KnowledgeItem)
-                .filter(KnowledgeItem.collection_id == cid)
-                .all()
-            )
+            items = session.query(KnowledgeItem).filter(KnowledgeItem.collection_id == cid).all()
 
             for item in items:
                 kid = str(item.knowledge_id)
@@ -1424,9 +1492,12 @@ async def delete_collection(
                 try:
                     from pymilvus import Collection, utility
 
+                    from memory_system.milvus_connection import get_milvus_connection
+
+                    get_milvus_connection()
                     if utility.has_collection("knowledge_embeddings"):
                         milvus_coll = Collection("knowledge_embeddings")
-                        milvus_coll.delete(f'document_id == "{kid}"')
+                        milvus_coll.delete(f'knowledge_id == "{kid}"')
                 except Exception as e:
                     logger.warning(f"Failed to delete Milvus embeddings for {kid}: {e}")
 
@@ -1552,6 +1623,9 @@ async def reprocess_knowledge(
     Resets processing status and re-triggers the pipeline.
     """
     try:
+        enqueue_payload = None
+        response_payload = None
+
         with get_db_session() as session:
             try:
                 kid = UUID(knowledge_id)
@@ -1592,8 +1666,10 @@ async def reprocess_knowledge(
                 )
 
             _, bucket_name, object_key = parts
-            metadata = item.item_metadata or {}
+            metadata = dict(item.item_metadata or {})
             mime_type = metadata.get("mime_type", "application/octet-stream")
+            reprocess_started_at = datetime.now(timezone.utc).isoformat()
+            reprocess_job_id = str(uuid4())
 
             # Delete old chunks
             try:
@@ -1608,14 +1684,22 @@ async def reprocess_knowledge(
             try:
                 from pymilvus import Collection, utility
 
+                from memory_system.milvus_connection import get_milvus_connection
+
+                get_milvus_connection()
                 if utility.has_collection("knowledge_embeddings"):
                     collection = Collection("knowledge_embeddings")
-                    collection.delete(f'document_id == "{knowledge_id}"')
+                    collection.delete(f'knowledge_id == "{knowledge_id}"')
             except Exception as e:
                 logger.warning(f"Failed to delete old Milvus embeddings: {e}")
 
             # Reset status to processing
             metadata["processing_status"] = "processing"
+            metadata["processing_progress"] = 5
+            metadata["job_id"] = reprocess_job_id
+            metadata["created_at"] = reprocess_started_at
+            metadata["started_at"] = reprocess_started_at
+            metadata["completed_at"] = None
             metadata.pop("error_message", None)
             metadata.pop("chunk_count", None)
             metadata.pop("token_count", None)
@@ -1624,34 +1708,70 @@ async def reprocess_knowledge(
 
             item_id = str(item.knowledge_id)
 
-            # Try Redis queue first, fallback to background thread
-            try:
-                from knowledge_base.processing_queue import get_processing_queue
-
-                queue = get_processing_queue()
-                queue.enqueue(
-                    document_id=item_id,
-                    file_key=object_key,
-                    bucket=bucket_name,
-                    mime_type=mime_type,
-                    user_id=current_user.user_id,
-                )
-            except Exception as e:
-                logger.warning(f"Redis queue unavailable, using background thread: {e}")
-                import threading
-
-                thread = threading.Thread(
-                    target=_process_document_background,
-                    args=(item_id, bucket_name, object_key, mime_type, current_user.user_id),
-                    daemon=True,
-                )
-                thread.start()
-
             # Get owner username
             owner = session.query(User).filter(User.user_id == item.owner_user_id).first()
             owner_name = owner.username if owner else "Unknown"
+            response_payload = _build_item_response(item, owner_name)
 
-            return _build_item_response(item, owner_name)
+            enqueue_payload = {
+                "document_id": item_id,
+                "bucket_name": bucket_name,
+                "object_key": object_key,
+                "mime_type": mime_type,
+                "job_id": reprocess_job_id,
+                "job_created_at": reprocess_started_at,
+            }
+
+        # Enqueue only after transaction commit, so status/chunk cleanup is visible immediately.
+        if enqueue_payload is None or response_payload is None:
+            raise RuntimeError("Reprocess payload preparation failed")
+        try:
+            from knowledge_base.processing_queue import get_processing_queue
+
+            queue = get_processing_queue()
+            queue_job = queue.enqueue(
+                document_id=enqueue_payload["document_id"],
+                file_key=enqueue_payload["object_key"],
+                bucket=enqueue_payload["bucket_name"],
+                mime_type=enqueue_payload["mime_type"],
+                user_id=current_user.user_id,
+            )
+            # Update to real queue job metadata (fallback values were written pre-commit).
+            with get_db_session() as session:
+                item = (
+                    session.query(KnowledgeItem)
+                    .filter(KnowledgeItem.knowledge_id == UUID(enqueue_payload["document_id"]))
+                    .first()
+                )
+                if item:
+                    meta = dict(item.item_metadata or {})
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    meta["job_id"] = queue_job.job_id
+                    meta["created_at"] = queue_job.created_at
+                    meta["started_at"] = queue_job.started_at or meta.get("started_at") or now_iso
+                    meta["completed_at"] = queue_job.completed_at
+                    item.item_metadata = meta
+                    session.commit()
+        except Exception as e:
+            logger.warning(f"Redis queue unavailable, using background thread: {e}")
+            import threading
+
+            thread = threading.Thread(
+                target=_process_document_background,
+                args=(
+                    enqueue_payload["document_id"],
+                    enqueue_payload["bucket_name"],
+                    enqueue_payload["object_key"],
+                    enqueue_payload["mime_type"],
+                    current_user.user_id,
+                    enqueue_payload["job_id"],
+                    enqueue_payload["job_created_at"],
+                ),
+                daemon=True,
+            )
+            thread.start()
+
+        return response_payload
 
     except HTTPException:
         raise
@@ -1715,15 +1835,17 @@ async def get_knowledge_chunks(
 
                 chunk_list = []
                 for c in chunks:
-                    chunk_list.append({
-                        "chunk_id": str(c.chunk_id),
-                        "chunk_index": c.chunk_index,
-                        "content": c.content,
-                        "keywords": c.keywords,
-                        "questions": c.questions,
-                        "summary": c.summary,
-                        "token_count": c.token_count,
-                    })
+                    chunk_list.append(
+                        {
+                            "chunk_id": str(c.chunk_id),
+                            "chunk_index": c.chunk_index,
+                            "content": c.content,
+                            "keywords": c.keywords,
+                            "questions": c.questions,
+                            "summary": c.summary,
+                            "token_count": c.token_count,
+                        }
+                    )
 
                 return {"chunks": chunk_list, "total": total}
 
@@ -1742,9 +1864,7 @@ async def get_knowledge_chunks(
 
 
 @router.get("/{knowledge_id}", response_model=KnowledgeItemResponse)
-async def get_knowledge(
-    knowledge_id: str, current_user: CurrentUser = Depends(get_current_user)
-):
+async def get_knowledge(knowledge_id: str, current_user: CurrentUser = Depends(get_current_user)):
     """Get knowledge item details."""
     try:
         with get_db_session() as session:
@@ -1832,18 +1952,22 @@ async def update_knowledge(
 
             if update_data.department_id is not None:
                 try:
-                    item.department_id = UUID(update_data.department_id) if update_data.department_id else None
+                    item.department_id = (
+                        UUID(update_data.department_id) if update_data.department_id else None
+                    )
                 except ValueError:
                     pass
 
             if update_data.collection_id is not None:
                 try:
-                    item.collection_id = UUID(update_data.collection_id) if update_data.collection_id else None
+                    item.collection_id = (
+                        UUID(update_data.collection_id) if update_data.collection_id else None
+                    )
                 except ValueError:
                     pass
 
             # Update metadata fields
-            metadata = item.item_metadata or {}
+            metadata = dict(item.item_metadata or {})
             if update_data.tags is not None:
                 metadata["tags"] = update_data.tags
             if update_data.description is not None:
@@ -1902,9 +2026,12 @@ async def delete_knowledge(
             try:
                 from pymilvus import Collection, utility
 
+                from memory_system.milvus_connection import get_milvus_connection
+
+                get_milvus_connection()
                 if utility.has_collection("knowledge_embeddings"):
                     collection = Collection("knowledge_embeddings")
-                    collection.delete(f'document_id == "{knowledge_id}"')
+                    collection.delete(f'knowledge_id == "{knowledge_id}"')
                     logger.info(f"Deleted Milvus embeddings for {knowledge_id}")
             except Exception as e:
                 logger.warning(f"Failed to delete from Milvus: {e}")
@@ -2034,9 +2161,7 @@ def _search_knowledge_sync(
         try:
             with get_db_session() as session:
                 items = (
-                    session.query(
-                        KnowledgeItem.knowledge_id, KnowledgeItem.title
-                    )
+                    session.query(KnowledgeItem.knowledge_id, KnowledgeItem.title)
                     .filter(KnowledgeItem.knowledge_id.in_(doc_ids))
                     .all()
                 )
@@ -2142,33 +2267,116 @@ async def get_processing_status(
 
             metadata = item.item_metadata or {}
             stored_status = metadata.get("processing_status", "completed")
+            if stored_status == "queued":
+                stored_status = "processing"
+            job_id = metadata.get("job_id")
+            if not job_id:
+                # Keep response fields stable even for legacy rows created before job_id existed.
+                job_id = f"local-{knowledge_id}"
+            created_at = metadata.get("created_at")
+            started_at = metadata.get("started_at")
+            completed_at = metadata.get("completed_at")
             chunk_count = metadata.get("chunk_count")
             token_count = metadata.get("token_count")
             error_message = metadata.get("error_message")
-            processed_at = item.updated_at.isoformat() if item.updated_at else None
+            processed_at = metadata.get("processed_at")
+            progress_percent = metadata.get("processing_progress")
+            if progress_percent is not None:
+                try:
+                    progress_percent = int(progress_percent)
+                except (TypeError, ValueError):
+                    progress_percent = None
+            if processed_at is None and item.updated_at:
+                processed_at = item.updated_at.isoformat()
+            if created_at is None and item.created_at:
+                created_at = item.created_at.isoformat()
 
-        # Try to get job status from processing queue
+            # Metadata and chunk rows can briefly diverge during reprocess retries.
+            # Reconcile here so clients don't stop polling on stale "completed" states.
+            if stored_status == "completed":
+                from database.models import KnowledgeChunk
+
+                actual_chunk_count = (
+                    session.query(KnowledgeChunk).filter(KnowledgeChunk.knowledge_id == kid).count()
+                )
+                metadata_chunk_count = None
+                if chunk_count is not None:
+                    try:
+                        metadata_chunk_count = int(chunk_count)
+                    except (TypeError, ValueError):
+                        metadata_chunk_count = None
+
+                if metadata_chunk_count is None:
+                    chunk_count = actual_chunk_count
+                elif metadata_chunk_count != actual_chunk_count:
+                    if metadata_chunk_count > 0 and actual_chunk_count == 0:
+                        logger.warning(
+                            "Completed status had stale chunk_count; returning processing status",
+                            extra={
+                                "knowledge_id": knowledge_id,
+                                "metadata_chunk_count": metadata_chunk_count,
+                                "actual_chunk_count": actual_chunk_count,
+                            },
+                        )
+                        stored_status = "processing"
+                        chunk_count = None
+                        token_count = None
+                        error_message = None
+                    else:
+                        chunk_count = actual_chunk_count
+
+        # Provide best-effort progress timestamps even when queue metadata is unavailable.
+        if started_at is None and stored_status in {"processing", "completed", "failed"}:
+            started_at = processed_at or created_at
+        if completed_at is None and stored_status in {"completed", "failed"}:
+            completed_at = processed_at
+
+        # Try to get richer job status from processing queue (when available).
         try:
-            from knowledge_base.processing_queue import get_processing_queue
+            if job_id and not str(job_id).startswith("local-"):
+                from knowledge_base.processing_queue import get_processing_queue
 
-            queue = get_processing_queue()
-            # Search for job by document_id (iterate recent jobs)
-            # The queue doesn't have a lookup by document_id, so use stored status
-            return ProcessingStatusResponse(
-                status=stored_status,
-                chunk_count=chunk_count,
-                token_count=token_count,
-                error_message=error_message,
-                processed_at=processed_at,
-            )
+                queue = get_processing_queue()
+                queue_job = queue.get_job(job_id)
+                if queue_job:
+                    stored_status = queue_job.status.value
+                    if stored_status == "queued":
+                        # Frontend status model does not expose queued; treat as early processing.
+                        stored_status = "processing"
+                    created_at = queue_job.created_at or created_at
+                    started_at = queue_job.started_at or started_at
+                    completed_at = queue_job.completed_at or completed_at
+                    error_message = queue_job.error_message or error_message
         except Exception:
-            return ProcessingStatusResponse(
-                status=stored_status,
-                chunk_count=chunk_count,
-                token_count=token_count,
-                error_message=error_message,
-                processed_at=processed_at,
-            )
+            pass
+
+        # Backfill progress for legacy rows and keep stage status coherent.
+        if progress_percent is None:
+            if stored_status == "uploading":
+                progress_percent = 0
+            elif stored_status == "processing":
+                progress_percent = 50
+            elif stored_status in {"completed", "failed"}:
+                progress_percent = 100
+        else:
+            progress_percent = max(0, min(100, progress_percent))
+            if stored_status == "completed":
+                progress_percent = 100
+            elif stored_status == "processing" and progress_percent >= 100:
+                progress_percent = 99
+
+        return ProcessingStatusResponse(
+            job_id=job_id,
+            status=stored_status,
+            created_at=created_at,
+            started_at=started_at,
+            completed_at=completed_at,
+            chunk_count=chunk_count,
+            token_count=token_count,
+            error_message=error_message,
+            processed_at=processed_at,
+            progress_percent=progress_percent,
+        )
 
     except HTTPException:
         raise

@@ -16,6 +16,8 @@ interface DocumentCardProps {
 export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, onDownload, onDelete, onEdit, onReprocess }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = React.useState(false);
+  const processingProgress = Math.max(0, Math.min(100, document.processingProgress ?? 0));
+  const uploadProgress = Math.max(0, Math.min(100, document.uploadProgress ?? 0));
 
   const getFileIcon = (type: Document['type']) => {
     switch (type) {
@@ -103,14 +105,14 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
               {document.status === 'uploading' ? 'Uploading' : 'Processing...'}
             </span>
             <span className="text-gray-800 dark:text-white font-medium">
-              {document.status === 'uploading' ? document.uploadProgress : document.processingProgress}%
+              {document.status === 'uploading' ? uploadProgress : processingProgress}%
             </span>
           </div>
           <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
             <div
               className="h-full bg-blue-500 transition-all duration-300"
               style={{
-                width: `${document.status === 'uploading' ? document.uploadProgress : document.processingProgress}%`
+                width: `${document.status === 'uploading' ? uploadProgress : processingProgress}%`
               }}
             />
           </div>

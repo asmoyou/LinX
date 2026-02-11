@@ -80,9 +80,20 @@ export interface ProcessingStatusResponse {
   chunk_count?: number;
   token_count?: number;
   processed_at?: string;
+  progress_percent?: number;
 }
 
 export interface KBConfigResponse {
+  processing: {
+    transcription?: {
+      enabled?: boolean;
+      engine?: string;
+      provider?: string;
+      model?: string;
+      language?: string;
+      temperature?: number;
+    };
+  };
   chunking: {
     strategy?: string;
     chunk_token_num?: number;
@@ -93,6 +104,7 @@ export interface KBConfigResponse {
     method?: string;
     vision_model?: string;
     vision_provider?: string;
+    vision_timeout_seconds?: number;
   };
   enrichment: {
     enabled?: boolean;
@@ -135,6 +147,7 @@ export interface KBConfigResponse {
     rerank_top_k?: number;
   };
   recommended?: {
+    processing?: Partial<KBConfigResponse['processing']>;
     chunking?: Partial<KBConfigResponse['chunking']>;
     parsing?: Partial<KBConfigResponse['parsing']>;
     enrichment?: Partial<KBConfigResponse['enrichment']>;
@@ -144,6 +157,7 @@ export interface KBConfigResponse {
 }
 
 export interface KBConfigUpdateRequest {
+  processing?: Partial<KBConfigResponse['processing']>;
   chunking?: Partial<KBConfigResponse['chunking']>;
   parsing?: Partial<KBConfigResponse['parsing']>;
   enrichment?: Partial<KBConfigResponse['enrichment']>;
