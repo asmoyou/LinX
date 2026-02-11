@@ -118,6 +118,21 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
     currentRoundNumber: 1,
   });
 
+  const hasRoundActivity = (round: {
+    thinking: string;
+    content: string;
+    statusMessages: StatusMessage[];
+    retryAttempts: RetryAttempt[];
+    errorFeedback: ErrorFeedback[];
+  }): boolean =>
+    Boolean(
+      round.thinking ||
+        round.content ||
+        round.statusMessages.length > 0 ||
+        round.retryAttempts.length > 0 ||
+        round.errorFeedback.length > 0
+    );
+
   // Memoize markdown components to prevent re-creation on each render
   const markdownComponents = useMemo(() => createMarkdownComponents(), []);
 
@@ -308,9 +323,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
             if (roundMatch) {
               const newRoundNumber = parseInt(roundMatch[1], 10);
               
-              // Save previous round if it has content
-              if (streamingDataRef.current.currentRound.content || 
-                  streamingDataRef.current.currentRound.thinking) {
+              // Save previous round when it has any visible activity
+              if (hasRoundActivity(streamingDataRef.current.currentRound)) {
                 const completedRound: ConversationRound = {
                   roundNumber: streamingDataRef.current.currentRoundNumber,
                   thinking: streamingDataRef.current.currentRound.thinking,
@@ -486,8 +500,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
           // On complete - save final round and create message
           const { rounds, currentRound, currentRoundNumber } = streamingDataRef.current;
           
-          // Save current round if it has content
-          if (currentRound.content || currentRound.thinking) {
+          // Save current round when it has any visible activity
+          if (hasRoundActivity(currentRound)) {
             const completedRound: ConversationRound = {
               roundNumber: currentRoundNumber,
               thinking: currentRound.thinking,
@@ -711,7 +725,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
           ))}
 
           {/* Current streaming rounds */}
-          {isStreaming && (currentRounds.length > 0 || currentRoundData.thinking || currentRoundData.content) && (
+          {isStreaming && (currentRounds.length > 0 || hasRoundActivity(currentRoundData)) && (
             <div className="flex justify-start animate-in fade-in slide-in-from-bottom-2 duration-300">
               <div className="max-w-[85%] space-y-3">
                 {/* Completed rounds */}

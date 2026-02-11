@@ -1695,8 +1695,8 @@ async def test_agent(
                 # Stream tokens as they arrive
                 while True:
                     try:
-                        # Wait for token with timeout
-                        token_data = token_queue.get(timeout=0.1)
+                        # Wait for token with timeout without blocking the event loop
+                        token_data = await asyncio.to_thread(token_queue.get, True, 0.1)
 
                         if token_data is None:
                             # Execution complete
@@ -1738,7 +1738,7 @@ async def test_agent(
                         continue
 
                 # Wait for thread to complete (should already be done)
-                exec_thread.join(timeout=5)
+                await asyncio.to_thread(exec_thread.join, 5)
 
                 # Check if there was an error
                 if error_holder[0]:
