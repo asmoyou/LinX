@@ -1,25 +1,33 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Loader2, ChevronLeft, ChevronsRight } from 'lucide-react';
 import { knowledgeApi } from '@/api/knowledge';
 import type { KnowledgeChunk } from '@/api/knowledge';
 
 interface ChunksViewerProps {
   documentId: string;
+  documentStatus?: 'uploading' | 'processing' | 'completed' | 'failed';
+  expectedChunkCount?: number;
 }
 
-export const ChunksViewer: React.FC<ChunksViewerProps> = ({ documentId }) => {
+export const ChunksViewer: React.FC<ChunksViewerProps> = ({
+  documentId,
+  documentStatus,
+  expectedChunkCount,
+}) => {
   const [chunks, setChunks] = useState<KnowledgeChunk[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [isLoading, setIsLoading] = useState(true);
   const [expandedChunks, setExpandedChunks] = useState<Set<number>>(new Set());
+  const [retryCount, setRetryCount] = useState(0);
   const pageSize = 20;
+  const maxRetries = 20;
 
   useEffect(() => {
-    loadChunks();
+    setRetryCount(0);
   }, [documentId, page]);
 
-  const loadChunks = async () => {
+  const loadChunks = useCallback(async () => {
     setIsLoading(true);
     try {
       const data = await knowledgeApi.getChunks(documentId, page, pageSize);
@@ -31,7 +39,29 @@ export const ChunksViewer: React.FC<ChunksViewerProps> = ({ documentId }) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [documentId, page, pageSize]);
+
+  useEffect(() => {
+    loadChunks();
+  }, [loadChunks]);
+
+  const shouldRetryEmptyResult =
+    chunks.length === 0 &&
+    retryCount < maxRetries &&
+    (documentStatus === 'uploading' ||
+      documentStatus === 'processing' ||
+      (documentStatus === 'completed' && (expectedChunkCount || 0) > 0));
+
+  useEffect(() => {
+    if (isLoading || !shouldRetryEmptyResult) return;
+
+    const timer = window.setTimeout(() => {
+      setRetryCount((prev) => prev + 1);
+      loadChunks();
+    }, 1500);
+
+    return () => window.clearTimeout(timer);
+  }, [isLoading, shouldRetryEmptyResult, loadChunks]);
 
   const toggleChunk = (index: number) => {
     setExpandedChunks((prev) => {
@@ -59,7 +89,14 @@ export const ChunksViewer: React.FC<ChunksViewerProps> = ({ documentId }) => {
   if (chunks.length === 0) {
     return (
       <div className="text-center py-12">
-        <p className="text-gray-500 dark:text-gray-400">No chunks available for this document.</p>
+        {shouldRetryEmptyResult ? (
+          <div className="flex items-center justify-center gap-2 text-gray-500 dark:text-gray-400">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <p>Chunks are being prepared, retrying...</p>
+          </div>
+        ) : (
+          <p className="text-gray-500 dark:text-gray-400">No chunks available for this document.</p>
+        )}
       </div>
     );
   }

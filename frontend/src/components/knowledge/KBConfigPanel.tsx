@@ -16,6 +16,15 @@ const isLikelyRerankModel = (model: string) =>
   /rerank|reranker|bge-reranker|jina-reranker|gte-rerank|cohere-rerank/i.test(model);
 
 const QUALITY_FIRST_DEFAULTS = {
+  processing: {
+    transcription: {
+      enabled: true,
+      engine: 'whisper',
+      provider: '',
+      model: 'base',
+      language: 'auto',
+    },
+  },
   chunking: {
     strategy: 'semantic',
     chunk_token_num: 512,
@@ -23,6 +32,7 @@ const QUALITY_FIRST_DEFAULTS = {
   },
   parsing: {
     method: 'auto',
+    vision_timeout_seconds: 120,
   },
   enrichment: {
     enabled: true,
@@ -108,6 +118,7 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
     setIsSaving(true);
     try {
       const updated = await knowledgeApi.updateConfig({
+        processing: config.processing,
         chunking: config.chunking,
         parsing: config.parsing,
         enrichment: config.enrichment,
@@ -129,9 +140,23 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
     setConfig({ ...config, chunking: { ...config.chunking, [key]: value } });
   };
 
-  const updateParsing = (key: string, value: string) => {
+  const updateParsing = (key: string, value: string | number) => {
     if (!config) return;
     setConfig({ ...config, parsing: { ...config.parsing, [key]: value } });
+  };
+
+  const updateTranscription = (key: string, value: string | number | boolean) => {
+    if (!config) return;
+    setConfig({
+      ...config,
+      processing: {
+        ...config.processing,
+        transcription: {
+          ...(config.processing?.transcription || {}),
+          [key]: value,
+        },
+      },
+    });
   };
 
   const updateEnrichment = (key: string, value: boolean | number) => {
@@ -195,6 +220,22 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
     });
   };
 
+  const handleTranscriptionProviderChange = (provider: string) => {
+    const models = availableProviders[provider] || [];
+    if (!config) return;
+    setConfig({
+      ...config,
+      processing: {
+        ...config.processing,
+        transcription: {
+          ...(config.processing?.transcription || {}),
+          provider,
+          model: models[0] || '',
+        },
+      },
+    });
+  };
+
   const pickRerankTarget = () => {
     const providers = Object.keys(availableProviders);
     const preferredProviders = [
@@ -230,6 +271,14 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
     ...QUALITY_FIRST_DEFAULTS.chunking,
     ...(config?.recommended?.chunking || {}),
   };
+  const recommendedProcessing = {
+    ...QUALITY_FIRST_DEFAULTS.processing,
+    ...(config?.recommended?.processing || {}),
+    transcription: {
+      ...QUALITY_FIRST_DEFAULTS.processing.transcription,
+      ...(config?.recommended?.processing?.transcription || {}),
+    },
+  };
   const recommendedParsing = {
     ...QUALITY_FIRST_DEFAULTS.parsing,
     ...(config?.recommended?.parsing || {}),
@@ -253,6 +302,17 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
     const rerankTarget = pickRerankTarget();
     setConfig({
       ...config,
+      processing: {
+        ...config.processing,
+        transcription: {
+          ...(config.processing?.transcription || {}),
+          enabled: Boolean(recommendedProcessing.transcription.enabled ?? true),
+          engine: String(recommendedProcessing.transcription.engine || 'whisper'),
+          provider: String(recommendedProcessing.transcription.provider || ''),
+          model: String(recommendedProcessing.transcription.model || 'base'),
+          language: String(recommendedProcessing.transcription.language || 'auto'),
+        },
+      },
       chunking: {
         ...config.chunking,
         strategy: String(recommendedChunking.strategy || 'semantic'),
@@ -262,6 +322,7 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
       parsing: {
         ...config.parsing,
         method: String(recommendedParsing.method || 'auto'),
+        vision_timeout_seconds: Number(recommendedParsing.vision_timeout_seconds || 120),
       },
       enrichment: {
         ...config.enrichment,
@@ -312,6 +373,11 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
 
   const visionProvider = config?.parsing?.vision_provider || '';
   const visionModels = availableProviders[visionProvider] || [];
+  const transcription = config?.processing?.transcription || {};
+  const transcriptionEngine = transcription.engine || 'whisper';
+  const transcriptionProvider = transcription.provider || '';
+  const transcriptionModels = availableProviders[transcriptionProvider] || [];
+  const whisperModels = ['tiny', 'base', 'small', 'medium', 'large', 'large-v2', 'large-v3'];
   const embeddingProvider = config?.embedding?.provider || '';
   const embeddingModels = availableProviders[embeddingProvider] || [];
   const enrichmentProvider = config?.enrichment?.provider || '';
@@ -481,6 +547,106 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
                     )}
                   </div>
                 </div>
+                {showAdvanced && (
+                  <div>
+                    <label className={labelClass}>{t('kbConfig.visionTimeoutSeconds')}</label>
+                    <input
+                      type="number"
+                      min={5}
+                      max={300}
+                      value={config.parsing.vision_timeout_seconds || 120}
+                      onChange={(e) => updateParsing('vision_timeout_seconds', e.target.value)}
+                      className={inputClass}
+                    />
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Transcription */}
+            <section>
+              <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-4">
+                {t('kbConfig.transcription')}
+              </h3>
+              <div className="space-y-4">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={transcription.enabled ?? true}
+                    onChange={(e) => updateTranscription('enabled', e.target.checked)}
+                    className="w-4 h-4 accent-indigo-500"
+                  />
+                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {t('kbConfig.enableTranscription')}
+                  </span>
+                </label>
+
+                {(transcription.enabled ?? true) && (
+                  <>
+                    <div>
+                      <label className={labelClass}>{t('kbConfig.transcriptionEngine')}</label>
+                      <select
+                        value={transcriptionEngine}
+                        onChange={(e) => updateTranscription('engine', e.target.value)}
+                        className={selectClass}
+                      >
+                        <option value="whisper">{t('kbConfig.transcriptionEngineWhisper')}</option>
+                        <option value="openai_compatible">
+                          {t('kbConfig.transcriptionEngineOpenAI')}
+                        </option>
+                      </select>
+                    </div>
+
+                    {transcriptionEngine === 'whisper' ? (
+                      <div>
+                        <label className={labelClass}>{t('kbConfig.transcriptionModel')}</label>
+                        <select
+                          value={transcription.model || 'base'}
+                          onChange={(e) => updateTranscription('model', e.target.value)}
+                          className={selectClass}
+                        >
+                          {whisperModels.map((modelName) => (
+                            <option key={modelName} value={modelName}>
+                              {modelName}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className={labelClass}>
+                            {t('kbConfig.transcriptionProvider')}
+                          </label>
+                          {providerSelect(
+                            transcriptionProvider,
+                            handleTranscriptionProviderChange,
+                          )}
+                        </div>
+                        <div>
+                          <label className={labelClass}>{t('kbConfig.transcriptionModel')}</label>
+                          {modelSelect(
+                            transcription.model || '',
+                            (v) => updateTranscription('model', v),
+                            transcriptionModels,
+                            !!transcriptionProvider,
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    <div>
+                      <label className={labelClass}>{t('kbConfig.transcriptionLanguage')}</label>
+                      <input
+                        type="text"
+                        value={transcription.language || 'auto'}
+                        onChange={(e) => updateTranscription('language', e.target.value)}
+                        className={inputClass}
+                        placeholder="auto / en / zh"
+                      />
+                    </div>
+                  </>
+                )}
               </div>
             </section>
 

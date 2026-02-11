@@ -123,6 +123,20 @@ export const Knowledge: React.FC = () => {
     }
   }, [isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Keep modal document in sync with list updates (status/chunkCount may change while polling).
+  useEffect(() => {
+    if (!selectedDocument) return;
+    const latest = documents.find((doc) => doc.id === selectedDocument.id);
+    if (!latest) {
+      setIsViewerOpen(false);
+      setSelectedDocument(null);
+      return;
+    }
+    if (latest !== selectedDocument) {
+      setSelectedDocument(latest);
+    }
+  }, [documents, selectedDocument]);
+
   const handleUploadSubmit = useCallback(
     async (data: UploadDocumentFormData & { departmentId?: string }, file: File) => {
       const accessLevelMap: Record<string, string> = {

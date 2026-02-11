@@ -24,6 +24,124 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _build_memory_filter_expression(collection_name: str, query) -> Optional[str]:
+    """Build Milvus filter expression for direct query mode."""
+    from memory_system.collections import CollectionName
+
+    filters = []
+    if collection_name == CollectionName.AGENT_MEMORIES:
+        if query.agent_id:
+            filters.append(f'agent_id == "{query.agent_id}"')
+    else:
+        if query.user_id:
+            filters.append(f'user_id == "{query.user_id}"')
+        if query.memory_type:
+            filters.append(f'memory_type == "{query.memory_type.value}"')
+        if query.task_id:
+            filters.append(f'metadata["task_id"] == "{query.task_id}"')
+    return " && ".join(filters) if filters else None
+
+
+def _determine_memory_collections(query) -> List[str]:
+    """Determine target collections without invoking embedding pipeline."""
+    from memory_system.collections import CollectionName
+    from memory_system.memory_interface import MemoryType
+
+    collections = []
+    if query.memory_type == MemoryType.AGENT:
+        collections.append(CollectionName.AGENT_MEMORIES)
+    elif query.memory_type in [
+        MemoryType.COMPANY,
+        MemoryType.USER_CONTEXT,
+        MemoryType.TASK_CONTEXT,
+    ]:
+        collections.append(CollectionName.COMPANY_MEMORIES)
+    else:
+        if query.agent_id:
+            collections.append(CollectionName.AGENT_MEMORIES)
+        if query.user_id:
+            collections.append(CollectionName.COMPANY_MEMORIES)
+        if not query.agent_id and not query.user_id:
+            collections.extend([CollectionName.AGENT_MEMORIES, CollectionName.COMPANY_MEMORIES])
+
+    return collections
+
+
+def _list_memories_without_embedding_sync(query) -> List[dict]:
+    """Fast path for wildcard list queries without embedding generation/search."""
+    from memory_system.collections import CollectionName
+    from memory_system.memory_interface import MemoryItem, MemoryType
+    from memory_system.milvus_connection import get_milvus_connection
+
+    milvus = get_milvus_connection()
+    collections_to_search = _determine_memory_collections(query)
+
+    items = []
+    for collection_name in collections_to_search:
+        collection = milvus.get_collection(collection_name)
+        expr = _build_memory_filter_expression(collection_name, query)
+        query_expr = expr if expr else "id >= 0"
+
+        if collection_name == CollectionName.AGENT_MEMORIES:
+            rows = collection.query(
+                expr=query_expr,
+                output_fields=["id", "agent_id", "content", "timestamp", "metadata"],
+                limit=query.top_k or 100,
+            )
+            for row in rows:
+                timestamp_ms = row.get("timestamp")
+                timestamp = (
+                    datetime.fromtimestamp(timestamp_ms / 1000.0)
+                    if timestamp_ms
+                    else datetime.utcnow()
+                )
+                items.append(
+                    MemoryItem(
+                        id=row.get("id"),
+                        content=row.get("content", ""),
+                        memory_type=MemoryType.AGENT,
+                        agent_id=row.get("agent_id"),
+                        metadata=row.get("metadata") or {},
+                        timestamp=timestamp,
+                        similarity_score=None,
+                    )
+                )
+        else:
+            rows = collection.query(
+                expr=query_expr,
+                output_fields=["id", "user_id", "content", "memory_type", "timestamp", "metadata"],
+                limit=query.top_k or 100,
+            )
+            for row in rows:
+                timestamp_ms = row.get("timestamp")
+                timestamp = (
+                    datetime.fromtimestamp(timestamp_ms / 1000.0)
+                    if timestamp_ms
+                    else datetime.utcnow()
+                )
+                memory_type_str = row.get("memory_type", "company")
+                try:
+                    memory_type = MemoryType(memory_type_str)
+                except ValueError:
+                    memory_type = MemoryType.COMPANY
+                items.append(
+                    MemoryItem(
+                        id=row.get("id"),
+                        content=row.get("content", ""),
+                        memory_type=memory_type,
+                        user_id=row.get("user_id"),
+                        metadata=row.get("metadata") or {},
+                        timestamp=timestamp,
+                        similarity_score=None,
+                    )
+                )
+
+    # Match previous semantics: latest first, then apply top_k.
+    items.sort(key=lambda x: x.timestamp or datetime.utcnow(), reverse=True)
+    top_k = query.top_k or 100
+    return _items_to_responses(items[:top_k])
+
+
 # ─── Pydantic Schemas ───────────────────────────────────────────────────────
 
 
@@ -86,8 +204,9 @@ class MemoryResponse(BaseModel):
 # ─── Helpers (all synchronous, called via asyncio.to_thread) ───────────────
 
 
-def _memory_item_to_response(item, agent_name: Optional[str] = None,
-                             user_name: Optional[str] = None) -> dict:
+def _memory_item_to_response(
+    item, agent_name: Optional[str] = None, user_name: Optional[str] = None
+) -> dict:
     """Convert a MemoryItem to a response dict."""
     meta = item.metadata or {}
     tags = meta.pop("tags", []) if meta else []
@@ -101,14 +220,18 @@ def _memory_item_to_response(item, agent_name: Optional[str] = None,
 
     return {
         "id": str(item.id) if item.id is not None else "",
-        "type": item.memory_type.value if hasattr(item.memory_type, "value") else str(item.memory_type),
+        "type": (
+            item.memory_type.value if hasattr(item.memory_type, "value") else str(item.memory_type)
+        ),
         "content": item.content,
         "summary": summary,
         "agentId": item.agent_id,
         "agentName": agent_name,
         "userId": item.user_id,
         "userName": user_name,
-        "createdAt": item.timestamp.isoformat() if item.timestamp else datetime.utcnow().isoformat(),
+        "createdAt": (
+            item.timestamp.isoformat() if item.timestamp else datetime.utcnow().isoformat()
+        ),
         "tags": tags if isinstance(tags, list) else [],
         "relevanceScore": item.similarity_score,
         "metadata": meta if meta else None,
@@ -157,6 +280,12 @@ def _retrieve_memories_sync(query):
     """Retrieve memories synchronously (embedding + Milvus + DB lookups)."""
     from memory_system.memory_system import get_memory_system
 
+    if query.query_text == "*":
+        try:
+            return _list_memories_without_embedding_sync(query)
+        except Exception as e:
+            logger.warning(f"Fast list path failed, fallback to semantic retrieval: {e}")
+
     memory_system = get_memory_system()
     try:
         items = memory_system.retrieve_memories(query)
@@ -171,7 +300,6 @@ def _retrieve_shared_sync(user_id: str):
     from memory_system.memory_interface import MemoryType, SearchQuery
     from memory_system.memory_system import get_memory_system
 
-    memory_system = get_memory_system()
     query = SearchQuery(
         query_text="*",
         memory_type=MemoryType.COMPANY,
@@ -179,15 +307,16 @@ def _retrieve_shared_sync(user_id: str):
         top_k=100,
     )
     try:
-        items = memory_system.retrieve_memories(query)
+        responses = _list_memories_without_embedding_sync(query)
     except Exception:
-        items = []
+        memory_system = get_memory_system()
+        try:
+            items = memory_system.retrieve_memories(query)
+        except Exception:
+            items = []
+        responses = _items_to_responses(items)
 
-    shared_items = [
-        item for item in items
-        if item.metadata and item.metadata.get("shared_from")
-    ]
-    return _items_to_responses(shared_items)
+    return [r for r in responses if r.get("metadata") and r["metadata"].get("shared_from")]
 
 
 def _store_memory_sync(memory_item):
@@ -228,9 +357,7 @@ def _detect_memory_type(memory_id: int) -> Optional[str]:
         results = collection.query(expr=f"id == {memory_id}", output_fields=["id"])
         if results:
             # Determine actual type from memory_type field
-            full = collection.query(
-                expr=f"id == {memory_id}", output_fields=["memory_type"]
-            )
+            full = collection.query(expr=f"id == {memory_id}", output_fields=["memory_type"])
             if full and full[0].get("memory_type"):
                 return full[0]["memory_type"]
             return "company"
@@ -308,8 +435,9 @@ def _delete_memory_sync(memory_id: int, type_str: Optional[str] = None) -> bool:
     return memory_system.delete_memory(memory_id, mem_type)
 
 
-def _update_memory_sync(memory_id: int, type_str: Optional[str], request: MemoryUpdate,
-                        user_id: str):
+def _update_memory_sync(
+    memory_id: int, type_str: Optional[str], request: MemoryUpdate, user_id: str
+):
     """Update a memory synchronously (fetch, delete, re-insert)."""
     from memory_system.collections import CollectionName
     from memory_system.memory_interface import MemoryItem, MemoryType
@@ -589,9 +717,7 @@ async def get_memories_by_agent(
 @router.get("/{memory_id}", response_model=MemoryResponse)
 async def get_memory(
     memory_id: int,
-    type: Optional[str] = Query(
-        None, pattern=r"^(agent|company|user_context|task_context)$"
-    ),
+    type: Optional[str] = Query(None, pattern=r"^(agent|company|user_context|task_context)$"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get a single memory by Milvus ID. Type is auto-detected if not provided."""
@@ -681,9 +807,7 @@ async def search_memories(
 async def update_memory(
     memory_id: int,
     request: MemoryUpdate,
-    type: Optional[str] = Query(
-        None, pattern=r"^(agent|company|user_context|task_context)$"
-    ),
+    type: Optional[str] = Query(None, pattern=r"^(agent|company|user_context|task_context)$"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update a memory (delete + re-insert in Milvus). Type is auto-detected if not provided."""
@@ -714,9 +838,7 @@ async def update_memory(
 @router.delete("/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_memory(
     memory_id: int,
-    type: Optional[str] = Query(
-        None, pattern=r"^(agent|company|user_context|task_context)$"
-    ),
+    type: Optional[str] = Query(None, pattern=r"^(agent|company|user_context|task_context)$"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Delete a memory by Milvus ID. Type is auto-detected if not provided."""
@@ -737,15 +859,11 @@ async def delete_memory(
 async def share_memory(
     memory_id: int,
     request: MemoryShareRequest,
-    type: Optional[str] = Query(
-        None, pattern=r"^(agent|company|user_context|task_context)$"
-    ),
+    type: Optional[str] = Query(None, pattern=r"^(agent|company|user_context|task_context)$"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Share a memory with specific users."""
-    result = await asyncio.to_thread(
-        _share_memory_sync, memory_id, type, request.user_ids
-    )
+    result = await asyncio.to_thread(_share_memory_sync, memory_id, type, request.user_ids)
 
     if result is None:
         raise HTTPException(

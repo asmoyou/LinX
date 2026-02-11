@@ -65,6 +65,35 @@ class KnowledgeIndexer:
         start_time = time.time()
 
         try:
+            if not chunks:
+                logger.warning(
+                    "Skip indexing because no chunks were produced",
+                    extra={"document_id": document_id},
+                )
+                return IndexingResult(
+                    document_id=document_id,
+                    chunks_indexed=0,
+                    embeddings_generated=0,
+                    indexing_time=time.time() - start_time,
+                )
+
+            normalized_metadata = list(chunk_metadata or [])
+            if len(normalized_metadata) != len(chunks):
+                logger.warning(
+                    "Chunk metadata length mismatch; normalizing metadata list",
+                    extra={
+                        "document_id": document_id,
+                        "chunks": len(chunks),
+                        "metadata": len(normalized_metadata),
+                    },
+                )
+                if len(normalized_metadata) < len(chunks):
+                    normalized_metadata.extend(
+                        {"chunk_index": i} for i in range(len(normalized_metadata), len(chunks))
+                    )
+                else:
+                    normalized_metadata = normalized_metadata[: len(chunks)]
+
             # Generate embeddings for all chunks
             embeddings = self.embedding_service.generate_embeddings_batch(chunks)
 
@@ -81,12 +110,12 @@ class KnowledgeIndexer:
             # knowledge_id, chunk_index, embedding, content, owner_user_id, access_level, metadata
             entities = [
                 [document_id] * len(chunks),
-                [meta.get("chunk_index", i) for i, meta in enumerate(chunk_metadata)],
+                [meta.get("chunk_index", i) for i, meta in enumerate(normalized_metadata)],
                 embeddings,
                 chunks,
                 [user_id] * len(chunks),
                 [access_level] * len(chunks),
-                [meta for meta in chunk_metadata],
+                [meta for meta in normalized_metadata],
             ]
 
             collection.insert(entities)
@@ -97,7 +126,7 @@ class KnowledgeIndexer:
                 document_id=document_id,
                 chunk_ids=ids,
                 chunks=chunks,
-                chunk_metadata=chunk_metadata,
+                chunk_metadata=normalized_metadata,
             )
 
             indexing_time = time.time() - start_time
@@ -146,9 +175,7 @@ class KnowledgeIndexer:
             doc_uuid = PyUUID(document_id) if isinstance(document_id, str) else document_id
 
             with get_db_session() as session:
-                for i, (chunk_id, chunk, meta) in enumerate(
-                    zip(chunk_ids, chunks, chunk_metadata)
-                ):
+                for i, (chunk_id, chunk, meta) in enumerate(zip(chunk_ids, chunks, chunk_metadata)):
                     knowledge_chunk = KnowledgeChunk(
                         chunk_id=chunk_id,
                         knowledge_id=doc_uuid,
@@ -163,9 +190,7 @@ class KnowledgeIndexer:
                     session.add(knowledge_chunk)
                 session.commit()
 
-            logger.debug(
-                f"Stored {len(chunks)} chunks in PostgreSQL for document {document_id}"
-            )
+            logger.debug(f"Stored {len(chunks)} chunks in PostgreSQL for document {document_id}")
 
         except Exception as e:
             logger.error(f"Failed to store chunks in PostgreSQL: {e}", exc_info=True)

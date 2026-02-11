@@ -5,18 +5,36 @@ References:
 - Design Section 14.2: Supported File Types
 """
 
+from __future__ import annotations
+
 import logging
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from moviepy.editor import VideoFileClip
-
-from knowledge_base.audio_processor import AudioProcessor, TranscriptionResult
+if TYPE_CHECKING:
+    from knowledge_base.audio_processor import AudioProcessor, TranscriptionResult
 
 logger = logging.getLogger(__name__)
+
+
+def _load_video_file_clip():
+    """Load VideoFileClip with compatibility for moviepy v1 and v2."""
+    try:
+        from moviepy.editor import VideoFileClip
+
+        return VideoFileClip
+    except ModuleNotFoundError:
+        try:
+            from moviepy import VideoFileClip
+
+            return VideoFileClip
+        except ModuleNotFoundError as err:
+            raise RuntimeError(
+                "moviepy is required for video processing. Install with: pip install moviepy"
+            ) from err
 
 
 @dataclass
@@ -39,8 +57,16 @@ class VideoProcessor:
         Args:
             audio_processor: AudioProcessor instance for transcription
         """
-        self.audio_processor = audio_processor or AudioProcessor()
+        self.audio_processor = audio_processor
         logger.info("VideoProcessor initialized")
+
+    def _get_audio_processor(self) -> AudioProcessor:
+        """Lazily load AudioProcessor so missing whisper does not break module import."""
+        if self.audio_processor is None:
+            from knowledge_base.audio_processor import get_audio_processor
+
+            self.audio_processor = get_audio_processor()
+        return self.audio_processor
 
     def process(self, video_path: Path) -> VideoProcessingResult:
         """Process video file by extracting and transcribing audio.
@@ -55,24 +81,29 @@ class VideoProcessor:
 
         try:
             # Load video
+            VideoFileClip = _load_video_file_clip()
             video = VideoFileClip(str(video_path))
 
-            # Extract metadata
-            video_duration = video.duration
-            video_size = video.size
-            fps = video.fps
+            try:
+                # Extract metadata
+                video_duration = video.duration
+                video_size = video.size
+                fps = video.fps
 
-            # Extract audio to temporary file
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
-                temp_audio_path = Path(temp_audio.name)
-                video.audio.write_audiofile(str(temp_audio_path), logger=None)
+                if video.audio is None:
+                    raise ValueError("Video file has no audio track")
 
-            # Transcribe audio
-            transcription = self.audio_processor.transcribe(temp_audio_path)
-
-            # Clean up
-            temp_audio_path.unlink()
-            video.close()
+                # Extract audio to temporary file
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
+                    temp_audio_path = Path(temp_audio.name)
+                try:
+                    video.audio.write_audiofile(str(temp_audio_path), logger=None)
+                    # Transcribe audio
+                    transcription = self._get_audio_processor().transcribe(temp_audio_path)
+                finally:
+                    temp_audio_path.unlink(missing_ok=True)
+            finally:
+                video.close()
 
             processing_time = (datetime.now() - start_time).total_seconds()
 
@@ -94,6 +125,9 @@ class VideoProcessor:
                 processing_time=processing_time,
             )
 
+        except ModuleNotFoundError as e:
+            logger.warning(f"Video processing dependency missing: {e}")
+            raise
         except Exception as e:
             logger.error(f"Video processing failed: {e}", exc_info=True)
             raise

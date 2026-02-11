@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Download, Share2, Lock, Globe, Building, AlertTriangle, CheckCircle, XCircle, Loader2, Layers, Hash } from 'lucide-react';
 import { ModalPanel } from '@/components/ModalPanel';
 import { DocumentPreview } from '@/components/knowledge/DocumentPreview';
@@ -23,6 +23,10 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
   isDownloading,
 }) => {
   const [activeTab, setActiveTab] = useState<ViewerTab>('preview');
+
+  useEffect(() => {
+    setActiveTab('preview');
+  }, [document?.id]);
 
   if (!isOpen || !document) return null;
 
@@ -287,7 +291,11 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
           </>
         ) : (
           /* Chunks Tab */
-          <ChunksViewer documentId={document.id} />
+          <ChunksViewer
+            documentId={document.id}
+            documentStatus={document.status}
+            expectedChunkCount={document.chunkCount}
+          />
         )}
       </ModalPanel>
     </div>

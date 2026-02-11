@@ -478,9 +478,10 @@ knowledge_base:
       confidence_threshold: 0.7
     transcription:
       enabled: true
-      engine: whisper
-      model: base
+      engine: openai_compatible
+      model: FunAudioLLM/SenseVoiceSmall
       language: auto
+      provider: llm-pool
     video:
       extract_audio: true
       extract_frames: false
@@ -496,6 +497,7 @@ knowledge_base:
     method: auto
     vision_model: Qwen/Qwen3-VL-32B-Instruct
     vision_provider: llm-pool
+    vision_timeout_seconds: 120
   embedding:
     provider: llm-pool
     model: BAAI/bge-m3
