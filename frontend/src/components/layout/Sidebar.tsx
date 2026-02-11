@@ -11,7 +11,9 @@ import {
   Building2,
   Settings,
   Mail,
-  Shield
+  Shield,
+  UserCog,
+  ShieldCheck
 } from 'lucide-react';
 import { useAuthStore, useUserStore } from '@/stores';
 
@@ -43,8 +45,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
     { path: '/memory', icon: BrainCircuit, label: t('nav.memory') },
     { path: '/skills', icon: Code2, label: t('nav.skills') },
     { path: '/departments', icon: Building2, label: t('nav.departments') },
+    { path: '/user-management', icon: UserCog, label: t('nav.userManagement'), requiredRoles: ['admin', 'manager'] as string[] },
+    { path: '/role-management', icon: ShieldCheck, label: t('nav.roleManagement'), requiredRoles: ['admin', 'manager'] as string[] },
     { path: '/settings', icon: Settings, label: t('nav.settings') },
   ];
+
+  const filteredNavItems = navItems.filter((item) => {
+    if (!item.requiredRoles) return true;
+    return item.requiredRoles.includes(role);
+  });
 
   return (
     <aside
@@ -70,7 +79,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
 
       {/* Navigation */}
       <nav className="flex-1 px-4 space-y-1.5 mt-2" aria-label="Primary navigation">
-        {navItems.map((item) => (
+        {filteredNavItems.map((item) => (
           <NavLink
             key={item.path}
             to={item.path}

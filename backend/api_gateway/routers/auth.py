@@ -134,6 +134,23 @@ async def login(request: LoginRequest):
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
+            # Check if user is disabled
+            attrs = user.attributes or {}
+            if attrs.get("is_disabled", False):
+                log_authentication_event(
+                    session=session,
+                    event_type="login_failed",
+                    username=request.username,
+                    user_id=str(user.user_id),
+                    success=False,
+                    reason="account_disabled",
+                )
+                session.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Account is disabled. Contact administrator.",
+                )
+
             # Create token pair
             tokens = create_token_pair(
                 user_id=str(user.user_id), username=user.username, role=user.role

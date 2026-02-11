@@ -125,6 +125,16 @@ export const usersApi = {
   },
 
   /**
+   * Change current user password
+   */
+  changePassword: async (currentPassword: string, newPassword: string): Promise<void> => {
+    await apiClient.put('/users/me/change-password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+  },
+
+  /**
    * Upload user avatar
    * Converts image to WebP format for optimization
    */

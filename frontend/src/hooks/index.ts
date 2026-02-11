@@ -3,3 +3,4 @@
  */
 
 export { useUserInitialization } from './useUserInitialization';
+export { usePermissions } from './usePermissions';

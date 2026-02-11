@@ -6,7 +6,7 @@ References:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from access_control.permissions import CurrentUser, get_current_user, require_role
 from access_control.rbac import Role
@@ -58,6 +58,13 @@ class UserProfile(BaseModel):
     role: str
     attributes: dict = None
     display_name: str | None = None  # User's custom display name (optional)
+
+
+class ChangePasswordRequest(BaseModel):
+    """Change password request."""
+
+    current_password: str = Field(..., min_length=8)
+    new_password: str = Field(..., min_length=8)
 
 
 class UpdateProfileRequest(BaseModel):
@@ -184,6 +191,40 @@ async def update_current_user_profile(
             attributes=resolved_attributes,
             display_name=display_name,
         )
+
+
+@router.put("/me/change-password", status_code=status.HTTP_200_OK)
+async def change_password(
+    request: ChangePasswordRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Change current user's password. Requires current password verification."""
+    from access_control.models import hash_password, verify_password
+    from database.connection import get_db_session
+    from database.models import User
+
+    with get_db_session() as session:
+        user = session.query(User).filter(User.user_id == current_user.user_id).first()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        # Verify current password
+        if not verify_password(request.current_password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect",
+            )
+
+        # Set new password
+        user.password_hash = hash_password(request.new_password)
+        session.commit()
+
+        logger.info(
+            "User changed password",
+            extra={"user_id": str(current_user.user_id)},
+        )
+
+        return {"message": "Password changed successfully"}
 
 
 @router.get("/me/quotas", response_model=ResourceQuota)

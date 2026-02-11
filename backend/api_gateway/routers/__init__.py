@@ -7,6 +7,26 @@ References:
 - Design Section 12: API Gateway
 """
 
-from api_gateway.routers import agents, auth, departments, knowledge, memory, tasks, users
+from api_gateway.routers import (
+    admin_users,
+    agents,
+    auth,
+    departments,
+    knowledge,
+    memory,
+    roles,
+    tasks,
+    users,
+)
 
-__all__ = ["auth", "users", "departments", "agents", "tasks", "knowledge", "memory"]
+__all__ = [
+    "auth",
+    "users",
+    "admin_users",
+    "roles",
+    "departments",
+    "agents",
+    "tasks",
+    "knowledge",
+    "memory",
+]

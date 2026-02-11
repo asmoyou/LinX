@@ -23,6 +23,7 @@ from api_gateway.middleware.auth import JWTAuthMiddleware
 from api_gateway.middleware.logging import RequestLoggingMiddleware
 from api_gateway.middleware.rate_limit import RateLimitMiddleware
 from api_gateway.routers import (
+    admin_users,
     agents,
     auth,
     departments,
@@ -30,6 +31,7 @@ from api_gateway.routers import (
     llm,
     memory,
     monitoring,
+    roles,
     skills,
     tasks,
     users,
@@ -284,6 +286,8 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
     app.include_router(users.router, prefix="/api/v1/users", tags=["Users"])
+    app.include_router(admin_users.router, prefix="/api/v1/admin/users", tags=["Admin Users"])
+    app.include_router(roles.router, prefix="/api/v1/roles", tags=["Roles"])
     app.include_router(departments.router, prefix="/api/v1/departments", tags=["Departments"])
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
     app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["Tasks"])
