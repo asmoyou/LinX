@@ -304,6 +304,7 @@
     "downloadFailed": "下载失败",
     "reprocessing": "正在重新处理 {{name}}...",
     "reprocessFailed": "重新处理失败",
+    "lastUpdated": "最后更新",
     "view": "查看",
     "viewDetails": "查看详情",
     "download": "下载",
@@ -344,7 +345,8 @@
     "files": "个文件",
     "file": "个文件",
     "zipExtracted": "已解压 {{count}} 个文件",
-    "zipSkipped": "，跳过 {{skipped}} 个"
+    "zipSkipped": "，跳过 {{skipped}} 个",
+    "lastUpdated": "最后更新"
   },
   "kbConfig": {
     "title": "流水线设置",

@@ -313,6 +313,7 @@ export const Knowledge: React.FC = () => {
         tags: updated.tags,
         accessLevel: updated.accessLevel,
         departmentId: updated.departmentId,
+        processedAt: updated.processedAt,
       });
       toast.success(t('document.updateSuccess'));
       setEditingDocument(null);

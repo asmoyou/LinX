@@ -304,6 +304,7 @@
     "downloadFailed": "Download failed",
     "reprocessing": "Reprocessing {{name}}...",
     "reprocessFailed": "Failed to reprocess",
+    "lastUpdated": "Last updated",
     "view": "View",
     "viewDetails": "View Details",
     "download": "Download",
@@ -344,7 +345,8 @@
     "files": "files",
     "file": "file",
     "zipExtracted": "Extracted {{count}} files",
-    "zipSkipped": ", skipped {{skipped}}"
+    "zipSkipped": ", skipped {{skipped}}",
+    "lastUpdated": "Last updated"
   },
   "kbConfig": {
     "title": "Pipeline Settings",

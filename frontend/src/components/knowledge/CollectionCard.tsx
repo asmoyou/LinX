@@ -1,6 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Folder, MoreVertical, Pencil, Trash2 } from 'lucide-react';
+import { Clock, Folder, MoreVertical, Pencil, Trash2 } from 'lucide-react';
 import { GlassPanel } from '@/components/GlassPanel';
 import type { Collection } from '@/types/document';
 
@@ -19,6 +19,7 @@ export const CollectionCard: React.FC<CollectionCardProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = React.useState(false);
+  const lastUpdatedAt = collection.updatedAt || collection.createdAt;
 
   const getAccessLevelColor = (level: Collection['accessLevel']) => {
     switch (level) {
@@ -31,6 +32,20 @@ export const CollectionCard: React.FC<CollectionCardProps> = ({
       case 'restricted':
         return 'bg-red-500/20 text-red-700 dark:text-red-400';
     }
+  };
+
+  const formatDateTime = (value: string) => {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString(undefined, {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
   };
 
   return (
@@ -125,7 +140,10 @@ export const CollectionCard: React.FC<CollectionCardProps> = ({
 
       {/* Metadata */}
       <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
-        {new Date(collection.createdAt).toLocaleDateString()}
+        <div className="flex items-center gap-1">
+          <Clock className="w-3 h-3" />
+          {t('collection.lastUpdated')}: {formatDateTime(lastUpdatedAt)}
+        </div>
       </div>
     </GlassPanel>
   );

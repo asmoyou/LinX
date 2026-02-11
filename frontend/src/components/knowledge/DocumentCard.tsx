@@ -18,6 +18,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
   const [showMenu, setShowMenu] = React.useState(false);
   const processingProgress = Math.max(0, Math.min(100, document.processingProgress ?? 0));
   const uploadProgress = Math.max(0, Math.min(100, document.uploadProgress ?? 0));
+  const lastUpdatedAt = document.processedAt || document.uploadedAt;
 
   const getFileIcon = (type: Document['type']) => {
     switch (type) {
@@ -66,6 +67,20 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const formatDateTime = (value: string) => {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString(undefined, {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
   };
 
   return (
@@ -249,7 +264,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
       <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
         <div className="flex items-center gap-1">
           <Clock className="w-3 h-3" />
-          {new Date(document.uploadedAt).toLocaleDateString()}
+          {t('document.lastUpdated')}: {formatDateTime(lastUpdatedAt)}
         </div>
       </div>
     </GlassPanel>
