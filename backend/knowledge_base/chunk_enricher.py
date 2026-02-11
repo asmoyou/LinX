@@ -79,6 +79,7 @@ class ChunkEnricher:
 
         provider_cfg = resolve_provider(self.provider_name)
         self.base_url = provider_cfg.get("base_url", "http://localhost:11434")
+        self.api_key = provider_cfg.get("api_key")
 
         # Determine API format from protocol
         protocol = provider_cfg.get("protocol", "ollama" if self.provider_name == "ollama" else "openai_compatible")
@@ -273,9 +274,13 @@ class ChunkEnricher:
                         "temperature": self.temperature,
                         "max_tokens": 512,
                     }
+                    headers = {"Content-Type": "application/json"}
+                    if self.api_key:
+                        headers["Authorization"] = f"Bearer {self.api_key}"
                     async with session.post(
                         f"{self.base_url}/v1/chat/completions",
                         json=payload,
+                        headers=headers,
                     ) as response:
                         response.raise_for_status()
                         data = await response.json()
@@ -294,9 +299,13 @@ class ChunkEnricher:
                             "num_predict": 512,
                         },
                     }
+                    headers = {"Content-Type": "application/json"}
+                    if self.api_key:
+                        headers["Authorization"] = f"Bearer {self.api_key}"
                     async with session.post(
                         f"{self.base_url}/api/generate",
                         json=payload,
+                        headers=headers,
                     ) as response:
                         response.raise_for_status()
                         data = await response.json()

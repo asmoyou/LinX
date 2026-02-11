@@ -60,12 +60,19 @@ class VisionDocumentParser:
 
         provider_cfg = resolve_provider(self.vision_provider)
         self.base_url = provider_cfg.get("base_url", "http://localhost:11434")
+        self.api_key = provider_cfg.get("api_key")
+        protocol = provider_cfg.get(
+            "protocol",
+            "ollama" if self.vision_provider == "ollama" else "openai_compatible",
+        )
+        self.api_format = "ollama" if protocol == "ollama" else "openai"
 
         logger.info(
             "VisionDocumentParser initialized",
             extra={
                 "model": self.vision_model,
                 "provider": self.vision_provider,
+                "api_format": self.api_format,
             },
         )
 
@@ -173,23 +180,57 @@ class VisionDocumentParser:
         """
         import aiohttp
 
-        payload = {
-            "model": self.vision_model,
-            "prompt": prompt,
-            "images": [image_b64],
-            "stream": False,
-            "options": {
-                "temperature": 0.1,
-                "num_predict": 4096,
-            },
-        }
-
         try:
             timeout = aiohttp.ClientTimeout(total=120)
             async with aiohttp.ClientSession(timeout=timeout) as session:
+                headers = {"Content-Type": "application/json"}
+                if self.api_key:
+                    headers["Authorization"] = f"Bearer {self.api_key}"
+
+                if self.api_format == "openai":
+                    payload = {
+                        "model": self.vision_model,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                                    },
+                                ],
+                            }
+                        ],
+                        "temperature": 0.1,
+                        "max_tokens": 4096,
+                    }
+                    async with session.post(
+                        f"{self.base_url}/v1/chat/completions",
+                        json=payload,
+                        headers=headers,
+                    ) as response:
+                        response.raise_for_status()
+                        data = await response.json()
+                        choices = data.get("choices", [])
+                        if not choices:
+                            return ""
+                        return choices[0].get("message", {}).get("content", "") or ""
+
+                payload = {
+                    "model": self.vision_model,
+                    "prompt": prompt,
+                    "images": [image_b64],
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,
+                        "num_predict": 4096,
+                    },
+                }
                 async with session.post(
                     f"{self.base_url}/api/generate",
                     json=payload,
+                    headers=headers,
                 ) as response:
                     response.raise_for_status()
                     data = await response.json()

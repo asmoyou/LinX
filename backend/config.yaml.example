@@ -758,11 +758,29 @@ knowledge_base:
   
   # Search Configuration
   search:
+    max_concurrent_requests: 4
+    request_timeout_seconds: 30
     enable_semantic: true
     enable_fulltext: true
     combine_results: true
     semantic_weight: 0.7
     fulltext_weight: 0.3
+    fusion_method: "rrf"
+    rrf_k: 60
+    min_relevance_score: 0.3
+    hybrid_score_scale: 0.02
+    keyword_min_rank: 4.0
+    keyword_max_terms: 16
+    semantic_timeout_seconds: 8
+    embedding_failure_backoff_seconds: 30
+    rerank_enabled: true
+    rerank_weight: 0.85
+    rerank_provider: "llm-pool"
+    rerank_model: "BAAI/bge-reranker-v2-m3"
+    rerank_top_k: 30
+    rerank_timeout_seconds: 10
+    rerank_failure_backoff_seconds: 60
+    rerank_doc_max_chars: 1600
 
 # ============================================================================
 # Message Bus Configuration

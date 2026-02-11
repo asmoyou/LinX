@@ -26,7 +26,7 @@ def resolve_provider(provider_name: str) -> dict:
         provider_name: Provider name (e.g. "ollama", "vllm", "llm-pool")
 
     Returns:
-        dict with keys: base_url, protocol, models.
+        dict with keys such as: base_url, protocol, models, api_key, timeout.
         Empty dict if provider not found anywhere.
     """
     # 1. Try database first
@@ -56,11 +56,27 @@ def _resolve_from_db(provider_name: str) -> Optional[dict]:
                 .first()
             )
             if provider and provider.enabled:
+                api_key = None
+                if provider.api_key_encrypted:
+                    try:
+                        from llm_providers.db_manager import ProviderDBManager
+
+                        db_manager = ProviderDBManager(session)
+                        api_key = db_manager._decrypt_api_key(provider.api_key_encrypted)
+                    except Exception as decrypt_err:
+                        logger.debug(
+                            f"Failed to decrypt API key for provider '{provider_name}': {decrypt_err}"
+                        )
+
                 protocol = provider.protocol or "openai_compatible"
                 return {
                     "base_url": provider.base_url,
                     "protocol": protocol,
+                    "api_key": api_key,
+                    "timeout": provider.timeout,
+                    "max_retries": provider.max_retries,
                     "models": provider.models or [],
+                    "model_metadata": provider.model_metadata or {},
                 }
     except Exception as e:
         logger.debug(f"DB provider lookup failed for '{provider_name}': {e}")
@@ -89,6 +105,8 @@ def _resolve_from_config(provider_name: str) -> Optional[dict]:
             return {
                 "base_url": provider_cfg["base_url"],
                 "protocol": protocol,
+                "api_key": provider_cfg.get("api_key"),
+                "timeout": provider_cfg.get("timeout"),
                 "models": models,
             }
     except Exception as e:

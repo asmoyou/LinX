@@ -8,6 +8,7 @@ References:
 - Design Section 9: LLM Provider Integration
 """
 
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -462,6 +463,91 @@ def _detect_model_type(model_id: str) -> str:
     return "chat"
 
 
+def _extract_embedding_vectors_from_payload(payload: Any) -> List[List[float]]:
+    """Extract embedding vectors from normal or gateway-wrapped responses."""
+    vectors: List[List[float]] = []
+
+    def _append_vector(candidate: Any) -> None:
+        if not isinstance(candidate, list) or not candidate:
+            return
+        try:
+            vectors.append([float(v) for v in candidate])
+        except (TypeError, ValueError):
+            return
+
+    def _walk(node: Any) -> None:
+        if node is None:
+            return
+
+        if isinstance(node, str):
+            # llm-pool style: output is a JSON string
+            try:
+                parsed = json.loads(node)
+            except Exception:
+                return
+            _walk(parsed)
+            return
+
+        if isinstance(node, list):
+            _append_vector(node)
+            for item in node:
+                if isinstance(item, (dict, list, str)):
+                    _walk(item)
+            return
+
+        if not isinstance(node, dict):
+            return
+
+        data = node.get("data")
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    _append_vector(item.get("embedding"))
+                else:
+                    _append_vector(item)
+
+        for key in ("embeddings", "results"):
+            alt = node.get(key)
+            if isinstance(alt, list):
+                for item in alt:
+                    if isinstance(item, dict):
+                        _append_vector(item.get("embedding"))
+                    else:
+                        _append_vector(item)
+
+        _append_vector(node.get("embedding"))
+        _walk(node.get("output"))
+
+    _walk(payload)
+    return vectors
+
+
+def _extract_rerank_results_from_payload(payload: Any) -> List[Dict[str, Any]]:
+    """Extract rerank results from normal or gateway-wrapped responses."""
+    if payload is None:
+        return []
+
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return []
+
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ("results", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+
+    output = payload.get("output")
+    return _extract_rerank_results_from_payload(output)
+
+
 async def _test_embedding_model(
     protocol: str,
     base_url: str,
@@ -523,10 +609,15 @@ async def _test_embedding_model(
                     ) as response:
                         if response.status == 200:
                             data = await response.json()
-                            embeddings = data.get('data', [])
+                            embeddings = _extract_embedding_vectors_from_payload(data)
                             if embeddings:
-                                dim = len(embeddings[0].get('embedding', []))
+                                dim = len(embeddings[0])
                                 return f"Embedding test successful (dimension: {dim})"
+                            keys = list(data.keys()) if isinstance(data, dict) else []
+                            last_error = (
+                                f"HTTP 200 but no embedding vector found in payload "
+                                f"(keys={keys[:8]})"
+                            )
                         else:
                             text = await response.text()
                             last_error = f"HTTP {response.status}: {text[:200]}"
@@ -575,7 +666,7 @@ async def _test_rerank_model(
                 ) as response:
                     if response.status == 200:
                         data = await response.json()
-                        results = data.get('results', [])
+                        results = _extract_rerank_results_from_payload(data)
                         return f"Rerank test successful ({len(results)} results)"
                     else:
                         text = await response.text()

@@ -336,14 +336,14 @@ export const Knowledge: React.FC = () => {
           <button
             onClick={() => setShowRetrievalTest(true)}
             className="flex items-center gap-2 px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors font-medium"
-            title="Test Retrieval"
+            title={t('kbConfig.testRetrieval')}
           >
             <Search className="w-5 h-5" />
           </button>
           <button
             onClick={() => setShowConfigPanel(true)}
             className="flex items-center gap-2 px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors font-medium"
-            title="Pipeline Settings"
+            title={t('kbConfig.title')}
           >
             <Settings className="w-5 h-5" />
           </button>
@@ -778,6 +778,8 @@ export const Knowledge: React.FC = () => {
       <RetrievalTestPanel
         isOpen={showRetrievalTest}
         onClose={() => setShowRetrievalTest(false)}
+        activeCollectionId={activeCollectionId}
+        collections={collections}
       />
     </div>
   );

@@ -7,6 +7,7 @@ References:
 - Design Section 14.1: Processing Workflow
 """
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -486,11 +487,28 @@ class DocumentChunker:
 
 # Singleton instance
 _document_chunker: Optional[DocumentChunker] = None
+_document_chunker_signature: Optional[str] = None
+
+
+def _build_chunker_signature() -> str:
+    """Build signature so chunker refreshes when chunking config changes."""
+    try:
+        config = get_config()
+        kb_config = config.get_section("knowledge_base") if config else {}
+        chunking_cfg = kb_config.get("chunking", {})
+        payload = {
+            "chunk_token_num": chunking_cfg.get("chunk_token_num"),
+            "overlap_percent": chunking_cfg.get("overlap_percent"),
+            "delimiters": chunking_cfg.get("delimiters"),
+        }
+        return json.dumps(payload, sort_keys=True, ensure_ascii=True)
+    except Exception:
+        return ""
 
 
 def get_document_chunker(
-    chunk_size: int = 512,
-    chunk_overlap: int = 50,
+    chunk_size: Optional[int] = None,
+    chunk_overlap: Optional[int] = None,
 ) -> DocumentChunker:
     """Get or create the document chunker singleton.
 
@@ -501,10 +519,27 @@ def get_document_chunker(
     Returns:
         DocumentChunker instance
     """
-    global _document_chunker
-    if _document_chunker is None:
+    global _document_chunker, _document_chunker_signature
+
+    signature = _build_chunker_signature()
+    if _document_chunker is None or signature != _document_chunker_signature:
+        config = get_config()
+        kb_config = config.get_section("knowledge_base") if config else {}
+        chunking_cfg = kb_config.get("chunking", {})
+
+        resolved_chunk_size = int(chunk_size or chunking_cfg.get("chunk_token_num", 512))
+        if chunk_overlap is None:
+            overlap_percent = max(0, min(int(chunking_cfg.get("overlap_percent", 10)), 50))
+            resolved_chunk_overlap = int(resolved_chunk_size * overlap_percent / 100)
+        else:
+            resolved_chunk_overlap = int(chunk_overlap)
+
+        # Prevent invalid overlap from causing fixed-size chunk loop stalls.
+        resolved_chunk_overlap = max(0, min(resolved_chunk_overlap, max(resolved_chunk_size - 1, 0)))
+
         _document_chunker = DocumentChunker(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
+            chunk_size=resolved_chunk_size,
+            chunk_overlap=resolved_chunk_overlap,
         )
+        _document_chunker_signature = signature
     return _document_chunker

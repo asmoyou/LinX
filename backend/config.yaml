@@ -131,8 +131,6 @@ llm:
   max_retries: 3
   retry_delay_seconds: 2
   cache_ttl: 30
-  # providers below are only used for initial DB seeding on first boot.
-  # At runtime, all provider info is read from the llm_providers DB table.
   providers:
     ollama:
       enabled: true
@@ -499,8 +497,8 @@ knowledge_base:
     vision_model: Qwen/Qwen3-VL-32B-Instruct
     vision_provider: llm-pool
   embedding:
-    provider: ollama
-    model: bge-m3
+    provider: llm-pool
+    model: BAAI/bge-m3
     dimension: 1024
   enrichment:
     enabled: true
@@ -517,6 +515,8 @@ knowledge_base:
     retry_failed_jobs: true
     max_retries: 3
   search:
+    max_concurrent_requests: 4
+    request_timeout_seconds: 30
     enable_semantic: true
     enable_fulltext: true
     combine_results: true
@@ -524,10 +524,20 @@ knowledge_base:
     fulltext_weight: 0.3
     fusion_method: rrf
     rrf_k: 60
+    min_relevance_score: 0.3
+    hybrid_score_scale: 0.02
+    keyword_min_rank: 4
+    keyword_max_terms: 16
+    semantic_timeout_seconds: 8
+    embedding_failure_backoff_seconds: 30
     rerank_enabled: true
-    rerank_provider: ollama
-    rerank_model: qllama/bge-reranker-v2-m3:latest
-    rerank_top_k: 5
+    rerank_weight: 0.85
+    rerank_provider: llm-pool
+    rerank_model: BAAI/bge-reranker-v2-m3
+    rerank_top_k: 30
+    rerank_timeout_seconds: 10
+    rerank_failure_backoff_seconds: 60
+    rerank_doc_max_chars: 1600
 message_bus:
   enable_pubsub: true
   enable_streams: true
