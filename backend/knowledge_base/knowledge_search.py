@@ -15,7 +15,7 @@ import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 from uuid import UUID
 
 from memory_system.embedding_service import get_embedding_service
@@ -68,6 +68,7 @@ class KnowledgeSearch:
         config = get_config()
         kb_config = config.get_section("knowledge_base") if config else {}
         search_cfg = kb_config.get("search", {})
+        llm_cfg = config.get_section("llm") if config else {}
 
         self.enable_semantic = search_cfg.get("enable_semantic", True)
         self.enable_fulltext = search_cfg.get("enable_fulltext", True)
@@ -93,9 +94,38 @@ class KnowledgeSearch:
         )
         self.rerank_weight = float(search_cfg.get("rerank_weight", 0.85))
         self.rerank_doc_max_chars = int(search_cfg.get("rerank_doc_max_chars", 1600))
+
+        # Cross-language query expansion for lexical retrieval (RAGFlow-style optional feature).
+        self.cross_language_expansion_enabled = bool(
+            search_cfg.get("cross_language_expansion_enabled", True)
+        )
+        raw_languages = search_cfg.get("cross_language_languages", ["en", "zh-CN"])
+        if not isinstance(raw_languages, list):
+            raw_languages = [raw_languages]
+        self.cross_language_languages = [
+            str(lang).strip() for lang in raw_languages if str(lang).strip()
+        ]
+        default_provider = str(llm_cfg.get("default_provider", "ollama") or "ollama").strip()
+        self.cross_language_provider = str(
+            search_cfg.get("cross_language_provider", default_provider) or default_provider
+        ).strip()
+        self.cross_language_model = str(
+            search_cfg.get("cross_language_model", "") or ""
+        ).strip()
+        self.cross_language_timeout_seconds = float(
+            search_cfg.get("cross_language_timeout_seconds", 4)
+        )
+        self.cross_language_failure_backoff_seconds = float(
+            search_cfg.get("cross_language_failure_backoff_seconds", 60)
+        )
+        self.cross_language_max_expansions = int(search_cfg.get("cross_language_max_expansions", 2))
+        self.cross_language_max_queries = int(search_cfg.get("cross_language_max_queries", 3))
+
         # Failure backoff timestamps to avoid repeated slow timeouts when upstream is unhealthy.
         self._embedding_fail_until = 0.0
         self._rerank_fail_until = 0.0
+        self._cross_language_fail_until = 0.0
+        self._cross_language_cache: Dict[str, List[str]] = {}
 
         logger.info(
             "KnowledgeSearch initialized (hybrid)",
@@ -112,6 +142,10 @@ class KnowledgeSearch:
                 "rerank_provider": self.rerank_provider,
                 "rerank_model": self.rerank_model,
                 "rerank_failure_backoff_seconds": self.rerank_failure_backoff_seconds,
+                "cross_language_expansion_enabled": self.cross_language_expansion_enabled,
+                "cross_language_languages": self.cross_language_languages,
+                "cross_language_provider": self.cross_language_provider,
+                "cross_language_model": self.cross_language_model,
             },
         )
 
@@ -136,14 +170,19 @@ class KnowledgeSearch:
             return round((time.perf_counter() - start_time) * 1000.0, 2)
 
         try:
-            query_terms = self._extract_query_terms(query)
+            expand_start = time.perf_counter()
+            retrieval_queries = self._build_retrieval_queries(query)
+            stage_ms["query_expand"] = _stage_elapsed_ms(expand_start)
+            vector_query = "\n".join(retrieval_queries) if len(retrieval_queries) > 1 else query
+            lexical_query = " ".join(retrieval_queries)
+            query_terms = self._extract_query_terms(lexical_query)
             vector_results = []
             bm25_results = []
 
             # Vector search via Milvus
             if self.enable_semantic:
                 vector_start = time.perf_counter()
-                vector_results = self._vector_search(query, search_filter)
+                vector_results = self._vector_search(vector_query, search_filter)
                 stage_ms["vector"] = _stage_elapsed_ms(vector_start)
             else:
                 stage_ms["vector"] = 0.0
@@ -151,7 +190,7 @@ class KnowledgeSearch:
             # BM25 search via PostgreSQL
             if self.enable_fulltext:
                 bm25_start = time.perf_counter()
-                bm25_results = self._bm25_search(query, search_filter, query_terms)
+                bm25_results = self._bm25_search(retrieval_queries, search_filter, query_terms)
                 stage_ms["bm25"] = _stage_elapsed_ms(bm25_start)
             else:
                 stage_ms["bm25"] = 0.0
@@ -212,6 +251,7 @@ class KnowledgeSearch:
                 "Hybrid knowledge search completed",
                 extra={
                     "query_length": len(query),
+                    "query_variants": len(retrieval_queries),
                     "query_terms": len(query_terms),
                     "vector_hits": len(vector_results),
                     "bm25_hits": len(bm25_results),
@@ -227,6 +267,262 @@ class KnowledgeSearch:
         except Exception as e:
             logger.error(f"Knowledge search failed: {e}", exc_info=True)
             raise
+
+    @staticmethod
+    def _normalize_query_key(text: str) -> str:
+        """Normalize text into a stable dedup/cache key."""
+        return unicodedata.normalize("NFKC", (text or "")).strip().lower()
+
+    def _build_retrieval_queries(self, query: str) -> List[str]:
+        """Build query variants for hybrid retrieval."""
+        base_query = (query or "").strip()
+        if not base_query:
+            return []
+
+        variants = [base_query]
+        if self.cross_language_expansion_enabled and self.cross_language_languages:
+            variants.extend(self._expand_query_cross_language(base_query))
+
+        deduped: List[str] = []
+        seen: Set[str] = set()
+        for candidate in variants:
+            clean = (candidate or "").strip()
+            if not clean:
+                continue
+            key = self._normalize_query_key(clean)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(clean)
+            if len(deduped) >= max(int(self.cross_language_max_queries), 1):
+                break
+        return deduped or [base_query]
+
+    def _expand_query_cross_language(self, query: str) -> List[str]:
+        """Expand user query into additional languages for lexical retrieval."""
+        if max(int(self.cross_language_max_expansions), 0) <= 0:
+            return []
+
+        now = time.monotonic()
+        if now < self._cross_language_fail_until:
+            logger.debug(
+                "Cross-language expansion in backoff window",
+                extra={
+                    "backoff_remaining_seconds": round(self._cross_language_fail_until - now, 2),
+                    "provider": self.cross_language_provider,
+                },
+            )
+            return []
+
+        cache_key = self._normalize_query_key(query)
+        cached = self._cross_language_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
+        try:
+            provider_cfg = resolve_provider(self.cross_language_provider)
+            if not provider_cfg:
+                raise ValueError(
+                    f"Cross-language provider '{self.cross_language_provider}' is not resolvable"
+                )
+
+            protocol = provider_cfg.get(
+                "protocol",
+                "ollama" if self.cross_language_provider == "ollama" else "openai_compatible",
+            )
+            model_name = self._resolve_cross_language_model(provider_cfg)
+            if not model_name:
+                raise ValueError(
+                    "Cross-language expansion model is not configured and cannot be auto-resolved"
+                )
+
+            prompt = (
+                "You are a multilingual retrieval query expander.\n"
+                "Rewrite the input query into the target languages while preserving intent.\n"
+                "Return JSON only: {\"queries\": [\"...\"]}.\n"
+                "No explanations, no markdown.\n\n"
+                f"Input query: {query}\n"
+                f"Target languages: {', '.join(self.cross_language_languages)}\n"
+            )
+            raw_response = self._call_cross_language_model(
+                protocol=str(protocol),
+                base_url=str(provider_cfg.get("base_url", "")).strip(),
+                api_key=provider_cfg.get("api_key"),
+                model_name=model_name,
+                prompt=prompt,
+            )
+
+            parsed = self._parse_cross_language_queries(raw_response)
+            expansions: List[str] = []
+            base_key = self._normalize_query_key(query)
+            seen: Set[str] = {base_key}
+            for candidate in parsed:
+                clean = candidate.strip()
+                if not clean:
+                    continue
+                key = self._normalize_query_key(clean)
+                if key in seen:
+                    continue
+                seen.add(key)
+                expansions.append(clean)
+                if len(expansions) >= max(int(self.cross_language_max_expansions), 1):
+                    break
+
+            self._cross_language_fail_until = 0.0
+            self._cross_language_cache[cache_key] = expansions
+            # Keep cache bounded.
+            if len(self._cross_language_cache) > 256:
+                oldest_key = next(iter(self._cross_language_cache))
+                self._cross_language_cache.pop(oldest_key, None)
+
+            return expansions
+        except Exception as e:
+            self._cross_language_fail_until = now + max(
+                float(self.cross_language_failure_backoff_seconds), 1.0
+            )
+            logger.warning(
+                "Cross-language query expansion failed; fallback to original query",
+                extra={
+                    "error": str(e),
+                    "provider": self.cross_language_provider,
+                    "model": self.cross_language_model,
+                    "backoff_seconds": self.cross_language_failure_backoff_seconds,
+                },
+            )
+            return []
+
+    def _resolve_cross_language_model(self, provider_cfg: dict) -> str:
+        """Resolve model name for cross-language expansion."""
+        if self.cross_language_model:
+            return self.cross_language_model
+
+        provider_models = provider_cfg.get("models") or []
+        if isinstance(provider_models, dict):
+            provider_models = list(provider_models.values())
+        if isinstance(provider_models, str):
+            provider_models = [provider_models]
+
+        candidates = [str(m).strip() for m in provider_models if str(m).strip()]
+        if not candidates:
+            return ""
+
+        non_chat_hints = ("embed", "embedding", "rerank")
+        for candidate in candidates:
+            lowered = candidate.lower()
+            if any(hint in lowered for hint in non_chat_hints):
+                continue
+            return candidate
+        return candidates[0]
+
+    @staticmethod
+    def _normalize_model_response(content: object) -> str:
+        """Normalize model response payload to plain text."""
+        if isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+            return "".join(text_parts).strip()
+        return (str(content) if content is not None else "").strip()
+
+    def _call_cross_language_model(
+        self,
+        protocol: str,
+        base_url: str,
+        api_key: Optional[str],
+        model_name: str,
+        prompt: str,
+    ) -> str:
+        """Call provider to generate cross-language query variants."""
+        timeout_seconds = max(float(self.cross_language_timeout_seconds), 1.0)
+
+        if protocol == "ollama":
+            import requests
+
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            payload = {
+                "model": model_name,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.0, "num_predict": 256},
+            }
+            response = requests.post(
+                f"{base_url.rstrip('/')}/api/generate",
+                json=payload,
+                headers=headers,
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            body = response.json()
+            return str(body.get("response") or body.get("thinking") or "")
+
+        from langchain_core.messages import HumanMessage
+
+        from llm_providers.custom_openai_provider import CustomOpenAIChat
+
+        llm = CustomOpenAIChat(
+            base_url=base_url,
+            model=model_name,
+            api_key=api_key,
+            temperature=0.0,
+            max_tokens=384,
+            timeout=max(2, min(int(timeout_seconds), 30)),
+            streaming=False,
+        )
+        result = llm.invoke([HumanMessage(content=prompt)])
+        return self._normalize_model_response(getattr(result, "content", ""))
+
+    @staticmethod
+    def _parse_cross_language_queries(response_text: str) -> List[str]:
+        """Parse model output into query list."""
+        text = (response_text or "").strip()
+        if not text:
+            return []
+
+        # Remove markdown fences when model does not strictly follow instructions.
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text, flags=re.IGNORECASE)
+
+        def _extract_from_obj(obj: object) -> List[str]:
+            if isinstance(obj, dict):
+                for key in ("queries", "translations", "results", "items"):
+                    value = obj.get(key)
+                    if isinstance(value, list):
+                        return [str(item).strip() for item in value if str(item).strip()]
+                return []
+            if isinstance(obj, list):
+                return [str(item).strip() for item in obj if str(item).strip()]
+            return []
+
+        json_candidates = [text]
+        if "{" in text and "}" in text:
+            json_candidates.append(text[text.find("{") : text.rfind("}") + 1])
+        if "[" in text and "]" in text:
+            json_candidates.append(text[text.find("[") : text.rfind("]") + 1])
+
+        for candidate in json_candidates:
+            try:
+                parsed = json.loads(candidate)
+            except Exception:
+                continue
+            extracted = _extract_from_obj(parsed)
+            if extracted:
+                return extracted
+
+        # Fallback to delimiter-based parsing.
+        items = re.split(r"(?:\n+|###|===|；|;)", text)
+        cleaned: List[str] = []
+        for item in items:
+            candidate = item.strip().strip("-").strip()
+            if not candidate:
+                continue
+            lowered = candidate.lower()
+            if lowered.startswith("output"):
+                continue
+            cleaned.append(candidate)
+        return cleaned
 
     def _generate_query_embedding(self, query: str) -> Optional[List[float]]:
         """Generate embedding with a strict timeout for search latency control."""
@@ -379,19 +675,70 @@ class KnowledgeSearch:
 
     def _bm25_search(
         self,
-        query: str,
+        query: Union[str, List[str]],
         search_filter: SearchFilter,
         query_terms: Optional[List[str]] = None,
     ) -> List[SearchResult]:
         """Perform BM25 full-text search via PostgreSQL tsvector.
 
         Args:
-            query: Search query
+            query: Search query or query variants
             search_filter: Filter criteria
 
         Returns:
             List of SearchResult from BM25 search
         """
+        queries = [query] if isinstance(query, str) else list(query or [])
+        queries = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
+        if not queries:
+            return []
+        queries = queries[: max(int(self.cross_language_max_queries), 1)]
+
+        merged: Dict[str, SearchResult] = {}
+        for q in queries:
+            for row in self._bm25_search_single(q, search_filter):
+                existing = merged.get(row.chunk_id)
+                if existing is None or float(row.similarity_score) > float(existing.similarity_score):
+                    row.metadata = dict(row.metadata or {})
+                    if len(queries) > 1:
+                        row.metadata["matched_query"] = q
+                    merged[row.chunk_id] = row
+
+        search_results = sorted(
+            merged.values(),
+            key=lambda item: float(item.similarity_score or 0.0),
+            reverse=True,
+        )
+
+        # If BM25 under-retrieves (especially for cross-language phrase mismatch),
+        # supplement with lightweight keyword fallback over all query variants.
+        target_hits = search_filter.top_k * 2
+        if len(search_results) < target_hits:
+            fallback_results = self._keyword_fallback_search_multi(
+                queries=queries,
+                query_terms=query_terms,
+                search_filter=search_filter,
+                exclude_chunk_ids={r.chunk_id for r in search_results},
+                limit=target_hits - len(search_results),
+            )
+            for row in fallback_results:
+                existing = merged.get(row.chunk_id)
+                if existing is None or float(row.similarity_score) > float(existing.similarity_score):
+                    merged[row.chunk_id] = row
+            search_results = sorted(
+                merged.values(),
+                key=lambda item: float(item.similarity_score or 0.0),
+                reverse=True,
+            )
+
+        return search_results[:target_hits]
+
+    def _bm25_search_single(
+        self,
+        query: str,
+        search_filter: SearchFilter,
+    ) -> List[SearchResult]:
+        """Execute one BM25 query and return ranked chunk matches."""
         try:
             from sqlalchemy import func, text
 
@@ -486,25 +833,52 @@ class KnowledgeSearch:
                         search_method="bm25",
                     )
                 )
-
-            # If BM25 under-retrieves (especially for Chinese phrases),
-            # supplement with lightweight keyword fallback.
-            target_hits = search_filter.top_k * 2
-            if len(search_results) < target_hits:
-                fallback_results = self._keyword_fallback_search(
-                    query=query,
-                    query_terms=query_terms or self._extract_query_terms(query),
-                    search_filter=search_filter,
-                    exclude_chunk_ids={r.chunk_id for r in search_results},
-                    limit=target_hits - len(search_results),
-                )
-                search_results.extend(fallback_results)
-
             return search_results
 
         except Exception as e:
-            logger.error(f"BM25 search failed: {e}", exc_info=True)
+            logger.error(f"BM25 search failed for query '{query}': {e}", exc_info=True)
             return []
+
+    def _keyword_fallback_search_multi(
+        self,
+        queries: List[str],
+        query_terms: Optional[List[str]],
+        search_filter: SearchFilter,
+        exclude_chunk_ids: Optional[Set[str]] = None,
+        limit: int = 10,
+    ) -> List[SearchResult]:
+        """Run keyword fallback over multiple query variants and merge top results."""
+        if limit <= 0:
+            return []
+
+        merged: Dict[str, SearchResult] = {}
+        excluded = set(exclude_chunk_ids or set())
+
+        base_terms = [t for t in (query_terms or []) if t]
+        for q in queries:
+            per_query_terms = self._extract_query_terms(q)
+            terms = list(dict.fromkeys(base_terms + per_query_terms))[: max(self.keyword_max_terms, 1)]
+            rows = self._keyword_fallback_search(
+                query=q,
+                query_terms=terms,
+                search_filter=search_filter,
+                exclude_chunk_ids=excluded.union(set(merged.keys())),
+                limit=limit,
+            )
+            for row in rows:
+                existing = merged.get(row.chunk_id)
+                if existing is None or float(row.similarity_score) > float(existing.similarity_score):
+                    merged[row.chunk_id] = row
+                if len(merged) >= limit:
+                    break
+            if len(merged) >= limit:
+                break
+
+        return sorted(
+            merged.values(),
+            key=lambda item: float(item.similarity_score or 0.0),
+            reverse=True,
+        )[:limit]
 
     def _extract_query_terms(self, query: str) -> List[str]:
         """Extract normalized query terms for lexical matching and reranking."""
@@ -1046,11 +1420,22 @@ class KnowledgeSearch:
             overlap_score = matched_terms / len(terms)
             method_score = _method_score(result)
             rank_prior = 1.0 - (rank_index / max(total_results, 1)) * 0.35
-            final_score = 0.65 * overlap_score + 0.25 * method_score + 0.10 * rank_prior
+            method = (result.search_method or "").lower()
+            semantic_floor_applied = False
+
+            # Preserve semantic-only hits for cross-lingual queries where lexical overlap is zero.
+            if method == "vector" and overlap_score == 0.0:
+                semantic_floor = 0.88 * method_score + 0.12 * rank_prior
+                final_score = max(semantic_floor, method_score * 0.90)
+                semantic_floor_applied = True
+            else:
+                final_score = 0.55 * overlap_score + 0.35 * method_score + 0.10 * rank_prior
+
             result.similarity_score = float(final_score)
             result.metadata = dict(result.metadata or {})
             result.metadata["query_overlap"] = round(overlap_score, 4)
             result.metadata["method_score"] = round(method_score, 4)
+            result.metadata["semantic_floor_applied"] = semantic_floor_applied
             reranked.append(result)
 
         reranked.sort(key=lambda item: item.similarity_score, reverse=True)

@@ -281,17 +281,10 @@ def _retrieve_memories_sync(query):
     from memory_system.memory_system import get_memory_system
 
     if query.query_text == "*":
-        try:
-            return _list_memories_without_embedding_sync(query)
-        except Exception as e:
-            logger.warning(f"Fast list path failed, fallback to semantic retrieval: {e}")
+        return _list_memories_without_embedding_sync(query)
 
     memory_system = get_memory_system()
-    try:
-        items = memory_system.retrieve_memories(query)
-    except Exception as e:
-        logger.error(f"Failed to retrieve memories: {e}")
-        items = []
+    items = memory_system.retrieve_memories(query)
     return _items_to_responses(items)
 
 
@@ -643,7 +636,15 @@ async def list_memories(
         top_k=100,
     )
 
-    results = await asyncio.to_thread(_retrieve_memories_sync, query)
+    try:
+        results = await asyncio.to_thread(_retrieve_memories_sync, query)
+    except Exception as e:
+        logger.error(f"Failed to list memories: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list memories: {e}",
+        )
+
     return [MemoryResponse(**r) for r in results]
 
 
@@ -691,7 +692,15 @@ async def get_memories_by_type(
         top_k=100,
     )
 
-    results = await asyncio.to_thread(_retrieve_memories_sync, query)
+    try:
+        results = await asyncio.to_thread(_retrieve_memories_sync, query)
+    except Exception as e:
+        logger.error(f"Failed to retrieve memories by type: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve memories: {e}",
+        )
+
     return [MemoryResponse(**r) for r in results]
 
 
@@ -798,6 +807,12 @@ async def search_memories(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Failed to search memories: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to search memories: {e}",
         )
 
     return [MemoryResponse(**r) for r in results]

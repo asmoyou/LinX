@@ -403,8 +403,10 @@ class DocumentProcessorWorker:
             parser = get_vision_parser()
             frame_prompt = (
                 "This image is a frame sampled from a video. "
+                "Primary output language must be zh-CN. "
                 "Extract visible text and summarize key scene actions/objects "
-                "that are useful for semantic retrieval."
+                "that are useful for semantic retrieval. "
+                "Keep key source-language labels in parentheses."
             )
 
             # Group one frame per second into 15-second request batches.

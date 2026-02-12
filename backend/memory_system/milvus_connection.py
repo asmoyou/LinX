@@ -15,6 +15,7 @@ References:
 """
 
 import logging
+import time
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
@@ -27,6 +28,7 @@ from pymilvus import (
     connections,
     utility,
 )
+from pymilvus.client.types import LoadState
 
 from shared.config import get_config
 
@@ -56,6 +58,8 @@ class MilvusConnectionManager:
         self._connection_alias = "default"
         self._is_connected = False
         self._collections: Dict[str, Collection] = {}
+        self._load_trigger_ts: Dict[str, float] = {}
+        self._load_retry_interval_seconds = 15.0
 
     def initialize(self) -> None:
         """
@@ -154,19 +158,37 @@ class MilvusConnectionManager:
 
         # Check cache first
         if collection_name in self._collections:
-            return self._collections[collection_name]
+            collection = self._collections[collection_name]
+        else:
+            # Check if collection exists
+            if not utility.has_collection(collection_name, using=self._connection_alias):
+                raise MilvusException(f"Collection '{collection_name}' does not exist")
 
-        # Check if collection exists
-        if not utility.has_collection(collection_name, using=self._connection_alias):
+            # Build collection handle and cache it
+            collection = Collection(name=collection_name, using=self._connection_alias)
+            self._collections[collection_name] = collection
+            logger.debug(f"Loaded collection handle: {collection_name}")
+
+        # Avoid blocking request path on collection load.
+        # We only trigger async load and let callers handle transient NotLoad failures.
+        load_state = utility.load_state(collection_name, using=self._connection_alias)
+        if load_state == LoadState.NotLoad:
+            now = time.monotonic()
+            last_ts = self._load_trigger_ts.get(collection_name, 0.0)
+            if now - last_ts >= self._load_retry_interval_seconds:
+                try:
+                    collection.load(timeout=1.0, _async=True)
+                    self._load_trigger_ts[collection_name] = now
+                    logger.info(f"Triggered async collection load: {collection_name}")
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to trigger async load for collection '{collection_name}': {e}"
+                    )
+        elif load_state == LoadState.Loading:
+            logger.debug(f"Collection is loading: {collection_name}")
+        elif load_state == LoadState.NotExist:
             raise MilvusException(f"Collection '{collection_name}' does not exist")
 
-        # Load collection
-        collection = Collection(name=collection_name, using=self._connection_alias)
-
-        # Cache the collection
-        self._collections[collection_name] = collection
-
-        logger.debug(f"Loaded collection: {collection_name}")
         return collection
 
     def list_collections(self) -> List[str]:

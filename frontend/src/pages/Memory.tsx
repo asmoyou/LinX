@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Brain, Building, User, Plus, Loader2, AlertCircle, X } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { MemoryCard } from '@/components/memory/MemoryCard';
 import { MemorySearchBar } from '@/components/memory/MemorySearchBar';
 import { MemoryDetailView } from '@/components/memory/MemoryDetailView';
@@ -16,11 +17,10 @@ const CreateMemoryModal: React.FC<{
   isOpen: boolean;
   onClose: () => void;
   onCreated: (memory: MemoryType) => void;
-  defaultType: MemoryCategory;
-}> = ({ isOpen, onClose, onCreated, defaultType }) => {
+}> = ({ isOpen, onClose, onCreated }) => {
   const { t } = useTranslation();
   // Only allow company type for manual creation
-  const [type] = useState<MemoryCategory>('company');
+  const type: MemoryCategory = 'company';
   const [content, setContent] = useState('');
   const [summary, setSummary] = useState('');
   const [tags, setTags] = useState('');
@@ -200,6 +200,7 @@ export const Memory: React.FC = () => {
   const [sharingMemory, setSharingMemory] = useState<MemoryType | null>(null);
   const [isSharingModalOpen, setIsSharingModalOpen] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [useSemanticSearchResults, setUseSemanticSearchResults] = useState(false);
 
   const tabDescriptionKey: Record<MemoryCategory, string> = {
     agent: 'memory.description.agent',
@@ -249,18 +250,32 @@ export const Memory: React.FC = () => {
 
   // Debounced search
   useEffect(() => {
-    if (!searchQuery.trim()) return;
+    const query = searchQuery.trim();
+    if (!query) {
+      setUseSemanticSearchResults(false);
+      return;
+    }
+
+    // Company and user-context tabs use local keyword filtering
+    // so users can still search when embedding services are unavailable.
+    if (activeTab !== 'agent') {
+      setUseSemanticSearchResults(false);
+      return;
+    }
+
     const timer = setTimeout(async () => {
       setLoading(true);
+      setUseSemanticSearchResults(true);
       try {
         const data = await memoriesApi.search({
-          query: searchQuery,
+          query,
           type: activeTab,
           limit: 50,
         });
         setMemoriesByType(activeTab, data);
       } catch {
-        // Fallback to local filter if search fails
+        // Fallback to local keyword filtering if semantic search fails.
+        setUseSemanticSearchResults(false);
       } finally {
         setLoading(false);
       }
@@ -287,6 +302,18 @@ export const Memory: React.FC = () => {
     if (dateTo && new Date(memory.createdAt) > new Date(dateTo)) return false;
     if (selectedTags.length > 0) {
       if (!selectedTags.some((tag) => memory.tags.includes(tag))) return false;
+    }
+    if (searchQuery.trim() && !useSemanticSearchResults) {
+      const query = searchQuery.trim().toLowerCase();
+      const summaryText = memory.summary?.toLowerCase() || '';
+      const hasMatchingTag = memory.tags.some((tag) => tag.toLowerCase().includes(query));
+      if (
+        !memory.content.toLowerCase().includes(query) &&
+        !summaryText.includes(query) &&
+        !hasMatchingTag
+      ) {
+        return false;
+      }
     }
     return true;
   });
@@ -329,7 +356,14 @@ export const Memory: React.FC = () => {
 
   const handleMemoryCreated = (memory: MemoryType) => {
     addMemory(memory);
-    fetchActiveTabMemories();
+    setActiveTab('company');
+    setSearchQuery('');
+    setDateFrom('');
+    setDateTo('');
+    setSelectedTags([]);
+    setUseSemanticSearchResults(false);
+    fetchMemoriesByType('company');
+    toast.success(t('memory.create.success'));
   };
 
   const tabs = [
@@ -466,7 +500,6 @@ export const Memory: React.FC = () => {
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
         onCreated={handleMemoryCreated}
-        defaultType={activeTab}
       />
     </div>
   );

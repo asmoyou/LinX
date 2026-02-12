@@ -20,8 +20,9 @@ from shared.config import get_config
 
 logger = logging.getLogger(__name__)
 
-# Prompt for structured document extraction
-EXTRACTION_PROMPT = """Extract all text content from this document page.
+def _build_extraction_prompt(output_language: str) -> str:
+    """Build extraction prompt with configurable output language."""
+    return f"""Extract all text content from this document page.
 Preserve the original structure including:
 - Headings and subheadings
 - Paragraphs
@@ -29,7 +30,12 @@ Preserve the original structure including:
 - Tables (use markdown table format)
 - Code blocks (use triple backticks)
 
-Output the extracted text in clean markdown format.
+Output requirements:
+- Primary output language must be {output_language}
+- Keep key source-language terms (names, product labels, UI text) in parentheses
+- Preserve critical source text snippets verbatim when possible
+- Output in clean markdown
+
 If the image contains handwritten text, extract it as best as possible.
 If the image is a diagram or chart, describe its content textually."""
 
@@ -45,8 +51,8 @@ class ParseResult:
     method: str = "vision"
 
 
-def _resolve_vision_settings() -> tuple[str, str, float]:
-    """Resolve current vision model/provider/timeout from runtime config."""
+def _resolve_vision_settings() -> tuple[str, str, float, str]:
+    """Resolve current vision model/provider/timeout/output language from config."""
     config = get_config()
     kb_config = config.get_section("knowledge_base") if config else {}
     parsing_cfg = kb_config.get("parsing", {})
@@ -54,7 +60,8 @@ def _resolve_vision_settings() -> tuple[str, str, float]:
     vision_provider = parsing_cfg.get("vision_provider", "ollama")
     vision_timeout = float(parsing_cfg.get("vision_timeout_seconds", 120))
     vision_timeout = max(5.0, vision_timeout)
-    return vision_model, vision_provider, vision_timeout
+    output_language = str(parsing_cfg.get("output_language", "zh-CN")).strip() or "zh-CN"
+    return vision_model, vision_provider, vision_timeout, output_language
 
 
 class VisionDocumentParser:
@@ -65,12 +72,16 @@ class VisionDocumentParser:
         vision_model: Optional[str] = None,
         vision_provider: Optional[str] = None,
         timeout_seconds: Optional[float] = None,
+        output_language: Optional[str] = None,
     ):
         """Initialize vision parser with config."""
-        default_model, default_provider, default_timeout = _resolve_vision_settings()
+        default_model, default_provider, default_timeout, default_output_language = (
+            _resolve_vision_settings()
+        )
         self.vision_model = vision_model or default_model
         self.vision_provider = vision_provider or default_provider
         self.timeout_seconds = float(timeout_seconds or default_timeout)
+        self.output_language = str(output_language or default_output_language).strip() or "zh-CN"
 
         # Resolve base_url from DB (primary) or config.yaml (fallback)
         from llm_providers.provider_resolver import resolve_provider
@@ -91,8 +102,14 @@ class VisionDocumentParser:
                 "provider": self.vision_provider,
                 "api_format": self.api_format,
                 "timeout_seconds": self.timeout_seconds,
+                "output_language": self.output_language,
             },
         )
+
+    def _get_output_language(self) -> str:
+        """Return configured output language with safe default."""
+        language = str(getattr(self, "output_language", "zh-CN") or "").strip()
+        return language or "zh-CN"
 
     async def parse_pdf(self, file_path: Path) -> ParseResult:
         """Parse a PDF document by converting pages to images and using vision LLM.
@@ -121,9 +138,13 @@ class VisionDocumentParser:
             img_b64 = base64.b64encode(img_bytes).decode("utf-8")
 
             # Send to vision LLM
+            page_prompt = (
+                f"This is page {page_num + 1} of a document. "
+                f"{_build_extraction_prompt(self._get_output_language())}"
+            )
             page_text = await self._extract_with_vision(
                 img_b64,
-                f"This is page {page_num + 1} of a document. {EXTRACTION_PROMPT}",
+                page_prompt,
             )
 
             if page_text:
@@ -175,7 +196,7 @@ class VisionDocumentParser:
         # Send to vision LLM
         text = await self._extract_with_vision_batch(
             [(mime_type, img_b64)],
-            prompt or EXTRACTION_PROMPT,
+            prompt or _build_extraction_prompt(self._get_output_language()),
         )
 
         return ParseResult(
@@ -206,7 +227,7 @@ class VisionDocumentParser:
 
         text = await self._extract_with_vision_batch(
             image_payloads,
-            prompt or EXTRACTION_PROMPT,
+            prompt or _build_extraction_prompt(self._get_output_language()),
         )
         return ParseResult(
             text=text or "",
@@ -224,8 +245,11 @@ class VisionDocumentParser:
         timeline = "\n\n".join(
             f"Segment {i + 1}:\n{text}" for i, text in enumerate(batch_texts)
         )
+        output_language = self._get_output_language()
         prompt = (
             "You are summarizing OCR and scene descriptions extracted from video frames.\n"
+            f"Primary output language must be {output_language}.\n"
+            "Keep key source-language labels or names in parentheses.\n"
             "Produce a concise but complete summary with:\n"
             "1) overall storyline,\n"
             "2) key entities/objects,\n"
@@ -508,17 +532,19 @@ def get_vision_parser() -> VisionDocumentParser:
         VisionDocumentParser instance
     """
     global _vision_parser
-    vision_model, vision_provider, timeout_seconds = _resolve_vision_settings()
+    vision_model, vision_provider, timeout_seconds, output_language = _resolve_vision_settings()
     if (
         _vision_parser is None
         or _vision_parser.vision_model != vision_model
         or _vision_parser.vision_provider != vision_provider
         or _vision_parser.timeout_seconds != float(timeout_seconds)
+        or _vision_parser.output_language != output_language
     ):
         _vision_parser = VisionDocumentParser(
             vision_model=vision_model,
             vision_provider=vision_provider,
             timeout_seconds=timeout_seconds,
+            output_language=output_language,
         )
     return _vision_parser
 

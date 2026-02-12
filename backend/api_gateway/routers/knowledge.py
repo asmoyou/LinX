@@ -1226,6 +1226,7 @@ _KB_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
     },
     "parsing": {
         "method": "auto",
+        "output_language": "zh-CN",
     },
     "enrichment": {
         "enabled": True,
@@ -1260,6 +1261,14 @@ _KB_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "rerank_timeout_seconds": 10,
         "rerank_failure_backoff_seconds": 60,
         "rerank_doc_max_chars": 1600,
+        "cross_language_expansion_enabled": True,
+        "cross_language_languages": ["en", "zh-CN"],
+        "cross_language_provider": "",
+        "cross_language_model": "",
+        "cross_language_timeout_seconds": 4,
+        "cross_language_failure_backoff_seconds": 60,
+        "cross_language_max_expansions": 2,
+        "cross_language_max_queries": 3,
     },
 }
 

@@ -14,6 +14,7 @@ from enum import Enum
 from typing import List, Optional
 
 from message_bus.redis_manager import RedisConnectionManager, get_redis_manager
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,14 @@ class ProcessingQueue:
         Returns:
             ProcessingJob or None if queue is empty
         """
-        result = self._client.brpop(self.queue_key, timeout=timeout)
+        try:
+            result = self._client.brpop(self.queue_key, timeout=timeout)
+        except RedisTimeoutError:
+            # BRPOP timeout is expected when queue is idle.
+            return None
+        except Exception as e:
+            logger.warning(f"Queue dequeue failed: {e}")
+            return None
         if not result:
             return None
 
