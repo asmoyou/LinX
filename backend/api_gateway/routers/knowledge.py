@@ -6,6 +6,7 @@ References:
 """
 
 import asyncio
+import io
 import json
 import time
 from datetime import datetime, timezone
@@ -134,6 +135,7 @@ class KnowledgeItemResponse(BaseModel):
     tags: Optional[List[str]] = None
     description: Optional[str] = None
     fileReference: Optional[str] = None
+    thumbnailUrl: Optional[str] = None
     departmentId: Optional[str] = None
     collectionId: Optional[str] = None
     chunkCount: Optional[int] = None
@@ -318,13 +320,115 @@ def _get_content_type_category(filename: str, content_type: Optional[str]) -> st
     return "document"
 
 
+def _build_thumbnail_url(item_id: str, thumbnail_reference: Optional[str]) -> Optional[str]:
+    """Build API thumbnail URL if thumbnail object exists."""
+    if thumbnail_reference and str(thumbnail_reference).startswith("minio:"):
+        return f"/api/v1/knowledge/{item_id}/thumbnail"
+    return None
+
+
+def _generate_thumbnail_stream(
+    file_data: Any,
+    filename: str,
+    content_type: Optional[str],
+) -> Optional[tuple[io.BytesIO, str]]:
+    """Generate a compact JPEG preview for image/pdf files."""
+    import os
+
+    doc_type = _get_file_type(filename, content_type)
+    if doc_type not in {"image", "pdf"}:
+        return None
+
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        logger.warning("Pillow is not installed, skip thumbnail generation")
+        return None
+
+    thumb = io.BytesIO()
+    try:
+        file_data.seek(0)
+        if doc_type == "image":
+            image = Image.open(file_data)
+        else:
+            try:
+                import fitz  # PyMuPDF
+            except ImportError:
+                logger.info("PyMuPDF is unavailable, skip PDF thumbnail generation")
+                return None
+
+            pdf_bytes = file_data.read()
+            if not pdf_bytes:
+                return None
+            with fitz.open(stream=pdf_bytes, filetype="pdf") as pdf_doc:
+                if pdf_doc.page_count == 0:
+                    return None
+                page = pdf_doc.load_page(0)
+                pix = page.get_pixmap(dpi=120, alpha=False)
+                image = Image.open(io.BytesIO(pix.tobytes("png")))
+
+        image = ImageOps.exif_transpose(image)
+        if image.mode not in {"RGB", "L"}:
+            image = image.convert("RGB")
+        if image.mode == "L":
+            image = image.convert("RGB")
+        image.thumbnail((512, 512))
+        image.save(thumb, format="JPEG", quality=82, optimize=True)
+        thumb.seek(0)
+        return thumb, "image/jpeg"
+    except Exception as ex:
+        logger.warning(f"Failed to generate thumbnail for {filename}: {ex}")
+        return None
+    finally:
+        try:
+            file_data.seek(0)
+        except Exception:
+            pass
+
+
+def _upload_thumbnail_if_possible(
+    minio_client: Any,
+    file_data: Any,
+    filename: str,
+    content_type: Optional[str],
+    user_id: str,
+) -> tuple[Optional[str], Optional[str]]:
+    """Generate and upload thumbnail to MinIO images bucket."""
+    generated = _generate_thumbnail_stream(
+        file_data=file_data,
+        filename=filename,
+        content_type=content_type,
+    )
+    if not generated:
+        return None, None
+
+    import os
+
+    thumb_stream, thumb_mime_type = generated
+    thumb_name = f"{os.path.splitext(filename)[0] or 'preview'}_thumb.jpg"
+    try:
+        thumb_bucket, thumb_key = minio_client.upload_file(
+            bucket_type="images",
+            file_data=thumb_stream,
+            filename=thumb_name,
+            user_id=user_id,
+            content_type=thumb_mime_type,
+        )
+        return f"minio:{thumb_bucket}:{thumb_key}", thumb_mime_type
+    except Exception as ex:
+        logger.warning(f"Thumbnail upload failed for {filename}: {ex}")
+        return None, None
+
+
 def _build_item_response(item: KnowledgeItem, owner_username: str) -> KnowledgeItemResponse:
     """Convert a KnowledgeItem DB model to an API response."""
     metadata = item.item_metadata or {}
+    item_id = str(item.knowledge_id)
     file_size = metadata.get("file_size", 0)
     doc_type = metadata.get("file_type", "txt")
     tags = metadata.get("tags", [])
     description = metadata.get("description")
+    thumbnail_reference = metadata.get("thumbnail_reference")
     processing_status = metadata.get("processing_status", "completed")
     chunk_count = metadata.get("chunk_count")
     token_count = metadata.get("token_count")
@@ -337,7 +441,7 @@ def _build_item_response(item: KnowledgeItem, owner_username: str) -> KnowledgeI
             processing_progress = None
 
     return KnowledgeItemResponse(
-        id=str(item.knowledge_id),
+        id=item_id,
         name=item.title,
         type=doc_type,
         size=file_size,
@@ -349,6 +453,7 @@ def _build_item_response(item: KnowledgeItem, owner_username: str) -> KnowledgeI
         tags=tags if tags else None,
         description=description,
         fileReference=item.file_reference,
+        thumbnailUrl=_build_thumbnail_url(item_id, thumbnail_reference),
         departmentId=str(item.department_id) if item.department_id else None,
         collectionId=str(item.collection_id) if item.collection_id else None,
         chunkCount=chunk_count,
@@ -589,6 +694,14 @@ def _handle_zip_upload(
                 result.errors.append(f"Upload failed: {extracted.filename}")
                 continue
 
+            thumbnail_reference, thumbnail_mime_type = _upload_thumbnail_if_possible(
+                minio_client=minio_client,
+                file_data=extracted.data,
+                filename=extracted.filename,
+                content_type=mime_type,
+                user_id=current_user.user_id,
+            )
+
             # Create KnowledgeItem
             knowledge_item = KnowledgeItem(
                 title=extracted.filename,
@@ -605,6 +718,8 @@ def _handle_zip_upload(
                     "mime_type": mime_type,
                     "tags": parsed_tags,
                     "description": None,
+                    "thumbnail_reference": thumbnail_reference,
+                    "thumbnail_mime_type": thumbnail_mime_type,
                     "processing_status": "processing",
                     "processing_progress": 5,
                     "job_id": str(uuid4()),
@@ -635,6 +750,7 @@ def _handle_zip_upload(
                     owner=current_user.username,
                     accessLevel=_map_access_level(backend_access_level),
                     tags=parsed_tags if parsed_tags else None,
+                    thumbnailUrl=_build_thumbnail_url(item_id, thumbnail_reference),
                     collectionId=str(collection.collection_id),
                 )
             )
@@ -760,6 +876,7 @@ async def upload_knowledge(
         backend_access_level = _map_access_level_to_backend(access_level)
 
         # Upload to MinIO
+        minio_client = None
         try:
             from object_storage.minio_client import get_minio_client
 
@@ -787,6 +904,17 @@ async def upload_knowledge(
         file.file.seek(0, 2)
         file_size = file.file.tell()
         file.file.seek(0)
+
+        thumbnail_reference = None
+        thumbnail_mime_type = None
+        if minio_client:
+            thumbnail_reference, thumbnail_mime_type = _upload_thumbnail_if_possible(
+                minio_client=minio_client,
+                file_data=file.file,
+                filename=file.filename or doc_title,
+                content_type=file.content_type,
+                user_id=current_user.user_id,
+            )
 
         # Parse department_id
         parsed_dept_id = None
@@ -841,6 +969,8 @@ async def upload_knowledge(
                     "mime_type": file.content_type,
                     "tags": parsed_tags,
                     "description": description if description else None,
+                    "thumbnail_reference": thumbnail_reference,
+                    "thumbnail_mime_type": thumbnail_mime_type,
                     "processing_status": "uploading",
                     "processing_progress": 0,
                 },
@@ -932,6 +1062,7 @@ async def upload_knowledge(
                 tags=parsed_tags if parsed_tags else None,
                 description=description if description else None,
                 fileReference=file_reference,
+                thumbnailUrl=_build_thumbnail_url(item_id, thumbnail_reference),
                 departmentId=department_id if department_id and department_id.strip() else None,
                 collectionId=collection_id if collection_id and collection_id.strip() else None,
             )
@@ -2540,6 +2671,113 @@ async def get_processing_status(
         )
 
 
+@router.get("/{knowledge_id}/thumbnail")
+async def get_knowledge_thumbnail(
+    knowledge_id: str,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Get a generated thumbnail image for a knowledge item."""
+    try:
+        with get_db_session() as session:
+            try:
+                kid = UUID(knowledge_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid knowledge ID format"
+                )
+
+            item = session.query(KnowledgeItem).filter(KnowledgeItem.knowledge_id == kid).first()
+            if not item:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge item not found"
+                )
+
+            has_access = can_access_knowledge_item(
+                current_user=current_user,
+                action=Action.READ,
+                owner_user_id=str(item.owner_user_id),
+                access_level=item.access_level,
+            )
+            if not has_access:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have access to this thumbnail",
+                )
+
+            metadata = item.item_metadata or {}
+            thumbnail_reference = metadata.get("thumbnail_reference")
+            thumbnail_mime_type = metadata.get("thumbnail_mime_type", "image/jpeg")
+
+            if not thumbnail_reference or not str(thumbnail_reference).startswith("minio:"):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Thumbnail not available",
+                )
+
+            parts = str(thumbnail_reference).split(":", 2)
+            if len(parts) != 3:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Invalid thumbnail reference format",
+                )
+
+            _, bucket_name, object_key = parts
+
+        from object_storage.minio_client import get_minio_client
+
+        minio_client = get_minio_client()
+        stream, file_metadata = minio_client.download_file_streaming(bucket_name, object_key)
+
+        cache_headers = {
+            "Content-Length": str(file_metadata.get("size", 0)),
+            "Cache-Control": "private, max-age=86400, stale-while-revalidate=3600",
+            "Vary": "Authorization",
+        }
+
+        etag = str(file_metadata.get("etag", "")).strip()
+        normalized_etag = etag.strip('"') if etag else ""
+        if normalized_etag:
+            cache_headers["ETag"] = f'"{normalized_etag}"'
+
+        last_modified = file_metadata.get("last_modified")
+        if last_modified:
+            cache_headers["Last-Modified"] = str(last_modified)
+
+        if_none_match = request.headers.get("if-none-match")
+        if if_none_match and normalized_etag:
+            etag_tokens = [token.strip().strip('"') for token in if_none_match.split(",")]
+            if "*" in etag_tokens or normalized_etag in etag_tokens:
+                cache_headers.pop("Content-Length", None)
+                return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=cache_headers)
+
+        if_modified_since = request.headers.get("if-modified-since")
+        if if_modified_since and last_modified:
+            try:
+                ims_dt = parsedate_to_datetime(if_modified_since)
+                lm_dt = parsedate_to_datetime(str(last_modified))
+                if ims_dt and lm_dt and lm_dt <= ims_dt:
+                    cache_headers.pop("Content-Length", None)
+                    return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=cache_headers)
+            except Exception:
+                pass
+
+        return StreamingResponse(
+            stream,
+            media_type=thumbnail_mime_type,
+            headers=cache_headers,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get knowledge thumbnail: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get thumbnail: {str(e)}",
+        )
+
+
 @router.get("/{knowledge_id}/download")
 async def download_knowledge(
     knowledge_id: str,
@@ -2547,11 +2785,7 @@ async def download_knowledge(
     inline: bool = Query(default=False),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Download knowledge item file from MinIO.
-
-    Args:
-        inline: If True, set Content-Disposition to inline (for preview).
-    """
+    """Download knowledge item file from MinIO."""
     try:
         with get_db_session() as session:
             try:

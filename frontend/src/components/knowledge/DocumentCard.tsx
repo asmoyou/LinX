@@ -89,6 +89,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
   const uploadProgress = Math.max(0, Math.min(100, document.uploadProgress ?? 0));
   const lastUpdatedAt = document.processedAt || document.uploadedAt;
   const previewCacheKey = `${document.id}:${document.processedAt || document.uploadedAt}`;
+  const hasGeneratedThumbnail = Boolean(document.thumbnailUrl);
   const previewMediaUrl =
     document.thumbnailUrl ||
     ((document.type === 'image' || document.type === 'video' || document.type === 'pdf')
@@ -352,7 +353,14 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
         className={`mb-4 rounded-lg overflow-hidden relative ${previewContainerClass}`}
       >
         {hasMediaPreview ? (
-          document.type === 'video' ? (
+          hasGeneratedThumbnail ? (
+            <img
+              src={previewMediaUrl}
+              alt={document.name}
+              className="h-full w-full object-cover"
+              draggable={false}
+            />
+          ) : document.type === 'video' ? (
             <video
               src={previewMediaUrl}
               className="h-full w-full object-cover"
