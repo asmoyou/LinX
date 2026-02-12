@@ -104,6 +104,14 @@ class ContainerConfig:
             if self.apparmor_profile:
                 security_opt.append(f"apparmor={self.apparmor_profile}")
 
+        labels = {
+            "com.linx.managed": "true",
+            "com.linx.type": "sandbox",
+            "com.linx.container_id": self.container_id,
+        }
+        if self.agent_id is not None:
+            labels["com.linx.agent_id"] = str(self.agent_id)
+
         config = {
             "image": self.image,
             "name": self.name or f"agent-{self.container_id[:8]}",
@@ -115,10 +123,7 @@ class ContainerConfig:
             "security_opt": security_opt,
             "cap_drop": self.drop_capabilities,
             "cap_add": self.add_capabilities,
-            "labels": {
-                "com.linx.managed": "true",
-                "com.linx.type": "sandbox",
-            },
+            "labels": labels,
             # Add resource limits directly
             **resource_config,
         }
@@ -854,6 +859,44 @@ class DockerCleanupManager:
             self.logger.error(f"Error listing orphaned containers: {e}")
 
         return removed
+
+    def cleanup_container_by_internal_id(self, container_id: str) -> bool:
+        """Force-remove a LinX container by internal container ID label.
+
+        Args:
+            container_id: LinX internal container ID (not Docker short ID)
+
+        Returns:
+            True if at least one matching container is removed, False otherwise
+        """
+        if not self.docker_available:
+            return False
+
+        try:
+            containers = self.docker_client.containers.list(
+                all=True,
+                filters={
+                    "label": [
+                        "com.linx.managed=true",
+                        f"com.linx.container_id={container_id}",
+                    ]
+                },
+            )
+
+            removed = False
+            for container in containers:
+                try:
+                    container.remove(force=True)
+                    removed = True
+                except DockerException as e:
+                    self.logger.warning(
+                        f"Failed to force-remove container {container.id[:12]}: {e}"
+                    )
+
+            return removed
+        except DockerException as e:
+            self.logger.error(f"Error finding container by internal ID {container_id}: {e}")
+            return False
 
     def cleanup_sandbox_images(self) -> int:
         """Remove sandbox-derived images tagged with LinX labels.

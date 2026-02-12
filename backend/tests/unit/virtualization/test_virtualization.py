@@ -6,6 +6,7 @@ References:
 """
 
 import platform
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -14,6 +15,7 @@ from virtualization.container_manager import (
     ContainerConfig,
     ContainerManager,
     ContainerStatus,
+    DockerCleanupManager,
     get_container_manager,
 )
 from virtualization.resource_limits import (
@@ -404,6 +406,7 @@ class TestContainerConfig:
     def test_container_config_to_docker_config(self):
         """Test conversion to Docker configuration."""
         config = ContainerConfig(
+            agent_id=uuid4(),
             name="test-container",
             image="test-image:latest",
         )
@@ -413,8 +416,54 @@ class TestContainerConfig:
         assert docker_config["name"] == "test-container"
         assert docker_config["image"] == "test-image:latest"
         assert docker_config["read_only"] is True
-        assert "host_config" in docker_config
-        assert "security_opt" in docker_config["host_config"]
+        assert "security_opt" in docker_config
+        assert "no-new-privileges:true" in docker_config["security_opt"]
+        assert docker_config["labels"]["com.linx.managed"] == "true"
+        assert docker_config["labels"]["com.linx.type"] == "sandbox"
+        assert docker_config["labels"]["com.linx.container_id"] == config.container_id
+        assert docker_config["labels"]["com.linx.agent_id"] == str(config.agent_id)
+
+
+class TestDockerCleanupManager:
+    """Test DockerCleanupManager functionality."""
+
+    def test_cleanup_container_by_internal_id(self):
+        """Test force-removing container by LinX internal ID label."""
+        manager = DockerCleanupManager()
+        manager.docker_available = True
+
+        mock_container = Mock()
+        mock_container.id = "abc123456789"
+        mock_client = Mock()
+        mock_client.containers.list.return_value = [mock_container]
+        manager.docker_client = mock_client
+
+        removed = manager.cleanup_container_by_internal_id("sandbox-123")
+
+        assert removed is True
+        mock_client.containers.list.assert_called_once_with(
+            all=True,
+            filters={
+                "label": [
+                    "com.linx.managed=true",
+                    "com.linx.container_id=sandbox-123",
+                ]
+            },
+        )
+        mock_container.remove.assert_called_once_with(force=True)
+
+    def test_cleanup_container_by_internal_id_not_found(self):
+        """Test cleanup returns False when no matching container exists."""
+        manager = DockerCleanupManager()
+        manager.docker_available = True
+
+        mock_client = Mock()
+        mock_client.containers.list.return_value = []
+        manager.docker_client = mock_client
+
+        removed = manager.cleanup_container_by_internal_id("sandbox-missing")
+
+        assert removed is False
 
 
 class TestSandboxPool:

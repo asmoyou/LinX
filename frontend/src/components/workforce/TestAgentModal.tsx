@@ -174,7 +174,14 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
       const currentAgentId = agentIdRef.current;
 
       if (currentSessionId && currentAgentId) {
-        agentsApi.endSession(currentAgentId, currentSessionId);
+        void agentsApi.endSession(currentAgentId, currentSessionId).then((result) => {
+          if (!result.success) {
+            console.warn(
+              `[TestAgentModal] Session cleanup failed for ${currentSessionId}: ` +
+                `${result.error || 'unknown error'}`
+            );
+          }
+        });
       }
 
       // Reset all state

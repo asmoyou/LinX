@@ -347,12 +347,18 @@ export const agentsApi = {
    * Note: The backend DELETE endpoint is idempotent — it returns 200
    * even if the session is already gone, so no 404 toast will appear.
    */
-  endSession: async (agentId: string, sessionId: string): Promise<void> => {
+  endSession: async (
+    agentId: string,
+    sessionId: string
+  ): Promise<{ success: boolean; error?: string }> => {
     try {
       await apiClient.delete(`/agents/${agentId}/sessions/${sessionId}`);
-    } catch {
-      // Swallow errors — session cleanup is best-effort.
-      // The backend TTL cleanup will catch anything we miss.
+      return { success: true };
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error while ending session';
+      console.warn(`[agentsApi.endSession] Failed for ${agentId}/${sessionId}: ${errorMessage}`);
+      return { success: false, error: errorMessage };
     }
   },
 

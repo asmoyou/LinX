@@ -266,10 +266,16 @@ class SessionManager:
         # Release sandbox container if in use
         if session.sandbox_id:
             try:
-                await self._release_sandbox(session.sandbox_id)
-                logger.debug(
-                    f"Released sandbox {session.sandbox_id} for session {session.session_id}"
-                )
+                released = await self._release_sandbox(session.sandbox_id)
+                if released:
+                    logger.debug(
+                        f"Released sandbox {session.sandbox_id} for session {session.session_id}"
+                    )
+                else:
+                    logger.warning(
+                        f"Failed to release sandbox {session.sandbox_id} "
+                        f"for session {session.session_id}"
+                    )
             except Exception as e:
                 logger.warning(f"Failed to release sandbox {session.sandbox_id}: {e}")
 
@@ -476,11 +482,13 @@ class SessionManager:
 
             # Container path for session workdir
             container_workdir = "/workspace"
+            session_suffix = session_workdir.name.removeprefix("session_")
+            container_name = f"session-{agent_id.hex[:8]}-{session_suffix}"
 
             # Create a container config optimized for code execution sessions
             config = ContainerConfig(
                 agent_id=agent_id,
-                name=f"session-{agent_id.hex[:8]}",
+                name=container_name,
                 sandbox_type=container_manager.default_sandbox,
                 image="python:3.11-bookworm",  # Full Python image with curl, wget, git, gcc etc.
                 read_only_root=False,  # Need writable filesystem for pip install
@@ -530,20 +538,39 @@ class SessionManager:
             logger.error(f"Failed to acquire sandbox: {e}", exc_info=True)
             return None
 
-    async def _release_sandbox(self, sandbox_id: str) -> None:
+    async def _release_sandbox(self, sandbox_id: str) -> bool:
         """Release a sandbox container.
 
         Args:
             sandbox_id: Container ID to release
+
+        Returns:
+            True if cleanup succeeded, False otherwise
         """
         try:
-            from virtualization.container_manager import get_container_manager
+            from virtualization.container_manager import (
+                get_container_manager,
+                get_docker_cleanup_manager,
+            )
 
             container_manager = get_container_manager()
-            container_manager.terminate_container(sandbox_id)
-            logger.info(f"Released sandbox container: {sandbox_id}")
+            terminated = container_manager.terminate_container(sandbox_id)
+            if terminated:
+                logger.info(f"Released sandbox container: {sandbox_id}")
+                return True
+
+            # Fallback: manager may have lost in-memory tracking, try direct Docker cleanup by label
+            cleanup_manager = get_docker_cleanup_manager()
+            removed = cleanup_manager.cleanup_container_by_internal_id(sandbox_id)
+            if removed:
+                logger.info(f"Released sandbox container via fallback cleanup: {sandbox_id}")
+                return True
+
+            logger.warning(f"Sandbox container cleanup reported failure: {sandbox_id}")
+            return False
         except Exception as e:
             logger.warning(f"Failed to release sandbox {sandbox_id}: {e}")
+            return False
 
     async def end_session(self, session_id: str, user_id: UUID) -> bool:
         """End a session and clean up resources.
