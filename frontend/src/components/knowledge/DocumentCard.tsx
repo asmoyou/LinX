@@ -20,6 +20,7 @@ import {
   Pencil,
 } from 'lucide-react';
 import { GlassPanel } from '@/components/GlassPanel';
+import { knowledgeApi } from '@/api/knowledge';
 import type { Document } from '@/types/document';
 
 interface DocumentCardProps {
@@ -47,12 +48,68 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = React.useState(false);
+  const [cardPreviewUrl, setCardPreviewUrl] = React.useState<string | null>(null);
+  const [isCardPreviewLoading, setIsCardPreviewLoading] = React.useState(false);
   const processingProgress = Math.max(0, Math.min(100, document.processingProgress ?? 0));
   const uploadProgress = Math.max(0, Math.min(100, document.uploadProgress ?? 0));
   const lastUpdatedAt = document.processedAt || document.uploadedAt;
   const previewImageUrl =
-    document.thumbnailUrl || (document.type === 'image' ? document.url : undefined);
+    document.thumbnailUrl ||
+    (document.type === 'image' ? document.url : undefined) ||
+    (document.type === 'image' ? cardPreviewUrl : undefined);
   const hasPreviewImage = Boolean(previewImageUrl);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    let localObjectUrl: string | null = null;
+
+    const hasDirectUrl = Boolean(document.thumbnailUrl || document.url);
+    const canLoadImagePreview =
+      document.type === 'image' &&
+      document.status === 'completed' &&
+      document.fileReference?.startsWith('minio:') &&
+      !hasDirectUrl;
+
+    if (!canLoadImagePreview) {
+      setCardPreviewUrl(null);
+      setIsCardPreviewLoading(false);
+      return () => undefined;
+    }
+
+    const loadPreview = async () => {
+      setIsCardPreviewLoading(true);
+      try {
+        const { blob } = await knowledgeApi.download(document.id);
+        if (cancelled) return;
+        localObjectUrl = URL.createObjectURL(blob);
+        setCardPreviewUrl(localObjectUrl);
+      } catch {
+        if (!cancelled) {
+          setCardPreviewUrl(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setIsCardPreviewLoading(false);
+        }
+      }
+    };
+
+    void loadPreview();
+
+    return () => {
+      cancelled = true;
+      if (localObjectUrl) {
+        URL.revokeObjectURL(localObjectUrl);
+      }
+    };
+  }, [
+    document.id,
+    document.type,
+    document.status,
+    document.fileReference,
+    document.thumbnailUrl,
+    document.url,
+  ]);
 
   const getFileIcon = (type: Document['type'], className: string = 'w-8 h-8') => {
     switch (type) {
@@ -143,12 +200,17 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
 
       {/* Thumbnail or compact icon strip */}
       <div
-        className={`mb-4 rounded-lg overflow-hidden ${
+        className={`mb-4 rounded-lg overflow-hidden relative ${
           hasPreviewImage ? 'h-32 bg-white/10' : 'h-16 bg-white/5 border border-white/20'
         }`}
       >
         {hasPreviewImage ? (
-          <img src={previewImageUrl} alt={document.name} className="h-full w-full object-cover" />
+          <img
+            src={previewImageUrl}
+            alt={document.name}
+            className="h-full w-full object-cover"
+            draggable={false}
+          />
         ) : (
           <div className="h-full px-3 flex items-center justify-between">
             <div className="flex items-center gap-3 min-w-0">
@@ -169,6 +231,11 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
                 {document.chunkCount} chunks
               </span>
             )}
+          </div>
+        )}
+        {!hasPreviewImage && isCardPreviewLoading && (
+          <div className="absolute inset-0 bg-black/20 flex items-center justify-center">
+            <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />
           </div>
         )}
       </div>
