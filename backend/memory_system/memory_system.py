@@ -16,9 +16,10 @@ import json
 import logging
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pymilvus import Collection
+import requests
 
 from memory_system.collections import CollectionName
 from memory_system.embedding_service import get_embedding_service
@@ -63,21 +64,174 @@ class MemorySystem(MemorySystemInterface):
         """Initialize the Memory System."""
         self._config = get_config()
         self._milvus = get_milvus_connection()
-        self._embedding_service = get_embedding_service()
+        self._embedding_service = get_embedding_service(scope="memory")
 
-        # Load memory configuration
+        # Load memory configuration with retrieval-section priority and root compatibility fallback.
         memory_config = self._config.get_section("memory")
-        self._default_top_k = memory_config.get("default_top_k", 10)
-        self._recency_weight = memory_config.get("recency_weight", 0.3)
-        self._similarity_weight = memory_config.get("similarity_weight", 0.7)
-        self._collection_retry_attempts = memory_config.get("collection_retry_attempts", 3)
-        self._collection_retry_delay_seconds = memory_config.get(
-            "collection_retry_delay_seconds", 0.35
-        )
-        self._search_timeout_seconds = float(memory_config.get("search_timeout_seconds", 2.0))
-        self._delete_timeout_seconds = float(memory_config.get("delete_timeout_seconds", 2.0))
+        retrieval_config = memory_config.get("retrieval", {})
+        if not isinstance(retrieval_config, dict):
+            retrieval_config = {}
 
-        logger.info("Memory System initialized")
+        kb_config = self._config.get_section("knowledge_base")
+        kb_search_cfg = kb_config.get("search", {}) if isinstance(kb_config, dict) else {}
+        if not isinstance(kb_search_cfg, dict):
+            kb_search_cfg = {}
+
+        milvus_config = self._config.get_section("database.milvus")
+        if not isinstance(milvus_config, dict):
+            milvus_config = {}
+
+        def _cfg_int(*candidates: object, default: int) -> int:
+            for value in candidates:
+                try:
+                    parsed = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if parsed > 0:
+                    return parsed
+            return default
+
+        def _cfg_float(
+            *candidates: object, default: float, minimum: Optional[float] = None
+        ) -> float:
+            for value in candidates:
+                try:
+                    parsed = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if minimum is not None and parsed < minimum:
+                    continue
+                return parsed
+            return default
+
+        def _cfg_text(*candidates: object) -> str:
+            for value in candidates:
+                text = str(value or "").strip()
+                if text:
+                    return text
+            return ""
+
+        self._default_top_k = _cfg_int(
+            retrieval_config.get("top_k"),
+            memory_config.get("default_top_k"),
+            default=10,
+        )
+        self._recency_weight = _cfg_float(
+            retrieval_config.get("recency_weight"),
+            memory_config.get("recency_weight"),
+            default=0.3,
+            minimum=0.0,
+        )
+        self._similarity_weight = _cfg_float(
+            retrieval_config.get("similarity_weight"),
+            memory_config.get("similarity_weight"),
+            default=0.7,
+            minimum=0.0,
+        )
+        total_weight = self._recency_weight + self._similarity_weight
+        if total_weight <= 0:
+            self._similarity_weight = 0.7
+            self._recency_weight = 0.3
+        else:
+            self._similarity_weight = self._similarity_weight / total_weight
+            self._recency_weight = self._recency_weight / total_weight
+
+        self._default_similarity_threshold = max(
+            _cfg_float(
+                retrieval_config.get("similarity_threshold"),
+                memory_config.get("similarity_threshold"),
+                default=0.0,
+            ),
+            0.0,
+        )
+
+        self._enable_reranking = bool(
+            retrieval_config.get(
+                "enable_reranking",
+                retrieval_config.get(
+                    "rerank_enabled", memory_config.get("enable_reranking", False)
+                ),
+            )
+        )
+        self._rerank_top_k = _cfg_int(
+            retrieval_config.get("rerank_top_k"),
+            kb_search_cfg.get("rerank_top_k"),
+            default=max(self._default_top_k, 20),
+        )
+        self._rerank_weight = min(
+            max(
+                _cfg_float(
+                    retrieval_config.get("rerank_weight"),
+                    kb_search_cfg.get("rerank_weight"),
+                    default=0.75,
+                ),
+                0.0,
+            ),
+            1.0,
+        )
+        self._rerank_provider = _cfg_text(
+            retrieval_config.get("rerank_provider"),
+            kb_search_cfg.get("rerank_provider"),
+        )
+        self._rerank_model = _cfg_text(
+            retrieval_config.get("rerank_model"),
+            kb_search_cfg.get("rerank_model"),
+        )
+        self._rerank_timeout_seconds = _cfg_float(
+            retrieval_config.get("rerank_timeout_seconds"),
+            kb_search_cfg.get("rerank_timeout_seconds"),
+            default=8.0,
+            minimum=1.0,
+        )
+        self._rerank_failure_backoff_seconds = _cfg_float(
+            retrieval_config.get("rerank_failure_backoff_seconds"),
+            kb_search_cfg.get("rerank_failure_backoff_seconds"),
+            default=30.0,
+            minimum=1.0,
+        )
+        self._rerank_doc_max_chars = _cfg_int(
+            retrieval_config.get("rerank_doc_max_chars"),
+            kb_search_cfg.get("rerank_doc_max_chars"),
+            default=1200,
+        )
+        self._rerank_fail_until = 0.0
+
+        self._collection_retry_attempts = _cfg_int(
+            memory_config.get("collection_retry_attempts"),
+            default=3,
+        )
+        self._collection_retry_delay_seconds = _cfg_float(
+            memory_config.get("collection_retry_delay_seconds"),
+            default=0.35,
+            minimum=0.0,
+        )
+        self._search_timeout_seconds = _cfg_float(
+            memory_config.get("search_timeout_seconds"),
+            default=2.0,
+            minimum=0.1,
+        )
+        self._delete_timeout_seconds = _cfg_float(
+            memory_config.get("delete_timeout_seconds"),
+            default=2.0,
+            minimum=0.1,
+        )
+        self._search_metric_type = _cfg_text(milvus_config.get("metric_type")) or "L2"
+        self._search_nprobe = _cfg_int(milvus_config.get("nprobe"), default=10)
+
+        logger.info(
+            "Memory System initialized",
+            extra={
+                "default_top_k": self._default_top_k,
+                "similarity_weight": self._similarity_weight,
+                "recency_weight": self._recency_weight,
+                "similarity_threshold": self._default_similarity_threshold,
+                "rerank_enabled": self._enable_reranking,
+                "rerank_provider": self._rerank_provider,
+                "rerank_model": self._rerank_model,
+                "metric_type": self._search_metric_type,
+                "nprobe": self._search_nprobe,
+            },
+        )
 
     def store_memory(self, memory: MemoryItem) -> int:
         """
@@ -125,6 +279,11 @@ class MemorySystem(MemorySystemInterface):
 
             # Prepare data for insertion
             timestamp_ms = int(memory.timestamp.timestamp() * 1000)
+            metadata_payload = dict(memory.metadata or {})
+            if memory.user_id and "user_id" not in metadata_payload:
+                metadata_payload["user_id"] = memory.user_id
+            if memory.task_id and "task_id" not in metadata_payload:
+                metadata_payload["task_id"] = memory.task_id
 
             if collection_name == CollectionName.AGENT_MEMORIES:
                 data = [
@@ -132,7 +291,7 @@ class MemorySystem(MemorySystemInterface):
                     [embedding],  # embedding
                     [memory.content],  # content
                     [timestamp_ms],  # timestamp
-                    [memory.metadata or {}],  # metadata
+                    [metadata_payload],  # metadata
                 ]
             else:  # COMPANY_MEMORIES
                 data = [
@@ -141,7 +300,7 @@ class MemorySystem(MemorySystemInterface):
                     [memory.content],  # content
                     [memory.memory_type.value],  # memory_type
                     [timestamp_ms],  # timestamp
-                    [memory.metadata or {}],  # metadata
+                    [metadata_payload],  # metadata
                 ]
 
             # Insert into Milvus
@@ -157,6 +316,8 @@ class MemorySystem(MemorySystemInterface):
 
             return memory_id
 
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"Failed to store memory: {e}")
             raise RuntimeError(f"Memory storage failed: {e}")
@@ -191,11 +352,18 @@ class MemorySystem(MemorySystemInterface):
                 results = self._search_collection(collection_name, query_embedding, query)
                 all_results.extend(results)
 
-            # Rank results by relevance (similarity + recency)
+            # Rank results by relevance (similarity + recency).
             ranked_results = self._rank_results(all_results)
 
-            # Apply top_k limit
+            # Optional model-based rerank for top candidates.
             top_k = query.top_k or self._default_top_k
+            ranked_results = self._rerank_results(
+                query_text=query.query_text,
+                ranked_results=ranked_results,
+                top_k=top_k,
+            )
+
+            # Apply top_k limit
             final_results = ranked_results[:top_k]
 
             logger.info(
@@ -261,8 +429,11 @@ class MemorySystem(MemorySystemInterface):
             # Build filter expression
             filter_expr = self._build_filter_expression(collection_name, query)
 
-            # Prepare search parameters
-            search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
+            # Prepare search parameters from Milvus config.
+            search_params = {
+                "metric_type": self._search_metric_type,
+                "params": {"nprobe": self._search_nprobe},
+            }
 
             # Determine output fields based on collection
             if collection_name == CollectionName.AGENT_MEMORIES:
@@ -270,23 +441,33 @@ class MemorySystem(MemorySystemInterface):
             else:  # COMPANY_MEMORIES
                 output_fields = ["user_id", "content", "memory_type", "timestamp", "metadata"]
 
+            candidate_limit = max(
+                query.top_k or self._default_top_k,
+                self._rerank_top_k if self._enable_reranking else 0,
+            )
+
             # Perform search with short retries for transient load-state failures.
             results = self._search_collection_with_retry(
                 collection=collection,
                 collection_name=collection_name,
                 query_embedding=query_embedding,
                 search_params=search_params,
-                limit=query.top_k or self._default_top_k,
+                limit=candidate_limit,
                 filter_expr=filter_expr,
                 output_fields=output_fields,
             )
 
             # Convert results to MemoryItem objects
+            effective_min_similarity = (
+                query.min_similarity
+                if (query.min_similarity and query.min_similarity > 0.0)
+                else self._default_similarity_threshold
+            )
             memories = []
             for hits in results:
                 for hit in hits:
                     memory = self._hit_to_memory_item(hit, collection_name)
-                    if memory and memory.similarity_score >= query.min_similarity:
+                    if memory and memory.similarity_score >= effective_min_similarity:
                         memories.append(memory)
 
             return memories
@@ -392,6 +573,8 @@ class MemorySystem(MemorySystemInterface):
         if collection_name == CollectionName.AGENT_MEMORIES:
             if query.agent_id:
                 filters.append(f'agent_id == "{query.agent_id}"')
+            if query.user_id:
+                filters.append(f'metadata["user_id"] == "{query.user_id}"')
         else:  # COMPANY_MEMORIES
             if query.user_id:
                 filters.append(f'user_id == "{query.user_id}"')
@@ -402,6 +585,24 @@ class MemorySystem(MemorySystemInterface):
                 filters.append(f'metadata["task_id"] == "{query.task_id}"')
 
         return " && ".join(filters) if filters else None
+
+    def _distance_to_similarity(self, distance: float) -> float:
+        """Normalize distance/score from Milvus into a [0, 1] similarity value."""
+        metric = str(self._search_metric_type or "L2").upper()
+        try:
+            raw_distance = float(distance)
+        except (TypeError, ValueError):
+            return 0.0
+
+        if metric == "L2":
+            return 1.0 / (1.0 + max(raw_distance, 0.0))
+
+        # For IP/COSINE, Milvus returns score-like distances where larger is better.
+        if metric in {"IP", "COSINE"}:
+            bounded = max(min(raw_distance, 1.0), -1.0)
+            return (bounded + 1.0) / 2.0
+
+        return 1.0 / (1.0 + max(raw_distance, 0.0))
 
     def _hit_to_memory_item(self, hit: Any, collection_name: str) -> Optional[MemoryItem]:
         """
@@ -417,7 +618,7 @@ class MemorySystem(MemorySystemInterface):
         try:
             # Extract fields from hit
             memory_id = hit.id
-            similarity_score = 1.0 / (1.0 + hit.distance)  # Convert L2 distance to similarity
+            similarity_score = self._distance_to_similarity(hit.distance)
             content = hit.entity.get("content")
             timestamp_ms = hit.entity.get("timestamp")
             metadata = hit.entity.get("metadata")
@@ -499,6 +700,236 @@ class MemorySystem(MemorySystemInterface):
         ranked = sorted(results, key=lambda m: m.metadata.get("_combined_score", 0.0), reverse=True)
 
         return ranked
+
+    def _rerank_results(
+        self,
+        query_text: str,
+        ranked_results: List[MemoryItem],
+        top_k: int,
+    ) -> List[MemoryItem]:
+        """Apply optional model rerank to the highest-ranked candidates."""
+        if (
+            not self._enable_reranking
+            or not self._rerank_provider
+            or not self._rerank_model
+            or len(ranked_results) <= 1
+        ):
+            return ranked_results
+
+        now = time.monotonic()
+        if now < self._rerank_fail_until:
+            return ranked_results
+
+        from llm_providers.provider_resolver import resolve_provider
+
+        provider_cfg = resolve_provider(self._rerank_provider)
+        base_url = str(provider_cfg.get("base_url") or "").strip()
+        if not base_url:
+            logger.warning(
+                "Memory rerank provider not resolvable, skip model rerank",
+                extra={"rerank_provider": self._rerank_provider},
+            )
+            return ranked_results
+
+        candidate_limit = min(
+            len(ranked_results),
+            max(int(self._rerank_top_k), int(top_k) * 3, int(top_k)),
+        )
+        candidates = ranked_results[:candidate_limit]
+        documents = [self._build_rerank_document(item) for item in candidates]
+
+        rerank_items = self._call_rerank_api(
+            query=query_text,
+            documents=documents,
+            base_url=base_url,
+            api_key=provider_cfg.get("api_key"),
+        )
+        if not rerank_items:
+            return ranked_results
+
+        rerank_weight = min(max(self._rerank_weight, 0.0), 1.0)
+        base_weight = 1.0 - rerank_weight
+
+        reranked_candidates: List[MemoryItem] = []
+        for doc_index, rerank_score in rerank_items:
+            if doc_index < 0 or doc_index >= len(candidates):
+                continue
+            candidate = candidates[doc_index]
+            candidate.metadata = dict(candidate.metadata or {})
+            base_score = float(
+                candidate.metadata.get("_combined_score", candidate.similarity_score or 0.0)
+            )
+            base_score = max(min(base_score, 1.0), 0.0)
+            blended = rerank_weight * float(rerank_score) + base_weight * base_score
+            candidate.metadata["_rerank_score"] = round(float(rerank_score), 4)
+            candidate.metadata["_rerank_blended_score"] = round(float(blended), 4)
+            candidate.metadata["_rerank_provider"] = self._rerank_provider
+            candidate.metadata["_rerank_model"] = self._rerank_model
+            candidate.similarity_score = float(blended)
+            reranked_candidates.append(candidate)
+
+        if not reranked_candidates:
+            return ranked_results
+
+        reranked_candidates.sort(
+            key=lambda item: float((item.metadata or {}).get("_rerank_blended_score", 0.0)),
+            reverse=True,
+        )
+        reranked_ids = {int(item.id) for item in reranked_candidates if item.id is not None}
+        reranked_candidates.extend(
+            [item for item in candidates if item.id is None or int(item.id) not in reranked_ids]
+        )
+        reranked_candidates.extend(ranked_results[candidate_limit:])
+        return reranked_candidates
+
+    def _build_rerank_document(self, memory: MemoryItem) -> str:
+        """Build compact rerank document from memory content and selected metadata."""
+        parts = [memory.content or ""]
+        metadata = memory.metadata or {}
+
+        summary = metadata.get("summary")
+        if summary:
+            parts.append(f"Summary: {summary}")
+
+        tags = metadata.get("tags")
+        if isinstance(tags, list) and tags:
+            text_tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+            if text_tags:
+                parts.append("Tags: " + ", ".join(text_tags))
+
+        text = "\n".join(part.strip() for part in parts if part and str(part).strip())
+        return text[: max(int(self._rerank_doc_max_chars), 256)]
+
+    def _call_rerank_api(
+        self,
+        query: str,
+        documents: List[str],
+        base_url: str,
+        api_key: Optional[str],
+    ) -> List[Tuple[int, float]]:
+        """Call OpenAI-compatible rerank API and return ordered (doc_index, score)."""
+        if not documents:
+            return []
+
+        now = time.monotonic()
+        if now < self._rerank_fail_until:
+            return []
+
+        total_timeout = max(float(self._rerank_timeout_seconds), 1.0)
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        payload = {
+            "model": self._rerank_model,
+            "query": query,
+            "documents": documents,
+            "top_n": len(documents),
+        }
+
+        urls_to_try = [
+            f"{base_url.rstrip('/')}/v1/rerank",
+            f"{base_url.rstrip('/')}/rerank",
+        ]
+        per_attempt_timeout = max(total_timeout / max(len(urls_to_try), 1), 1.0)
+
+        last_error = None
+        for url in urls_to_try:
+            try:
+                response = requests.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=per_attempt_timeout,
+                )
+                if response.status_code != 200:
+                    last_error = f"{url} -> HTTP {response.status_code}: {response.text[:160]}"
+                    continue
+                parsed = self._parse_rerank_response(response.json(), len(documents))
+                if parsed:
+                    self._rerank_fail_until = 0.0
+                    return parsed
+                last_error = f"{url} -> empty or invalid rerank response"
+            except Exception as call_err:
+                last_error = f"{url} -> {call_err}"
+
+        self._rerank_fail_until = now + max(self._rerank_failure_backoff_seconds, 1.0)
+        if last_error:
+            logger.warning(
+                "Memory rerank failed, fallback to base ranking",
+                extra={
+                    "error": last_error,
+                    "rerank_provider": self._rerank_provider,
+                    "backoff_seconds": self._rerank_failure_backoff_seconds,
+                },
+            )
+        return []
+
+    def _parse_rerank_response(
+        self,
+        response_data: object,
+        doc_count: int,
+    ) -> List[Tuple[int, float]]:
+        """Parse rerank response into ordered (index, score) pairs."""
+        if isinstance(response_data, str):
+            try:
+                response_data = json.loads(response_data)
+            except Exception:
+                return []
+        if not isinstance(response_data, dict):
+            return []
+
+        raw_results = response_data.get("results")
+        if not isinstance(raw_results, list):
+            raw_results = response_data.get("data")
+        if not isinstance(raw_results, list):
+            raw_results = response_data.get("output")
+            if isinstance(raw_results, str):
+                try:
+                    wrapped_output = json.loads(raw_results)
+                except Exception:
+                    wrapped_output = None
+                if isinstance(wrapped_output, dict):
+                    raw_results = wrapped_output.get("results") or wrapped_output.get("data")
+        if not isinstance(raw_results, list):
+            return []
+
+        parsed: List[Tuple[int, float]] = []
+        for idx, item in enumerate(raw_results):
+            if isinstance(item, dict):
+                raw_index = (
+                    item.get("index")
+                    if item.get("index") is not None
+                    else item.get("document_index")
+                )
+                if raw_index is None and isinstance(item.get("document"), dict):
+                    raw_index = item.get("document", {}).get("index")
+                try:
+                    doc_index = int(raw_index if raw_index is not None else idx)
+                except (TypeError, ValueError):
+                    continue
+                raw_score = (
+                    item.get("relevance_score")
+                    if item.get("relevance_score") is not None
+                    else item.get("score")
+                )
+                if raw_score is None:
+                    raw_score = item.get("similarity", 0.0)
+            else:
+                doc_index = idx
+                raw_score = item
+
+            try:
+                score = float(raw_score)
+            except (TypeError, ValueError):
+                continue
+
+            if doc_index < 0 or doc_index >= doc_count:
+                continue
+            parsed.append((doc_index, max(min(score, 1.0), 0.0)))
+
+        parsed.sort(key=lambda pair: pair[1], reverse=True)
+        return parsed
 
     def delete_memory(self, memory_id: int, memory_type: MemoryType) -> bool:
         """

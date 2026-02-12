@@ -64,7 +64,12 @@ def get_embedding_dimension() -> int:
         int: Embedding dimension (default: 768)
     """
     config = get_config()
-    return config.get("memory.embedding.dimension", 768)
+    # Memory schema should primarily follow memory.embedding.dimension, with
+    # knowledge_base.embedding.dimension as compatibility fallback.
+    return config.get(
+        "memory.embedding.dimension",
+        config.get("knowledge_base.embedding.dimension", 768),
+    )
 
 
 def get_index_type() -> str:

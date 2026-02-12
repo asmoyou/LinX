@@ -1,17 +1,14 @@
-"""Embedding generation service using local LLM providers.
+"""Embedding generation services and scoped config resolution.
 
-This module provides embedding generation using local LLM providers (Ollama/vLLM)
-for semantic similarity search in the memory system.
-
-References:
-- Requirements 3.2, 5: Vector Database and LLM Integration
-- Design Section 6.3: Embedding Strategy
-- Design Section 9: LLM Integration Design
+This module provides embedding generation using local/remote providers
+(Ollama or OpenAI-compatible endpoints) and allows different pipelines
+(e.g. memory and knowledge base) to resolve embedding configuration
+independently with explicit fallback rules.
 """
 
 import json
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import requests
 
@@ -19,6 +16,179 @@ from memory_system.memory_interface import EmbeddingServiceInterface
 from shared.config import get_config
 
 logger = logging.getLogger(__name__)
+
+EMBEDDING_SCOPE_MEMORY = "memory"
+EMBEDDING_SCOPE_KNOWLEDGE_BASE = "knowledge_base"
+_ALLOWED_EMBEDDING_SCOPES = {EMBEDDING_SCOPE_MEMORY, EMBEDDING_SCOPE_KNOWLEDGE_BASE}
+
+
+def _normalize_scope(scope: Optional[str]) -> str:
+    normalized = str(scope or EMBEDDING_SCOPE_MEMORY).strip().lower()
+    if normalized not in _ALLOWED_EMBEDDING_SCOPES:
+        return EMBEDDING_SCOPE_MEMORY
+    return normalized
+
+
+def _safe_get_section(config, section: str) -> Dict[str, object]:
+    if not config:
+        return {}
+    try:
+        section_data = config.get_section(section)
+    except Exception:
+        return {}
+    return section_data if isinstance(section_data, dict) else {}
+
+
+def _normalize_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _coerce_int(value: object) -> Optional[int]:
+    try:
+        coerced = int(value)
+        return coerced if coerced > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_provider_models(provider_cfg: dict) -> List[str]:
+    provider_models = provider_cfg.get("models", []) if isinstance(provider_cfg, dict) else []
+    if isinstance(provider_models, dict):
+        provider_models = list(provider_models.values())
+    elif isinstance(provider_models, str):
+        provider_models = [provider_models]
+    elif not isinstance(provider_models, list):
+        provider_models = []
+
+    models: List[str] = []
+    for model in provider_models:
+        model_str = _normalize_text(model)
+        if model_str:
+            models.append(model_str)
+    return models
+
+
+def _infer_embedding_model_from_provider(provider_cfg: dict) -> str:
+    models = _normalize_provider_models(provider_cfg)
+    embedding_hints = ("embed", "embedding", "bge", "e5", "mxbai", "gte", "jina")
+    for candidate in models:
+        lowered = candidate.lower()
+        if any(hint in lowered for hint in embedding_hints):
+            return candidate
+    return models[0] if models else ""
+
+
+def _default_model_for_provider(provider: str) -> str:
+    return "nomic-embed-text" if provider == "ollama" else "BAAI/bge-m3"
+
+
+def resolve_embedding_settings(scope: str = EMBEDDING_SCOPE_MEMORY) -> Dict[str, object]:
+    """Resolve effective embedding settings for a pipeline scope.
+
+    Resolution order:
+    1. scope-specific config section (memory.embedding or knowledge_base.embedding)
+    2. optional cross-scope fallback (configurable per scope)
+    3. llm.embedding_provider / llm.default_provider
+    4. provider model hints / hardcoded defaults
+    """
+    normalized_scope = _normalize_scope(scope)
+    config = get_config()
+
+    memory_cfg = _safe_get_section(config, "memory")
+    kb_cfg = _safe_get_section(config, "knowledge_base")
+    llm_cfg = _safe_get_section(config, "llm")
+
+    memory_embedding = memory_cfg.get("embedding", {}) if isinstance(memory_cfg, dict) else {}
+    if not isinstance(memory_embedding, dict):
+        memory_embedding = {}
+
+    kb_embedding = kb_cfg.get("embedding", {}) if isinstance(kb_cfg, dict) else {}
+    if not isinstance(kb_embedding, dict):
+        kb_embedding = {}
+
+    if normalized_scope == EMBEDDING_SCOPE_KNOWLEDGE_BASE:
+        primary_name = "knowledge_base.embedding"
+        fallback_name = "memory.embedding"
+        primary_cfg = kb_embedding
+        fallback_cfg = memory_embedding
+        allow_cross_scope_fallback = bool(primary_cfg.get("inherit_from_memory", False))
+    else:
+        primary_name = "memory.embedding"
+        fallback_name = "knowledge_base.embedding"
+        primary_cfg = memory_embedding
+        fallback_cfg = kb_embedding
+        allow_cross_scope_fallback = bool(primary_cfg.get("inherit_from_knowledge_base", True))
+
+    provider = _normalize_text(primary_cfg.get("provider"))
+    provider_source = f"{primary_name}.provider" if provider else ""
+
+    if not provider and allow_cross_scope_fallback:
+        provider = _normalize_text(fallback_cfg.get("provider"))
+        if provider:
+            provider_source = f"{fallback_name}.provider"
+
+    if not provider:
+        provider = _normalize_text(llm_cfg.get("embedding_provider"))
+        if provider:
+            provider_source = "llm.embedding_provider"
+
+    if not provider:
+        provider = _normalize_text(llm_cfg.get("default_provider"))
+        if provider:
+            provider_source = "llm.default_provider"
+
+    provider = provider.lower() or "ollama"
+    if not provider_source:
+        provider_source = "hardcoded.default"
+
+    from llm_providers.provider_resolver import resolve_provider
+
+    provider_cfg = resolve_provider(provider)
+
+    model = _normalize_text(primary_cfg.get("model"))
+    model_source = f"{primary_name}.model" if model else ""
+
+    if not model and allow_cross_scope_fallback:
+        model = _normalize_text(fallback_cfg.get("model"))
+        if model:
+            model_source = f"{fallback_name}.model"
+
+    if not model:
+        model = _infer_embedding_model_from_provider(provider_cfg)
+        if model:
+            model_source = "provider.models"
+
+    if not model:
+        model = _default_model_for_provider(provider)
+        model_source = "hardcoded.default"
+
+    dimension = _coerce_int(primary_cfg.get("dimension"))
+    dimension_source = f"{primary_name}.dimension" if dimension else ""
+
+    if dimension is None and allow_cross_scope_fallback:
+        dimension = _coerce_int(fallback_cfg.get("dimension"))
+        if dimension is not None:
+            dimension_source = f"{fallback_name}.dimension"
+
+    provider_dimension = _coerce_int(provider_cfg.get("embedding_dimension"))
+    if dimension is None and provider_dimension is not None:
+        dimension = provider_dimension
+        dimension_source = "provider.embedding_dimension"
+
+    if dimension is None:
+        dimension = 1024 if "bge" in model.lower() else 768
+        dimension_source = "heuristic.default"
+
+    return {
+        "scope": normalized_scope,
+        "provider": provider,
+        "provider_source": provider_source,
+        "model": model,
+        "model_source": model_source,
+        "dimension": dimension,
+        "dimension_source": dimension_source,
+        "allow_cross_scope_fallback": allow_cross_scope_fallback,
+    }
 
 
 def _normalize_embedding_vector(raw_vector: object) -> Optional[List[float]]:
@@ -94,84 +264,59 @@ def _extract_embedding_vectors(response_data: object) -> List[List[float]]:
 
 
 class OllamaEmbeddingService(EmbeddingServiceInterface):
-    """
-    Embedding service using Ollama local LLM provider.
-
-    This service generates embeddings using Ollama's embedding models
-    (e.g., nomic-embed-text, mxbai-embed-large).
-
-    Example:
-        >>> service = OllamaEmbeddingService()
-        >>> embedding = service.generate_embedding("Hello world")
-        >>> len(embedding)
-        768
-    """
+    """Embedding service using Ollama protocol (/api/embeddings)."""
 
     def __init__(
-        self, base_url: Optional[str] = None, model: Optional[str] = None, timeout: int = 30
+        self,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        timeout: int = 30,
+        provider_name: Optional[str] = None,
+        scope: str = EMBEDDING_SCOPE_MEMORY,
+        embedding_settings: Optional[Dict[str, object]] = None,
     ):
-        """
-        Initialize the Ollama embedding service.
-
-        Args:
-            base_url: Ollama API base URL (default from config)
-            model: Embedding model name (default from config)
-            timeout: Request timeout in seconds
-        """
         self._config = get_config()
+        self._scope = _normalize_scope(scope)
+        settings = embedding_settings or resolve_embedding_settings(scope=self._scope)
 
-        # Read knowledge_base.embedding config first
-        kb_config = self._config.get_section("knowledge_base") if self._config else {}
-        kb_embedding = kb_config.get("embedding", {})
-
-        # Resolve provider config from DB (primary) or config.yaml (fallback)
-        embedding_provider = kb_embedding.get("provider", "ollama")
         from llm_providers.provider_resolver import resolve_provider
 
-        provider_cfg = resolve_provider(embedding_provider)
+        resolved_provider = _normalize_text(
+            provider_name or settings.get("provider") or "ollama"
+        ).lower()
+        provider_cfg = resolve_provider(resolved_provider)
 
         self._base_url = base_url or provider_cfg.get("base_url", "http://localhost:11434")
         self._api_key = provider_cfg.get("api_key")
 
-        # Model priority: explicit param > kb.embedding.model > provider default
-        self._model = (
-            model
-            or kb_embedding.get("model")
-            or "nomic-embed-text"
-        )
+        self._model = _normalize_text(
+            model or settings.get("model")
+        ) or _default_model_for_provider(resolved_provider)
 
         self._timeout = provider_cfg.get("timeout", timeout)
-        # Dimension priority: kb.embedding.dimension > provider config > auto-detect
-        default_dim = 1024 if "bge" in self._model else 768
+        default_dim = 1024 if "bge" in self._model.lower() else 768
         self._embedding_dim = (
-            kb_embedding.get("dimension")
-            or provider_cfg.get("embedding_dimension")
+            _coerce_int(settings.get("dimension"))
+            or _coerce_int(provider_cfg.get("embedding_dimension"))
             or default_dim
         )
 
         logger.info(
-            f"Initialized Ollama embedding service: "
-            f"url={self._base_url}, model={self._model}, dim={self._embedding_dim}"
+            "Initialized Ollama embedding service",
+            extra={
+                "scope": self._scope,
+                "provider": resolved_provider,
+                "url": self._base_url,
+                "model": self._model,
+                "dimension": self._embedding_dim,
+            },
         )
 
     def generate_embedding(self, text: str) -> List[float]:
-        """
-        Generate embedding vector for text using Ollama.
-
-        Args:
-            text: Input text
-
-        Returns:
-            List[float]: Embedding vector
-
-        Raises:
-            RuntimeError: If embedding generation fails
-        """
         if not text or not text.strip():
             raise ValueError("Text cannot be empty")
 
         try:
-            # Call Ollama embeddings API
             url = f"{self._base_url}/api/embeddings"
             payload = {"model": self._model, "prompt": text}
             headers = {"Content-Type": "application/json"}
@@ -179,18 +324,14 @@ class OllamaEmbeddingService(EmbeddingServiceInterface):
                 headers["Authorization"] = f"Bearer {self._api_key}"
 
             response = requests.post(url, json=payload, headers=headers, timeout=self._timeout)
-
             response.raise_for_status()
 
-            # Extract embedding from response
             result = response.json()
             vectors = _extract_embedding_vectors(result)
             if not vectors:
                 raise RuntimeError("No embedding returned from Ollama")
-            embedding = vectors[0]
 
-            logger.debug(f"Generated embedding for text (length={len(text)})")
-            return embedding
+            return vectors[0]
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to generate embedding via Ollama: {e}")
@@ -200,22 +341,6 @@ class OllamaEmbeddingService(EmbeddingServiceInterface):
             raise RuntimeError(f"Embedding generation failed: {e}")
 
     def generate_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
-        """
-        Generate embeddings for multiple texts in batch.
-
-        Note: Ollama doesn't have a native batch API, so this calls
-        the single embedding endpoint multiple times. For better performance,
-        consider using vLLM for batch operations.
-
-        Args:
-            texts: List of input texts
-
-        Returns:
-            List[List[float]]: List of embedding vectors
-
-        Raises:
-            RuntimeError: If embedding generation fails
-        """
         if not texts:
             return []
 
@@ -226,10 +351,8 @@ class OllamaEmbeddingService(EmbeddingServiceInterface):
                 embeddings.append(embedding)
             except Exception as e:
                 logger.error(f"Failed to generate embedding for text {i}: {e}")
-                # Continue with other texts, append None for failed ones
                 embeddings.append(None)
 
-        # Check if any embeddings failed
         failed_count = sum(1 for e in embeddings if e is None)
         if failed_count > 0:
             logger.warning(f"Failed to generate {failed_count}/{len(texts)} embeddings")
@@ -237,28 +360,11 @@ class OllamaEmbeddingService(EmbeddingServiceInterface):
         return embeddings
 
     def get_embedding_dimension(self) -> int:
-        """
-        Get the dimension of embeddings produced by this service.
-
-        Returns:
-            int: Embedding dimension
-        """
         return self._embedding_dim
 
 
 class VLLMEmbeddingService(EmbeddingServiceInterface):
-    """
-    Embedding service using vLLM local LLM provider.
-
-    This service generates embeddings using vLLM's high-performance
-    embedding models for production-scale deployments.
-
-    Example:
-        >>> service = VLLMEmbeddingService()
-        >>> embeddings = service.generate_embeddings_batch(["text1", "text2"])
-        >>> len(embeddings)
-        2
-    """
+    """Embedding service using OpenAI-compatible protocol (/v1/embeddings)."""
 
     def __init__(
         self,
@@ -266,49 +372,29 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
         model: Optional[str] = None,
         timeout: int = 30,
         provider_name: Optional[str] = None,
+        scope: str = EMBEDDING_SCOPE_MEMORY,
+        embedding_settings: Optional[Dict[str, object]] = None,
     ):
-        """
-        Initialize the vLLM embedding service.
-
-        Args:
-            base_url: vLLM API base URL (default from config)
-            model: Embedding model name (default from config)
-            timeout: Request timeout in seconds
-            provider_name: Provider identifier (e.g. vllm, llm-pool)
-        """
         self._config = get_config()
+        self._scope = _normalize_scope(scope)
+        settings = embedding_settings or resolve_embedding_settings(scope=self._scope)
 
-        # Resolve provider config from DB (primary) or config.yaml (fallback)
         from llm_providers.provider_resolver import resolve_provider
 
-        kb_config = self._config.get_section("knowledge_base") if self._config else {}
-        kb_embedding = kb_config.get("embedding", {})
-        resolved_provider = provider_name or kb_embedding.get("provider") or "vllm"
+        resolved_provider = _normalize_text(
+            provider_name or settings.get("provider") or "vllm"
+        ).lower()
         provider_cfg = resolve_provider(resolved_provider)
 
-        provider_models = provider_cfg.get("models", [])
-        if isinstance(provider_models, dict):
-            provider_models = list(provider_models.values())
-        if not isinstance(provider_models, list):
-            provider_models = []
-
-        provider_embedding_model = ""
-        embedding_hints = ("embed", "embedding", "bge", "e5", "mxbai", "gte", "jina")
-        for candidate in provider_models:
-            candidate_str = str(candidate)
-            if any(hint in candidate_str.lower() for hint in embedding_hints):
-                provider_embedding_model = candidate_str
-                break
-        if not provider_embedding_model and provider_models:
-            provider_embedding_model = str(provider_models[0])
+        provider_embedding_model = _infer_embedding_model_from_provider(provider_cfg)
 
         self._base_url = base_url or provider_cfg.get("base_url", "http://localhost:8000")
         self._api_key = provider_cfg.get("api_key")
         self._model = (
-            model
-            or kb_embedding.get("model")
+            _normalize_text(model)
+            or _normalize_text(settings.get("model"))
             or provider_embedding_model
-            or "BAAI/bge-m3"
+            or _default_model_for_provider(resolved_provider)
         )
 
         resolved_timeout = provider_cfg.get("timeout", timeout)
@@ -318,37 +404,28 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
             self._timeout = timeout
 
         default_dim = 1024 if "bge" in self._model.lower() else 768
-        provider_dim = provider_cfg.get("embedding_dimension")
-        try:
-            provider_dim = int(provider_dim) if provider_dim is not None else None
-        except (TypeError, ValueError):
-            provider_dim = None
-        self._embedding_dim = kb_embedding.get("dimension") or provider_dim or default_dim
+        self._embedding_dim = (
+            _coerce_int(settings.get("dimension"))
+            or _coerce_int(provider_cfg.get("embedding_dimension"))
+            or default_dim
+        )
 
         logger.info(
-            f"Initialized vLLM embedding service: "
-            f"provider={resolved_provider}, "
-            f"url={self._base_url}, model={self._model}, dim={self._embedding_dim}"
+            "Initialized OpenAI-compatible embedding service",
+            extra={
+                "scope": self._scope,
+                "provider": resolved_provider,
+                "url": self._base_url,
+                "model": self._model,
+                "dimension": self._embedding_dim,
+            },
         )
 
     def generate_embedding(self, text: str) -> List[float]:
-        """
-        Generate embedding vector for text using vLLM.
-
-        Args:
-            text: Input text
-
-        Returns:
-            List[float]: Embedding vector
-
-        Raises:
-            RuntimeError: If embedding generation fails
-        """
         if not text or not text.strip():
             raise ValueError("Text cannot be empty")
 
         try:
-            # Call vLLM embeddings API (OpenAI-compatible)
             url = f"{self._base_url}/v1/embeddings"
             payload = {"model": self._model, "input": text}
             headers = {"Content-Type": "application/json"}
@@ -356,20 +433,16 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
                 headers["Authorization"] = f"Bearer {self._api_key}"
 
             response = requests.post(url, json=payload, headers=headers, timeout=self._timeout)
-
             response.raise_for_status()
 
-            # Extract embedding from response
             result = response.json()
             vectors = _extract_embedding_vectors(result)
             if not vectors:
                 raise RuntimeError(
                     f"No embedding returned from provider response (keys={list(result.keys())})"
                 )
-            embedding = vectors[0]
 
-            logger.debug(f"Generated embedding for text (length={len(text)})")
-            return embedding
+            return vectors[0]
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to generate embedding via vLLM: {e}")
@@ -379,25 +452,10 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
             raise RuntimeError(f"Embedding generation failed: {e}")
 
     def generate_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
-        """
-        Generate embeddings for multiple texts in batch using vLLM.
-
-        vLLM supports batch embedding generation for better performance.
-
-        Args:
-            texts: List of input texts
-
-        Returns:
-            List[List[float]]: List of embedding vectors
-
-        Raises:
-            RuntimeError: If embedding generation fails
-        """
         if not texts:
             return []
 
         try:
-            # Call vLLM embeddings API with batch input
             url = f"{self._base_url}/v1/embeddings"
             payload = {"model": self._model, "input": texts}
             headers = {"Content-Type": "application/json"}
@@ -408,12 +466,10 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
                 url,
                 json=payload,
                 headers=headers,
-                timeout=self._timeout * 2,  # Longer timeout for batch
+                timeout=self._timeout * 2,
             )
-
             response.raise_for_status()
 
-            # Extract embeddings from response
             result = response.json()
             embeddings = _extract_embedding_vectors(result)
             if not embeddings:
@@ -421,7 +477,6 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
                     f"No embeddings returned from provider response (keys={list(result.keys())})"
                 )
 
-            logger.debug(f"Generated {len(embeddings)} embeddings in batch")
             return embeddings
 
         except requests.exceptions.RequestException as e:
@@ -432,42 +487,34 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
             raise RuntimeError(f"Batch embedding generation failed: {e}")
 
     def get_embedding_dimension(self) -> int:
-        """
-        Get the dimension of embeddings produced by this service.
-
-        Returns:
-            int: Embedding dimension
-        """
         return self._embedding_dim
 
 
-# Global embedding service instance
-_embedding_service: Optional[EmbeddingServiceInterface] = None
-_embedding_service_signature: Optional[str] = None
+# Scope-keyed embedding service instances.
+_embedding_services: Dict[str, EmbeddingServiceInterface] = {}
+_embedding_service_signatures: Dict[str, str] = {}
 
 
-def _build_embedding_service_signature() -> str:
-    """Build signature to refresh singleton when embedding/provider config changes."""
+def _build_embedding_service_signature(scope: str) -> str:
+    """Build signature to refresh singleton when scoped config changes."""
+    normalized_scope = _normalize_scope(scope)
     try:
-        config = get_config()
-        kb_config = config.get_section("knowledge_base") if config else {}
-        kb_embedding = kb_config.get("embedding", {})
-        provider = str(kb_embedding.get("provider", "") or "").lower()
-        if not provider and config:
-            llm_config = config.get_section("llm")
-            provider = str(llm_config.get("embedding_provider", "ollama") or "").lower()
+        settings = resolve_embedding_settings(scope=normalized_scope)
 
         from llm_providers.provider_resolver import resolve_provider
 
-        provider_cfg = resolve_provider(provider)
+        provider_cfg = resolve_provider(str(settings.get("provider", "")))
         signature_payload = {
-            "provider": provider,
-            "model": kb_embedding.get("model"),
-            "dimension": kb_embedding.get("dimension"),
+            "scope": normalized_scope,
+            "provider": settings.get("provider"),
+            "model": settings.get("model"),
+            "dimension": settings.get("dimension"),
+            "provider_source": settings.get("provider_source"),
+            "model_source": settings.get("model_source"),
+            "dimension_source": settings.get("dimension_source"),
             "base_url": provider_cfg.get("base_url"),
             "protocol": provider_cfg.get("protocol"),
             "timeout": provider_cfg.get("timeout"),
-            # avoid leaking key into logs; only use presence bit for signature.
             "has_api_key": bool(provider_cfg.get("api_key")),
         }
         return json.dumps(signature_payload, sort_keys=True, ensure_ascii=True)
@@ -475,33 +522,17 @@ def _build_embedding_service_signature() -> str:
         return ""
 
 
-def get_embedding_service() -> EmbeddingServiceInterface:
-    """
-    Get the global embedding service instance.
+def get_embedding_service(scope: str = EMBEDDING_SCOPE_MEMORY) -> EmbeddingServiceInterface:
+    """Get or build scoped embedding service singleton."""
+    normalized_scope = _normalize_scope(scope)
+    signature = _build_embedding_service_signature(normalized_scope)
+    current_service = _embedding_services.get(normalized_scope)
+    current_signature = _embedding_service_signatures.get(normalized_scope)
 
-    This function returns the singleton embedding service instance.
-    The service type (Ollama/vLLM) is determined by knowledge_base.embedding.provider
-    in config, falling back to llm.embedding_provider.
+    if current_service is None or signature != current_signature:
+        settings = resolve_embedding_settings(scope=normalized_scope)
+        provider = _normalize_text(settings.get("provider")).lower() or "ollama"
 
-    Returns:
-        EmbeddingServiceInterface: Global embedding service instance
-    """
-    global _embedding_service, _embedding_service_signature
-    signature = _build_embedding_service_signature()
-
-    if _embedding_service is None or signature != _embedding_service_signature:
-        config = get_config()
-
-        # Prefer knowledge_base.embedding.provider, fallback to llm.embedding_provider
-        kb_config = config.get_section("knowledge_base") if config else {}
-        kb_embedding = kb_config.get("embedding", {})
-        provider = kb_embedding.get("provider", "").lower()
-
-        if not provider:
-            llm_config = config.get_section("llm") if config else {}
-            provider = llm_config.get("embedding_provider", "ollama").lower()
-
-        # Determine which service to use based on provider protocol
         from llm_providers.provider_resolver import resolve_provider
 
         provider_cfg = resolve_provider(provider)
@@ -511,30 +542,43 @@ def get_embedding_service() -> EmbeddingServiceInterface:
         )
 
         if protocol == "ollama":
-            _embedding_service = OllamaEmbeddingService()
-        else:
-            # openai_compatible (vLLM, llm-pool, etc.) uses /v1/embeddings
-            _embedding_service = VLLMEmbeddingService(
+            service = OllamaEmbeddingService(
+                scope=normalized_scope,
                 provider_name=provider,
-                model=kb_embedding.get("model"),
+                model=_normalize_text(settings.get("model")),
+                embedding_settings=settings,
+            )
+        else:
+            service = VLLMEmbeddingService(
+                scope=normalized_scope,
+                provider_name=provider,
+                model=_normalize_text(settings.get("model")),
+                embedding_settings=settings,
             )
 
-        _embedding_service_signature = signature
-        logger.info(f"Initialized embedding service: {provider}")
+        _embedding_services[normalized_scope] = service
+        _embedding_service_signatures[normalized_scope] = signature
+        logger.info(
+            "Initialized embedding service",
+            extra={
+                "scope": normalized_scope,
+                "provider": provider,
+                "model": settings.get("model"),
+            },
+        )
 
-    return _embedding_service
+    return _embedding_services[normalized_scope]
 
 
-def set_embedding_service(service: EmbeddingServiceInterface) -> None:
-    """
-    Set a custom embedding service instance.
-
-    This is useful for testing or using custom embedding providers.
-
-    Args:
-        service: Embedding service instance
-    """
-    global _embedding_service, _embedding_service_signature
-    _embedding_service = service
-    _embedding_service_signature = ""
-    logger.info(f"Set custom embedding service: {type(service).__name__}")
+def set_embedding_service(
+    service: EmbeddingServiceInterface,
+    scope: str = EMBEDDING_SCOPE_MEMORY,
+) -> None:
+    """Set custom scoped embedding service instance (mainly for tests or overrides)."""
+    normalized_scope = _normalize_scope(scope)
+    _embedding_services[normalized_scope] = service
+    _embedding_service_signatures[normalized_scope] = ""
+    logger.info(
+        "Set custom embedding service",
+        extra={"scope": normalized_scope, "service": type(service).__name__},
+    )

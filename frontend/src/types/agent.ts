@@ -18,10 +18,6 @@ export type Agent = {
   accessLevel?: 'private' | 'team' | 'public';
   allowedKnowledge?: string[];
   allowedMemory?: string[];
-  // Knowledge Base Configuration
-  embeddingModel?: string;
-  embeddingProvider?: string;
-  vectorDimension?: number;
   topK?: number;
   similarityThreshold?: number;
 };

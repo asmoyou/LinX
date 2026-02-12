@@ -35,7 +35,7 @@ class KnowledgeIndexer:
 
     def __init__(self):
         """Initialize knowledge indexer."""
-        self.embedding_service = get_embedding_service()
+        self.embedding_service = get_embedding_service(scope="knowledge_base")
         self.milvus_conn = get_milvus_connection()
         self.collection_name = "knowledge_embeddings"
         logger.info("KnowledgeIndexer initialized")

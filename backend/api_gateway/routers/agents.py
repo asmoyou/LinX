@@ -405,10 +405,7 @@ class UpdateAgentRequest(BaseModel):
     accessLevel: Optional[str] = None
     allowedKnowledge: Optional[List[str]] = None
     allowedMemory: Optional[List[str]] = None
-    # Knowledge Base Configuration
-    embeddingModel: Optional[str] = None
-    embeddingProvider: Optional[str] = None
-    vectorDimension: Optional[int] = Field(None, ge=128, le=4096)
+    # Retrieval Configuration
     topK: Optional[int] = Field(None, ge=1, le=20)
     similarityThreshold: Optional[float] = Field(None, ge=0.0, le=1.0)
     # Department
@@ -436,10 +433,7 @@ class AgentResponse(BaseModel):
     accessLevel: str = "private"
     allowedKnowledge: List[str] = Field(default_factory=list)
     allowedMemory: List[str] = Field(default_factory=list)
-    # Knowledge Base Configuration
-    embeddingModel: Optional[str] = None
-    embeddingProvider: Optional[str] = None
-    vectorDimension: Optional[int] = None
+    # Retrieval Configuration
     topK: Optional[int] = None
     similarityThreshold: Optional[float] = None
     departmentId: Optional[str] = None
@@ -557,9 +551,6 @@ async def create_agent(
             accessLevel=agent_info.access_level,
             allowedKnowledge=agent_info.allowed_knowledge,
             allowedMemory=agent_info.allowed_memory,
-            embeddingModel=agent_info.embedding_model,
-            embeddingProvider=agent_info.embedding_provider,
-            vectorDimension=agent_info.vector_dimension,
             topK=agent_info.top_k,
             similarityThreshold=agent_info.similarity_threshold,
             departmentId=str(agent_info.department_id) if agent_info.department_id else None,
@@ -603,9 +594,6 @@ async def list_agents(current_user: CurrentUser = Depends(get_current_user)):
                 accessLevel=agent.access_level,
                 allowedKnowledge=agent.allowed_knowledge,
                 allowedMemory=agent.allowed_memory,
-                embeddingModel=agent.embedding_model,
-                embeddingProvider=agent.embedding_provider,
-                vectorDimension=agent.vector_dimension,
                 topK=agent.top_k,
                 similarityThreshold=agent.similarity_threshold,
                 departmentId=str(agent.department_id) if agent.department_id else None,
@@ -662,9 +650,6 @@ async def get_agent(agent_id: str, current_user: CurrentUser = Depends(get_curre
             accessLevel=agent.access_level,
             allowedKnowledge=agent.allowed_knowledge,
             allowedMemory=agent.allowed_memory,
-            embeddingModel=agent.embedding_model,
-            embeddingProvider=agent.embedding_provider,
-            vectorDimension=agent.vector_dimension,
             topK=agent.top_k,
             similarityThreshold=agent.similarity_threshold,
             departmentId=str(agent.department_id) if agent.department_id else None,
@@ -727,9 +712,6 @@ async def update_agent(
             access_level=request.accessLevel,
             allowed_knowledge=validated_allowed_knowledge,
             allowed_memory=validated_allowed_memory,
-            embedding_model=request.embeddingModel,
-            embedding_provider=request.embeddingProvider,
-            vector_dimension=request.vectorDimension,
             top_k=request.topK,
             similarity_threshold=request.similarityThreshold,
             department_id=request.department_id,
@@ -768,9 +750,6 @@ async def update_agent(
             accessLevel=updated_agent.access_level,
             allowedKnowledge=updated_agent.allowed_knowledge,
             allowedMemory=updated_agent.allowed_memory,
-            embeddingModel=updated_agent.embedding_model,
-            embeddingProvider=updated_agent.embedding_provider,
-            vectorDimension=updated_agent.vector_dimension,
             topK=updated_agent.top_k,
             similarityThreshold=updated_agent.similarity_threshold,
             departmentId=str(updated_agent.department_id) if updated_agent.department_id else None,
@@ -1438,85 +1417,11 @@ async def test_agent(
                 context = {}
                 try:
                     from database.connection import get_db_session
-                    from memory_system.embedding_service import (
-                        OllamaEmbeddingService,
-                        get_embedding_service,
-                        set_embedding_service,
-                    )
                     from memory_system.memory_interface import MemoryType, SearchQuery
+                    from memory_system.memory_system import get_memory_system
 
-                    # Check if agent has custom embedding configuration
-                    custom_embedding_service = None
-                    if agent_info.embedding_provider and agent_info.embedding_model:
-                        logger.info(
-                            f"Agent {agent_info.name} uses custom embedding: "
-                            f"provider={agent_info.embedding_provider}, model={agent_info.embedding_model}"
-                        )
-
-                        # Create agent-specific embedding service
-                        try:
-                            from database.connection import get_db_session
-                            from llm_providers.db_manager import ProviderDBManager
-
-                            with get_db_session() as db:
-                                db_manager = ProviderDBManager(db)
-                                embedding_provider = db_manager.get_provider(
-                                    agent_info.embedding_provider
-                                )
-
-                                if embedding_provider and embedding_provider.enabled:
-                                    # Create custom embedding service with agent's configuration
-                                    if embedding_provider.protocol == "ollama":
-                                        custom_embedding_service = OllamaEmbeddingService(
-                                            base_url=embedding_provider.base_url,
-                                            model=agent_info.embedding_model,
-                                        )
-                                        logger.info(
-                                            f"Created custom Ollama embedding service: "
-                                            f"{embedding_provider.base_url} / {agent_info.embedding_model}"
-                                        )
-                                    elif embedding_provider.protocol == "openai_compatible":
-                                        # For OpenAI-compatible providers
-                                        from memory_system.embedding_service import (
-                                            VLLMEmbeddingService,
-                                        )
-
-                                        custom_embedding_service = VLLMEmbeddingService(
-                                            base_url=embedding_provider.base_url,
-                                            model=agent_info.embedding_model,
-                                        )
-                                        logger.info(
-                                            f"Created custom OpenAI-compatible embedding service: "
-                                            f"{embedding_provider.base_url} / {agent_info.embedding_model}"
-                                        )
-                                else:
-                                    logger.warning(
-                                        f"Embedding provider {agent_info.embedding_provider} not found or disabled"
-                                    )
-                        except Exception as embed_error:
-                            logger.error(
-                                f"Failed to create custom embedding service: {embed_error}",
-                                exc_info=True,
-                            )
-
-                    # If we have a custom embedding service, temporarily set it and create new MemorySystem
-                    if custom_embedding_service:
-                        # Save original and set custom
-                        original_service = get_embedding_service()
-                        set_embedding_service(custom_embedding_service)
-
-                        # Create a NEW MemorySystem instance that will use the custom embedding service
-                        from memory_system.memory_system import MemorySystem
-
-                        memory_system = MemorySystem()
-
-                        logger.info(f"Using custom embedding service for agent {agent_info.name}")
-                    else:
-                        # Use default memory system
-                        from memory_system.memory_system import get_memory_system
-
-                        memory_system = get_memory_system()
-                        original_service = None
+                    # Use memory system global configuration (memory/knowledge settings).
+                    memory_system = get_memory_system()
 
                     memory_scopes = resolve_memory_scopes(
                         access_level=agent_info.access_level,
@@ -1623,19 +1528,8 @@ async def test_agent(
                             + "\n\n"
                         )
 
-                    # Restore original embedding service if we changed it
-                    if original_service is not None:
-                        set_embedding_service(original_service)
-                        logger.info("Restored original embedding service")
-
                 except Exception as mem_error:
                     logger.error(f"Failed to retrieve memories: {mem_error}", exc_info=True)
-                    # Make sure to restore original embedding service even on error
-                    if "original_service" in locals() and original_service is not None:
-                        try:
-                            set_embedding_service(original_service)
-                        except:
-                            pass
 
                 # Build messages with conversation history
                 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -2499,29 +2393,29 @@ async def update_agent_skills(
 
         # Return updated agent info
         return AgentResponse(
-            agent_id=str(updated_agent.agent_id),
+            id=str(updated_agent.agent_id),
             name=updated_agent.name,
-            agent_type=updated_agent.agent_type,
+            type=updated_agent.agent_type,
             avatar=_resolve_agent_avatar(updated_agent.avatar),
-            owner_user_id=str(updated_agent.owner_user_id),
-            capabilities=updated_agent.capabilities,
+            skills=updated_agent.capabilities,
             status=updated_agent.status,
-            llm_provider=updated_agent.llm_provider,
-            llm_model=updated_agent.llm_model,
-            system_prompt=updated_agent.system_prompt,
+            systemPrompt=updated_agent.system_prompt,
+            currentTask=None,
+            tasksCompleted=0,
+            uptime="0h 0m",
+            model=updated_agent.llm_model,
+            provider=updated_agent.llm_provider,
             temperature=updated_agent.temperature,
-            max_tokens=updated_agent.max_tokens,
-            top_p=updated_agent.top_p,
-            access_level=updated_agent.access_level,
-            allowed_knowledge=updated_agent.allowed_knowledge,
-            allowed_memory=updated_agent.allowed_memory,
-            embedding_model=updated_agent.embedding_model,
-            embedding_provider=updated_agent.embedding_provider,
-            vector_dimension=updated_agent.vector_dimension,
-            top_k=updated_agent.top_k,
-            similarity_threshold=updated_agent.similarity_threshold,
-            created_at=updated_agent.created_at,
-            updated_at=updated_agent.updated_at,
+            maxTokens=updated_agent.max_tokens,
+            topP=updated_agent.top_p,
+            accessLevel=updated_agent.access_level,
+            allowedKnowledge=updated_agent.allowed_knowledge,
+            allowedMemory=updated_agent.allowed_memory,
+            topK=updated_agent.top_k,
+            similarityThreshold=updated_agent.similarity_threshold,
+            departmentId=str(updated_agent.department_id) if updated_agent.department_id else None,
+            createdAt=updated_agent.created_at,
+            updatedAt=updated_agent.updated_at,
         )
 
     except ValueError:

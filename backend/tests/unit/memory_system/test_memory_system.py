@@ -448,39 +448,45 @@ class TestEmbeddingService:
 
     def test_ollama_embedding_service_initialization(self):
         """Test Ollama embedding service initialization."""
-        with patch("memory_system.embedding_service.get_config") as mock_config:
-            mock_config.return_value.get_section.return_value = {
-                "ollama": {
-                    "base_url": "http://localhost:11434",
-                    "embedding_model": "nomic-embed-text",
-                    "embedding_dimension": 768,
+        with patch("memory_system.embedding_service.resolve_embedding_settings") as mock_settings:
+            with patch("llm_providers.provider_resolver.resolve_provider") as mock_resolve_provider:
+                mock_settings.return_value = {
+                    "provider": "ollama",
+                    "model": "nomic-embed-text",
+                    "dimension": 768,
                 }
-            }
+                mock_resolve_provider.return_value = {
+                    "base_url": "http://localhost:11434",
+                    "api_key": None,
+                    "timeout": 30,
+                }
 
-            service = OllamaEmbeddingService()
+                service = OllamaEmbeddingService()
 
-            assert service._base_url == "http://localhost:11434"
-            assert service._model == "nomic-embed-text"
-            assert service.get_embedding_dimension() == 768
+                assert service._base_url == "http://localhost:11434"
+                assert service._model == "nomic-embed-text"
+                assert service.get_embedding_dimension() == 768
 
     def test_generate_embedding_empty_text_fails(self):
         """Test that generating embedding for empty text fails."""
-        service = MockEmbeddingService()
-
         # Mock service should handle this, but real service should fail
-        with patch("memory_system.embedding_service.get_config") as mock_config:
-            mock_config.return_value.get_section.return_value = {
-                "ollama": {
-                    "base_url": "http://localhost:11434",
-                    "embedding_model": "nomic-embed-text",
-                    "embedding_dimension": 768,
+        with patch("memory_system.embedding_service.resolve_embedding_settings") as mock_settings:
+            with patch("llm_providers.provider_resolver.resolve_provider") as mock_resolve_provider:
+                mock_settings.return_value = {
+                    "provider": "ollama",
+                    "model": "nomic-embed-text",
+                    "dimension": 768,
                 }
-            }
+                mock_resolve_provider.return_value = {
+                    "base_url": "http://localhost:11434",
+                    "api_key": None,
+                    "timeout": 30,
+                }
 
-            service = OllamaEmbeddingService()
+                service = OllamaEmbeddingService()
 
-            with pytest.raises(ValueError, match="Text cannot be empty"):
-                service.generate_embedding("")
+                with pytest.raises(ValueError, match="Text cannot be empty"):
+                    service.generate_embedding("")
 
 
 if __name__ == "__main__":

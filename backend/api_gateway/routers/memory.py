@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from access_control.permissions import CurrentUser, get_current_user
+from shared.config import get_config
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -108,6 +109,8 @@ def _build_memory_filter_expression(collection_name: str, query) -> Optional[str
     if collection_name == CollectionName.AGENT_MEMORIES:
         if query.agent_id:
             filters.append(f'agent_id == "{query.agent_id}"')
+        if query.user_id:
+            filters.append(f'metadata["user_id"] == "{query.user_id}"')
     else:
         if query.user_id:
             filters.append(f'user_id == "{query.user_id}"')
@@ -397,6 +400,161 @@ class MemoryIndexInspectResponse(BaseModel):
     milvus_error: Optional[str] = Field(None, alias="milvusError")
 
 
+class MemoryConfigResponse(BaseModel):
+    """Memory retrieval and embedding configuration."""
+
+    embedding: dict
+    retrieval: dict
+    runtime: dict
+    recommended: Optional[dict] = None
+
+
+class MemoryConfigUpdateRequest(BaseModel):
+    """Request to update memory retrieval configuration."""
+
+    embedding: Optional[dict] = None
+    retrieval: Optional[dict] = None
+    runtime: Optional[dict] = None
+
+
+_MEMORY_RUNTIME_KEYS = (
+    "collection_retry_attempts",
+    "collection_retry_delay_seconds",
+    "search_timeout_seconds",
+    "delete_timeout_seconds",
+)
+
+
+_MEMORY_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "embedding": {
+        "provider": "",
+        "model": "",
+        "dimension": 1024,
+        "inherit_from_knowledge_base": True,
+    },
+    "retrieval": {
+        "top_k": 10,
+        "similarity_threshold": 0.0,
+        "similarity_weight": 0.7,
+        "recency_weight": 0.3,
+        "enable_reranking": True,
+        "rerank_weight": 0.75,
+        "rerank_provider": "",
+        "rerank_model": "",
+        "rerank_top_k": 30,
+        "rerank_timeout_seconds": 8,
+        "rerank_failure_backoff_seconds": 30,
+        "rerank_doc_max_chars": 1200,
+    },
+    "runtime": {
+        "collection_retry_attempts": 3,
+        "collection_retry_delay_seconds": 0.35,
+        "search_timeout_seconds": 2.0,
+        "delete_timeout_seconds": 2.0,
+    },
+}
+
+
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(base)
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _build_memory_config_payload(memory_section: dict, kb_section: Optional[dict] = None) -> dict:
+    """Build memory config payload with effective resolved settings and source hints."""
+    from memory_system.embedding_service import resolve_embedding_settings
+
+    kb_section = kb_section if isinstance(kb_section, dict) else {}
+    kb_search = kb_section.get("search", {}) if isinstance(kb_section.get("search"), dict) else {}
+
+    embedding_cfg = (
+        memory_section.get("embedding", {})
+        if isinstance(memory_section.get("embedding"), dict)
+        else {}
+    )
+    retrieval_cfg = (
+        memory_section.get("retrieval", {})
+        if isinstance(memory_section.get("retrieval"), dict)
+        else {}
+    )
+    runtime_cfg = (
+        memory_section.get("runtime", {})
+        if isinstance(memory_section.get("runtime"), dict)
+        else {}
+    )
+
+    embedding_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["embedding"], embedding_cfg)
+    retrieval_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["retrieval"], retrieval_cfg)
+    runtime_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["runtime"], runtime_cfg)
+    for key in _MEMORY_RUNTIME_KEYS:
+        if key in memory_section:
+            runtime_merged[key] = memory_section.get(key)
+
+    effective_embedding = resolve_embedding_settings(scope="memory")
+    effective_rerank_provider = (
+        str(retrieval_cfg.get("rerank_provider") or "").strip()
+        or str(kb_search.get("rerank_provider") or "").strip()
+    )
+    effective_rerank_model = (
+        str(retrieval_cfg.get("rerank_model") or "").strip()
+        or str(kb_search.get("rerank_model") or "").strip()
+    )
+    rerank_provider_source = (
+        "memory.retrieval.rerank_provider"
+        if str(retrieval_cfg.get("rerank_provider") or "").strip()
+        else (
+            "knowledge_base.search.rerank_provider"
+            if str(kb_search.get("rerank_provider") or "").strip()
+            else "none"
+        )
+    )
+    rerank_model_source = (
+        "memory.retrieval.rerank_model"
+        if str(retrieval_cfg.get("rerank_model") or "").strip()
+        else (
+            "knowledge_base.search.rerank_model"
+            if str(kb_search.get("rerank_model") or "").strip()
+            else "none"
+        )
+    )
+
+    retrieval_effective = {
+        **retrieval_merged,
+        "rerank_provider": effective_rerank_provider,
+        "rerank_model": effective_rerank_model,
+        "sources": {
+            "rerank_provider": rerank_provider_source,
+            "rerank_model": rerank_model_source,
+        },
+    }
+
+    embedding_payload = {
+        **embedding_merged,
+        "effective": {
+            "provider": effective_embedding.get("provider"),
+            "model": effective_embedding.get("model"),
+            "dimension": effective_embedding.get("dimension"),
+        },
+        "sources": {
+            "provider": effective_embedding.get("provider_source"),
+            "model": effective_embedding.get("model_source"),
+            "dimension": effective_embedding.get("dimension_source"),
+        },
+    }
+
+    return {
+        "embedding": embedding_payload,
+        "retrieval": retrieval_effective,
+        "runtime": runtime_merged,
+        "recommended": _MEMORY_RECOMMENDED_DEFAULTS,
+    }
+
+
 # ─── Helpers (all synchronous, called via asyncio.to_thread) ───────────────
 
 
@@ -429,6 +587,10 @@ def _memory_item_to_response(
     # Remove internal scoring fields
     meta.pop("_combined_score", None)
     meta.pop("_recency_score", None)
+    meta.pop("_rerank_score", None)
+    meta.pop("_rerank_blended_score", None)
+    meta.pop("_rerank_provider", None)
+    meta.pop("_rerank_model", None)
 
     return {
         "id": str(item.id) if item.id is not None else "",
@@ -668,6 +830,9 @@ def _retrieve_memories_sync(query):
                 mapped = None
 
             if mapped:
+                # Enforce user isolation at source-of-truth layer.
+                if query.user_id and str(mapped.user_id or "") != str(query.user_id):
+                    continue
                 db_item = mapped.to_memory_item(similarity_score=semantic_item.similarity_score)
                 if semantic_item.metadata:
                     db_item.metadata = db_item.metadata or {}
@@ -677,7 +842,9 @@ def _retrieve_memories_sync(query):
                     )
                 items.append(db_item)
             else:
-                # Legacy data not yet in PostgreSQL.
+                # Fail-closed for unmapped legacy vector rows when user scope is present.
+                if query.user_id:
+                    continue
                 items.append(semantic_item)
     except Exception as exc:
         logger.warning("Semantic memory search failed, falling back to text search: %s", exc)
@@ -1467,6 +1634,83 @@ async def get_memory_stats(
     return stats
 
 
+@router.get("/config", response_model=MemoryConfigResponse)
+async def get_memory_config(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Get memory retrieval configuration and effective model sources."""
+    try:
+        config = get_config()
+        memory_section = config.get_section("memory")
+        kb_section = config.get_section("knowledge_base")
+        return MemoryConfigResponse(**_build_memory_config_payload(memory_section, kb_section))
+    except Exception as e:
+        logger.error("Failed to get memory config: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get memory configuration: {str(e)}",
+        )
+
+
+@router.put("/config", response_model=MemoryConfigResponse)
+async def update_memory_config(
+    update_data: MemoryConfigUpdateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Update memory retrieval configuration. Requires admin role."""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can update memory configuration",
+        )
+
+    try:
+        import os
+
+        import yaml
+
+        from shared.config import reload_config
+
+        config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config.yaml")
+        config_path = os.path.abspath(config_path)
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw_config = yaml.safe_load(f)
+
+        memory_cfg = raw_config.setdefault("memory", {})
+        if update_data.embedding is not None:
+            memory_cfg["embedding"] = {
+                **(memory_cfg.get("embedding", {}) or {}),
+                **update_data.embedding,
+            }
+        if update_data.retrieval is not None:
+            memory_cfg["retrieval"] = {
+                **(memory_cfg.get("retrieval", {}) or {}),
+                **update_data.retrieval,
+            }
+        if update_data.runtime is not None:
+            for key in _MEMORY_RUNTIME_KEYS:
+                if key in update_data.runtime:
+                    memory_cfg[key] = update_data.runtime[key]
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(raw_config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+        reloaded = reload_config(config_path)
+        updated_memory = reloaded.get_section("memory")
+        updated_kb = reloaded.get_section("knowledge_base")
+        return MemoryConfigResponse(**_build_memory_config_payload(updated_memory, updated_kb))
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to update memory config: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update memory configuration: {str(e)}",
+        )
+
+
 @router.get("/shared", response_model=List[MemoryResponse])
 async def get_shared_memories(
     current_user: CurrentUser = Depends(get_current_user),
@@ -1495,7 +1739,7 @@ async def get_memories_by_type(
     query = SearchQuery(
         query_text="*",
         memory_type=mem_type,
-        user_id=current_user.user_id if mem_type != MemoryType.AGENT else None,
+        user_id=current_user.user_id,
         top_k=100,
     )
 
@@ -1529,6 +1773,7 @@ async def get_memories_by_agent(
         query_text="*",
         memory_type=MemoryType.AGENT,
         agent_id=agent_id,
+        user_id=current_user.user_id,
         top_k=100,
     )
 

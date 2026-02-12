@@ -19,8 +19,9 @@ References:
 
 import pytest
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
+from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 
 from access_control.permissions import CurrentUser
@@ -419,6 +420,7 @@ class TestRouteRegistration:
         expected_paths = [
             "/api/v1/memories",
             "/api/v1/memories/stats",
+            "/api/v1/memories/config",
             "/api/v1/memories/shared",
             "/api/v1/memories/search",
             "/api/v1/memories/type/{memory_type}",
@@ -437,8 +439,223 @@ class TestRouteRegistration:
         assert "POST" in route_map.get("/api/v1/memories", set())
         assert "POST" in route_map.get("/api/v1/memories/search", set())
         assert "GET" in route_map.get("/api/v1/memories/stats", set())
+        assert "GET" in route_map.get("/api/v1/memories/config", set())
+        assert "PUT" in route_map.get("/api/v1/memories/config", set())
         assert "GET" in route_map.get("/api/v1/memories/shared", set())
         assert "GET" in route_map.get("/api/v1/memories/{memory_id}", set())
         assert "PUT" in route_map.get("/api/v1/memories/{memory_id}", set())
         assert "DELETE" in route_map.get("/api/v1/memories/{memory_id}", set())
         assert "POST" in route_map.get("/api/v1/memories/{memory_id}/share", set())
+
+
+class TestMemoryConfigPayload:
+    """Test memory config payload builder behavior."""
+
+    def test_payload_uses_memory_rerank_when_provided(self):
+        from api_gateway.routers.memory import _build_memory_config_payload
+
+        memory_section = {
+            "embedding": {
+                "provider": "memory-embed-provider",
+                "model": "memory-embed-model",
+                "dimension": 1024,
+            },
+            "retrieval": {
+                "enable_reranking": True,
+                "rerank_provider": "memory-rerank-provider",
+                "rerank_model": "memory-rerank-model",
+            },
+        }
+        kb_section = {
+            "search": {
+                "rerank_provider": "kb-rerank-provider",
+                "rerank_model": "kb-rerank-model",
+            }
+        }
+
+        with patch(
+            "memory_system.embedding_service.resolve_embedding_settings",
+            return_value={
+                "provider": "effective-embed-provider",
+                "model": "effective-embed-model",
+                "dimension": 1024,
+                "provider_source": "memory.embedding.provider",
+                "model_source": "memory.embedding.model",
+                "dimension_source": "memory.embedding.dimension",
+            },
+        ):
+            payload = _build_memory_config_payload(memory_section, kb_section)
+
+        assert payload["retrieval"]["rerank_provider"] == "memory-rerank-provider"
+        assert payload["retrieval"]["rerank_model"] == "memory-rerank-model"
+        assert (
+            payload["retrieval"]["sources"]["rerank_provider"] == "memory.retrieval.rerank_provider"
+        )
+        assert payload["retrieval"]["sources"]["rerank_model"] == "memory.retrieval.rerank_model"
+        assert payload["embedding"]["effective"]["provider"] == "effective-embed-provider"
+        assert payload["runtime"]["collection_retry_attempts"] == 3
+        assert payload["runtime"]["search_timeout_seconds"] == 2.0
+
+    def test_payload_falls_back_to_kb_rerank_when_memory_not_set(self):
+        from api_gateway.routers.memory import _build_memory_config_payload
+
+        memory_section = {
+            "embedding": {},
+            "retrieval": {
+                "enable_reranking": True,
+            },
+        }
+        kb_section = {
+            "search": {
+                "rerank_provider": "kb-rerank-provider",
+                "rerank_model": "kb-rerank-model",
+            }
+        }
+
+        with patch(
+            "memory_system.embedding_service.resolve_embedding_settings",
+            return_value={
+                "provider": "fallback-embed-provider",
+                "model": "fallback-embed-model",
+                "dimension": 1024,
+                "provider_source": "knowledge_base.embedding.provider",
+                "model_source": "knowledge_base.embedding.model",
+                "dimension_source": "knowledge_base.embedding.dimension",
+            },
+        ):
+            payload = _build_memory_config_payload(memory_section, kb_section)
+
+        assert payload["retrieval"]["rerank_provider"] == "kb-rerank-provider"
+        assert payload["retrieval"]["rerank_model"] == "kb-rerank-model"
+        assert (
+            payload["retrieval"]["sources"]["rerank_provider"]
+            == "knowledge_base.search.rerank_provider"
+        )
+        assert (
+            payload["retrieval"]["sources"]["rerank_model"] == "knowledge_base.search.rerank_model"
+        )
+        assert payload["runtime"]["delete_timeout_seconds"] == 2.0
+
+
+class TestMemoryConfigEndpoints:
+    """Test GET/PUT memory config endpoint behavior."""
+
+    @pytest.mark.asyncio
+    async def test_get_memory_config_success(self, mock_current_user):
+        from api_gateway.routers.memory import get_memory_config
+
+        mock_config = MagicMock()
+        mock_config.get_section.side_effect = lambda section: {
+            "memory": {"embedding": {}, "retrieval": {}},
+            "knowledge_base": {"search": {}},
+        }.get(section, {})
+
+        payload = {
+            "embedding": {
+                "provider": "cfg-provider",
+                "model": "cfg-model",
+                "dimension": 1024,
+                "effective": {"provider": "eff-provider", "model": "eff-model", "dimension": 1024},
+                "sources": {
+                    "provider": "memory.embedding.provider",
+                    "model": "memory.embedding.model",
+                },
+            },
+            "retrieval": {"top_k": 10, "enable_reranking": True},
+            "runtime": {"search_timeout_seconds": 2.0},
+            "recommended": {},
+        }
+
+        with patch("api_gateway.routers.memory.get_config", return_value=mock_config):
+            with patch(
+                "api_gateway.routers.memory._build_memory_config_payload", return_value=payload
+            ):
+                response = await get_memory_config(current_user=mock_current_user)
+
+        assert response.embedding["provider"] == "cfg-provider"
+        assert response.retrieval["top_k"] == 10
+        assert response.runtime["search_timeout_seconds"] == 2.0
+
+    @pytest.mark.asyncio
+    async def test_update_memory_config_forbidden_for_non_admin(self, mock_current_user):
+        from api_gateway.routers.memory import MemoryConfigUpdateRequest, update_memory_config
+
+        with pytest.raises(HTTPException) as exc_info:
+            await update_memory_config(
+                update_data=MemoryConfigUpdateRequest(retrieval={"top_k": 20}),
+                current_user=mock_current_user,
+            )
+
+        assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+        assert "Only admins" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_update_memory_config_admin_merges_and_returns_payload(self, mock_admin_user):
+        from api_gateway.routers.memory import MemoryConfigUpdateRequest, update_memory_config
+
+        initial_config = {
+            "memory": {
+                "embedding": {"provider": "old-provider", "model": "old-model"},
+                "retrieval": {"top_k": 10},
+                "search_timeout_seconds": 2.0,
+            },
+            "knowledge_base": {
+                "search": {"rerank_provider": "kb-provider", "rerank_model": "kb-model"},
+            },
+        }
+
+        mock_reloaded = MagicMock()
+        mock_reloaded.get_section.side_effect = lambda section: {
+            "memory": {
+                "embedding": {"provider": "new-provider", "model": "old-model"},
+                "retrieval": {"top_k": 20, "rerank_model": "new-rerank-model"},
+                "search_timeout_seconds": 4,
+            },
+            "knowledge_base": {"search": {"rerank_provider": "kb-provider"}},
+        }.get(section, {})
+
+        payload = {
+            "embedding": {
+                "provider": "new-provider",
+                "model": "old-model",
+                "dimension": 1024,
+                "effective": {"provider": "new-provider", "model": "old-model", "dimension": 1024},
+                "sources": {"provider": "memory.embedding.provider"},
+            },
+            "retrieval": {
+                "top_k": 20,
+                "enable_reranking": True,
+                "rerank_model": "new-rerank-model",
+            },
+            "runtime": {"search_timeout_seconds": 4},
+            "recommended": {},
+        }
+
+        mocked_open = mock_open(read_data="memory: {}\n")
+
+        with patch("builtins.open", mocked_open):
+            with patch("yaml.safe_load", return_value=initial_config):
+                with patch("yaml.dump") as mock_yaml_dump:
+                    with patch("shared.config.reload_config", return_value=mock_reloaded):
+                        with patch(
+                            "api_gateway.routers.memory._build_memory_config_payload",
+                            return_value=payload,
+                        ):
+                            response = await update_memory_config(
+                                update_data=MemoryConfigUpdateRequest(
+                                    embedding={"provider": "new-provider"},
+                                    retrieval={"top_k": 20, "rerank_model": "new-rerank-model"},
+                                    runtime={"search_timeout_seconds": 4},
+                                ),
+                                current_user=mock_admin_user,
+                            )
+
+        dumped_config = mock_yaml_dump.call_args.args[0]
+        assert dumped_config["memory"]["embedding"]["provider"] == "new-provider"
+        assert dumped_config["memory"]["embedding"]["model"] == "old-model"
+        assert dumped_config["memory"]["retrieval"]["top_k"] == 20
+        assert dumped_config["memory"]["retrieval"]["rerank_model"] == "new-rerank-model"
+        assert dumped_config["memory"]["search_timeout_seconds"] == 4
+        assert response.embedding["provider"] == "new-provider"
+        assert response.retrieval["top_k"] == 20
+        assert response.runtime["search_timeout_seconds"] == 4

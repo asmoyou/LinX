@@ -14,8 +14,5 @@ with get_db_session() as session:
         print(f"LLM Model: {agent.llm_model}")
         print(f"Temperature: {agent.temperature}")
         print(f"Max Tokens: {agent.max_tokens}")
-        print(f"Embedding Provider: {agent.embedding_provider}")
-        print(f"Embedding Model: {agent.embedding_model}")
-        print(f"Vector Dimension: {agent.vector_dimension}")
     else:
         print("Agent not found")

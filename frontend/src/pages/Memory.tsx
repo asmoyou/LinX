@@ -5,6 +5,7 @@ import {
   Building,
   User,
   Plus,
+  Settings2,
   Loader2,
   AlertCircle,
   X,
@@ -14,6 +15,7 @@ import { MemoryCard } from "@/components/memory/MemoryCard";
 import { MemorySearchBar } from "@/components/memory/MemorySearchBar";
 import { MemoryDetailView } from "@/components/memory/MemoryDetailView";
 import { MemorySharingModal } from "@/components/memory/MemorySharingModal";
+import { MemoryConfigPanel } from "@/components/memory/MemoryConfigPanel";
 import { memoriesApi } from "@/api/memories";
 import { agentsApi } from "@/api/agents";
 import { useMemoryStore } from "@/stores/memoryStore";
@@ -24,6 +26,16 @@ import type {
   MemoryIndexInfo,
 } from "@/types/memory";
 import type { Agent } from "@/types/agent";
+
+const getErrorDetail = (error: unknown): string | null => {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  const detail = (error as { response?: { data?: { detail?: unknown } } }).response?.data
+    ?.detail;
+  return typeof detail === "string" && detail.trim() ? detail : null;
+};
 
 const CreateMemoryModal: React.FC<{
   isOpen: boolean;
@@ -83,8 +95,8 @@ const CreateMemoryModal: React.FC<{
       setTags("");
       setAgentId("");
       onClose();
-    } catch (e: any) {
-      setError(e?.response?.data?.detail || t("memory.create.error"));
+    } catch (error: unknown) {
+      setError(getErrorDetail(error) || t("memory.create.error"));
     } finally {
       setIsSubmitting(false);
     }
@@ -244,11 +256,13 @@ export const Memory: React.FC = () => {
   const [sharingMemory, setSharingMemory] = useState<MemoryType | null>(null);
   const [isSharingModalOpen, setIsSharingModalOpen] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [isConfigPanelOpen, setIsConfigPanelOpen] = useState(false);
   const [useSemanticSearchResults, setUseSemanticSearchResults] =
     useState(false);
   const [reindexingMemoryId, setReindexingMemoryId] = useState<string | null>(
     null,
   );
+  const [updatingMemoryId, setUpdatingMemoryId] = useState<string | null>(null);
   const [indexInspectingMemoryId, setIndexInspectingMemoryId] = useState<
     string | null
   >(null);
@@ -294,8 +308,8 @@ export const Memory: React.FC = () => {
     try {
       const data = await memoriesApi.getByType(activeTab);
       setMemoriesByType(activeTab, data);
-    } catch (e: any) {
-      setError(e?.response?.data?.detail || t("memory.loadError"));
+    } catch (error: unknown) {
+      setError(getErrorDetail(error) || t("memory.loadError"));
     } finally {
       setLoading(false);
     }
@@ -405,9 +419,9 @@ export const Memory: React.FC = () => {
       }
       fetchActiveTabMemories();
       toast.success(t("memory.share.success"));
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || t("memory.share.error"));
-      throw e;
+    } catch (error: unknown) {
+      toast.error(getErrorDetail(error) || t("memory.share.error"));
+      throw error;
     }
   };
 
@@ -420,8 +434,8 @@ export const Memory: React.FC = () => {
         ...prev,
         [memory.id]: detail,
       }));
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || t("memory.indexInspect.error"));
+    } catch (error: unknown) {
+      toast.error(getErrorDetail(error) || t("memory.indexInspect.error"));
     } finally {
       setIndexInspectingMemoryId(null);
     }
@@ -442,10 +456,65 @@ export const Memory: React.FC = () => {
         return next;
       });
       toast.success(t("memory.reindex.success"));
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || t("memory.reindex.error"));
+    } catch (error: unknown) {
+      toast.error(getErrorDetail(error) || t("memory.reindex.error"));
     } finally {
       setReindexingMemoryId(null);
+    }
+  };
+
+  const handleUpdateMemory = async (
+    memory: MemoryType,
+    updates: {
+      content: string;
+      summary?: string;
+      tags: string[];
+    },
+    options: {
+      reindexAfterSave: boolean;
+    },
+  ) => {
+    if (updatingMemoryId) return;
+    setUpdatingMemoryId(memory.id);
+    try {
+      const updated = await memoriesApi.update(memory.id, {
+        content: updates.content,
+        summary: updates.summary,
+        tags: updates.tags,
+      });
+      updateMemory(memory.id, updated);
+      if (selectedMemory?.id === memory.id) {
+        setSelectedMemory(updated);
+      }
+
+      let finalMemory = updated;
+      if (options.reindexAfterSave) {
+        finalMemory = await memoriesApi.reindex(memory.id);
+        updateMemory(memory.id, finalMemory);
+        if (selectedMemory?.id === memory.id) {
+          setSelectedMemory(finalMemory);
+        }
+        setIndexInfoByMemoryId((prev) => {
+          const next = { ...prev };
+          delete next[memory.id];
+          return next;
+        });
+      }
+
+      fetchMemoriesByType(activeTab);
+      toast.success(
+        options.reindexAfterSave
+          ? t("memory.detail.saveAndReindexSuccess", "Memory updated and index rebuilt")
+          : t("memory.detail.saveSuccess", "Memory updated"),
+      );
+    } catch (error: unknown) {
+      toast.error(
+        getErrorDetail(error) ||
+          t("memory.detail.saveError", "Failed to update memory"),
+      );
+      throw error;
+    } finally {
+      setUpdatingMemoryId(null);
     }
   };
 
@@ -498,20 +567,28 @@ export const Memory: React.FC = () => {
       color: "text-purple-500",
     },
   ];
-
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-3xl font-bold text-zinc-800 dark:text-white">
           {t("memory.title")}
         </h1>
-        <button
-          onClick={() => setIsCreateModalOpen(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium"
-        >
-          <Plus className="w-5 h-5" />
-          {t("memory.newMemory")}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsConfigPanelOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors font-medium"
+          >
+            <Settings2 className="w-5 h-5" />
+            {t("memory.config.manage", "Config")}
+          </button>
+          <button
+            onClick={() => setIsCreateModalOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium"
+          >
+            <Plus className="w-5 h-5" />
+            {t("memory.newMemory")}
+          </button>
+        </div>
       </div>
 
       {/* Error Banner */}
@@ -611,6 +688,7 @@ export const Memory: React.FC = () => {
 
       {/* Modals */}
       <MemoryDetailView
+        key={selectedMemory?.id || "memory-detail"}
         memory={selectedMemory}
         isOpen={isDetailViewOpen}
         onClose={() => {
@@ -619,8 +697,12 @@ export const Memory: React.FC = () => {
         }}
         onShare={handleShare}
         onDelete={handleDelete}
+        onUpdate={handleUpdateMemory}
         onReindex={handleReindex}
         onInspectIndex={handleInspectIndex}
+        isUpdating={
+          selectedMemory ? updatingMemoryId === selectedMemory.id : false
+        }
         isReindexing={
           selectedMemory ? reindexingMemoryId === selectedMemory.id : false
         }
@@ -646,6 +728,10 @@ export const Memory: React.FC = () => {
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
         onCreated={handleMemoryCreated}
+      />
+      <MemoryConfigPanel
+        isOpen={isConfigPanelOpen}
+        onClose={() => setIsConfigPanelOpen(false)}
       />
     </div>
   );

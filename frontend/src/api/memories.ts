@@ -4,6 +4,10 @@ import type {
   MemoryType,
   MemoryFilter,
   MemoryIndexInfo,
+  MemoryConfig,
+  MemoryConfigEmbedding,
+  MemoryConfigRetrieval,
+  MemoryConfigRuntime,
 } from "../types/memory";
 
 export interface CreateMemoryRequest {
@@ -12,7 +16,14 @@ export interface CreateMemoryRequest {
   summary?: string;
   agent_id?: string;
   tags?: string[];
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpdateMemoryRequest {
+  content?: string;
+  summary?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface SearchMemoriesRequest {
@@ -25,6 +36,12 @@ export interface SearchMemoriesRequest {
 export interface ShareMemoryRequest {
   user_ids?: string[];
   agent_ids?: string[];
+}
+
+export interface UpdateMemoryConfigRequest {
+  embedding?: Partial<Omit<MemoryConfigEmbedding, "effective" | "sources">>;
+  retrieval?: Partial<Omit<MemoryConfigRetrieval, "sources">>;
+  runtime?: Partial<MemoryConfigRuntime>;
 }
 
 /**
@@ -62,7 +79,7 @@ export const memoriesApi = {
    */
   update: async (
     memoryId: string,
-    data: Partial<CreateMemoryRequest>,
+    data: UpdateMemoryRequest,
   ): Promise<Memory> => {
     const response = await apiClient.put<Memory>(`/memories/${memoryId}`, data);
     return response.data;
@@ -137,6 +154,22 @@ export const memoriesApi = {
     const response = await apiClient.get<MemoryIndexInfo>(
       `/memories/${memoryId}/index`,
     );
+    return response.data;
+  },
+
+  /**
+   * Get memory retrieval configuration
+   */
+  getConfig: async (): Promise<MemoryConfig> => {
+    const response = await apiClient.get<MemoryConfig>("/memories/config");
+    return response.data;
+  },
+
+  /**
+   * Update memory retrieval configuration (admin only)
+   */
+  updateConfig: async (data: UpdateMemoryConfigRequest): Promise<MemoryConfig> => {
+    const response = await apiClient.put<MemoryConfig>("/memories/config", data);
     return response.data;
   },
 

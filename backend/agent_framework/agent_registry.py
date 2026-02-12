@@ -43,10 +43,7 @@ class AgentInfo:
     allowed_knowledge: List[str] = None
     allowed_memory: List[str] = None
     
-    # Knowledge Base Configuration
-    embedding_model: Optional[str] = None
-    embedding_provider: Optional[str] = None
-    vector_dimension: Optional[int] = None
+    # Retrieval Configuration
     top_k: Optional[int] = None
     similarity_threshold: Optional[float] = None
 
@@ -200,9 +197,6 @@ class AgentRegistry:
         access_level: Optional[str] = None,
         allowed_knowledge: Optional[List[str]] = None,
         allowed_memory: Optional[List[str]] = None,
-        embedding_model: Optional[str] = None,
-        embedding_provider: Optional[str] = None,
-        vector_dimension: Optional[int] = None,
         top_k: Optional[int] = None,
         similarity_threshold: Optional[float] = None,
         department_id: Optional[str] = None,
@@ -225,9 +219,6 @@ class AgentRegistry:
             access_level: Access level
             allowed_knowledge: List of allowed knowledge collection IDs
             allowed_memory: List of allowed memory scopes
-            embedding_model: Embedding model name
-            embedding_provider: Embedding provider name
-            vector_dimension: Vector dimension
             top_k: Top K results for retrieval
             similarity_threshold: Similarity threshold for retrieval
             department_id: Department UUID string (empty string or None to clear)
@@ -269,12 +260,6 @@ class AgentRegistry:
                 agent.allowed_knowledge = allowed_knowledge
             if allowed_memory is not None:
                 agent.allowed_memory = allowed_memory
-            if embedding_model is not None:
-                agent.embedding_model = embedding_model
-            if embedding_provider is not None:
-                agent.embedding_provider = embedding_provider
-            if vector_dimension is not None:
-                agent.vector_dimension = vector_dimension
             if top_k is not None:
                 agent.top_k = top_k
             if similarity_threshold is not None:
@@ -351,9 +336,6 @@ class AgentRegistry:
             access_level=agent.access_level or "private",
             allowed_knowledge=agent.allowed_knowledge or [],
             allowed_memory=agent.allowed_memory or [],
-            embedding_model=getattr(agent, 'embedding_model', None),
-            embedding_provider=getattr(agent, 'embedding_provider', None),
-            vector_dimension=getattr(agent, 'vector_dimension', None),
             top_k=getattr(agent, 'top_k', None),
             similarity_threshold=getattr(agent, 'similarity_threshold', None),
             department_id=getattr(agent, 'department_id', None),

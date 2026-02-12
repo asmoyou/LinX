@@ -60,7 +60,7 @@ class KnowledgeSearch:
 
     def __init__(self):
         """Initialize knowledge search."""
-        self.embedding_service = get_embedding_service()
+        self.embedding_service = get_embedding_service(scope="knowledge_base")
         self.milvus_conn = get_milvus_connection()
         self.collection_name = "knowledge_embeddings"
 

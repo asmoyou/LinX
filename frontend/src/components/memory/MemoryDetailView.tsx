@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   X,
@@ -15,6 +15,8 @@ import {
   CheckCircle2,
   AlertTriangle,
   Loader2,
+  Pencil,
+  Save,
 } from "lucide-react";
 import { ModalPanel } from "@/components/ModalPanel";
 import type { Memory, MemoryIndexInfo } from "@/types/memory";
@@ -27,6 +29,18 @@ interface MemoryDetailViewProps {
   onDelete?: (memory: Memory) => void;
   onReindex?: (memory: Memory) => void;
   onInspectIndex?: (memory: Memory) => void;
+  onUpdate?: (
+    memory: Memory,
+    updates: {
+      content: string;
+      summary?: string;
+      tags: string[];
+    },
+    options: {
+      reindexAfterSave: boolean;
+    },
+  ) => Promise<void> | void;
+  isUpdating?: boolean;
   isReindexing?: boolean;
   isInspectingIndex?: boolean;
   indexInfo?: MemoryIndexInfo | null;
@@ -40,13 +54,60 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
   onDelete,
   onReindex,
   onInspectIndex,
+  onUpdate,
+  isUpdating = false,
   isReindexing = false,
   isInspectingIndex = false,
   indexInfo = null,
 }) => {
   const { t } = useTranslation();
+  const [isEditing, setIsEditing] = useState(false);
+  const [editSummary, setEditSummary] = useState(() => memory?.summary || "");
+  const [editContent, setEditContent] = useState(() => memory?.content || "");
+  const [editTags, setEditTags] = useState(() => (memory?.tags || []).join(", "));
+  const [reindexAfterSave, setReindexAfterSave] = useState(true);
 
   if (!isOpen || !memory) return null;
+
+  const handleEditToggle = () => {
+    if (isEditing) {
+      setIsEditing(false);
+      return;
+    }
+    setEditSummary(memory.summary || "");
+    setEditContent(memory.content || "");
+    setEditTags((memory.tags || []).join(", "));
+    setReindexAfterSave(true);
+    setIsEditing(true);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!onUpdate) return;
+    const normalizedContent = editContent.trim();
+    if (!normalizedContent) return;
+
+    const tags = editTags
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+
+    try {
+      await onUpdate(
+        memory,
+        {
+          content: normalizedContent,
+          summary: editSummary.trim() || undefined,
+          tags,
+        },
+        {
+          reindexAfterSave,
+        },
+      );
+      setIsEditing(false);
+    } catch {
+      // Error is handled by parent page toast.
+    }
+  };
 
   const getTypeIcon = (type: Memory["type"]) => {
     switch (type) {
@@ -119,6 +180,20 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
             </h2>
           </div>
           <div className="flex items-center gap-2">
+            {onUpdate && (
+              <button
+                onClick={handleEditToggle}
+                className="p-2 hover:bg-white/20 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title={t("memory.detail.edit", "Edit")}
+                disabled={isUpdating}
+              >
+                {isUpdating ? (
+                  <Loader2 className="w-5 h-5 animate-spin text-indigo-500" />
+                ) : (
+                  <Pencil className="w-5 h-5 text-indigo-500" />
+                )}
+              </button>
+            )}
             {onReindex && (
               <button
                 onClick={() => onReindex(memory)}
@@ -293,27 +368,111 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
           </div>
         )}
 
-        {/* Summary */}
-        {memory.summary && (
-          <div className="mb-6">
-            <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-2">
-              {t("memory.detail.summary")}
+        {isEditing ? (
+          <div className="mb-6 p-4 bg-white/10 rounded-lg space-y-4">
+            <h3 className="text-lg font-semibold text-gray-800 dark:text-white">
+              {t("memory.detail.editTitle", "Edit Memory")}
             </h3>
-            <p className="text-gray-700 dark:text-gray-300 bg-white/10 p-4 rounded-lg">
-              {memory.summary}
-            </p>
-          </div>
-        )}
 
-        {/* Content */}
-        <div className="mb-6">
-          <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-2">
-            {t("memory.detail.content")}
-          </h3>
-          <div className="text-gray-700 dark:text-gray-300 bg-white/10 p-4 rounded-lg whitespace-pre-wrap">
-            {memory.content}
+            <label className="block text-sm text-gray-700 dark:text-gray-300">
+              <span className="block mb-1">{t("memory.detail.summary")}</span>
+              <input
+                value={editSummary}
+                onChange={(event) => setEditSummary(event.target.value)}
+                className="w-full px-3 py-2 bg-white/10 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-800 dark:text-white"
+                placeholder={t(
+                  "memory.detail.summaryPlaceholder",
+                  "Optional summary",
+                )}
+              />
+            </label>
+
+            <label className="block text-sm text-gray-700 dark:text-gray-300">
+              <span className="block mb-1">{t("memory.detail.content")}</span>
+              <textarea
+                value={editContent}
+                onChange={(event) => setEditContent(event.target.value)}
+                rows={7}
+                className="w-full px-3 py-2 bg-white/10 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-800 dark:text-white resize-none"
+                placeholder={t("memory.detail.content")}
+              />
+            </label>
+
+            <label className="block text-sm text-gray-700 dark:text-gray-300">
+              <span className="block mb-1">{t("memory.detail.tags")}</span>
+              <input
+                value={editTags}
+                onChange={(event) => setEditTags(event.target.value)}
+                className="w-full px-3 py-2 bg-white/10 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-800 dark:text-white"
+                placeholder={t(
+                  "memory.detail.tagsPlaceholder",
+                  "tag1, tag2, tag3",
+                )}
+              />
+            </label>
+
+            <label className="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+              <input
+                type="checkbox"
+                checked={reindexAfterSave}
+                onChange={(event) => setReindexAfterSave(event.target.checked)}
+                className="rounded"
+              />
+              {t(
+                "memory.detail.reindexAfterSave",
+                "Rebuild vector index after saving",
+              )}
+            </label>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setIsEditing(false)}
+                disabled={isUpdating}
+                className="px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50"
+              >
+                {t("common.cancel", "Cancel")}
+              </button>
+              <button
+                onClick={handleSaveEdit}
+                disabled={isUpdating || !editContent.trim()}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-500 text-white hover:bg-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isUpdating ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Save className="w-4 h-4" />
+                )}
+                {reindexAfterSave
+                  ? t("memory.detail.saveAndReindex", "Save & Rebuild Index")
+                  : t("common.save", "Save")}
+              </button>
+            </div>
           </div>
-        </div>
+        ) : (
+          <>
+            {/* Summary */}
+            {memory.summary && (
+              <div className="mb-6">
+                <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-2">
+                  {t("memory.detail.summary")}
+                </h3>
+                <p className="text-gray-700 dark:text-gray-300 bg-white/10 p-4 rounded-lg">
+                  {memory.summary}
+                </p>
+              </div>
+            )}
+
+            {/* Content */}
+            <div className="mb-6">
+              <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-2">
+                {t("memory.detail.content")}
+              </h3>
+              <div className="text-gray-700 dark:text-gray-300 bg-white/10 p-4 rounded-lg whitespace-pre-wrap">
+                {memory.content}
+              </div>
+            </div>
+          </>
+        )}
 
         {/* Metadata Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
@@ -373,7 +532,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
         </div>
 
         {/* Tags */}
-        {memory.tags.length > 0 && (
+        {!isEditing && memory.tags.length > 0 && (
           <div className="mb-6">
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">
               {t("memory.detail.tags")}

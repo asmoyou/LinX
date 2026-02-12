@@ -17,9 +17,6 @@ export interface CreateAgentRequest {
   accessLevel?: string;
   allowedKnowledge?: string[];
   allowedMemory?: string[];
-  embeddingModel?: string;
-  embeddingProvider?: string;
-  vectorDimension?: number;
   topK?: number;
   similarityThreshold?: number;
   capabilities?: string[];
@@ -40,9 +37,6 @@ export interface UpdateAgentRequest {
   accessLevel?: string;
   allowedKnowledge?: string[];
   allowedMemory?: string[];
-  embeddingModel?: string;
-  embeddingProvider?: string;
-  vectorDimension?: number;
   topK?: number;
   similarityThreshold?: number;
   capabilities?: string[];

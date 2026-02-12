@@ -175,9 +175,6 @@ class Agent(Base):
     )  # list of memory scopes (agent/company/user_context)
 
     # Knowledge Base Configuration
-    embedding_model = Column(String(255), nullable=True)  # embedding model name
-    embedding_provider = Column(String(100), nullable=True)  # embedding provider name
-    vector_dimension = Column(Integer, nullable=True)  # vector dimension (e.g., 1536)
     top_k = Column(Integer, nullable=True)  # top K results for retrieval
     similarity_threshold = Column(Float, nullable=True)  # similarity threshold (0.0-1.0)
 

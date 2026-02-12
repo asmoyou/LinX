@@ -699,16 +699,24 @@ memory:
   
   # Embedding Configuration
   embedding:
-    model: "embedding"  # References llm.providers.ollama.models.embedding
-    dimension: 768  # Must match model output dimension
+    provider: "llm-pool"  # Preferred embedding provider for memory retrieval
+    model: "BAAI/bge-m3"
+    dimension: 1024  # Must match model output dimension
     batch_size: 32
+    inherit_from_knowledge_base: true  # Fallback to knowledge_base.embedding when blank
     
   # Retrieval Configuration
   retrieval:
     top_k: 10
-    similarity_threshold: 0.7
+    similarity_threshold: 0.3
     enable_reranking: true
-    rerank_top_k: 5
+    rerank_provider: "llm-pool"  # Falls back to knowledge_base.search.rerank_provider when blank
+    rerank_model: "BAAI/bge-reranker-v2-m3"  # Falls back to knowledge_base.search.rerank_model when blank
+    rerank_top_k: 30
+    rerank_weight: 0.75
+    rerank_timeout_seconds: 8
+    rerank_failure_backoff_seconds: 30
+    rerank_doc_max_chars: 1200
     
     # Ranking Weights
     similarity_weight: 0.7
