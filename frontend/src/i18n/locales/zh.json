@@ -18,6 +18,28 @@
     "collapseSidebar": "收起侧边栏",
     "expandSidebar": "展开侧边栏"
   },
+  "header": {
+    "status": "状态",
+    "optimal": "最佳",
+    "health": {
+      "openStatus": "打开系统状态",
+      "title": "系统依赖状态",
+      "lastUpdated": "更新时间",
+      "checking": "检测中",
+      "checkingDetails": "正在检查依赖服务...",
+      "unknown": "未知",
+      "degraded": "降级",
+      "critical": "异常",
+      "running": "运行中",
+      "down": "不可用",
+      "disabled": "已禁用",
+      "required": "必需",
+      "optional": "可选",
+      "impact": "影响",
+      "fetchFailed": "加载系统状态失败",
+      "summary": "必需服务健康 {{requiredHealthy}}/{{requiredTotal}}，可选异常 {{optionalDown}}"
+    }
+  },
   "departments": {
     "title": "部门管理",
     "create": "创建部门",

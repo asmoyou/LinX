@@ -5,6 +5,7 @@ import time
 import pytest
 
 from shared.metrics import (  # Import some metrics to test
+    DependencyHealthStatus,
     HealthStatus,
     MetricsManager,
     agents_total,
@@ -38,15 +39,50 @@ def test_health_status_to_dict():
     assert data["message"] == "Error occurred"
 
 
-def test_get_health_status():
+def test_get_health_status(monkeypatch):
     """Test overall health status retrieval."""
+    monkeypatch.setattr(
+        "shared.metrics._collect_dependency_health",
+        lambda timeout_seconds: [
+            DependencyHealthStatus(
+                dependency_id="postgres",
+                name="PostgreSQL",
+                required=True,
+                enabled=True,
+                healthy=True,
+                status="up",
+                message="ok",
+                impact="",
+                source="test",
+                latency_ms=1.2,
+            ),
+            DependencyHealthStatus(
+                dependency_id="funasr",
+                name="FunASR",
+                required=False,
+                enabled=True,
+                healthy=False,
+                status="down",
+                message="down",
+                impact="",
+                source="test",
+                latency_ms=2.5,
+            ),
+        ],
+    )
+
     health = get_health_status()
 
     assert "status" in health
+    assert "overall" in health
     assert "checks" in health
+    assert "dependencies" in health
+    assert "summary" in health
     assert "timestamp" in health
     assert health["status"] in ["healthy", "unhealthy"]
+    assert health["overall"] in ["optimal", "degraded", "critical"]
     assert isinstance(health["checks"], list)
+    assert isinstance(health["dependencies"], list)
     assert isinstance(health["timestamp"], float)
 
 

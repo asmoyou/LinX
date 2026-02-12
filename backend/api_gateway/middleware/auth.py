@@ -25,6 +25,9 @@ logger = get_logger(__name__)
 PUBLIC_ENDPOINTS = {
     "/",
     "/health",
+    "/api/v1/health",
+    "/api/v1/health/live",
+    "/api/v1/health/ready",
     "/docs",
     "/redoc",
     "/openapi.json",
@@ -34,14 +37,16 @@ PUBLIC_ENDPOINTS = {
 }
 
 
-def create_auth_error_response(message: str, error_code: str, status_code: int = 401) -> JSONResponse:
+def create_auth_error_response(
+    message: str, error_code: str, status_code: int = 401
+) -> JSONResponse:
     """Create a structured authentication error response.
-    
+
     Args:
         message: Human-readable error message
         error_code: Machine-readable error code
         status_code: HTTP status code
-        
+
     Returns:
         JSONResponse with structured error
     """
@@ -81,8 +86,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 extra={"path": request.url.path, "method": request.method},
             )
             return create_auth_error_response(
-                message="Missing authentication credentials",
-                error_code="missing_credentials"
+                message="Missing authentication credentials", error_code="missing_credentials"
             )
 
         # Validate Bearer token format
@@ -93,8 +97,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 extra={"path": request.url.path, "method": request.method},
             )
             return create_auth_error_response(
-                message="Invalid authentication credentials format",
-                error_code="invalid_format"
+                message="Invalid authentication credentials format", error_code="invalid_format"
             )
 
         token = parts[1]
@@ -127,8 +130,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 "Expired token", extra={"path": request.url.path, "method": request.method}
             )
             return create_auth_error_response(
-                message="Token has expired",
-                error_code="token_expired"
+                message="Token has expired", error_code="token_expired"
             )
 
         except JWTTokenInvalidError as e:
@@ -137,8 +139,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 extra={"path": request.url.path, "method": request.method, "error": str(e)},
             )
             return create_auth_error_response(
-                message="Invalid authentication credentials",
-                error_code="invalid_token"
+                message="Invalid authentication credentials", error_code="invalid_token"
             )
 
     def _is_public_endpoint(self, path: str) -> bool:

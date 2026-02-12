@@ -13,3 +13,4 @@ export { memoriesApi } from './memories';
 export { skillsApi } from './skills';
 export { knowledgeApi } from './knowledge';
 export { llmApi } from './llm';
+export { healthApi } from './health';

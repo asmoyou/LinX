@@ -561,6 +561,7 @@ monitoring:
     check_redis: true
     check_minio: true
     check_milvus: true
+    check_funasr: true
     check_llm: true
 
 # ============================================================================

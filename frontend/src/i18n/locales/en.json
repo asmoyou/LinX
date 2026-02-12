@@ -18,6 +18,28 @@
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar"
   },
+  "header": {
+    "status": "Status",
+    "optimal": "Optimal",
+    "health": {
+      "openStatus": "Open system status",
+      "title": "System Dependencies",
+      "lastUpdated": "Updated",
+      "checking": "Checking",
+      "checkingDetails": "Checking dependencies...",
+      "unknown": "Unknown",
+      "degraded": "Degraded",
+      "critical": "Critical",
+      "running": "Running",
+      "down": "Down",
+      "disabled": "Disabled",
+      "required": "Required",
+      "optional": "Optional",
+      "impact": "Impact",
+      "fetchFailed": "Failed to load health status",
+      "summary": "Required healthy {{requiredHealthy}}/{{requiredTotal}}, optional down {{optionalDown}}"
+    }
+  },
   "departments": {
     "title": "Department Management",
     "create": "Create Department",

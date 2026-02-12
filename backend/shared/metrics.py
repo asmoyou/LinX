@@ -11,8 +11,11 @@ References:
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 import psutil
 from prometheus_client import (
@@ -455,35 +458,525 @@ class HealthStatus:
         }
 
 
+@dataclass
+class DependencyCheckDefinition:
+    """Static definition for a dependency health check."""
+
+    dependency_id: str
+    name: str
+    required: bool
+    enabled: bool
+    impact: str
+    source: str
+    disabled_message: str
+    checker: Callable[[int], Tuple[bool, str, Optional[float]]]
+
+
+@dataclass
+class DependencyHealthStatus:
+    """Runtime status for one dependency."""
+
+    dependency_id: str
+    name: str
+    required: bool
+    enabled: bool
+    healthy: bool
+    status: str
+    message: str
+    impact: str
+    source: str
+    latency_ms: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert dependency status to dictionary."""
+        return {
+            "id": self.dependency_id,
+            "name": self.name,
+            "required": self.required,
+            "enabled": self.enabled,
+            "healthy": self.healthy,
+            "status": self.status,
+            "message": self.message,
+            "impact": self.impact,
+            "source": self.source,
+            "latency_ms": self.latency_ms,
+        }
+
+
+def _elapsed_ms(start_time: float) -> float:
+    """Get elapsed milliseconds since start time."""
+    return round((time.perf_counter() - start_time) * 1000, 2)
+
+
+def _truncate_error(error: Exception, max_length: int = 220) -> str:
+    """Render a compact one-line error message."""
+    message = " ".join(str(error).split()).strip() or error.__class__.__name__
+    if len(message) <= max_length:
+        return message
+    return f"{message[:max_length]}..."
+
+
+def _check_postgres(timeout_seconds: int) -> Tuple[bool, str, Optional[float]]:
+    """Check PostgreSQL availability."""
+    start_time = time.perf_counter()
+    try:
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.pool import NullPool
+        from shared.config import get_config
+
+        config = get_config()
+        db_config = config.get_section("database.postgres")
+        database_url = (
+            f"postgresql://{db_config['username']}:{db_config['password']}"
+            f"@{db_config['host']}:{db_config['port']}/{db_config['database']}"
+        )
+        engine = create_engine(
+            database_url,
+            poolclass=NullPool,
+            connect_args={
+                "connect_timeout": max(1, timeout_seconds),
+                "options": "-c timezone=UTC",
+            },
+        )
+
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+        finally:
+            engine.dispose()
+
+        return True, "PostgreSQL connection is healthy", _elapsed_ms(start_time)
+    except Exception as error:
+        return (
+            False,
+            f"PostgreSQL check error: {_truncate_error(error)}",
+            _elapsed_ms(start_time),
+        )
+
+
+def _check_redis(timeout_seconds: int) -> Tuple[bool, str, Optional[float]]:
+    """Check Redis availability."""
+    start_time = time.perf_counter()
+    try:
+        import redis
+        from shared.config import get_config
+
+        config = get_config()
+        redis_config = config.get_section("database.redis")
+        client = redis.Redis(
+            host=redis_config["host"],
+            port=redis_config["port"],
+            password=redis_config.get("password") or None,
+            db=redis_config.get("db", 0),
+            socket_timeout=max(1, timeout_seconds),
+            socket_connect_timeout=max(1, timeout_seconds),
+            decode_responses=True,
+        )
+
+        try:
+            client.ping()
+        finally:
+            client.close()
+
+        return True, "Redis connection is healthy", _elapsed_ms(start_time)
+    except Exception as error:
+        details = _truncate_error(error)
+        details_upper = details.upper()
+        if "NOAUTH" in details_upper or "WRONGPASS" in details_upper:
+            return (
+                False,
+                "Redis authentication failed. Check database.redis.password against the "
+                "Redis server requirepass setting.",
+                _elapsed_ms(start_time),
+            )
+        return (
+            False,
+            f"Redis check error: {details}",
+            _elapsed_ms(start_time),
+        )
+
+
+def _check_minio(timeout_seconds: int) -> Tuple[bool, str, Optional[float]]:
+    """Check MinIO availability."""
+    start_time = time.perf_counter()
+    try:
+        import requests
+        from shared.config import get_config
+
+        config = get_config()
+        minio_config = config.get_section("storage.minio")
+        protocol = "https" if minio_config.get("secure", False) else "http"
+        endpoint = str(minio_config.get("endpoint", "")).strip()
+        if not endpoint:
+            return False, "MinIO endpoint is empty", _elapsed_ms(start_time)
+
+        health_url = f"{protocol}://{endpoint}/minio/health/live"
+        response = requests.get(health_url, timeout=max(1, timeout_seconds))
+
+        if 200 <= response.status_code < 300:
+            return True, "MinIO connection is healthy", _elapsed_ms(start_time)
+
+        return (
+            False,
+            f"MinIO health endpoint returned HTTP {response.status_code}",
+            _elapsed_ms(start_time),
+        )
+    except Exception as error:
+        return (
+            False,
+            f"MinIO check error: {_truncate_error(error)}",
+            _elapsed_ms(start_time),
+        )
+
+
+def _check_milvus(timeout_seconds: int) -> Tuple[bool, str, Optional[float]]:
+    """Check Milvus availability."""
+    start_time = time.perf_counter()
+    alias = f"healthcheck_{uuid4().hex[:8]}"
+    try:
+        from pymilvus import connections, utility
+        from shared.config import get_config
+
+        config = get_config()
+        milvus_config = config.get_section("database.milvus")
+
+        connect_args: Dict[str, Any] = {
+            "alias": alias,
+            "host": milvus_config.get("host", "localhost"),
+            "port": str(milvus_config.get("port", 19530)),
+            "timeout": max(1, timeout_seconds),
+        }
+        user = milvus_config.get("user", "")
+        password = milvus_config.get("password", "")
+        if user and password:
+            connect_args["user"] = user
+            connect_args["password"] = password
+
+        connections.connect(**connect_args)
+        utility.list_collections(using=alias)
+
+        return True, "Milvus connection is healthy", _elapsed_ms(start_time)
+    except Exception as error:
+        return (
+            False,
+            f"Milvus check error: {_truncate_error(error)}",
+            _elapsed_ms(start_time),
+        )
+    finally:
+        try:
+            from pymilvus import connections
+
+            connections.disconnect(alias=alias)
+        except Exception:
+            pass
+
+
+def _check_funasr_service(
+    timeout_seconds: int,
+    service_url: str,
+    service_api_key: str,
+) -> Tuple[bool, str, Optional[float]]:
+    """Check external FunASR service availability."""
+    start_time = time.perf_counter()
+    endpoint = f"{service_url.rstrip('/')}/health"
+    headers: Dict[str, str] = {}
+    if service_api_key:
+        headers["Authorization"] = f"Bearer {service_api_key}"
+
+    try:
+        import requests
+
+        response = requests.get(
+            endpoint,
+            headers=headers,
+            timeout=max(1, timeout_seconds),
+        )
+        if 200 <= response.status_code < 300:
+            return (
+                True,
+                f"FunASR service is healthy ({response.status_code})",
+                _elapsed_ms(start_time),
+            )
+
+        body = response.text.replace("\n", " ").strip()[:120]
+        details = f": {body}" if body else ""
+        return (
+            False,
+            f"FunASR service returned HTTP {response.status_code}{details}",
+            _elapsed_ms(start_time),
+        )
+    except Exception as error:
+        return (
+            False,
+            f"FunASR check error: {_truncate_error(error)}",
+            _elapsed_ms(start_time),
+        )
+
+
+def _build_dependency_definitions() -> List[DependencyCheckDefinition]:
+    """Build dependency definitions from compose-driven defaults and runtime config."""
+    from shared.config import get_config
+
+    config = get_config()
+    health_config = config.get("monitoring.health", default={}) or {}
+    transcription_config = (
+        config.get(
+            "knowledge_base.processing.transcription",
+            default={},
+        )
+        or {}
+    )
+
+    transcription_enabled = bool(transcription_config.get("enabled", True))
+    transcription_engine = str(transcription_config.get("engine", "funasr")).strip().lower()
+    check_funasr_enabled = bool(health_config.get("check_funasr", True))
+
+    funasr_enabled = (
+        check_funasr_enabled and transcription_enabled and transcription_engine == "funasr"
+    )
+    if not check_funasr_enabled:
+        funasr_disabled_message = "Health check disabled by monitoring.health.check_funasr"
+    elif not transcription_enabled:
+        funasr_disabled_message = (
+            "Transcription is disabled in knowledge_base.processing.transcription"
+        )
+    elif transcription_engine != "funasr":
+        funasr_disabled_message = (
+            f"Transcription engine is '{transcription_engine}', FunASR health check skipped"
+        )
+    else:
+        funasr_disabled_message = "FunASR health check enabled"
+
+    funasr_service_url = str(transcription_config.get("funasr_service_url", "")).strip()
+    funasr_service_api_key = str(transcription_config.get("funasr_service_api_key", "")).strip()
+
+    return [
+        DependencyCheckDefinition(
+            dependency_id="postgres",
+            name="PostgreSQL",
+            required=True,
+            enabled=bool(health_config.get("check_database", True)),
+            impact="Core APIs, authentication, and metadata operations are unavailable",
+            source="docker-compose: api-gateway.depends_on",
+            disabled_message="Health check disabled by monitoring.health.check_database",
+            checker=_check_postgres,
+        ),
+        DependencyCheckDefinition(
+            dependency_id="redis",
+            name="Redis",
+            required=True,
+            enabled=bool(health_config.get("check_redis", True)),
+            impact="Message bus, queues, and async workflow coordination are unavailable",
+            source="docker-compose: api-gateway.depends_on",
+            disabled_message="Health check disabled by monitoring.health.check_redis",
+            checker=_check_redis,
+        ),
+        DependencyCheckDefinition(
+            dependency_id="minio",
+            name="MinIO",
+            required=True,
+            enabled=bool(health_config.get("check_minio", True)),
+            impact="File upload/download and artifact storage are unavailable",
+            source="docker-compose: api-gateway.depends_on",
+            disabled_message="Health check disabled by monitoring.health.check_minio",
+            checker=_check_minio,
+        ),
+        DependencyCheckDefinition(
+            dependency_id="milvus",
+            name="Milvus",
+            required=True,
+            enabled=bool(health_config.get("check_milvus", True)),
+            impact="Vector memory and semantic retrieval features are unavailable",
+            source="docker-compose: api-gateway.depends_on",
+            disabled_message="Health check disabled by monitoring.health.check_milvus",
+            checker=_check_milvus,
+        ),
+        DependencyCheckDefinition(
+            dependency_id="funasr",
+            name="FunASR",
+            required=False,
+            enabled=funasr_enabled,
+            impact="Audio/video transcription features are unavailable",
+            source="docker-compose: funasr-service (optional)",
+            disabled_message=funasr_disabled_message,
+            checker=lambda timeout_seconds: _check_funasr_service(
+                timeout_seconds=timeout_seconds,
+                service_url=funasr_service_url,
+                service_api_key=funasr_service_api_key,
+            ),
+        ),
+    ]
+
+
+def _run_dependency_check(
+    definition: DependencyCheckDefinition,
+    timeout_seconds: int,
+) -> DependencyHealthStatus:
+    """Execute one dependency check and normalize the result."""
+    if not definition.enabled:
+        return DependencyHealthStatus(
+            dependency_id=definition.dependency_id,
+            name=definition.name,
+            required=definition.required,
+            enabled=False,
+            healthy=True,
+            status="disabled",
+            message=definition.disabled_message,
+            impact=definition.impact,
+            source=definition.source,
+            latency_ms=None,
+        )
+
+    healthy, message, latency_ms = definition.checker(timeout_seconds)
+    return DependencyHealthStatus(
+        dependency_id=definition.dependency_id,
+        name=definition.name,
+        required=definition.required,
+        enabled=True,
+        healthy=healthy,
+        status="up" if healthy else "down",
+        message=message,
+        impact=definition.impact,
+        source=definition.source,
+        latency_ms=latency_ms,
+    )
+
+
+def _collect_dependency_health(timeout_seconds: int) -> List[DependencyHealthStatus]:
+    """Collect all dependency checks concurrently."""
+    definitions = _build_dependency_definitions()
+    results: Dict[str, DependencyHealthStatus] = {}
+
+    runnable = [definition for definition in definitions if definition.enabled]
+    for definition in definitions:
+        if not definition.enabled:
+            results[definition.dependency_id] = _run_dependency_check(definition, timeout_seconds)
+
+    if runnable:
+        max_workers = min(8, len(runnable))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(_run_dependency_check, definition, timeout_seconds): definition
+                for definition in runnable
+            }
+
+            for future in as_completed(future_map):
+                definition = future_map[future]
+                try:
+                    results[definition.dependency_id] = future.result()
+                except Exception as error:
+                    results[definition.dependency_id] = DependencyHealthStatus(
+                        dependency_id=definition.dependency_id,
+                        name=definition.name,
+                        required=definition.required,
+                        enabled=definition.enabled,
+                        healthy=False,
+                        status="down",
+                        message=f"Dependency check crashed: {_truncate_error(error)}",
+                        impact=definition.impact,
+                        source=definition.source,
+                        latency_ms=None,
+                    )
+
+    return [results[definition.dependency_id] for definition in definitions]
+
+
 def get_health_status() -> Dict[str, Any]:
     """Get overall system health status.
 
     Returns:
         Dictionary with health status
     """
-    checks = []
+    checks: List[HealthStatus] = []
+    system_healthy = False
+    dependencies: List[DependencyHealthStatus] = []
 
     # System health
     try:
         cpu_percent = psutil.cpu_percent(interval=0.1)
         memory_percent = psutil.virtual_memory().percent
 
+        system_healthy = cpu_percent < 95 and memory_percent < 95
         checks.append(
             HealthStatus(
                 "system",
-                cpu_percent < 95 and memory_percent < 95,
+                system_healthy,
                 f"CPU: {cpu_percent}%, Memory: {memory_percent}%",
             )
         )
     except Exception as e:
         checks.append(HealthStatus("system", False, str(e)))
+        system_healthy = False
 
-    # Overall status
-    all_healthy = all(check.healthy for check in checks)
+    # Dependency health
+    timeout_seconds = 5
+    try:
+        from shared.config import get_config
+
+        config = get_config()
+        timeout_seconds = int(config.get("monitoring.health.timeout_seconds", default=5))
+    except Exception:
+        timeout_seconds = 5
+
+    try:
+        dependencies = _collect_dependency_health(timeout_seconds=max(1, timeout_seconds))
+        checks.extend(
+            [
+                HealthStatus(
+                    dependency.name.lower(),
+                    dependency.healthy,
+                    dependency.message,
+                )
+                for dependency in dependencies
+                if dependency.enabled
+            ]
+        )
+    except Exception as error:
+        checks.append(
+            HealthStatus(
+                "dependencies",
+                False,
+                f"Failed to collect dependency health: {_truncate_error(error)}",
+            )
+        )
+
+    required_dependencies = [
+        dependency for dependency in dependencies if dependency.required and dependency.enabled
+    ]
+    optional_dependencies = [
+        dependency for dependency in dependencies if not dependency.required and dependency.enabled
+    ]
+
+    required_unhealthy = [
+        dependency for dependency in required_dependencies if not dependency.healthy
+    ]
+    optional_unhealthy = [
+        dependency for dependency in optional_dependencies if not dependency.healthy
+    ]
+    required_blockers = (not system_healthy) or bool(required_unhealthy)
+    overall_status = (
+        "critical" if required_blockers else "degraded" if optional_unhealthy else "optimal"
+    )
+
+    # Keep compatibility: overall status remains healthy/unhealthy.
+    status = "healthy" if not required_blockers else "unhealthy"
 
     return {
-        "status": "healthy" if all_healthy else "unhealthy",
+        "status": status,
+        "overall": overall_status,
         "checks": [check.to_dict() for check in checks],
+        "dependencies": [dependency.to_dict() for dependency in dependencies],
+        "summary": {
+            "required_total": len(required_dependencies),
+            "required_healthy": len(required_dependencies) - len(required_unhealthy),
+            "required_unhealthy": len(required_unhealthy),
+            "optional_total": len(optional_dependencies),
+            "optional_healthy": len(optional_dependencies) - len(optional_unhealthy),
+            "optional_unhealthy": len(optional_unhealthy),
+            "disabled_checks": len(
+                [dependency for dependency in dependencies if not dependency.enabled]
+            ),
+        },
         "timestamp": time.time(),
     }
 
