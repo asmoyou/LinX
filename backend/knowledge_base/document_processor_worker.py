@@ -304,28 +304,39 @@ class DocumentProcessorWorker:
             return result.text
         elif "video" in mime_type:
             errors = []
+            audio_text = ""
+            vision_text = ""
 
-            # 1) Prefer audio transcription pipeline.
+            # 1) Audio transcription pipeline.
             try:
                 from knowledge_base.video_processor import get_video_processor
 
                 video_processor = get_video_processor()
                 result = video_processor.process(file_path)
-                video_text = (result.transcription.text or "").strip()
-                if video_text:
-                    return video_text
-                errors.append("audio transcription returned empty text")
+                audio_text = (result.transcription.text or "").strip()
+                if not audio_text:
+                    errors.append("audio transcription returned empty text")
             except Exception as video_err:
                 errors.append(f"audio transcription failed: {video_err}")
 
-            # 2) Fallback: sample frames and parse with vision LLM.
+            # 2) Vision frame parsing pipeline.
             try:
                 vision_text = self._extract_video_with_vision(file_path).strip()
-                if vision_text:
-                    return vision_text
-                errors.append("vision frame parsing returned empty text")
+                if not vision_text:
+                    errors.append("vision frame parsing returned empty text")
             except Exception as vision_err:
                 errors.append(f"vision frame parsing failed: {vision_err}")
+
+            # For videos we prefer multimodal indexing: keep both audio and visual signals.
+            if audio_text and vision_text:
+                return (
+                    f"Audio Transcript:\n{audio_text}\n\n"
+                    f"Visual Analysis:\n{vision_text}"
+                )
+            if audio_text:
+                return audio_text
+            if vision_text:
+                return vision_text
 
             logger.warning(
                 "Video extraction degraded to metadata fallback text",
@@ -380,9 +391,7 @@ class DocumentProcessorWorker:
                 "-i",
                 str(file_path),
                 "-vf",
-                "fps=1/5",
-                "-frames:v",
-                "6",
+                "fps=1,scale=720:480",
                 frame_pattern,
             ]
             subprocess.run(command, check=True)
@@ -392,20 +401,36 @@ class DocumentProcessorWorker:
                 raise RuntimeError("no video frames were extracted")
 
             parser = get_vision_parser()
-            prompt = (
+            frame_prompt = (
                 "This image is a frame sampled from a video. "
                 "Extract visible text and summarize key scene actions/objects "
                 "that are useful for semantic retrieval."
             )
 
-            frame_texts = []
-            for i, frame_path in enumerate(frames, start=1):
-                parsed = self._run_async(parser.parse_image(frame_path, prompt=prompt))
+            # Group one frame per second into 15-second request batches.
+            batch_size = 15
+            batch_texts = []
+            for start in range(0, len(frames), batch_size):
+                batch_frames = frames[start : start + batch_size]
+                parsed = self._run_async(
+                    parser.parse_images(batch_frames, prompt=frame_prompt)
+                )
                 content = (parsed.text or "").strip()
                 if content:
-                    frame_texts.append(f"Frame {i}:\n{content}")
+                    end = start + len(batch_frames) - 1
+                    batch_texts.append(f"Segment {start:04d}s-{end:04d}s:\n{content}")
 
-            return "\n\n".join(frame_texts)
+            if not batch_texts:
+                return ""
+
+            summary = self._run_async(parser.summarize_video_batches(batch_texts)).strip()
+            if not summary:
+                return "\n\n".join(batch_texts)
+
+            return (
+                f"Video Summary:\n{summary}\n\n"
+                f"Segment Details:\n{'\n\n'.join(batch_texts)}"
+            )
 
     @staticmethod
     def _build_video_fallback_text(file_path: Path, errors: list[str]) -> str:

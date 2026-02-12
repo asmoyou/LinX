@@ -739,9 +739,12 @@ knowledge_base:
     # Audio Transcription
     transcription:
       enabled: true
-      engine: "whisper"
-      model: "base"  # Options: tiny, base, small, medium, large
+      engine: "funasr"
+      model: "iic/SenseVoiceSmall"  # Default FunASR model
       language: "auto"
+      funasr_service_url: "http://127.0.0.1:10095"  # Optional external FunASR service
+      funasr_service_timeout_seconds: 300
+      funasr_service_api_key: ""  # Optional bearer token for service auth
     
     # Video Processing
     video:

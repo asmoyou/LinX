@@ -67,6 +67,21 @@ docker build -f infrastructure/docker/Dockerfile.agent-runtime -t dwp-agent-runt
 docker build -f infrastructure/docker/Dockerfile.document-processor -t dwp-document-processor:latest .
 ```
 
+### 5. Dockerfile.funasr-service
+**Purpose**: Standalone ASR microservice based on FunASR
+
+**Features**:
+- Isolated FunASR runtime dependencies
+- HTTP `/transcribe` endpoint for backend audio/video pipeline
+- Model cache persistence via Docker volume
+- Health check endpoint `/health`
+- Port 10095
+
+**Build**:
+```bash
+docker build -f infrastructure/docker/Dockerfile.funasr-service -t dwp-funasr-service:latest .
+```
+
 ## Image Optimization
 
 All Dockerfiles use multi-stage builds to minimize image size:
@@ -134,6 +149,7 @@ docker-compose build api-gateway
 docker-compose build task-manager
 docker-compose build agent-runtime
 docker-compose build document-processor
+docker-compose build funasr-service
 ```
 
 ## Running Services
@@ -146,6 +162,7 @@ docker-compose up -d
 Start specific service:
 ```bash
 docker-compose up -d api-gateway
+docker-compose up -d funasr-service
 ```
 
 View logs:

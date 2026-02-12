@@ -271,6 +271,29 @@ services:
       - dwp-backend
     restart: unless-stopped
 
+  funasr-service:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.funasr-service
+    container_name: dwp-funasr-service
+    environment:
+      - FUNASR_MODEL=${FUNASR_MODEL:-iic/SenseVoiceSmall}
+      - FUNASR_AUTH_TOKEN=${FUNASR_AUTH_TOKEN:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - funasr-model-cache:/root/.cache
+    ports:
+      - "${FUNASR_SERVICE_PORT:-10095}:10095"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:10095/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - dwp-backend
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend
@@ -300,6 +323,7 @@ volumes:
   minio-milvus-data:
   milvus-data:
   etcd-data:
+  funasr-model-cache:
 
 networks:
   dwp-frontend:

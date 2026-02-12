@@ -58,6 +58,27 @@ def test_video_fallback_to_vision_when_audio_transcription_fails():
     assert result == "Frame 1: test scene"
 
 
+def test_video_combines_audio_and_vision_when_both_available():
+    """Video parsing should include both audio transcript and visual analysis."""
+    worker = DocumentProcessorWorker.__new__(DocumentProcessorWorker)
+    worker.parsing_method = "standard"
+    worker._extract_video_with_vision = Mock(return_value="Frame summary text")
+
+    mock_video_processor = Mock()
+    mock_video_processor.process.return_value = Mock(
+        transcription=Mock(text="Audio transcript text")
+    )
+
+    with patch(
+        "knowledge_base.video_processor.get_video_processor", return_value=mock_video_processor
+    ):
+        result = worker._extract_text(Path("/tmp/test.mp4"), "video/mp4")
+
+    assert "Audio Transcript:\nAudio transcript text" in result
+    assert "Visual Analysis:\nFrame summary text" in result
+    worker._extract_video_with_vision.assert_called_once_with(Path("/tmp/test.mp4"))
+
+
 def test_image_vision_mode_raises_instead_of_fallback_when_vision_fails():
     """When parsing method is vision, extraction failure should not silently fallback to OCR."""
     worker = DocumentProcessorWorker.__new__(DocumentProcessorWorker)
@@ -96,6 +117,43 @@ def test_video_fallback_to_metadata_when_audio_and_vision_are_unavailable():
 
     assert "Video file 'test.mp4' was processed" in result
     assert "audio transcription failed" in result
+
+
+def test_extract_video_with_vision_uses_15s_batches_and_summary():
+    """Video vision fallback should batch 15 frames per request and summarize batches."""
+    worker = DocumentProcessorWorker.__new__(DocumentProcessorWorker)
+
+    mock_parser = Mock()
+    mock_parser.parse_images = AsyncMock(
+        side_effect=[
+            ParseResult(text="batch-1 text"),
+            ParseResult(text="batch-2 text"),
+            ParseResult(text="batch-3 text"),
+        ]
+    )
+    mock_parser.summarize_video_batches = AsyncMock(return_value="final summary")
+
+    def _fake_ffmpeg_run(command, check):  # noqa: ANN001
+        assert check is True
+        assert "fps=1,scale=720:480" in command
+        frame_pattern = command[-1]
+        frame_dir = Path(frame_pattern).parent
+        for i in range(1, 32):
+            (frame_dir / f"frame_{i:03d}.jpg").write_bytes(b"x")
+
+    with patch("shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("subprocess.run", side_effect=_fake_ffmpeg_run):
+            with patch("knowledge_base.vision_parser.get_vision_parser", return_value=mock_parser):
+                result = worker._extract_video_with_vision(Path("/tmp/test.mp4"))
+
+    assert "Video Summary:\nfinal summary" in result
+    assert "Segment 0000s-0014s:\nbatch-1 text" in result
+    assert "Segment 0015s-0029s:\nbatch-2 text" in result
+    assert "Segment 0030s-0030s:\nbatch-3 text" in result
+
+    batch_sizes = [len(call.args[0]) for call in mock_parser.parse_images.await_args_list]
+    assert batch_sizes == [15, 15, 1]
+    mock_parser.summarize_video_batches.assert_awaited_once()
 
 
 def test_indexer_skips_empty_chunks():

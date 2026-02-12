@@ -19,10 +19,13 @@ const QUALITY_FIRST_DEFAULTS = {
   processing: {
     transcription: {
       enabled: true,
-      engine: 'whisper',
+      engine: 'funasr',
       provider: '',
-      model: 'base',
+      model: 'iic/SenseVoiceSmall',
       language: 'auto',
+      funasr_service_url: 'http://127.0.0.1:10095',
+      funasr_service_timeout_seconds: 300,
+      funasr_service_api_key: '',
     },
   },
   chunking: {
@@ -68,6 +71,17 @@ const QUALITY_FIRST_DEFAULTS = {
     rerank_failure_backoff_seconds: 60,
     rerank_doc_max_chars: 1600,
   },
+};
+
+const normalizeTranscriptionEngine = (engine?: string): string => {
+  const normalized = String(engine || '').trim().toLowerCase();
+  if (['whisper', 'local', 'local_whisper', 'local_funasr'].includes(normalized)) {
+    return 'funasr';
+  }
+  if (['openai', 'remote', 'llm'].includes(normalized)) {
+    return 'openai_compatible';
+  }
+  return normalized || 'funasr';
 };
 
 export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose }) => {
@@ -307,10 +321,21 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
         transcription: {
           ...(config.processing?.transcription || {}),
           enabled: Boolean(recommendedProcessing.transcription.enabled ?? true),
-          engine: String(recommendedProcessing.transcription.engine || 'whisper'),
+          engine: normalizeTranscriptionEngine(
+            String(recommendedProcessing.transcription.engine || 'funasr')
+          ),
           provider: String(recommendedProcessing.transcription.provider || ''),
-          model: String(recommendedProcessing.transcription.model || 'base'),
+          model: String(recommendedProcessing.transcription.model || 'iic/SenseVoiceSmall'),
           language: String(recommendedProcessing.transcription.language || 'auto'),
+          funasr_service_url: String(
+            recommendedProcessing.transcription.funasr_service_url || 'http://127.0.0.1:10095'
+          ),
+          funasr_service_timeout_seconds: Number(
+            recommendedProcessing.transcription.funasr_service_timeout_seconds || 300
+          ),
+          funasr_service_api_key: String(
+            recommendedProcessing.transcription.funasr_service_api_key || ''
+          ),
         },
       },
       chunking: {
@@ -374,10 +399,9 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
   const visionProvider = config?.parsing?.vision_provider || '';
   const visionModels = availableProviders[visionProvider] || [];
   const transcription = config?.processing?.transcription || {};
-  const transcriptionEngine = transcription.engine || 'whisper';
+  const transcriptionEngine = normalizeTranscriptionEngine(transcription.engine);
   const transcriptionProvider = transcription.provider || '';
   const transcriptionModels = availableProviders[transcriptionProvider] || [];
-  const whisperModels = ['tiny', 'base', 'small', 'medium', 'large', 'large-v2', 'large-v3'];
   const embeddingProvider = config?.embedding?.provider || '';
   const embeddingModels = availableProviders[embeddingProvider] || [];
   const enrichmentProvider = config?.enrichment?.provider || '';
@@ -590,27 +614,75 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
                         onChange={(e) => updateTranscription('engine', e.target.value)}
                         className={selectClass}
                       >
-                        <option value="whisper">{t('kbConfig.transcriptionEngineWhisper')}</option>
+                        <option value="funasr">{t('kbConfig.transcriptionEngineFunASR')}</option>
                         <option value="openai_compatible">
                           {t('kbConfig.transcriptionEngineOpenAI')}
                         </option>
                       </select>
                     </div>
 
-                    {transcriptionEngine === 'whisper' ? (
-                      <div>
-                        <label className={labelClass}>{t('kbConfig.transcriptionModel')}</label>
-                        <select
-                          value={transcription.model || 'base'}
-                          onChange={(e) => updateTranscription('model', e.target.value)}
-                          className={selectClass}
-                        >
-                          {whisperModels.map((modelName) => (
-                            <option key={modelName} value={modelName}>
-                              {modelName}
-                            </option>
-                          ))}
-                        </select>
+                    {transcriptionEngine === 'funasr' ? (
+                      <div className="space-y-4">
+                        <div>
+                          <label className={labelClass}>{t('kbConfig.transcriptionModel')}</label>
+                          <input
+                            type="text"
+                            value={transcription.model || 'iic/SenseVoiceSmall'}
+                            onChange={(e) => updateTranscription('model', e.target.value)}
+                            className={inputClass}
+                            placeholder="iic/SenseVoiceSmall"
+                          />
+                        </div>
+                        <div>
+                          <label className={labelClass}>
+                            {t('kbConfig.funasrServiceUrl')}
+                          </label>
+                          <input
+                            type="text"
+                            value={transcription.funasr_service_url || ''}
+                            onChange={(e) =>
+                              updateTranscription('funasr_service_url', e.target.value)
+                            }
+                            className={inputClass}
+                            placeholder="http://127.0.0.1:10095"
+                          />
+                        </div>
+                        {showAdvanced && (
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <label className={labelClass}>
+                                {t('kbConfig.funasrServiceTimeout')}
+                              </label>
+                              <input
+                                type="number"
+                                min={5}
+                                max={1800}
+                                value={transcription.funasr_service_timeout_seconds || 300}
+                                onChange={(e) =>
+                                  updateTranscription(
+                                    'funasr_service_timeout_seconds',
+                                    Number(e.target.value)
+                                  )
+                                }
+                                className={inputClass}
+                              />
+                            </div>
+                            <div>
+                              <label className={labelClass}>
+                                {t('kbConfig.funasrServiceApiKey')}
+                              </label>
+                              <input
+                                type="password"
+                                value={transcription.funasr_service_api_key || ''}
+                                onChange={(e) =>
+                                  updateTranscription('funasr_service_api_key', e.target.value)
+                                }
+                                className={inputClass}
+                                placeholder={t('common.optional')}
+                              />
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="grid grid-cols-2 gap-4">

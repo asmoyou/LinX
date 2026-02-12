@@ -61,7 +61,7 @@ class VideoProcessor:
         logger.info("VideoProcessor initialized")
 
     def _get_audio_processor(self) -> AudioProcessor:
-        """Lazily load AudioProcessor so missing whisper does not break module import."""
+        """Lazily load AudioProcessor so optional ASR deps do not break module import."""
         if self.audio_processor is None:
             from knowledge_base.audio_processor import get_audio_processor
 

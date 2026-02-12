@@ -1020,10 +1020,13 @@ _KB_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "processing": {
         "transcription": {
             "enabled": True,
-            "engine": "whisper",
-            "model": "base",
+            "engine": "funasr",
+            "model": "iic/SenseVoiceSmall",
             "provider": "",
             "language": "auto",
+            "funasr_service_url": "http://127.0.0.1:10095",
+            "funasr_service_timeout_seconds": 300,
+            "funasr_service_api_key": "",
         },
     },
     "chunking": {
@@ -1071,6 +1074,57 @@ _KB_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _normalize_processing_config(processing_section: dict) -> dict:
+    """Normalize legacy transcription config values for UI/runtime consistency."""
+    normalized = dict(processing_section or {})
+    transcription = dict(normalized.get("transcription", {}))
+
+    raw_engine = str(transcription.get("engine", "funasr")).strip().lower()
+    engine_aliases = {
+        "local": "funasr",
+        "local_funasr": "funasr",
+        "whisper": "funasr",
+        "local_whisper": "funasr",
+        "openai": "openai_compatible",
+        "remote": "openai_compatible",
+        "llm": "openai_compatible",
+    }
+    effective_engine = engine_aliases.get(raw_engine, raw_engine or "funasr")
+    transcription["engine"] = effective_engine
+
+    if effective_engine == "funasr":
+        whisper_models = {"tiny", "base", "small", "medium", "large", "large-v2", "large-v3"}
+        raw_model = str(transcription.get("model", "")).strip()
+        alias_models = {"funaudiollm/sensevoicesmall", "sensevoicesmall"}
+        if (
+            raw_engine in {"whisper", "local_whisper"}
+            or not raw_model
+            or raw_model in whisper_models
+            or raw_model.lower() in alias_models
+        ):
+            transcription["model"] = "iic/SenseVoiceSmall"
+        transcription["provider"] = str(transcription.get("provider", "")).strip()
+        transcription["funasr_service_url"] = str(
+            transcription.get("funasr_service_url", "http://127.0.0.1:10095")
+        ).strip()
+        transcription["funasr_service_api_key"] = str(
+            transcription.get("funasr_service_api_key", "")
+        ).strip()
+        try:
+            timeout_value = int(transcription.get("funasr_service_timeout_seconds", 300))
+        except (TypeError, ValueError):
+            timeout_value = 300
+        transcription["funasr_service_timeout_seconds"] = max(5, timeout_value)
+    elif effective_engine == "openai_compatible":
+        transcription["model"] = (
+            str(transcription.get("model", "FunAudioLLM/SenseVoiceSmall")).strip()
+            or "FunAudioLLM/SenseVoiceSmall"
+        )
+
+    normalized["transcription"] = transcription
+    return normalized
+
+
 def _merge_kb_section_with_recommended(
     section_name: str,
     current_section: Optional[dict],
@@ -1088,7 +1142,10 @@ def _merge_kb_section_with_recommended(
                 merged[key] = value
         return merged
 
-    return _deep_merge(defaults, current)
+    merged = _deep_merge(defaults, current)
+    if section_name == "processing":
+        return _normalize_processing_config(merged)
+    return merged
 
 
 @router.get("/config", response_model=KBConfigResponse)

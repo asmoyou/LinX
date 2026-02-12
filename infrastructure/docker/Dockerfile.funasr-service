@@ -1,0 +1,32 @@
+# Dockerfile for standalone FunASR service
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY infrastructure/funasr_service/requirements.txt /app/requirements.txt
+
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+    torch==2.2.2 && \
+    pip install --no-cache-dir -r /app/requirements.txt
+
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+    torchaudio==2.2.2
+
+COPY infrastructure/funasr_service /app
+
+ENV PORT=10095
+ENV FUNASR_MODEL=iic/SenseVoiceSmall
+
+EXPOSE 10095
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:10095/health || exit 1
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "10095"]

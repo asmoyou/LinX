@@ -478,10 +478,13 @@ knowledge_base:
       confidence_threshold: 0.7
     transcription:
       enabled: true
-      engine: openai_compatible
-      model: FunAudioLLM/SenseVoiceSmall
+      engine: funasr
+      model: iic/SenseVoiceSmall
       language: auto
-      provider: llm-pool
+      provider: ''
+      funasr_service_url: http://127.0.0.1:10095
+      funasr_service_timeout_seconds: 300
+      funasr_service_api_key: ''
     video:
       extract_audio: true
       extract_frames: false
@@ -495,8 +498,8 @@ knowledge_base:
       。；！？.!?'
   parsing:
     method: auto
-    vision_model: Qwen/Qwen3-VL-32B-Instruct
-    vision_provider: llm-pool
+    vision_model: qwen3-vl:30b
+    vision_provider: ollama
     vision_timeout_seconds: 120
   embedding:
     provider: llm-pool

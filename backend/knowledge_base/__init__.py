@@ -13,7 +13,7 @@ This module provides document processing pipeline including:
 All submodules are imported directly where needed (e.g.,
 ``from knowledge_base.document_chunker import get_document_chunker``).
 This avoids top-level import failures when optional dependencies
-(whisper, libmagic, etc.) are not installed.
+(FunASR, libmagic, etc.) are not installed.
 
 References:
 - Requirements 4, 16: Knowledge Base and Document Processing

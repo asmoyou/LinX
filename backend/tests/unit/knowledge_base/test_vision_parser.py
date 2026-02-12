@@ -69,3 +69,77 @@ def test_openai_vision_normalizes_list_content(monkeypatch):
     text = asyncio.run(parser._extract_with_vision("ZmFrZQ==", "extract please"))
 
     assert text == "line-1 line-2"
+
+
+def test_openai_parse_images_sends_all_images_in_single_request(monkeypatch, tmp_path):
+    """parse_images should package multiple frames into one vision request."""
+    parser = _build_parser(api_format="openai")
+    captured: dict = {}
+
+    class DummyResult:
+        content = "batch extracted text"
+
+    class DummyLLM:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+
+        def invoke(self, messages):
+            captured["messages"] = messages
+            return DummyResult()
+
+    monkeypatch.setattr(
+        "llm_providers.custom_openai_provider.CustomOpenAIChat",
+        DummyLLM,
+    )
+
+    frame_1 = tmp_path / "frame_001.jpg"
+    frame_2 = tmp_path / "frame_002.jpg"
+    frame_1.write_bytes(b"frame-1")
+    frame_2.write_bytes(b"frame-2")
+
+    result = asyncio.run(
+        parser.parse_images([frame_1, frame_2], prompt="video segment extraction")
+    )
+
+    assert result.text == "batch extracted text"
+    assert result.pages == 2
+    message = captured["messages"][0]
+    content = message.content
+    image_parts = [
+        part
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    ]
+    assert len(image_parts) == 2
+    assert content[0]["type"] == "text"
+
+
+def test_openai_summarize_video_batches_uses_text_only_prompt(monkeypatch):
+    """Batch summary should use a text-only request with the same model."""
+    parser = _build_parser(api_format="openai")
+    captured: dict = {}
+
+    class DummyResult:
+        content = "summarized video"
+
+    class DummyLLM:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+
+        def invoke(self, messages):
+            captured["messages"] = messages
+            return DummyResult()
+
+    monkeypatch.setattr(
+        "llm_providers.custom_openai_provider.CustomOpenAIChat",
+        DummyLLM,
+    )
+
+    summary = asyncio.run(
+        parser.summarize_video_batches(["Segment 1: intro", "Segment 2: action"])
+    )
+
+    assert summary == "summarized video"
+    message = captured["messages"][0]
+    assert isinstance(message.content, str)
+    assert "Segment 1" in message.content
