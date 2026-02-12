@@ -105,6 +105,11 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
   };
 
   const indexBadge = getIndexStatusBadge();
+  const relevanceScore =
+    typeof memory.relevanceScore === "number" &&
+    Number.isFinite(memory.relevanceScore)
+      ? Math.max(0, Math.min(1, memory.relevanceScore))
+      : null;
   const sharedTargetNames = (
     memory.sharedWithNames && memory.sharedWithNames.length > 0
       ? memory.sharedWithNames
@@ -130,10 +135,10 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
               {indexBadge.label}
             </span>
           </div>
-          {showRelevance && memory.relevanceScore !== undefined && (
+          {showRelevance && relevanceScore !== null && (
             <div className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400">
               <TrendingUp className="w-3 h-3" />
-              {(memory.relevanceScore * 100).toFixed(0)}%
+              {(relevanceScore * 100).toFixed(0)}%
             </div>
           )}
         </div>

@@ -61,6 +61,11 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
   indexInfo = null,
 }) => {
   const { t } = useTranslation();
+  const relevanceScore =
+    typeof memory?.relevanceScore === "number" &&
+    Number.isFinite(memory.relevanceScore)
+      ? Math.max(0, Math.min(1, memory.relevanceScore))
+      : null;
   const [isEditing, setIsEditing] = useState(false);
   const [editSummary, setEditSummary] = useState(() => memory?.summary || "");
   const [editContent, setEditContent] = useState(() => memory?.content || "");
@@ -346,7 +351,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
         </div>
 
         {/* Relevance Score */}
-        {memory.relevanceScore !== undefined && (
+        {relevanceScore !== null && (
           <div className="mb-6 p-4 bg-indigo-500/10 border border-indigo-500/30 rounded-lg">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -356,13 +361,13 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
                 </span>
               </div>
               <span className="text-2xl font-bold text-indigo-500">
-                {(memory.relevanceScore * 100).toFixed(0)}%
+                {(relevanceScore * 100).toFixed(0)}%
               </span>
             </div>
             <div className="mt-2 w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
               <div
                 className="h-full bg-indigo-500 transition-all duration-500"
-                style={{ width: `${memory.relevanceScore * 100}%` }}
+                style={{ width: `${relevanceScore * 100}%` }}
               />
             </div>
           </div>

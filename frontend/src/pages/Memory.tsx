@@ -677,7 +677,11 @@ export const Memory: React.FC = () => {
                 key={memory.id}
                 memory={memory}
                 onClick={handleMemoryClick}
-                showRelevance={memory.type === "agent"}
+                showRelevance={
+                  memory.type === "agent" &&
+                  activeTab === "agent" &&
+                  useSemanticSearchResults
+                }
                 onReindex={handleReindex}
                 isReindexing={reindexingMemoryId === memory.id}
               />
