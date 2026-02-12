@@ -20,7 +20,6 @@ import {
   Pencil,
 } from 'lucide-react';
 import { GlassPanel } from '@/components/GlassPanel';
-import { knowledgeApi } from '@/api/knowledge';
 import type { Document } from '@/types/document';
 
 interface DocumentCardProps {
@@ -35,38 +34,6 @@ interface DocumentCardProps {
   onDragEnd?: () => void;
 }
 
-const MAX_INLINE_IMAGE_PREVIEW_SIZE = 5 * 1024 * 1024; // 5MB
-const MAX_INLINE_PDF_PREVIEW_SIZE = 6 * 1024 * 1024; // 6MB
-const MAX_INLINE_TEXT_PREVIEW_SIZE = 512 * 1024; // 512KB
-const MAX_MEDIA_CACHE_ENTRIES = 80;
-
-const mediaPreviewCache = new Map<string, string>();
-const mediaCacheOrder: string[] = [];
-const textPreviewCache = new Map<string, string>();
-
-const touchMediaCacheKey = (key: string) => {
-  const index = mediaCacheOrder.indexOf(key);
-  if (index >= 0) {
-    mediaCacheOrder.splice(index, 1);
-  }
-  mediaCacheOrder.push(key);
-};
-
-const setMediaCache = (key: string, objectUrl: string) => {
-  if (!mediaPreviewCache.has(key) && mediaCacheOrder.length >= MAX_MEDIA_CACHE_ENTRIES) {
-    const oldestKey = mediaCacheOrder.shift();
-    if (oldestKey) {
-      const oldUrl = mediaPreviewCache.get(oldestKey);
-      if (oldUrl) {
-        URL.revokeObjectURL(oldUrl);
-      }
-      mediaPreviewCache.delete(oldestKey);
-    }
-  }
-  mediaPreviewCache.set(key, objectUrl);
-  touchMediaCacheKey(key);
-};
-
 export const DocumentCard: React.FC<DocumentCardProps> = ({
   document,
   onView,
@@ -79,155 +46,20 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
   onDragEnd,
 }) => {
   const { t } = useTranslation();
-  const previewContainerRef = React.useRef<HTMLDivElement | null>(null);
-  const [shouldLoadPreview, setShouldLoadPreview] = React.useState(false);
   const [showMenu, setShowMenu] = React.useState(false);
-  const [cardPreviewUrl, setCardPreviewUrl] = React.useState<string | null>(null);
-  const [textPreview, setTextPreview] = React.useState<string | null>(null);
-  const [isCardPreviewLoading, setIsCardPreviewLoading] = React.useState(false);
   const processingProgress = Math.max(0, Math.min(100, document.processingProgress ?? 0));
   const uploadProgress = Math.max(0, Math.min(100, document.uploadProgress ?? 0));
   const lastUpdatedAt = document.processedAt || document.uploadedAt;
-  const previewCacheKey = `${document.id}:${document.processedAt || document.uploadedAt}`;
   const hasGeneratedThumbnail = Boolean(document.thumbnailUrl);
   const previewMediaUrl =
     document.thumbnailUrl ||
     ((document.type === 'image' || document.type === 'video' || document.type === 'pdf')
       ? document.url
-      : undefined) ||
-    ((document.type === 'image' || document.type === 'video' || document.type === 'pdf')
-      ? cardPreviewUrl
       : undefined);
   const hasMediaPreview = Boolean(previewMediaUrl);
-  const hasTextPreview = Boolean(textPreview);
   const previewContainerClass = hasMediaPreview
     ? 'h-32 bg-white/10'
-    : hasTextPreview
-      ? 'h-20 bg-white/5 border border-white/20'
-      : 'h-16 bg-white/5 border border-white/20';
-
-  React.useEffect(() => {
-    const element = previewContainerRef.current;
-    if (!element) return () => undefined;
-    if (shouldLoadPreview) return () => undefined;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            setShouldLoadPreview(true);
-            observer.disconnect();
-          }
-        });
-      },
-      { rootMargin: '160px 0px' }
-    );
-
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [shouldLoadPreview]);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    let localObjectUrl: string | null = null;
-
-    const hasDirectUrl = Boolean(document.thumbnailUrl || document.url);
-    const canLoadPreviewFromStorage =
-      document.status === 'completed' && document.fileReference?.startsWith('minio:');
-    const wantsRemoteImagePreview =
-      document.type === 'image' &&
-      !hasDirectUrl &&
-      document.size <= MAX_INLINE_IMAGE_PREVIEW_SIZE;
-    const wantsRemoteVideoPreview = false;
-    const wantsRemotePdfPreview =
-      document.type === 'pdf' &&
-      !hasDirectUrl &&
-      document.size <= MAX_INLINE_PDF_PREVIEW_SIZE;
-    const wantsRemoteTextPreview =
-      (document.type === 'txt' || document.type === 'md') &&
-      document.size <= MAX_INLINE_TEXT_PREVIEW_SIZE;
-    const wantsRemoteMediaPreview =
-      wantsRemoteImagePreview || wantsRemoteVideoPreview || wantsRemotePdfPreview;
-
-    const cachedMediaUrl = mediaPreviewCache.get(previewCacheKey);
-    const cachedText = textPreviewCache.get(previewCacheKey);
-    if (wantsRemoteMediaPreview && cachedMediaUrl) {
-      touchMediaCacheKey(previewCacheKey);
-      setCardPreviewUrl(cachedMediaUrl);
-      setTextPreview(null);
-      setIsCardPreviewLoading(false);
-      return () => undefined;
-    }
-    if (wantsRemoteTextPreview && cachedText != null) {
-      setTextPreview(cachedText);
-      setCardPreviewUrl(null);
-      setIsCardPreviewLoading(false);
-      return () => undefined;
-    }
-
-    if (
-      !shouldLoadPreview ||
-      !canLoadPreviewFromStorage ||
-      (!wantsRemoteMediaPreview && !wantsRemoteTextPreview)
-    ) {
-      setCardPreviewUrl(null);
-      setTextPreview(null);
-      setIsCardPreviewLoading(false);
-      return () => undefined;
-    }
-
-    const loadPreview = async () => {
-      setIsCardPreviewLoading(true);
-      try {
-        const { blob } = await knowledgeApi.download(document.id);
-        if (cancelled) return;
-
-        if (wantsRemoteTextPreview) {
-          const text = await blob.text();
-          if (cancelled) return;
-          const normalized = text.replace(/\s+/g, ' ').trim();
-          const snippet = normalized.slice(0, 180) || '';
-          textPreviewCache.set(previewCacheKey, snippet);
-          setTextPreview(snippet || null);
-          setCardPreviewUrl(null);
-          return;
-        }
-
-        localObjectUrl = URL.createObjectURL(blob);
-        setMediaCache(previewCacheKey, localObjectUrl);
-        setCardPreviewUrl(localObjectUrl);
-        setTextPreview(null);
-      } catch {
-        if (!cancelled) {
-          setCardPreviewUrl(null);
-          setTextPreview(null);
-        }
-      } finally {
-        if (!cancelled) {
-          setIsCardPreviewLoading(false);
-        }
-      }
-    };
-
-    void loadPreview();
-
-    return () => {
-      cancelled = true;
-      if (localObjectUrl && !mediaPreviewCache.has(previewCacheKey)) {
-        URL.revokeObjectURL(localObjectUrl);
-      }
-    };
-  }, [
-    document.id,
-    document.type,
-    document.size,
-    document.status,
-    document.fileReference,
-    document.thumbnailUrl,
-    document.url,
-    previewCacheKey,
-    shouldLoadPreview,
-  ]);
+    : 'h-16 bg-white/5 border border-white/20';
 
   const renderCompactHint = () => {
     if (document.type === 'audio') {
@@ -349,7 +181,6 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
 
       {/* Thumbnail or compact icon strip */}
       <div
-        ref={previewContainerRef}
         className={`mb-4 rounded-lg overflow-hidden relative ${previewContainerClass}`}
       >
         {hasMediaPreview ? (
@@ -382,15 +213,6 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
               draggable={false}
             />
           )
-        ) : hasTextPreview ? (
-          <div className="h-full px-3 py-2 flex flex-col justify-center">
-            <p className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
-              {document.type} preview
-            </p>
-            <p className="text-xs text-gray-700 dark:text-gray-300 line-clamp-2 leading-relaxed">
-              {textPreview}
-            </p>
-          </div>
         ) : (
           <div className="h-full px-3 flex items-center justify-between">
             <div className="flex items-center gap-3 min-w-0">
@@ -407,11 +229,6 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
               </div>
             </div>
             {renderCompactHint()}
-          </div>
-        )}
-        {!hasMediaPreview && !hasTextPreview && isCardPreviewLoading && (
-          <div className="absolute inset-0 bg-black/20 flex items-center justify-center">
-            <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />
           </div>
         )}
       </div>
