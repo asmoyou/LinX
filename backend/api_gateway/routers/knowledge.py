@@ -9,10 +9,11 @@ import asyncio
 import json
 import time
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, text
@@ -2542,6 +2543,7 @@ async def get_processing_status(
 @router.get("/{knowledge_id}/download")
 async def download_knowledge(
     knowledge_id: str,
+    request: Request,
     inline: bool = Query(default=False),
     current_user: CurrentUser = Depends(get_current_user),
 ):
@@ -2609,14 +2611,51 @@ async def download_knowledge(
         encoded_filename = urllib.parse.quote(original_filename)
 
         disposition = "inline" if inline else "attachment"
+        cache_headers = {
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_filename}",
+            "Content-Length": str(file_metadata.get("size", 0)),
+            "Cache-Control": "private, max-age=3600, stale-while-revalidate=120",
+            "Vary": "Authorization",
+        }
+
+        etag = str(file_metadata.get("etag", "")).strip()
+        if etag:
+            normalized_etag = etag.strip('"')
+            cache_headers["ETag"] = f'"{normalized_etag}"'
+        else:
+            normalized_etag = ""
+
+        last_modified = file_metadata.get("last_modified")
+        if last_modified:
+            cache_headers["Last-Modified"] = str(last_modified)
+
+        # Conditional request support to avoid sending full payload repeatedly.
+        if request is not None:
+            if_none_match = request.headers.get("if-none-match")
+            if if_none_match and normalized_etag:
+                etag_tokens = [token.strip().strip('"') for token in if_none_match.split(",")]
+                if "*" in etag_tokens or normalized_etag in etag_tokens:
+                    cache_headers.pop("Content-Length", None)
+                    return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=cache_headers)
+
+            if_modified_since = request.headers.get("if-modified-since")
+            if if_modified_since and last_modified:
+                try:
+                    ims_dt = parsedate_to_datetime(if_modified_since)
+                    lm_dt = parsedate_to_datetime(str(last_modified))
+                    if ims_dt and lm_dt and lm_dt <= ims_dt:
+                        cache_headers.pop("Content-Length", None)
+                        return Response(
+                            status_code=status.HTTP_304_NOT_MODIFIED, headers=cache_headers
+                        )
+                except Exception:
+                    # Invalid date headers should not fail downloads.
+                    pass
 
         return StreamingResponse(
             stream,
             media_type=mime_type,
-            headers={
-                "Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_filename}",
-                "Content-Length": str(file_metadata.get("size", 0)),
-            },
+            headers=cache_headers,
         )
 
     except HTTPException:
