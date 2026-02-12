@@ -192,6 +192,9 @@ class AgentConfig:
     agent_type: str
     owner_user_id: UUID
     capabilities: List[str]  # List of skill names
+    access_level: str = "private"
+    allowed_knowledge: List[str] = field(default_factory=list)
+    allowed_memory: List[str] = field(default_factory=list)
     llm_model: str = "ollama"
     temperature: float = 0.7
     max_iterations: int = 20  # Maximum conversation rounds
@@ -205,6 +208,11 @@ class AgentConfig:
     
     def __post_init__(self):
         """Validate configuration and apply environment variable overrides."""
+        if self.allowed_knowledge is None:
+            self.allowed_knowledge = []
+        if self.allowed_memory is None:
+            self.allowed_memory = []
+
         # Apply environment variable overrides with defaults
         if self.max_parse_retries is None:
             self.max_parse_retries = _get_env_int('AGENT_MAX_PARSE_RETRIES', 3)
@@ -604,6 +612,14 @@ class BaseAgent:
                     context_info.append(f"Relevant memories: {', '.join(context['agent_memories'][:3])}")
                 if context.get("company_memories"):
                     context_info.append(f"Company knowledge: {', '.join(context['company_memories'][:3])}")
+                if context.get("user_context_memories"):
+                    context_info.append(
+                        f"User context: {', '.join(context['user_context_memories'][:3])}"
+                    )
+                if context.get("knowledge_snippets"):
+                    context_info.append(
+                        f"Knowledge snippets: {', '.join(context['knowledge_snippets'][:3])}"
+                    )
 
                 if context_info:
                     user_message = f"{task_description}\n\nContext:\n" + "\n".join(context_info)
@@ -1561,6 +1577,14 @@ class BaseAgent:
                 context_info.append(f"Relevant memories: {', '.join(context['agent_memories'][:3])}")
             if context.get("company_memories"):
                 context_info.append(f"Company knowledge: {', '.join(context['company_memories'][:3])}")
+            if context.get("user_context_memories"):
+                context_info.append(
+                    f"User context: {', '.join(context['user_context_memories'][:3])}"
+                )
+            if context.get("knowledge_snippets"):
+                context_info.append(
+                    f"Knowledge snippets: {', '.join(context['knowledge_snippets'][:3])}"
+                )
 
             if context_info:
                 user_message = f"{task_description}\n\nContext:\n" + "\n".join(context_info)

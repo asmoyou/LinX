@@ -10,8 +10,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from uuid import UUID
 
+from agent_framework.access_policy import resolve_memory_scopes
 from agent_framework.agent_memory_interface import AgentMemoryInterface, get_agent_memory_interface
 from agent_framework.base_agent import BaseAgent
+from memory_system.memory_interface import MemoryType, SearchQuery
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,7 @@ class ExecutionContext:
 
     agent_id: UUID
     user_id: UUID
+    user_role: str = "user"
     task_id: Optional[UUID] = None
     task_description: str = ""
     additional_context: Optional[Dict[str, Any]] = None
@@ -62,31 +65,114 @@ class AgentExecutor:
             # Try to retrieve relevant memories (optional - continue if fails)
             agent_memories = []
             company_memories = []
-            
+            user_context_memories = []
+            memory_scopes = resolve_memory_scopes(
+                access_level=agent.config.access_level,
+                allowed_memory=agent.config.allowed_memory,
+            )
+
+            if "agent" in memory_scopes:
+                try:
+                    agent_memories = self.memory_interface.retrieve_agent_memory(
+                        agent_id=context.agent_id,
+                        query=context.task_description,
+                        top_k=3,
+                    )
+                    logger.debug(f"Retrieved {len(agent_memories)} agent memories")
+                except Exception as mem_error:
+                    logger.warning(
+                        f"Failed to retrieve agent memories (continuing without): {mem_error}"
+                    )
+
+            if "company" in memory_scopes:
+                try:
+                    company_memories = self.memory_interface.retrieve_company_memory(
+                        user_id=context.user_id,
+                        query=context.task_description,
+                        top_k=3,
+                    )
+                    logger.debug(f"Retrieved {len(company_memories)} company memories")
+                except Exception as mem_error:
+                    logger.warning(
+                        f"Failed to retrieve company memories (continuing without): {mem_error}"
+                    )
+
+            if "user_context" in memory_scopes:
+                try:
+                    user_context_query = SearchQuery(
+                        query_text=context.task_description,
+                        memory_type=MemoryType.USER_CONTEXT,
+                        user_id=str(context.user_id),
+                        top_k=3,
+                    )
+                    user_context_memories = self.memory_interface.memory_system.retrieve_memories(
+                        user_context_query
+                    )
+                    logger.debug(f"Retrieved {len(user_context_memories)} user-context memories")
+                except Exception as mem_error:
+                    logger.warning(
+                        f"Failed to retrieve user-context memories (continuing without): {mem_error}"
+                    )
+
+            knowledge_snippets = []
             try:
-                agent_memories = self.memory_interface.retrieve_agent_memory(
-                    agent_id=context.agent_id,
-                    query=context.task_description,
-                    top_k=3,
+                from access_control.knowledge_filter import filter_knowledge_query
+                from access_control.permissions import CurrentUser
+                from database.connection import get_db_session
+                from database.models import KnowledgeItem
+                from knowledge_base.knowledge_search import SearchFilter, get_knowledge_search
+
+                current_user = CurrentUser(
+                    user_id=str(context.user_id),
+                    username="agent_executor_user",
+                    role=context.user_role or "user",
                 )
-                logger.debug(f"Retrieved {len(agent_memories)} agent memories")
-            except Exception as mem_error:
-                logger.warning(f"Failed to retrieve agent memories (continuing without): {mem_error}")
-            
-            try:
-                company_memories = self.memory_interface.retrieve_company_memory(
-                    user_id=context.user_id,
-                    query=context.task_description,
-                    top_k=3,
+
+                candidate_document_ids = None
+                if agent.config.allowed_knowledge:
+                    allowed_collection_uuids = []
+                    for collection_id in agent.config.allowed_knowledge:
+                        try:
+                            allowed_collection_uuids.append(UUID(collection_id))
+                        except ValueError:
+                            continue
+
+                    if allowed_collection_uuids:
+                        with get_db_session() as session:
+                            query = session.query(KnowledgeItem.knowledge_id)
+                            query = filter_knowledge_query(query, current_user)
+                            query = query.filter(
+                                KnowledgeItem.collection_id.in_(allowed_collection_uuids)
+                            )
+                            candidate_document_ids = [str(row[0]) for row in query.all()]
+                    else:
+                        candidate_document_ids = []
+
+                if candidate_document_ids != []:
+                    search_service = get_knowledge_search()
+                    search_filter = SearchFilter(
+                        user_id=str(context.user_id),
+                        user_role=context.user_role or "user",
+                        document_ids=candidate_document_ids,
+                        top_k=3,
+                    )
+                    knowledge_results = search_service.search(
+                        query=context.task_description,
+                        search_filter=search_filter,
+                    )
+                    knowledge_snippets = [result.content for result in knowledge_results[:3]]
+            except Exception as knowledge_error:
+                logger.warning(
+                    "Failed to retrieve knowledge snippets (continuing without): %s",
+                    knowledge_error,
                 )
-                logger.debug(f"Retrieved {len(company_memories)} company memories")
-            except Exception as mem_error:
-                logger.warning(f"Failed to retrieve company memories (continuing without): {mem_error}")
 
             # Prepare execution context
             exec_context = {
                 "agent_memories": [m.content for m in agent_memories],
                 "company_memories": [m.content for m in company_memories],
+                "user_context_memories": [m.content for m in user_context_memories],
+                "knowledge_snippets": knowledge_snippets,
             }
 
             if context.additional_context:

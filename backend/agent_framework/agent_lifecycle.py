@@ -72,6 +72,9 @@ class AgentLifecycleManager:
             agent_type=agent_type,
             owner_user_id=owner_user_id,
             capabilities=capabilities,
+            access_level=agent_info.access_level or "private",
+            allowed_knowledge=agent_info.allowed_knowledge or [],
+            allowed_memory=agent_info.allowed_memory or [],
         )
 
         # Create BaseAgent instance

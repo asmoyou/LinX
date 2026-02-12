@@ -101,8 +101,8 @@ class AgentRegistry:
             max_tokens: Maximum tokens
             top_p: Top-p sampling
             access_level: Access level (private, team, public)
-            allowed_knowledge: List of allowed knowledge base IDs
-            allowed_memory: List of allowed memory collection IDs
+            allowed_knowledge: List of allowed knowledge collection IDs
+            allowed_memory: List of allowed memory scopes
 
         Returns:
             AgentInfo with registered agent details
@@ -223,8 +223,8 @@ class AgentRegistry:
             max_tokens: Maximum tokens
             top_p: Top-p sampling
             access_level: Access level
-            allowed_knowledge: List of allowed knowledge base IDs
-            allowed_memory: List of allowed memory collection IDs
+            allowed_knowledge: List of allowed knowledge collection IDs
+            allowed_memory: List of allowed memory scopes
             embedding_model: Embedding model name
             embedding_provider: Embedding provider name
             vector_dimension: Vector dimension

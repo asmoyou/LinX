@@ -6,6 +6,7 @@ export interface CreateAgentRequest {
   name: string;
   type: string;
   template_id?: string;
+  avatar?: string;
   systemPrompt?: string;
   skills?: string[];
   model?: string;
@@ -16,6 +17,11 @@ export interface CreateAgentRequest {
   accessLevel?: string;
   allowedKnowledge?: string[];
   allowedMemory?: string[];
+  embeddingModel?: string;
+  embeddingProvider?: string;
+  vectorDimension?: number;
+  topK?: number;
+  similarityThreshold?: number;
   capabilities?: string[];
   config?: Record<string, any>;
   department_id?: string;
@@ -23,6 +29,7 @@ export interface CreateAgentRequest {
 
 export interface UpdateAgentRequest {
   name?: string;
+  avatar?: string;
   systemPrompt?: string;
   skills?: string[];
   model?: string;
@@ -33,6 +40,11 @@ export interface UpdateAgentRequest {
   accessLevel?: string;
   allowedKnowledge?: string[];
   allowedMemory?: string[];
+  embeddingModel?: string;
+  embeddingProvider?: string;
+  vectorDimension?: number;
+  topK?: number;
+  similarityThreshold?: number;
   capabilities?: string[];
   config?: Record<string, any>;
   department_id?: string | null;

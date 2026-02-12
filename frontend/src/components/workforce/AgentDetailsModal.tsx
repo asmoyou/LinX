@@ -2,6 +2,31 @@ import React from 'react';
 import { X, Activity, Clock, CheckCircle, MessageSquare } from 'lucide-react';
 import type { Agent } from '@/types/agent';
 
+const normalizeMemoryScopes = (scopes?: string[]): string[] => {
+  if (!scopes || scopes.length === 0) {
+    return [];
+  }
+
+  const aliasMap: Record<string, string> = {
+    agent: 'agent',
+    agent_memories: 'agent',
+    company: 'company',
+    company_memories: 'company',
+    user_context: 'user_context',
+  };
+  const normalized: string[] = [];
+
+  for (const rawScope of scopes) {
+    const scope = (rawScope || '').trim().toLowerCase();
+    const canonicalScope = aliasMap[scope];
+    if (canonicalScope && !normalized.includes(canonicalScope)) {
+      normalized.push(canonicalScope);
+    }
+  }
+
+  return normalized;
+};
+
 interface AgentDetailsModalProps {
   agent: Agent | null;
   isOpen: boolean;
@@ -11,6 +36,14 @@ interface AgentDetailsModalProps {
 
 export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({ agent, isOpen, onClose, onTest }) => {
   if (!isOpen || !agent) return null;
+
+  const configuredMemoryScopes = normalizeMemoryScopes(agent.allowedMemory);
+  const effectiveMemoryScopes =
+    configuredMemoryScopes.length > 0
+      ? configuredMemoryScopes
+      : agent.accessLevel === 'team' || agent.accessLevel === 'public'
+      ? ['agent', 'company', 'user_context']
+      : ['agent', 'user_context'];
 
   const mockLogs = [
     { timestamp: '2026-01-21 17:05:23', level: 'INFO', message: 'Task execution started' },
@@ -83,6 +116,35 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({ agent, isO
             </div>
           </div>
         )}
+
+        {/* Data Access */}
+        <div className="mb-6">
+          <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-2">
+            Data Access
+          </h3>
+          <div className="p-4 bg-white/10 rounded-lg space-y-2 text-sm text-gray-700 dark:text-gray-300">
+            <p>
+              <span className="font-semibold">Access Level:</span>{' '}
+              <span className="capitalize">{agent.accessLevel || 'private'}</span>
+            </p>
+            <p>
+              <span className="font-semibold">Allowed Knowledge:</span>{' '}
+              {(agent.allowedKnowledge?.length || 0) > 0
+                ? `${agent.allowedKnowledge?.length || 0} selected`
+                : 'No whitelist (use permission defaults)'}
+            </p>
+            <p>
+              <span className="font-semibold">Allowed Memory (Configured):</span>{' '}
+              {configuredMemoryScopes.length > 0
+                ? configuredMemoryScopes.join(', ')
+                : 'No explicit scope'}
+            </p>
+            <p>
+              <span className="font-semibold">Allowed Memory (Effective):</span>{' '}
+              {effectiveMemoryScopes.join(', ')}
+            </p>
+          </div>
+        </div>
 
         {/* Logs */}
         <div>

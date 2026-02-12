@@ -16,6 +16,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Upload
 from pydantic import BaseModel, Field
 
 from access_control.permissions import CurrentUser, get_current_user
+from agent_framework.access_policy import normalize_allowed_memory_scopes, resolve_memory_scopes
 from agent_framework.agent_registry import get_agent_registry
 from object_storage.minio_client import get_minio_client
 from shared.logging import get_logger
@@ -85,6 +86,103 @@ def _auto_fix_avatar_ref(old_ref: str, new_ref: str):
                 logger.info(f"Auto-fixed avatar for agent {agent.agent_id}: minio ref")
     except Exception as e:
         logger.warning(f"Failed to auto-fix avatar reference: {e}")
+
+
+def _validate_allowed_knowledge(
+    allowed_knowledge: List[str],
+    current_user: CurrentUser,
+) -> List[str]:
+    """Validate agent allowed knowledge whitelist against accessible collections."""
+    if not allowed_knowledge:
+        return []
+
+    normalized_ids: List[str] = []
+    for raw_id in allowed_knowledge:
+        if raw_id and raw_id.strip() and raw_id not in normalized_ids:
+            normalized_ids.append(raw_id.strip())
+
+    parsed_ids: List[UUID] = []
+    invalid_ids: List[str] = []
+    for collection_id in normalized_ids:
+        try:
+            parsed_ids.append(UUID(collection_id))
+        except ValueError:
+            invalid_ids.append(collection_id)
+
+    if invalid_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid knowledge base IDs: {', '.join(invalid_ids)}",
+        )
+
+    from access_control.knowledge_filter import can_access_knowledge_item
+    from access_control.rbac import Action
+    from database.connection import get_db_session
+    from database.models import KnowledgeCollection, User
+
+    current_user_uuid = UUID(current_user.user_id)
+
+    with get_db_session() as session:
+        user = session.query(User).filter(User.user_id == current_user_uuid).first()
+        user_attributes = dict(user.attributes or {}) if user else {}
+        if user and user.department_id:
+            user_attributes["department_id"] = str(user.department_id)
+
+        collections = (
+            session.query(KnowledgeCollection)
+            .filter(KnowledgeCollection.collection_id.in_(parsed_ids))
+            .all()
+        )
+
+    collection_map = {str(collection.collection_id): collection for collection in collections}
+    missing_ids = [
+        collection_id for collection_id in normalized_ids if collection_id not in collection_map
+    ]
+    if missing_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Knowledge bases not found: {', '.join(missing_ids)}",
+        )
+
+    inaccessible_ids: List[str] = []
+    for collection_id in normalized_ids:
+        collection = collection_map[collection_id]
+        resource_attributes = {}
+        if collection.department_id:
+            resource_attributes["department_id"] = str(collection.department_id)
+
+        can_access = can_access_knowledge_item(
+            current_user=current_user,
+            action=Action.READ,
+            owner_user_id=str(collection.owner_user_id),
+            access_level=collection.access_level,
+            user_attributes=user_attributes or None,
+            resource_attributes=resource_attributes or None,
+        )
+        if not can_access:
+            inaccessible_ids.append(collection_id)
+
+    if inaccessible_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Knowledge bases are not accessible: {', '.join(inaccessible_ids)}",
+        )
+
+    return normalized_ids
+
+
+def _validate_allowed_memory(allowed_memory: Optional[List[str]]) -> Optional[List[str]]:
+    """Validate and normalize allowed memory scopes."""
+    if allowed_memory is None:
+        return None
+
+    normalized_scopes, invalid_scopes = normalize_allowed_memory_scopes(allowed_memory)
+    if invalid_scopes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid memory scopes: {', '.join(invalid_scopes)}",
+        )
+    return normalized_scopes
 
 
 # Agent cache with TTL (Time To Live) and memory-aware sizing
@@ -281,15 +379,15 @@ class CreateAgentRequest(BaseModel):
     template_id: Optional[str] = None
     avatar: Optional[str] = None
     systemPrompt: Optional[str] = None
-    skills: List[str] = []
+    skills: List[str] = Field(default_factory=list)
     model: Optional[str] = None
     provider: Optional[str] = None
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
     maxTokens: Optional[int] = Field(default=2000, ge=1, le=8000)
     topP: Optional[float] = Field(default=0.9, ge=0.0, le=1.0)
     accessLevel: Optional[str] = Field(default="private")
-    allowedKnowledge: List[str] = []
-    allowedMemory: List[str] = []
+    allowedKnowledge: List[str] = Field(default_factory=list)
+    allowedMemory: List[str] = Field(default_factory=list)
 
 
 class UpdateAgentRequest(BaseModel):
@@ -329,15 +427,15 @@ class AgentResponse(BaseModel):
     tasksCompleted: int = 0
     uptime: str = "0h 0m"
     systemPrompt: Optional[str] = None
-    skills: List[str] = []
+    skills: List[str] = Field(default_factory=list)
     model: Optional[str] = None
     provider: Optional[str] = None
     temperature: float = 0.7
     maxTokens: int = 2000
     topP: float = 0.9
     accessLevel: str = "private"
-    allowedKnowledge: List[str] = []
-    allowedMemory: List[str] = []
+    allowedKnowledge: List[str] = Field(default_factory=list)
+    allowedMemory: List[str] = Field(default_factory=list)
     # Knowledge Base Configuration
     embeddingModel: Optional[str] = None
     embeddingProvider: Optional[str] = None
@@ -406,6 +504,11 @@ async def create_agent(
     """Create a new agent."""
     try:
         registry = get_agent_registry()
+        validated_allowed_knowledge = _validate_allowed_knowledge(
+            request.allowedKnowledge or [],
+            current_user,
+        )
+        validated_allowed_memory = _validate_allowed_memory(request.allowedMemory or [])
 
         # Register agent in database with LLM configuration
         agent_info = registry.register_agent(
@@ -420,8 +523,8 @@ async def create_agent(
             max_tokens=request.maxTokens or 2000,
             top_p=request.topP or 0.9,
             access_level=request.accessLevel or "private",
-            allowed_knowledge=request.allowedKnowledge or [],
-            allowed_memory=request.allowedMemory or [],
+            allowed_knowledge=validated_allowed_knowledge,
+            allowed_memory=validated_allowed_memory or [],
         )
 
         # Update status to idle after creation
@@ -604,6 +707,12 @@ async def update_agent(
             )
 
         # Update agent with all configuration fields
+        validated_allowed_knowledge = (
+            _validate_allowed_knowledge(request.allowedKnowledge, current_user)
+            if request.allowedKnowledge is not None
+            else None
+        )
+        validated_allowed_memory = _validate_allowed_memory(request.allowedMemory)
         updated_agent = registry.update_agent(
             agent_id=UUID(agent_id),
             name=request.name,
@@ -616,8 +725,8 @@ async def update_agent(
             max_tokens=request.maxTokens,
             top_p=request.topP,
             access_level=request.accessLevel,
-            allowed_knowledge=request.allowedKnowledge,
-            allowed_memory=request.allowedMemory,
+            allowed_knowledge=validated_allowed_knowledge,
+            allowed_memory=validated_allowed_memory,
             embedding_model=request.embeddingModel,
             embedding_provider=request.embeddingProvider,
             vector_dimension=request.vectorDimension,
@@ -1225,6 +1334,9 @@ async def test_agent(
                         agent_type=agent_info.agent_type,
                         owner_user_id=UUID(current_user.user_id),
                         capabilities=agent_info.capabilities or [],
+                        access_level=agent_info.access_level or "private",
+                        allowed_knowledge=agent_info.allowed_knowledge or [],
+                        allowed_memory=agent_info.allowed_memory or [],
                         llm_model=agent_info.llm_model or "llama3.2:latest",
                         temperature=agent_info.temperature or 0.7,
                         max_iterations=10,
@@ -1325,6 +1437,7 @@ async def test_agent(
                 # Get memory context
                 context = {}
                 try:
+                    from database.connection import get_db_session
                     from memory_system.embedding_service import (
                         OllamaEmbeddingService,
                         get_embedding_service,
@@ -1405,25 +1518,110 @@ async def test_agent(
                         memory_system = get_memory_system()
                         original_service = None
 
-                    # Search agent memories
-                    agent_query = SearchQuery(
-                        query_text=message,
-                        agent_id=str(agent_id),
-                        memory_type=MemoryType.AGENT,
-                        top_k=agent_info.top_k or 5,
+                    memory_scopes = resolve_memory_scopes(
+                        access_level=agent_info.access_level,
+                        allowed_memory=agent_info.allowed_memory,
                     )
-                    agent_memories = memory_system.retrieve_memories(agent_query)
-                    context["agent_memories"] = [m.content for m in agent_memories]
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "info",
+                                "content": f"Effective memory scopes: {', '.join(memory_scopes)}",
+                            }
+                        )
+                        + "\n\n"
+                    )
 
-                    # Search company memories
-                    company_query = SearchQuery(
-                        query_text=message,
-                        user_id=current_user.user_id,
-                        memory_type=MemoryType.COMPANY,
-                        top_k=agent_info.top_k or 5,
-                    )
-                    company_memories = memory_system.retrieve_memories(company_query)
-                    context["company_memories"] = [m.content for m in company_memories]
+                    if "agent" in memory_scopes:
+                        agent_query = SearchQuery(
+                            query_text=message,
+                            agent_id=str(agent_id),
+                            memory_type=MemoryType.AGENT,
+                            top_k=agent_info.top_k or 5,
+                        )
+                        agent_memories = memory_system.retrieve_memories(agent_query)
+                        context["agent_memories"] = [m.content for m in agent_memories]
+
+                    if "company" in memory_scopes:
+                        company_query = SearchQuery(
+                            query_text=message,
+                            user_id=current_user.user_id,
+                            memory_type=MemoryType.COMPANY,
+                            top_k=agent_info.top_k or 5,
+                        )
+                        company_memories = memory_system.retrieve_memories(company_query)
+                        context["company_memories"] = [m.content for m in company_memories]
+
+                    if "user_context" in memory_scopes:
+                        user_context_query = SearchQuery(
+                            query_text=message,
+                            user_id=current_user.user_id,
+                            memory_type=MemoryType.USER_CONTEXT,
+                            top_k=agent_info.top_k or 5,
+                        )
+                        user_context_memories = memory_system.retrieve_memories(user_context_query)
+                        context["user_context_memories"] = [
+                            m.content for m in user_context_memories
+                        ]
+
+                    # Retrieve knowledge snippets, narrowed by allowed knowledge collections when set.
+                    knowledge_document_ids = None
+                    if agent_info.allowed_knowledge:
+                        from access_control.knowledge_filter import filter_knowledge_query
+                        from database.models import KnowledgeItem
+
+                        knowledge_collection_uuids = []
+                        for collection_id in agent_info.allowed_knowledge:
+                            try:
+                                knowledge_collection_uuids.append(UUID(collection_id))
+                            except ValueError:
+                                continue
+
+                        if knowledge_collection_uuids:
+                            with get_db_session() as session:
+                                knowledge_query = session.query(KnowledgeItem.knowledge_id)
+                                knowledge_query = filter_knowledge_query(knowledge_query, current_user)
+                                knowledge_query = knowledge_query.filter(
+                                    KnowledgeItem.collection_id.in_(knowledge_collection_uuids)
+                                )
+                                knowledge_document_ids = [
+                                    str(row[0]) for row in knowledge_query.all()
+                                ]
+                        else:
+                            knowledge_document_ids = []
+
+                    if knowledge_document_ids != []:
+                        from knowledge_base.knowledge_search import SearchFilter, get_knowledge_search
+
+                        knowledge_search = get_knowledge_search()
+                        knowledge_filter = SearchFilter(
+                            user_id=current_user.user_id,
+                            user_role=current_user.role,
+                            document_ids=knowledge_document_ids,
+                            top_k=agent_info.top_k or 5,
+                            min_relevance_score=agent_info.similarity_threshold,
+                        )
+                        knowledge_results = knowledge_search.search(
+                            query=message,
+                            search_filter=knowledge_filter,
+                        )
+                        context["knowledge_snippets"] = [
+                            result.content for result in knowledge_results[:3]
+                        ]
+                        yield (
+                            "data: "
+                            + json.dumps(
+                                {
+                                    "type": "info",
+                                    "content": (
+                                        "Knowledge snippets retrieved: "
+                                        f"{len(context['knowledge_snippets'])}"
+                                    ),
+                                }
+                            )
+                            + "\n\n"
+                        )
 
                     # Restore original embedding service if we changed it
                     if original_service is not None:
@@ -1905,6 +2103,9 @@ async def test_agent(
                     agent_type=agent_info.agent_type,
                     owner_user_id=UUID(current_user.user_id),
                     capabilities=agent_info.capabilities or [],
+                    access_level=agent_info.access_level or "private",
+                    allowed_knowledge=agent_info.allowed_knowledge or [],
+                    allowed_memory=agent_info.allowed_memory or [],
                     llm_model=agent_info.llm_model or "llama3.2:latest",
                     temperature=agent_info.temperature or 0.7,
                     max_iterations=10,
@@ -1983,6 +2184,7 @@ async def test_agent(
                 exec_context = ExecutionContext(
                     agent_id=UUID(agent_id),
                     user_id=UUID(current_user.user_id),
+                    user_role=current_user.role,
                     task_description=message,
                 )
 

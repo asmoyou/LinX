@@ -174,8 +174,8 @@ class Agent(Base):
         nullable=True,
         index=True,
     )
-    allowed_knowledge = Column(JSONB, nullable=True)  # list of knowledge base IDs
-    allowed_memory = Column(JSONB, nullable=True)  # list of memory collection IDs
+    allowed_knowledge = Column(JSONB, nullable=True)  # list of knowledge collection IDs
+    allowed_memory = Column(JSONB, nullable=True)  # list of memory scopes (agent/company/user_context)
     
     # Knowledge Base Configuration
     embedding_model = Column(String(255), nullable=True)  # embedding model name

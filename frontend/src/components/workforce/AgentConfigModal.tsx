@@ -4,10 +4,38 @@ import { X, Save, Loader2, AlertCircle, Info } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { Agent } from '@/types/agent';
 import { llmApi, agentsApi } from '@/api';
+import { knowledgeApi } from '@/api/knowledge';
 import type { ModelMetadata } from '@/api/llm';
+import type { Collection } from '@/types/document';
 import { ModelMetadataCard } from '@/components/settings/ModelMetadataCard';
 import { ImageCropModal } from '@/components/common/ImageCropModal';
 import { DepartmentSelect } from '@/components/departments/DepartmentSelect';
+
+const MEMORY_SCOPE_ORDER = ['agent', 'company', 'user_context'] as const;
+type MemoryScope = (typeof MEMORY_SCOPE_ORDER)[number];
+const MEMORY_SCOPE_ALIAS_MAP: Record<string, MemoryScope> = {
+  agent: 'agent',
+  agent_memories: 'agent',
+  company: 'company',
+  company_memories: 'company',
+  user_context: 'user_context',
+};
+
+const normalizeMemoryScopes = (scopes?: string[]): MemoryScope[] => {
+  if (!scopes || scopes.length === 0) {
+    return [];
+  }
+
+  const normalized: MemoryScope[] = [];
+  for (const rawScope of scopes) {
+    const scope = (rawScope || '').trim().toLowerCase();
+    const canonicalScope = MEMORY_SCOPE_ALIAS_MAP[scope];
+    if (canonicalScope && !normalized.includes(canonicalScope)) {
+      normalized.push(canonicalScope);
+    }
+  }
+  return normalized;
+};
 
 interface AgentConfigModalProps {
   agent: Agent | null;
@@ -36,6 +64,9 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [isLoadingEmbeddingMetadata, setIsLoadingEmbeddingMetadata] = useState(false);
   const [isAvatarCropModalOpen, setIsAvatarCropModalOpen] = useState(false);
   const [avatarPreview, setAvatarPreview] = useState<string>('');  // presigned URL for display
+  const [availableKnowledgeBases, setAvailableKnowledgeBases] = useState<Collection[]>([]);
+  const [isLoadingKnowledgeBases, setIsLoadingKnowledgeBases] = useState(false);
+  const [knowledgeBasesError, setKnowledgeBasesError] = useState<string | null>(null);
   
   // Skills state
   const [availableSkills, setAvailableSkills] = useState<Array<{
@@ -89,7 +120,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         departmentId: agent.departmentId || '',
         accessLevel: agent.accessLevel || 'private',
         allowedKnowledge: agent.allowedKnowledge || [],
-        allowedMemory: agent.allowedMemory || [],
+        allowedMemory: normalizeMemoryScopes(agent.allowedMemory || []),
         embeddingModel: agent.embeddingModel || '',
         embeddingProvider: agent.embeddingProvider || 'openai',
         vectorDimension: agent.vectorDimension || 1536,
@@ -108,6 +139,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       fetchAvailableProviders();
       fetchAvailableEmbeddingModels();
       fetchAvailableSkills();
+      fetchKnowledgeBases();
     }
   }, [isOpen]);
 
@@ -178,6 +210,41 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       setIsLoadingProviders(false);
     }
   };
+
+  const fetchKnowledgeBases = async () => {
+    setIsLoadingKnowledgeBases(true);
+    setKnowledgeBasesError(null);
+    try {
+      const pageSize = 100;
+      let page = 1;
+      let total = Number.POSITIVE_INFINITY;
+      const allCollections: Collection[] = [];
+
+      while (allCollections.length < total) {
+        const response = await knowledgeApi.getCollections({ page, page_size: pageSize });
+        allCollections.push(...response.collections);
+        total = response.total;
+        if (response.collections.length < pageSize) {
+          break;
+        }
+        page += 1;
+      }
+
+      allCollections.sort((a, b) => a.name.localeCompare(b.name));
+      setAvailableKnowledgeBases(allCollections);
+    } catch (error: any) {
+      console.error('Failed to fetch knowledge collections:', error);
+      const errorMsg =
+        error.response?.data?.detail ||
+        error.response?.data?.message ||
+        error.message ||
+        'Failed to load knowledge bases';
+      setKnowledgeBasesError(errorMsg);
+      setAvailableKnowledgeBases([]);
+    } finally {
+      setIsLoadingKnowledgeBases(false);
+    }
+  };
   
   const fetchAvailableSkills = async () => {
     if (!agent?.id) return;
@@ -218,6 +285,39 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       ...formData,
       skills: newSkills
     });
+  };
+
+  const toggleKnowledgeBase = (collectionId: string) => {
+    const selected = formData.allowedKnowledge || [];
+    const nextSelected = selected.includes(collectionId)
+      ? selected.filter((id) => id !== collectionId)
+      : [...selected, collectionId];
+    setFormData({
+      ...formData,
+      allowedKnowledge: nextSelected,
+    });
+  };
+
+  const toggleMemoryScope = (scope: string) => {
+    const selected = formData.allowedMemory || [];
+    const nextSelected = selected.includes(scope)
+      ? selected.filter((item) => item !== scope)
+      : [...selected, scope];
+    setFormData({
+      ...formData,
+      allowedMemory: nextSelected,
+    });
+  };
+
+  const resolveEffectiveMemoryScopes = (): string[] => {
+    const normalizedSelected = normalizeMemoryScopes(formData.allowedMemory || []);
+    if (normalizedSelected.length > 0) {
+      return normalizedSelected;
+    }
+    if (formData.accessLevel === 'team' || formData.accessLevel === 'public') {
+      return ['agent', 'company', 'user_context'];
+    }
+    return ['agent', 'user_context'];
   };
 
   const fetchModelMetadata = async (provider: string, model: string) => {
@@ -336,7 +436,19 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     setIsSaving(true);
     
     try {
-      const updatedAgent = { ...agent!, ...formData } as Agent;
+      const shouldNormalizeKnowledge = !knowledgeBasesError && !isLoadingKnowledgeBases;
+      const availableKnowledgeIds = new Set(availableKnowledgeBases.map((item) => item.id));
+      const normalizedAllowedKnowledge = shouldNormalizeKnowledge
+        ? (formData.allowedKnowledge || []).filter((id) => availableKnowledgeIds.has(id))
+        : (formData.allowedKnowledge || []);
+      const normalizedAllowedMemory = normalizeMemoryScopes(formData.allowedMemory || []);
+
+      const updatedAgent = {
+        ...agent!,
+        ...formData,
+        allowedKnowledge: normalizedAllowedKnowledge,
+        allowedMemory: normalizedAllowedMemory,
+      } as Agent;
       console.log('[AgentConfigModal] Calling onSave with:', updatedAgent);
       
       // Call parent's onSave with updated agent data
@@ -946,12 +1058,78 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                   {t('agent.accessibleKnowledgeBases', '可访问的知识库')}
                 </label>
                 <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-xl min-h-[120px]">
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2">
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-3">
                     {formData.allowedKnowledge?.length || 0} {t('agent.knowledgeBasesSelected', '个知识库已选择')}
                   </p>
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                    {t('agent.knowledgeBaseAccessDesc', '配置此代理可以查询的知识库。知识库管理功能实现后将可用。')}
-                  </p>
+
+                  {isLoadingKnowledgeBases && (
+                    <div className="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>{t('agent.loadingKnowledgeBases', '加载知识库中...')}</span>
+                    </div>
+                  )}
+
+                  {!isLoadingKnowledgeBases && knowledgeBasesError && (
+                    <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+                      <p className="text-sm text-red-700 dark:text-red-400">
+                        {t('agent.knowledgeBasesLoadFailed', '知识库加载失败')}: {knowledgeBasesError}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={fetchKnowledgeBases}
+                        className="mt-2 text-xs text-red-600 dark:text-red-400 hover:underline"
+                      >
+                        {t('common.retry', '重试')}
+                      </button>
+                    </div>
+                  )}
+
+                  {!isLoadingKnowledgeBases && !knowledgeBasesError && availableKnowledgeBases.length === 0 && (
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {t('agent.noKnowledgeBasesAvailable', '当前没有可用知识库，请先在知识库页面创建集合。')}
+                    </p>
+                  )}
+
+                  {!isLoadingKnowledgeBases && !knowledgeBasesError && availableKnowledgeBases.length > 0 && (
+                    <>
+                      <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                        {availableKnowledgeBases.map((kb) => {
+                          const isSelected = (formData.allowedKnowledge || []).includes(kb.id);
+                          return (
+                            <button
+                              key={kb.id}
+                              type="button"
+                              onClick={() => toggleKnowledgeBase(kb.id)}
+                              className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                                isSelected
+                                  ? 'border-emerald-500 bg-emerald-500/10'
+                                  : 'border-zinc-200 dark:border-zinc-700 hover:border-emerald-400/60'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 truncate">
+                                    {kb.name}
+                                  </p>
+                                  {kb.description && (
+                                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-2">
+                                      {kb.description}
+                                    </p>
+                                  )}
+                                </div>
+                                <span className="text-xs px-2 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 whitespace-nowrap">
+                                  {kb.itemCount}
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
+                        {t('agent.knowledgeBaseAccessDesc', '配置此代理可以查询的知识库。')}
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -1006,6 +1184,15 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           {/* Data Access Tab */}
           {activeTab === 'access' && (
             <div className="space-y-4">
+              <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+                <p className="text-sm text-blue-700 dark:text-blue-400 font-medium">
+                  {t(
+                    'agent.accessLevelEffectiveRule',
+                    '访问级别决定默认数据范围；若配置白名单，则在默认范围上进一步收敛。'
+                  )}
+                </p>
+              </div>
+
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
                   {t('agent.accessLevel')}
@@ -1023,11 +1210,18 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.allowedKnowledge')}
+                  {t('agent.allowedKnowledge', '允许的知识库')}
                 </label>
                 <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-xl min-h-[100px]">
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {formData.allowedKnowledge?.length || 0} knowledge bases selected
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-1">
+                    {formData.allowedKnowledge?.length || 0}{' '}
+                    {t('agent.knowledgeBasesSelected', '个知识库已选择')}
+                  </p>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                    {t(
+                      'agent.allowedKnowledgeConfiguredInKnowledgeTab',
+                      '知识库白名单请在“知识库”标签页中配置。'
+                    )}
                   </p>
                 </div>
               </div>
@@ -1036,11 +1230,81 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
                   {t('agent.allowedMemory')}
                 </label>
-                <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-xl min-h-[100px]">
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {formData.allowedMemory?.length || 0} memory collections selected
+                <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-xl">
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-1">
+                    {formData.allowedMemory?.length || 0}{' '}
+                    {t('agent.memoryScopesSelected', '个记忆范围已选择')}
                   </p>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
+                    {t('agent.allowedMemoryDesc', '选择代理在执行时可检索的记忆范围。')}
+                  </p>
+                  <div className="space-y-2">
+                    {[
+                      {
+                        id: 'agent',
+                        title: t('agent.memoryScopeAgentTitle', 'Agent 记忆'),
+                        desc: t(
+                          'agent.memoryScopeAgentDesc',
+                          '仅检索当前代理的私有历史记忆。'
+                        ),
+                      },
+                      {
+                        id: 'company',
+                        title: t('agent.memoryScopeCompanyTitle', 'Company 记忆'),
+                        desc: t('agent.memoryScopeCompanyDesc', '检索组织共享的通用记忆。'),
+                      },
+                      {
+                        id: 'user_context',
+                        title: t('agent.memoryScopeUserContextTitle', '用户上下文'),
+                        desc: t(
+                          'agent.memoryScopeUserContextDesc',
+                          '检索当前用户的偏好和上下文记忆。'
+                        ),
+                      },
+                    ].map((option) => {
+                      const isSelected = (formData.allowedMemory || []).includes(option.id);
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => toggleMemoryScope(option.id)}
+                          className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                            isSelected
+                              ? 'border-emerald-500 bg-emerald-500/10'
+                              : 'border-zinc-200 dark:border-zinc-700 hover:border-emerald-400/60'
+                          }`}
+                        >
+                          <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+                            {option.title}
+                          </p>
+                          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                            {option.desc}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
+              </div>
+
+              <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-xl">
+                <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t('agent.effectiveAccessSummaryTitle', '当前生效规则')}
+                </p>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-1">
+                  {t(
+                    'agent.effectiveKnowledgeRule',
+                    '知识库：先按权限过滤，再应用允许的知识库白名单（未配置白名单则不额外限制）。'
+                  )}
+                </p>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {t(
+                    'agent.effectiveMemoryRule',
+                    '记忆：优先使用“允许的记忆范围”；未配置时按访问级别使用默认范围。'
+                  )}{' '}
+                  {t('agent.effectiveMemoryScopes', '实际生效的记忆范围')}:{' '}
+                  {resolveEffectiveMemoryScopes().join(', ')}
+                </p>
               </div>
             </div>
           )}
