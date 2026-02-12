@@ -65,8 +65,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     logger.info("Logging system initialized")
 
     # TODO: Initialize database connections
-    # TODO: Initialize Redis connections
     # TODO: Load ABAC policies
+
+    # Initialize Redis connections at startup (fail-soft to preserve fallback paths)
+    try:
+        from message_bus.redis_manager import get_redis_manager
+
+        redis_manager = get_redis_manager()
+        redis_healthy = redis_manager.health_check()
+        redis_pool_stats = redis_manager.get_pool_stats()
+
+        if redis_healthy:
+            logger.info("Redis connection manager initialized", extra=redis_pool_stats)
+        else:
+            logger.warning(
+                "Redis initialized but health check failed; running in degraded mode",
+                extra=redis_pool_stats,
+            )
+    except Exception as redis_error:
+        logger.warning(
+            f"Failed to initialize Redis connection manager at startup; "
+            f"features depending on Redis may degrade: {redis_error}"
+        )
 
     # Sync config.yaml providers to database
     try:
@@ -251,9 +271,7 @@ def create_app() -> FastAPI:
     cors_allow_methods = config.get("api.cors.allow_methods", default=["*"])
     cors_allow_headers = config.get("api.cors.allow_headers", default=["*"])
 
-    cors_expose_headers = config.get(
-        "api.cors.expose_headers", default=["Content-Disposition"]
-    )
+    cors_expose_headers = config.get("api.cors.expose_headers", default=["Content-Disposition"])
 
     app.add_middleware(
         CORSMiddleware,
