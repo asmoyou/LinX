@@ -1171,6 +1171,26 @@
     "indexInspect": {
       "error": "加载记忆索引详情失败"
     },
+    "retrievalTest": {
+      "trigger": "检索测试",
+      "title": "记忆检索测试",
+      "queryPlaceholder": "输入查询词测试记忆召回...",
+      "search": "检索",
+      "scopeLabel": "检索范围",
+      "scopeAll": "全部类型",
+      "scopeAgent": "智能体记忆",
+      "scopeCompany": "公司记忆",
+      "scopeUserContext": "用户画像",
+      "limitLabel": "结果数量：{{limit}}",
+      "minScoreLabel": "最小相似度：{{score}}",
+      "searching": "正在检索...",
+      "emptyHint": "输入查询并点击“检索”以测试记忆召回结果。",
+      "noResults": "没有返回结果。",
+      "resultSummary": "返回 {{total}} 条，含分数 {{scored}} 条，最高 {{max}}%，平均 {{avg}}%",
+      "scoreBadge": "分数 {{score}}%",
+      "noScore": "无分数",
+      "typeLabel": "类型"
+    },
     "config": {
       "title": "检索配置",
       "manage": "配置",

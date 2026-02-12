@@ -5,6 +5,7 @@ import {
   Building,
   User,
   Plus,
+  Search,
   Settings2,
   Loader2,
   AlertCircle,
@@ -16,6 +17,7 @@ import { MemorySearchBar } from "@/components/memory/MemorySearchBar";
 import { MemoryDetailView } from "@/components/memory/MemoryDetailView";
 import { MemorySharingModal } from "@/components/memory/MemorySharingModal";
 import { MemoryConfigPanel } from "@/components/memory/MemoryConfigPanel";
+import { MemoryRetrievalTestPanel } from "@/components/memory/MemoryRetrievalTestPanel";
 import { memoriesApi } from "@/api/memories";
 import { agentsApi } from "@/api/agents";
 import { useMemoryStore } from "@/stores/memoryStore";
@@ -257,6 +259,7 @@ export const Memory: React.FC = () => {
   const [isSharingModalOpen, setIsSharingModalOpen] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isConfigPanelOpen, setIsConfigPanelOpen] = useState(false);
+  const [isRetrievalTestOpen, setIsRetrievalTestOpen] = useState(false);
   const [useSemanticSearchResults, setUseSemanticSearchResults] =
     useState(false);
   const [reindexingMemoryId, setReindexingMemoryId] = useState<string | null>(
@@ -575,6 +578,13 @@ export const Memory: React.FC = () => {
         </h1>
         <div className="flex items-center gap-2">
           <button
+            onClick={() => setIsRetrievalTestOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors font-medium"
+          >
+            <Search className="w-5 h-5" />
+            {t("memory.retrievalTest.trigger", "Retrieval Test")}
+          </button>
+          <button
             onClick={() => setIsConfigPanelOpen(true)}
             className="flex items-center gap-2 px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors font-medium"
           >
@@ -736,6 +746,11 @@ export const Memory: React.FC = () => {
       <MemoryConfigPanel
         isOpen={isConfigPanelOpen}
         onClose={() => setIsConfigPanelOpen(false)}
+      />
+      <MemoryRetrievalTestPanel
+        isOpen={isRetrievalTestOpen}
+        onClose={() => setIsRetrievalTestOpen(false)}
+        activeType={activeTab}
       />
     </div>
   );

@@ -30,6 +30,7 @@ export interface SearchMemoriesRequest {
   query: string;
   type?: MemoryType;
   limit?: number;
+  min_score?: number;
   filters?: MemoryFilter;
 }
 

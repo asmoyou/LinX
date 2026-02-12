@@ -346,6 +346,7 @@ class MemorySearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
     type: Optional[str] = Field(None, pattern=r"^(agent|company|user_context|task_context)$")
     limit: Optional[int] = Field(10, ge=1, le=100)
+    min_score: Optional[float] = Field(None, ge=0.0, le=1.0)
     filters: Optional[Dict[str, Any]] = None
 
 
@@ -1872,6 +1873,7 @@ async def search_memories(
         memory_type=memory_type,
         user_id=current_user.user_id,
         top_k=request.limit or 10,
+        min_similarity=request.min_score or 0.0,
     )
 
     try:

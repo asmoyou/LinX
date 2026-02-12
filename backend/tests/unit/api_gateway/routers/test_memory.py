@@ -216,6 +216,20 @@ class TestSearchMemories:
         with pytest.raises(ValidationError):
             MemorySearchRequest(query="test", limit=200)
 
+    def test_search_validation_min_score_bounds(self):
+        """Test min_score validation."""
+        from api_gateway.routers.memory import MemorySearchRequest
+        from pydantic import ValidationError
+
+        req = MemorySearchRequest(query="test", min_score=0.35)
+        assert req.min_score == 0.35
+
+        with pytest.raises(ValidationError):
+            MemorySearchRequest(query="test", min_score=-0.1)
+
+        with pytest.raises(ValidationError):
+            MemorySearchRequest(query="test", min_score=1.2)
+
 
 class TestShareMemory:
     """Test POST /api/v1/memories/{memory_id}/share."""

@@ -1171,6 +1171,26 @@
     "indexInspect": {
       "error": "Failed to load memory index details"
     },
+    "retrievalTest": {
+      "trigger": "Retrieval Test",
+      "title": "Memory Retrieval Test",
+      "queryPlaceholder": "Enter query text to test memory recall...",
+      "search": "Search",
+      "scopeLabel": "Search Scope",
+      "scopeAll": "All Types",
+      "scopeAgent": "Agent Memory",
+      "scopeCompany": "Company Memory",
+      "scopeUserContext": "User Context",
+      "limitLabel": "Result Limit: {{limit}}",
+      "minScoreLabel": "Minimum Similarity: {{score}}",
+      "searching": "Searching...",
+      "emptyHint": "Enter a query and click Search to test memory retrieval.",
+      "noResults": "No results returned.",
+      "resultSummary": "Returned {{total}} items, scored {{scored}}, max {{max}}%, avg {{avg}}%",
+      "scoreBadge": "Score {{score}}%",
+      "noScore": "No Score",
+      "typeLabel": "Type"
+    },
     "config": {
       "title": "Retrieval Configuration",
       "manage": "Config",
