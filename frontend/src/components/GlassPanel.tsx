@@ -1,18 +1,21 @@
 import React from 'react';
 
-interface GlassPanelProps {
+interface GlassPanelProps extends React.HTMLAttributes<HTMLDivElement> {
   children: React.ReactNode;
-  className?: string;
   hover?: boolean;
 }
 
-export const GlassPanel: React.FC<GlassPanelProps> = ({ 
-  children, 
+export const GlassPanel: React.FC<GlassPanelProps> = ({
+  children,
   className = '',
-  hover = false 
+  hover = false,
+  ...divProps
 }) => {
   return (
-    <div className={`glass-panel rounded-[24px] p-6 ${hover ? 'hover-lift hover-glow' : ''} ${className}`}>
+    <div
+      className={`glass-panel rounded-[24px] p-6 ${hover ? 'hover-lift hover-glow' : ''} ${className}`}
+      {...divProps}
+    >
       {children}
     </div>
   );

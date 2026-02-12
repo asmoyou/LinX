@@ -15,7 +15,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy import func, text
 
 from access_control.knowledge_filter import (
     can_access_knowledge_item,
@@ -397,6 +397,34 @@ def _build_collection_response(
     )
 
 
+def _refresh_collection_item_counts(session: Any, collection_ids: List[Optional[UUID]]) -> None:
+    """Refresh denormalized item_count for the specified collections."""
+    valid_ids = sorted({cid for cid in collection_ids if cid is not None}, key=str)
+    if not valid_ids:
+        return
+
+    counts = {
+        row.collection_id: int(row.item_count)
+        for row in (
+            session.query(
+                KnowledgeItem.collection_id.label("collection_id"),
+                func.count(KnowledgeItem.knowledge_id).label("item_count"),
+            )
+            .filter(KnowledgeItem.collection_id.in_(valid_ids))
+            .group_by(KnowledgeItem.collection_id)
+            .all()
+        )
+    }
+
+    collections = (
+        session.query(KnowledgeCollection)
+        .filter(KnowledgeCollection.collection_id.in_(valid_ids))
+        .all()
+    )
+    for collection in collections:
+        collection.item_count = counts.get(collection.collection_id, 0)
+
+
 def _enqueue_processing(
     item_id: str,
     bucket_name: str,
@@ -498,6 +526,14 @@ def _handle_zip_upload(
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Collection not found",
+                )
+            if not check_knowledge_write_permission(
+                current_user=current_user,
+                owner_user_id=str(collection.owner_user_id),
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to add files to this collection",
                 )
         else:
             # Auto-create collection named after ZIP file (sans .zip extension)
@@ -602,8 +638,7 @@ def _handle_zip_upload(
                 )
             )
 
-        # Update item count
-        collection.item_count = (collection.item_count or 0) + len(items_response)
+        _refresh_collection_item_counts(session, [collection.collection_id])
         session.flush()
 
         # Get owner username for collection response
@@ -770,6 +805,26 @@ async def upload_knowledge(
 
         # Create database record
         with get_db_session() as session:
+            if parsed_collection_id:
+                collection = (
+                    session.query(KnowledgeCollection)
+                    .filter(KnowledgeCollection.collection_id == parsed_collection_id)
+                    .first()
+                )
+                if not collection:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Collection not found",
+                    )
+                if not check_knowledge_write_permission(
+                    current_user=current_user,
+                    owner_user_id=str(collection.owner_user_id),
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="You do not have permission to add files to this collection",
+                    )
+
             knowledge_item = KnowledgeItem(
                 title=doc_title,
                 content_type=content_category,
@@ -857,6 +912,9 @@ async def upload_knowledge(
                     "processing_status": "failed",
                     "error_message": "File storage unavailable: upload failed",
                 }
+
+            _refresh_collection_item_counts(session, [parsed_collection_id])
+            session.flush()
 
             response = KnowledgeItemResponse(
                 id=item_id,
@@ -2000,6 +2058,8 @@ async def update_knowledge(
                     detail="You do not have permission to update this knowledge item",
                 )
 
+            original_collection_id = item.collection_id
+
             # Update fields
             if update_data.title is not None:
                 item.title = update_data.title
@@ -2016,12 +2076,37 @@ async def update_knowledge(
                     pass
 
             if update_data.collection_id is not None:
-                try:
-                    item.collection_id = (
-                        UUID(update_data.collection_id) if update_data.collection_id else None
+                target_collection_id: Optional[UUID] = None
+                if update_data.collection_id:
+                    try:
+                        target_collection_id = UUID(update_data.collection_id)
+                    except ValueError:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Invalid collection ID format",
+                        )
+
+                    target_collection = (
+                        session.query(KnowledgeCollection)
+                        .filter(KnowledgeCollection.collection_id == target_collection_id)
+                        .first()
                     )
-                except ValueError:
-                    pass
+                    if not target_collection:
+                        raise HTTPException(
+                            status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Collection not found",
+                        )
+
+                    if not check_knowledge_write_permission(
+                        current_user=current_user,
+                        owner_user_id=str(target_collection.owner_user_id),
+                    ):
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail="You do not have permission to move item into this collection",
+                        )
+
+                item.collection_id = target_collection_id
 
             # Update metadata fields
             metadata = dict(item.item_metadata or {})
@@ -2032,6 +2117,11 @@ async def update_knowledge(
             item.item_metadata = metadata
 
             session.flush()
+            if original_collection_id != item.collection_id:
+                _refresh_collection_item_counts(
+                    session, [original_collection_id, item.collection_id]
+                )
+                session.flush()
 
             # Get owner username
             owner = session.query(User).filter(User.user_id == item.owner_user_id).first()
@@ -2079,6 +2169,8 @@ async def delete_knowledge(
                     detail="You do not have permission to delete this knowledge item",
                 )
 
+            original_collection_id = item.collection_id
+
             # 1. Delete from Milvus (vector embeddings)
             try:
                 from pymilvus import Collection, utility
@@ -2118,6 +2210,8 @@ async def delete_knowledge(
 
             # 4. Delete knowledge item from database
             session.delete(item)
+            session.flush()
+            _refresh_collection_item_counts(session, [original_collection_id])
 
         logger.info(
             f"Knowledge item deleted: {knowledge_id}",

@@ -9,6 +9,11 @@ interface CollectionCardProps {
   onClick: (collection: Collection) => void;
   onEdit: (collection: Collection) => void;
   onDelete: (collection: Collection) => void;
+  isDropTarget?: boolean;
+  isDragActive?: boolean;
+  onDragOver?: (event: React.DragEvent<HTMLDivElement>) => void;
+  onDragLeave?: (event: React.DragEvent<HTMLDivElement>) => void;
+  onDrop?: (event: React.DragEvent<HTMLDivElement>) => void;
 }
 
 export const CollectionCard: React.FC<CollectionCardProps> = ({
@@ -16,6 +21,11 @@ export const CollectionCard: React.FC<CollectionCardProps> = ({
   onClick,
   onEdit,
   onDelete,
+  isDropTarget = false,
+  isDragActive = false,
+  onDragOver,
+  onDragLeave,
+  onDrop,
 }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = React.useState(false);
@@ -49,7 +59,14 @@ export const CollectionCard: React.FC<CollectionCardProps> = ({
   };
 
   return (
-    <GlassPanel className="hover:scale-105 transition-transform duration-200 relative cursor-pointer">
+    <GlassPanel
+      className={`hover:scale-105 transition-transform duration-200 relative cursor-pointer ${
+        isDropTarget ? 'ring-2 ring-indigo-500 bg-indigo-500/5' : ''
+      }`}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       {/* Access Badge */}
       <div className="absolute top-4 right-4 flex items-center gap-2">
         <span
@@ -61,10 +78,17 @@ export const CollectionCard: React.FC<CollectionCardProps> = ({
 
       {/* Folder Icon */}
       <div
-        className="flex items-center justify-center h-32 mb-4 bg-white/10 rounded-lg"
+        className={`flex flex-col items-center justify-center h-32 mb-4 rounded-lg transition-colors ${
+          isDropTarget ? 'bg-indigo-500/15' : 'bg-white/10'
+        }`}
         onClick={() => onClick(collection)}
       >
         <Folder className="w-12 h-12 text-amber-500" />
+        {isDragActive && (
+          <span className="mt-2 text-xs font-medium text-indigo-700 dark:text-indigo-300">
+            {isDropTarget ? t('collection.dropToMove') : t('collection.dragHint')}
+          </span>
+        )}
       </div>
 
       {/* Collection Info */}

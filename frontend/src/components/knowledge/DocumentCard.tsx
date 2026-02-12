@@ -11,9 +11,22 @@ interface DocumentCardProps {
   onDelete: (document: Document) => void;
   onEdit?: (document: Document) => void;
   onReprocess?: (document: Document) => void;
+  draggable?: boolean;
+  onDragStart?: (document: Document) => void;
+  onDragEnd?: () => void;
 }
 
-export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, onDownload, onDelete, onEdit, onReprocess }) => {
+export const DocumentCard: React.FC<DocumentCardProps> = ({
+  document,
+  onView,
+  onDownload,
+  onDelete,
+  onEdit,
+  onReprocess,
+  draggable = false,
+  onDragStart,
+  onDragEnd,
+}) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = React.useState(false);
   const processingProgress = Math.max(0, Math.min(100, document.processingProgress ?? 0));
@@ -84,7 +97,21 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document, onView, on
   };
 
   return (
-    <GlassPanel className="hover:scale-105 transition-transform duration-200 relative">
+    <GlassPanel
+      className={`hover:scale-105 transition-transform duration-200 relative ${
+        draggable ? 'cursor-grab active:cursor-grabbing' : ''
+      }`}
+      draggable={draggable}
+      onDragStart={(event) => {
+        if (!draggable) return;
+        event.dataTransfer.effectAllowed = 'move';
+        onDragStart?.(document);
+      }}
+      onDragEnd={() => {
+        if (!draggable) return;
+        onDragEnd?.();
+      }}
+    >
       {/* Status Badge */}
       <div className="absolute top-4 right-4 flex items-center gap-2">
         {getStatusIcon(document.status)}

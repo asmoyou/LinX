@@ -103,6 +103,7 @@ interface KnowledgeState {
   createCollection: (name: string, description?: string) => Promise<Collection>;
   updateCollection: (id: string, data: { name?: string; description?: string }) => Promise<void>;
   deleteCollection: (id: string) => Promise<void>;
+  moveDocumentToCollection: (documentId: string, collectionId: string) => Promise<Document>;
   setActiveCollection: (id: string | null) => void;
 
   // Actions - Documents
@@ -405,6 +406,60 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       }));
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Failed to delete collection';
+      set({ error: message });
+      throw error;
+    }
+  },
+
+  moveDocumentToCollection: async (documentId: string, collectionId: string) => {
+    const sourceDocument = get().documents.find((doc) => doc.id === documentId);
+    if (!sourceDocument) {
+      throw new Error('Document not found');
+    }
+    if (sourceDocument.collectionId === collectionId) {
+      return sourceDocument;
+    }
+
+    try {
+      const updated = await knowledgeApi.update(documentId, { collection_id: collectionId });
+      const previousCollectionId = sourceDocument.collectionId;
+
+      set((state) => {
+        const updatedCollections = state.collections.map((collection) => {
+          if (collection.id === collectionId) {
+            return { ...collection, itemCount: collection.itemCount + 1 };
+          }
+          if (previousCollectionId && collection.id === previousCollectionId) {
+            return { ...collection, itemCount: Math.max(0, collection.itemCount - 1) };
+          }
+          return collection;
+        });
+
+        const updatedDocument = normalizeProcessingProgress({
+          ...sourceDocument,
+          ...updated,
+          collectionId,
+        });
+
+        const isRootView = state.activeCollectionId === null;
+        const nextDocuments = isRootView
+          ? state.documents.filter((doc) => doc.id !== documentId)
+          : state.documents.map((doc) => (doc.id === documentId ? updatedDocument : doc));
+
+        return {
+          collections: updatedCollections,
+          documents: nextDocuments,
+          totalDocuments: isRootView
+            ? Math.max(0, state.totalDocuments - 1)
+            : state.totalDocuments,
+          selectedDocument:
+            state.selectedDocument?.id === documentId ? updatedDocument : state.selectedDocument,
+        };
+      });
+
+      return updated;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to move document';
       set({ error: message });
       throw error;
     }

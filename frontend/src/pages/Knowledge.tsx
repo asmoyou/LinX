@@ -59,6 +59,9 @@ export const Knowledge: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [accessFilter, setAccessFilter] = useState('all');
+  const [draggingDocumentId, setDraggingDocumentId] = useState<string | null>(null);
+  const [dropTargetCollectionId, setDropTargetCollectionId] = useState<string | null>(null);
+  const [isMovingDocument, setIsMovingDocument] = useState(false);
 
   // Edit states
   const [editingCollection, setEditingCollection] = useState<Collection | null>(null);
@@ -91,6 +94,7 @@ export const Knowledge: React.FC = () => {
     createCollection,
     updateCollection,
     deleteCollection: deleteCollectionAction,
+    moveDocumentToCollection,
     setActiveCollection,
     uploadDocument,
     deleteDocument,
@@ -281,6 +285,68 @@ export const Knowledge: React.FC = () => {
 
   const handleNavigateRoot = () => {
     setActiveCollection(null);
+  };
+
+  // ============= Drag & Drop handlers =============
+  const handleDocumentDragStart = (document: Document) => {
+    setDraggingDocumentId(document.id);
+  };
+
+  const handleDocumentDragEnd = () => {
+    setDraggingDocumentId(null);
+    setDropTargetCollectionId(null);
+  };
+
+  const handleCollectionDragOver = (
+    event: React.DragEvent<HTMLDivElement>,
+    collection: Collection
+  ) => {
+    if (!draggingDocumentId || isMovingDocument) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    if (dropTargetCollectionId !== collection.id) {
+      setDropTargetCollectionId(collection.id);
+    }
+  };
+
+  const handleCollectionDragLeave = (
+    event: React.DragEvent<HTMLDivElement>,
+    collection: Collection
+  ) => {
+    if (!draggingDocumentId) return;
+    if (dropTargetCollectionId === collection.id && !event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setDropTargetCollectionId(null);
+    }
+  };
+
+  const handleCollectionDrop = async (
+    event: React.DragEvent<HTMLDivElement>,
+    collection: Collection
+  ) => {
+    event.preventDefault();
+    const documentId = draggingDocumentId;
+    setDropTargetCollectionId(null);
+    setDraggingDocumentId(null);
+
+    if (!documentId || isMovingDocument) return;
+
+    const draggedDocument = documents.find((doc) => doc.id === documentId);
+    if (!draggedDocument || draggedDocument.collectionId === collection.id) return;
+
+    setIsMovingDocument(true);
+    try {
+      await moveDocumentToCollection(documentId, collection.id);
+      toast.success(
+        t('collection.moveSuccess', {
+          name: draggedDocument.name,
+          collection: collection.name,
+        })
+      );
+    } catch {
+      toast.error(t('collection.moveFailed'));
+    } finally {
+      setIsMovingDocument(false);
+    }
   };
 
   // ============= Document edit handlers =============
@@ -698,6 +764,11 @@ export const Knowledge: React.FC = () => {
                     onClick={handleCollectionClick}
                     onEdit={openEditCollection}
                     onDelete={handleCollectionDelete}
+                    isDragActive={Boolean(draggingDocumentId)}
+                    isDropTarget={dropTargetCollectionId === collection.id}
+                    onDragOver={(event) => handleCollectionDragOver(event, collection)}
+                    onDragLeave={(event) => handleCollectionDragLeave(event, collection)}
+                    onDrop={(event) => handleCollectionDrop(event, collection)}
                   />
                 ))}
               </div>
@@ -733,6 +804,9 @@ export const Knowledge: React.FC = () => {
                       onDelete={handleDelete}
                       onEdit={openEditDocument}
                       onReprocess={handleReprocess}
+                      draggable
+                      onDragStart={handleDocumentDragStart}
+                      onDragEnd={handleDocumentDragEnd}
                     />
                   ))
                 )}
