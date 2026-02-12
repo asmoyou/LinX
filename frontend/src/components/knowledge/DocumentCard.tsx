@@ -1,6 +1,24 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { FileText, Image, Music, Video, File, Eye, Download, Trash2, MoreVertical, Clock, CheckCircle, XCircle, Loader2, Layers, Hash, RotateCcw, Pencil } from 'lucide-react';
+import {
+  FileText,
+  Image,
+  Music,
+  Video,
+  File,
+  Eye,
+  Download,
+  Trash2,
+  MoreVertical,
+  Clock,
+  CheckCircle,
+  XCircle,
+  Loader2,
+  Layers,
+  Hash,
+  RotateCcw,
+  Pencil,
+} from 'lucide-react';
 import { GlassPanel } from '@/components/GlassPanel';
 import type { Document } from '@/types/document';
 
@@ -32,22 +50,25 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
   const processingProgress = Math.max(0, Math.min(100, document.processingProgress ?? 0));
   const uploadProgress = Math.max(0, Math.min(100, document.uploadProgress ?? 0));
   const lastUpdatedAt = document.processedAt || document.uploadedAt;
+  const previewImageUrl =
+    document.thumbnailUrl || (document.type === 'image' ? document.url : undefined);
+  const hasPreviewImage = Boolean(previewImageUrl);
 
-  const getFileIcon = (type: Document['type']) => {
+  const getFileIcon = (type: Document['type'], className: string = 'w-8 h-8') => {
     switch (type) {
       case 'pdf':
       case 'docx':
       case 'txt':
       case 'md':
-        return <FileText className="w-8 h-8 text-blue-500" />;
+        return <FileText className={`${className} text-blue-500`} />;
       case 'image':
-        return <Image className="w-8 h-8 text-green-500" />;
+        return <Image className={`${className} text-green-500`} />;
       case 'audio':
-        return <Music className="w-8 h-8 text-purple-500" />;
+        return <Music className={`${className} text-purple-500`} />;
       case 'video':
-        return <Video className="w-8 h-8 text-red-500" />;
+        return <Video className={`${className} text-red-500`} />;
       default:
-        return <File className="w-8 h-8 text-gray-500" />;
+        return <File className={`${className} text-gray-500`} />;
     }
   };
 
@@ -120,23 +141,50 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
         </span>
       </div>
 
-      {/* Thumbnail or Icon */}
-      <div className="flex items-center justify-center h-32 mb-4 bg-white/10 rounded-lg">
-        {document.thumbnailUrl ? (
-          <img src={document.thumbnailUrl} alt={document.name} className="h-full w-full object-cover rounded-lg" />
+      {/* Thumbnail or compact icon strip */}
+      <div
+        className={`mb-4 rounded-lg overflow-hidden ${
+          hasPreviewImage ? 'h-32 bg-white/10' : 'h-16 bg-white/5 border border-white/20'
+        }`}
+      >
+        {hasPreviewImage ? (
+          <img src={previewImageUrl} alt={document.name} className="h-full w-full object-cover" />
         ) : (
-          getFileIcon(document.type)
+          <div className="h-full px-3 flex items-center justify-between">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-md bg-white/20 flex items-center justify-center shrink-0">
+                {getFileIcon(document.type, 'w-5 h-5')}
+              </div>
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                  {document.type}
+                </p>
+                <p className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">
+                  {formatFileSize(document.size)}
+                </p>
+              </div>
+            </div>
+            {document.status === 'completed' && document.chunkCount != null && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 text-gray-600 dark:text-gray-300">
+                {document.chunkCount} chunks
+              </span>
+            )}
+          </div>
         )}
       </div>
 
       {/* Document Info */}
       <div className="mb-4">
-        <h3 className="text-sm font-semibold text-gray-800 dark:text-white mb-1 truncate" title={document.name}>
+        <h3
+          className="text-sm font-semibold text-gray-800 dark:text-white mb-1 truncate"
+          title={document.name}
+        >
           {document.name}
         </h3>
-        <p className="text-xs text-gray-600 dark:text-gray-400">
-          {formatFileSize(document.size)} • {document.type.toUpperCase()}
-        </p>
+        <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+          <span className="px-1.5 py-0.5 rounded bg-white/20">{document.type.toUpperCase()}</span>
+          <span>{formatFileSize(document.size)}</span>
+        </div>
       </div>
 
       {/* Progress Bar */}
