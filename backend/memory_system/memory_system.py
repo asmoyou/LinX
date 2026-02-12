@@ -70,6 +70,12 @@ class MemorySystem(MemorySystemInterface):
         self._default_top_k = memory_config.get("default_top_k", 10)
         self._recency_weight = memory_config.get("recency_weight", 0.3)
         self._similarity_weight = memory_config.get("similarity_weight", 0.7)
+        self._collection_retry_attempts = memory_config.get("collection_retry_attempts", 3)
+        self._collection_retry_delay_seconds = memory_config.get(
+            "collection_retry_delay_seconds", 0.35
+        )
+        self._search_timeout_seconds = float(memory_config.get("search_timeout_seconds", 2.0))
+        self._delete_timeout_seconds = float(memory_config.get("delete_timeout_seconds", 2.0))
 
         logger.info("Memory System initialized")
 
@@ -264,13 +270,14 @@ class MemorySystem(MemorySystemInterface):
             else:  # COMPANY_MEMORIES
                 output_fields = ["user_id", "content", "memory_type", "timestamp", "metadata"]
 
-            # Perform search
-            results = collection.search(
-                data=[query_embedding],
-                anns_field="embedding",
-                param=search_params,
+            # Perform search with short retries for transient load-state failures.
+            results = self._search_collection_with_retry(
+                collection=collection,
+                collection_name=collection_name,
+                query_embedding=query_embedding,
+                search_params=search_params,
                 limit=query.top_k or self._default_top_k,
-                expr=filter_expr if filter_expr else None,
+                filter_expr=filter_expr,
                 output_fields=output_fields,
             )
 
@@ -287,6 +294,87 @@ class MemorySystem(MemorySystemInterface):
         except Exception as e:
             logger.error(f"Failed to search collection {collection_name}: {e}")
             return []
+
+    @staticmethod
+    def _is_collection_not_loaded_error(exc: Exception) -> bool:
+        """Detect Milvus transient collection load-state error."""
+        current = exc
+        seen = set()
+        while current and id(current) not in seen:
+            seen.add(id(current))
+            code = getattr(current, "code", None)
+            if code == 101:
+                return True
+            message = str(current).lower()
+            if "collection not loaded" in message:
+                return True
+            if "not loaded" in message and "collection" in message:
+                return True
+
+            if current.__cause__ is not None:
+                current = current.__cause__
+            elif current.__context__ is not None:
+                current = current.__context__
+            else:
+                current = None
+        return False
+
+    def _search_collection_with_retry(
+        self,
+        collection: Collection,
+        collection_name: str,
+        query_embedding: List[float],
+        search_params: Dict[str, Any],
+        limit: int,
+        filter_expr: Optional[str],
+        output_fields: List[str],
+    ):
+        """Search Milvus with retries when collection is still loading."""
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, self._collection_retry_attempts + 1):
+            try:
+                return collection.search(
+                    data=[query_embedding],
+                    anns_field="embedding",
+                    param=search_params,
+                    limit=limit,
+                    expr=filter_expr if filter_expr else None,
+                    output_fields=output_fields,
+                    timeout=max(self._search_timeout_seconds, 0.5),
+                )
+            except Exception as exc:
+                if not self._is_collection_not_loaded_error(exc):
+                    raise
+                last_error = exc
+                try:
+                    collection.load(timeout=1.0, _async=True)
+                except Exception as load_exc:
+                    logger.debug(
+                        "Failed to trigger async load for %s after search failure: %s",
+                        collection_name,
+                        load_exc,
+                    )
+
+                if attempt < self._collection_retry_attempts:
+                    delay = self._collection_retry_delay_seconds * attempt
+                    logger.warning(
+                        "Collection '%s' not loaded yet (attempt %d/%d), retrying in %.2fs",
+                        collection_name,
+                        attempt,
+                        self._collection_retry_attempts,
+                        delay,
+                    )
+                    time.sleep(delay)
+
+        if last_error:
+            logger.warning(
+                "Collection '%s' remained unavailable after %d retries: %s",
+                collection_name,
+                self._collection_retry_attempts,
+                last_error,
+            )
+        return []
 
     def _build_filter_expression(self, collection_name: str, query: SearchQuery) -> Optional[str]:
         """
@@ -435,12 +523,20 @@ class MemorySystem(MemorySystemInterface):
 
             # Delete by ID
             expr = f"id == {memory_id}"
-            collection.delete(expr)
+            collection.delete(expr, timeout=max(self._delete_timeout_seconds, 0.5))
 
             logger.info(f"Deleted memory: id={memory_id}, type={memory_type.value}")
             return True
 
         except Exception as e:
+            if self._is_collection_not_loaded_error(e):
+                logger.warning(
+                    "Skip deleting memory %s in %s because collection is not loaded: %s",
+                    memory_id,
+                    memory_type.value,
+                    e,
+                )
+                return False
             logger.error(f"Failed to delete memory {memory_id}: {e}")
             return False
 

@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -62,9 +63,7 @@ class Department(Base):
         nullable=True,
         index=True,
     )
-    status = Column(
-        String(20), nullable=False, default="active", index=True
-    )  # active, archived
+    status = Column(String(20), nullable=False, default="active", index=True)  # active, archived
     sort_order = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
@@ -74,9 +73,7 @@ class Department(Base):
     # Relationships
     parent = relationship("Department", remote_side=[department_id], backref="children")
     manager = relationship("User", foreign_keys=[manager_id])
-    members = relationship(
-        "User", back_populates="department", foreign_keys="User.department_id"
-    )
+    members = relationship("User", back_populates="department", foreign_keys="User.department_id")
     agents = relationship("Agent", back_populates="department")
     knowledge_items = relationship("KnowledgeItem", back_populates="department")
 
@@ -116,9 +113,7 @@ class User(Base):
     )
 
     # Relationships
-    department = relationship(
-        "Department", back_populates="members", foreign_keys=[department_id]
-    )
+    department = relationship("Department", back_populates="members", foreign_keys=[department_id])
     agents = relationship("Agent", back_populates="owner", cascade="all, delete-orphan")
     tasks = relationship("Task", back_populates="creator", cascade="all, delete-orphan")
     permissions = relationship("Permission", back_populates="user", cascade="all, delete-orphan")
@@ -157,7 +152,7 @@ class Agent(Base):
         String(50), nullable=False, default="idle", index=True
     )  # active, idle, terminated
     container_id = Column(String(255), nullable=True)
-    
+
     # LLM Configuration
     llm_provider = Column(String(100), nullable=True)  # provider name (ollama, openai, etc.)
     llm_model = Column(String(255), nullable=True)  # model name
@@ -165,7 +160,7 @@ class Agent(Base):
     temperature = Column(Float, nullable=True, default=0.7)
     max_tokens = Column(Integer, nullable=True, default=2000)
     top_p = Column(Float, nullable=True, default=0.9)
-    
+
     # Access Control
     access_level = Column(String(50), nullable=True, default="private")  # private, team, public
     department_id = Column(
@@ -175,15 +170,17 @@ class Agent(Base):
         index=True,
     )
     allowed_knowledge = Column(JSONB, nullable=True)  # list of knowledge collection IDs
-    allowed_memory = Column(JSONB, nullable=True)  # list of memory scopes (agent/company/user_context)
-    
+    allowed_memory = Column(
+        JSONB, nullable=True
+    )  # list of memory scopes (agent/company/user_context)
+
     # Knowledge Base Configuration
     embedding_model = Column(String(255), nullable=True)  # embedding model name
     embedding_provider = Column(String(100), nullable=True)  # embedding provider name
     vector_dimension = Column(Integer, nullable=True)  # vector dimension (e.g., 1536)
     top_k = Column(Integer, nullable=True)  # top K results for retrieval
     similarity_threshold = Column(Float, nullable=True)  # similarity threshold (0.0-1.0)
-    
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -271,45 +268,47 @@ class Skill(Base):
     skill_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), unique=True, nullable=False, index=True)
     description = Column(Text, nullable=False)
-    
+
     # Skill type and implementation
     skill_type = Column(String(50), nullable=False, default="python_function", index=True)
     code = Column(Text, nullable=True)  # Python code for inline skills
     config = Column(JSONB, nullable=True)  # YAML/JSON config for API/DB skills
-    
+
     # Storage location (for flexible architecture)
     storage_type = Column(String(50), nullable=False, default="inline", index=True)
     # inline (code field) | minio (package in MinIO)
     storage_path = Column(String(500), nullable=True)
     # MinIO path: skills-storage/{skill_id}/
-    
+
     # Manifest (parsed from skill.yaml for packages)
     manifest = Column(JSONB, nullable=True)
-    
+
     # Agent skill specific fields (added for agent_skill support)
     skill_md_content = Column(Text, nullable=True)  # SKILL.md content for agent_skill
     homepage = Column(String(500), nullable=True)  # Homepage URL
-    skill_metadata = Column(JSONB, nullable=True)  # Additional metadata (emoji, tags, etc.) - renamed from 'metadata' to avoid SQLAlchemy conflict
+    skill_metadata = Column(
+        JSONB, nullable=True
+    )  # Additional metadata (emoji, tags, etc.) - renamed from 'metadata' to avoid SQLAlchemy conflict
     gating_status = Column(JSONB, nullable=True)  # Gating check results
-    
+
     # Auto-extracted from code/config/manifest
     interface_definition = Column(JSONB, nullable=False)
     dependencies = Column(JSONB, nullable=True)
-    
+
     # Metadata
     version = Column(String(50), nullable=False, default="1.0.0")
     is_active = Column(Boolean, nullable=False, default=True, index=True)
     is_system = Column(Boolean, nullable=False, default=False, index=True)
-    
+
     # Execution stats
     execution_count = Column(Integer, nullable=False, default=0)
     last_executed_at = Column(DateTime(timezone=True), nullable=True)
     average_execution_time = Column(Float, nullable=True)
-    
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
-    
+
     # Owner (for custom skills)
     created_by = Column(
         UUID(as_uuid=True),
@@ -352,6 +351,47 @@ class Permission(Base):
 
     def __repr__(self):
         return f"<Permission(permission_id={self.permission_id}, user_id={self.user_id}, resource_type={self.resource_type}, access_level={self.access_level})>"
+
+
+class MemoryRecord(Base):
+    """Memory records table.
+
+    PostgreSQL is the source of truth for memory business data.
+    Milvus stores only vector indexes and is referenced by milvus_id.
+    """
+
+    __tablename__ = "memory_records"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    milvus_id = Column(BigInteger, nullable=True, unique=True, index=True)
+    memory_type = Column(String(50), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    user_id = Column(String(255), nullable=True, index=True)
+    agent_id = Column(String(255), nullable=True, index=True)
+    task_id = Column(String(255), nullable=True, index=True)
+    memory_metadata = Column(JSONB, nullable=True)
+    timestamp = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    vector_status = Column(String(20), nullable=False, default="pending", index=True)
+    vector_error = Column(Text, nullable=True)
+    vector_updated_at = Column(DateTime(timezone=True), nullable=True)
+    is_deleted = Column(Boolean, nullable=False, default=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_memory_type_user", "memory_type", "user_id"),
+        Index("idx_memory_type_agent", "memory_type", "agent_id"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<MemoryRecord(id={self.id}, type={self.memory_type}, "
+            f"milvus_id={self.milvus_id}, status={self.vector_status})>"
+        )
 
 
 class KnowledgeCollection(Base):
@@ -398,9 +438,7 @@ class KnowledgeCollection(Base):
     )
 
     # Indexes
-    __table_args__ = (
-        Index("idx_collection_owner_access", "owner_user_id", "access_level"),
-    )
+    __table_args__ = (Index("idx_collection_owner_access", "owner_user_id", "access_level"),)
 
     def __repr__(self):
         return (
@@ -628,12 +666,12 @@ class ABACPolicyModel(Base):
 
 class LLMProvider(Base):
     """LLM Provider configurations table.
-    
+
     Stores dynamically configured LLM providers.
     """
-    
+
     __tablename__ = "llm_providers"
-    
+
     provider_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), unique=True, nullable=False, index=True)
     protocol = Column(String(50), nullable=False)  # ollama, openai_compatible
@@ -644,12 +682,12 @@ class LLMProvider(Base):
     models = Column(JSONB, nullable=False)  # List of model names
     model_metadata = Column(JSONB, nullable=True)  # Dict[model_name, ModelMetadata]
     enabled = Column(Boolean, nullable=False, default=True, index=True)
-    
+
     # Last test connection result
     last_test_status = Column(String(20), nullable=True)  # 'success', 'failed', 'untested'
     last_test_time = Column(DateTime(timezone=True), nullable=True)
     last_test_error = Column(Text, nullable=True)  # Error message if test failed
-    
+
     created_by = Column(
         UUID(as_uuid=True),
         ForeignKey("users.user_id", ondelete="SET NULL"),
@@ -660,12 +698,12 @@ class LLMProvider(Base):
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
-    
+
     # Indexes
     __table_args__ = (
         Index("idx_provider_enabled", "enabled"),
         Index("idx_provider_protocol", "protocol"),
     )
-    
+
     def __repr__(self):
         return f"<LLMProvider(provider_id={self.provider_id}, name={self.name}, protocol={self.protocol}, enabled={self.enabled})>"

@@ -1,5 +1,10 @@
-import apiClient from './client';
-import type { Memory, MemoryType, MemoryFilter } from '../types/memory';
+import apiClient from "./client";
+import type {
+  Memory,
+  MemoryType,
+  MemoryFilter,
+  MemoryIndexInfo,
+} from "../types/memory";
 
 export interface CreateMemoryRequest {
   type: MemoryType;
@@ -30,7 +35,7 @@ export const memoriesApi = {
    * Get all memories
    */
   getAll: async (filters?: MemoryFilter): Promise<Memory[]> => {
-    const response = await apiClient.get<Memory[]>('/memories', {
+    const response = await apiClient.get<Memory[]>("/memories", {
       params: filters,
     });
     return response.data;
@@ -48,14 +53,17 @@ export const memoriesApi = {
    * Create memory
    */
   create: async (data: CreateMemoryRequest): Promise<Memory> => {
-    const response = await apiClient.post<Memory>('/memories', data);
+    const response = await apiClient.post<Memory>("/memories", data);
     return response.data;
   },
 
   /**
    * Update memory
    */
-  update: async (memoryId: string, data: Partial<CreateMemoryRequest>): Promise<Memory> => {
+  update: async (
+    memoryId: string,
+    data: Partial<CreateMemoryRequest>,
+  ): Promise<Memory> => {
     const response = await apiClient.put<Memory>(`/memories/${memoryId}`, data);
     return response.data;
   },
@@ -71,14 +79,17 @@ export const memoriesApi = {
    * Search memories (semantic search)
    */
   search: async (data: SearchMemoriesRequest): Promise<Memory[]> => {
-    const response = await apiClient.post<Memory[]>('/memories/search', data);
+    const response = await apiClient.post<Memory[]>("/memories/search", data);
     return response.data;
   },
 
   /**
    * Get memories by type
    */
-  getByType: async (type: MemoryType, filters?: MemoryFilter): Promise<Memory[]> => {
+  getByType: async (
+    type: MemoryType,
+    filters?: MemoryFilter,
+  ): Promise<Memory[]> => {
     const response = await apiClient.get<Memory[]>(`/memories/type/${type}`, {
       params: filters,
     });
@@ -89,15 +100,43 @@ export const memoriesApi = {
    * Get memories by agent
    */
   getByAgent: async (agentId: string): Promise<Memory[]> => {
-    const response = await apiClient.get<Memory[]>(`/memories/agent/${agentId}`);
+    const response = await apiClient.get<Memory[]>(
+      `/memories/agent/${agentId}`,
+    );
     return response.data;
   },
 
   /**
    * Share memory
    */
-  share: async (memoryId: string, data: ShareMemoryRequest): Promise<Memory> => {
-    const response = await apiClient.post<Memory>(`/memories/${memoryId}/share`, data);
+  share: async (
+    memoryId: string,
+    data: ShareMemoryRequest,
+  ): Promise<Memory> => {
+    const response = await apiClient.post<Memory>(
+      `/memories/${memoryId}/share`,
+      data,
+    );
+    return response.data;
+  },
+
+  /**
+   * Rebuild vector index for one memory
+   */
+  reindex: async (memoryId: string): Promise<Memory> => {
+    const response = await apiClient.post<Memory>(
+      `/memories/${memoryId}/reindex`,
+    );
+    return response.data;
+  },
+
+  /**
+   * Inspect index payload for one memory
+   */
+  getIndex: async (memoryId: string): Promise<MemoryIndexInfo> => {
+    const response = await apiClient.get<MemoryIndexInfo>(
+      `/memories/${memoryId}/index`,
+    );
     return response.data;
   },
 
@@ -105,7 +144,7 @@ export const memoriesApi = {
    * Get shared memories
    */
   getShared: async (): Promise<Memory[]> => {
-    const response = await apiClient.get<Memory[]>('/memories/shared');
+    const response = await apiClient.get<Memory[]>("/memories/shared");
     return response.data;
   },
 };

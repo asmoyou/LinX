@@ -12,8 +12,9 @@ References:
 
 import asyncio
 import logging
+import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -22,6 +23,81 @@ from access_control.permissions import CurrentUser, get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+_COLLECTION_RETRY_ATTEMPTS = 3
+_COLLECTION_RETRY_DELAY_SECONDS = 0.35
+
+
+class CollectionLoadingError(RuntimeError):
+    """Raised when Milvus collection remains unavailable after retries."""
+
+
+def _iter_exception_chain(exc: Exception):
+    """Yield exception + nested causes/contexts."""
+    current = exc
+    seen = set()
+    while current and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        if current.__cause__ is not None:
+            current = current.__cause__
+        elif current.__context__ is not None:
+            current = current.__context__
+        else:
+            current = None
+
+
+def _is_collection_not_loaded_error(exc: Exception) -> bool:
+    """Detect Milvus transient error when collection has not finished loading."""
+    for current in _iter_exception_chain(exc):
+        code = getattr(current, "code", None)
+        if code == 101:
+            return True
+        message = str(current).lower()
+        if "collection not loaded" in message:
+            return True
+        if "not loaded" in message and "collection" in message:
+            return True
+    return False
+
+
+def _query_collection_with_retry(
+    milvus,
+    collection_name: str,
+    operation: Callable[[Any], Any],
+):
+    """Run a Milvus operation with short retries for transient load-state failures."""
+    last_error: Optional[Exception] = None
+    for attempt in range(1, _COLLECTION_RETRY_ATTEMPTS + 1):
+        collection = milvus.get_collection(collection_name)
+        try:
+            return operation(collection)
+        except Exception as exc:
+            if not _is_collection_not_loaded_error(exc):
+                raise
+            last_error = exc
+            try:
+                collection.load(timeout=1.0, _async=True)
+            except Exception as load_exc:
+                logger.debug(
+                    "Failed to trigger async load after query failure: %s",
+                    load_exc,
+                )
+            if attempt < _COLLECTION_RETRY_ATTEMPTS:
+                delay = _COLLECTION_RETRY_DELAY_SECONDS * attempt
+                logger.warning(
+                    "Collection '%s' not loaded yet (attempt %d/%d), retrying in %.2fs",
+                    collection_name,
+                    attempt,
+                    _COLLECTION_RETRY_ATTEMPTS,
+                    delay,
+                )
+                time.sleep(delay)
+
+    raise CollectionLoadingError(
+        f"Memory collection '{collection_name}' is still loading. Please retry shortly."
+    ) from last_error
 
 
 def _build_memory_filter_expression(collection_name: str, query) -> Optional[str]:
@@ -67,8 +143,70 @@ def _determine_memory_collections(query) -> List[str]:
     return collections
 
 
-def _list_memories_without_embedding_sync(query) -> List[dict]:
-    """Fast path for wildcard list queries without embedding generation/search."""
+def _get_memory_repository():
+    """Lazy-load memory repository to avoid import side effects at module load."""
+    from memory_system.memory_repository import get_memory_repository
+
+    return get_memory_repository()
+
+
+def _sync_record_to_milvus_sync(memory_id: int):
+    """Best-effort vector sync from PostgreSQL source-of-truth into Milvus index."""
+    from memory_system.memory_interface import MemoryItem
+    from memory_system.memory_system import get_memory_system
+
+    repo = _get_memory_repository()
+    record = repo.get(memory_id)
+    if not record:
+        return None
+
+    memory_system = get_memory_system()
+
+    # Replace stale vector row when re-indexing an existing record.
+    if record.milvus_id is not None:
+        try:
+            memory_system.delete_memory(record.milvus_id, record.memory_type)
+        except Exception as exc:
+            logger.warning("Failed deleting stale vector row for memory %s: %s", memory_id, exc)
+        repo.clear_milvus_link(record.id)
+        record = repo.get(memory_id)
+        if not record:
+            return None
+
+    try:
+        memory_item = MemoryItem(
+            content=record.content,
+            memory_type=record.memory_type,
+            agent_id=record.agent_id,
+            user_id=record.user_id,
+            task_id=record.task_id,
+            timestamp=record.timestamp,
+            metadata=record.metadata,
+        )
+        milvus_id = int(memory_system.store_memory(memory_item))
+        return repo.mark_vector_synced(memory_id, milvus_id)
+    except Exception as exc:
+        repo.mark_vector_failed(memory_id, str(exc))
+        logger.warning("Vector sync failed for memory %s: %s", memory_id, exc)
+        return repo.get(memory_id)
+
+
+def _list_memories_from_db_sync(query) -> List[dict]:
+    """Wildcard list path backed by PostgreSQL source-of-truth."""
+    repo = _get_memory_repository()
+    rows = repo.list_memories(
+        memory_type=query.memory_type,
+        agent_id=query.agent_id,
+        user_id=query.user_id,
+        task_id=query.task_id,
+        limit=query.top_k or 100,
+    )
+    items = [row.to_memory_item() for row in rows]
+    return _items_to_responses(items)
+
+
+def _list_memories_from_milvus_sync(query) -> List[dict]:
+    """Legacy fallback path for wildcard list queries using Milvus only."""
     from memory_system.collections import CollectionName
     from memory_system.memory_interface import MemoryItem, MemoryType
     from memory_system.milvus_connection import get_milvus_connection
@@ -77,69 +215,103 @@ def _list_memories_without_embedding_sync(query) -> List[dict]:
     collections_to_search = _determine_memory_collections(query)
 
     items = []
+    loading_errors = []
     for collection_name in collections_to_search:
-        collection = milvus.get_collection(collection_name)
         expr = _build_memory_filter_expression(collection_name, query)
         query_expr = expr if expr else "id >= 0"
 
-        if collection_name == CollectionName.AGENT_MEMORIES:
-            rows = collection.query(
-                expr=query_expr,
-                output_fields=["id", "agent_id", "content", "timestamp", "metadata"],
-                limit=query.top_k or 100,
-            )
-            for row in rows:
-                timestamp_ms = row.get("timestamp")
-                timestamp = (
-                    datetime.fromtimestamp(timestamp_ms / 1000.0)
-                    if timestamp_ms
-                    else datetime.utcnow()
+        try:
+            if collection_name == CollectionName.AGENT_MEMORIES:
+                rows = _query_collection_with_retry(
+                    milvus,
+                    collection_name,
+                    lambda col: col.query(
+                        expr=query_expr,
+                        output_fields=["id", "agent_id", "content", "timestamp", "metadata"],
+                        limit=query.top_k or 100,
+                    ),
                 )
-                items.append(
-                    MemoryItem(
-                        id=row.get("id"),
-                        content=row.get("content", ""),
-                        memory_type=MemoryType.AGENT,
-                        agent_id=row.get("agent_id"),
-                        metadata=row.get("metadata") or {},
-                        timestamp=timestamp,
-                        similarity_score=None,
+                for row in rows:
+                    timestamp_ms = row.get("timestamp")
+                    timestamp = (
+                        datetime.fromtimestamp(timestamp_ms / 1000.0)
+                        if timestamp_ms
+                        else datetime.utcnow()
                     )
-                )
-        else:
-            rows = collection.query(
-                expr=query_expr,
-                output_fields=["id", "user_id", "content", "memory_type", "timestamp", "metadata"],
-                limit=query.top_k or 100,
-            )
-            for row in rows:
-                timestamp_ms = row.get("timestamp")
-                timestamp = (
-                    datetime.fromtimestamp(timestamp_ms / 1000.0)
-                    if timestamp_ms
-                    else datetime.utcnow()
-                )
-                memory_type_str = row.get("memory_type", "company")
-                try:
-                    memory_type = MemoryType(memory_type_str)
-                except ValueError:
-                    memory_type = MemoryType.COMPANY
-                items.append(
-                    MemoryItem(
-                        id=row.get("id"),
-                        content=row.get("content", ""),
-                        memory_type=memory_type,
-                        user_id=row.get("user_id"),
-                        metadata=row.get("metadata") or {},
-                        timestamp=timestamp,
-                        similarity_score=None,
+                    items.append(
+                        MemoryItem(
+                            id=row.get("id"),
+                            content=row.get("content", ""),
+                            memory_type=MemoryType.AGENT,
+                            agent_id=row.get("agent_id"),
+                            metadata=row.get("metadata") or {},
+                            timestamp=timestamp,
+                            similarity_score=None,
+                        )
                     )
+            else:
+                rows = _query_collection_with_retry(
+                    milvus,
+                    collection_name,
+                    lambda col: col.query(
+                        expr=query_expr,
+                        output_fields=[
+                            "id",
+                            "user_id",
+                            "content",
+                            "memory_type",
+                            "timestamp",
+                            "metadata",
+                        ],
+                        limit=query.top_k or 100,
+                    ),
                 )
+                for row in rows:
+                    timestamp_ms = row.get("timestamp")
+                    timestamp = (
+                        datetime.fromtimestamp(timestamp_ms / 1000.0)
+                        if timestamp_ms
+                        else datetime.utcnow()
+                    )
+                    memory_type_str = row.get("memory_type", "company")
+                    try:
+                        memory_type = MemoryType(memory_type_str)
+                    except ValueError:
+                        memory_type = MemoryType.COMPANY
+                    items.append(
+                        MemoryItem(
+                            id=row.get("id"),
+                            content=row.get("content", ""),
+                            memory_type=memory_type,
+                            user_id=row.get("user_id"),
+                            metadata=row.get("metadata") or {},
+                            timestamp=timestamp,
+                            similarity_score=None,
+                        )
+                    )
+        except CollectionLoadingError as e:
+            loading_errors.append((collection_name, str(e)))
+            logger.warning("Skipping loading collection during list: %s", collection_name)
+            continue
 
     # Match previous semantics: latest first, then apply top_k.
+    if loading_errors and not items:
+        logger.warning(
+            "All target memory collections unavailable during wildcard list, returning empty result"
+        )
+
     items.sort(key=lambda x: x.timestamp or datetime.utcnow(), reverse=True)
     top_k = query.top_k or 100
     return _items_to_responses(items[:top_k])
+
+
+def _list_memories_without_embedding_sync(query) -> List[dict]:
+    """Wildcard list path with DB-first and Milvus fallback."""
+    try:
+        return _list_memories_from_db_sync(query)
+    except Exception as db_exc:
+        logger.warning("DB list path failed, fallback to Milvus: %s", db_exc)
+        return _list_memories_from_milvus_sync(query)
 
 
 # ─── Pydantic Schemas ───────────────────────────────────────────────────────
@@ -177,7 +349,8 @@ class MemorySearchRequest(BaseModel):
 class MemoryShareRequest(BaseModel):
     """Share memory request."""
 
-    user_ids: List[str] = Field(..., min_length=1)
+    user_ids: List[str] = Field(default_factory=list)
+    agent_ids: List[str] = Field(default_factory=list)
 
 
 class MemoryResponse(BaseModel):
@@ -199,20 +372,59 @@ class MemoryResponse(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     is_shared: bool = Field(False, alias="isShared")
     shared_with: List[str] = Field(default_factory=list, alias="sharedWith")
+    shared_with_names: List[str] = Field(default_factory=list, alias="sharedWithNames")
+    index_status: Optional[str] = Field(None, alias="indexStatus")
+    index_error: Optional[str] = Field(None, alias="indexError")
+
+
+class MemoryIndexInspectResponse(BaseModel):
+    """Detailed vector index inspection response."""
+
+    model_config = {"populate_by_name": True, "serialize_by_alias": True}
+
+    memory_id: str = Field(..., alias="memoryId")
+    milvus_id: Optional[int] = Field(None, alias="milvusId")
+    collection: Optional[str] = None
+    vector_status: Optional[str] = Field(None, alias="vectorStatus")
+    vector_error: Optional[str] = Field(None, alias="vectorError")
+    vector_updated_at: Optional[str] = Field(None, alias="vectorUpdatedAt")
+    exists_in_milvus: bool = Field(False, alias="existsInMilvus")
+    indexed_content: Optional[str] = Field(None, alias="indexedContent")
+    indexed_timestamp: Optional[str] = Field(None, alias="indexedTimestamp")
+    indexed_metadata: Optional[Dict[str, Any]] = Field(None, alias="indexedMetadata")
+    embedding_dimension: Optional[int] = Field(None, alias="embeddingDimension")
+    embedding_preview: Optional[List[float]] = Field(None, alias="embeddingPreview")
+    milvus_error: Optional[str] = Field(None, alias="milvusError")
 
 
 # ─── Helpers (all synchronous, called via asyncio.to_thread) ───────────────
 
 
 def _memory_item_to_response(
-    item, agent_name: Optional[str] = None, user_name: Optional[str] = None
+    item,
+    agent_name: Optional[str] = None,
+    user_name: Optional[str] = None,
+    shared_with_names: Optional[List[str]] = None,
 ) -> dict:
     """Convert a MemoryItem to a response dict."""
-    meta = item.metadata or {}
-    tags = meta.pop("tags", []) if meta else []
-    summary = meta.pop("summary", None) if meta else None
-    shared_with = meta.pop("shared_with", []) if meta else []
-    is_shared = bool(meta.pop("shared_from", None)) if meta else False
+    meta = dict(item.metadata or {})
+    tags = meta.pop("tags", [])
+    summary = meta.pop("summary", None)
+    shared_with = meta.get("shared_with", [])
+    stored_shared_names = meta.get("shared_with_names", [])
+    shared_from = meta.get("shared_from", None)
+    index_status = meta.pop("vector_status", None)
+    index_error = meta.pop("vector_error", None)
+
+    if not isinstance(shared_with, list):
+        shared_with = []
+
+    if shared_with_names is not None:
+        final_shared_names = shared_with_names
+    elif isinstance(stored_shared_names, list):
+        final_shared_names = stored_shared_names
+    else:
+        final_shared_names = []
 
     # Remove internal scoring fields
     meta.pop("_combined_score", None)
@@ -235,8 +447,11 @@ def _memory_item_to_response(
         "tags": tags if isinstance(tags, list) else [],
         "relevanceScore": item.similarity_score,
         "metadata": meta if meta else None,
-        "isShared": is_shared or bool(shared_with),
-        "sharedWith": shared_with if isinstance(shared_with, list) else [],
+        "isShared": bool(shared_from) or bool(shared_with),
+        "sharedWith": shared_with,
+        "sharedWithNames": final_shared_names,
+        "indexStatus": index_status,
+        "indexError": index_error,
     }
 
 
@@ -263,29 +478,223 @@ def _lookup_user_name(session, user_id: Optional[str]) -> Optional[str]:
     return attrs.get("display_name") or user.username
 
 
+def _dedupe_preserve_order(values: List[str]) -> List[str]:
+    """Deduplicate while keeping first-seen order."""
+    seen = set()
+    result = []
+    for value in values:
+        key = str(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(key)
+    return result
+
+
+def _resolve_share_targets(agent_ids: List[str], user_ids: List[str]) -> Dict[str, List[str]]:
+    """Resolve share targets into user IDs and human-readable names."""
+    from uuid import UUID
+
+    from database.connection import get_db_session
+    from database.models import Agent
+
+    normalized_agent_ids = _dedupe_preserve_order([str(v) for v in (agent_ids or []) if str(v)])
+    normalized_user_ids = _dedupe_preserve_order([str(v) for v in (user_ids or []) if str(v)])
+
+    target_user_ids: List[str] = []
+    target_entity_ids: List[str] = []
+    target_entity_names: List[str] = []
+
+    with get_db_session() as session:
+        if normalized_agent_ids:
+            parsed_agent_ids = []
+            for raw_agent_id in normalized_agent_ids:
+                try:
+                    parsed_agent_ids.append(UUID(raw_agent_id))
+                except Exception:
+                    continue
+
+            agent_rows = []
+            if parsed_agent_ids:
+                agent_rows = session.query(Agent).filter(Agent.agent_id.in_(parsed_agent_ids)).all()
+            rows_by_id = {str(row.agent_id): row for row in agent_rows}
+
+            for raw_agent_id in normalized_agent_ids:
+                row = rows_by_id.get(raw_agent_id)
+                if not row:
+                    continue
+                target_user_ids.append(str(row.owner_user_id))
+                target_entity_ids.append(str(row.agent_id))
+                target_entity_names.append(row.name or str(row.agent_id))
+
+        for raw_user_id in normalized_user_ids:
+            target_user_ids.append(raw_user_id)
+            target_entity_ids.append(raw_user_id)
+            target_entity_names.append(_lookup_user_name(session, raw_user_id) or raw_user_id)
+
+    return {
+        "target_user_ids": _dedupe_preserve_order(target_user_ids),
+        "target_entity_ids": _dedupe_preserve_order(target_entity_ids),
+        "target_entity_names": _dedupe_preserve_order(target_entity_names),
+    }
+
+
 def _items_to_responses(items) -> List[dict]:
     """Convert memory items to response dicts with name lookups. Runs in thread."""
     from database.connection import get_db_session
 
     with get_db_session() as session:
         results = []
+        target_name_cache: Dict[str, Optional[str]] = {}
+
+        def _resolve_target_name(target_id: str) -> str:
+            key = str(target_id)
+            if key in target_name_cache:
+                cached = target_name_cache[key]
+                return cached or key
+
+            name = _lookup_agent_name(session, key)
+            if not name:
+                name = _lookup_user_name(session, key)
+            target_name_cache[key] = name
+            return name or key
+
         for item in items:
             agent_name = _lookup_agent_name(session, item.agent_id)
             user_name = _lookup_user_name(session, item.user_id)
-            results.append(_memory_item_to_response(item, agent_name, user_name))
+            raw_shared_with = (item.metadata or {}).get("shared_with", [])
+            shared_with_names = (
+                [_resolve_target_name(str(target_id)) for target_id in raw_shared_with]
+                if isinstance(raw_shared_with, list)
+                else []
+            )
+            results.append(
+                _memory_item_to_response(
+                    item,
+                    agent_name=agent_name,
+                    user_name=user_name,
+                    shared_with_names=shared_with_names,
+                )
+            )
     return results
 
 
+def _parse_datetime_safe(raw: Optional[str]) -> Optional[datetime]:
+    """Parse date/datetime input used by list filters."""
+    if not raw:
+        return None
+    candidate = str(raw).strip()
+    if not candidate:
+        return None
+    try:
+        if "T" not in candidate:
+            candidate = f"{candidate}T00:00:00"
+        candidate = candidate.replace("Z", "+00:00")
+        return datetime.fromisoformat(candidate)
+    except Exception:
+        return None
+
+
+def _apply_response_filters(
+    responses: List[dict],
+    *,
+    date_from: Optional[str],
+    date_to: Optional[str],
+    tags: Optional[str],
+) -> List[dict]:
+    """Apply lightweight response filters (date/tags) on list endpoints."""
+
+    def _normalize(dt: Optional[datetime]) -> Optional[datetime]:
+        if dt is None:
+            return None
+        return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+    start_dt = _normalize(_parse_datetime_safe(date_from))
+    end_dt = _normalize(_parse_datetime_safe(date_to))
+    expected_tags = [tag.strip() for tag in (tags or "").split(",") if tag.strip()]
+
+    if not start_dt and not end_dt and not expected_tags:
+        return responses
+
+    filtered = []
+    for item in responses:
+        created_at = _normalize(_parse_datetime_safe(item.get("createdAt")))
+        if start_dt and created_at and created_at < start_dt:
+            continue
+        if end_dt and created_at and created_at > end_dt:
+            continue
+
+        if expected_tags:
+            item_tags = item.get("tags") or []
+            if not isinstance(item_tags, list):
+                continue
+            if not all(tag in item_tags for tag in expected_tags):
+                continue
+
+        filtered.append(item)
+
+    return filtered
+
+
 def _retrieve_memories_sync(query):
-    """Retrieve memories synchronously (embedding + Milvus + DB lookups)."""
+    """Retrieve memories synchronously (DB-first with semantic/vector fallback)."""
     from memory_system.memory_system import get_memory_system
 
     if query.query_text == "*":
         return _list_memories_without_embedding_sync(query)
 
+    repo = _get_memory_repository()
     memory_system = get_memory_system()
-    items = memory_system.retrieve_memories(query)
-    return _items_to_responses(items)
+    items = []
+    try:
+        semantic_items = memory_system.retrieve_memories(query)
+
+        # Map Milvus ids back to PostgreSQL records so API ids remain business ids.
+        milvus_ids = []
+        for semantic_item in semantic_items:
+            if semantic_item.id is None:
+                continue
+            try:
+                milvus_ids.append(int(semantic_item.id))
+            except (TypeError, ValueError):
+                continue
+
+        mapped_by_milvus = repo.get_by_milvus_ids(milvus_ids)
+        for semantic_item in semantic_items:
+            mapped = None
+            try:
+                mapped = mapped_by_milvus.get(int(semantic_item.id))
+            except (TypeError, ValueError):
+                mapped = None
+
+            if mapped:
+                db_item = mapped.to_memory_item(similarity_score=semantic_item.similarity_score)
+                if semantic_item.metadata:
+                    db_item.metadata = db_item.metadata or {}
+                    # Preserve debug scores from ranking pipeline.
+                    db_item.metadata.update(
+                        {k: v for k, v in semantic_item.metadata.items() if str(k).startswith("_")}
+                    )
+                items.append(db_item)
+            else:
+                # Legacy data not yet in PostgreSQL.
+                items.append(semantic_item)
+    except Exception as exc:
+        logger.warning("Semantic memory search failed, falling back to text search: %s", exc)
+
+    if items:
+        return _items_to_responses(items)
+
+    fallback_rows = repo.search_text(
+        query.query_text,
+        memory_type=query.memory_type,
+        agent_id=query.agent_id,
+        user_id=query.user_id,
+        task_id=query.task_id,
+        limit=query.top_k or 10,
+    )
+    fallback_items = [row.to_memory_item() for row in fallback_rows]
+    return _items_to_responses(fallback_items)
 
 
 def _retrieve_shared_sync(user_id: str):
@@ -313,32 +722,51 @@ def _retrieve_shared_sync(user_id: str):
 
 
 def _store_memory_sync(memory_item):
-    """Store a memory synchronously (embedding + Milvus insert)."""
-    from memory_system.memory_system import get_memory_system
-
-    memory_system = get_memory_system()
-    memory_id = memory_system.store_memory(memory_item)
-    memory_item.id = memory_id
+    """Store memory with PostgreSQL as source-of-truth and best-effort Milvus indexing."""
+    from memory_system.memory_interface import MemoryType
 
     from database.connection import get_db_session
 
-    with get_db_session() as session:
-        agent_name = _lookup_agent_name(session, memory_item.agent_id)
-        user_name = _lookup_user_name(session, memory_item.user_id)
+    if memory_item.memory_type == MemoryType.AGENT and not memory_item.agent_id:
+        raise ValueError("agent_id required for agent memories")
+    if memory_item.memory_type != MemoryType.AGENT and not memory_item.user_id:
+        raise ValueError("user_id required for company/user_context memories")
 
-    return _memory_item_to_response(memory_item, agent_name, user_name)
+    repo = _get_memory_repository()
+    created = repo.create(memory_item)
+    synced = _sync_record_to_milvus_sync(created.id)
+    final_record = synced or repo.get(created.id) or created
+    item = final_record.to_memory_item()
+
+    with get_db_session() as session:
+        agent_name = _lookup_agent_name(session, item.agent_id)
+        user_name = _lookup_user_name(session, item.user_id)
+
+    return _memory_item_to_response(item, agent_name, user_name)
 
 
 def _detect_memory_type(memory_id: int) -> Optional[str]:
-    """Search both Milvus collections to find which one contains the memory ID."""
+    """Detect memory type by DB id first, then Milvus fallback for legacy rows."""
     from memory_system.collections import CollectionName
     from memory_system.milvus_connection import get_milvus_connection
+
+    repo = _get_memory_repository()
+    record = repo.get(memory_id)
+    if record:
+        return record.memory_type.value
+
+    by_milvus = repo.get_by_milvus_id(memory_id)
+    if by_milvus:
+        return by_milvus.memory_type.value
 
     milvus = get_milvus_connection()
     # Check agent_memories first
     try:
-        collection = milvus.get_collection(CollectionName.AGENT_MEMORIES)
-        results = collection.query(expr=f"id == {memory_id}", output_fields=["id"])
+        results = _query_collection_with_retry(
+            milvus,
+            CollectionName.AGENT_MEMORIES,
+            lambda col: col.query(expr=f"id == {memory_id}", output_fields=["id"]),
+        )
         if results:
             return "agent"
     except Exception:
@@ -346,11 +774,18 @@ def _detect_memory_type(memory_id: int) -> Optional[str]:
 
     # Check company_memories
     try:
-        collection = milvus.get_collection(CollectionName.COMPANY_MEMORIES)
-        results = collection.query(expr=f"id == {memory_id}", output_fields=["id"])
+        results = _query_collection_with_retry(
+            milvus,
+            CollectionName.COMPANY_MEMORIES,
+            lambda col: col.query(expr=f"id == {memory_id}", output_fields=["id"]),
+        )
         if results:
             # Determine actual type from memory_type field
-            full = collection.query(expr=f"id == {memory_id}", output_fields=["memory_type"])
+            full = _query_collection_with_retry(
+                milvus,
+                CollectionName.COMPANY_MEMORIES,
+                lambda col: col.query(expr=f"id == {memory_id}", output_fields=["memory_type"]),
+            )
             if full and full[0].get("memory_type"):
                 return full[0]["memory_type"]
             return "company"
@@ -361,10 +796,28 @@ def _detect_memory_type(memory_id: int) -> Optional[str]:
 
 
 def _get_memory_by_id_sync(memory_id: int, type_str: Optional[str] = None):
-    """Get a single memory by Milvus ID synchronously."""
+    """Get a single memory by business id (DB) with legacy Milvus fallback."""
     from memory_system.collections import CollectionName
     from memory_system.memory_interface import MemoryItem, MemoryType
     from memory_system.milvus_connection import get_milvus_connection
+
+    repo = _get_memory_repository()
+    record = repo.get(memory_id)
+    if not record:
+        record = repo.get_by_milvus_id(memory_id)
+
+    if record:
+        if type_str and record.memory_type.value != type_str:
+            return None
+
+        item = record.to_memory_item()
+        from database.connection import get_db_session
+
+        with get_db_session() as session:
+            agent_name = _lookup_agent_name(session, item.agent_id)
+            user_name = _lookup_user_name(session, item.user_id)
+
+        return _memory_item_to_response(item, agent_name, user_name)
 
     if not type_str:
         type_str = _detect_memory_type(memory_id)
@@ -381,11 +834,13 @@ def _get_memory_by_id_sync(memory_id: int, type_str: Optional[str] = None):
         output_fields = ["user_id", "content", "memory_type", "timestamp", "metadata"]
 
     milvus = get_milvus_connection()
-    collection = milvus.get_collection(collection_name)
-
-    results = collection.query(
-        expr=f"id == {memory_id}",
-        output_fields=output_fields,
+    results = _query_collection_with_retry(
+        milvus,
+        collection_name,
+        lambda col: col.query(
+            expr=f"id == {memory_id}",
+            output_fields=output_fields,
+        ),
     )
 
     if not results:
@@ -414,9 +869,27 @@ def _get_memory_by_id_sync(memory_id: int, type_str: Optional[str] = None):
 
 
 def _delete_memory_sync(memory_id: int, type_str: Optional[str] = None) -> bool:
-    """Delete a memory synchronously."""
+    """Delete memory from DB source-of-truth and best-effort vector index."""
     from memory_system.memory_interface import MemoryType
     from memory_system.memory_system import get_memory_system
+
+    repo = _get_memory_repository()
+    record = repo.get(memory_id)
+    if not record:
+        record = repo.get_by_milvus_id(memory_id)
+
+    if record:
+        if type_str and record.memory_type.value != type_str:
+            return False
+
+        memory_system = get_memory_system()
+        if record.milvus_id is not None:
+            try:
+                memory_system.delete_memory(record.milvus_id, record.memory_type)
+            except Exception as exc:
+                logger.warning("Failed deleting vector index for memory %s: %s", record.id, exc)
+
+        return repo.soft_delete(record.id)
 
     if not type_str:
         type_str = _detect_memory_type(memory_id)
@@ -437,6 +910,47 @@ def _update_memory_sync(
     from memory_system.memory_system import get_memory_system
     from memory_system.milvus_connection import get_milvus_connection
 
+    repo = _get_memory_repository()
+    record = repo.get(memory_id)
+    if not record:
+        record = repo.get_by_milvus_id(memory_id)
+
+    if record:
+        if type_str and record.memory_type.value != type_str:
+            return None
+
+        new_meta = dict(record.metadata or {})
+        if request.tags is not None:
+            new_meta["tags"] = request.tags
+        if request.summary is not None:
+            new_meta["summary"] = request.summary
+        if request.metadata is not None:
+            new_meta.update(request.metadata)
+
+        new_content = request.content if request.content else record.content
+        updated = repo.update_record(
+            record.id,
+            content=new_content,
+            metadata=new_meta,
+            user_id=record.user_id or user_id,
+            agent_id=record.agent_id,
+            task_id=record.task_id or new_meta.get("task_id"),
+        )
+        if not updated:
+            return None
+
+        synced = _sync_record_to_milvus_sync(updated.id)
+        final_record = synced or repo.get(updated.id) or updated
+        item = final_record.to_memory_item()
+
+        from database.connection import get_db_session
+
+        with get_db_session() as session:
+            agent_name = _lookup_agent_name(session, item.agent_id)
+            user_name = _lookup_user_name(session, item.user_id)
+
+        return _memory_item_to_response(item, agent_name, user_name)
+
     if not type_str:
         type_str = _detect_memory_type(memory_id)
         if not type_str:
@@ -453,11 +967,13 @@ def _update_memory_sync(
         output_fields = ["user_id", "content", "memory_type", "timestamp", "metadata"]
 
     milvus = get_milvus_connection()
-    collection = milvus.get_collection(collection_name)
-
-    results = collection.query(
-        expr=f"id == {memory_id}",
-        output_fields=output_fields,
+    results = _query_collection_with_retry(
+        milvus,
+        collection_name,
+        lambda col: col.query(
+            expr=f"id == {memory_id}",
+            output_fields=output_fields,
+        ),
     )
 
     if not results:
@@ -498,12 +1014,245 @@ def _update_memory_sync(
     return _memory_item_to_response(new_item, agent_name, user_name)
 
 
-def _share_memory_sync(memory_id: int, type_str: Optional[str], user_ids: List[str]):
+def _to_iso_timestamp(raw: Any) -> Optional[str]:
+    """Convert timestamp-like value to ISO string."""
+    if raw is None:
+        return None
+    if hasattr(raw, "isoformat"):
+        return raw.isoformat()
+    try:
+        return str(raw)
+    except Exception:
+        return None
+
+
+def _inspect_memory_index_sync(memory_id: int, type_str: Optional[str] = None):
+    """Inspect vector index payload for one memory record."""
+    from memory_system.collections import CollectionName
+    from memory_system.milvus_connection import get_milvus_connection
+
+    repo = _get_memory_repository()
+    record = repo.get(memory_id)
+    if not record:
+        record = repo.get_by_milvus_id(memory_id)
+    if not record:
+        return None
+    if type_str and record.memory_type.value != type_str:
+        return None
+
+    if record.memory_type.value == "agent":
+        collection_name = CollectionName.AGENT_MEMORIES
+        output_fields = ["id", "agent_id", "content", "timestamp", "metadata", "embedding"]
+    else:
+        collection_name = CollectionName.COMPANY_MEMORIES
+        output_fields = [
+            "id",
+            "user_id",
+            "memory_type",
+            "content",
+            "timestamp",
+            "metadata",
+            "embedding",
+        ]
+
+    response = {
+        "memoryId": str(record.id),
+        "milvusId": record.milvus_id,
+        "collection": collection_name,
+        "vectorStatus": record.vector_status,
+        "vectorError": record.vector_error,
+        "vectorUpdatedAt": _to_iso_timestamp(record.vector_updated_at),
+        "existsInMilvus": False,
+        "indexedContent": None,
+        "indexedTimestamp": None,
+        "indexedMetadata": None,
+        "embeddingDimension": None,
+        "embeddingPreview": None,
+        "milvusError": None,
+    }
+
+    if record.milvus_id is None:
+        return response
+
+    milvus = get_milvus_connection()
+    try:
+        rows = _query_collection_with_retry(
+            milvus,
+            collection_name,
+            lambda col: col.query(
+                expr=f"id == {record.milvus_id}",
+                output_fields=output_fields,
+            ),
+        )
+    except Exception as exc:
+        response["milvusError"] = str(exc)
+        return response
+
+    if not rows:
+        return response
+
+    row = rows[0]
+    embedding = row.get("embedding")
+    embedding_preview = None
+    embedding_dimension = None
+    if isinstance(embedding, list):
+        embedding_dimension = len(embedding)
+        embedding_preview = [float(v) for v in embedding[:8]]
+
+    response.update(
+        {
+            "existsInMilvus": True,
+            "indexedContent": row.get("content"),
+            "indexedTimestamp": _to_iso_timestamp(row.get("timestamp")),
+            "indexedMetadata": row.get("metadata"),
+            "embeddingDimension": embedding_dimension,
+            "embeddingPreview": embedding_preview,
+        }
+    )
+    return response
+
+
+def _reindex_memory_sync(memory_id: int, type_str: Optional[str] = None):
+    """Trigger manual vector re-index for a memory record."""
+    from database.connection import get_db_session
+
+    repo = _get_memory_repository()
+    record = repo.get(memory_id)
+    if not record:
+        record = repo.get_by_milvus_id(memory_id)
+    if not record:
+        return None
+    if type_str and record.memory_type.value != type_str:
+        return None
+
+    synced = _sync_record_to_milvus_sync(record.id)
+    final_record = synced or repo.get(record.id) or record
+    item = final_record.to_memory_item()
+
+    with get_db_session() as session:
+        agent_name = _lookup_agent_name(session, item.agent_id)
+        user_name = _lookup_user_name(session, item.user_id)
+        raw_shared_with = (item.metadata or {}).get("shared_with", [])
+        if isinstance(raw_shared_with, list):
+            shared_with_names = [
+                _lookup_agent_name(session, str(target_id))
+                or _lookup_user_name(session, str(target_id))
+                or str(target_id)
+                for target_id in raw_shared_with
+            ]
+        else:
+            shared_with_names = []
+
+    return _memory_item_to_response(
+        item,
+        agent_name=agent_name,
+        user_name=user_name,
+        shared_with_names=shared_with_names,
+    )
+
+
+def _share_memory_sync(
+    memory_id: int,
+    type_str: Optional[str],
+    user_ids: List[str],
+    agent_ids: List[str],
+):
     """Share a memory synchronously."""
     from memory_system.collections import CollectionName
     from memory_system.memory_interface import MemoryItem, MemoryType
     from memory_system.memory_system import get_memory_system
     from memory_system.milvus_connection import get_milvus_connection
+
+    repo = _get_memory_repository()
+    source_record = repo.get(memory_id)
+    if not source_record:
+        source_record = repo.get_by_milvus_id(memory_id)
+
+    if source_record:
+        if type_str and source_record.memory_type.value != type_str:
+            return None
+
+        share_targets = _resolve_share_targets(agent_ids=agent_ids, user_ids=user_ids)
+        target_user_ids = share_targets["target_user_ids"]
+        target_entity_ids = share_targets["target_entity_ids"]
+        target_entity_names = share_targets["target_entity_names"]
+
+        existing_shared_records = repo.list_shared_children(source_record.id)
+        existing_by_user_id = {}
+        for shared_record in existing_shared_records:
+            if shared_record.user_id and shared_record.user_id not in existing_by_user_id:
+                existing_by_user_id[shared_record.user_id] = shared_record
+
+        current_user_ids = set(existing_by_user_id.keys())
+        desired_user_ids = set(target_user_ids)
+
+        users_to_add = sorted(desired_user_ids - current_user_ids)
+        users_to_remove = sorted(current_user_ids - desired_user_ids)
+
+        memory_system = get_memory_system()
+
+        for user_id_to_remove in users_to_remove:
+            shared_record = existing_by_user_id.get(user_id_to_remove)
+            if not shared_record:
+                continue
+            if shared_record.milvus_id is not None:
+                try:
+                    memory_system.delete_memory(shared_record.milvus_id, shared_record.memory_type)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed deleting shared vector row source=%s child=%s: %s",
+                        source_record.id,
+                        shared_record.id,
+                        exc,
+                    )
+            repo.soft_delete(shared_record.id)
+
+        for target_user_id in users_to_add:
+            shared_meta = {
+                **(source_record.metadata or {}),
+                "shared_from": source_record.id,
+                "shared_at": datetime.utcnow().isoformat(),
+                "shared_to_user_id": target_user_id,
+            }
+            shared_item = MemoryItem(
+                content=source_record.content,
+                memory_type=MemoryType.COMPANY,
+                user_id=target_user_id,
+                timestamp=datetime.utcnow(),
+                metadata=shared_meta,
+            )
+            created = repo.create(shared_item)
+            _sync_record_to_milvus_sync(created.id)
+
+        source_meta = dict(source_record.metadata or {})
+        if target_entity_ids:
+            source_meta["shared_with"] = target_entity_ids
+            source_meta["shared_with_names"] = target_entity_names
+        else:
+            source_meta.pop("shared_with", None)
+            source_meta.pop("shared_with_names", None)
+
+        updated = repo.update_record(
+            source_record.id,
+            metadata=source_meta,
+            mark_vector_pending=False,
+        )
+        if not updated:
+            return None
+
+        item = updated.to_memory_item()
+        from database.connection import get_db_session
+
+        with get_db_session() as session:
+            agent_name = _lookup_agent_name(session, item.agent_id)
+            user_name = _lookup_user_name(session, item.user_id)
+
+        return _memory_item_to_response(
+            item,
+            agent_name=agent_name,
+            user_name=user_name,
+            shared_with_names=target_entity_names,
+        )
 
     if not type_str:
         type_str = _detect_memory_type(memory_id)
@@ -513,7 +1262,8 @@ def _share_memory_sync(memory_id: int, type_str: Optional[str], user_ids: List[s
     mem_type = MemoryType(type_str)
     memory_system = get_memory_system()
 
-    success = memory_system.share_memory(memory_id, mem_type, user_ids)
+    target_ids = agent_ids or user_ids
+    success = memory_system.share_memory(memory_id, mem_type, target_ids)
     if not success:
         return None
 
@@ -526,11 +1276,13 @@ def _share_memory_sync(memory_id: int, type_str: Optional[str], user_ids: List[s
         output_fields = ["user_id", "content", "memory_type", "timestamp", "metadata"]
 
     milvus = get_milvus_connection()
-    collection = milvus.get_collection(collection_name)
-
-    results = collection.query(
-        expr=f"id == {memory_id}",
-        output_fields=output_fields,
+    results = _query_collection_with_retry(
+        milvus,
+        collection_name,
+        lambda col: col.query(
+            expr=f"id == {memory_id}",
+            output_fields=output_fields,
+        ),
     )
 
     if not results:
@@ -541,7 +1293,7 @@ def _share_memory_sync(memory_id: int, type_str: Optional[str], user_ids: List[s
             "createdAt": datetime.utcnow().isoformat(),
             "tags": [],
             "isShared": True,
-            "sharedWith": user_ids,
+            "sharedWith": target_ids,
         }
 
     row = results[0]
@@ -559,24 +1311,63 @@ def _share_memory_sync(memory_id: int, type_str: Optional[str], user_ids: List[s
 
     if not item.metadata:
         item.metadata = {}
-    item.metadata["shared_with"] = user_ids
+    item.metadata["shared_with"] = target_ids
 
     from database.connection import get_db_session
 
     with get_db_session() as session:
         agent_name = _lookup_agent_name(session, item.agent_id)
         user_name = _lookup_user_name(session, item.user_id)
+        shared_with_names = [
+            _lookup_agent_name(session, str(target_id))
+            or _lookup_user_name(session, str(target_id))
+            or str(target_id)
+            for target_id in target_ids
+        ]
 
-    return _memory_item_to_response(item, agent_name, user_name)
+    return _memory_item_to_response(
+        item,
+        agent_name=agent_name,
+        user_name=user_name,
+        shared_with_names=shared_with_names,
+    )
 
 
 def _purge_memories_sync(memory_type: str, agent_id: Optional[str]):
-    """Purge memories synchronously."""
+    """Purge memories synchronously (DB-first soft delete + vector cleanup)."""
     from memory_system.collections import CollectionName
     from memory_system.memory_interface import MemoryType
+    from memory_system.memory_system import get_memory_system
     from memory_system.milvus_connection import get_milvus_connection
 
     mem_type = MemoryType(memory_type)
+    repo = _get_memory_repository()
+
+    db_rows = repo.list_memories(memory_type=mem_type, agent_id=agent_id, limit=None)
+    if db_rows:
+        deleted = repo.purge_by_type(mem_type, agent_id=agent_id)
+        memory_system = get_memory_system()
+        vector_deleted = 0
+        for row in db_rows:
+            if row.milvus_id is None:
+                continue
+            try:
+                if memory_system.delete_memory(row.milvus_id, row.memory_type):
+                    vector_deleted += 1
+            except Exception as exc:
+                logger.warning(
+                    "Failed deleting vector row during purge memory_id=%s milvus_id=%s: %s",
+                    row.id,
+                    row.milvus_id,
+                    exc,
+                )
+
+        return {
+            "deleted": deleted,
+            "type": memory_type,
+            "message": f"Purged {deleted} memories",
+            "vectorDeleted": vector_deleted,
+        }
 
     if mem_type == MemoryType.AGENT:
         collection_name = CollectionName.AGENT_MEMORIES
@@ -592,10 +1383,12 @@ def _purge_memories_sync(memory_type: str, agent_id: Optional[str]):
             expr = f'memory_type == "{memory_type}"'
 
     milvus = get_milvus_connection()
-    collection = milvus.get_collection(collection_name)
-
     try:
-        existing = collection.query(expr=expr, output_fields=["id"])
+        existing = _query_collection_with_retry(
+            milvus,
+            collection_name,
+            lambda col: col.query(expr=expr, output_fields=["id"]),
+        )
         count = len(existing)
     except Exception:
         count = 0
@@ -604,6 +1397,7 @@ def _purge_memories_sync(memory_type: str, agent_id: Optional[str]):
         return {"deleted": 0, "type": memory_type, "message": "No memories found to purge"}
 
     ids = [row["id"] for row in existing]
+    collection = milvus.get_collection(collection_name)
     collection.delete(expr=f"id in {ids}")
 
     return {"deleted": count, "type": memory_type, "message": f"Purged {count} memories"}
@@ -638,12 +1432,25 @@ async def list_memories(
 
     try:
         results = await asyncio.to_thread(_retrieve_memories_sync, query)
+    except CollectionLoadingError as e:
+        logger.warning(f"Memory collection is still loading during list: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
     except Exception as e:
         logger.error(f"Failed to list memories: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list memories: {e}",
         )
+
+    results = _apply_response_filters(
+        results,
+        date_from=date_from,
+        date_to=date_to,
+        tags=tags,
+    )
 
     return [MemoryResponse(**r) for r in results]
 
@@ -694,6 +1501,12 @@ async def get_memories_by_type(
 
     try:
         results = await asyncio.to_thread(_retrieve_memories_sync, query)
+    except CollectionLoadingError as e:
+        logger.warning(f"Memory collection is still loading during type query: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
     except Exception as e:
         logger.error(f"Failed to retrieve memories by type: {e}")
         raise HTTPException(
@@ -719,7 +1532,14 @@ async def get_memories_by_agent(
         top_k=100,
     )
 
-    results = await asyncio.to_thread(_retrieve_memories_sync, query)
+    try:
+        results = await asyncio.to_thread(_retrieve_memories_sync, query)
+    except CollectionLoadingError as e:
+        logger.warning(f"Memory collection is still loading during agent query: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
     return [MemoryResponse(**r) for r in results]
 
 
@@ -730,7 +1550,15 @@ async def get_memory(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get a single memory by Milvus ID. Type is auto-detected if not provided."""
-    result = await asyncio.to_thread(_get_memory_by_id_sync, memory_id, type)
+    try:
+        result = await asyncio.to_thread(_get_memory_by_id_sync, memory_id, type)
+    except CollectionLoadingError as e:
+        logger.warning(f"Memory collection is still loading during get by id: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
+
     if result is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -803,6 +1631,12 @@ async def search_memories(
 
     try:
         results = await asyncio.to_thread(_retrieve_memories_sync, query)
+    except CollectionLoadingError as e:
+        logger.warning(f"Memory collection is still loading during search: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -850,6 +1684,44 @@ async def update_memory(
     return MemoryResponse(**result)
 
 
+@router.post("/{memory_id}/reindex", response_model=MemoryResponse)
+async def reindex_memory(
+    memory_id: int,
+    type: Optional[str] = Query(None, pattern=r"^(agent|company|user_context|task_context)$"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Manually rebuild vector index for one memory."""
+    result = await asyncio.to_thread(_reindex_memory_sync, memory_id, type)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Memory not found",
+        )
+
+    logger.info(
+        "Memory reindexed",
+        extra={"memory_id": memory_id, "type": type},
+    )
+    return MemoryResponse(**result)
+
+
+@router.get("/{memory_id}/index", response_model=MemoryIndexInspectResponse)
+async def inspect_memory_index(
+    memory_id: int,
+    type: Optional[str] = Query(None, pattern=r"^(agent|company|user_context|task_context)$"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Inspect vector index record for one memory."""
+    result = await asyncio.to_thread(_inspect_memory_index_sync, memory_id, type)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Memory not found",
+        )
+
+    return MemoryIndexInspectResponse(**result)
+
+
 @router.delete("/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_memory(
     memory_id: int,
@@ -877,8 +1749,14 @@ async def share_memory(
     type: Optional[str] = Query(None, pattern=r"^(agent|company|user_context|task_context)$"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Share a memory with specific users."""
-    result = await asyncio.to_thread(_share_memory_sync, memory_id, type, request.user_ids)
+    """Share a memory with specific users/agents (full replacement)."""
+    result = await asyncio.to_thread(
+        _share_memory_sync,
+        memory_id,
+        type,
+        request.user_ids or [],
+        request.agent_ids or [],
+    )
 
     if result is None:
         raise HTTPException(
@@ -888,7 +1766,11 @@ async def share_memory(
 
     logger.info(
         "Memory shared",
-        extra={"memory_id": memory_id, "shared_with": request.user_ids},
+        extra={
+            "memory_id": memory_id,
+            "shared_user_ids": request.user_ids,
+            "shared_agent_ids": request.agent_ids,
+        },
     )
 
     return MemoryResponse(**result)

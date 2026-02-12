@@ -127,7 +127,8 @@ class TestListMemories:
         """Verify GET /memories is registered."""
         route_paths = [(r.path, r.methods) for r in app.routes if hasattr(r, "methods")]
         get_memories = [
-            (path, methods) for path, methods in route_paths
+            (path, methods)
+            for path, methods in route_paths
             if path == "/api/v1/memories" and "GET" in methods
         ]
         assert len(get_memories) == 1
@@ -136,7 +137,8 @@ class TestListMemories:
         """Verify POST /memories is registered."""
         route_paths = [(r.path, r.methods) for r in app.routes if hasattr(r, "methods")]
         post_memories = [
-            (path, methods) for path, methods in route_paths
+            (path, methods)
+            for path, methods in route_paths
             if path == "/api/v1/memories" and "POST" in methods
         ]
         assert len(post_memories) == 1
@@ -217,20 +219,21 @@ class TestSearchMemories:
 class TestShareMemory:
     """Test POST /api/v1/memories/{memory_id}/share."""
 
-    def test_share_validation_empty_user_ids(self):
-        """Ensure empty user_ids is rejected."""
+    def test_share_validation_empty_targets_allowed(self):
+        """Empty target list is allowed for clearing share settings."""
         from api_gateway.routers.memory import MemoryShareRequest
-        from pydantic import ValidationError
 
-        with pytest.raises(ValidationError):
-            MemoryShareRequest(user_ids=[])
+        req = MemoryShareRequest(user_ids=[], agent_ids=[])
+        assert req.user_ids == []
+        assert req.agent_ids == []
 
     def test_share_validation_valid(self):
         """Test valid share request."""
         from api_gateway.routers.memory import MemoryShareRequest
 
-        req = MemoryShareRequest(user_ids=["user-1", "user-2"])
-        assert len(req.user_ids) == 2
+        req = MemoryShareRequest(user_ids=["user-1"], agent_ids=["agent-1", "agent-2"])
+        assert len(req.user_ids) == 1
+        assert len(req.agent_ids) == 2
 
 
 class TestMemoryUpdate:
@@ -293,13 +296,36 @@ class TestMemoryResponse:
         assert resp.relevance_score is None
 
 
+class TestMemoryIndexInspectResponse:
+    """Test MemoryIndexInspectResponse schema."""
+
+    def test_index_inspect_model(self):
+        from api_gateway.routers.memory import MemoryIndexInspectResponse
+
+        resp = MemoryIndexInspectResponse(
+            memoryId="10",
+            milvusId=99,
+            collection="company_memories",
+            vectorStatus="synced",
+            existsInMilvus=True,
+            embeddingDimension=1536,
+            embeddingPreview=[0.1, 0.2],
+        )
+        assert resp.memory_id == "10"
+        assert resp.milvus_id == 99
+        assert resp.vector_status == "synced"
+        assert resp.exists_in_milvus is True
+
+
 class TestMemoryItemToResponse:
     """Test the _memory_item_to_response helper."""
 
     def test_conversion_basic(self, sample_memory_item):
         from api_gateway.routers.memory import _memory_item_to_response
 
-        result = _memory_item_to_response(sample_memory_item, agent_name=None, user_name="Test User")
+        result = _memory_item_to_response(
+            sample_memory_item, agent_name=None, user_name="Test User"
+        )
         assert result["id"] == "1"
         assert result["type"] == "company"
         assert result["content"] == "Test memory content"
