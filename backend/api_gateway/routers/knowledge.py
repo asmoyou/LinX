@@ -14,7 +14,18 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, text
@@ -66,6 +77,8 @@ def _load_search_runtime_limits() -> tuple[int, float]:
 
 _SEARCH_MAX_CONCURRENT_REQUESTS, _SEARCH_REQUEST_TIMEOUT_SECONDS = _load_search_runtime_limits()
 _SEARCH_REQUEST_SEMAPHORE = asyncio.Semaphore(_SEARCH_MAX_CONCURRENT_REQUESTS)
+_THUMBNAIL_BACKFILL_RETRY_COOLDOWN_SECONDS = 60 * 60
+_THUMBNAIL_BACKFILL_ERROR_MAX_LENGTH = 300
 
 # MIME type to document category mapping
 MIME_TYPE_MAP = {
@@ -353,16 +366,145 @@ def _build_thumbnail_url(item_id: str, thumbnail_reference: Optional[str]) -> Op
     return None
 
 
+def _parse_minio_reference(reference: Optional[str]) -> Optional[tuple[str, str]]:
+    """Parse `minio:<bucket>:<key>` reference into bucket/key tuple."""
+    if not reference or not str(reference).startswith("minio:"):
+        return None
+
+    parts = str(reference).split(":", 2)
+    if len(parts) != 3:
+        return None
+
+    _, bucket_name, object_key = parts
+    if not bucket_name or not object_key:
+        return None
+    return bucket_name, object_key
+
+
+def _should_attempt_thumbnail_backfill(
+    metadata: Dict[str, Any], *, now: Optional[datetime] = None
+) -> bool:
+    """Throttle repeated thumbnail backfill attempts after recent failures."""
+    if metadata.get("thumbnail_reference"):
+        return False
+
+    last_error = metadata.get("thumbnail_backfill_last_error")
+    if not last_error:
+        return True
+
+    raw_last_attempt = metadata.get("thumbnail_backfill_last_attempt_at")
+    if not raw_last_attempt:
+        return True
+
+    try:
+        last_attempt = datetime.fromisoformat(str(raw_last_attempt))
+    except ValueError:
+        return True
+
+    if last_attempt.tzinfo is None:
+        last_attempt = last_attempt.replace(tzinfo=timezone.utc)
+
+    current_time = now or datetime.now(timezone.utc)
+    elapsed_seconds = (current_time - last_attempt).total_seconds()
+    return elapsed_seconds >= _THUMBNAIL_BACKFILL_RETRY_COOLDOWN_SECONDS
+
+
+def _record_thumbnail_backfill_attempt(
+    item: KnowledgeItem,
+    metadata: Dict[str, Any],
+    *,
+    thumbnail_reference: Optional[str] = None,
+    thumbnail_mime_type: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> None:
+    """Persist result of a thumbnail backfill attempt to metadata."""
+    updated_metadata: Dict[str, Any] = {
+        **metadata,
+        "thumbnail_backfill_last_attempt_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if thumbnail_reference:
+        updated_metadata["thumbnail_reference"] = thumbnail_reference
+        updated_metadata["thumbnail_mime_type"] = thumbnail_mime_type or "image/jpeg"
+        updated_metadata.pop("thumbnail_backfill_last_error", None)
+    elif error_message:
+        updated_metadata["thumbnail_backfill_last_error"] = str(error_message)[
+            :_THUMBNAIL_BACKFILL_ERROR_MAX_LENGTH
+        ]
+
+    item.item_metadata = updated_metadata
+
+
+def _backfill_thumbnail_for_item(item: KnowledgeItem) -> tuple[Optional[str], Optional[str]]:
+    """Try generating thumbnail for existing media item when metadata lacks it."""
+    metadata = dict(item.item_metadata or {})
+    if not _should_attempt_thumbnail_backfill(metadata):
+        return None, None
+
+    file_reference_parts = _parse_minio_reference(item.file_reference)
+    if not file_reference_parts:
+        return None, None
+
+    filename = metadata.get("original_filename") or item.title or "document"
+    content_type = metadata.get("mime_type")
+    file_type = metadata.get("file_type") or _get_file_type(filename, content_type)
+    if file_type not in {"image", "pdf", "video"}:
+        return None, None
+
+    try:
+        from object_storage.minio_client import get_minio_client
+
+        minio_client = get_minio_client()
+        source_bucket, source_key = file_reference_parts
+        file_data, _ = minio_client.download_file(source_bucket, source_key)
+
+        thumbnail_reference, thumbnail_mime_type = _upload_thumbnail_if_possible(
+            minio_client=minio_client,
+            file_data=file_data,
+            filename=filename,
+            content_type=content_type,
+            user_id=str(item.owner_user_id),
+        )
+        if not thumbnail_reference:
+            _record_thumbnail_backfill_attempt(
+                item,
+                metadata,
+                error_message="Thumbnail generation returned empty result",
+            )
+            return None, None
+
+        _record_thumbnail_backfill_attempt(
+            item,
+            metadata,
+            thumbnail_reference=thumbnail_reference,
+            thumbnail_mime_type=thumbnail_mime_type,
+        )
+        return thumbnail_reference, thumbnail_mime_type
+    except Exception as ex:
+        _record_thumbnail_backfill_attempt(
+            item,
+            metadata,
+            error_message=str(ex),
+        )
+        logger.warning(
+            "Failed to backfill thumbnail for knowledge item",
+            extra={"knowledge_id": str(item.knowledge_id), "error": str(ex)},
+        )
+        return None, None
+
+
 def _generate_thumbnail_stream(
     file_data: Any,
     filename: str,
     content_type: Optional[str],
 ) -> Optional[tuple[io.BytesIO, str]]:
-    """Generate a compact JPEG preview for image/pdf files."""
+    """Generate a compact JPEG preview for image/pdf/video files."""
     import os
+    import shutil
+    import tempfile
 
     doc_type = _get_file_type(filename, content_type)
-    if doc_type not in {"image", "pdf"}:
+    if doc_type not in {"image", "pdf", "video"}:
         return None
 
     try:
@@ -376,7 +518,7 @@ def _generate_thumbnail_stream(
         file_data.seek(0)
         if doc_type == "image":
             image = Image.open(file_data)
-        else:
+        elif doc_type == "pdf":
             try:
                 import fitz  # PyMuPDF
             except ImportError:
@@ -392,6 +534,35 @@ def _generate_thumbnail_stream(
                 page = pdf_doc.load_page(0)
                 pix = page.get_pixmap(dpi=120, alpha=False)
                 image = Image.open(io.BytesIO(pix.tobytes("png")))
+        else:
+            try:
+                try:
+                    from moviepy.editor import VideoFileClip
+                except ModuleNotFoundError:
+                    from moviepy import VideoFileClip
+            except ModuleNotFoundError:
+                logger.info("moviepy is unavailable, skip video thumbnail generation")
+                return None
+
+            video_suffix = os.path.splitext(filename)[1] or ".mp4"
+            with tempfile.NamedTemporaryFile(suffix=video_suffix, delete=False) as temp_video:
+                temp_video_path = temp_video.name
+                shutil.copyfileobj(file_data, temp_video)
+
+            try:
+                with VideoFileClip(temp_video_path) as video_clip:
+                    duration = float(video_clip.duration or 0.0)
+                    frame_time = 0.0
+                    if duration > 0:
+                        frame_time = min(1.0, duration * 0.1)
+                        frame_time = min(frame_time, max(duration - 0.001, 0.0))
+                    frame = video_clip.get_frame(frame_time)
+                image = Image.fromarray(frame)
+            finally:
+                try:
+                    os.remove(temp_video_path)
+                except OSError:
+                    pass
 
         image = ImageOps.exif_transpose(image)
         if image.mode not in {"RGB", "L"}:
@@ -904,6 +1075,7 @@ async def upload_knowledge(
 
         # Upload to MinIO
         minio_client = None
+        upload_error_message: Optional[str] = None
         try:
             from object_storage.minio_client import get_minio_client
 
@@ -921,8 +1093,15 @@ async def upload_knowledge(
             )
 
             file_reference = f"minio:{bucket_name}:{object_key}"
+        except ValueError as e:
+            # File-type and validation errors are user-actionable; return immediately.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            ) from e
         except Exception as e:
             logger.warning(f"MinIO upload failed, storing reference only: {e}")
+            upload_error_message = f"File storage upload failed: {str(e)}"
             file_reference = None
             bucket_name = ""
             object_key = ""
@@ -1068,7 +1247,8 @@ async def upload_knowledge(
                 knowledge_item.item_metadata = {
                     **knowledge_item.item_metadata,
                     "processing_status": "failed",
-                    "error_message": "File storage unavailable: upload failed",
+                    "error_message": upload_error_message
+                    or "File storage unavailable: upload failed",
                 }
 
             _refresh_collection_item_counts(session, [parsed_collection_id])
@@ -2747,21 +2927,22 @@ async def get_knowledge_thumbnail(
             metadata = item.item_metadata or {}
             thumbnail_reference = metadata.get("thumbnail_reference")
             thumbnail_mime_type = metadata.get("thumbnail_mime_type", "image/jpeg")
+            thumbnail_parts = _parse_minio_reference(thumbnail_reference)
+            if not thumbnail_parts:
+                generated_reference, generated_mime_type = _backfill_thumbnail_for_item(item)
+                if generated_reference:
+                    thumbnail_reference = generated_reference
+                    thumbnail_mime_type = generated_mime_type or "image/jpeg"
+                    thumbnail_parts = _parse_minio_reference(thumbnail_reference)
+                    session.flush()
 
-            if not thumbnail_reference or not str(thumbnail_reference).startswith("minio:"):
+            if not thumbnail_parts:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Thumbnail not available",
                 )
 
-            parts = str(thumbnail_reference).split(":", 2)
-            if len(parts) != 3:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Invalid thumbnail reference format",
-                )
-
-            _, bucket_name, object_key = parts
+            bucket_name, object_key = thumbnail_parts
 
         from object_storage.minio_client import get_minio_client
 

@@ -20,6 +20,7 @@ import {
   Pencil,
 } from 'lucide-react';
 import { GlassPanel } from '@/components/GlassPanel';
+import { knowledgeApi } from '@/api/knowledge';
 import type { Document } from '@/types/document';
 
 interface DocumentCardProps {
@@ -34,6 +35,8 @@ interface DocumentCardProps {
   onDragEnd?: () => void;
 }
 
+const thumbnailBlobCache = new Map<string, Blob>();
+
 export const DocumentCard: React.FC<DocumentCardProps> = ({
   document,
   onView,
@@ -47,12 +50,88 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = React.useState(false);
+  const [thumbnailBlobUrl, setThumbnailBlobUrl] = React.useState<string | null>(null);
+  const thumbnailObjectUrlRef = React.useRef<string | null>(null);
+  const supportsPreviewThumb = document.type === 'image' || document.type === 'video' || document.type === 'pdf';
+  const canAttemptThumbnail =
+    supportsPreviewThumb &&
+    document.status === 'completed' &&
+    (Boolean(document.thumbnailUrl) || document.fileReference?.startsWith('minio:'));
+  const thumbnailCacheKey = `${document.id}:${document.processedAt || document.uploadedAt || ''}`;
+
+  const revokeThumbnailObjectUrl = React.useCallback(() => {
+    if (thumbnailObjectUrlRef.current) {
+      URL.revokeObjectURL(thumbnailObjectUrlRef.current);
+      thumbnailObjectUrlRef.current = null;
+    }
+  }, []);
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    const loadThumbnail = async () => {
+      revokeThumbnailObjectUrl();
+      setThumbnailBlobUrl(null);
+
+      if (!canAttemptThumbnail) {
+        return;
+      }
+
+      const cachedBlob = thumbnailBlobCache.get(thumbnailCacheKey);
+      if (cachedBlob) {
+        const cachedUrl = URL.createObjectURL(cachedBlob);
+        if (cancelled) {
+          URL.revokeObjectURL(cachedUrl);
+          return;
+        }
+        thumbnailObjectUrlRef.current = cachedUrl;
+        setThumbnailBlobUrl(cachedUrl);
+        return;
+      }
+
+      try {
+        const blob = await knowledgeApi.getThumbnail(document.id);
+        if (!blob) {
+          return;
+        }
+        thumbnailBlobCache.set(thumbnailCacheKey, blob);
+        const nextUrl = URL.createObjectURL(blob);
+
+        if (cancelled) {
+          URL.revokeObjectURL(nextUrl);
+          return;
+        }
+
+        revokeThumbnailObjectUrl();
+        thumbnailObjectUrlRef.current = nextUrl;
+        setThumbnailBlobUrl(nextUrl);
+      } catch {
+        if (!cancelled) {
+          setThumbnailBlobUrl(null);
+        }
+      }
+    };
+
+    void loadThumbnail();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canAttemptThumbnail, document.id, revokeThumbnailObjectUrl, thumbnailCacheKey]);
+
+  React.useEffect(
+    () => () => {
+      revokeThumbnailObjectUrl();
+    },
+    [revokeThumbnailObjectUrl]
+  );
+
   const processingProgress = Math.max(0, Math.min(100, document.processingProgress ?? 0));
   const uploadProgress = Math.max(0, Math.min(100, document.uploadProgress ?? 0));
   const lastUpdatedAt = document.processedAt || document.uploadedAt;
-  const hasGeneratedThumbnail = Boolean(document.thumbnailUrl);
+  const hasGeneratedThumbnail = Boolean(thumbnailBlobUrl);
   const previewMediaUrl =
-    document.thumbnailUrl ||
+    thumbnailBlobUrl ||
     ((document.type === 'image' || document.type === 'video' || document.type === 'pdf')
       ? document.url
       : undefined);
@@ -110,28 +189,53 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
     }
   };
 
-  const getStatusIcon = (status: Document['status']) => {
+  const getStatusIcon = (status: Document['status'], className: string = 'w-3.5 h-3.5') => {
     switch (status) {
       case 'completed':
-        return <CheckCircle className="w-4 h-4 text-green-500" />;
+        return <CheckCircle className={className} />;
       case 'failed':
-        return <XCircle className="w-4 h-4 text-red-500" />;
+        return <XCircle className={className} />;
       case 'processing':
       case 'uploading':
-        return <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />;
+        return <Loader2 className={`${className} animate-spin`} />;
     }
   };
 
-  const getAccessLevelColor = (level: Document['accessLevel']) => {
+  const getStatusLabel = (status: Document['status']) => {
+    switch (status) {
+      case 'completed':
+        return 'ready';
+      case 'failed':
+        return 'failed';
+      case 'processing':
+        return 'processing';
+      case 'uploading':
+        return 'uploading';
+    }
+  };
+
+  const getStatusBadgeClass = (status: Document['status']) => {
+    switch (status) {
+      case 'completed':
+        return 'bg-emerald-600 text-white';
+      case 'failed':
+        return 'bg-rose-600 text-white';
+      case 'processing':
+      case 'uploading':
+        return 'bg-sky-600 text-white';
+    }
+  };
+
+  const getAccessLevelBadgeClass = (level: Document['accessLevel']) => {
     switch (level) {
       case 'public':
-        return 'bg-green-500/20 text-green-700 dark:text-green-400';
+        return 'bg-emerald-600 text-white';
       case 'internal':
-        return 'bg-blue-500/20 text-blue-700 dark:text-blue-400';
+        return 'bg-sky-600 text-white';
       case 'confidential':
-        return 'bg-orange-500/20 text-orange-700 dark:text-orange-400';
+        return 'bg-amber-400 text-gray-900';
       case 'restricted':
-        return 'bg-red-500/20 text-red-700 dark:text-red-400';
+        return 'bg-rose-600 text-white';
     }
   };
 
@@ -172,47 +276,59 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
       }}
     >
       {/* Status Badge */}
-      <div className="absolute top-4 right-4 flex items-center gap-2">
-        {getStatusIcon(document.status)}
-        <span className={`text-xs px-2 py-1 rounded-full ${getAccessLevelColor(document.accessLevel)}`}>
-          {document.accessLevel}
-        </span>
+      <div className="absolute top-4 right-4 z-20 pointer-events-none">
+        <div className="flex flex-col items-end gap-1.5">
+          <span
+            className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide shadow-lg ${getStatusBadgeClass(document.status)}`}
+          >
+            {getStatusIcon(document.status)}
+            {getStatusLabel(document.status)}
+          </span>
+          <span
+            className={`inline-flex items-center rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide shadow-lg ${getAccessLevelBadgeClass(document.accessLevel)}`}
+          >
+            {document.accessLevel}
+          </span>
+        </div>
       </div>
 
       {/* Thumbnail or compact icon strip */}
       <div
-        className={`mb-4 rounded-lg overflow-hidden relative ${previewContainerClass}`}
+        className={`mb-4 rounded-lg overflow-hidden relative z-0 ${previewContainerClass}`}
       >
         {hasMediaPreview ? (
-          hasGeneratedThumbnail ? (
-            <img
-              src={previewMediaUrl}
-              alt={document.name}
-              className="h-full w-full object-cover"
-              draggable={false}
-            />
-          ) : document.type === 'video' ? (
-            <video
-              src={previewMediaUrl}
-              className="h-full w-full object-cover"
-              muted
-              playsInline
-              preload="metadata"
-            />
-          ) : document.type === 'pdf' ? (
-            <iframe
-              src={`${previewMediaUrl}#page=1&toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
-              title={document.name}
-              className="h-full w-full pointer-events-none"
-            />
-          ) : (
-            <img
-              src={previewMediaUrl}
-              alt={document.name}
-              className="h-full w-full object-cover"
-              draggable={false}
-            />
-          )
+          <>
+            {hasGeneratedThumbnail ? (
+              <img
+                src={previewMediaUrl}
+                alt={document.name}
+                className="h-full w-full object-cover"
+                draggable={false}
+              />
+            ) : document.type === 'video' ? (
+              <video
+                src={previewMediaUrl}
+                className="h-full w-full object-cover"
+                muted
+                playsInline
+                preload="metadata"
+              />
+            ) : document.type === 'pdf' ? (
+              <iframe
+                src={`${previewMediaUrl}#page=1&toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
+                title={document.name}
+                className="h-full w-full pointer-events-none"
+              />
+            ) : (
+              <img
+                src={previewMediaUrl}
+                alt={document.name}
+                className="h-full w-full object-cover"
+                draggable={false}
+              />
+            )}
+            <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/55 to-transparent pointer-events-none" />
+          </>
         ) : (
           <div className="h-full px-3 flex items-center justify-between">
             <div className="flex items-center gap-3 min-w-0">

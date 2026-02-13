@@ -11,7 +11,7 @@ interface UploadZoneProps {
 export const UploadZone: React.FC<UploadZoneProps> = ({ 
   onUpload, 
   acceptedTypes = [
-    '.pdf', '.docx', '.txt', '.md',
+    '.pdf', '.doc', '.docx', '.txt', '.md',
     '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp',
     '.mp3', '.wav', '.m4a', '.flac',
     '.mp4', '.avi', '.mov', '.mkv',
@@ -23,7 +23,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
 
-  const validateFile = (file: File): string | null => {
+  const validateFile = useCallback((file: File): string | null => {
     // Check file size
     const fileSizeMB = file.size / (1024 * 1024);
     if (fileSizeMB > maxSize) {
@@ -37,9 +37,9 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
     }
 
     return null;
-  };
+  }, [acceptedTypes, maxSize]);
 
-  const handleFiles = (files: FileList | null) => {
+  const handleFiles = useCallback((files: FileList | null) => {
     if (!files) return;
 
     const fileArray = Array.from(files);
@@ -57,7 +57,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
 
     setErrors(newErrors);
     setSelectedFiles((prev) => [...prev, ...validFiles]);
-  };
+  }, [validateFile]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -73,11 +73,11 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
     e.preventDefault();
     setIsDragging(false);
     handleFiles(e.dataTransfer.files);
-  }, []);
+  }, [handleFiles]);
 
-  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     handleFiles(e.target.files);
-  };
+  }, [handleFiles]);
 
   const removeFile = (index: number) => {
     setSelectedFiles((prev) => prev.filter((_, i) => i !== index));

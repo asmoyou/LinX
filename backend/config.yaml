@@ -97,6 +97,7 @@ storage:
     max_file_size_mb: 500
     allowed_document_types:
     - pdf
+    - doc
     - docx
     - txt
     - md

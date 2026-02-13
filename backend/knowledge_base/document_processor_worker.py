@@ -200,9 +200,9 @@ class DocumentProcessorWorker:
 
             # Step 3: LLM enrichment (if enabled)
             # For image/video content, enrichment adds noticeable latency with limited recall gain.
-            skip_enrichment_for_media = job.mime_type.startswith("image/") or job.mime_type.startswith(
-                "video/"
-            )
+            skip_enrichment_for_media = job.mime_type.startswith(
+                "image/"
+            ) or job.mime_type.startswith("video/")
             if self.enrichment_enabled and chunks and not skip_enrichment_for_media:
                 try:
                     from knowledge_base.chunk_enricher import get_chunk_enricher
@@ -257,18 +257,44 @@ class DocumentProcessorWorker:
         Returns:
             Extracted text
         """
+        normalized_mime_type = (mime_type or "").split(";", 1)[0].strip().lower()
+        if normalized_mime_type in {"", "application/octet-stream", "binary/octet-stream"}:
+            suffix_to_mime = {
+                ".pdf": "application/pdf",
+                ".doc": "application/msword",
+                ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ".txt": "text/plain",
+                ".md": "text/markdown",
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".gif": "image/gif",
+                ".mp3": "audio/mpeg",
+                ".wav": "audio/wav",
+                ".m4a": "audio/mp4",
+                ".flac": "audio/flac",
+                ".mp4": "video/mp4",
+                ".avi": "video/x-msvideo",
+                ".mov": "video/quicktime",
+                ".mkv": "video/x-matroska",
+            }
+            normalized_mime_type = suffix_to_mime.get(
+                file_path.suffix.lower(), normalized_mime_type
+            )
+
+        effective_type = normalized_mime_type or mime_type
         strict_vision_mode = self.parsing_method == "vision"
 
         # Vision parsing for images/PDFs when explicitly configured, and for images in auto mode.
-        should_try_vision = ("image" in mime_type) or ("pdf" in mime_type)
+        should_try_vision = ("image" in effective_type) or ("pdf" in effective_type)
         if should_try_vision and (
-            strict_vision_mode or (self.parsing_method == "auto" and "image" in mime_type)
+            strict_vision_mode or (self.parsing_method == "auto" and "image" in effective_type)
         ):
             try:
                 from knowledge_base.vision_parser import get_vision_parser
 
                 parser = get_vision_parser()
-                if "image" in mime_type:
+                if "image" in effective_type:
                     result = self._run_async(parser.parse_image(file_path))
                 else:
                     result = self._run_async(parser.parse_pdf(file_path))
@@ -280,7 +306,7 @@ class DocumentProcessorWorker:
                     raise ValueError("Vision parsing returned empty text in vision mode")
                 logger.warning(
                     "Vision parsing returned empty text, falling back to standard parser",
-                    extra={"file_path": str(file_path), "mime_type": mime_type},
+                    extra={"file_path": str(file_path), "mime_type": effective_type},
                 )
             except Exception as vision_err:
                 if strict_vision_mode:
@@ -290,19 +316,19 @@ class DocumentProcessorWorker:
                 logger.warning(f"Vision parsing failed, falling back to standard: {vision_err}")
 
         # Standard extraction
-        if "image" in mime_type:
+        if "image" in effective_type:
             from knowledge_base.ocr_processor import get_ocr_processor
 
             ocr_processor = get_ocr_processor()
             result = ocr_processor.process(file_path)
             return result.text
-        elif "audio" in mime_type:
+        elif "audio" in effective_type:
             from knowledge_base.audio_processor import get_audio_processor
 
             audio_processor = get_audio_processor()
             result = audio_processor.transcribe(file_path)
             return result.text
-        elif "video" in mime_type:
+        elif "video" in effective_type:
             errors = []
             audio_text = ""
             vision_text = ""
@@ -329,10 +355,7 @@ class DocumentProcessorWorker:
 
             # For videos we prefer multimodal indexing: keep both audio and visual signals.
             if audio_text and vision_text:
-                return (
-                    f"Audio Transcript:\n{audio_text}\n\n"
-                    f"Visual Analysis:\n{vision_text}"
-                )
+                return f"Audio Transcript:\n{audio_text}\n\n" f"Visual Analysis:\n{vision_text}"
             if audio_text:
                 return audio_text
             if vision_text:
@@ -347,13 +370,13 @@ class DocumentProcessorWorker:
             )
             return self._build_video_fallback_text(file_path, errors)
         else:
-            extractor = get_extractor(mime_type)
+            extractor = get_extractor(effective_type)
             result = extractor.extract(file_path)
 
             # Auto mode: if extracted text is sparse, try vision for PDFs
             if (
                 self.parsing_method == "auto"
-                and "pdf" in mime_type
+                and "pdf" in effective_type
                 and len(result.text.strip()) < 100
             ):
                 try:
@@ -414,9 +437,7 @@ class DocumentProcessorWorker:
             batch_texts = []
             for start in range(0, len(frames), batch_size):
                 batch_frames = frames[start : start + batch_size]
-                parsed = self._run_async(
-                    parser.parse_images(batch_frames, prompt=frame_prompt)
-                )
+                parsed = self._run_async(parser.parse_images(batch_frames, prompt=frame_prompt))
                 content = (parsed.text or "").strip()
                 if content:
                     end = start + len(batch_frames) - 1
@@ -429,10 +450,7 @@ class DocumentProcessorWorker:
             if not summary:
                 return "\n\n".join(batch_texts)
 
-            return (
-                f"Video Summary:\n{summary}\n\n"
-                f"Segment Details:\n{'\n\n'.join(batch_texts)}"
-            )
+            return f"Video Summary:\n{summary}\n\n" f"Segment Details:\n{'\n\n'.join(batch_texts)}"
 
     @staticmethod
     def _build_video_fallback_text(file_path: Path, errors: list[str]) -> str:
@@ -505,7 +523,9 @@ class DocumentProcessorWorker:
 
                     if progress is None:
                         if status == "processing":
-                            progress_value = existing_progress_int if existing_progress_int is not None else 5
+                            progress_value = (
+                                existing_progress_int if existing_progress_int is not None else 5
+                            )
                         elif status in {"completed", "failed"}:
                             progress_value = 100
                         else:

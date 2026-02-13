@@ -6,6 +6,8 @@ References:
 """
 
 import logging
+import shutil
+import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -212,6 +214,80 @@ class DOCXExtractor(TextExtractor):
             raise
 
 
+class DOCExtractor(TextExtractor):
+    """Extract text from legacy DOC (binary Word) files."""
+
+    def extract(self, file_path: Path) -> ExtractionResult:
+        """Extract text from legacy DOC file.
+
+        Tries host-native converters first (textutil/antiword/catdoc), then
+        attempts a DOCX parser fallback for mis-labelled files.
+        """
+        start_time = datetime.now()
+        attempts: list[str] = []
+        commands: list[tuple[str, list[str]]] = []
+
+        if shutil.which("textutil"):
+            commands.append(
+                (
+                    "textutil",
+                    ["textutil", "-convert", "txt", "-stdout", str(file_path)],
+                )
+            )
+        if shutil.which("antiword"):
+            commands.append(("antiword", ["antiword", str(file_path)]))
+        if shutil.which("catdoc"):
+            commands.append(("catdoc", ["catdoc", str(file_path)]))
+
+        for command_name, command in commands:
+            try:
+                completed = subprocess.run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="ignore",
+                )
+                extracted_text = (completed.stdout or "").strip()
+                if not extracted_text:
+                    attempts.append(f"{command_name}: empty output")
+                    continue
+
+                extraction_time = (datetime.now() - start_time).total_seconds()
+                word_count = self._count_words(extracted_text)
+                return ExtractionResult(
+                    text=extracted_text,
+                    metadata={
+                        "filename": file_path.name,
+                        "size": file_path.stat().st_size,
+                        "extractor": command_name,
+                    },
+                    word_count=word_count,
+                    extraction_time=extraction_time,
+                )
+            except Exception as ex:
+                attempts.append(f"{command_name}: {ex}")
+
+        # Some clients mislabel DOCX as application/msword. Try DOCX parser last.
+        try:
+            fallback_result = DOCXExtractor().extract(file_path)
+            fallback_result.metadata = {
+                **fallback_result.metadata,
+                "extractor": "python-docx-fallback",
+            }
+            return fallback_result
+        except Exception as ex:
+            attempts.append(f"python-docx-fallback: {ex}")
+
+        attempts_summary = "; ".join(attempts) if attempts else "no extraction tool available"
+        raise ValueError(
+            "Legacy Word (.doc) extraction failed. "
+            "Install textutil/antiword/catdoc or convert to .docx. "
+            f"Details: {attempts_summary}"
+        )
+
+
 class TextFileExtractor(TextExtractor):
     """Extract text from plain text files."""
 
@@ -306,13 +382,17 @@ def get_extractor(file_type: str) -> TextExtractor:
     Raises:
         ValueError: If file type is not supported
     """
-    if "pdf" in file_type.lower():
+    normalized = file_type.lower()
+
+    if "pdf" in normalized:
         return PDFExtractor()
-    elif "word" in file_type.lower() or "docx" in file_type.lower():
+    elif "application/msword" in normalized or normalized.endswith(".doc"):
+        return DOCExtractor()
+    elif "wordprocessingml.document" in normalized or "docx" in normalized or "word" in normalized:
         return DOCXExtractor()
-    elif "markdown" in file_type.lower() or file_type.endswith(".md"):
+    elif "markdown" in normalized or normalized.endswith(".md"):
         return MarkdownExtractor()
-    elif "text" in file_type.lower() or file_type.endswith(".txt"):
+    elif "text" in normalized or normalized.endswith(".txt"):
         return TextFileExtractor()
     else:
         raise ValueError(f"Unsupported file type: {file_type}")

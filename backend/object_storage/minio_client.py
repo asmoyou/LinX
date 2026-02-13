@@ -172,7 +172,13 @@ class MinIOClient:
             return True  # No restrictions for other bucket types
 
         file_ext = Path(filename).suffix.lstrip(".").lower()
-        allowed = file_ext in self.allowed_types[bucket_type]
+        allowed_extensions = set(self.allowed_types[bucket_type])
+
+        # Backward compatibility: treat legacy .doc as allowed when .docx is enabled.
+        if bucket_type == "documents" and file_ext == "doc" and "docx" in allowed_extensions:
+            allowed = True
+        else:
+            allowed = file_ext in allowed_extensions
 
         if not allowed:
             logger.warning(f"File type '{file_ext}' not allowed for bucket type '{bucket_type}'")
@@ -239,17 +245,17 @@ class MinIOClient:
 
         # Prepare metadata
         upload_metadata = metadata or {}
-        
+
         # Only add filename to metadata if it's ASCII-safe
         # MinIO metadata only supports ASCII characters
         try:
-            filename.encode('ascii')
+            filename.encode("ascii")
             upload_metadata["original_filename"] = filename
         except UnicodeEncodeError:
             # Skip non-ASCII filenames in metadata
             # Filename is still preserved in object_key
             logger.warning(f"Skipping non-ASCII filename in metadata: {filename}")
-        
+
         upload_metadata.update(
             {
                 "user_id": user_id,
@@ -356,9 +362,7 @@ class MinIOClient:
             S3Error: If download fails
         """
         try:
-            response = self.client.get_object(
-                bucket_name=bucket_name, object_name=object_key
-            )
+            response = self.client.get_object(bucket_name=bucket_name, object_name=object_key)
 
             # Get metadata from headers
             metadata = {

@@ -276,6 +276,20 @@ export const knowledgeApi = {
   },
 
   /**
+   * Get generated thumbnail image blob (auth-required endpoint).
+   */
+  getThumbnail: async (documentId: string): Promise<Blob | null> => {
+    const response = await apiClient.get(`/knowledge/${documentId}/thumbnail`, {
+      responseType: 'blob',
+      validateStatus: (status) => (status >= 200 && status < 300) || status === 404,
+    });
+    if (response.status === 404) {
+      return null;
+    }
+    return response.data;
+  },
+
+  /**
    * Download document — returns blob and server-provided filename
    */
   download: async (documentId: string): Promise<{ blob: Blob; filename?: string }> => {

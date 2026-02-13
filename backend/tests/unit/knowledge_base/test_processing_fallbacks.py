@@ -119,6 +119,28 @@ def test_video_fallback_to_metadata_when_audio_and_vision_are_unavailable():
     assert "audio transcription failed" in result
 
 
+def test_extract_text_infers_docx_type_when_mime_is_octet_stream(tmp_path):
+    """Generic binary MIME should fallback to extension-based extractor routing."""
+    worker = DocumentProcessorWorker.__new__(DocumentProcessorWorker)
+    worker.parsing_method = "standard"
+
+    docx_file = tmp_path / "sample.docx"
+    docx_file.write_bytes(b"fake-docx")
+
+    mock_extractor = Mock()
+    mock_extractor.extract.return_value = Mock(text="extracted docx text")
+
+    with patch(
+        "knowledge_base.document_processor_worker.get_extractor", return_value=mock_extractor
+    ) as mocked_get:
+        result = worker._extract_text(docx_file, "application/octet-stream")
+
+    assert result == "extracted docx text"
+    mocked_get.assert_called_once_with(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+
+
 def test_extract_video_with_vision_uses_15s_batches_and_summary():
     """Video vision fallback should batch 15 frames per request and summarize batches."""
     worker = DocumentProcessorWorker.__new__(DocumentProcessorWorker)

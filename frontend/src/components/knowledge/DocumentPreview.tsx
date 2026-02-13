@@ -28,6 +28,49 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({ document, onDo
       setBlobUrl(null);
       setIsTruncated(false);
 
+      // DOC/DOCX preview: render extracted chunks as readable text.
+      if (document.type === 'docx') {
+        if (document.status === 'processing' || document.status === 'uploading') {
+          setError('Document is still being processed...');
+          setIsLoading(false);
+          return;
+        }
+        if (document.status === 'failed') {
+          setError(document.errorMessage || document.error || 'Processing failed');
+          setIsLoading(false);
+          return;
+        }
+
+        try {
+          const chunkResp = await knowledgeApi.getChunks(document.id, 1, 20);
+          if (cancelled) return;
+
+          const mergedText = (chunkResp.chunks || [])
+            .map((chunk) => (chunk.content || '').trim())
+            .filter(Boolean)
+            .join('\n\n')
+            .trim();
+
+          if (!mergedText) {
+            setError('No extracted text available for preview');
+          } else if (mergedText.length > MAX_TEXT_SIZE) {
+            setTextContent(mergedText.slice(0, MAX_TEXT_SIZE));
+            setIsTruncated(true);
+          } else {
+            setTextContent(mergedText);
+          }
+        } catch {
+          if (!cancelled) {
+            setError('Failed to load preview');
+          }
+        } finally {
+          if (!cancelled) {
+            setIsLoading(false);
+          }
+        }
+        return;
+      }
+
       // Guard: skip download when file is not available
       if (!document.fileReference || !document.fileReference.startsWith('minio:')) {
         if (document.status === 'processing' || document.status === 'uploading') {
@@ -86,7 +129,14 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({ document, onDo
         blobUrlRef.current = null;
       }
     };
-  }, [document.id, document.type, document.fileReference, document.status]);
+  }, [
+    document.id,
+    document.type,
+    document.fileReference,
+    document.status,
+    document.error,
+    document.errorMessage,
+  ]);
 
   if (isLoading) {
     return (
@@ -143,7 +193,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({ document, onDo
   }
 
   // Plain text
-  if (document.type === 'txt' && textContent !== null) {
+  if ((document.type === 'txt' || document.type === 'docx') && textContent !== null) {
     return (
       <div className="min-h-[400px]">
         <pre className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200 p-4 bg-white/5 rounded-lg overflow-auto max-h-[600px] font-mono">
