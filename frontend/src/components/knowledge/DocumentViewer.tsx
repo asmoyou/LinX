@@ -81,7 +81,8 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
   };
 
   const getProcessingTime = (doc: Document) => {
-    const startRaw = doc.processingStartedAt || doc.uploadedAt;
+    const startRaw =
+      doc.processingStartedAt || doc.previousProcessedAt || doc.uploadedAt;
     const endRaw = doc.processingCompletedAt || doc.processedAt;
     if (!startRaw || !endRaw) return null;
 

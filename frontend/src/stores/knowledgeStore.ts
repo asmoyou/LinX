@@ -281,6 +281,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   reprocessDocument: async (id: string) => {
     try {
       stopPollingDocument(id);
+      const currentDoc = get().documents.find((doc) => doc.id === id);
       const updated = await knowledgeApi.reprocess(id);
       get().updateDocument(id, {
         status: normalizeStatus(updated.status),
@@ -291,6 +292,10 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         tokenCount: undefined,
         processingStartedAt: undefined,
         processingCompletedAt: undefined,
+        previousProcessedAt:
+          currentDoc?.processedAt ||
+          currentDoc?.processingCompletedAt ||
+          currentDoc?.previousProcessedAt,
       });
       // Start polling for the reprocessing result
       get().pollProcessingStatus(id);

@@ -24,6 +24,7 @@ export type Document = {
   processedAt?: string;
   processingStartedAt?: string;
   processingCompletedAt?: string;
+  previousProcessedAt?: string;
   uploadProgress?: number;
   processingProgress?: number;
   owner: string;
