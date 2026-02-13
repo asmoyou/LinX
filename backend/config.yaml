@@ -498,6 +498,11 @@ knowledge_base:
       extract_audio: true
       extract_frames: false
       frame_interval_seconds: 10
+    indexing:
+      flush_timeout_seconds: 8
+      milvus_max_retries: 2
+      retry_backoff_seconds: 1
+      allow_flush_degrade: true
   chunking:
     strategy: semantic
     chunk_token_num: 512

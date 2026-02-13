@@ -761,6 +761,13 @@ knowledge_base:
       extract_frames: false
       frame_interval_seconds: 10
 
+    # Milvus indexing resilience
+    indexing:
+      flush_timeout_seconds: 8
+      milvus_max_retries: 2
+      retry_backoff_seconds: 1
+      allow_flush_degrade: true
+
   # Vision Parsing
   parsing:
     method: "auto"

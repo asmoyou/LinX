@@ -15,15 +15,12 @@ References:
 """
 
 import logging
+import threading
 import time
-from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
 from pymilvus import (
     Collection,
-    CollectionSchema,
-    DataType,
-    FieldSchema,
     MilvusException,
     connections,
     utility,
@@ -60,6 +57,7 @@ class MilvusConnectionManager:
         self._collections: Dict[str, Collection] = {}
         self._load_trigger_ts: Dict[str, float] = {}
         self._load_retry_interval_seconds = 15.0
+        self._reconnect_lock = threading.Lock()
 
     def initialize(self) -> None:
         """
@@ -140,12 +138,13 @@ class MilvusConnectionManager:
             logger.error(f"Milvus health check failed: {e}")
             return False
 
-    def get_collection(self, collection_name: str) -> Collection:
+    def get_collection(self, collection_name: str, force_refresh: bool = False) -> Collection:
         """
         Get a Milvus collection by name.
 
         Args:
             collection_name: Name of the collection
+            force_refresh: Rebuild cached collection handle before returning
 
         Returns:
             Collection: Milvus collection object
@@ -155,6 +154,9 @@ class MilvusConnectionManager:
         """
         if not self._is_connected:
             raise RuntimeError("Milvus connection not initialized")
+
+        if force_refresh:
+            self.invalidate_collection_handle(collection_name)
 
         # Check cache first
         if collection_name in self._collections:
@@ -190,6 +192,13 @@ class MilvusConnectionManager:
             raise MilvusException(f"Collection '{collection_name}' does not exist")
 
         return collection
+
+    def invalidate_collection_handle(self, collection_name: str) -> None:
+        """Invalidate a cached collection handle."""
+        if collection_name in self._collections:
+            del self._collections[collection_name]
+            logger.info(f"Invalidated cached collection handle: {collection_name}")
+        self._load_trigger_ts.pop(collection_name, None)
 
     def list_collections(self) -> List[str]:
         """
@@ -345,6 +354,23 @@ class MilvusConnectionManager:
                 "alias": self._connection_alias,
                 "error": str(e),
             }
+
+    def reconnect(self) -> None:
+        """Reconnect Milvus and clear cached handles."""
+        with self._reconnect_lock:
+            logger.warning("Reconnecting Milvus connection")
+
+            try:
+                if connections.has_connection(self._connection_alias):
+                    connections.disconnect(alias=self._connection_alias)
+            except Exception as disconnect_err:
+                logger.warning(f"Failed to disconnect Milvus during reconnect: {disconnect_err}")
+
+            self._collections.clear()
+            self._load_trigger_ts.clear()
+            self._is_connected = False
+
+            self.initialize()
 
     def close(self) -> None:
         """

@@ -8,14 +8,18 @@ References:
 """
 
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from typing import List, Optional
+
+from pymilvus import MilvusException
 
 from database.connection import get_db_session
 from database.models import KnowledgeChunk, KnowledgeItem
 from memory_system.embedding_service import get_embedding_service
 from memory_system.milvus_connection import get_milvus_connection
+from shared.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +42,29 @@ class KnowledgeIndexer:
         self.embedding_service = get_embedding_service(scope="knowledge_base")
         self.milvus_conn = get_milvus_connection()
         self.collection_name = "knowledge_embeddings"
-        logger.info("KnowledgeIndexer initialized")
+        config = get_config()
+        self._milvus_flush_timeout_seconds = float(
+            config.get("knowledge_base.processing.indexing.flush_timeout_seconds", 8.0)
+        )
+        self._milvus_retry_backoff_seconds = float(
+            config.get("knowledge_base.processing.indexing.retry_backoff_seconds", 1.0)
+        )
+        self._milvus_max_retries = max(
+            0,
+            int(config.get("knowledge_base.processing.indexing.milvus_max_retries", 2)),
+        )
+        self._milvus_allow_flush_degrade = bool(
+            config.get("knowledge_base.processing.indexing.allow_flush_degrade", True)
+        )
+        logger.info(
+            "KnowledgeIndexer initialized",
+            extra={
+                "milvus_flush_timeout_seconds": self._milvus_flush_timeout_seconds,
+                "milvus_retry_backoff_seconds": self._milvus_retry_backoff_seconds,
+                "milvus_max_retries": self._milvus_max_retries,
+                "milvus_allow_flush_degrade": self._milvus_allow_flush_degrade,
+            },
+        )
 
     def index_chunks(
         self,
@@ -60,8 +86,6 @@ class KnowledgeIndexer:
         Returns:
             IndexingResult with indexing details
         """
-        import time
-
         start_time = time.time()
 
         try:
@@ -101,11 +125,6 @@ class KnowledgeIndexer:
             # Use uuid.UUID objects, not strings — SQLAlchemy UUID(as_uuid=True) needs exact type
             ids = [uuid.uuid4() for _ in chunks]
 
-            # Insert into Milvus
-            from pymilvus import Collection
-
-            collection = Collection(self.collection_name)
-
             # Field order must match schema (excluding auto_id 'id'):
             # knowledge_id, chunk_index, embedding, content, owner_user_id, access_level, metadata
             entities = [
@@ -118,8 +137,7 @@ class KnowledgeIndexer:
                 [meta for meta in normalized_metadata],
             ]
 
-            collection.insert(entities)
-            collection.flush()
+            self._insert_and_flush_with_retry(document_id=document_id, entities=entities)
 
             # Store chunks in PostgreSQL for BM25 search
             self._store_chunks_in_postgres(
@@ -150,6 +168,110 @@ class KnowledgeIndexer:
         except Exception as e:
             logger.error(f"Knowledge indexing failed: {e}", exc_info=True)
             raise
+
+    def _insert_and_flush_with_retry(self, document_id: str, entities: List[list]) -> None:
+        """Insert vectors and flush Milvus with retry/reconnect on transient failures."""
+        inserted = False
+        max_attempts = self._milvus_max_retries + 1
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                collection = self.milvus_conn.get_collection(
+                    self.collection_name,
+                    force_refresh=attempt > 1,
+                )
+
+                if not inserted:
+                    collection.insert(entities)
+                    inserted = True
+
+                collection.flush(timeout=self._milvus_flush_timeout_seconds)
+                if attempt > 1:
+                    logger.info(
+                        "Milvus indexing recovered after retry",
+                        extra={
+                            "document_id": document_id,
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                        },
+                    )
+                return
+
+            except Exception as exc:
+                last_error = exc
+                retryable = self._is_retryable_milvus_error(exc)
+                should_retry = retryable and attempt < max_attempts
+
+                log_extra = {
+                    "document_id": document_id,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "inserted": inserted,
+                    "error": str(exc),
+                }
+
+                if should_retry:
+                    logger.warning(
+                        "Milvus insert/flush failed with retryable error, reconnecting and retrying",
+                        extra=log_extra,
+                    )
+                    self._recover_milvus_connection()
+                    backoff_seconds = self._milvus_retry_backoff_seconds * (2 ** (attempt - 1))
+                    if backoff_seconds > 0:
+                        time.sleep(backoff_seconds)
+                    continue
+
+                logger.error(
+                    "Milvus insert/flush failed",
+                    extra=log_extra,
+                    exc_info=True,
+                )
+                break
+
+        if last_error is not None:
+            if (
+                inserted
+                and self._milvus_allow_flush_degrade
+                and self._is_retryable_milvus_error(last_error)
+            ):
+                logger.error(
+                    "Milvus flush remained unavailable after retries; continuing without flush",
+                    extra={"document_id": document_id, "error": str(last_error)},
+                )
+                return
+            raise last_error
+
+    def _recover_milvus_connection(self) -> None:
+        """Best-effort reconnect for transient Milvus channel/connection failures."""
+        try:
+            self.milvus_conn.reconnect()
+        except Exception as reconnect_error:
+            logger.warning(
+                "Milvus reconnect failed, retry will continue with refreshed collection handle: "
+                f"{reconnect_error}"
+            )
+            self.milvus_conn.invalidate_collection_handle(self.collection_name)
+
+    @staticmethod
+    def _is_retryable_milvus_error(error: Exception) -> bool:
+        """Return True for transient Milvus errors worth retrying."""
+        retryable_markers = (
+            "channel not found",
+            "deadline exceeded",
+            "timed out",
+            "timeout",
+            "connection refused",
+            "connection reset",
+            "broken pipe",
+            "service unavailable",
+            "temporarily unavailable",
+        )
+        message = str(error).lower()
+        if any(marker in message for marker in retryable_markers):
+            return True
+
+        return isinstance(error, (TimeoutError, ConnectionError))
 
     def _store_chunks_in_postgres(
         self,

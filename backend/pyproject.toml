@@ -29,7 +29,7 @@ alembic = "^1.13.1"
 asyncpg = "^0.29.0"
 
 # Database - Vector Database (Milvus)
-pymilvus = "^2.3.5"
+pymilvus = ">=2.6.3,<2.7"
 
 # Object Storage - MinIO
 minio = "^7.2.3"

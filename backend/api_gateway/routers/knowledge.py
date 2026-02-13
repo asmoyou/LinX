@@ -1746,13 +1746,14 @@ async def delete_collection(
 
                 # Delete Milvus embeddings
                 try:
-                    from pymilvus import Collection, utility
-
                     from memory_system.milvus_connection import get_milvus_connection
 
-                    get_milvus_connection()
-                    if utility.has_collection("knowledge_embeddings"):
-                        milvus_coll = Collection("knowledge_embeddings")
+                    milvus = get_milvus_connection()
+                    if milvus.collection_exists("knowledge_embeddings"):
+                        milvus_coll = milvus.get_collection(
+                            "knowledge_embeddings",
+                            force_refresh=True,
+                        )
                         milvus_coll.delete(f'knowledge_id == "{kid}"')
                 except Exception as e:
                     logger.warning(f"Failed to delete Milvus embeddings for {kid}: {e}")
@@ -1938,13 +1939,14 @@ async def reprocess_knowledge(
 
             # Delete old Milvus embeddings
             try:
-                from pymilvus import Collection, utility
-
                 from memory_system.milvus_connection import get_milvus_connection
 
-                get_milvus_connection()
-                if utility.has_collection("knowledge_embeddings"):
-                    collection = Collection("knowledge_embeddings")
+                milvus = get_milvus_connection()
+                if milvus.collection_exists("knowledge_embeddings"):
+                    collection = milvus.get_collection(
+                        "knowledge_embeddings",
+                        force_refresh=True,
+                    )
                     collection.delete(f'knowledge_id == "{knowledge_id}"')
             except Exception as e:
                 logger.warning(f"Failed to delete old Milvus embeddings: {e}")
@@ -2314,13 +2316,14 @@ async def delete_knowledge(
 
             # 1. Delete from Milvus (vector embeddings)
             try:
-                from pymilvus import Collection, utility
-
                 from memory_system.milvus_connection import get_milvus_connection
 
-                get_milvus_connection()
-                if utility.has_collection("knowledge_embeddings"):
-                    collection = Collection("knowledge_embeddings")
+                milvus = get_milvus_connection()
+                if milvus.collection_exists("knowledge_embeddings"):
+                    collection = milvus.get_collection(
+                        "knowledge_embeddings",
+                        force_refresh=True,
+                    )
                     collection.delete(f'knowledge_id == "{knowledge_id}"')
                     logger.info(f"Deleted Milvus embeddings for {knowledge_id}")
             except Exception as e:
