@@ -4,13 +4,19 @@ import io
 import sys
 import types
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from api_gateway.routers.knowledge import (
+    _build_docx_filename,
+    _convert_legacy_doc_bytes_to_docx,
     _generate_thumbnail_stream,
     _get_bucket_type,
     _get_file_type,
+    _is_legacy_word_doc,
     _parse_minio_reference,
     _should_attempt_thumbnail_backfill,
 )
@@ -92,3 +98,49 @@ def test_should_attempt_thumbnail_backfill_respects_recent_failures() -> None:
         "thumbnail_backfill_last_attempt_at": (now - timedelta(hours=2)).isoformat(),
     }
     assert _should_attempt_thumbnail_backfill(stale_failure_metadata, now=now) is True
+
+
+def test_is_legacy_word_doc_detects_doc_variants() -> None:
+    """Legacy DOC detection should handle extension and MIME fallbacks."""
+    assert _is_legacy_word_doc("legacy.doc", "application/msword") is True
+    assert _is_legacy_word_doc("legacy.bin", "application/msword") is True
+    assert _is_legacy_word_doc("modern.docx", "application/msword") is False
+    assert (
+        _is_legacy_word_doc(
+            "modern.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        is False
+    )
+
+
+def test_build_docx_filename_rewrites_extension() -> None:
+    """Converted filename should preserve stem and force .docx extension."""
+    assert _build_docx_filename("legacy.doc") == "legacy.docx"
+    assert _build_docx_filename("report.final.v1") == "report.final.docx"
+
+
+def test_convert_legacy_doc_bytes_to_docx_uses_textutil_when_available(monkeypatch) -> None:
+    """Conversion helper should return generated DOCX bytes from tool output."""
+
+    def _fake_which(command: str):  # noqa: ANN001
+        return "/usr/bin/textutil" if command == "textutil" else None
+
+    def _fake_run(command, check, capture_output, text):  # noqa: ANN001
+        output_index = command.index("-output") + 1
+        output_path = Path(command[output_index])
+        output_path.write_bytes(b"converted-docx-binary")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("api_gateway.routers.knowledge.shutil.which", _fake_which)
+    monkeypatch.setattr("api_gateway.routers.knowledge.subprocess.run", _fake_run)
+
+    converted = _convert_legacy_doc_bytes_to_docx(b"legacy-doc-binary", "legacy.doc")
+    assert converted == b"converted-docx-binary"
+
+
+def test_convert_legacy_doc_bytes_to_docx_raises_when_no_converter(monkeypatch) -> None:
+    """A clear error should be raised when no conversion tool is available."""
+    monkeypatch.setattr("api_gateway.routers.knowledge.shutil.which", lambda _command: None)
+    with pytest.raises(ValueError, match="no converter tool available"):
+        _convert_legacy_doc_bytes_to_docx(b"legacy-doc-binary", "legacy.doc")

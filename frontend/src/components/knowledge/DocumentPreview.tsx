@@ -82,7 +82,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({ document, onDo
         try {
           if (document.fileReference && document.fileReference.startsWith('minio:')) {
             try {
-              const { blob } = await knowledgeApi.download(document.id);
+              const { blob } = await knowledgeApi.download(document.id, { convert_to: 'docx' });
               if (cancelled) return;
               const buffer = await blob.arrayBuffer();
               if (cancelled) return;

@@ -292,9 +292,24 @@ export const knowledgeApi = {
   /**
    * Download document — returns blob and server-provided filename
    */
-  download: async (documentId: string): Promise<{ blob: Blob; filename?: string }> => {
+  download: async (
+    documentId: string,
+    options?: {
+      inline?: boolean;
+      convert_to?: 'docx';
+    }
+  ): Promise<{ blob: Blob; filename?: string }> => {
+    const params: Record<string, string | boolean> = {};
+    if (options?.inline !== undefined) {
+      params.inline = options.inline;
+    }
+    if (options?.convert_to) {
+      params.convert_to = options.convert_to;
+    }
+
     const response = await apiClient.get(`/knowledge/${documentId}/download`, {
       responseType: 'blob',
+      params,
     });
 
     // Extract filename from Content-Disposition header

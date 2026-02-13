@@ -8,9 +8,14 @@ References:
 import asyncio
 import io
 import json
+import os
+import shutil
+import subprocess
+import tempfile
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
@@ -379,6 +384,96 @@ def _parse_minio_reference(reference: Optional[str]) -> Optional[tuple[str, str]
     if not bucket_name or not object_key:
         return None
     return bucket_name, object_key
+
+
+def _is_legacy_word_doc(filename: str, mime_type: Optional[str]) -> bool:
+    """Return True when source file is likely an old binary .doc file."""
+    ext = os.path.splitext(filename or "")[1].lower()
+    normalized = _normalize_content_type(mime_type)
+    if ext == ".doc":
+        return True
+    return normalized == "application/msword" and ext != ".docx"
+
+
+def _build_docx_filename(filename: str) -> str:
+    """Build target filename for converted DOCX output."""
+    stem = Path(filename or "document").stem or "document"
+    return f"{stem}.docx"
+
+
+def _convert_legacy_doc_bytes_to_docx(source_bytes: bytes, source_filename: str) -> bytes:
+    """Convert binary .doc bytes to .docx bytes using host-native converters."""
+    if not source_bytes:
+        raise ValueError("Source DOC file is empty")
+
+    source_suffix = Path(source_filename or "document.doc").suffix.lower() or ".doc"
+    if source_suffix != ".doc":
+        source_suffix = ".doc"
+
+    with tempfile.TemporaryDirectory(prefix="kb_doc_to_docx_") as temp_dir:
+        source_path = Path(temp_dir) / f"source{source_suffix}"
+        source_path.write_bytes(source_bytes)
+
+        output_filename = _build_docx_filename(source_filename)
+        preferred_output_path = Path(temp_dir) / output_filename
+        soffice_output_path = Path(temp_dir) / f"{source_path.stem}.docx"
+
+        conversion_commands: list[tuple[str, list[str]]] = []
+        soffice_bin = shutil.which("soffice") or shutil.which("libreoffice")
+        if soffice_bin:
+            conversion_commands.append(
+                (
+                    "soffice",
+                    [
+                        soffice_bin,
+                        "--headless",
+                        "--convert-to",
+                        "docx",
+                        "--outdir",
+                        str(temp_dir),
+                        str(source_path),
+                    ],
+                )
+            )
+        textutil_bin = shutil.which("textutil")
+        if textutil_bin:
+            conversion_commands.append(
+                (
+                    "textutil",
+                    [
+                        textutil_bin,
+                        "-convert",
+                        "docx",
+                        str(source_path),
+                        "-output",
+                        str(preferred_output_path),
+                    ],
+                )
+            )
+
+        attempts: list[str] = []
+        for command_name, command in conversion_commands:
+            try:
+                subprocess.run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+                for candidate_path in (preferred_output_path, soffice_output_path):
+                    if candidate_path.exists() and candidate_path.stat().st_size > 0:
+                        return candidate_path.read_bytes()
+
+                attempts.append(f"{command_name}: converted without output file")
+            except Exception as ex:
+                attempts.append(f"{command_name}: {ex}")
+
+        details = "; ".join(attempts) if attempts else "no converter tool available"
+        raise ValueError(
+            "DOC to DOCX conversion failed. Install LibreOffice (soffice) or textutil. "
+            f"Details: {details}"
+        )
 
 
 def _should_attempt_thumbnail_backfill(
@@ -3003,10 +3098,19 @@ async def download_knowledge(
     knowledge_id: str,
     request: Request,
     inline: bool = Query(default=False),
+    convert_to: Optional[str] = Query(
+        default=None, description="Optional format conversion target"
+    ),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Download knowledge item file from MinIO."""
     try:
+        if convert_to not in {None, "docx"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unsupported convert_to value. Supported values: docx",
+            )
+
         with get_db_session() as session:
             try:
                 kid = UUID(knowledge_id)
@@ -3040,24 +3144,35 @@ async def download_knowledge(
                     detail="File not available for download",
                 )
 
-            # Parse file reference
-            parts = item.file_reference.split(":", 2)
-            if len(parts) != 3:
+            file_reference_parts = _parse_minio_reference(item.file_reference)
+            if not file_reference_parts:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Invalid file reference format",
                 )
 
-            _, bucket_name, object_key = parts
+            bucket_name, object_key = file_reference_parts
             metadata = item.item_metadata or {}
             original_filename = metadata.get("original_filename", item.title)
             mime_type = metadata.get("mime_type", "application/octet-stream")
+            should_convert_to_docx = convert_to == "docx" and _is_legacy_word_doc(
+                original_filename, mime_type
+            )
 
-        # Stream from MinIO
+        # Stream from MinIO (or convert legacy DOC on demand)
         from object_storage.minio_client import get_minio_client
 
         minio_client = get_minio_client()
-        stream, file_metadata = minio_client.download_file_streaming(bucket_name, object_key)
+        if should_convert_to_docx:
+            downloaded_stream, _ = minio_client.download_file(bucket_name, object_key)
+            doc_bytes = downloaded_stream.read()
+            converted_bytes = _convert_legacy_doc_bytes_to_docx(doc_bytes, original_filename)
+            stream = io.BytesIO(converted_bytes)
+            file_metadata = {"size": len(converted_bytes), "etag": "", "last_modified": None}
+            mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            original_filename = _build_docx_filename(original_filename)
+        else:
+            stream, file_metadata = minio_client.download_file_streaming(bucket_name, object_key)
 
         # Encode filename for Content-Disposition header (RFC 5987)
         import urllib.parse
@@ -3068,7 +3183,11 @@ async def download_knowledge(
         cache_headers = {
             "Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_filename}",
             "Content-Length": str(file_metadata.get("size", 0)),
-            "Cache-Control": "private, max-age=3600, stale-while-revalidate=120",
+            "Cache-Control": (
+                "private, max-age=300"
+                if should_convert_to_docx
+                else "private, max-age=3600, stale-while-revalidate=120"
+            ),
             "Vary": "Authorization",
         }
 
