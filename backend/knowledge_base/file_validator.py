@@ -80,6 +80,12 @@ class FileValidator:
 
         # Map MIME types to supported file types
         self.mime_type_map = {ft.value: ft for ft in SupportedFileType}
+        # Common MIME variants reported by browsers/libmagic for the same media type.
+        self.mime_type_aliases = {
+            "audio/x-m4a": SupportedFileType.M4A,
+            "audio/m4a": SupportedFileType.M4A,
+            "audio/x-flac": SupportedFileType.FLAC,
+        }
 
         logger.info(
             "FileValidator initialized",
@@ -124,9 +130,15 @@ class FileValidator:
 
             # Detect MIME type
             mime_type = self.magic.from_file(str(file_path))
+            normalized_mime_type = mime_type.split(";", 1)[0].strip().lower()
 
             # Check if file type is supported
-            file_type = self.mime_type_map.get(mime_type)
+            file_type = self.mime_type_map.get(normalized_mime_type)
+            if file_type is None:
+                file_type = self.mime_type_aliases.get(normalized_mime_type)
+                if file_type is not None:
+                    mime_type = file_type.value
+
             if file_type is None:
                 # Try to match by extension for text files
                 if file_path.suffix.lower() in [".txt", ".md", ".markdown"]:

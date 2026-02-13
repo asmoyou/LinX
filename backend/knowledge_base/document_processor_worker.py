@@ -555,6 +555,7 @@ class DocumentProcessorWorker:
         Returns:
             File suffix with dot prefix
         """
+        normalized_mime_type = mime_type.split(";", 1)[0].strip().lower()
         mime_to_suffix = {
             "application/pdf": ".pdf",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
@@ -564,11 +565,21 @@ class DocumentProcessorWorker:
             "text/html": ".html",
             "image/png": ".png",
             "image/jpeg": ".jpg",
+            "image/gif": ".gif",
+            "image/bmp": ".bmp",
+            "image/webp": ".webp",
             "audio/mpeg": ".mp3",
             "audio/wav": ".wav",
+            "audio/mp4": ".m4a",
+            "audio/x-m4a": ".m4a",
+            "audio/m4a": ".m4a",
+            "audio/flac": ".flac",
             "video/mp4": ".mp4",
+            "video/x-msvideo": ".avi",
+            "video/quicktime": ".mov",
+            "video/x-matroska": ".mkv",
         }
-        return mime_to_suffix.get(mime_type, "")
+        return mime_to_suffix.get(normalized_mime_type, "")
 
 
 # Singleton instance

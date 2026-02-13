@@ -10,7 +10,13 @@ interface UploadZoneProps {
 
 export const UploadZone: React.FC<UploadZoneProps> = ({ 
   onUpload, 
-  acceptedTypes = ['.pdf', '.docx', '.txt', '.md', '.png', '.jpg', '.jpeg', '.mp3', '.wav', '.mp4'],
+  acceptedTypes = [
+    '.pdf', '.docx', '.txt', '.md',
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp',
+    '.mp3', '.wav', '.m4a', '.flac',
+    '.mp4', '.avi', '.mov', '.mkv',
+    '.zip'
+  ],
   maxSize = 100 
 }) => {
   const [isDragging, setIsDragging] = useState(false);

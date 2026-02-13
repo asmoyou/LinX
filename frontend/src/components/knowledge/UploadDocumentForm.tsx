@@ -18,7 +18,8 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const SUPPORTED_FORMATS = [
   '.pdf', '.doc', '.docx', '.txt', '.md',
   '.jpg', '.jpeg', '.png', '.gif',
-  '.mp3', '.wav', '.mp4', '.avi',
+  '.mp3', '.wav', '.m4a', '.flac',
+  '.mp4', '.avi', '.mov', '.mkv',
   '.zip'
 ];
 

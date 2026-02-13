@@ -16,8 +16,9 @@ logger = logging.getLogger(__name__)
 # Supported file extensions (matches knowledge router's EXT_TO_DOC_TYPE)
 SUPPORTED_EXTENSIONS = {
     ".pdf", ".doc", ".docx", ".txt", ".md",
-    ".jpg", ".jpeg", ".png", ".gif",
-    ".mp3", ".wav", ".mp4", ".avi",
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
+    ".mp3", ".wav", ".m4a", ".flac",
+    ".mp4", ".avi", ".mov", ".mkv",
 }
 
 # Files/directories to skip

@@ -79,8 +79,14 @@ MIME_TYPE_MAP = {
     "image/gif": "document",
     "audio/mpeg": "document",
     "audio/wav": "document",
+    "audio/mp4": "document",
+    "audio/x-m4a": "document",
+    "audio/m4a": "document",
+    "audio/flac": "document",
     "video/mp4": "document",
     "video/x-msvideo": "document",
+    "video/quicktime": "document",
+    "video/x-matroska": "document",
 }
 
 # MIME type to frontend DocumentType mapping
@@ -95,8 +101,14 @@ MIME_TO_DOC_TYPE = {
     "image/gif": "image",
     "audio/mpeg": "audio",
     "audio/wav": "audio",
+    "audio/mp4": "audio",
+    "audio/x-m4a": "audio",
+    "audio/m4a": "audio",
+    "audio/flac": "audio",
     "video/mp4": "video",
     "video/x-msvideo": "video",
+    "video/quicktime": "video",
+    "video/x-matroska": "video",
     "application/zip": "zip",
     "application/x-zip-compressed": "zip",
 }
@@ -114,8 +126,12 @@ EXT_TO_DOC_TYPE = {
     ".gif": "image",
     ".mp3": "audio",
     ".wav": "audio",
+    ".m4a": "audio",
+    ".flac": "audio",
     ".mp4": "video",
     ".avi": "video",
+    ".mov": "video",
+    ".mkv": "video",
     ".zip": "zip",
 }
 
@@ -269,10 +285,18 @@ class ZipUploadResponse(BaseModel):
     errors: List[str]
 
 
+def _normalize_content_type(content_type: Optional[str]) -> Optional[str]:
+    """Normalize content type by dropping params and lower-casing."""
+    if not content_type:
+        return None
+    return content_type.split(";", 1)[0].strip().lower()
+
+
 def _get_file_type(filename: str, content_type: Optional[str]) -> str:
     """Determine document type from MIME type or file extension."""
-    if content_type and content_type in MIME_TO_DOC_TYPE:
-        return MIME_TO_DOC_TYPE[content_type]
+    normalized_content_type = _normalize_content_type(content_type)
+    if normalized_content_type and normalized_content_type in MIME_TO_DOC_TYPE:
+        return MIME_TO_DOC_TYPE[normalized_content_type]
 
     import os
 
@@ -289,12 +313,13 @@ def _get_bucket_type(filename: str, content_type: Optional[str]) -> str:
     import os
 
     # Check MIME type first
-    if content_type:
-        if content_type.startswith("image/"):
+    normalized_content_type = _normalize_content_type(content_type)
+    if normalized_content_type:
+        if normalized_content_type.startswith("image/"):
             return "images"
-        if content_type.startswith("audio/"):
+        if normalized_content_type.startswith("audio/"):
             return "audio"
-        if content_type.startswith("video/"):
+        if normalized_content_type.startswith("video/"):
             return "video"
 
     # Fallback: check file extension
@@ -315,8 +340,9 @@ def _get_bucket_type(filename: str, content_type: Optional[str]) -> str:
 
 def _get_content_type_category(filename: str, content_type: Optional[str]) -> str:
     """Map MIME type to knowledge item content_type category."""
-    if content_type and content_type in MIME_TYPE_MAP:
-        return MIME_TYPE_MAP[content_type]
+    normalized_content_type = _normalize_content_type(content_type)
+    if normalized_content_type and normalized_content_type in MIME_TYPE_MAP:
+        return MIME_TYPE_MAP[normalized_content_type]
     return "document"
 
 
@@ -566,7 +592,8 @@ def _is_zip_file(filename: str, content_type: Optional[str]) -> bool:
     """Check if the uploaded file is a ZIP archive."""
     import os
 
-    if content_type in ("application/zip", "application/x-zip-compressed"):
+    normalized_content_type = _normalize_content_type(content_type)
+    if normalized_content_type in ("application/zip", "application/x-zip-compressed"):
         return True
     ext = os.path.splitext(filename or "")[1].lower()
     return ext == ".zip"
