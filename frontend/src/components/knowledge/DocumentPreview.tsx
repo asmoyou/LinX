@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Loader2, Download } from 'lucide-react';
+import { renderAsync } from 'docx-preview';
 import { knowledgeApi } from '@/api/knowledge';
 import type { Document } from '@/types/document';
 
@@ -9,14 +10,50 @@ interface DocumentPreviewProps {
 }
 
 const MAX_TEXT_SIZE = 50 * 1024; // 50KB
+const DOCX_ZIP_MAGIC = [0x50, 0x4b, 0x03, 0x04];
+
+const isDocxZipBuffer = (buffer: ArrayBuffer): boolean => {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length < DOCX_ZIP_MAGIC.length) {
+    return false;
+  }
+  return DOCX_ZIP_MAGIC.every((magicByte, index) => bytes[index] === magicByte);
+};
+
+const mergeChunksToText = (
+  chunks: Array<{ content?: string }>
+): { text: string; truncated: boolean } => {
+  const mergedText = (chunks || [])
+    .map((chunk) => (chunk.content || '').trim())
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+
+  if (!mergedText) {
+    return { text: '', truncated: false };
+  }
+
+  if (mergedText.length > MAX_TEXT_SIZE) {
+    return { text: mergedText.slice(0, MAX_TEXT_SIZE), truncated: true };
+  }
+
+  return { text: mergedText, truncated: false };
+};
 
 export const DocumentPreview: React.FC<DocumentPreviewProps> = ({ document, onDownload }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [docxArrayBuffer, setDocxArrayBuffer] = useState<ArrayBuffer | null>(null);
   const [isTruncated, setIsTruncated] = useState(false);
   const blobUrlRef = useRef<string | null>(null);
+  const docxContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const loadDocxTextFallback = React.useCallback(async () => {
+    const chunkResp = await knowledgeApi.getChunks(document.id, 1, 20);
+    return mergeChunksToText(chunkResp.chunks || []);
+  }, [document.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -26,9 +63,10 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({ document, onDo
       setError(null);
       setTextContent(null);
       setBlobUrl(null);
+      setDocxArrayBuffer(null);
       setIsTruncated(false);
 
-      // DOC/DOCX preview: render extracted chunks as readable text.
+      // DOCX preview: prefer full fidelity render; fallback to extracted text.
       if (document.type === 'docx') {
         if (document.status === 'processing' || document.status === 'uploading') {
           setError('Document is still being processed...');
@@ -42,22 +80,31 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({ document, onDo
         }
 
         try {
-          const chunkResp = await knowledgeApi.getChunks(document.id, 1, 20);
+          if (document.fileReference && document.fileReference.startsWith('minio:')) {
+            try {
+              const { blob } = await knowledgeApi.download(document.id);
+              if (cancelled) return;
+              const buffer = await blob.arrayBuffer();
+              if (cancelled) return;
+
+              // Only DOCX (zip container) is rendered by docx-preview.
+              if (isDocxZipBuffer(buffer)) {
+                setDocxArrayBuffer(buffer);
+                return;
+              }
+            } catch {
+              // Ignore and fallback to chunk text.
+            }
+          }
+
+          const { text, truncated } = await loadDocxTextFallback();
           if (cancelled) return;
 
-          const mergedText = (chunkResp.chunks || [])
-            .map((chunk) => (chunk.content || '').trim())
-            .filter(Boolean)
-            .join('\n\n')
-            .trim();
-
-          if (!mergedText) {
+          if (!text) {
             setError('No extracted text available for preview');
-          } else if (mergedText.length > MAX_TEXT_SIZE) {
-            setTextContent(mergedText.slice(0, MAX_TEXT_SIZE));
-            setIsTruncated(true);
           } else {
-            setTextContent(mergedText);
+            setTextContent(text);
+            setIsTruncated(truncated);
           }
         } catch {
           if (!cancelled) {
@@ -136,7 +183,52 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({ document, onDo
     document.status,
     document.error,
     document.errorMessage,
+    loadDocxTextFallback,
   ]);
+
+  useEffect(() => {
+    if (document.type !== 'docx' || !docxArrayBuffer || !docxContainerRef.current) {
+      return;
+    }
+
+    let cancelled = false;
+    const container = docxContainerRef.current;
+
+    const renderDocxPreview = async () => {
+      container.innerHTML = '';
+
+      try {
+        await renderAsync(docxArrayBuffer, container);
+      } catch {
+        if (cancelled) return;
+
+        setDocxArrayBuffer(null);
+        try {
+          const { text, truncated } = await loadDocxTextFallback();
+          if (cancelled) return;
+
+          if (!text) {
+            setError('No extracted text available for preview');
+          } else {
+            setError(null);
+            setTextContent(text);
+            setIsTruncated(truncated);
+          }
+        } catch {
+          if (!cancelled) {
+            setError('Failed to render Word preview');
+          }
+        }
+      }
+    };
+
+    void renderDocxPreview();
+
+    return () => {
+      cancelled = true;
+      container.innerHTML = '';
+    };
+  }, [document.type, docxArrayBuffer, loadDocxTextFallback]);
 
   if (isLoading) {
     return (
@@ -214,6 +306,18 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({ document, onDo
             )}
           </div>
         )}
+      </div>
+    );
+  }
+
+  // DOCX rich preview
+  if (document.type === 'docx' && docxArrayBuffer) {
+    return (
+      <div className="min-h-[400px]">
+        <div
+          ref={docxContainerRef}
+          className="w-full max-h-[700px] overflow-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-white p-4 [&_.docx-wrapper]:bg-transparent [&_.docx]:mx-auto"
+        />
       </div>
     );
   }
