@@ -1,6 +1,6 @@
-import React, { useCallback, useState } from 'react';
-import { Upload, File, X } from 'lucide-react';
-import { GlassPanel } from '@/components/GlassPanel';
+import React, { useCallback, useState } from "react";
+import { Upload, File, X } from "lucide-react";
+import { GlassPanel } from "@/components/GlassPanel";
 
 interface UploadZoneProps {
   onUpload: (files: File[]) => void;
@@ -8,56 +8,79 @@ interface UploadZoneProps {
   maxSize?: number; // in MB
 }
 
-export const UploadZone: React.FC<UploadZoneProps> = ({ 
-  onUpload, 
+export const UploadZone: React.FC<UploadZoneProps> = ({
+  onUpload,
   acceptedTypes = [
-    '.pdf', '.doc', '.docx', '.txt', '.md',
-    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp',
-    '.mp3', '.wav', '.m4a', '.flac',
-    '.mp4', '.avi', '.mov', '.mkv',
-    '.zip'
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".txt",
+    ".md",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".webp",
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".flac",
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".mkv",
+    ".zip",
   ],
-  maxSize = 100 
+  maxSize = 100,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
 
-  const validateFile = useCallback((file: File): string | null => {
-    // Check file size
-    const fileSizeMB = file.size / (1024 * 1024);
-    if (fileSizeMB > maxSize) {
-      return `${file.name}: File size exceeds ${maxSize}MB`;
-    }
-
-    // Check file type
-    const fileExt = '.' + file.name.split('.').pop()?.toLowerCase();
-    if (!acceptedTypes.includes(fileExt)) {
-      return `${file.name}: File type not supported`;
-    }
-
-    return null;
-  }, [acceptedTypes, maxSize]);
-
-  const handleFiles = useCallback((files: FileList | null) => {
-    if (!files) return;
-
-    const fileArray = Array.from(files);
-    const newErrors: string[] = [];
-    const validFiles: File[] = [];
-
-    fileArray.forEach((file) => {
-      const error = validateFile(file);
-      if (error) {
-        newErrors.push(error);
-      } else {
-        validFiles.push(file);
+  const validateFile = useCallback(
+    (file: File): string | null => {
+      // Check file size
+      const fileSizeMB = file.size / (1024 * 1024);
+      if (fileSizeMB > maxSize) {
+        return `${file.name}: File size exceeds ${maxSize}MB`;
       }
-    });
 
-    setErrors(newErrors);
-    setSelectedFiles((prev) => [...prev, ...validFiles]);
-  }, [validateFile]);
+      // Check file type
+      const fileExt = "." + file.name.split(".").pop()?.toLowerCase();
+      if (!acceptedTypes.includes(fileExt)) {
+        return `${file.name}: File type not supported`;
+      }
+
+      return null;
+    },
+    [acceptedTypes, maxSize],
+  );
+
+  const handleFiles = useCallback(
+    (files: FileList | null) => {
+      if (!files) return;
+
+      const fileArray = Array.from(files);
+      const newErrors: string[] = [];
+      const validFiles: File[] = [];
+
+      fileArray.forEach((file) => {
+        const error = validateFile(file);
+        if (error) {
+          newErrors.push(error);
+        } else {
+          validFiles.push(file);
+        }
+      });
+
+      setErrors(newErrors);
+      setSelectedFiles((prev) => [...prev, ...validFiles]);
+    },
+    [validateFile],
+  );
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -69,15 +92,21 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
     setIsDragging(false);
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    handleFiles(e.dataTransfer.files);
-  }, [handleFiles]);
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragging(false);
+      handleFiles(e.dataTransfer.files);
+    },
+    [handleFiles],
+  );
 
-  const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    handleFiles(e.target.files);
-  }, [handleFiles]);
+  const handleFileInput = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      handleFiles(e.target.files);
+    },
+    [handleFiles],
+  );
 
   const removeFile = (index: number) => {
     setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
@@ -106,13 +135,15 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
         onDrop={handleDrop}
         className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
           isDragging
-            ? 'border-indigo-500 bg-indigo-500/10'
-            : 'border-gray-300 dark:border-gray-600'
+            ? "border-indigo-500 bg-indigo-500/10"
+            : "border-gray-300 dark:border-gray-600"
         }`}
       >
-        <Upload className={`w-12 h-12 mx-auto mb-4 ${isDragging ? 'text-indigo-500' : 'text-gray-400'}`} />
+        <Upload
+          className={`w-12 h-12 mx-auto mb-4 ${isDragging ? "text-indigo-500" : "text-gray-400"}`}
+        />
         <p className="text-lg font-medium text-gray-800 dark:text-white mb-2">
-          {isDragging ? 'Drop files here' : 'Drag and drop files here'}
+          {isDragging ? "Drop files here" : "Drag and drop files here"}
         </p>
         <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
           or click to browse
@@ -120,7 +151,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
         <input
           type="file"
           multiple
-          accept={acceptedTypes.join(',')}
+          accept={acceptedTypes.join(",")}
           onChange={handleFileInput}
           className="hidden"
           id="file-input"
@@ -132,7 +163,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
           Browse Files
         </label>
         <p className="text-xs text-gray-500 dark:text-gray-400 mt-4">
-          Supported: {acceptedTypes.join(', ')} • Max size: {maxSize}MB
+          Supported: {acceptedTypes.join(", ")} • Max size: {maxSize}MB
         </p>
       </div>
 
@@ -140,7 +171,10 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
       {errors.length > 0 && (
         <div className="mt-4 space-y-2">
           {errors.map((error, index) => (
-            <div key={index} className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-700 dark:text-red-400">
+            <div
+              key={index}
+              className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-700 dark:text-red-400"
+            >
               {error}
             </div>
           ))}
@@ -155,7 +189,10 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
           </h4>
           <div className="space-y-2 max-h-48 overflow-y-auto">
             {selectedFiles.map((file, index) => (
-              <div key={index} className="flex items-center justify-between p-3 bg-white/10 rounded-lg">
+              <div
+                key={index}
+                className="flex items-center justify-between p-3 bg-white/10 rounded-lg"
+              >
                 <div className="flex items-center gap-3 flex-1 min-w-0">
                   <File className="w-5 h-5 text-gray-600 dark:text-gray-400 flex-shrink-0" />
                   <div className="flex-1 min-w-0">
@@ -180,7 +217,8 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
             onClick={handleUpload}
             className="w-full mt-4 px-4 py-3 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium"
           >
-            Upload {selectedFiles.length} {selectedFiles.length === 1 ? 'File' : 'Files'}
+            Upload {selectedFiles.length}{" "}
+            {selectedFiles.length === 1 ? "File" : "Files"}
           </button>
         </div>
       )}

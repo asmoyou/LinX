@@ -90,6 +90,8 @@ MIME_TYPE_MAP = {
     "application/pdf": "document",
     "application/msword": "document",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "document",
+    "application/vnd.ms-excel": "document",
     "text/plain": "document",
     "text/markdown": "document",
     "image/jpeg": "document",
@@ -112,6 +114,8 @@ MIME_TO_DOC_TYPE = {
     "application/pdf": "pdf",
     "application/msword": "docx",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "excel",
+    "application/vnd.ms-excel": "excel",
     "text/plain": "txt",
     "text/markdown": "md",
     "image/jpeg": "image",
@@ -136,6 +140,8 @@ EXT_TO_DOC_TYPE = {
     ".pdf": "pdf",
     ".doc": "docx",
     ".docx": "docx",
+    ".xls": "excel",
+    ".xlsx": "excel",
     ".txt": "txt",
     ".md": "md",
     ".jpg": "image",
@@ -1537,6 +1543,7 @@ _KB_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "generate_summary": True,
         "temperature": 0.2,
         "batch_size": 5,
+        "max_tokens": 0,
     },
     "embedding": {
         "dimension": 1024,
@@ -2382,6 +2389,7 @@ async def get_knowledge_chunks(
             # Query chunks
             try:
                 from database.models import KnowledgeChunk
+                from memory_system.embedding_service import resolve_embedding_settings
 
                 query = (
                     session.query(KnowledgeChunk)
@@ -2393,21 +2401,118 @@ async def get_knowledge_chunks(
                 offset = (page - 1) * page_size
                 chunks = query.offset(offset).limit(page_size).all()
 
+                # Resolve effective embedding config for frontend diagnostics.
+                embedding_settings: Dict[str, Any] = {}
+                try:
+                    embedding_settings = resolve_embedding_settings(scope="knowledge_base")
+                except Exception as embed_cfg_err:
+                    logger.warning(
+                        "Failed to resolve embedding settings for chunks view: " f"{embed_cfg_err}"
+                    )
+
+                # Best-effort Milvus lookup to show whether page chunks are indexed.
+                indexed_chunk_indices: set[int] = set()
+                vector_lookup_attempted = False
+                vector_lookup_error: Optional[str] = None
+
+                try:
+                    chunk_indexes = sorted(
+                        {int(c.chunk_index) for c in chunks if c.chunk_index is not None}
+                    )
+                    if chunk_indexes:
+                        from memory_system.milvus_connection import get_milvus_connection
+
+                        milvus = get_milvus_connection()
+                        if milvus.collection_exists("knowledge_embeddings"):
+                            collection = milvus.get_collection("knowledge_embeddings")
+                            index_expr = ", ".join(str(idx) for idx in chunk_indexes)
+                            expr = f'knowledge_id == "{kid}" and ' f"chunk_index in [{index_expr}]"
+                            rows = collection.query(
+                                expr=expr,
+                                output_fields=["chunk_index"],
+                                limit=max(len(chunk_indexes), 1),
+                            )
+                            indexed_chunk_indices = {
+                                int(row["chunk_index"])
+                                for row in rows
+                                if isinstance(row, dict) and row.get("chunk_index") is not None
+                            }
+                        vector_lookup_attempted = True
+                except Exception as vector_err:
+                    vector_lookup_attempted = True
+                    vector_lookup_error = str(vector_err)
+                    logger.warning(
+                        "Failed to query chunk vector index status",
+                        extra={
+                            "knowledge_id": str(kid),
+                            "error": vector_lookup_error,
+                        },
+                    )
+
                 chunk_list = []
                 for c in chunks:
+                    keywords = c.keywords or []
+                    questions = c.questions or []
+                    summary_text = (c.summary or "").strip()
+                    enrichment_applied = bool(keywords or questions or summary_text)
+
+                    if c.chunk_index is not None:
+                        is_indexed = int(c.chunk_index) in indexed_chunk_indices
+                    else:
+                        is_indexed = False
+
+                    if is_indexed:
+                        embedding_status = "indexed"
+                    elif item.status == "failed":
+                        embedding_status = "failed"
+                    elif item.status == "completed":
+                        embedding_status = "missing" if vector_lookup_attempted else "unknown"
+                    else:
+                        embedding_status = "pending"
+
                     chunk_list.append(
                         {
                             "chunk_id": str(c.chunk_id),
                             "chunk_index": c.chunk_index,
                             "content": c.content,
-                            "keywords": c.keywords,
-                            "questions": c.questions,
+                            "keywords": keywords,
+                            "questions": questions,
                             "summary": c.summary,
                             "token_count": c.token_count,
+                            "chunk_metadata": c.chunk_metadata,
+                            "enrichment_applied": enrichment_applied,
+                            "enrichment": {
+                                "applied": enrichment_applied,
+                                "keywords_count": len(keywords),
+                                "questions_count": len(questions),
+                                "has_summary": bool(summary_text),
+                            },
+                            "embedding": {
+                                "status": embedding_status,
+                                "indexed": is_indexed,
+                                "provider": embedding_settings.get("provider"),
+                                "model": embedding_settings.get("model"),
+                                "dimension": embedding_settings.get("dimension"),
+                            },
                         }
                     )
 
-                return {"chunks": chunk_list, "total": total}
+                return {
+                    "chunks": chunk_list,
+                    "total": total,
+                    "embedding_config": {
+                        "provider": embedding_settings.get("provider"),
+                        "model": embedding_settings.get("model"),
+                        "dimension": embedding_settings.get("dimension"),
+                        "provider_source": embedding_settings.get("provider_source"),
+                        "model_source": embedding_settings.get("model_source"),
+                        "dimension_source": embedding_settings.get("dimension_source"),
+                    },
+                    "vector_index_lookup": {
+                        "attempted": vector_lookup_attempted,
+                        "error": vector_lookup_error,
+                    },
+                }
 
             except Exception as e:
                 logger.warning(f"Failed to query chunks (table may not exist): {e}")

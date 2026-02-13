@@ -1,6 +1,6 @@
-import React from 'react';
-import { Search, Filter } from 'lucide-react';
-import { DepartmentSelect } from '@/components/departments/DepartmentSelect';
+import React from "react";
+import { Search, Filter } from "lucide-react";
+import { DepartmentSelect } from "@/components/departments/DepartmentSelect";
 
 interface SearchBarProps {
   searchQuery: string;
@@ -49,6 +49,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             <option value="all">All Types</option>
             <option value="pdf">PDF</option>
             <option value="docx">DOCX</option>
+            <option value="excel">Excel</option>
             <option value="txt">TXT</option>
             <option value="md">Markdown</option>
             <option value="image">Images</option>

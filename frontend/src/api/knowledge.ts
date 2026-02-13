@@ -54,11 +54,38 @@ export interface KnowledgeChunk {
   questions?: string[];
   summary?: string;
   token_count?: number;
+  chunk_metadata?: Record<string, unknown> | null;
+  enrichment_applied?: boolean;
+  enrichment?: {
+    applied?: boolean;
+    keywords_count?: number;
+    questions_count?: number;
+    has_summary?: boolean;
+  };
+  embedding?: {
+    status?: 'indexed' | 'missing' | 'pending' | 'failed' | 'unknown';
+    indexed?: boolean;
+    provider?: string;
+    model?: string;
+    dimension?: number;
+  };
 }
 
 export interface KnowledgeChunksResponse {
   chunks: KnowledgeChunk[];
   total: number;
+  embedding_config?: {
+    provider?: string;
+    model?: string;
+    dimension?: number;
+    provider_source?: string;
+    model_source?: string;
+    dimension_source?: string;
+  };
+  vector_index_lookup?: {
+    attempted?: boolean;
+    error?: string | null;
+  };
 }
 
 export interface UpdateDocumentRequest {
@@ -115,6 +142,7 @@ export interface KBConfigResponse {
     generate_summary?: boolean;
     temperature?: number;
     batch_size?: number;
+    max_tokens?: number;
   };
   embedding: {
     provider?: string;

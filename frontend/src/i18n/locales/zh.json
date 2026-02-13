@@ -436,6 +436,8 @@
     "enableEnrichment": "启用 LLM 富化",
     "enrichmentProvider": "富化模型供应商",
     "enrichmentModel": "富化模型",
+    "enrichmentMaxTokens": "富化最大输出 Token",
+    "enrichmentMaxTokensHint": "填 0 表示跟随模型元数据中的最大输出 Token",
     "keywordsTopn": "关键词数量",
     "questionsTopn": "问题数量",
     "generateSummary": "生成摘要",

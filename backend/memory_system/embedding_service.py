@@ -263,6 +263,23 @@ def _extract_embedding_vectors(response_data: object) -> List[List[float]]:
     return vectors
 
 
+def _is_payload_too_large_error(error: Exception) -> bool:
+    """Return True when provider rejected request due to payload size."""
+    if isinstance(error, requests.exceptions.HTTPError):
+        response = getattr(error, "response", None)
+        if response is not None and getattr(response, "status_code", None) == 413:
+            return True
+
+    message = str(error).lower()
+    if "413" in message and (
+        "request entity too large" in message
+        or "payload too large" in message
+        or "request too large" in message
+    ):
+        return True
+    return False
+
+
 class OllamaEmbeddingService(EmbeddingServiceInterface):
     """Embedding service using Ollama protocol (/api/embeddings)."""
 
@@ -410,6 +427,35 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
             or default_dim
         )
 
+        scope_section_name = (
+            "knowledge_base" if self._scope == EMBEDDING_SCOPE_KNOWLEDGE_BASE else "memory"
+        )
+        scope_embedding_cfg: Dict[str, object] = {}
+        try:
+            scope_section = self._config.get_section(scope_section_name) if self._config else {}
+            if isinstance(scope_section, dict):
+                embedding_cfg = scope_section.get("embedding", {})
+                if isinstance(embedding_cfg, dict):
+                    scope_embedding_cfg = embedding_cfg
+        except Exception:
+            scope_embedding_cfg = {}
+
+        self._max_batch_size = (
+            _coerce_int(settings.get("batch_size"))
+            or _coerce_int(scope_embedding_cfg.get("batch_size"))
+            or 32
+        )
+        self._max_batch_chars = (
+            _coerce_int(settings.get("batch_char_limit"))
+            or _coerce_int(scope_embedding_cfg.get("batch_char_limit"))
+            or 120_000
+        )
+        self._single_input_max_chars = (
+            _coerce_int(settings.get("single_input_char_limit"))
+            or _coerce_int(scope_embedding_cfg.get("single_input_char_limit"))
+            or 60_000
+        )
+
         logger.info(
             "Initialized OpenAI-compatible embedding service",
             extra={
@@ -418,6 +464,8 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
                 "url": self._base_url,
                 "model": self._model,
                 "dimension": self._embedding_dim,
+                "batch_size": self._max_batch_size,
+                "batch_char_limit": self._max_batch_chars,
             },
         )
 
@@ -455,29 +503,32 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
         if not texts:
             return []
 
+        normalized_texts = [str(text or "") for text in texts]
+        embeddings: List[Optional[List[float]]] = [None] * len(normalized_texts)
+
         try:
-            url = f"{self._base_url}/v1/embeddings"
-            payload = {"model": self._model, "input": texts}
-            headers = {"Content-Type": "application/json"}
-            if self._api_key:
-                headers["Authorization"] = f"Bearer {self._api_key}"
-
-            response = requests.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=self._timeout * 2,
-            )
-            response.raise_for_status()
-
-            result = response.json()
-            embeddings = _extract_embedding_vectors(result)
-            if not embeddings:
-                raise RuntimeError(
-                    f"No embeddings returned from provider response (keys={list(result.keys())})"
+            for start, end in self._build_batch_ranges(normalized_texts):
+                self._embed_range_with_adaptive_split(
+                    texts=normalized_texts,
+                    start=start,
+                    end=end,
+                    output=embeddings,
                 )
 
-            return embeddings
+            missing_indices = [idx for idx, vector in enumerate(embeddings) if vector is None]
+            if missing_indices:
+                raise RuntimeError(
+                    "Batch embedding generation produced missing vectors at indices "
+                    f"{missing_indices[:5]}"
+                )
+
+            finalized_embeddings: List[List[float]] = []
+            for vector in embeddings:
+                if vector is None:
+                    raise RuntimeError("Missing embedding vector after batch generation")
+                finalized_embeddings.append(vector)
+
+            return finalized_embeddings
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to generate batch embeddings via vLLM: {e}")
@@ -485,6 +536,117 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
         except Exception as e:
             logger.error(f"Unexpected error generating batch embeddings: {e}")
             raise RuntimeError(f"Batch embedding generation failed: {e}")
+
+    def _build_batch_ranges(self, texts: List[str]) -> List[tuple[int, int]]:
+        """Build initial batches by item count and approximate payload size."""
+        ranges: List[tuple[int, int]] = []
+        start = 0
+        char_count = 0
+
+        for idx, text in enumerate(texts):
+            text_length = len(text)
+            exceeds_items = (idx - start) >= self._max_batch_size
+            exceeds_chars = idx > start and (char_count + text_length) > self._max_batch_chars
+
+            if exceeds_items or exceeds_chars:
+                ranges.append((start, idx))
+                start = idx
+                char_count = 0
+
+            char_count += text_length
+
+        if start < len(texts):
+            ranges.append((start, len(texts)))
+
+        return ranges
+
+    def _embed_range_with_adaptive_split(
+        self,
+        texts: List[str],
+        start: int,
+        end: int,
+        output: List[Optional[List[float]]],
+    ) -> None:
+        """Embed one range and split recursively when payload is too large."""
+        batch = texts[start:end]
+
+        try:
+            vectors = self._request_embeddings_batch(batch)
+            if len(vectors) != len(batch):
+                raise RuntimeError(
+                    "Embedding count mismatch: "
+                    f"expected={len(batch)}, received={len(vectors)}, range=({start}, {end})"
+                )
+
+            for offset, vector in enumerate(vectors):
+                output[start + offset] = vector
+            return
+
+        except Exception as error:
+            if not _is_payload_too_large_error(error):
+                raise
+
+            batch_len = end - start
+            if batch_len > 1:
+                mid = start + (batch_len // 2)
+                logger.warning(
+                    "Embedding payload too large, splitting batch",
+                    extra={
+                        "scope": self._scope,
+                        "start": start,
+                        "end": end,
+                        "batch_len": batch_len,
+                    },
+                )
+                self._embed_range_with_adaptive_split(texts, start, mid, output)
+                self._embed_range_with_adaptive_split(texts, mid, end, output)
+                return
+
+            single_text = batch[0]
+            if len(single_text) > self._single_input_max_chars:
+                logger.warning(
+                    "Single embedding input exceeded payload limit, truncating",
+                    extra={
+                        "scope": self._scope,
+                        "index": start,
+                        "original_chars": len(single_text),
+                        "truncated_chars": self._single_input_max_chars,
+                    },
+                )
+                single_text = single_text[: self._single_input_max_chars]
+
+            output[start] = self.generate_embedding(single_text)
+
+    def _request_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
+        """Submit one embedding batch request and parse vectors."""
+        url = f"{self._base_url}/v1/embeddings"
+        payload = {"model": self._model, "input": texts}
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=self._timeout * 2,
+        )
+        response.raise_for_status()
+
+        result = response.json()
+        embeddings = _extract_embedding_vectors(result)
+        if not embeddings:
+            raise RuntimeError(
+                f"No embeddings returned from provider response (keys={list(result)})"
+            )
+
+        if len(embeddings) != len(texts):
+            raise RuntimeError(
+                "Provider returned unexpected number of embeddings: "
+                f"expected={len(texts)}, got={len(embeddings)}"
+            )
+
+        return embeddings
 
     def get_embedding_dimension(self) -> int:
         return self._embedding_dim

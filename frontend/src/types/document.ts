@@ -1,6 +1,18 @@
-export type DocumentStatus = 'uploading' | 'processing' | 'completed' | 'failed';
+export type DocumentStatus =
+  | "uploading"
+  | "processing"
+  | "completed"
+  | "failed";
 
-export type DocumentType = 'pdf' | 'docx' | 'txt' | 'md' | 'image' | 'audio' | 'video';
+export type DocumentType =
+  | "pdf"
+  | "docx"
+  | "excel"
+  | "txt"
+  | "md"
+  | "image"
+  | "audio"
+  | "video";
 
 export type Document = {
   id: string;
@@ -13,7 +25,7 @@ export type Document = {
   uploadProgress?: number;
   processingProgress?: number;
   owner: string;
-  accessLevel: 'public' | 'internal' | 'confidential' | 'restricted';
+  accessLevel: "public" | "internal" | "confidential" | "restricted";
   tags?: string[];
   description?: string;
   thumbnailUrl?: string;
@@ -33,7 +45,7 @@ export type Collection = {
   description?: string;
   itemCount: number;
   owner: string;
-  accessLevel: 'public' | 'internal' | 'confidential' | 'restricted';
+  accessLevel: "public" | "internal" | "confidential" | "restricted";
   departmentId?: string;
   createdAt: string;
   updatedAt: string;

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import markdown
+import pandas as pd
 import pdfplumber
 import PyPDF2
 from docx import Document as DocxDocument
@@ -370,6 +371,84 @@ class MarkdownExtractor(TextExtractor):
             raise
 
 
+class ExcelExtractor(TextExtractor):
+    """Extract text from Excel spreadsheets (.xls/.xlsx)."""
+
+    def extract(self, file_path: Path) -> ExtractionResult:
+        """Extract text from every worksheet as tab-separated lines."""
+        start_time = datetime.now()
+
+        try:
+            # Read all sheets so we preserve workbook-level context.
+            sheets = pd.read_excel(file_path, sheet_name=None, dtype=str)
+            if not sheets:
+                raise ValueError("Spreadsheet contains no worksheets")
+
+            text_parts: list[str] = []
+            sheet_summaries: list[dict[str, Any]] = []
+
+            for sheet_name, dataframe in sheets.items():
+                frame = dataframe.fillna("")
+                if frame.columns.empty and frame.empty:
+                    text_parts.append(f"[Sheet: {sheet_name}]\n(Empty sheet)")
+                    sheet_summaries.append({"name": sheet_name, "rows": 0, "columns": 0})
+                    continue
+
+                header_line = "\t".join(str(col) for col in frame.columns)
+                row_lines = [
+                    "\t".join(str(cell) for cell in row)
+                    for row in frame.itertuples(index=False, name=None)
+                ]
+                sheet_text = "\n".join([f"[Sheet: {sheet_name}]", header_line, *row_lines]).strip()
+                text_parts.append(sheet_text)
+
+                sheet_summaries.append(
+                    {
+                        "name": sheet_name,
+                        "rows": int(frame.shape[0]),
+                        "columns": int(frame.shape[1]),
+                    }
+                )
+
+            text = "\n\n".join(part for part in text_parts if part.strip())
+            extraction_time = (datetime.now() - start_time).total_seconds()
+            word_count = self._count_words(text)
+
+            metadata = {
+                "filename": file_path.name,
+                "sheet_count": len(sheet_summaries),
+                "sheets": sheet_summaries,
+            }
+
+            logger.info(
+                "Excel extraction completed",
+                extra={
+                    "file": str(file_path),
+                    "sheets": len(sheet_summaries),
+                    "words": word_count,
+                    "time": extraction_time,
+                },
+            )
+
+            return ExtractionResult(
+                text=text,
+                metadata=metadata,
+                page_count=len(sheet_summaries),
+                word_count=word_count,
+                extraction_time=extraction_time,
+            )
+
+        except ImportError as e:
+            logger.error(f"Excel extraction dependency missing: {e}", exc_info=True)
+            raise ValueError(
+                "Excel extraction requires optional dependencies (e.g. openpyxl/xlrd). "
+                "Please install them and retry."
+            ) from e
+        except Exception as e:
+            logger.error(f"Excel extraction failed: {e}", exc_info=True)
+            raise
+
+
 def get_extractor(file_type: str) -> TextExtractor:
     """Get appropriate text extractor for file type.
 
@@ -390,6 +469,13 @@ def get_extractor(file_type: str) -> TextExtractor:
         return DOCExtractor()
     elif "wordprocessingml.document" in normalized or "docx" in normalized or "word" in normalized:
         return DOCXExtractor()
+    elif (
+        "spreadsheetml.sheet" in normalized
+        or "vnd.ms-excel" in normalized
+        or normalized.endswith(".xlsx")
+        or normalized.endswith(".xls")
+    ):
+        return ExcelExtractor()
     elif "markdown" in normalized or normalized.endswith(".md"):
         return MarkdownExtractor()
     elif "text" in normalized or normalized.endswith(".txt"):

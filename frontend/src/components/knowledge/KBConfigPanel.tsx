@@ -44,6 +44,7 @@ const QUALITY_FIRST_DEFAULTS = {
     generate_summary: true,
     temperature: 0.2,
     batch_size: 5,
+    max_tokens: 0,
   },
   embedding: {
     dimension: 1024,
@@ -357,6 +358,7 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
         generate_summary: Boolean(recommendedEnrichment.generate_summary ?? true),
         temperature: Number(recommendedEnrichment.temperature || 0.2),
         batch_size: Number(recommendedEnrichment.batch_size || 5),
+        max_tokens: Number(recommendedEnrichment.max_tokens ?? 0),
       },
       embedding: {
         ...config.embedding,
@@ -809,6 +811,23 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
                           !!enrichmentProvider,
                         )}
                       </div>
+                    </div>
+                    <div>
+                      <label className={labelClass}>{t('kbConfig.enrichmentMaxTokens')}</label>
+                      <input
+                        type="number" min={0} max={8192} step={64}
+                        value={config.enrichment.max_tokens ?? 0}
+                        onChange={(e) =>
+                          updateEnrichment(
+                            'max_tokens',
+                            Math.max(0, Math.min(8192, Number(e.target.value) || 0)),
+                          )
+                        }
+                        className={inputClass}
+                      />
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {t('kbConfig.enrichmentMaxTokensHint')}
+                      </p>
                     </div>
                     {showAdvanced && (
                       <div className="grid grid-cols-2 gap-4">

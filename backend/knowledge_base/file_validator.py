@@ -24,6 +24,8 @@ class SupportedFileType(Enum):
     PDF = "application/pdf"
     DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     DOC = "application/msword"
+    XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    XLS = "application/vnd.ms-excel"
     TXT = "text/plain"
     MD = "text/markdown"
     HTML = "text/html"
@@ -146,6 +148,13 @@ class FileValidator:
                         SupportedFileType.TXT
                         if file_path.suffix == ".txt"
                         else SupportedFileType.MD
+                    )
+                    mime_type = file_type.value
+                elif file_path.suffix.lower() in [".xlsx", ".xls"]:
+                    file_type = (
+                        SupportedFileType.XLSX
+                        if file_path.suffix.lower() == ".xlsx"
+                        else SupportedFileType.XLS
                     )
                     mime_type = file_type.value
                 else:

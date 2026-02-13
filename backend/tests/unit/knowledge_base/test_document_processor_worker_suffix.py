@@ -15,3 +15,14 @@ def test_get_suffix_supports_flac_and_common_video_variants() -> None:
     assert DocumentProcessorWorker._get_suffix("audio/flac") == ".flac"
     assert DocumentProcessorWorker._get_suffix("video/quicktime") == ".mov"
     assert DocumentProcessorWorker._get_suffix("video/x-matroska") == ".mkv"
+
+
+def test_get_suffix_supports_excel_variants() -> None:
+    """Excel MIME types should map to stable spreadsheet suffixes."""
+    assert (
+        DocumentProcessorWorker._get_suffix(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        == ".xlsx"
+    )
+    assert DocumentProcessorWorker._get_suffix("application/vnd.ms-excel") == ".xls"

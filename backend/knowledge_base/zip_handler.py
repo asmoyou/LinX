@@ -15,10 +15,27 @@ logger = logging.getLogger(__name__)
 
 # Supported file extensions (matches knowledge router's EXT_TO_DOC_TYPE)
 SUPPORTED_EXTENSIONS = {
-    ".pdf", ".doc", ".docx", ".txt", ".md",
-    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
-    ".mp3", ".wav", ".m4a", ".flac",
-    ".mp4", ".avi", ".mov", ".mkv",
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".txt",
+    ".md",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".bmp",
+    ".webp",
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".flac",
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".mkv",
 }
 
 # Files/directories to skip
@@ -142,8 +159,7 @@ def extract_zip(zip_data: BinaryIO) -> ZipExtractionResult:
             # Check file count limit
             if len(result.extracted_files) >= MAX_FILES:
                 result.errors.append(
-                    f"Reached maximum file limit ({MAX_FILES}). "
-                    f"Remaining files were skipped."
+                    f"Reached maximum file limit ({MAX_FILES}). " f"Remaining files were skipped."
                 )
                 break
 

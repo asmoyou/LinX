@@ -34,6 +34,18 @@ def test_get_file_type_falls_back_to_m4a_extension() -> None:
     assert _get_file_type("voice-note.m4a", None) == "audio"
 
 
+def test_get_file_type_supports_excel_uploads() -> None:
+    """Excel MIME/extension should map to the dedicated excel document type."""
+    assert (
+        _get_file_type(
+            "report.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        == "excel"
+    )
+    assert _get_file_type("legacy-sheet.xls", None) == "excel"
+
+
 def test_get_bucket_type_handles_content_type_with_parameters() -> None:
     """Bucket routing should tolerate MIME parameters from clients/browsers."""
     assert _get_bucket_type("voice-note.m4a", "audio/mp4; codecs=mp4a.40.2") == "audio"

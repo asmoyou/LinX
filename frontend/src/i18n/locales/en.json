@@ -436,6 +436,8 @@
     "enableEnrichment": "Enable LLM Enrichment",
     "enrichmentProvider": "Enrichment Provider",
     "enrichmentModel": "Enrichment Model",
+    "enrichmentMaxTokens": "Enrichment Max Output Tokens",
+    "enrichmentMaxTokensHint": "Set 0 to follow provider model max output tokens",
     "keywordsTopn": "Keywords Top-N",
     "questionsTopn": "Questions Top-N",
     "generateSummary": "Generate Summary",

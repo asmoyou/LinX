@@ -1,7 +1,8 @@
-import React from 'react';
-import { useTranslation } from 'react-i18next';
+import React from "react";
+import { useTranslation } from "react-i18next";
 import {
   FileText,
+  FileSpreadsheet,
   Image,
   Music,
   Video,
@@ -18,10 +19,10 @@ import {
   Hash,
   RotateCcw,
   Pencil,
-} from 'lucide-react';
-import { GlassPanel } from '@/components/GlassPanel';
-import { knowledgeApi } from '@/api/knowledge';
-import type { Document } from '@/types/document';
+} from "lucide-react";
+import { GlassPanel } from "@/components/GlassPanel";
+import { knowledgeApi } from "@/api/knowledge";
+import type { Document } from "@/types/document";
 
 interface DocumentCardProps {
   document: Document;
@@ -50,14 +51,20 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = React.useState(false);
-  const [thumbnailBlobUrl, setThumbnailBlobUrl] = React.useState<string | null>(null);
+  const [thumbnailBlobUrl, setThumbnailBlobUrl] = React.useState<string | null>(
+    null,
+  );
   const thumbnailObjectUrlRef = React.useRef<string | null>(null);
-  const supportsPreviewThumb = document.type === 'image' || document.type === 'video' || document.type === 'pdf';
+  const supportsPreviewThumb =
+    document.type === "image" ||
+    document.type === "video" ||
+    document.type === "pdf";
   const canAttemptThumbnail =
     supportsPreviewThumb &&
-    document.status === 'completed' &&
-    (Boolean(document.thumbnailUrl) || document.fileReference?.startsWith('minio:'));
-  const thumbnailCacheKey = `${document.id}:${document.processedAt || document.uploadedAt || ''}`;
+    document.status === "completed" &&
+    (Boolean(document.thumbnailUrl) ||
+      document.fileReference?.startsWith("minio:"));
+  const thumbnailCacheKey = `${document.id}:${document.processedAt || document.uploadedAt || ""}`;
 
   const revokeThumbnailObjectUrl = React.useCallback(() => {
     if (thumbnailObjectUrlRef.current) {
@@ -117,31 +124,44 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [canAttemptThumbnail, document.id, revokeThumbnailObjectUrl, thumbnailCacheKey]);
+  }, [
+    canAttemptThumbnail,
+    document.id,
+    revokeThumbnailObjectUrl,
+    thumbnailCacheKey,
+  ]);
 
   React.useEffect(
     () => () => {
       revokeThumbnailObjectUrl();
     },
-    [revokeThumbnailObjectUrl]
+    [revokeThumbnailObjectUrl],
   );
 
-  const processingProgress = Math.max(0, Math.min(100, document.processingProgress ?? 0));
-  const uploadProgress = Math.max(0, Math.min(100, document.uploadProgress ?? 0));
+  const processingProgress = Math.max(
+    0,
+    Math.min(100, document.processingProgress ?? 0),
+  );
+  const uploadProgress = Math.max(
+    0,
+    Math.min(100, document.uploadProgress ?? 0),
+  );
   const lastUpdatedAt = document.processedAt || document.uploadedAt;
   const hasGeneratedThumbnail = Boolean(thumbnailBlobUrl);
   const previewMediaUrl =
     thumbnailBlobUrl ||
-    ((document.type === 'image' || document.type === 'video' || document.type === 'pdf')
+    (document.type === "image" ||
+    document.type === "video" ||
+    document.type === "pdf"
       ? document.url
       : undefined);
   const hasMediaPreview = Boolean(previewMediaUrl);
   const previewContainerClass = hasMediaPreview
-    ? 'h-32 bg-white/10'
-    : 'h-16 bg-white/5 border border-white/20';
+    ? "h-32 bg-white/10"
+    : "h-16 bg-white/5 border border-white/20";
 
   const renderCompactHint = () => {
-    if (document.type === 'audio') {
+    if (document.type === "audio") {
       return (
         <div className="flex items-end gap-0.5 h-5">
           {[6, 12, 8, 14, 10].map((height, idx) => (
@@ -154,14 +174,18 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
         </div>
       );
     }
-    if (document.type === 'pdf' || document.type === 'docx') {
+    if (
+      document.type === "pdf" ||
+      document.type === "docx" ||
+      document.type === "excel"
+    ) {
       return (
         <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 text-gray-600 dark:text-gray-300">
           {document.type.toUpperCase()}
         </span>
       );
     }
-    if (document.status === 'completed' && document.chunkCount != null) {
+    if (document.status === "completed" && document.chunkCount != null) {
       return (
         <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 text-gray-600 dark:text-gray-300">
           {document.chunkCount} chunks
@@ -171,71 +195,83 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
     return null;
   };
 
-  const getFileIcon = (type: Document['type'], className: string = 'w-8 h-8') => {
+  const getFileIcon = (
+    type: Document["type"],
+    className: string = "w-8 h-8",
+  ) => {
     switch (type) {
-      case 'pdf':
-      case 'docx':
-      case 'txt':
-      case 'md':
+      case "pdf":
+      case "docx":
+      case "excel":
+      case "txt":
+      case "md":
+        if (type === "excel") {
+          return (
+            <FileSpreadsheet className={`${className} text-emerald-500`} />
+          );
+        }
         return <FileText className={`${className} text-blue-500`} />;
-      case 'image':
+      case "image":
         return <Image className={`${className} text-green-500`} />;
-      case 'audio':
+      case "audio":
         return <Music className={`${className} text-purple-500`} />;
-      case 'video':
+      case "video":
         return <Video className={`${className} text-red-500`} />;
       default:
         return <File className={`${className} text-gray-500`} />;
     }
   };
 
-  const getStatusIcon = (status: Document['status'], className: string = 'w-3.5 h-3.5') => {
+  const getStatusIcon = (
+    status: Document["status"],
+    className: string = "w-3.5 h-3.5",
+  ) => {
     switch (status) {
-      case 'completed':
+      case "completed":
         return <CheckCircle className={className} />;
-      case 'failed':
+      case "failed":
         return <XCircle className={className} />;
-      case 'processing':
-      case 'uploading':
+      case "processing":
+      case "uploading":
         return <Loader2 className={`${className} animate-spin`} />;
     }
   };
 
-  const getStatusLabel = (status: Document['status']) => {
+  const getStatusLabel = (status: Document["status"]) => {
     switch (status) {
-      case 'completed':
-        return 'ready';
-      case 'failed':
-        return 'failed';
-      case 'processing':
-        return 'processing';
-      case 'uploading':
-        return 'uploading';
+      case "completed":
+        return "ready";
+      case "failed":
+        return "failed";
+      case "processing":
+        return "processing";
+      case "uploading":
+        return "uploading";
     }
   };
 
-  const getStatusBadgeClass = (status: Document['status']) => {
+  const getStatusBadgeClass = (status: Document["status"]) => {
     switch (status) {
-      case 'completed':
-        return 'bg-emerald-600 text-white';
-      case 'failed':
-        return 'bg-rose-600 text-white';
-      case 'processing':
-      case 'uploading':
-        return 'bg-sky-600 text-white';
+      case "completed":
+        return "bg-emerald-600 text-white";
+      case "failed":
+        return "bg-rose-600 text-white";
+      case "processing":
+      case "uploading":
+        return "bg-sky-600 text-white";
     }
   };
 
-  const getAccessLevelBadgeClass = (level: Document['accessLevel']) => {
+  const getAccessLevelBadgeClass = (level: Document["accessLevel"]) => {
     switch (level) {
-      case 'public':
-        return 'bg-emerald-600 text-white';
-      case 'internal':
-        return 'bg-sky-600 text-white';
-      case 'confidential':
-        return 'bg-amber-400 text-gray-900';
-      case 'restricted':
-        return 'bg-rose-600 text-white';
+      case "public":
+        return "bg-emerald-600 text-white";
+      case "internal":
+        return "bg-sky-600 text-white";
+      case "confidential":
+        return "bg-amber-400 text-gray-900";
+      case "restricted":
+        return "bg-rose-600 text-white";
     }
   };
 
@@ -249,12 +285,12 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return parsed.toLocaleString(undefined, {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
       hour12: false,
     });
   };
@@ -262,12 +298,12 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
   return (
     <GlassPanel
       className={`hover:scale-105 transition-transform duration-200 relative ${
-        draggable ? 'cursor-grab active:cursor-grabbing' : ''
+        draggable ? "cursor-grab active:cursor-grabbing" : ""
       }`}
       draggable={draggable}
       onDragStart={(event) => {
         if (!draggable) return;
-        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.effectAllowed = "move";
         onDragStart?.(document);
       }}
       onDragEnd={() => {
@@ -305,7 +341,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
                 className="h-full w-full object-cover"
                 draggable={false}
               />
-            ) : document.type === 'video' ? (
+            ) : document.type === "video" ? (
               <video
                 src={previewMediaUrl}
                 className="h-full w-full object-cover"
@@ -313,7 +349,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
                 playsInline
                 preload="metadata"
               />
-            ) : document.type === 'pdf' ? (
+            ) : document.type === "pdf" ? (
               <iframe
                 src={`${previewMediaUrl}#page=1&toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
                 title={document.name}
@@ -333,7 +369,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
           <div className="h-full px-3 flex items-center justify-between">
             <div className="flex items-center gap-3 min-w-0">
               <div className="w-10 h-10 rounded-md bg-white/20 flex items-center justify-center shrink-0">
-                {getFileIcon(document.type, 'w-5 h-5')}
+                {getFileIcon(document.type, "w-5 h-5")}
               </div>
               <div className="min-w-0">
                 <p className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
@@ -358,7 +394,9 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
           {document.name}
         </h3>
         <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
-          <span className="px-1.5 py-0.5 rounded bg-white/20">{document.type.toUpperCase()}</span>
+          <span className="px-1.5 py-0.5 rounded bg-white/20">
+            {document.type.toUpperCase()}
+          </span>
           <span>{formatFileSize(document.size)}</span>
         </div>
         {document.description && (
@@ -369,21 +407,25 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
       </div>
 
       {/* Progress Bar */}
-      {(document.status === 'uploading' || document.status === 'processing') && (
+      {(document.status === "uploading" ||
+        document.status === "processing") && (
         <div className="mb-4">
           <div className="flex items-center justify-between text-xs mb-1">
             <span className="text-gray-600 dark:text-gray-400">
-              {document.status === 'uploading' ? 'Uploading' : 'Processing...'}
+              {document.status === "uploading" ? "Uploading" : "Processing..."}
             </span>
             <span className="text-gray-800 dark:text-white font-medium">
-              {document.status === 'uploading' ? uploadProgress : processingProgress}%
+              {document.status === "uploading"
+                ? uploadProgress
+                : processingProgress}
+              %
             </span>
           </div>
           <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
             <div
               className="h-full bg-blue-500 transition-all duration-300"
               style={{
-                width: `${document.status === 'uploading' ? uploadProgress : processingProgress}%`
+                width: `${document.status === "uploading" ? uploadProgress : processingProgress}%`,
               }}
             />
           </div>
@@ -391,46 +433,54 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
       )}
 
       {/* Processing Result Details */}
-      {document.status === 'completed' && (document.chunkCount || document.tokenCount) && (
-        <div className="mb-4 flex items-center gap-3 text-xs text-gray-600 dark:text-gray-400">
-          {document.chunkCount != null && (
-            <span className="flex items-center gap-1">
-              <Layers className="w-3 h-3" />
-              {document.chunkCount} chunks
-            </span>
-          )}
-          {document.tokenCount != null && (
-            <span className="flex items-center gap-1">
-              <Hash className="w-3 h-3" />
-              {document.tokenCount.toLocaleString()} tokens
-            </span>
-          )}
-        </div>
-      )}
+      {document.status === "completed" &&
+        (document.chunkCount || document.tokenCount) && (
+          <div className="mb-4 flex items-center gap-3 text-xs text-gray-600 dark:text-gray-400">
+            {document.chunkCount != null && (
+              <span className="flex items-center gap-1">
+                <Layers className="w-3 h-3" />
+                {document.chunkCount} chunks
+              </span>
+            )}
+            {document.tokenCount != null && (
+              <span className="flex items-center gap-1">
+                <Hash className="w-3 h-3" />
+                {document.tokenCount.toLocaleString()} tokens
+              </span>
+            )}
+          </div>
+        )}
 
       {/* Failed Error Banner */}
-      {document.status === 'failed' && (document.errorMessage || document.error) && (
-        <div className="mb-4 p-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-700 dark:text-red-400">
-          {document.errorMessage || document.error}
-        </div>
-      )}
+      {document.status === "failed" &&
+        (document.errorMessage || document.error) && (
+          <div className="mb-4 p-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-700 dark:text-red-400">
+            {document.errorMessage || document.error}
+          </div>
+        )}
 
       {/* Reprocess Button for failed/completed documents */}
-      {onReprocess && (document.status === 'failed' || document.status === 'completed') && (
-        <button
-          onClick={() => onReprocess(document)}
-          className="mb-4 w-full flex items-center justify-center gap-2 px-3 py-1.5 bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30 rounded-lg hover:bg-amber-500/30 transition-colors text-xs font-medium"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          {document.status === 'failed' ? t('kbConfig.retryProcessing') : t('kbConfig.reprocess')}
-        </button>
-      )}
+      {onReprocess &&
+        (document.status === "failed" || document.status === "completed") && (
+          <button
+            onClick={() => onReprocess(document)}
+            className="mb-4 w-full flex items-center justify-center gap-2 px-3 py-1.5 bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30 rounded-lg hover:bg-amber-500/30 transition-colors text-xs font-medium"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            {document.status === "failed"
+              ? t("kbConfig.retryProcessing")
+              : t("kbConfig.reprocess")}
+          </button>
+        )}
 
       {/* Tags */}
       {document.tags && document.tags.length > 0 && (
         <div className="flex flex-wrap gap-1 mb-4">
           {document.tags.slice(0, 2).map((tag) => (
-            <span key={tag} className="text-xs px-2 py-0.5 bg-white/20 rounded-full text-gray-700 dark:text-gray-300">
+            <span
+              key={tag}
+              className="text-xs px-2 py-0.5 bg-white/20 rounded-full text-gray-700 dark:text-gray-300"
+            >
               {tag}
             </span>
           ))}
@@ -446,10 +496,12 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
       <div className="flex items-center gap-2">
         <button
           onClick={() => onView(document)}
-          disabled={document.status === 'uploading' || document.status === 'processing'}
+          disabled={
+            document.status === "uploading" || document.status === "processing"
+          }
           className="flex-1 px-3 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {t('document.view')}
+          {t("document.view")}
         </button>
         <div className="relative">
           <button
@@ -458,7 +510,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
           >
             <MoreVertical className="w-5 h-5 text-gray-700 dark:text-gray-300" />
           </button>
-          
+
           {showMenu && (
             <>
               <div
@@ -471,11 +523,14 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
                     onView(document);
                     setShowMenu(false);
                   }}
-                  disabled={document.status === 'uploading' || document.status === 'processing'}
+                  disabled={
+                    document.status === "uploading" ||
+                    document.status === "processing"
+                  }
                   className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2 disabled:opacity-50"
                 >
                   <Eye className="w-4 h-4" />
-                  {t('document.viewDetails')}
+                  {t("document.viewDetails")}
                 </button>
                 {onEdit && (
                   <button
@@ -486,7 +541,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
                     className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2"
                   >
                     <Pencil className="w-4 h-4" />
-                    {t('common.edit')}
+                    {t("common.edit")}
                   </button>
                 )}
                 <button
@@ -494,11 +549,14 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
                     onDownload(document);
                     setShowMenu(false);
                   }}
-                  disabled={document.status === 'uploading' || document.status === 'processing'}
+                  disabled={
+                    document.status === "uploading" ||
+                    document.status === "processing"
+                  }
                   className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2 disabled:opacity-50"
                 >
                   <Download className="w-4 h-4" />
-                  {t('document.download')}
+                  {t("document.download")}
                 </button>
                 <button
                   onClick={() => {
@@ -508,7 +566,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
                   className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2 text-red-500"
                 >
                   <Trash2 className="w-4 h-4" />
-                  {t('common.delete')}
+                  {t("common.delete")}
                 </button>
               </div>
             </>
@@ -520,7 +578,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
       <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
         <div className="flex items-center gap-1">
           <Clock className="w-3 h-3" />
-          {t('document.lastUpdated')}: {formatDateTime(lastUpdatedAt)}
+          {t("document.lastUpdated")}: {formatDateTime(lastUpdatedAt)}
         </div>
       </div>
     </GlassPanel>

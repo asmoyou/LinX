@@ -99,6 +99,8 @@ storage:
     - pdf
     - doc
     - docx
+    - xls
+    - xlsx
     - txt
     - md
     - html
@@ -453,8 +455,8 @@ memory:
       retention_days: 365
       max_items_per_user: 5000
   embedding:
-    provider: llm-pool
-    model: BAAI/bge-m3
+    provider: ollama
+    model: bge-m3
     dimension: 1024
     batch_size: 32
     inherit_from_knowledge_base: true
@@ -462,8 +464,8 @@ memory:
     top_k: 10
     similarity_threshold: 0.3
     enable_reranking: true
-    rerank_provider: llm-pool
-    rerank_model: BAAI/bge-reranker-v2-m3
+    rerank_provider: ollama
+    rerank_model: qllama/bge-reranker-v2-m3:latest
     rerank_top_k: 30
     rerank_weight: 0.75
     rerank_timeout_seconds: 8
@@ -471,10 +473,17 @@ memory:
     rerank_doc_max_chars: 1200
     similarity_weight: 0.7
     recency_weight: 0.3
+    milvus:
+      metric_type: L2
+      nprobe: 10
   sharing:
     enable_automatic: true
     enable_explicit: true
     default_scope: user_context
+  collection_retry_attempts: 3
+  collection_retry_delay_seconds: 0.35
+  search_timeout_seconds: 2
+  delete_timeout_seconds: 2
 knowledge_base:
   processing:
     chunk_size_tokens: 512
@@ -518,18 +527,19 @@ knowledge_base:
     vision_timeout_seconds: 120
     output_language: zh-CN
   embedding:
-    provider: llm-pool
-    model: BAAI/bge-m3
+    provider: ollama
+    model: bge-m3
     dimension: 1024
   enrichment:
     enabled: true
-    provider: llm-pool
-    model: Qwen/Qwen3-Next-80B-A3B-Instruct
+    provider: ollama
+    model: qwen3-vl:30b
     keywords_topn: 5
     questions_topn: 3
     generate_summary: true
     temperature: 0.2
     batch_size: 5
+    max_tokens: 0
   queue:
     max_concurrent_jobs: 5
     job_timeout_minutes: 60
@@ -553,8 +563,8 @@ knowledge_base:
     embedding_failure_backoff_seconds: 30
     rerank_enabled: true
     rerank_weight: 0.85
-    rerank_provider: llm-pool
-    rerank_model: BAAI/bge-reranker-v2-m3
+    rerank_provider: ollama
+    rerank_model: qllama/bge-reranker-v2-m3:latest
     rerank_top_k: 30
     rerank_timeout_seconds: 10
     rerank_failure_backoff_seconds: 60
