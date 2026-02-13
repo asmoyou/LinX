@@ -81,14 +81,28 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
   };
 
   const getProcessingTime = (doc: Document) => {
-    if (!doc.uploadedAt || !doc.processedAt) return null;
-    const start = new Date(doc.uploadedAt).getTime();
-    const end = new Date(doc.processedAt).getTime();
+    const startRaw = doc.processingStartedAt || doc.uploadedAt;
+    const endRaw = doc.processingCompletedAt || doc.processedAt;
+    if (!startRaw || !endRaw) return null;
+
+    const start = new Date(startRaw).getTime();
+    const end = new Date(endRaw).getTime();
+    if (Number.isNaN(start) || Number.isNaN(end)) return null;
+
     const diffMs = end - start;
     if (diffMs < 0) return null;
-    if (diffMs < 1000) return `${diffMs}ms`;
-    if (diffMs < 60000) return `${(diffMs / 1000).toFixed(1)}s`;
-    return `${(diffMs / 60000).toFixed(1)}min`;
+    if (diffMs < 1000) return `${Math.round(diffMs)}ms`;
+
+    const totalSeconds = diffMs / 1000;
+    if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = Math.round(totalSeconds % 60);
+    if (minutes < 60) return `${minutes}m ${seconds}s`;
+
+    const hours = Math.floor(minutes / 60);
+    const remainMinutes = minutes % 60;
+    return `${hours}h ${remainMinutes}m`;
   };
 
   const handleDownload = () => {

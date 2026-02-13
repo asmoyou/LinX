@@ -289,6 +289,8 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         errorMessage: undefined,
         chunkCount: undefined,
         tokenCount: undefined,
+        processingStartedAt: undefined,
+        processingCompletedAt: undefined,
       });
       // Start polling for the reprocessing result
       get().pollProcessingStatus(id);
@@ -329,6 +331,8 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
           status: normalizedStatus,
           processingProgress: progress,
           processedAt: status.processed_at || status.completed_at || undefined,
+          processingStartedAt: status.started_at || status.created_at || undefined,
+          processingCompletedAt: status.completed_at || status.processed_at || undefined,
           error: status.error_message || undefined,
           errorMessage: status.error_message || undefined,
           chunkCount: status.chunk_count,

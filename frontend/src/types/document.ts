@@ -22,6 +22,8 @@ export type Document = {
   status: DocumentStatus;
   uploadedAt: string;
   processedAt?: string;
+  processingStartedAt?: string;
+  processingCompletedAt?: string;
   uploadProgress?: number;
   processingProgress?: number;
   owner: string;
