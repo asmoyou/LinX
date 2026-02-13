@@ -18,7 +18,7 @@ References:
 """
 
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, mock_open, patch
 
 from fastapi import HTTPException, status
@@ -309,6 +309,29 @@ class TestMemoryResponse:
         assert resp.shared_with == []
         assert resp.is_shared is False
         assert resp.relevance_score is None
+
+
+class TestTimestampFormatting:
+    """Test helper timestamp conversion used by index inspection."""
+
+    def test_to_iso_timestamp_converts_milvus_milliseconds(self):
+        from api_gateway.routers.memory import _to_iso_timestamp
+
+        milvus_ts_ms = 1739407685123
+        expected = datetime.fromtimestamp(milvus_ts_ms / 1000.0, tz=timezone.utc).isoformat()
+        assert _to_iso_timestamp(milvus_ts_ms) == expected
+
+    def test_to_iso_timestamp_converts_numeric_string_timestamp(self):
+        from api_gateway.routers.memory import _to_iso_timestamp
+
+        milvus_ts_ms_str = "1739407685123"
+        expected = datetime.fromtimestamp(1739407685.123, tz=timezone.utc).isoformat()
+        assert _to_iso_timestamp(milvus_ts_ms_str) == expected
+
+    def test_to_iso_timestamp_preserves_plain_text(self):
+        from api_gateway.routers.memory import _to_iso_timestamp
+
+        assert _to_iso_timestamp("not-a-timestamp") == "not-a-timestamp"
 
 
 class TestMemoryIndexInspectResponse:

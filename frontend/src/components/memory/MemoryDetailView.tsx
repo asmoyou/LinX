@@ -136,6 +136,36 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
     }
   };
 
+  const formatTimestamp = (value?: string | null) => {
+    if (!value) return "-";
+
+    const normalized = value.trim();
+    if (!normalized) return "-";
+
+    let parsed = new Date(normalized);
+    if (Number.isNaN(parsed.getTime()) && /^-?\d+(\.\d+)?$/.test(normalized)) {
+      const numeric = Number(normalized);
+      if (Number.isFinite(numeric)) {
+        const magnitude = Math.abs(Math.trunc(numeric));
+        const milliseconds =
+          magnitude >= 100_000_000_000
+            ? numeric
+            : magnitude >= 1_000_000_000
+              ? numeric * 1000
+              : Number.NaN;
+
+        if (Number.isFinite(milliseconds)) {
+          parsed = new Date(milliseconds);
+        }
+      }
+    }
+
+    if (Number.isNaN(parsed.getTime())) {
+      return normalized;
+    }
+    return parsed.toLocaleString();
+  };
+
   const indexStatus = String(memory.indexStatus || "").toLowerCase();
   const indexStatusKey = (
     indexStatus === "synced" ||
@@ -297,13 +327,13 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
                     <p>
                       {t("memory.detail.indexUpdated")}:{" "}
                       {indexInfo.vectorUpdatedAt
-                        ? new Date(indexInfo.vectorUpdatedAt).toLocaleString()
+                        ? formatTimestamp(indexInfo.vectorUpdatedAt)
                         : "-"}
                     </p>
                     <p>
                       {t("memory.detail.indexTimestamp")}:{" "}
                       {indexInfo.indexedTimestamp
-                        ? new Date(indexInfo.indexedTimestamp).toLocaleString()
+                        ? formatTimestamp(indexInfo.indexedTimestamp)
                         : "-"}
                     </p>
                     <p>
@@ -489,7 +519,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
               </span>
             </div>
             <p className="text-gray-800 dark:text-white font-medium">
-              {new Date(memory.createdAt).toLocaleString()}
+              {formatTimestamp(memory.createdAt)}
             </p>
           </div>
 
@@ -502,7 +532,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
                 </span>
               </div>
               <p className="text-gray-800 dark:text-white font-medium">
-                {new Date(memory.updatedAt).toLocaleString()}
+                {formatTimestamp(memory.updatedAt)}
               </p>
             </div>
           )}

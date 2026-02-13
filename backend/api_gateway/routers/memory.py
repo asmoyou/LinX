@@ -13,7 +13,7 @@ References:
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -1182,12 +1182,52 @@ def _update_memory_sync(
     return _memory_item_to_response(new_item, agent_name, user_name)
 
 
+def _numeric_timestamp_to_iso(raw_timestamp: float) -> Optional[str]:
+    """Convert unix timestamp expressed in seconds or milliseconds to ISO string."""
+    absolute = abs(raw_timestamp)
+    if absolute >= 1e11:
+        seconds = raw_timestamp / 1000.0
+    elif absolute >= 1e9:
+        seconds = raw_timestamp
+    else:
+        return None
+
+    try:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _to_iso_timestamp(raw: Any) -> Optional[str]:
     """Convert timestamp-like value to ISO string."""
     if raw is None:
         return None
+
+    if isinstance(raw, datetime):
+        if raw.tzinfo is None:
+            return raw.replace(tzinfo=timezone.utc).isoformat()
+        return raw.isoformat()
+
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        converted = _numeric_timestamp_to_iso(float(raw))
+        if converted is not None:
+            return converted
+
+    if isinstance(raw, str):
+        value = raw.strip()
+        if not value:
+            return None
+        try:
+            converted = _numeric_timestamp_to_iso(float(value))
+            if converted is not None:
+                return converted
+        except ValueError:
+            pass
+        return value
+
     if hasattr(raw, "isoformat"):
         return raw.isoformat()
+
     try:
         return str(raw)
     except Exception:
