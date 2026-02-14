@@ -123,28 +123,6 @@ class AgentExecutor:
             return clean
         return clean[: max_chars - 3] + "..."
 
-    def _retrieve_memories_without_similarity_threshold(
-        self,
-        *,
-        query_text: str,
-        memory_type: MemoryType,
-        top_k: int,
-        agent_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        task_id: Optional[str] = None,
-    ) -> list[Any]:
-        """Retry memory retrieval with `min_similarity=0` as a fallback."""
-        search_query = SearchQuery(
-            query_text=query_text,
-            memory_type=memory_type,
-            agent_id=agent_id,
-            user_id=user_id,
-            task_id=task_id,
-            top_k=top_k,
-            min_similarity=0.0,
-        )
-        return self.memory_interface.memory_system.retrieve_memories(search_query)
-
     def _build_execution_context_internal(
         self,
         agent: BaseAgent,
@@ -212,20 +190,6 @@ class AgentExecutor:
                     top_k=top_k,
                 )
                 logger.debug(f"Retrieved {len(agent_memories)} agent memories")
-                if not agent_memories:
-                    try:
-                        fallback_memories = self._retrieve_memories_without_similarity_threshold(
-                            query_text=context.task_description,
-                            memory_type=MemoryType.AGENT,
-                            agent_id=str(context.agent_id),
-                            top_k=top_k,
-                        )
-                        if fallback_memories:
-                            agent_memories = fallback_memories
-                            memory_debug["agent"]["fallback_used"] = True
-                            memory_debug["agent"]["fallback_hit_count"] = len(fallback_memories)
-                    except Exception as fallback_error:
-                        memory_debug["agent"]["fallback_error"] = str(fallback_error)
             except Exception as mem_error:
                 memory_debug["agent"]["error"] = str(mem_error)
                 logger.warning(
@@ -240,20 +204,6 @@ class AgentExecutor:
                     top_k=top_k,
                 )
                 logger.debug(f"Retrieved {len(company_memories)} company memories")
-                if not company_memories:
-                    try:
-                        fallback_memories = self._retrieve_memories_without_similarity_threshold(
-                            query_text=context.task_description,
-                            memory_type=MemoryType.COMPANY,
-                            user_id=str(context.user_id),
-                            top_k=top_k,
-                        )
-                        if fallback_memories:
-                            company_memories = fallback_memories
-                            memory_debug["company"]["fallback_used"] = True
-                            memory_debug["company"]["fallback_hit_count"] = len(fallback_memories)
-                    except Exception as fallback_error:
-                        memory_debug["company"]["fallback_error"] = str(fallback_error)
             except Exception as mem_error:
                 memory_debug["company"]["error"] = str(mem_error)
                 logger.warning(
@@ -272,22 +222,6 @@ class AgentExecutor:
                     user_context_query
                 )
                 logger.debug(f"Retrieved {len(user_context_memories)} user-context memories")
-                if not user_context_memories:
-                    try:
-                        fallback_memories = self._retrieve_memories_without_similarity_threshold(
-                            query_text=context.task_description,
-                            memory_type=MemoryType.USER_CONTEXT,
-                            user_id=str(context.user_id),
-                            top_k=top_k,
-                        )
-                        if fallback_memories:
-                            user_context_memories = fallback_memories
-                            memory_debug["user_context"]["fallback_used"] = True
-                            memory_debug["user_context"]["fallback_hit_count"] = len(
-                                fallback_memories
-                            )
-                    except Exception as fallback_error:
-                        memory_debug["user_context"]["fallback_error"] = str(fallback_error)
             except Exception as mem_error:
                 memory_debug["user_context"]["error"] = str(mem_error)
                 logger.warning(

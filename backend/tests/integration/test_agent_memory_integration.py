@@ -89,14 +89,12 @@ def test_executor_exposes_memory_debug_details():
     assert debug_info["memory"]["agent"]["hits"][0].startswith("agent memory")
 
 
-def test_executor_uses_zero_threshold_fallback_when_company_retrieval_is_empty():
-    """Fallback retrieval should recover company memories when default filtering returns none."""
+def test_executor_does_not_force_zero_threshold_fallback_for_company_memory():
+    """Company memory lookup should not bypass configured similarity threshold."""
     memory_interface = Mock()
     memory_interface.retrieve_agent_memory.return_value = []
     memory_interface.retrieve_company_memory.return_value = []
-    memory_interface.memory_system.retrieve_memories.return_value = [
-        Mock(content="company fallback memory")
-    ]
+    memory_interface.memory_system.retrieve_memories.return_value = []
     memory_interface.store_agent_memory.return_value = "memory-id"
 
     agent = _build_agent(allowed_memory=["company"])
@@ -109,9 +107,10 @@ def test_executor_uses_zero_threshold_fallback_when_company_retrieval_is_empty()
 
     context_data, debug_info = executor.build_execution_context_with_debug(agent, context)
 
-    assert context_data["company_memories"] == ["company fallback memory"]
-    assert debug_info["memory"]["company"]["fallback_used"] is True
-    assert debug_info["memory"]["company"]["fallback_hit_count"] == 1
+    assert context_data["company_memories"] == []
+    assert debug_info["memory"]["company"]["fallback_used"] is False
+    assert debug_info["memory"]["company"]["fallback_hit_count"] == 0
+    memory_interface.memory_system.retrieve_memories.assert_not_called()
 
 
 def test_executor_stores_successful_response_as_agent_memory():
