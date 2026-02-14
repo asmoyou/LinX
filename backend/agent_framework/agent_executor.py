@@ -643,23 +643,38 @@ class AgentExecutor:
                 context=exec_context,
             )
 
-            # Store result in memory if successful (optional - don't fail if this fails)
-            if result.get("success"):
-                try:
-                    content = _format_agent_memory_content(
-                        task=context.task_description,
-                        result=result.get("output", ""),
-                        agent_name=agent.config.name,
-                    )
-                    self.memory_interface.store_agent_memory(
-                        agent_id=context.agent_id,
-                        content=content,
-                        user_id=context.user_id,
-                        metadata={"task_id": str(context.task_id) if context.task_id else None},
-                    )
-                    logger.debug("Stored execution result in agent memory")
-                except Exception as mem_error:
-                    logger.warning(f"Failed to store result in memory (continuing): {mem_error}")
+            # Persist one task-level memory record per task completion (success or failure).
+            try:
+                execution_success = bool(result.get("success"))
+                execution_summary = result.get("output")
+                if not execution_success:
+                    execution_summary = result.get("error") or "Task execution failed"
+
+                content = _format_agent_memory_content(
+                    task=context.task_description,
+                    result=str(execution_summary or ""),
+                    agent_name=agent.config.name,
+                )
+                self.memory_interface.store_agent_memory(
+                    agent_id=context.agent_id,
+                    content=content,
+                    user_id=context.user_id,
+                    metadata={
+                        "task_id": str(context.task_id) if context.task_id else None,
+                        "execution_status": "success" if execution_success else "failed",
+                        "source": "agent_executor_task",
+                    },
+                )
+                logger.debug(
+                    "Stored task completion memory",
+                    extra={
+                        "agent_id": str(context.agent_id),
+                        "task_id": str(context.task_id) if context.task_id else None,
+                        "execution_status": "success" if execution_success else "failed",
+                    },
+                )
+            except Exception as mem_error:
+                logger.warning(f"Failed to store task completion memory (continuing): {mem_error}")
 
             logger.info(f"Agent execution completed: {agent.config.name}")
             return result

@@ -1,5 +1,6 @@
 """Tests for SessionManager sandbox lifecycle behavior."""
 
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -102,3 +103,72 @@ async def test_acquire_sandbox_uses_unique_container_name(monkeypatch, tmp_path)
 
     assert sandbox_id == "sandbox-internal-id"
     assert created["config"].name == f"session-{agent_id.hex[:8]}-abc123def456"
+
+
+@pytest.mark.asyncio
+async def test_end_session_triggers_callbacks_with_buffered_turns(monkeypatch, tmp_path):
+    """Ending a session should trigger registered callbacks before cleanup."""
+    monkeypatch.setattr(SessionManager, "_check_docker_availability", lambda self: False)
+    manager = SessionManager(base_workdir=str(tmp_path), use_sandbox_by_default=False)
+
+    user_id = uuid4()
+    agent_id = uuid4()
+    session, _ = await manager.get_or_create_session(
+        agent_id=agent_id,
+        user_id=user_id,
+        use_sandbox=False,
+    )
+    session.append_memory_turn("如何做锅包肉？", "给出详细步骤", agent_name="小新客服")
+
+    callback_events = []
+
+    async def on_session_end(closed_session, reason: str) -> None:
+        callback_events.append(
+            {
+                "session_id": closed_session.session_id,
+                "reason": reason,
+                "turn_count": len(closed_session.memory_turns),
+            }
+        )
+        closed_session.drain_memory_turns()
+
+    manager.register_session_end_callback(on_session_end)
+
+    ended = await manager.end_session(session.session_id, user_id)
+
+    assert ended is True
+    assert callback_events == [
+        {"session_id": session.session_id, "reason": "user", "turn_count": 1}
+    ]
+    assert manager.get_session(session.session_id) is None
+
+
+@pytest.mark.asyncio
+async def test_expired_cleanup_triggers_callbacks(monkeypatch, tmp_path):
+    """Expired session cleanup should trigger callbacks with reason=expired."""
+    monkeypatch.setattr(SessionManager, "_check_docker_availability", lambda self: False)
+    manager = SessionManager(base_workdir=str(tmp_path), use_sandbox_by_default=False)
+
+    user_id = uuid4()
+    agent_id = uuid4()
+    session, _ = await manager.get_or_create_session(
+        agent_id=agent_id,
+        user_id=user_id,
+        use_sandbox=False,
+    )
+    session.append_memory_turn("用户问题", "助手回答", agent_name="test-agent")
+    session.last_activity = datetime.now() - timedelta(minutes=session.ttl_minutes + 1)
+
+    callback_reasons = []
+
+    async def on_session_end(closed_session, reason: str) -> None:
+        callback_reasons.append(reason)
+        closed_session.drain_memory_turns()
+
+    manager.register_session_end_callback(on_session_end)
+
+    cleaned = await manager._cleanup_expired_sessions()
+
+    assert cleaned == 1
+    assert callback_reasons == ["expired"]
+    assert manager.get_session(session.session_id) is None

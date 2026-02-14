@@ -315,7 +315,9 @@ def _build_retrieval_process_messages(context_debug: Dict[str, Any]) -> List[str
 
         min_similarity = scope_info.get("min_similarity")
         if isinstance(min_similarity, (int, float)):
-            messages.append(f"[记忆检索][{scope_label}] 最小相似度阈值: {float(min_similarity):.2f}")
+            messages.append(
+                f"[记忆检索][{scope_label}] 最小相似度阈值: {float(min_similarity):.2f}"
+            )
 
         pre_filter_hit_count = int(scope_info.get("pre_filter_hit_count") or 0)
         hit_count = int(scope_info.get("hit_count") or 0)
@@ -386,6 +388,122 @@ def _build_retrieval_process_messages(context_debug: Dict[str, Any]) -> List[str
                     messages.append(f"[知识片段#{idx}] {excerpt}")
 
     return messages
+
+
+_SESSION_MEMORY_CALLBACK_REGISTERED = False
+_SESSION_MEMORY_MAX_TURNS = 24
+_SESSION_MEMORY_MAX_TURNS_FOR_FLUSH = 12
+_SESSION_MEMORY_ITEM_MAX_CHARS = 320
+
+
+def _normalize_session_memory_text(
+    text: Any, max_chars: int = _SESSION_MEMORY_ITEM_MAX_CHARS
+) -> str:
+    normalized = " ".join(str(text or "").split()).strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 3] + "..."
+
+
+def _build_agent_session_memory_content(turns: List[Dict[str, str]], agent_name: str) -> str:
+    selected_turns = turns[-_SESSION_MEMORY_MAX_TURNS_FOR_FLUSH:]
+    lines: List[str] = []
+    if agent_name:
+        lines.append(f"[Agent: {agent_name}]")
+    lines.append(f"Session conversation summary ({len(selected_turns)} turns)")
+    for idx, turn in enumerate(selected_turns, start=1):
+        user_message = _normalize_session_memory_text(turn.get("user_message", ""))
+        agent_response = _normalize_session_memory_text(turn.get("agent_response", ""))
+        lines.append(f"Round {idx} User: {user_message}")
+        lines.append(f"Round {idx} Assistant: {agent_response}")
+    return "\n".join(lines)
+
+
+def _build_user_context_session_content(turns: List[Dict[str, str]], agent_name: str) -> str:
+    selected_turns = turns[-_SESSION_MEMORY_MAX_TURNS_FOR_FLUSH:]
+    lines: List[str] = ["User session profile signals (aggregated)"]
+    if agent_name:
+        lines.append(f"Agent: {agent_name}")
+    for idx, turn in enumerate(selected_turns, start=1):
+        user_message = _normalize_session_memory_text(turn.get("user_message", ""))
+        lines.append(f"User intent {idx}: {user_message}")
+    return "\n".join(lines)
+
+
+async def _flush_session_memories(
+    session: "ConversationSession",
+    reason: str,
+) -> None:
+    turns = session.drain_memory_turns()
+    if not turns:
+        return
+
+    agent_name = ""
+    for turn in reversed(turns):
+        candidate = str(turn.get("agent_name") or "").strip()
+        if candidate:
+            agent_name = candidate
+            break
+
+    if not agent_name:
+        try:
+            registry = get_agent_registry()
+            agent_info = registry.get_agent(session.agent_id)
+            if agent_info:
+                agent_name = agent_info.name or ""
+        except Exception:
+            agent_name = ""
+
+    from agent_framework.agent_memory_interface import get_agent_memory_interface
+
+    mem_interface = get_agent_memory_interface()
+    turn_count = len(turns)
+    metadata_base = {
+        "source": "agent_test_session",
+        "session_id": session.session_id,
+        "turn_count": turn_count,
+        "session_end_reason": reason,
+        "aggregated": True,
+        "agent_name": agent_name,
+    }
+
+    try:
+        mem_interface.store_agent_memory(
+            agent_id=session.agent_id,
+            content=_build_agent_session_memory_content(turns, agent_name),
+            user_id=session.user_id,
+            metadata={**metadata_base},
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to store aggregated agent memory on session end",
+            extra={"session_id": session.session_id, "reason": reason, "error": str(e)},
+        )
+
+    try:
+        mem_interface.store_user_context(
+            user_id=session.user_id,
+            agent_id=session.agent_id,
+            content=_build_user_context_session_content(turns, agent_name),
+            metadata={**metadata_base},
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to store aggregated user-context memory on session end",
+            extra={"session_id": session.session_id, "reason": reason, "error": str(e)},
+        )
+
+
+def _ensure_session_memory_callback_registered() -> None:
+    global _SESSION_MEMORY_CALLBACK_REGISTERED
+    if _SESSION_MEMORY_CALLBACK_REGISTERED:
+        return
+
+    from agent_framework.session_manager import get_session_manager
+
+    session_mgr = get_session_manager()
+    session_mgr.register_session_end_callback(_flush_session_memories)
+    _SESSION_MEMORY_CALLBACK_REGISTERED = True
 
 
 # Agent cache with TTL (Time To Live) and memory-aware sizing
@@ -1342,6 +1460,8 @@ async def test_agent(
     from llm_providers.custom_openai_provider import CustomOpenAIChat
 
     try:
+        _ensure_session_memory_callback_registered()
+
         # Parse and sanitize history from JSON string.
         parsed_history: List[Dict[str, str]] = []
         if history:
@@ -2073,51 +2193,26 @@ async def test_agent(
                     yield f"data: {json.dumps(stats)}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'content': 'Agent execution completed'})}\n\n"
 
-                    # Auto-generate user context memory from conversation
+                    # Buffer turn-level memory candidates; flush once on session end.
                     if final_response[0]:
                         try:
-                            from agent_framework.agent_memory_interface import (
-                                _format_agent_memory_content,
-                                _format_user_context_content,
-                                get_agent_memory_interface,
-                            )
-
-                            mem_interface = get_agent_memory_interface()
-                            agent_memory_content = _format_agent_memory_content(
-                                task=message,
-                                result=final_response[0],
-                                agent_name=agent_info.name,
-                            )
-                            mem_interface.store_agent_memory(
-                                agent_id=UUID(agent_id),
-                                content=agent_memory_content,
-                                user_id=current_user.user_id,
-                                metadata={
-                                    "source": "agent_test_stream",
-                                    "session_id": conversation_session.session_id,
-                                },
-                            )
-
-                            user_context_content = _format_user_context_content(
+                            conversation_session.append_memory_turn(
                                 user_message=message,
+                                agent_response=final_response[0],
                                 agent_name=agent_info.name,
-                                # Avoid stuffing assistant answer into user profile memory.
-                                # Keep user context centered on user intent; model extraction can
-                                # add richer facts later if enabled.
-                                response_summary="",
+                                max_turns=_SESSION_MEMORY_MAX_TURNS,
                             )
-                            mem_interface.store_user_context(
-                                user_id=UUID(current_user.user_id),
-                                agent_id=UUID(agent_id),
-                                content=user_context_content,
-                                metadata={
-                                    "agent_name": agent_info.name,
+                            logger.debug(
+                                "Buffered session memory candidate",
+                                extra={
                                     "session_id": conversation_session.session_id,
+                                    "buffered_turns": len(conversation_session.memory_turns),
                                 },
                             )
-                            logger.debug("User context memory stored for conversation")
                         except Exception as uc_error:
-                            logger.warning(f"Failed to store user context (continuing): {uc_error}")
+                            logger.warning(
+                                f"Failed to buffer session memory candidate (continuing): {uc_error}"
+                            )
 
                 logger.info(
                     f"Agent test completed: {agent_info.name} (tokens: {input_tokens}/{output_tokens}, speed: {tokens_per_second:.1f} tok/s)"
@@ -2288,6 +2383,7 @@ async def end_agent_session(
     try:
         from agent_framework.session_manager import get_session_manager
 
+        _ensure_session_memory_callback_registered()
         session_mgr = get_session_manager()
         session = session_mgr.get_session(session_id)
 

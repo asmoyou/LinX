@@ -18,6 +18,7 @@ References:
 import asyncio
 import logging
 import shutil
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,8 @@ from typing import Dict, Optional
 from uuid import UUID, uuid4
 
 logger = logging.getLogger(__name__)
+
+SessionEndCallback = Callable[["ConversationSession", str], Optional[Awaitable[None]]]
 
 
 @dataclass
@@ -44,6 +47,7 @@ class ConversationSession:
     ttl_minutes: int = 30
     use_sandbox: bool = False
     sandbox_id: Optional[str] = None  # Docker container ID if sandbox is enabled
+    memory_turns: list[dict[str, str]] = field(default_factory=list)
 
     def is_expired(self) -> bool:
         """Check if session has exceeded its TTL."""
@@ -62,6 +66,37 @@ class ConversationSession:
         elapsed = datetime.now() - self.last_activity
         remaining = timedelta(minutes=self.ttl_minutes) - elapsed
         return max(0, remaining.total_seconds())
+
+    def append_memory_turn(
+        self,
+        user_message: str,
+        agent_response: str,
+        agent_name: str = "",
+        max_turns: int = 24,
+    ) -> None:
+        """Append one conversation turn as a memory candidate."""
+        user_text = str(user_message or "").strip()
+        agent_text = str(agent_response or "").strip()
+        if not user_text or not agent_text:
+            return
+
+        self.memory_turns.append(
+            {
+                "user_message": user_text,
+                "agent_response": agent_text,
+                "agent_name": str(agent_name or "").strip(),
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+        if len(self.memory_turns) > max_turns:
+            self.memory_turns = self.memory_turns[-max_turns:]
+        self.touch()
+
+    def drain_memory_turns(self) -> list[dict[str, str]]:
+        """Drain buffered memory candidates and clear the buffer."""
+        turns = list(self.memory_turns)
+        self.memory_turns.clear()
+        return turns
 
 
 class SessionManager:
@@ -120,6 +155,7 @@ class SessionManager:
 
         # User session index: user_id -> list of session_ids
         self._user_sessions: Dict[str, list] = {}
+        self._session_end_callbacks: list[SessionEndCallback] = []
 
         # Cleanup task handle
         self._cleanup_task: Optional[asyncio.Task] = None
@@ -141,6 +177,40 @@ class SessionManager:
                 "docker_available": self._docker_available,
             },
         )
+
+    def register_session_end_callback(self, callback: SessionEndCallback) -> None:
+        """Register a callback that runs before a session is finalized."""
+        if callback in self._session_end_callbacks:
+            return
+        self._session_end_callbacks.append(callback)
+        logger.debug(
+            "Registered session end callback",
+            extra={"callback_count": len(self._session_end_callbacks)},
+        )
+
+    async def _trigger_session_end_callbacks(
+        self, session: ConversationSession, reason: str
+    ) -> None:
+        """Run all registered session-end callbacks."""
+        if not self._session_end_callbacks:
+            return
+
+        for callback in list(self._session_end_callbacks):
+            try:
+                result = callback(session, reason)
+                if asyncio.iscoroutine(result):
+                    await result
+                elif hasattr(result, "__await__"):
+                    await result
+            except Exception as e:
+                logger.warning(
+                    "Session end callback failed",
+                    extra={
+                        "session_id": session.session_id,
+                        "reason": reason,
+                        "error": str(e),
+                    },
+                )
 
     def _check_docker_availability(self) -> bool:
         """Check if Docker is available for sandbox execution."""
@@ -237,8 +307,7 @@ class SessionManager:
             try:
                 session = self._sessions.get(session_id)
                 if session:
-                    await self._cleanup_session_resources(session)
-                    self._remove_session(session_id)
+                    await self._finalize_session(session, reason="expired")
                     cleaned += 1
                     logger.info(
                         f"Cleaned up expired session: {session_id}",
@@ -256,6 +325,12 @@ class SessionManager:
             logger.info(f"Cleaned up {cleaned} expired sessions")
 
         return cleaned
+
+    async def _finalize_session(self, session: ConversationSession, reason: str) -> None:
+        """Finalize one session by running callbacks then cleaning resources."""
+        await self._trigger_session_end_callbacks(session, reason)
+        await self._cleanup_session_resources(session)
+        self._remove_session(session.session_id)
 
     async def _cleanup_session_resources(self, session: ConversationSession) -> None:
         """Clean up resources associated with a session.
@@ -596,8 +671,7 @@ class SessionManager:
             return False
 
         # Clean up resources
-        await self._cleanup_session_resources(session)
-        self._remove_session(session_id)
+        await self._finalize_session(session, reason="user")
 
         logger.info(
             f"Ended session: {session_id}",
@@ -667,7 +741,7 @@ class SessionManager:
             session = self._sessions.get(session_id)
             if session:
                 try:
-                    await self._cleanup_session_resources(session)
+                    await self._finalize_session(session, reason="shutdown")
                 except Exception as e:
                     logger.error(f"Error cleaning up session {session_id}: {e}")
 
