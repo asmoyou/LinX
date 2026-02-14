@@ -14,6 +14,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
     ".pdf",
     ".doc",
     ".docx",
+    ".pptx",
     ".xls",
     ".xlsx",
     ".txt",
@@ -50,6 +51,9 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
 
       // Check file type
       const fileExt = "." + file.name.split(".").pop()?.toLowerCase();
+      if (fileExt === ".ppt") {
+        return `${file.name}: Legacy .ppt is not supported. Please resave as .pptx`;
+      }
       if (!acceptedTypes.includes(fileExt)) {
         return `${file.name}: File type not supported`;
       }

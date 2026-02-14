@@ -274,6 +274,46 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
         return;
       }
 
+      // PPT preview: render extracted slide text from chunks.
+      if (document.type === "ppt") {
+        if (
+          document.status === "processing" ||
+          document.status === "uploading"
+        ) {
+          setError("Document is still being processed...");
+          setIsLoading(false);
+          return;
+        }
+        if (document.status === "failed") {
+          setError(
+            document.errorMessage || document.error || "Processing failed",
+          );
+          setIsLoading(false);
+          return;
+        }
+
+        try {
+          const { text, truncated } = await loadChunkTextFallback(50);
+          if (cancelled) return;
+
+          if (!text) {
+            setError("No extracted slide text available for preview");
+          } else {
+            setTextContent(text);
+            setIsTruncated(truncated);
+          }
+        } catch {
+          if (!cancelled) {
+            setError("Failed to load preview");
+          }
+        } finally {
+          if (!cancelled) {
+            setIsLoading(false);
+          }
+        }
+        return;
+      }
+
       // DOCX preview: prefer full fidelity render; fallback to extracted text.
       if (document.type === "docx") {
         if (
@@ -518,7 +558,9 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
 
   // Plain text
   if (
-    (document.type === "txt" || document.type === "docx") &&
+    (document.type === "txt" ||
+      document.type === "docx" ||
+      document.type === "ppt") &&
     textContent !== null
   ) {
     return (

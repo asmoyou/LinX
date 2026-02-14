@@ -26,3 +26,13 @@ def test_get_suffix_supports_excel_variants() -> None:
         == ".xlsx"
     )
     assert DocumentProcessorWorker._get_suffix("application/vnd.ms-excel") == ".xls"
+
+
+def test_get_suffix_supports_pptx_variant() -> None:
+    """PPTX MIME type should map to stable presentation suffix."""
+    assert (
+        DocumentProcessorWorker._get_suffix(
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        )
+        == ".pptx"
+    )

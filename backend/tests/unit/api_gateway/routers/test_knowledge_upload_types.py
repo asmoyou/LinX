@@ -46,6 +46,18 @@ def test_get_file_type_supports_excel_uploads() -> None:
     assert _get_file_type("legacy-sheet.xls", None) == "excel"
 
 
+def test_get_file_type_supports_pptx_uploads_only() -> None:
+    """PPTX should map to presentation type, while legacy PPT should not."""
+    assert (
+        _get_file_type(
+            "deck.pptx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+        == "ppt"
+    )
+    assert _get_file_type("legacy-deck.ppt", None) == "txt"
+
+
 def test_get_bucket_type_handles_content_type_with_parameters() -> None:
     """Bucket routing should tolerate MIME parameters from clients/browsers."""
     assert _get_bucket_type("voice-note.m4a", "audio/mp4; codecs=mp4a.40.2") == "audio"

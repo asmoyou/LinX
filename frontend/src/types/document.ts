@@ -7,6 +7,7 @@ export type DocumentStatus =
 export type DocumentType =
   | "pdf"
   | "docx"
+  | "ppt"
   | "excel"
   | "txt"
   | "md"

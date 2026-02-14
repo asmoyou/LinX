@@ -348,6 +348,7 @@
       "noFile": "Please select a file to upload",
       "fileTooBig": "File size exceeds limit",
       "unsupportedFormat": "Unsupported file format",
+      "legacyPptNotSupported": "Legacy .ppt is not supported. Please resave as .pptx and upload.",
       "failed": "Failed to upload document. Please try again."
     }
   },

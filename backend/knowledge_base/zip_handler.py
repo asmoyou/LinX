@@ -18,6 +18,7 @@ SUPPORTED_EXTENSIONS = {
     ".pdf",
     ".doc",
     ".docx",
+    ".pptx",
     ".xls",
     ".xlsx",
     ".txt",

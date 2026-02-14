@@ -174,7 +174,7 @@ class MinIOClient:
         file_ext = Path(filename).suffix.lstrip(".").lower()
         allowed_extensions = set(self.allowed_types[bucket_type])
 
-        # Backward compatibility: treat legacy .doc as allowed when .docx is enabled.
+        # Backward compatibility for legacy Word binary format.
         if bucket_type == "documents" and file_ext == "doc" and "docx" in allowed_extensions:
             allowed = True
         else:

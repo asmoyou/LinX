@@ -148,6 +148,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
   );
   const lastUpdatedAt = document.processedAt || document.uploadedAt;
   const hasGeneratedThumbnail = Boolean(thumbnailBlobUrl);
+  const documentTypeLabel = document.type === "ppt" ? "PPTX" : document.type.toUpperCase();
   const previewMediaUrl =
     thumbnailBlobUrl ||
     (document.type === "image" ||
@@ -177,11 +178,12 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
     if (
       document.type === "pdf" ||
       document.type === "docx" ||
+      document.type === "ppt" ||
       document.type === "excel"
     ) {
       return (
         <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 text-gray-600 dark:text-gray-300">
-          {document.type.toUpperCase()}
+          {documentTypeLabel}
         </span>
       );
     }
@@ -202,6 +204,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
     switch (type) {
       case "pdf":
       case "docx":
+      case "ppt":
       case "excel":
       case "txt":
       case "md":
@@ -209,6 +212,9 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
           return (
             <FileSpreadsheet className={`${className} text-emerald-500`} />
           );
+        }
+        if (type === "ppt") {
+          return <FileText className={`${className} text-orange-500`} />;
         }
         return <FileText className={`${className} text-blue-500`} />;
       case "image":
@@ -395,7 +401,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
         </h3>
         <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
           <span className="px-1.5 py-0.5 rounded bg-white/20">
-            {document.type.toUpperCase()}
+            {documentTypeLabel}
           </span>
           <span>{formatFileSize(document.size)}</span>
         </div>

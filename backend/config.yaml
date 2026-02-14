@@ -99,6 +99,7 @@ storage:
     - pdf
     - doc
     - docx
+    - pptx
     - xls
     - xlsx
     - txt

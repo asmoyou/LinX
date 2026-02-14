@@ -66,6 +66,7 @@ setup(
             "PyPDF2>=3.0.1",
             "pdfplumber>=0.10.3",
             "python-docx>=1.1.0",
+            "python-pptx>=1.0.2",
             "pytesseract>=0.3.10",
             "openai-whisper>=20231117",
         ],

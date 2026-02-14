@@ -141,6 +141,28 @@ def test_extract_text_infers_docx_type_when_mime_is_octet_stream(tmp_path):
     )
 
 
+def test_extract_text_infers_pptx_type_when_mime_is_octet_stream(tmp_path):
+    """Generic binary MIME should infer PPTX type from extension."""
+    worker = DocumentProcessorWorker.__new__(DocumentProcessorWorker)
+    worker.parsing_method = "standard"
+
+    pptx_file = tmp_path / "slides.pptx"
+    pptx_file.write_bytes(b"fake-pptx")
+
+    mock_extractor = Mock()
+    mock_extractor.extract.return_value = Mock(text="extracted pptx text")
+
+    with patch(
+        "knowledge_base.document_processor_worker.get_extractor", return_value=mock_extractor
+    ) as mocked_get:
+        result = worker._extract_text(pptx_file, "application/octet-stream")
+
+    assert result == "extracted pptx text"
+    mocked_get.assert_called_once_with(
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )
+
+
 def test_extract_video_with_vision_uses_15s_batches_and_summary():
     """Video vision fallback should batch 15 frames per request and summarize batches."""
     worker = DocumentProcessorWorker.__new__(DocumentProcessorWorker)

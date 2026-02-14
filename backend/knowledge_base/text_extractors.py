@@ -20,6 +20,11 @@ import pdfplumber
 import PyPDF2
 from docx import Document as DocxDocument
 
+try:
+    from pptx import Presentation as PptxPresentation
+except ImportError:  # pragma: no cover - tested via extractor runtime guard
+    PptxPresentation = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -289,6 +294,129 @@ class DOCExtractor(TextExtractor):
         )
 
 
+class PPTXExtractor(TextExtractor):
+    """Extract text from PPTX slide decks."""
+
+    def extract(self, file_path: Path) -> ExtractionResult:
+        """Extract text from PPTX file."""
+        start_time = datetime.now()
+
+        if PptxPresentation is None:
+            raise ValueError(
+                "PPT/PPTX extraction requires optional dependency `python-pptx`. "
+                "Please install it and retry."
+            )
+
+        try:
+            presentation = PptxPresentation(file_path)
+            slide_count = len(presentation.slides)
+            slide_text_parts: list[str] = []
+            slide_summaries: list[dict[str, Any]] = []
+
+            for slide_index, slide in enumerate(presentation.slides, start=1):
+                lines: list[str] = []
+                for shape in slide.shapes:
+                    lines.extend(self._extract_shape_lines(shape))
+
+                notes_text = self._extract_notes_text(slide)
+                if notes_text:
+                    lines.append(f"[Speaker Notes]\n{notes_text}")
+
+                cleaned_lines = [line.strip() for line in lines if line and line.strip()]
+                has_text = bool(cleaned_lines)
+                if has_text:
+                    slide_text = "\n".join(cleaned_lines)
+                else:
+                    slide_text = "(Empty slide)"
+
+                slide_text_parts.append(f"[Slide {slide_index}]\n{slide_text}")
+                slide_summaries.append(
+                    {
+                        "slide": slide_index,
+                        "shape_count": len(slide.shapes),
+                        "has_text": has_text,
+                    }
+                )
+
+            text = "\n\n".join(slide_text_parts).strip()
+            extraction_time = (datetime.now() - start_time).total_seconds()
+            word_count = self._count_words(text)
+
+            core = presentation.core_properties
+            metadata = {
+                "filename": file_path.name,
+                "slide_count": slide_count,
+                "slides": slide_summaries,
+                "author": getattr(core, "author", None),
+                "title": getattr(core, "title", None),
+                "subject": getattr(core, "subject", None),
+                "created": str(core.created) if getattr(core, "created", None) else None,
+                "modified": str(core.modified) if getattr(core, "modified", None) else None,
+            }
+
+            logger.info(
+                "PPTX extraction completed",
+                extra={
+                    "file": str(file_path),
+                    "slides": slide_count,
+                    "words": word_count,
+                    "time": extraction_time,
+                },
+            )
+
+            return ExtractionResult(
+                text=text,
+                metadata=metadata,
+                page_count=slide_count,
+                word_count=word_count,
+                extraction_time=extraction_time,
+            )
+        except Exception as e:
+            logger.error(f"PPTX extraction failed: {e}", exc_info=True)
+            raise
+
+    def _extract_shape_lines(self, shape: Any) -> list[str]:
+        """Extract text from a single PowerPoint shape."""
+        lines: list[str] = []
+
+        if hasattr(shape, "shapes"):
+            for child_shape in shape.shapes:
+                lines.extend(self._extract_shape_lines(child_shape))
+
+        if getattr(shape, "has_text_frame", False):
+            text_frame = getattr(shape, "text_frame", None)
+            if text_frame is not None:
+                frame_text = (getattr(text_frame, "text", "") or "").strip()
+                if frame_text:
+                    lines.extend(line.strip() for line in frame_text.splitlines() if line.strip())
+
+        if getattr(shape, "has_table", False):
+            table = getattr(shape, "table", None)
+            if table is not None:
+                for row in table.rows:
+                    row_values = [cell.text.strip() for cell in row.cells]
+                    if any(row_values):
+                        lines.append(" | ".join(row_values))
+
+        return lines
+
+    @staticmethod
+    def _extract_notes_text(slide: Any) -> str:
+        """Extract speaker notes text from a slide."""
+        if not getattr(slide, "has_notes_slide", False):
+            return ""
+
+        notes_slide = getattr(slide, "notes_slide", None)
+        if notes_slide is None:
+            return ""
+
+        notes_frame = getattr(notes_slide, "notes_text_frame", None)
+        if notes_frame is None:
+            return ""
+
+        return (getattr(notes_frame, "text", "") or "").strip()
+
+
 class TextFileExtractor(TextExtractor):
     """Extract text from plain text files."""
 
@@ -469,6 +597,8 @@ def get_extractor(file_type: str) -> TextExtractor:
         return DOCExtractor()
     elif "wordprocessingml.document" in normalized or "docx" in normalized or "word" in normalized:
         return DOCXExtractor()
+    elif "presentationml.presentation" in normalized or normalized.endswith(".pptx"):
+        return PPTXExtractor()
     elif (
         "spreadsheetml.sheet" in normalized
         or "vnd.ms-excel" in normalized

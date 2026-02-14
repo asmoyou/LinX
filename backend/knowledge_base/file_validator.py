@@ -24,6 +24,7 @@ class SupportedFileType(Enum):
     PDF = "application/pdf"
     DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     DOC = "application/msword"
+    PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     XLS = "application/vnd.ms-excel"
     TXT = "text/plain"
@@ -156,6 +157,9 @@ class FileValidator:
                         if file_path.suffix.lower() == ".xlsx"
                         else SupportedFileType.XLS
                     )
+                    mime_type = file_type.value
+                elif file_path.suffix.lower() == ".pptx":
+                    file_type = SupportedFileType.PPTX
                     mime_type = file_type.value
                 else:
                     return FileValidationResult(

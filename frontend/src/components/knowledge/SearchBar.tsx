@@ -49,6 +49,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             <option value="all">All Types</option>
             <option value="pdf">PDF</option>
             <option value="docx">DOCX</option>
+            <option value="ppt">PPTX</option>
             <option value="excel">Excel</option>
             <option value="txt">TXT</option>
             <option value="md">Markdown</option>

@@ -25,6 +25,7 @@ const SUPPORTED_FORMATS = [
   ".pdf",
   ".doc",
   ".docx",
+  ".pptx",
   ".xls",
   ".xlsx",
   ".txt",
@@ -83,6 +84,15 @@ export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({
 
     // Validate file format
     const fileExt = "." + file.name.split(".").pop()?.toLowerCase();
+    if (fileExt === ".ppt") {
+      toast.error(
+        t(
+          "document.errors.legacyPptNotSupported",
+          "Legacy .ppt is not supported. Please resave as .pptx and upload.",
+        ),
+      );
+      return;
+    }
     if (!SUPPORTED_FORMATS.includes(fileExt)) {
       toast.error(
         t("document.errors.unsupportedFormat", "Unsupported file format"),
@@ -214,7 +224,7 @@ export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({
             <div className="mt-6 text-xs text-zinc-500 dark:text-zinc-400 space-y-1">
               <p>
                 {t("document.supportedFormats", "Supported Formats")}: PDF, DOC,
-                DOCX, XLS, XLSX, TXT, MD, Images, Audio, Video, ZIP
+                DOCX, PPTX, XLS, XLSX, TXT, MD, Images, Audio, Video, ZIP
               </p>
               <p>{t("document.maxSize", "Max File Size")}: 50MB</p>
             </div>

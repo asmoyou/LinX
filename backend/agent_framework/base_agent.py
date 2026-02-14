@@ -47,7 +47,7 @@ def _get_env_float(key: str, default: float) -> float:
 def _get_env_bool(key: str, default: bool) -> bool:
     """Get boolean from environment variable with fallback."""
     value = os.environ.get(key, str(default)).lower()
-    return value in ('true', '1', 'yes', 'on')
+    return value in ("true", "1", "yes", "on")
 
 
 class AgentStatus(Enum):
@@ -65,10 +65,11 @@ class AgentStatus(Enum):
 # Error Recovery Data Structures
 # ============================================================================
 
+
 @dataclass
 class ParseError:
     """Records a tool call parsing error."""
-    
+
     error_type: str  # "json_decode_error", "missing_field", "unknown_tool", "invalid_type"
     message: str
     malformed_input: Optional[str] = None
@@ -78,7 +79,7 @@ class ParseError:
 @dataclass
 class ToolCall:
     """Represents a parsed tool call."""
-    
+
     tool_name: str
     arguments: Dict[str, Any]
     raw_json: str
@@ -87,7 +88,7 @@ class ToolCall:
 @dataclass
 class ToolResult:
     """Result of a tool execution attempt."""
-    
+
     tool_name: str
     status: str  # "success", "error", "timeout"
     result: Optional[Any] = None
@@ -99,7 +100,7 @@ class ToolResult:
 @dataclass
 class ToolCallRecord:
     """Records a single tool call attempt."""
-    
+
     round_number: int
     tool_name: str
     arguments: Dict[str, Any]
@@ -113,7 +114,7 @@ class ToolCallRecord:
 @dataclass
 class ErrorRecord:
     """Records an error occurrence."""
-    
+
     round_number: int
     error_type: str  # "parse_error", "execution_error", "timeout", "validation_error"
     error_message: str
@@ -127,7 +128,7 @@ class ErrorRecord:
 @dataclass
 class ErrorFeedback:
     """Structured feedback for LLM after error."""
-    
+
     error_type: str
     error_message: str
     malformed_input: Optional[str]
@@ -135,40 +136,40 @@ class ErrorFeedback:
     retry_count: int
     max_retries: int
     suggestions: List[str]
-    
+
     def to_prompt(self) -> str:
         """Convert to human-readable prompt for LLM."""
         prompt = f"⚠️ **{self.error_type}** (Attempt {self.retry_count}/{self.max_retries})\n\n"
-        
+
         prompt += f"**Error**: {self.error_message}\n\n"
-        
+
         if self.malformed_input:
             # Truncate if too long
             input_display = self.malformed_input
             if len(input_display) > 200:
                 input_display = input_display[:200] + "..."
             prompt += f"**Your input**:\n```\n{input_display}\n```\n\n"
-        
+
         prompt += f"**Expected format**:\n```json\n{self.expected_format}\n```\n\n"
-        
+
         if self.suggestions:
             prompt += "**Key fix**: "
             # Only show first 2 suggestions for brevity
             prompt += "; ".join(self.suggestions[:2])
             prompt += "\n\n"
-        
+
         if self.retry_count < self.max_retries:
             prompt += "⚡ **Action**: Fix the error and retry immediately. Be concise - no lengthy explanations needed.\n"
         else:
             prompt += "⛔ Maximum retry attempts reached. Please provide a final answer without using tools.\n"
-        
+
         return prompt
 
 
 @dataclass
 class ConversationState:
     """Tracks state of multi-round conversation."""
-    
+
     round_number: int = 0
     max_rounds: int = 20
     tool_calls_made: List[ToolCallRecord] = field(default_factory=list)
@@ -199,13 +200,19 @@ class AgentConfig:
     temperature: float = 0.7
     max_iterations: int = 20  # Maximum conversation rounds
     system_prompt: Optional[str] = None  # Custom system prompt
-    
+
     # Error recovery settings (can be overridden by environment variables)
     max_parse_retries: Optional[int] = None
     max_execution_retries: Optional[int] = None
     tool_timeout_seconds: Optional[float] = None
     enable_error_recovery: Optional[bool] = None
-    
+    context_window_tokens: Optional[int] = None
+    context_compression_threshold: Optional[float] = None
+    tool_result_item_max_chars: Optional[int] = None
+    tool_result_total_max_chars: Optional[int] = None
+    history_compress_chars: Optional[int] = None
+    history_tail_protected_messages: Optional[int] = None
+
     def __post_init__(self):
         """Validate configuration and apply environment variable overrides."""
         if self.allowed_knowledge is None:
@@ -215,35 +222,85 @@ class AgentConfig:
 
         # Apply environment variable overrides with defaults
         if self.max_parse_retries is None:
-            self.max_parse_retries = _get_env_int('AGENT_MAX_PARSE_RETRIES', 3)
-        
+            self.max_parse_retries = _get_env_int("AGENT_MAX_PARSE_RETRIES", 3)
+
         if self.max_execution_retries is None:
-            self.max_execution_retries = _get_env_int('AGENT_MAX_EXECUTION_RETRIES', 3)
-        
+            self.max_execution_retries = _get_env_int("AGENT_MAX_EXECUTION_RETRIES", 3)
+
         if self.tool_timeout_seconds is None:
-            self.tool_timeout_seconds = _get_env_float('AGENT_TOOL_TIMEOUT', 30.0)
-        
+            self.tool_timeout_seconds = _get_env_float("AGENT_TOOL_TIMEOUT", 30.0)
+
         if self.enable_error_recovery is None:
-            self.enable_error_recovery = _get_env_bool('AGENT_ENABLE_ERROR_RECOVERY', True)
-        
+            self.enable_error_recovery = _get_env_bool("AGENT_ENABLE_ERROR_RECOVERY", True)
+        if self.context_window_tokens is None:
+            self.context_window_tokens = _get_env_int("AGENT_DEFAULT_CONTEXT_WINDOW_TOKENS", 8192)
+        if self.context_compression_threshold is None:
+            self.context_compression_threshold = _get_env_float(
+                "AGENT_CONTEXT_COMPRESSION_THRESHOLD", 0.8
+            )
+        if self.tool_result_item_max_chars is None:
+            self.tool_result_item_max_chars = _get_env_int("AGENT_TOOL_RESULT_ITEM_MAX_CHARS", 1200)
+        if self.tool_result_total_max_chars is None:
+            self.tool_result_total_max_chars = _get_env_int(
+                "AGENT_TOOL_RESULT_TOTAL_MAX_CHARS", 3200
+            )
+        if self.history_compress_chars is None:
+            self.history_compress_chars = _get_env_int("AGENT_HISTORY_COMPRESS_CHARS", 600)
+        if self.history_tail_protected_messages is None:
+            self.history_tail_protected_messages = _get_env_int(
+                "AGENT_HISTORY_TAIL_PROTECTED_MESSAGES", 6
+            )
+
         # Validate retry limits
         if self.max_parse_retries < 0:
-            raise ValueError(f"max_parse_retries must be non-negative, got {self.max_parse_retries}")
+            raise ValueError(
+                f"max_parse_retries must be non-negative, got {self.max_parse_retries}"
+            )
         if self.max_execution_retries < 0:
-            raise ValueError(f"max_execution_retries must be non-negative, got {self.max_execution_retries}")
-        
+            raise ValueError(
+                f"max_execution_retries must be non-negative, got {self.max_execution_retries}"
+            )
+
         # Validate timeout
         if not (1.0 <= self.tool_timeout_seconds <= 300.0):
-            raise ValueError(f"tool_timeout_seconds must be between 1 and 300, got {self.tool_timeout_seconds}")
-        
+            raise ValueError(
+                f"tool_timeout_seconds must be between 1 and 300, got {self.tool_timeout_seconds}"
+            )
+
         # Validate max_iterations
         if self.max_iterations < 1:
             raise ValueError(f"max_iterations must be positive, got {self.max_iterations}")
-        
+        if self.context_window_tokens < 1024:
+            raise ValueError(
+                f"context_window_tokens must be >= 1024, got {self.context_window_tokens}"
+            )
+        if not (0.1 <= self.context_compression_threshold <= 0.95):
+            raise ValueError(
+                f"context_compression_threshold must be between 0.1 and 0.95, got {self.context_compression_threshold}"
+            )
+        if self.tool_result_item_max_chars < 200:
+            raise ValueError(
+                f"tool_result_item_max_chars must be >= 200, got {self.tool_result_item_max_chars}"
+            )
+        if self.tool_result_total_max_chars < self.tool_result_item_max_chars:
+            raise ValueError(
+                "tool_result_total_max_chars must be >= tool_result_item_max_chars, "
+                f"got {self.tool_result_total_max_chars} < {self.tool_result_item_max_chars}"
+            )
+        if self.history_compress_chars < 200:
+            raise ValueError(
+                f"history_compress_chars must be >= 200, got {self.history_compress_chars}"
+            )
+        if self.history_tail_protected_messages < 2:
+            raise ValueError(
+                "history_tail_protected_messages must be >= 2, "
+                f"got {self.history_tail_protected_messages}"
+            )
+
         # Validate temperature
         if not (0.0 <= self.temperature <= 2.0):
             raise ValueError(f"temperature must be between 0 and 2, got {self.temperature}")
-        
+
         logger.debug(
             "AgentConfig validated",
             extra={
@@ -251,8 +308,14 @@ class AgentConfig:
                 "max_parse_retries": self.max_parse_retries,
                 "max_execution_retries": self.max_execution_retries,
                 "tool_timeout_seconds": self.tool_timeout_seconds,
-                "enable_error_recovery": self.enable_error_recovery
-            }
+                "enable_error_recovery": self.enable_error_recovery,
+                "context_window_tokens": self.context_window_tokens,
+                "context_compression_threshold": self.context_compression_threshold,
+                "tool_result_item_max_chars": self.tool_result_item_max_chars,
+                "tool_result_total_max_chars": self.tool_result_total_max_chars,
+                "history_compress_chars": self.history_compress_chars,
+                "history_tail_protected_messages": self.history_tail_protected_messages,
+            },
         )
 
 
@@ -265,7 +328,7 @@ class BaseAgent:
     - Memory access (Agent Memory + Company Memory)
     - Tools (LangChain tools)
     - Execution environment (isolated container)
-    
+
     Uses LangGraph 1.0 StateGraph API for agent workflow.
     """
 
@@ -308,25 +371,25 @@ class BaseAgent:
 
             # Initialize SkillManager
             from agent_framework.skill_manager import get_skill_manager
+
             self.skill_manager = get_skill_manager(
-                agent_id=self.config.agent_id,
-                user_id=self.config.owner_user_id
+                agent_id=self.config.agent_id, user_id=self.config.owner_user_id
             )
-            
+
             # Discover and load skills based on agent's capabilities
             skills = await self.skill_manager.discover_skills(
                 agent_capabilities=self.config.capabilities
             )
-            
+
             logger.info(
                 f"Discovered {len(skills)} skills for agent {self.config.name}",
-                extra={"agent_id": str(self.config.agent_id), "skill_count": len(skills)}
+                extra={"agent_id": str(self.config.agent_id), "skill_count": len(skills)},
             )
-            
+
             # Load skills
             langchain_tool_count = 0
             agent_skill_count = 0
-            
+
             for skill_info in skills:
                 if skill_info.skill_type == "langchain_tool":
                     tool = await self.skill_manager.load_langchain_tool(skill_info)
@@ -335,12 +398,18 @@ class BaseAgent:
                         langchain_tool_count += 1
                         logger.info(
                             f"✓ Loaded LangChain tool: {skill_info.name}",
-                            extra={"agent_id": str(self.config.agent_id), "skill_id": str(skill_info.skill_id)}
+                            extra={
+                                "agent_id": str(self.config.agent_id),
+                                "skill_id": str(skill_info.skill_id),
+                            },
                         )
                     else:
                         logger.error(
                             f"✗ Failed to load LangChain tool: {skill_info.name}",
-                            extra={"agent_id": str(self.config.agent_id), "skill_id": str(skill_info.skill_id)}
+                            extra={
+                                "agent_id": str(self.config.agent_id),
+                                "skill_id": str(skill_info.skill_id),
+                            },
                         )
                 elif skill_info.skill_type == "agent_skill":
                     # Agent skills are loaded as documentation, not tools
@@ -349,79 +418,87 @@ class BaseAgent:
                         agent_skill_count += 1
                         logger.info(
                             f"✓ Loaded Agent Skill doc: {skill_info.name}",
-                            extra={"agent_id": str(self.config.agent_id), "skill_id": str(skill_info.skill_id)}
+                            extra={
+                                "agent_id": str(self.config.agent_id),
+                                "skill_id": str(skill_info.skill_id),
+                            },
                         )
                     else:
                         logger.error(
                             f"✗ Failed to load Agent Skill doc: {skill_info.name}",
-                            extra={"agent_id": str(self.config.agent_id), "skill_id": str(skill_info.skill_id)}
+                            extra={
+                                "agent_id": str(self.config.agent_id),
+                                "skill_id": str(skill_info.skill_id),
+                            },
                         )
-            
+
             # Add enhanced bash tool with PTY and background support
             from agent_framework.tools.process_manager import get_process_manager
             from agent_framework.tools.bash_tool import create_bash_tool
+
             process_manager = get_process_manager()
             bash_tool = create_bash_tool(
                 agent_id=self.config.agent_id,
                 user_id=self.config.owner_user_id,
-                process_manager=process_manager
+                process_manager=process_manager,
             )
             self.tools.append(bash_tool)
             logger.info(
                 f"✓ Added enhanced bash tool (PTY + background support)",
-                extra={"agent_id": str(self.config.agent_id)}
+                extra={"agent_id": str(self.config.agent_id)},
             )
-            
+
             # Add process management tool
             from agent_framework.tools.process_tool import create_process_tool
+
             process_tool = create_process_tool(
-                agent_id=self.config.agent_id,
-                user_id=self.config.owner_user_id
+                agent_id=self.config.agent_id, user_id=self.config.owner_user_id
             )
             self.tools.append(process_tool)
             logger.info(
-                f"✓ Added process management tool",
-                extra={"agent_id": str(self.config.agent_id)}
+                f"✓ Added process management tool", extra={"agent_id": str(self.config.agent_id)}
             )
-            
+
             # Add code execution tool (for agent to run generated code)
             from agent_framework.tools.code_execution_tool import create_code_execution_tool
+
             code_exec_tool = create_code_execution_tool(
-                agent_id=self.config.agent_id,
-                user_id=self.config.owner_user_id
+                agent_id=self.config.agent_id, user_id=self.config.owner_user_id
             )
             self.tools.append(code_exec_tool)
 
             # Add file operation tools (read, edit, write, list files in workspace)
             from agent_framework.tools.file_tools import create_file_tools
+
             file_tools = create_file_tools()
             self.tools.extend(file_tools)
             logger.info(
                 f"✓ Added file tools (read_file, edit_file, write_file, list_files)",
-                extra={"agent_id": str(self.config.agent_id)}
+                extra={"agent_id": str(self.config.agent_id)},
             )
-            
+
             # Add read_skill tool (for agent to read Agent Skill documentation)
             if agent_skill_count > 0:
                 from agent_framework.tools.read_skill_tool import create_read_skill_tool
+
                 read_skill_tool = create_read_skill_tool(
                     agent_id=self.config.agent_id,
                     user_id=self.config.owner_user_id,
-                    skill_manager=self.skill_manager  # Pass the loaded skill_manager
+                    skill_manager=self.skill_manager,  # Pass the loaded skill_manager
                 )
                 self.tools.append(read_skill_tool)
                 logger.info(
                     f"✓ Added read_skill tool for {agent_skill_count} Agent Skills",
-                    extra={"agent_id": str(self.config.agent_id)}
+                    extra={"agent_id": str(self.config.agent_id)},
                 )
-            
+
             logger.info(
                 f"Skills loaded: {langchain_tool_count} LangChain tools, {agent_skill_count} Agent Skills",
                 extra={
                     "agent_id": str(self.config.agent_id),
                     "langchain_tools": langchain_tool_count,
-                    "agent_skills": agent_skill_count
-                }
+                    "agent_skills": agent_skill_count,
+                },
             )
 
             # Bind tools to LLM (if supported)
@@ -432,7 +509,7 @@ class BaseAgent:
                 except (NotImplementedError, AttributeError) as e:
                     logger.warning(
                         f"LLM does not support bind_tools, using without tool binding: {e}",
-                        extra={"agent_id": str(self.config.agent_id)}
+                        extra={"agent_id": str(self.config.agent_id)},
                     )
                     self.llm_with_tools = self.llm
             else:
@@ -448,48 +525,49 @@ class BaseAgent:
             def call_llm(state: MessagesState) -> Dict[str, List]:
                 """LLM node that processes messages and decides on tool calls."""
                 messages = state["messages"]
-                
+
                 # Prepend system message if not already present
                 if not messages or not isinstance(messages[0], SystemMessage):
                     messages = [SystemMessage(content=system_prompt)] + messages
-                
+
                 response = self.llm_with_tools.invoke(messages)
                 return {"messages": [response]}
 
             # Check if LLM supports tool calls
-            llm_supports_tools = self.tools and hasattr(self.llm, 'bind_tools')
-            
+            llm_supports_tools = self.tools and hasattr(self.llm, "bind_tools")
+
             # Add tool execution node (only if tools are available and LLM supports them)
             if llm_supports_tools:
+
                 def call_tools(state: MessagesState) -> Dict[str, List]:
                     """Tool node that executes tool calls."""
                     messages = state["messages"]
                     last_message = messages[-1]
-                    
+
                     tool_results = []
-                    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+                    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
                         for tool_call in last_message.tool_calls:
                             tool = self.tools_by_name.get(tool_call["name"])
                             if tool:
                                 try:
                                     result = tool.invoke(tool_call["args"])
                                     from langchain_core.messages import ToolMessage
+
                                     tool_results.append(
                                         ToolMessage(
-                                            content=str(result),
-                                            tool_call_id=tool_call["id"]
+                                            content=str(result), tool_call_id=tool_call["id"]
                                         )
                                     )
                                 except Exception as e:
                                     logger.error(f"Tool execution failed: {e}")
                                     from langchain_core.messages import ToolMessage
+
                                     tool_results.append(
                                         ToolMessage(
-                                            content=f"Error: {str(e)}",
-                                            tool_call_id=tool_call["id"]
+                                            content=f"Error: {str(e)}", tool_call_id=tool_call["id"]
                                         )
                                     )
-                    
+
                     return {"messages": tool_results}
 
                 # Conditional edge to decide whether to continue or end
@@ -497,28 +575,24 @@ class BaseAgent:
                     """Decide whether to continue with tools or end."""
                     messages = state["messages"]
                     last_message = messages[-1]
-                    
+
                     # Check if LLM made tool calls
-                    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+                    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
                         return "tools"
                     return END
 
                 # Build graph with tools
                 builder.add_node("llm", call_llm)
                 builder.add_node("tools", call_tools)
-                
+
                 builder.add_edge(START, "llm")
-                builder.add_conditional_edges(
-                    "llm",
-                    should_continue,
-                    {"tools": "tools", END: END}
-                )
+                builder.add_conditional_edges("llm", should_continue, {"tools": "tools", END: END})
                 builder.add_edge("tools", "llm")
             else:
                 # Build simple graph without tools
                 logger.info(
                     f"Building agent without tool support",
-                    extra={"agent_id": str(self.config.agent_id)}
+                    extra={"agent_id": str(self.config.agent_id)},
                 )
                 builder.add_node("llm", call_llm)
                 builder.add_edge(START, "llm")
@@ -536,11 +610,13 @@ class BaseAgent:
             raise
 
     def execute_task(
-        self, task_description: str, context: Optional[Dict[str, Any]] = None,
+        self,
+        task_description: str,
+        context: Optional[Dict[str, Any]] = None,
         stream_callback: Optional[callable] = None,
-        session_workdir: Optional['Path'] = None,
+        session_workdir: Optional["Path"] = None,
         container_id: Optional[str] = None,
-        message_content: Optional[Any] = None
+        message_content: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Execute a task using the agent.
 
@@ -572,12 +648,14 @@ class BaseAgent:
             # Set workspace root for file tools
             if session_workdir:
                 from agent_framework.tools.file_tools import set_workspace_root
+
                 set_workspace_root(session_workdir)
                 logger.debug(f"Set workspace root to {session_workdir}")
 
             # Route to new implementation if error recovery is enabled
             if self.config.enable_error_recovery and stream_callback:
                 import asyncio
+
                 # Run async method in sync context
                 # Always create a new event loop for this thread to avoid conflicts
                 # with the main thread's FastAPI event loop
@@ -586,16 +664,20 @@ class BaseAgent:
                     # we're being called from an async context (shouldn't happen normally)
                     loop = asyncio.get_running_loop()
                     # If we get here, there's a running loop - this is unusual
-                    logger.warning("Event loop already running in current thread, using legacy implementation")
+                    logger.warning(
+                        "Event loop already running in current thread, using legacy implementation"
+                    )
                 except RuntimeError:
                     # No running loop - this is the expected case when called from a thread
                     # Create a new event loop for this thread
                     result = asyncio.run(
                         self.execute_task_with_recovery(
-                            task_description, context, stream_callback,
+                            task_description,
+                            context,
+                            stream_callback,
                             session_workdir=session_workdir,
                             container_id=container_id,
-                            message_content=message_content
+                            message_content=message_content,
                         )
                     )
                     self.status = AgentStatus.ACTIVE
@@ -604,14 +686,18 @@ class BaseAgent:
             # Legacy implementation (original code)
             # Prepare input messages
             user_message = task_description
-            
+
             # Add context information if provided
             if context:
                 context_info = []
                 if context.get("agent_memories"):
-                    context_info.append(f"Relevant memories: {', '.join(context['agent_memories'][:3])}")
+                    context_info.append(
+                        f"Relevant memories: {', '.join(context['agent_memories'][:3])}"
+                    )
                 if context.get("company_memories"):
-                    context_info.append(f"Company knowledge: {', '.join(context['company_memories'][:3])}")
+                    context_info.append(
+                        f"Company knowledge: {', '.join(context['company_memories'][:3])}"
+                    )
                 if context.get("user_context_memories"):
                     context_info.append(
                         f"User context: {', '.join(context['user_context_memories'][:3])}"
@@ -640,81 +726,83 @@ class BaseAgent:
                 human_content = message_content if message_content is not None else user_message
                 messages = [
                     SystemMessage(content=system_prompt),
-                    HumanMessage(content=human_content)
+                    HumanMessage(content=human_content),
                 ]
-                
+
                 # Multi-round conversation loop for tool execution
                 tool_calls_made = []
                 max_iterations = 20  # 最多20轮
                 iteration = 0
-                
+
                 logger.info(
                     f"[TOOL-LOOP] Starting multi-round conversation (max {max_iterations} iterations)",
-                    extra={"agent_id": str(self.config.agent_id), "has_tools": len(self.tools) > 0}
+                    extra={"agent_id": str(self.config.agent_id), "has_tools": len(self.tools) > 0},
                 )
-                
+
                 while iteration < max_iterations:
                     iteration += 1
-                    
+
                     logger.info(
                         f"[TOOL-LOOP] Round {iteration}/{max_iterations}",
-                        extra={"agent_id": str(self.config.agent_id)}
+                        extra={"agent_id": str(self.config.agent_id)},
                     )
-                    
+
                     # Stream LLM response for this round
                     round_output = ""
                     round_thinking = ""
                     chunk_count = 0
                     stream_failed = False
-                    
+
                     try:
                         for chunk in self.llm.stream(messages):
-                            if hasattr(chunk, 'content') and chunk.content:
+                            if hasattr(chunk, "content") and chunk.content:
                                 # Check for content_type in additional_kwargs
                                 content_type = "content"  # default
-                                if hasattr(chunk, 'additional_kwargs') and chunk.additional_kwargs:
-                                    content_type = chunk.additional_kwargs.get('content_type', 'content')
-                                
+                                if hasattr(chunk, "additional_kwargs") and chunk.additional_kwargs:
+                                    content_type = chunk.additional_kwargs.get(
+                                        "content_type", "content"
+                                    )
+
                                 # Send to frontend immediately for real-time streaming
                                 stream_callback((chunk.content, content_type))
-                                
+
                                 # Also accumulate for tool detection
                                 if content_type == "thinking":
                                     round_thinking += chunk.content
                                 else:
                                     round_output += chunk.content
                                 chunk_count += 1
-                        
+
                         # If no chunks were received, mark streaming as failed
                         if chunk_count == 0:
                             stream_failed = True
                             logger.warning("LLM streaming returned no chunks")
-                        
+
                     except Exception as stream_error:
                         stream_failed = True
                         logger.warning(f"Streaming failed: {stream_error}")
-                    
+
                     # If streaming failed, fall back to non-streaming
                     if stream_failed:
                         logger.info("Falling back to non-streaming mode")
                         try:
                             result = self.llm.invoke(messages)
-                            if hasattr(result, 'content'):
+                            if hasattr(result, "content"):
                                 round_output = result.content
                             else:
                                 round_output = str(result)
-                            
+
                             if not round_output:
                                 raise ValueError("LLM returned empty content")
                         except Exception as invoke_error:
                             logger.error(f"Non-streaming fallback also failed: {invoke_error}")
                             raise
-                    
+
                     logger.info(
                         f"[TOOL-LOOP] Round {iteration} LLM output: thinking={len(round_thinking)} chars, content={len(round_output)} chars",
-                        extra={"agent_id": str(self.config.agent_id)}
+                        extra={"agent_id": str(self.config.agent_id)},
                     )
-                    
+
                     # Check if output contains tool calls
                     import re
                     import json
@@ -723,12 +811,12 @@ class BaseAgent:
                     tool_json_blocks = []
                     for tc in parsed_calls:
                         tool_json_blocks.append(tc.raw_json)
-                    
+
                     if tool_json_blocks:
                         # This round contains tool calls
                         logger.info(
                             f"[TOOL-LOOP] Found {len(parsed_calls)} tool calls in round {iteration}",
-                            extra={"agent_id": str(self.config.agent_id)}
+                            extra={"agent_id": str(self.config.agent_id)},
                         )
 
                         # Note: thinking and content already sent during streaming above
@@ -742,75 +830,77 @@ class BaseAgent:
                             tool = self.tools_by_name.get(tool_name)
                             if tool:
                                 # Send "calling tool" message BEFORE execution
-                                stream_callback((
-                                    f"\n\n🔧 **调用工具: {tool_name}**\n参数: {tool_args}\n",
-                                    "tool_call"
-                                ))
+                                stream_callback(
+                                    (
+                                        f"\n\n🔧 **调用工具: {tool_name}**\n参数: {tool_args}\n",
+                                        "tool_call",
+                                    )
+                                )
 
                                 logger.info(
                                     f"Executing tool: {tool_name}",
                                     extra={
                                         "agent_id": str(self.config.agent_id),
                                         "tool_name": tool_name,
-                                        "tool_args": str(tool_args)
-                                    }
+                                        "tool_args": str(tool_args),
+                                    },
                                 )
 
                                 # Execute tool
                                 try:
                                     result = tool.invoke(tool_args)
-                                    tool_calls_made.append({
-                                        "name": tool_name,
-                                        "args": tool_args,
-                                        "result": str(result)
-                                    })
-                                    tool_results.append({
-                                        "tool": tool_name,
-                                        "args": tool_args,
-                                        "result": str(result)
-                                    })
+                                    tool_calls_made.append(
+                                        {
+                                            "name": tool_name,
+                                            "args": tool_args,
+                                            "result": str(result),
+                                        }
+                                    )
+                                    tool_results.append(
+                                        {
+                                            "tool": tool_name,
+                                            "args": tool_args,
+                                            "result": str(result),
+                                        }
+                                    )
 
                                     # Send tool execution result to frontend
-                                    stream_callback((
-                                        f"✅ **执行结果**: {result}\n",
-                                        "tool_result"
-                                    ))
+                                    stream_callback((f"✅ **执行结果**: {result}\n", "tool_result"))
 
                                     logger.info(
                                         f"Tool executed successfully: {tool_name} = {result}",
-                                        extra={"agent_id": str(self.config.agent_id)}
+                                        extra={"agent_id": str(self.config.agent_id)},
                                     )
                                 except Exception as tool_error:
-                                    logger.error(f"Tool execution failed: {tool_error}", exc_info=True)
-                                    stream_callback((
-                                        f"❌ **执行失败**: {str(tool_error)}\n",
-                                        "tool_error"
-                                    ))
-                                    tool_results.append({
-                                        "tool": tool_name,
-                                        "args": tool_args,
-                                        "error": str(tool_error)
-                                    })
+                                    logger.error(
+                                        f"Tool execution failed: {tool_error}", exc_info=True
+                                    )
+                                    stream_callback(
+                                        (f"❌ **执行失败**: {str(tool_error)}\n", "tool_error")
+                                    )
+                                    tool_results.append(
+                                        {
+                                            "tool": tool_name,
+                                            "args": tool_args,
+                                            "error": str(tool_error),
+                                        }
+                                    )
                             else:
                                 logger.warning(f"Tool not found: {tool_name}")
-                                stream_callback((
-                                    f"⚠️ 工具未找到: {tool_name}\n",
-                                    "tool_error"
-                                ))
+                                stream_callback((f"⚠️ 工具未找到: {tool_name}\n", "tool_error"))
 
                         # If tools were executed, continue to next round with tool results
                         if tool_results:
                             logger.info(
                                 f"[TOOL-LOOP] Executed {len(tool_results)} tools, continuing to round {iteration + 1}",
-                                extra={"agent_id": str(self.config.agent_id)}
+                                extra={"agent_id": str(self.config.agent_id)},
                             )
-                            
+
                             # Send separator before continuation
-                            stream_callback((
-                                f"\n\n---\n\n💭 **根据工具结果生成最终回答...**\n\n",
-                                "info"
-                            ))
-                            
+                            stream_callback(
+                                (f"\n\n---\n\n💭 **根据工具结果生成最终回答...**\n\n", "info")
+                            )
+
                             # Build a message with tool results
                             tool_results_text = "\n\n工具执行结果：\n"
                             for tr in tool_results:
@@ -818,17 +908,17 @@ class BaseAgent:
                                     tool_results_text += f"- {tr['tool']}: 错误 - {tr['error']}\n"
                                 else:
                                     tool_results_text += f"- {tr['tool']}: {tr['result']}\n"
-                            
+
                             # Check if we just read skill documentation - if so, encourage using it
-                            if any(tr.get('tool') == 'read_skill' for tr in tool_results):
+                            if any(tr.get("tool") == "read_skill" for tr in tool_results):
                                 tool_results_text += "\n你已经获得了技能文档。如果需要执行技能中的脚本或命令，请使用 code_execution 工具。如果已经有足够信息，可以直接回答用户。"
                             else:
                                 tool_results_text += "\n请根据以上工具执行结果，给出最终回答。如果还需要更多信息或执行其他操作，可以继续调用工具。"
-                            
+
                             # Add to conversation history
                             messages.append(AIMessage(content=round_output))
                             messages.append(HumanMessage(content=tool_results_text))
-                            
+
                             # Continue to next round
                             continue
                         else:
@@ -839,31 +929,31 @@ class BaseAgent:
                         # No tool calls in this round - this is the final answer
                         logger.info(
                             f"[TOOL-LOOP] No tool calls in round {iteration}, conversation complete",
-                            extra={"agent_id": str(self.config.agent_id)}
+                            extra={"agent_id": str(self.config.agent_id)},
                         )
-                        
+
                         # Note: thinking and content already sent during streaming above
                         # Exit loop - we have the final answer
                         break
-                
+
                 logger.info(
                     f"[TOOL-LOOP] Conversation completed after {iteration} rounds",
                     extra={
                         "agent_id": str(self.config.agent_id),
-                        "tool_calls_count": len(tool_calls_made)
-                    }
+                        "tool_calls_count": len(tool_calls_made),
+                    },
                 )
-                
+
                 self.status = AgentStatus.ACTIVE
                 logger.info(
                     f"Task completed: {self.config.name}",
                     extra={
                         "agent_id": str(self.config.agent_id),
                         "tool_calls_count": len(tool_calls_made),
-                        "rounds": iteration
-                    }
+                        "rounds": iteration,
+                    },
                 )
-                
+
                 return {
                     "success": True,
                     "output": "Conversation completed",  # Not used in streaming mode
@@ -872,27 +962,29 @@ class BaseAgent:
                 }
             else:
                 # Non-streaming mode - invoke normally
-                result = self.agent.invoke({
-                    "messages": [HumanMessage(content=user_message)]
-                })
+                result = self.agent.invoke({"messages": [HumanMessage(content=user_message)]})
 
                 # Extract output from result
                 messages = result.get("messages", [])
                 final_output = ""
-                
+
                 if messages:
                     # Get the last AI message
                     for msg in reversed(messages):
                         if isinstance(msg, AIMessage):
                             final_output = msg.content
                             break
-                    
+
                     if not final_output and messages:
                         # Fallback to last message
-                        final_output = str(messages[-1].content) if hasattr(messages[-1], 'content') else str(messages[-1])
-                
+                        final_output = (
+                            str(messages[-1].content)
+                            if hasattr(messages[-1], "content")
+                            else str(messages[-1])
+                        )
+
                 # Parse and execute tool calls if LLM doesn't support function calling
-                if self.tools and not hasattr(self.llm, 'bind_tools'):
+                if self.tools and not hasattr(self.llm, "bind_tools"):
                     final_output = self._parse_and_execute_tools_sync(final_output)
 
                 self.status = AgentStatus.ACTIVE
@@ -943,7 +1035,7 @@ class BaseAgent:
         """
         self.tools.append(tool)
         logger.info(f"Tool added to agent: {tool.name}")
-        
+
         # Re-initialize if agent is already initialized
         if self.agent:
             logger.info("Re-initializing agent with new tool")
@@ -971,7 +1063,7 @@ class BaseAgent:
         preprocessed = llm_output
 
         # Qwen/ChatGLM <tool_call>JSON</tool_call> format
-        qwen_tool_pattern = r'<tool_call>\s*(\{.*?\})\s*</tool_call>'
+        qwen_tool_pattern = r"<tool_call>\s*(\{.*?\})\s*</tool_call>"
         qwen_matches = re.findall(qwen_tool_pattern, preprocessed, re.DOTALL)
         for qwen_json in qwen_matches:
             try:
@@ -991,7 +1083,7 @@ class BaseAgent:
 
         # GLM <tool_call>name<|end_of_box|> <tool_call>key: val<|end_of_box|> format
         glm_blocks = re.findall(
-            r'<tool_call>\s*(.*?)\s*(?:<\|end_of_box\|>|</tool_call>)',
+            r"<tool_call>\s*(.*?)\s*(?:<\|end_of_box\|>|</tool_call>)",
             preprocessed,
             re.DOTALL,
         )
@@ -1011,7 +1103,7 @@ class BaseAgent:
                 preprocessed += f"\n```json\n{normalized}\n```"
 
         # <function_call>JSON</function_call> format
-        fc_pattern = r'<function_call>\s*(\{.*?\})\s*</function_call>'
+        fc_pattern = r"<function_call>\s*(\{.*?\})\s*</function_call>"
         fc_matches = re.findall(fc_pattern, preprocessed, re.DOTALL)
         for fc_json in fc_matches:
             try:
@@ -1042,130 +1134,133 @@ class BaseAgent:
 
         # Try pattern 2 (without wrapper)
         matches2 = re.findall(json_pattern2, preprocessed, re.DOTALL)
-        
+
         # Combine matches
         json_blocks = []
-        
+
         # Process pattern 1 matches
         for json_str, tool_name in matches1:
             json_blocks.append(json_str)
-        
+
         # Process pattern 2 matches (only if pattern 1 didn't match)
         if not matches1 and matches2:
             for tool_name in matches2:
                 # Extract the full JSON block
                 match = re.search(
-                    r'\{[^}]*"tool"\s*:\s*"' + re.escape(tool_name) + r'"[^}]*\}',
-                    llm_output
+                    r'\{[^}]*"tool"\s*:\s*"' + re.escape(tool_name) + r'"[^}]*\}', llm_output
                 )
                 if match:
                     json_blocks.append(match.group(0))
-        
+
         # Parse each JSON block
         for json_str in json_blocks:
             try:
                 tool_data = json.loads(json_str)
-                
+
                 # Validate required fields
                 if "tool" not in tool_data:
-                    parse_errors.append(ParseError(
-                        error_type="missing_field",
-                        message="Missing required field 'tool'",
-                        malformed_input=json_str
-                    ))
+                    parse_errors.append(
+                        ParseError(
+                            error_type="missing_field",
+                            message="Missing required field 'tool'",
+                            malformed_input=json_str,
+                        )
+                    )
                     continue
-                
+
                 tool_name = tool_data["tool"]
-                
+
                 # Check if tool exists
                 if tool_name not in self.tools_by_name:
                     available_tools = ", ".join(self.tools_by_name.keys())
-                    parse_errors.append(ParseError(
-                        error_type="unknown_tool",
-                        message=f"Tool '{tool_name}' not found. Available tools: {available_tools}",
-                        malformed_input=json_str
-                    ))
+                    parse_errors.append(
+                        ParseError(
+                            error_type="unknown_tool",
+                            message=f"Tool '{tool_name}' not found. Available tools: {available_tools}",
+                            malformed_input=json_str,
+                        )
+                    )
                     continue
-                
+
                 # Extract arguments
                 args = {k: v for k, v in tool_data.items() if k != "tool"}
-                
-                tool_calls.append(ToolCall(
-                    tool_name=tool_name,
-                    arguments=args,
-                    raw_json=json_str
-                ))
-                
+
+                tool_calls.append(ToolCall(tool_name=tool_name, arguments=args, raw_json=json_str))
+
             except json.JSONDecodeError as e:
-                parse_errors.append(ParseError(
-                    error_type="json_decode_error",
-                    message=f"Failed to parse JSON: {str(e)}",
-                    malformed_input=json_str,
-                    details={"line": e.lineno, "column": e.colno, "pos": e.pos}
-                ))
+                parse_errors.append(
+                    ParseError(
+                        error_type="json_decode_error",
+                        message=f"Failed to parse JSON: {str(e)}",
+                        malformed_input=json_str,
+                        details={"line": e.lineno, "column": e.colno, "pos": e.pos},
+                    )
+                )
             except Exception as e:
-                parse_errors.append(ParseError(
-                    error_type="unknown_error",
-                    message=f"Unexpected error: {str(e)}",
-                    malformed_input=json_str
-                ))
-        
+                parse_errors.append(
+                    ParseError(
+                        error_type="unknown_error",
+                        message=f"Unexpected error: {str(e)}",
+                        malformed_input=json_str,
+                    )
+                )
+
         return tool_calls, parse_errors
 
     def _handle_parse_errors(
-        self,
-        parse_errors: List[ParseError],
-        state: ConversationState
+        self, parse_errors: List[ParseError], state: ConversationState
     ) -> Optional[ErrorFeedback]:
         """Generate feedback for parse errors.
-        
+
         Args:
             parse_errors: List of parse errors
             state: Current conversation state
-            
+
         Returns:
             ErrorFeedback if recoverable, None if max retries exceeded
         """
         if not parse_errors:
             return None
-        
+
         # Get the first error (focus on one at a time)
         error = parse_errors[0]
-        
+
         # Check retry count
         retry_key = f"parse_error_{error.error_type}"
         retry_count = state.retry_counts.get(retry_key, 0)
-        
+
         if retry_count >= self.config.max_parse_retries:
             logger.error(
                 f"[RECOVERY] Max parse retries exceeded for {error.error_type}",
-                extra={"agent_id": str(self.config.agent_id), "error_type": error.error_type}
+                extra={"agent_id": str(self.config.agent_id), "error_type": error.error_type},
             )
             return None
-        
+
         # Increment retry count
         state.retry_counts[retry_key] = retry_count + 1
-        
+
         # Record error
-        state.errors.append(ErrorRecord(
-            round_number=state.round_number,
-            error_type=error.error_type,
-            error_message=error.message,
-            malformed_input=error.malformed_input,
-            is_recoverable=True,
-            retry_count=retry_count + 1
-        ))
-        
+        state.errors.append(
+            ErrorRecord(
+                round_number=state.round_number,
+                error_type=error.error_type,
+                error_message=error.message,
+                malformed_input=error.malformed_input,
+                is_recoverable=True,
+                retry_count=retry_count + 1,
+            )
+        )
+
         logger.warning(
             f"[RECOVERY] Parse error detected: {error.error_type}",
             extra={
                 "agent_id": str(self.config.agent_id),
                 "error_type": error.error_type,
                 "retry_count": retry_count + 1,
-                "max_retries": self.config.max_parse_retries
-            }
+                "max_retries": self.config.max_parse_retries,
+            },
         )
-        
+
         # Generate feedback based on error type
         if error.error_type == "json_decode_error":
             return ErrorFeedback(
@@ -1180,10 +1275,10 @@ class BaseAgent:
                     "Ensure all quotes are properly escaped",
                     "Verify JSON structure is valid",
                     "Use double quotes for strings, not single quotes",
-                    "Check for missing commas between fields"
-                ]
+                    "Check for missing commas between fields",
+                ],
             )
-        
+
         elif error.error_type == "missing_field":
             return ErrorFeedback(
                 error_type="Missing Required Field",
@@ -1195,10 +1290,10 @@ class BaseAgent:
                 suggestions=[
                     "Every tool call must have a 'tool' field",
                     "The 'tool' field specifies which tool to use",
-                    "Example: {\"tool\": \"calculator\", \"expression\": \"1+1\"}"
-                ]
+                    'Example: {"tool": "calculator", "expression": "1+1"}',
+                ],
             )
-        
+
         elif error.error_type == "unknown_tool":
             available_tools = ", ".join(self.tools_by_name.keys())
             return ErrorFeedback(
@@ -1211,10 +1306,10 @@ class BaseAgent:
                 suggestions=[
                     f"Use one of these tools: {available_tools}",
                     "Check the tool name spelling",
-                    "Refer to the Available Tools section in the system prompt"
-                ]
+                    "Refer to the Available Tools section in the system prompt",
+                ],
             )
-        
+
         else:
             return ErrorFeedback(
                 error_type="Tool Call Error",
@@ -1223,16 +1318,16 @@ class BaseAgent:
                 expected_format='{"tool": "tool_name", "arg1": "value1"}',
                 retry_count=retry_count + 1,
                 max_retries=self.config.max_parse_retries,
-                suggestions=["Review the tool call format and try again"]
+                suggestions=["Review the tool call format and try again"],
             )
 
     async def _execute_code_blocks(
         self,
         code_blocks: List,
-        state: 'ConversationState',
+        state: "ConversationState",
         stream_callback: Optional[callable] = None,
-        session_workdir: Optional['Path'] = None,
-        container_id: Optional[str] = None
+        session_workdir: Optional["Path"] = None,
+        container_id: Optional[str] = None,
     ) -> List:
         """Execute code blocks extracted from LLM output.
 
@@ -1262,11 +1357,12 @@ class BaseAgent:
         skill_env = {}
         try:
             from skill_library.skill_env_manager import get_skill_env_manager
+
             env_manager = get_skill_env_manager()
             skill_env = env_manager.get_env_for_user(self.config.owner_user_id)
             logger.debug(
                 f"[CODE_BLOCK] Loaded {len(skill_env)} skill environment variables",
-                extra={"agent_id": str(self.config.agent_id)}
+                extra={"agent_id": str(self.config.agent_id)},
             )
         except Exception as e:
             logger.warning(f"[CODE_BLOCK] Failed to load skill env vars: {e}")
@@ -1276,7 +1372,7 @@ class BaseAgent:
             workdir = session_workdir
             logger.info(
                 f"[CODE_BLOCK] Reusing session workdir: {workdir}",
-                extra={"agent_id": str(self.config.agent_id)}
+                extra={"agent_id": str(self.config.agent_id)},
             )
         else:
             session_id = uuid4().hex[:8]
@@ -1291,17 +1387,17 @@ class BaseAgent:
                         for filename, content in skill_ref.package_files.items():
                             file_path = workdir / filename
                             file_path.parent.mkdir(parents=True, exist_ok=True)
-                            file_path.write_text(content, encoding='utf-8')
+                            file_path.write_text(content, encoding="utf-8")
                             # Make scripts executable
-                            if filename.endswith(('.sh', '.py')):
+                            if filename.endswith((".sh", ".py")):
                                 file_path.chmod(0o755)
                         logger.info(
                             f"[CODE_BLOCK] Copied {len(skill_ref.package_files)} skill files to workdir",
                             extra={
                                 "agent_id": str(self.config.agent_id),
                                 "skill_name": skill_ref.name,
-                                "workdir": str(workdir)
-                            }
+                                "workdir": str(workdir),
+                            },
                         )
             except Exception as e:
                 logger.warning(f"[CODE_BLOCK] Failed to copy skill files: {e}")
@@ -1309,10 +1405,12 @@ class BaseAgent:
         for i, block in enumerate(code_blocks):
             # Send execution indicator to frontend
             if stream_callback:
-                stream_callback((
-                    f"\n\n🔧 **执行代码块 {i+1}/{len(code_blocks)}**: {block.language}\n文件: {block.filename}\n",
-                    "code_execution"
-                ))
+                stream_callback(
+                    (
+                        f"\n\n🔧 **执行代码块 {i+1}/{len(code_blocks)}**: {block.language}\n文件: {block.filename}\n",
+                        "code_execution",
+                    )
+                )
 
             logger.info(
                 f"[CODE_BLOCK] Executing block {i+1}/{len(code_blocks)}: {block.language}",
@@ -1320,8 +1418,8 @@ class BaseAgent:
                     "agent_id": str(self.config.agent_id),
                     "language": block.language,
                     "script_name": block.filename,
-                    "code_length": len(block.code)
-                }
+                    "code_length": len(block.code),
+                },
             )
 
             # Execute the code block with skill environment variables and shared workdir
@@ -1330,24 +1428,30 @@ class BaseAgent:
                 timeout=self.config.tool_timeout_seconds,
                 env=skill_env,
                 workdir=workdir,  # Use shared workdir with skill files
-                container_id=container_id  # Docker sandbox (None = subprocess)
+                container_id=container_id,  # Docker sandbox (None = subprocess)
             )
             results.append(result)
 
             # Send result to frontend
             if stream_callback:
                 if result.success:
-                    output_preview = result.output[:500] if len(result.output) > 500 else result.output
-                    stream_callback((
-                        f"✅ **执行成功** ({result.execution_time:.2f}s)\n```\n{output_preview}\n```\n",
-                        "code_result"
-                    ))
+                    output_preview = (
+                        result.output[:500] if len(result.output) > 500 else result.output
+                    )
+                    stream_callback(
+                        (
+                            f"✅ **执行成功** ({result.execution_time:.2f}s)\n```\n{output_preview}\n```\n",
+                            "code_result",
+                        )
+                    )
                 else:
                     error_preview = (result.error or result.output)[:500]
-                    stream_callback((
-                        f"❌ **执行失败** (exit code {result.exit_code})\n```\n{error_preview}\n```\n",
-                        "code_error"
-                    ))
+                    stream_callback(
+                        (
+                            f"❌ **执行失败** (exit code {result.exit_code})\n```\n{error_preview}\n```\n",
+                            "code_error",
+                        )
+                    )
 
             logger.info(
                 f"[CODE_BLOCK] Block {i+1} {'succeeded' if result.success else 'failed'}",
@@ -1355,8 +1459,8 @@ class BaseAgent:
                     "agent_id": str(self.config.agent_id),
                     "success": result.success,
                     "exit_code": result.exit_code,
-                    "execution_time": result.execution_time
-                }
+                    "execution_time": result.execution_time,
+                },
             )
 
             # Stop on first error (can be made configurable)
@@ -1369,199 +1473,360 @@ class BaseAgent:
         self,
         tool_calls: List[ToolCall],
         state: ConversationState,
-        stream_callback: Optional[callable] = None
+        stream_callback: Optional[callable] = None,
     ) -> List[ToolResult]:
         """Execute tools with error handling and recovery.
-        
+
         Args:
             tool_calls: List of tool calls to execute
             state: Current conversation state
             stream_callback: Optional callback for streaming updates
-            
+
         Returns:
             List of tool results
         """
         import asyncio
-        
+
         results = []
-        
+
         for tool_call in tool_calls:
             tool_name = tool_call.tool_name
             tool = self.tools_by_name[tool_name]
-            
+
             # Check retry count for this specific tool
             retry_key = f"tool_{tool_name}"
             retry_count = state.retry_counts.get(retry_key, 0)
-            
+
             try:
                 # Send "calling tool" message
                 if stream_callback:
                     retry_indicator = f" (重试 {retry_count})" if retry_count > 0 else ""
-                    stream_callback((
-                        f"\n\n🔧 **调用工具: {tool_name}{retry_indicator}**\n参数: {tool_call.arguments}\n",
-                        "tool_call"
-                    ))
-                
+                    stream_callback(
+                        (
+                            f"\n\n🔧 **调用工具: {tool_name}{retry_indicator}**\n参数: {tool_call.arguments}\n",
+                            "tool_call",
+                        )
+                    )
+
                 logger.info(
                     f"[RECOVERY] Executing tool: {tool_name}",
                     extra={
                         "agent_id": str(self.config.agent_id),
                         "tool_name": tool_name,
                         "tool_args": str(tool_call.arguments),
-                        "retry_count": retry_count
-                    }
+                        "retry_count": retry_count,
+                    },
                 )
-                
+
                 # Execute tool with timeout
                 result = await asyncio.wait_for(
-                    tool.ainvoke(tool_call.arguments),
-                    timeout=self.config.tool_timeout_seconds
+                    tool.ainvoke(tool_call.arguments), timeout=self.config.tool_timeout_seconds
                 )
-                
+
                 # Success
-                results.append(ToolResult(
-                    tool_name=tool_name,
-                    status="success",
-                    result=result,
-                    retry_count=retry_count
-                ))
-                
+                results.append(
+                    ToolResult(
+                        tool_name=tool_name,
+                        status="success",
+                        result=result,
+                        retry_count=retry_count,
+                    )
+                )
+
                 # Reset retry count on success
                 state.retry_counts[retry_key] = 0
-                
+
                 # Send success message
                 if stream_callback:
-                    stream_callback((
-                        f"✅ **执行结果**: {result}\n",
-                        "tool_result"
-                    ))
-                
+                    stream_callback((f"✅ **执行结果**: {result}\n", "tool_result"))
+
                 # Record success
-                state.tool_calls_made.append(ToolCallRecord(
-                    round_number=state.round_number,
-                    tool_name=tool_name,
-                    arguments=tool_call.arguments,
-                    status="success",
-                    result=result,
-                    retry_number=retry_count
-                ))
-                
+                state.tool_calls_made.append(
+                    ToolCallRecord(
+                        round_number=state.round_number,
+                        tool_name=tool_name,
+                        arguments=tool_call.arguments,
+                        status="success",
+                        result=result,
+                        retry_number=retry_count,
+                    )
+                )
+
                 logger.info(
                     f"[RECOVERY] Tool executed successfully: {tool_name}",
-                    extra={"agent_id": str(self.config.agent_id), "tool_name": tool_name}
+                    extra={"agent_id": str(self.config.agent_id), "tool_name": tool_name},
                 )
-                
+
             except asyncio.TimeoutError:
                 # Timeout error
-                error_msg = f"Tool execution timed out after {self.config.tool_timeout_seconds} seconds"
-                
-                results.append(ToolResult(
-                    tool_name=tool_name,
-                    status="error",
-                    error=error_msg,
-                    error_type="timeout",
-                    retry_count=retry_count
-                ))
-                
+                error_msg = (
+                    f"Tool execution timed out after {self.config.tool_timeout_seconds} seconds"
+                )
+
+                results.append(
+                    ToolResult(
+                        tool_name=tool_name,
+                        status="error",
+                        error=error_msg,
+                        error_type="timeout",
+                        retry_count=retry_count,
+                    )
+                )
+
                 # Increment retry count
                 state.retry_counts[retry_key] = retry_count + 1
-                
+
                 # Send error message
                 if stream_callback:
-                    stream_callback((
-                        f"⏱️ **超时错误**: {error_msg}\n",
-                        "tool_error"
-                    ))
-                
+                    stream_callback((f"⏱️ **超时错误**: {error_msg}\n", "tool_error"))
+
                 # Record error
-                state.tool_calls_made.append(ToolCallRecord(
-                    round_number=state.round_number,
-                    tool_name=tool_name,
-                    arguments=tool_call.arguments,
-                    status="timeout",
-                    error=error_msg,
-                    retry_number=retry_count
-                ))
-                
+                state.tool_calls_made.append(
+                    ToolCallRecord(
+                        round_number=state.round_number,
+                        tool_name=tool_name,
+                        arguments=tool_call.arguments,
+                        status="timeout",
+                        error=error_msg,
+                        retry_number=retry_count,
+                    )
+                )
+
                 logger.warning(
                     f"[RECOVERY] Tool execution timeout: {tool_name}",
                     extra={
                         "agent_id": str(self.config.agent_id),
                         "tool_name": tool_name,
-                        "timeout": self.config.tool_timeout_seconds
-                    }
+                        "timeout": self.config.tool_timeout_seconds,
+                    },
                 )
-                
+
             except Exception as e:
                 # Execution error
                 error_msg = str(e)
-                
-                results.append(ToolResult(
-                    tool_name=tool_name,
-                    status="error",
-                    error=error_msg,
-                    error_type="execution_error",
-                    retry_count=retry_count
-                ))
-                
+
+                results.append(
+                    ToolResult(
+                        tool_name=tool_name,
+                        status="error",
+                        error=error_msg,
+                        error_type="execution_error",
+                        retry_count=retry_count,
+                    )
+                )
+
                 # Increment retry count
                 state.retry_counts[retry_key] = retry_count + 1
-                
+
                 # Send error message
                 if stream_callback:
-                    stream_callback((
-                        f"❌ **执行失败**: {error_msg}\n",
-                        "tool_error"
-                    ))
-                
+                    stream_callback((f"❌ **执行失败**: {error_msg}\n", "tool_error"))
+
                 # Record error
-                state.tool_calls_made.append(ToolCallRecord(
-                    round_number=state.round_number,
-                    tool_name=tool_name,
-                    arguments=tool_call.arguments,
-                    status="execution_error",
-                    error=error_msg,
-                    retry_number=retry_count
-                ))
-                
+                state.tool_calls_made.append(
+                    ToolCallRecord(
+                        round_number=state.round_number,
+                        tool_name=tool_name,
+                        arguments=tool_call.arguments,
+                        status="execution_error",
+                        error=error_msg,
+                        retry_number=retry_count,
+                    )
+                )
+
                 logger.error(
                     f"[RECOVERY] Tool execution failed: {tool_name}",
                     extra={
                         "agent_id": str(self.config.agent_id),
                         "tool_name": tool_name,
-                        "error": error_msg
+                        "error": error_msg,
                     },
-                    exc_info=True
+                    exc_info=True,
                 )
-        
+
         return results
+
+    def _estimate_text_tokens(self, text: str) -> int:
+        """Estimate token count from text length (mixed CN/EN heuristic)."""
+        if not text:
+            return 0
+        return max(1, int(len(text) * 0.5))
+
+    def _estimate_messages_tokens(self, messages: List[Any]) -> int:
+        """Estimate token count for a message list."""
+        total = 0
+        for msg in messages:
+            content = getattr(msg, "content", msg)
+
+            if isinstance(content, str):
+                total += self._estimate_text_tokens(content)
+                continue
+
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, str):
+                        total += self._estimate_text_tokens(item)
+                    elif isinstance(item, dict):
+                        if item.get("type") == "text":
+                            total += self._estimate_text_tokens(str(item.get("text", "")))
+                        elif isinstance(item.get("content"), str):
+                            total += self._estimate_text_tokens(item["content"])
+                continue
+
+            if content is not None:
+                total += self._estimate_text_tokens(str(content))
+
+        return total
+
+    def _truncate_text_for_context(self, text: str, max_chars: int) -> str:
+        """Truncate long text while keeping head and tail context."""
+        if len(text) <= max_chars:
+            return text
+
+        if max_chars < 80:
+            return text[:max_chars]
+
+        marker = "\n...[内容已压缩]...\n"
+        keep = max_chars - len(marker)
+        head = int(keep * 0.75)
+        tail = keep - head
+        return text[:head] + marker + text[-tail:]
+
+    def _clone_message_with_content(self, msg: Any, content: Any) -> Any:
+        """Clone known message types with replaced content."""
+        if isinstance(msg, SystemMessage):
+            return SystemMessage(content=content)
+        if isinstance(msg, HumanMessage):
+            return HumanMessage(content=content)
+        if isinstance(msg, AIMessage):
+            return AIMessage(content=content)
+        return msg
+
+    def _compress_messages_if_needed(
+        self, messages: List[Any]
+    ) -> Tuple[List[Any], Optional[Dict[str, int]]]:
+        """Compress history when estimated prompt tokens approach context limit."""
+        context_window = int(self.config.context_window_tokens or 8192)
+        threshold_tokens = int(
+            context_window * float(self.config.context_compression_threshold or 0.8)
+        )
+
+        estimated_before = self._estimate_messages_tokens(messages)
+        if estimated_before <= threshold_tokens:
+            return messages, None
+
+        compressed_messages = list(messages)
+        truncated_messages = 0
+        removed_messages = 0
+
+        protected_tail = max(2, int(self.config.history_tail_protected_messages or 6))
+        history_truncate_chars = int(self.config.history_compress_chars or 600)
+
+        mutable_end = max(1, len(compressed_messages) - protected_tail)
+
+        # Step 1: truncate old long messages (keep recent tail unchanged).
+        for idx in range(1, mutable_end):
+            msg = compressed_messages[idx]
+            content = getattr(msg, "content", None)
+            if isinstance(content, str) and len(content) > history_truncate_chars:
+                compressed_content = self._truncate_text_for_context(
+                    content, history_truncate_chars
+                )
+                compressed_messages[idx] = self._clone_message_with_content(msg, compressed_content)
+                truncated_messages += 1
+
+        estimated_after_truncate = self._estimate_messages_tokens(compressed_messages)
+
+        # Step 2: if still above threshold, prune oldest messages while preserving newest tail.
+        if estimated_after_truncate > threshold_tokens and len(compressed_messages) > 2:
+            system_messages = compressed_messages[:1]
+            tail_start = max(1, len(compressed_messages) - protected_tail)
+            head_messages = compressed_messages[1:tail_start]
+            tail_messages = compressed_messages[tail_start:]
+
+            compact_messages = list(system_messages) + list(tail_messages)
+            compact_tokens = self._estimate_messages_tokens(compact_messages)
+            kept_head_reversed: List[Any] = []
+
+            for msg in reversed(head_messages):
+                msg_tokens = self._estimate_messages_tokens([msg])
+                if compact_tokens + msg_tokens <= threshold_tokens:
+                    kept_head_reversed.append(msg)
+                    compact_tokens += msg_tokens
+                else:
+                    removed_messages += 1
+
+            kept_head = list(reversed(kept_head_reversed))
+            compressed_messages = list(system_messages) + kept_head + list(tail_messages)
+
+        estimated_after = self._estimate_messages_tokens(compressed_messages)
+
+        if (
+            truncated_messages == 0
+            and removed_messages == 0
+            and estimated_after >= estimated_before
+        ):
+            return messages, None
+
+        meta = {
+            "context_window": context_window,
+            "threshold_tokens": threshold_tokens,
+            "estimated_before": estimated_before,
+            "estimated_after": estimated_after,
+            "truncated_messages": truncated_messages,
+            "removed_messages": removed_messages,
+        }
+        return compressed_messages, meta
 
     def _format_tool_results(self, tool_results: List[ToolResult]) -> str:
         """Format tool results for LLM feedback.
-        
+
         Args:
             tool_results: List of tool results
-            
+
         Returns:
             Formatted string for LLM
         """
         if not tool_results:
             return ""
-        
-        result_text = "\n\n工具执行结果：\n"
-        
-        for tr in tool_results:
-            if tr.status == "success":
-                result_text += f"- {tr.tool_name}: {tr.result}\n"
-            else:
-                result_text += f"- {tr.tool_name}: 错误 - {tr.error}\n"
-        
+
+        per_item_limit = int(self.config.tool_result_item_max_chars or 1200)
+        total_limit = int(self.config.tool_result_total_max_chars or 3200)
+
+        result_lines = ["\n\n工具执行结果：\n"]
+        used_chars = 0
+        truncated_items = 0
+        omitted_items = 0
+
+        for idx, tr in enumerate(tool_results):
+            raw_value = tr.result if tr.status == "success" else f"错误 - {tr.error}"
+            value_text = str(raw_value)
+            if len(value_text) > per_item_limit:
+                value_text = self._truncate_text_for_context(value_text, per_item_limit)
+                truncated_items += 1
+
+            line = f"- {tr.tool_name}: {value_text}\n"
+            if used_chars + len(line) > total_limit:
+                omitted_items = len(tool_results) - idx
+                result_lines.append(f"- 其余 {omitted_items} 条工具结果省略（超出上下文预算）\n")
+                break
+
+            result_lines.append(line)
+            used_chars += len(line)
+
+        if truncated_items > 0:
+            result_lines.append(f"\n注：已压缩 {truncated_items} 条过长工具结果。\n")
+        if omitted_items > 0:
+            result_lines.append("注：部分工具结果已省略，优先保留最新信息。\n")
+
+        result_text = "".join(result_lines)
+
         # Check if we just read skill documentation
-        if any(tr.tool_name == 'read_skill' and tr.status == "success" for tr in tool_results):
+        if any(tr.tool_name == "read_skill" and tr.status == "success" for tr in tool_results):
             result_text += "\n你已经获得了技能文档。如果需要执行技能中的脚本或命令，请使用 code_execution 工具。如果已经有足够信息，可以直接回答用户。"
         else:
             result_text += "\n请根据以上工具执行结果，给出最终回答。如果还需要更多信息或执行其他操作，可以继续调用工具。"
-        
+
         return result_text
 
     async def execute_task_with_recovery(
@@ -1569,9 +1834,9 @@ class BaseAgent:
         task_description: str,
         context: Optional[Dict[str, Any]] = None,
         stream_callback: Optional[callable] = None,
-        session_workdir: Optional['Path'] = None,
+        session_workdir: Optional["Path"] = None,
         container_id: Optional[str] = None,
-        message_content: Optional[Any] = None
+        message_content: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Execute task with error recovery (new implementation).
 
@@ -1591,10 +1856,10 @@ class BaseAgent:
             Dict with execution results including conversation state
         """
         import asyncio
-        
+
         # Initialize conversation state
         state = ConversationState(max_rounds=self.config.max_iterations)
-        
+
         # Prepare system prompt and initial messages
         system_prompt = self._create_system_prompt()
         user_message = task_description
@@ -1603,9 +1868,13 @@ class BaseAgent:
         if context:
             context_info = []
             if context.get("agent_memories"):
-                context_info.append(f"Relevant memories: {', '.join(context['agent_memories'][:3])}")
+                context_info.append(
+                    f"Relevant memories: {', '.join(context['agent_memories'][:3])}"
+                )
             if context.get("company_memories"):
-                context_info.append(f"Company knowledge: {', '.join(context['company_memories'][:3])}")
+                context_info.append(
+                    f"Company knowledge: {', '.join(context['company_memories'][:3])}"
+                )
             if context.get("user_context_memories"):
                 context_info.append(
                     f"User context: {', '.join(context['user_context_memories'][:3])}"
@@ -1627,19 +1896,13 @@ class BaseAgent:
 
         # Use multimodal content (with images) if provided, otherwise plain text
         human_content = message_content if message_content is not None else user_message
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=human_content)
-        ]
-        
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_content)]
+
         logger.info(
             f"[RECOVERY] Starting conversation with error recovery",
-            extra={
-                "agent_id": str(self.config.agent_id),
-                "max_rounds": state.max_rounds
-            }
+            extra={"agent_id": str(self.config.agent_id), "max_rounds": state.max_rounds},
         )
-        
+
         # Main conversation loop
         while state.round_number < state.max_rounds and not state.is_terminated:
             state.round_number += 1
@@ -1652,15 +1915,40 @@ class BaseAgent:
 
             logger.info(
                 f"[RECOVERY] Round {state.round_number}/{state.max_rounds}",
-                extra={"agent_id": str(self.config.agent_id)}
+                extra={"agent_id": str(self.config.agent_id)},
             )
 
             # Send round indicator to frontend (only for rounds > 1)
             if state.round_number > 1 and stream_callback:
-                stream_callback((
-                    f"\n\n💭 **第 {state.round_number} 轮对话**\n",
-                    "info"
-                ))
+                stream_callback((f"\n\n💭 **第 {state.round_number} 轮对话**\n", "info"))
+
+            # Force compression when context reaches configured threshold (default 80%).
+            compressed_messages, compression_meta = self._compress_messages_if_needed(messages)
+            if compression_meta:
+                messages = compressed_messages
+                logger.warning(
+                    "[RECOVERY] Context pressure detected, compressed conversation history",
+                    extra={
+                        "agent_id": str(self.config.agent_id),
+                        "context_window": compression_meta["context_window"],
+                        "threshold_tokens": compression_meta["threshold_tokens"],
+                        "estimated_before": compression_meta["estimated_before"],
+                        "estimated_after": compression_meta["estimated_after"],
+                        "truncated_messages": compression_meta["truncated_messages"],
+                        "removed_messages": compression_meta["removed_messages"],
+                    },
+                )
+                if stream_callback:
+                    stream_callback(
+                        (
+                            (
+                                "\n\n🗜️ 上下文已接近上限，已自动压缩历史与工具结果。"
+                                f" 估算 {compression_meta['estimated_before']} -> {compression_meta['estimated_after']} tokens"
+                                f"（阈值 {compression_meta['threshold_tokens']} / 窗口 {compression_meta['context_window']}）\n"
+                            ),
+                            "info",
+                        )
+                    )
 
             # 1. Get LLM response
             round_output = ""
@@ -1672,26 +1960,28 @@ class BaseAgent:
                     # Check for usage info in the chunk
                     # LangChain's stream() returns AIMessageChunk objects
                     # The final chunk contains response_metadata with usage info
-                    if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
+                    if hasattr(chunk, "response_metadata") and chunk.response_metadata:
                         meta = chunk.response_metadata
-                        if 'usage' in meta:
-                            round_usage = meta['usage']
-                            logger.info(f"[RECOVERY] Got usage from response_metadata: {round_usage}")
-                        elif 'token_usage' in meta:
-                            round_usage = meta['token_usage']
+                        if "usage" in meta:
+                            round_usage = meta["usage"]
+                            logger.info(
+                                f"[RECOVERY] Got usage from response_metadata: {round_usage}"
+                            )
+                        elif "token_usage" in meta:
+                            round_usage = meta["token_usage"]
                             logger.info(f"[RECOVERY] Got usage from token_usage: {round_usage}")
-                    if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
+                    if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
                         um = chunk.usage_metadata
                         round_usage = {
-                            'prompt_tokens': getattr(um, 'input_tokens', 0),
-                            'completion_tokens': getattr(um, 'output_tokens', 0),
+                            "prompt_tokens": getattr(um, "input_tokens", 0),
+                            "completion_tokens": getattr(um, "output_tokens", 0),
                         }
                         logger.info(f"[RECOVERY] Got usage from usage_metadata: {round_usage}")
 
-                    if hasattr(chunk, 'content') and chunk.content:
+                    if hasattr(chunk, "content") and chunk.content:
                         content_type = "content"
-                        if hasattr(chunk, 'additional_kwargs') and chunk.additional_kwargs:
-                            content_type = chunk.additional_kwargs.get('content_type', 'content')
+                        if hasattr(chunk, "additional_kwargs") and chunk.additional_kwargs:
+                            content_type = chunk.additional_kwargs.get("content_type", "content")
 
                         # Track round timing for content tokens only
                         if content_type in ("content", "thinking"):
@@ -1712,7 +2002,7 @@ class BaseAgent:
                 # Try non-streaming fallback
                 try:
                     result = self.llm.invoke(messages)
-                    round_output = result.content if hasattr(result, 'content') else str(result)
+                    round_output = result.content if hasattr(result, "content") else str(result)
                 except Exception as fallback_error:
                     logger.error(f"[RECOVERY] LLM fallback also failed: {fallback_error}")
                     state.is_terminated = True
@@ -1721,7 +2011,7 @@ class BaseAgent:
 
             logger.info(
                 f"[RECOVERY] Round {state.round_number} output: thinking={len(round_thinking)} chars, content={len(round_output)} chars, usage={round_usage}",
-                extra={"agent_id": str(self.config.agent_id)}
+                extra={"agent_id": str(self.config.agent_id)},
             )
 
             # Helper function to send round stats
@@ -1732,24 +2022,32 @@ class BaseAgent:
 
                     # Use actual usage from LLM if available, otherwise estimate
                     if round_usage:
-                        input_tokens = round_usage.get('prompt_tokens', 0) or round_usage.get('input_tokens', 0)
-                        output_tokens = round_usage.get('completion_tokens', 0) or round_usage.get('output_tokens', 0)
-                        logger.info(f"[RECOVERY] Using actual token counts: in={input_tokens}, out={output_tokens}")
+                        input_tokens = round_usage.get("prompt_tokens", 0) or round_usage.get(
+                            "input_tokens", 0
+                        )
+                        output_tokens = round_usage.get("completion_tokens", 0) or round_usage.get(
+                            "output_tokens", 0
+                        )
+                        logger.info(
+                            f"[RECOVERY] Using actual token counts: in={input_tokens}, out={output_tokens}"
+                        )
                     else:
                         # Estimate tokens (Chinese avg ~1.5 tokens/char, English ~0.25, mixed ~0.5)
                         output_tokens = int(round_output_chars * 0.5)
                         # Estimate input tokens from messages
                         input_chars = 0
                         for msg in messages:
-                            if hasattr(msg, 'content'):
+                            if hasattr(msg, "content"):
                                 if isinstance(msg.content, str):
                                     input_chars += len(msg.content)
                                 elif isinstance(msg.content, list):
                                     for item in msg.content:
-                                        if isinstance(item, dict) and item.get('type') == 'text':
-                                            input_chars += len(item.get('text', ''))
+                                        if isinstance(item, dict) and item.get("type") == "text":
+                                            input_chars += len(item.get("text", ""))
                         input_tokens = int(input_chars * 0.5)
-                        logger.info(f"[RECOVERY] Using estimated token counts: in={input_tokens}, out={output_tokens}")
+                        logger.info(
+                            f"[RECOVERY] Using estimated token counts: in={input_tokens}, out={output_tokens}"
+                        )
 
                     # Calculate time to first token
                     if round_first_token_time is not None:
@@ -1779,20 +2077,27 @@ class BaseAgent:
                     total_time = round(round_end_time - round_start_time, 2)
 
                     # Send round stats
-                    stream_callback((json.dumps({
-                        "roundNumber": state.round_number,
-                        "timeToFirstToken": time_to_first,
-                        "tokensPerSecond": tokens_per_second,
-                        "inputTokens": input_tokens,
-                        "outputTokens": output_tokens,
-                        "totalTime": total_time
-                    }), "round_stats"))
+                    stream_callback(
+                        (
+                            json.dumps(
+                                {
+                                    "roundNumber": state.round_number,
+                                    "timeToFirstToken": time_to_first,
+                                    "tokensPerSecond": tokens_per_second,
+                                    "inputTokens": input_tokens,
+                                    "outputTokens": output_tokens,
+                                    "totalTime": total_time,
+                                }
+                            ),
+                            "round_stats",
+                        )
+                    )
 
                     logger.info(
                         f"[RECOVERY] Round {state.round_number} stats: "
                         f"ttft={time_to_first}s, speed={tokens_per_second}tok/s, "
                         f"in={input_tokens}, out={output_tokens}, time={total_time}s",
-                        extra={"agent_id": str(self.config.agent_id)}
+                        extra={"agent_id": str(self.config.agent_id)},
                     )
 
             # 2. FIRST: Check for executable code blocks (```python, ```bash)
@@ -1802,14 +2107,16 @@ class BaseAgent:
             if code_blocks:
                 logger.info(
                     f"[CODE_BLOCK] Found {len(code_blocks)} executable code blocks",
-                    extra={"agent_id": str(self.config.agent_id)}
+                    extra={"agent_id": str(self.config.agent_id)},
                 )
 
                 # Execute code blocks
                 code_results = await self._execute_code_blocks(
-                    code_blocks, state, stream_callback,
+                    code_blocks,
+                    state,
+                    stream_callback,
                     session_workdir=session_workdir,
-                    container_id=container_id
+                    container_id=container_id,
                 )
 
                 # Check if any execution succeeded
@@ -1826,36 +2133,37 @@ class BaseAgent:
                     # All code blocks failed, let LLM try to fix
                     error_feedback = "\n".join([r.to_feedback() for r in code_results])
                     messages.append(AIMessage(content=round_output))
-                    messages.append(HumanMessage(content=f"代码执行失败，请修正:\n{error_feedback}"))
+                    messages.append(
+                        HumanMessage(content=f"代码执行失败，请修正:\n{error_feedback}")
+                    )
                     send_round_stats()
                     continue
 
             # 3. Parse JSON tool calls (fallback if no code blocks)
             tool_calls, parse_errors = self._parse_tool_calls(round_output)
-            
+
             # 4. Handle parse errors
             if parse_errors:
                 logger.warning(
                     f"[RECOVERY] Found {len(parse_errors)} parse errors",
-                    extra={"agent_id": str(self.config.agent_id)}
+                    extra={"agent_id": str(self.config.agent_id)},
                 )
-                
+
                 # Send retry indicator to frontend
                 if stream_callback:
-                    stream_callback((
-                        f"\n\n🔄 **检测到错误，正在重试** (第 {state.retry_counts.get('parse_error_' + parse_errors[0].error_type, 0) + 1}/{self.config.max_parse_retries} 次)\n",
-                        "retry_attempt"
-                    ))
-                
+                    stream_callback(
+                        (
+                            f"\n\n🔄 **检测到错误，正在重试** (第 {state.retry_counts.get('parse_error_' + parse_errors[0].error_type, 0) + 1}/{self.config.max_parse_retries} 次)\n",
+                            "retry_attempt",
+                        )
+                    )
+
                 feedback = self._handle_parse_errors(parse_errors, state)
-                
+
                 if feedback:
                     # Send error feedback to frontend
                     if stream_callback:
-                        stream_callback((
-                            f"\n\n{feedback.to_prompt()}",
-                            "error_feedback"
-                        ))
+                        stream_callback((f"\n\n{feedback.to_prompt()}", "error_feedback"))
 
                     # Add to conversation and retry
                     messages.append(AIMessage(content=round_output))
@@ -1869,10 +2177,12 @@ class BaseAgent:
                     state.termination_reason = "max_parse_retries_exceeded"
 
                     if stream_callback:
-                        stream_callback((
-                            "\n\n⛔ 工具调用格式错误次数过多，无法继续。请直接提供答案。\n",
-                            "error"
-                        ))
+                        stream_callback(
+                            (
+                                "\n\n⛔ 工具调用格式错误次数过多，无法继续。请直接提供答案。\n",
+                                "error",
+                            )
+                        )
                     send_round_stats()
                     break
 
@@ -1880,44 +2190,43 @@ class BaseAgent:
             if not tool_calls:
                 logger.info(
                     f"[RECOVERY] No tool calls in round {state.round_number}, conversation complete",
-                    extra={"agent_id": str(self.config.agent_id)}
+                    extra={"agent_id": str(self.config.agent_id)},
                 )
                 state.is_terminated = True
                 state.termination_reason = "final_answer_provided"
                 send_round_stats()
                 break
-            
+
             # 6. Execute tool calls with recovery
             tool_results = await self._execute_tools_with_recovery(
                 tool_calls, state, stream_callback
             )
-            
+
             # 7. Check if all tools failed
             all_failed = all(r.status == "error" for r in tool_results)
-            
+
             if all_failed:
                 logger.warning("[RECOVERY] All tools failed")
-                
+
                 # Send retry indicator to frontend
                 failed_tool = tool_results[0].tool_name
                 retry_key = f"tool_{failed_tool}"
                 retry_count = state.retry_counts.get(retry_key, 0)
-                
+
                 if stream_callback:
-                    stream_callback((
-                        f"\n\n🔄 **工具执行失败，正在重试** (第 {retry_count}/{self.config.max_execution_retries} 次)\n",
-                        "retry_attempt"
-                    ))
-                
+                    stream_callback(
+                        (
+                            f"\n\n🔄 **工具执行失败，正在重试** (第 {retry_count}/{self.config.max_execution_retries} 次)\n",
+                            "retry_attempt",
+                        )
+                    )
+
                 feedback = self._handle_execution_failures(tool_results, state)
-                
+
                 if feedback:
                     # Send error feedback
                     if stream_callback:
-                        stream_callback((
-                            f"\n\n{feedback.to_prompt()}",
-                            "error_feedback"
-                        ))
+                        stream_callback((f"\n\n{feedback.to_prompt()}", "error_feedback"))
 
                     # Add to conversation and retry
                     messages.append(AIMessage(content=round_output))
@@ -1931,41 +2240,39 @@ class BaseAgent:
                     state.termination_reason = "max_execution_retries_exceeded"
 
                     if stream_callback:
-                        stream_callback((
-                            "\n\n⛔ 工具执行失败次数过多，无法继续。请根据已有信息提供答案。\n",
-                            "error"
-                        ))
+                        stream_callback(
+                            (
+                                "\n\n⛔ 工具执行失败次数过多，无法继续。请根据已有信息提供答案。\n",
+                                "error",
+                            )
+                        )
                     send_round_stats()
                     break
 
             # 7. Add results to conversation and continue
             if stream_callback:
-                stream_callback((
-                    f"\n\n---\n\n💭 **根据工具结果生成最终回答...**\n\n",
-                    "info"
-                ))
+                stream_callback((f"\n\n---\n\n💭 **根据工具结果生成最终回答...**\n\n", "info"))
 
             # Send round stats before continuing to next round
             send_round_stats()
 
             messages.append(AIMessage(content=round_output))
             messages.append(HumanMessage(content=self._format_tool_results(tool_results)))
-        
+
         # Handle max rounds reached
         if state.round_number >= state.max_rounds:
             logger.warning(
                 f"[RECOVERY] Max rounds reached ({state.max_rounds})",
-                extra={"agent_id": str(self.config.agent_id)}
+                extra={"agent_id": str(self.config.agent_id)},
             )
             state.is_terminated = True
             state.termination_reason = "max_rounds_reached"
-            
+
             if stream_callback:
-                stream_callback((
-                    f"\n\n⚠️ 已达到最大对话轮数 ({state.max_rounds})，对话结束。\n",
-                    "warning"
-                ))
-        
+                stream_callback(
+                    (f"\n\n⚠️ 已达到最大对话轮数 ({state.max_rounds})，对话结束。\n", "warning")
+                )
+
         logger.info(
             f"[RECOVERY] Conversation completed: reason={state.termination_reason}, rounds={state.round_number}, errors={len(state.errors)}",
             extra={
@@ -1973,10 +2280,10 @@ class BaseAgent:
                 "termination_reason": state.termination_reason,
                 "rounds": state.round_number,
                 "tool_calls": len(state.tool_calls_made),
-                "errors": len(state.errors)
-            }
+                "errors": len(state.errors),
+            },
         )
-        
+
         return {
             "success": state.termination_reason in ["final_answer_provided"],
             "output": round_output if state.is_terminated else "Incomplete",
@@ -1985,21 +2292,19 @@ class BaseAgent:
             "error_recovery_stats": {
                 "total_errors": len(state.errors),
                 "recovered_errors": len([e for e in state.errors if e.is_recoverable]),
-                "retry_attempts": sum(state.retry_counts.values())
-            }
+                "retry_attempts": sum(state.retry_counts.values()),
+            },
         }
 
     def _handle_execution_failures(
-        self,
-        tool_results: List[ToolResult],
-        state: ConversationState
+        self, tool_results: List[ToolResult], state: ConversationState
     ) -> Optional[ErrorFeedback]:
         """Generate feedback for execution failures.
-        
+
         Args:
             tool_results: List of tool results with errors
             state: Current conversation state
-            
+
         Returns:
             ErrorFeedback if recoverable, None if max retries exceeded
         """
@@ -2007,31 +2312,30 @@ class BaseAgent:
         failed_result = next((r for r in tool_results if r.status == "error"), None)
         if not failed_result:
             return None
-        
+
         # Check retry count
         retry_key = f"tool_{failed_result.tool_name}"
         retry_count = state.retry_counts.get(retry_key, 0)
-        
+
         if retry_count >= self.config.max_execution_retries:
             logger.error(
                 f"[RECOVERY] Max execution retries exceeded for {failed_result.tool_name}",
-                extra={
-                    "agent_id": str(self.config.agent_id),
-                    "tool_name": failed_result.tool_name
-                }
+                extra={"agent_id": str(self.config.agent_id), "tool_name": failed_result.tool_name},
             )
             return None
-        
+
         # Record error
-        state.errors.append(ErrorRecord(
-            round_number=state.round_number,
-            error_type=failed_result.error_type or "execution_error",
-            error_message=failed_result.error or "Unknown error",
-            tool_name=failed_result.tool_name,
-            is_recoverable=True,
-            retry_count=retry_count
-        ))
-        
+        state.errors.append(
+            ErrorRecord(
+                round_number=state.round_number,
+                error_type=failed_result.error_type or "execution_error",
+                error_message=failed_result.error or "Unknown error",
+                tool_name=failed_result.tool_name,
+                is_recoverable=True,
+                retry_count=retry_count,
+            )
+        )
+
         # Generate feedback based on error type
         if failed_result.error_type == "timeout":
             return ErrorFeedback(
@@ -2045,8 +2349,8 @@ class BaseAgent:
                     "The operation took too long to complete",
                     "Consider breaking it into smaller steps",
                     "Check if there's an infinite loop",
-                    "Try a simpler approach"
-                ]
+                    "Try a simpler approach",
+                ],
             )
         else:
             return ErrorFeedback(
@@ -2060,63 +2364,64 @@ class BaseAgent:
                     "Check the error message for details",
                     "Verify the arguments are correct",
                     "Try a different approach",
-                    "Consider using an alternative tool"
-                ]
+                    "Consider using an alternative tool",
+                ],
             )
 
     def _parse_and_execute_tools_sync(self, output: str) -> str:
         """Parse tool calls from LLM output and execute them synchronously.
-        
+
         For LLMs that don't support function calling, we parse tool invocations
         from the text output and execute them manually.
-        
+
         Args:
             output: LLM output text
-        
+
         Returns:
             Modified output with tool results
         """
         import re
         import json
         import asyncio
-        
+
         # Pattern to match tool invocations: ```tool:tool_name\n{json}\n```
-        pattern = r'```tool:(\w+)\s*\n(.*?)\n```'
+        pattern = r"```tool:(\w+)\s*\n(.*?)\n```"
         matches = re.findall(pattern, output, re.DOTALL)
-        
+
         if not matches:
             return output
-        
+
         logger.info(
             f"Found {len(matches)} tool invocations in output",
-            extra={"agent_id": str(self.config.agent_id)}
+            extra={"agent_id": str(self.config.agent_id)},
         )
-        
+
         modified_output = output
-        
+
         for tool_name, args_json in matches:
             tool = self.tools_by_name.get(tool_name)
             if not tool:
                 logger.warning(f"Tool not found: {tool_name}")
                 continue
-            
+
             try:
                 # Parse arguments
                 args = json.loads(args_json)
-                
+
                 logger.info(
                     f"Executing tool: {tool_name}",
-                    extra={"agent_id": str(self.config.agent_id), "args": args}
+                    extra={"agent_id": str(self.config.agent_id), "args": args},
                 )
-                
+
                 # Execute tool (handle both sync and async)
-                if hasattr(tool, '_arun'):
+                if hasattr(tool, "_arun"):
                     # Run async tool in new event loop
                     try:
                         loop = asyncio.get_event_loop()
                         if loop.is_running():
                             # If loop is running, create new loop in thread
                             import concurrent.futures
+
                             with concurrent.futures.ThreadPoolExecutor() as executor:
                                 future = executor.submit(asyncio.run, tool._arun(**args))
                                 result = future.result()
@@ -2127,27 +2432,27 @@ class BaseAgent:
                         result = asyncio.run(tool._arun(**args))
                 else:
                     result = tool._run(**args)
-                
+
                 # Replace tool invocation with result in output
                 tool_block = f"```tool:{tool_name}\n{args_json}\n```"
                 result_block = f"```tool_result:{tool_name}\n{result}\n```"
                 modified_output = modified_output.replace(tool_block, result_block)
-                
+
                 logger.info(
                     f"Tool executed successfully: {tool_name}",
-                    extra={"agent_id": str(self.config.agent_id)}
+                    extra={"agent_id": str(self.config.agent_id)},
                 )
-                
+
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse tool arguments: {e}")
             except Exception as e:
                 logger.error(f"Tool execution failed: {e}", exc_info=True)
-        
+
         return modified_output
 
     def _create_system_prompt(self) -> str:
         """Create system prompt for the agent.
-        
+
         Includes Agent Skills documentation and available tools if available.
 
         Returns:
@@ -2169,7 +2474,7 @@ When solving problems:
 4. If you need more information, ask clarifying questions
 
 Always be professional, accurate, and helpful."""
-        
+
         # Add tools description for LangChain tools
         # Include tools in prompt if:
         # 1. LLM doesn't support bind_tools, OR
@@ -2177,17 +2482,17 @@ Always be professional, accurate, and helpful."""
         if self.tools:
             # Include ALL tools in the prompt (including code_execution)
             langchain_tools = self.tools
-            
+
             if langchain_tools:
                 tools_prompt = "\n\n## Available Tools\n\n"
                 tools_prompt += "You have access to the following tools:\n\n"
-                
+
                 for tool in langchain_tools:
                     tools_prompt += f"### {tool.name}\n"
                     tools_prompt += f"{tool.description}\n\n"
-                
+
                 # Add note about how to use tools
-                if not hasattr(self.llm, 'bind_tools'):
+                if not hasattr(self.llm, "bind_tools"):
                     # LLM doesn't support function calling - need manual format
                     tools_prompt += "\n**IMPORTANT - How to use tools**: To use a tool, you MUST write it in this EXACT format:\n\n"
                     tools_prompt += "```json\n"
@@ -2206,7 +2511,9 @@ Always be professional, accurate, and helpful."""
                     # LLM supports function calling, but may not work properly
                     # Provide both formats
                     tools_prompt += "\n**How to use tools**: \n\n"
-                    tools_prompt += "**Method 1 (Preferred)**: Use function calling if supported.\n\n"
+                    tools_prompt += (
+                        "**Method 1 (Preferred)**: Use function calling if supported.\n\n"
+                    )
                     tools_prompt += "**Method 2 (Fallback)**: If function calling doesn't work, use this JSON format:\n"
                     tools_prompt += "```json\n"
                     tools_prompt += '{"tool": "tool_name", "arg_name": "arg_value"}\n'
@@ -2219,7 +2526,7 @@ Always be professional, accurate, and helpful."""
                     tools_prompt += "```json\n"
                     tools_prompt += '{"tool": "code_execution", "code": "import requests; print(requests.get(\'https://api.example.com\').text)"}\n'
                     tools_prompt += "```\n\n"
-                
+
                 base_prompt += tools_prompt
 
         # Add sandbox workspace documentation
@@ -2241,10 +2548,10 @@ Files persist throughout the conversation session.
 All file paths should use `/workspace/` as the root, e.g. `/workspace/main.py`.
 """
         base_prompt += workspace_prompt
-        
+
         # Add Agent Skills documentation if available
         if self.skill_manager:
             skills_prompt = self.skill_manager.format_skills_for_prompt()
             return base_prompt + skills_prompt
-        
+
         return base_prompt

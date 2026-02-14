@@ -18,7 +18,7 @@ def _build_test_config() -> dict:
             "artifacts": "artifacts",
             "backups": "backups",
         },
-        "allowed_document_types": ["pdf", "docx", "txt"],
+        "allowed_document_types": ["pdf", "docx", "pptx", "txt"],
         "allowed_audio_types": ["mp3"],
         "allowed_video_types": ["mp4"],
         "allowed_image_types": ["png"],
