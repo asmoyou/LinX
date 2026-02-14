@@ -340,7 +340,7 @@ const SkillTester: React.FC<SkillTesterProps> = ({
                             {t('skills.agentExecutionResult', 'Agent 执行结果：')}
                           </div>
                         </div>
-                        <div className="prose prose-sm dark:prose-invert max-w-none bg-muted/30 p-4 rounded-lg overflow-x-auto">
+                        <div className="markdown-content bg-muted/30 p-4 rounded-lg overflow-x-auto">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
                             {result.output || ''}
                           </ReactMarkdown>
@@ -380,7 +380,7 @@ const SkillTester: React.FC<SkillTesterProps> = ({
                           <div className="text-sm font-medium text-foreground mb-2">
                             {dryRun ? t('skills.simulatedOutput', '模拟输出：') : t('skills.actualOutput', '实际输出：')}
                           </div>
-                          <div className="prose prose-sm dark:prose-invert max-w-none bg-muted/30 p-4 rounded-lg overflow-x-auto">
+                          <div className="markdown-content bg-muted/30 p-4 rounded-lg overflow-x-auto">
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>
                               {result.actual_output || result.simulated_output || ''}
                             </ReactMarkdown>
@@ -393,7 +393,7 @@ const SkillTester: React.FC<SkillTesterProps> = ({
                   // LangChain tool result display
                   <div className="space-y-2">
                     <div className="text-sm text-muted-foreground">{t('skills.output', '输出：')}</div>
-                    <div className="prose prose-sm dark:prose-invert max-w-none bg-muted/30 p-4 rounded-lg overflow-x-auto border border-border/30">
+                    <div className="markdown-content bg-muted/30 p-4 rounded-lg overflow-x-auto border border-border/30">
                       {typeof result.output === 'string' ? (
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.output}</ReactMarkdown>
                       ) : (

@@ -717,7 +717,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                     ) : (
                       /* Fallback for old single-round messages */
                       <div className="rounded-[24px] px-4 py-3 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-lg">
-                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5">
+                        <div className="markdown-content">
                           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                             {message.content}
                           </ReactMarkdown>

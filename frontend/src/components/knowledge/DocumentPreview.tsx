@@ -532,7 +532,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
   if (document.type === "md" && textContent !== null) {
     return (
       <div className="min-h-[400px]">
-        <div className="prose prose-sm dark:prose-invert max-w-none p-4 bg-white/5 rounded-lg overflow-auto max-h-[600px]">
+        <div className="markdown-content p-4 bg-white/5 rounded-lg overflow-auto max-h-[600px]">
           <pre className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200 font-mono">
             {textContent}
           </pre>
