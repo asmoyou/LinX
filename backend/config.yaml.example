@@ -729,6 +729,21 @@ memory:
     enable_explicit: true
     default_scope: "user_context"  # Options: agent_memory, user_context, company_memory
 
+  # Automatic Milvus orphan vector cleanup (production safety guard)
+  cleanup_orphans:
+    enabled: true
+    run_on_startup: true
+    startup_delay_seconds: 120
+    interval_seconds: 21600  # 6 hours
+    batch_size: 1000
+    query_timeout_seconds: 10
+    dry_run: false  # Set true to observe only, without deleting
+    max_scan_per_collection: 200000
+    max_delete_per_collection: 20000
+    collections: ["agent_memories", "company_memories"]
+    advisory_lock_id: 73012019  # PostgreSQL advisory lock for multi-worker safety
+    use_advisory_lock: true
+
 # ============================================================================
 # Knowledge Base Configuration
 # ============================================================================

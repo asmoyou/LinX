@@ -480,6 +480,21 @@ memory:
     enable_automatic: true
     enable_explicit: true
     default_scope: user_context
+  cleanup_orphans:
+    enabled: true
+    run_on_startup: true
+    startup_delay_seconds: 120
+    interval_seconds: 21600
+    batch_size: 1000
+    query_timeout_seconds: 10
+    dry_run: false
+    max_scan_per_collection: 200000
+    max_delete_per_collection: 20000
+    collections:
+    - agent_memories
+    - company_memories
+    advisory_lock_id: 73012019
+    use_advisory_lock: true
   collection_retry_attempts: 3
   collection_retry_delay_seconds: 0.35
   search_timeout_seconds: 2

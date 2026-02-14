@@ -164,6 +164,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.warning(f"Failed to initialize SessionManager: {e}")
 
+    # Start Milvus orphan vector cleanup manager
+    try:
+        from memory_system.orphan_vector_cleanup import initialize_orphan_cleanup_manager
+
+        manager = await initialize_orphan_cleanup_manager()
+        if manager:
+            logger.info("Milvus orphan cleanup manager initialized")
+        else:
+            logger.info("Milvus orphan cleanup manager is disabled by config")
+    except Exception as e:
+        logger.warning(f"Failed to initialize Milvus orphan cleanup manager: {e}")
+
     # Start document processing worker
     try:
         from knowledge_base.document_processor_worker import start_worker
@@ -195,6 +207,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.info("SessionManager shutdown complete")
     except Exception as e:
         logger.error(f"Failed to shutdown SessionManager: {e}")
+
+    # Stop Milvus orphan cleanup manager
+    try:
+        from memory_system.orphan_vector_cleanup import shutdown_orphan_cleanup_manager
+
+        await shutdown_orphan_cleanup_manager()
+        logger.info("Milvus orphan cleanup manager shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown Milvus orphan cleanup manager: {e}")
 
     # Final Docker sandbox cleanup (catch anything SessionManager missed)
     try:
