@@ -7,7 +7,10 @@ References:
 
 import base64
 import io
+import mimetypes
+import tempfile
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -1419,6 +1422,311 @@ async def clear_cache(current_user: CurrentUser = Depends(get_current_user)):
     return {"message": "Agent cache cleared successfully", "cached_agents": 0}
 
 
+_GENERIC_CONTENT_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
+_ATTACHMENT_MAX_CHARS_PER_FILE = 6000
+_ATTACHMENT_MAX_CHARS_TOTAL = 12000
+_ATTACHMENT_MAX_TEXT_BYTES = 2 * 1024 * 1024
+
+_MINIO_DOCUMENT_EXTENSIONS = {
+    "pdf",
+    "doc",
+    "docx",
+    "pptx",
+    "xls",
+    "xlsx",
+    "txt",
+    "md",
+    "html",
+}
+
+_ATTACHMENT_DOCUMENT_EXTENSIONS = {
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".pptx",
+    ".xls",
+    ".xlsx",
+    ".txt",
+    ".md",
+    ".markdown",
+    ".html",
+    ".htm",
+    ".csv",
+    ".json",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".rtf",
+}
+
+_ATTACHMENT_TEXT_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".markdown",
+    ".html",
+    ".htm",
+    ".csv",
+    ".json",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".rtf",
+    ".log",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".toml",
+    ".sql",
+    ".sh",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+}
+
+
+def _normalize_attachment_content_type(content_type: Optional[str]) -> Optional[str]:
+    """Normalize MIME type by dropping parameters and lower-casing."""
+    if not content_type:
+        return None
+    return content_type.split(";", 1)[0].strip().lower()
+
+
+def _infer_effective_content_type(filename: str, content_type: Optional[str]) -> str:
+    """Infer the most useful MIME type using header first and extension fallback."""
+    normalized = _normalize_attachment_content_type(content_type) or ""
+    if normalized and normalized not in _GENERIC_CONTENT_TYPES:
+        return normalized
+
+    guessed = _normalize_attachment_content_type(mimetypes.guess_type(filename or "")[0])
+    if guessed:
+        return guessed
+
+    extension_map = {
+        ".doc": "application/msword",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".xls": "application/vnd.ms-excel",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".md": "text/markdown",
+        ".markdown": "text/markdown",
+        ".txt": "text/plain",
+        ".csv": "text/csv",
+        ".json": "application/json",
+        ".xml": "application/xml",
+        ".yaml": "application/x-yaml",
+        ".yml": "application/x-yaml",
+        ".html": "text/html",
+        ".htm": "text/html",
+        ".pdf": "application/pdf",
+    }
+    return extension_map.get(
+        Path(filename or "").suffix.lower(), normalized or "application/octet-stream"
+    )
+
+
+def _infer_attachment_type(filename: str, content_type: Optional[str]) -> str:
+    """Classify uploaded attachment into image/document/audio/video/other."""
+    normalized = _normalize_attachment_content_type(content_type) or ""
+    suffix = Path(filename or "").suffix.lower()
+
+    if normalized.startswith("image/"):
+        return "image"
+    if normalized.startswith("audio/"):
+        return "audio"
+    if normalized.startswith("video/"):
+        return "video"
+
+    if suffix in _ATTACHMENT_DOCUMENT_EXTENSIONS:
+        return "document"
+
+    document_mime_hints = (
+        "pdf",
+        "word",
+        "presentation",
+        "spreadsheet",
+        "excel",
+        "text/",
+        "markdown",
+        "html",
+        "json",
+        "xml",
+        "yaml",
+        "csv",
+    )
+    if any(hint in normalized for hint in document_mime_hints):
+        return "document"
+
+    return "other"
+
+
+def _infer_attachment_bucket_type(filename: str, content_type: Optional[str]) -> str:
+    """Choose a MinIO bucket type for attachment upload."""
+    file_type = _infer_attachment_type(filename, content_type)
+    if file_type == "image":
+        return "images"
+    if file_type == "audio":
+        return "audio"
+    if file_type == "video":
+        return "video"
+    if file_type == "document":
+        ext = Path(filename or "").suffix.lower().lstrip(".")
+        return "documents" if ext in _MINIO_DOCUMENT_EXTENSIONS else "artifacts"
+    return "artifacts"
+
+
+def _is_likely_text_attachment(filename: str, content_type: Optional[str]) -> bool:
+    """Heuristic for deciding whether raw bytes can be safely decoded as text."""
+    normalized = _normalize_attachment_content_type(content_type) or ""
+    suffix = Path(filename or "").suffix.lower()
+    if suffix in _ATTACHMENT_TEXT_EXTENSIONS:
+        return True
+    if normalized.startswith("text/"):
+        return True
+    return normalized in {
+        "application/json",
+        "application/xml",
+        "application/x-yaml",
+        "application/yaml",
+        "application/javascript",
+    }
+
+
+def _decode_text_payload(file_data: bytes) -> str:
+    """Best-effort decode for text-like payloads."""
+    sample = file_data[:_ATTACHMENT_MAX_TEXT_BYTES]
+    for encoding in ("utf-8", "utf-8-sig", "utf-16"):
+        try:
+            return sample.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return sample.decode("utf-8", errors="replace")
+
+
+def _truncate_attachment_excerpt(text: str, max_chars: int) -> str:
+    """Trim attachment text before injecting into LLM prompt."""
+    normalized = (text or "").strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    if max_chars <= 32:
+        return normalized[:max_chars]
+    return normalized[: max_chars - 16] + "\n...[truncated]"
+
+
+def _extract_attachment_text(
+    filename: str,
+    content_type: Optional[str],
+    file_data: bytes,
+) -> tuple[str, Optional[str]]:
+    """Extract text for document-like attachments using KB extractors with plain-text fallback."""
+    if not file_data:
+        return "", "empty file"
+
+    effective_content_type = _infer_effective_content_type(filename, content_type)
+    suffix = Path(filename or "").suffix.lower()
+
+    extraction_input = effective_content_type or suffix
+    should_use_kb_extractor = suffix in _ATTACHMENT_DOCUMENT_EXTENSIONS or any(
+        hint in extraction_input
+        for hint in (
+            "pdf",
+            "word",
+            "presentation",
+            "spreadsheet",
+            "excel",
+            "markdown",
+            "text/",
+            "html",
+        )
+    )
+
+    if should_use_kb_extractor:
+        temp_path: Optional[Path] = None
+        try:
+            from knowledge_base.text_extractors import get_extractor
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".bin") as tmp_file:
+                tmp_file.write(file_data)
+                temp_path = Path(tmp_file.name)
+
+            extractor = get_extractor(extraction_input)
+            result = extractor.extract(temp_path)
+            extracted_text = (result.text or "").strip()
+            if extracted_text:
+                extracted_text = _truncate_attachment_excerpt(
+                    extracted_text,
+                    _ATTACHMENT_MAX_CHARS_PER_FILE * 2,
+                )
+                return extracted_text, None
+            return "", "extractor returned empty text"
+        except Exception as extraction_error:
+            if not _is_likely_text_attachment(filename, effective_content_type):
+                return "", _trim_process_text(str(extraction_error), max_chars=180)
+        finally:
+            if temp_path:
+                temp_path.unlink(missing_ok=True)
+
+    if _is_likely_text_attachment(filename, effective_content_type):
+        decoded_text = _decode_text_payload(file_data).strip()
+        if decoded_text:
+            decoded_text = _truncate_attachment_excerpt(
+                decoded_text,
+                _ATTACHMENT_MAX_CHARS_PER_FILE * 2,
+            )
+            return decoded_text, None
+        return "", "decoded text is empty"
+
+    return "", "unsupported or binary file type"
+
+
+def _build_attachment_prompt_context(
+    file_refs: List["FileReference"],
+    *,
+    include_image_notes: bool = True,
+) -> str:
+    """Build a bounded prompt section summarizing uploaded attachment content."""
+    if not file_refs:
+        return ""
+
+    sections: List[str] = []
+    remaining = _ATTACHMENT_MAX_CHARS_TOTAL
+
+    for file_ref in file_refs:
+        if file_ref.extracted_text:
+            excerpt = _truncate_attachment_excerpt(
+                file_ref.extracted_text,
+                _ATTACHMENT_MAX_CHARS_PER_FILE,
+            )
+            if remaining <= 0:
+                sections.append("[Files] Additional extracted text omitted due to size limit.")
+                break
+            if len(excerpt) > remaining:
+                excerpt = _truncate_attachment_excerpt(excerpt, remaining)
+            sections.append(f"[Document: {file_ref.name}]\n{excerpt}")
+            remaining -= len(excerpt)
+            continue
+
+        if file_ref.type == "document":
+            reason = _trim_process_text(file_ref.extraction_error or "unavailable", max_chars=120)
+            sections.append(
+                f"[Document: {file_ref.name}] Attached, but text extraction unavailable ({reason})."
+            )
+        elif include_image_notes and file_ref.type == "image":
+            sections.append(f"[Image: {file_ref.name}] Attached.")
+        elif file_ref.type == "audio":
+            sections.append(f"[Audio: {file_ref.name}] Attached.")
+        elif file_ref.type == "video":
+            sections.append(f"[Video: {file_ref.name}] Attached.")
+        else:
+            sections.append(f"[File: {file_ref.name}] Attached.")
+
+    if not sections:
+        return ""
+
+    return "\n\nAttached files context:\n" + "\n\n".join(sections)
+
+
 class TestAgentRequest(BaseModel):
     """Test agent request."""
 
@@ -1436,6 +1744,8 @@ class FileReference(BaseModel):
     name: str  # original filename
     size: int  # file size in bytes
     content_type: str  # MIME type
+    extracted_text: Optional[str] = None  # Extracted text for document-like files
+    extraction_error: Optional[str] = None  # Extraction failure reason, if any
 
 
 @router.post("/{agent_id}/test")
@@ -1463,12 +1773,10 @@ async def test_agent(
     - File processing via agent skills
 
     File Processing:
-    - Files are processed by agent skills (if available)
-    - If agent has 'image_processing' skill: processes images
-    - If agent has 'document_processing' skill: processes documents
-    - If agent has 'ocr' skill: extracts text from images
-    - Without relevant skills: files are skipped, only text is processed
-    - Skills are dynamically loaded from skill_library at runtime
+    - Image attachments are passed to vision-capable models as multimodal input
+    - Document attachments are parsed to text using knowledge_base extractors
+    - Text-like unknown files use a safe decode fallback
+    - Unsupported/binary files are still attached with a metadata note
 
     Args:
         agent_id: Agent ID
@@ -1527,33 +1835,36 @@ async def test_agent(
 
             for file in files:
                 try:
-                    # Detect file type
-                    content_type = file.content_type or "application/octet-stream"
-                    file_type = "other"
-
-                    if content_type.startswith("image/"):
-                        file_type = "image"
-                        bucket_type = "images"
-                    elif content_type in [
-                        "application/pdf",
-                        "application/msword",
-                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        "text/plain",
-                    ]:
-                        file_type = "document"
-                        bucket_type = "documents"
-                    elif content_type.startswith("audio/"):
-                        file_type = "audio"
-                        bucket_type = "audio"
-                    elif content_type.startswith("video/"):
-                        file_type = "video"
-                        bucket_type = "video"
-                    else:
-                        bucket_type = "documents"  # Default bucket
-
                     # Read file data
                     file_data = await file.read()
                     file_stream = io.BytesIO(file_data)
+                    file_name = file.filename or "unnamed"
+
+                    # Detect file type and pick the appropriate bucket.
+                    original_content_type = _normalize_attachment_content_type(file.content_type)
+                    content_type = _infer_effective_content_type(file_name, original_content_type)
+                    file_type = _infer_attachment_type(file_name, content_type)
+                    bucket_type = _infer_attachment_bucket_type(file_name, content_type)
+
+                    extracted_text: Optional[str] = None
+                    extraction_error: Optional[str] = None
+                    if file_type in {"document", "other"}:
+                        extracted_text, extraction_error = await asyncio.to_thread(
+                            _extract_attachment_text,
+                            file_name,
+                            content_type,
+                            file_data,
+                        )
+                        if extracted_text:
+                            logger.info(
+                                "Extracted attachment text for agent test",
+                                extra={
+                                    "agent_id": agent_id,
+                                    "filename": file_name,
+                                    "file_type": file_type,
+                                    "chars": len(extracted_text),
+                                },
+                            )
 
                     # Upload to MinIO
                     # Note: MinIO metadata only supports ASCII characters
@@ -1561,7 +1872,7 @@ async def test_agent(
                     bucket_name, object_key = minio_client.upload_file(
                         bucket_type=bucket_type,
                         file_data=file_stream,
-                        filename=file.filename or "unnamed",
+                        filename=file_name,
                         user_id=current_user.user_id,
                         task_id=None,
                         agent_id=agent_id,
@@ -1577,9 +1888,11 @@ async def test_agent(
                     file_ref = FileReference(
                         path=f"{bucket_name}/{object_key}",
                         type=file_type,
-                        name=file.filename or "unnamed",
+                        name=file_name,
                         size=len(file_data),
                         content_type=content_type,
+                        extracted_text=extracted_text,
+                        extraction_error=extraction_error,
                     )
                     file_refs.append(file_ref)
 
@@ -1597,6 +1910,11 @@ async def test_agent(
                     logger.error(f"Failed to upload file {file.filename}: {file_error}")
                     # Continue with other files
                     continue
+
+        attachment_context = _build_attachment_prompt_context(file_refs, include_image_notes=True)
+        message_with_attachments = (
+            f"{message}{attachment_context}" if attachment_context else message
+        )
 
         registry = get_agent_registry()
         agent_info = registry.get_agent(UUID(agent_id))
@@ -1865,69 +2183,47 @@ async def test_agent(
                         elif msg.get("role") == "assistant":
                             messages.append(AIMessage(content=msg.get("content", "")))
 
-                # Process files with agent skills (if available)
-                file_processing_results = []
                 if file_refs:
-                    yield f"data: {json.dumps({'type': 'info', 'content': f'Processing {len(file_refs)} file(s)...'})}\n\n"
-
-                    # Check agent skills
-                    agent_skills = agent_info.capabilities or []
-                    has_image_skill = "image_processing" in agent_skills
-                    has_doc_skill = "document_processing" in agent_skills
-                    has_ocr_skill = "ocr" in agent_skills
-
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {"type": "info", "content": f"Processing {len(file_refs)} file(s)..."}
+                        )
+                        + "\n\n"
+                    )
                     for file_ref in file_refs:
-                        try:
-                            if file_ref.type == "image":
-                                if has_image_skill:
-                                    # TODO: Load and execute image_processing skill
-                                    yield f"data: {json.dumps({'type': 'info', 'content': f'Analyzing image: {file_ref.name}'})}\n\n"
-                                    file_processing_results.append(
-                                        f"[Image: {file_ref.name}] - Image processing skill not yet implemented"
-                                    )
-                                elif has_ocr_skill:
-                                    # TODO: Load and execute OCR skill
-                                    yield f"data: {json.dumps({'type': 'info', 'content': f'Extracting text from image: {file_ref.name}'})}\n\n"
-                                    file_processing_results.append(
-                                        f"[Image: {file_ref.name}] - OCR skill not yet implemented"
-                                    )
-                                else:
-                                    logger.info(
-                                        f"Agent {agent_id} lacks image processing skills, skipping image {file_ref.name}"
-                                    )
-                                    file_processing_results.append(
-                                        f"[Image: {file_ref.name}] - Attached (no processing skill available)"
-                                    )
-
-                            elif file_ref.type == "document":
-                                if has_doc_skill:
-                                    # TODO: Load and execute document_processing skill
-                                    yield f"data: {json.dumps({'type': 'info', 'content': f'Processing document: {file_ref.name}'})}\n\n"
-                                    file_processing_results.append(
-                                        f"[Document: {file_ref.name}] - Document processing skill not yet implemented"
-                                    )
-                                else:
-                                    logger.info(
-                                        f"Agent {agent_id} lacks document processing skills, skipping document {file_ref.name}"
-                                    )
-                                    file_processing_results.append(
-                                        f"[Document: {file_ref.name}] - Attached (no processing skill available)"
-                                    )
-
-                            else:
-                                # Other file types
-                                file_processing_results.append(
-                                    f"[File: {file_ref.name}] - Attached"
+                        if file_ref.extracted_text:
+                            yield (
+                                "data: "
+                                + json.dumps(
+                                    {
+                                        "type": "info",
+                                        "content": (
+                                            f"Extracted text from {file_ref.name} "
+                                            f"({len(file_ref.extracted_text)} chars)"
+                                        ),
+                                    }
                                 )
-
-                        except Exception as process_error:
-                            logger.error(f"Error processing file {file_ref.name}: {process_error}")
-                            file_processing_results.append(
-                                f"[File: {file_ref.name}] - Processing failed: {str(process_error)}"
+                                + "\n\n"
+                            )
+                        elif file_ref.type == "document":
+                            yield (
+                                "data: "
+                                + json.dumps(
+                                    {
+                                        "type": "info",
+                                        "content": (
+                                            f"Attached {file_ref.name} "
+                                            f"(text extraction unavailable)"
+                                        ),
+                                    }
+                                )
+                                + "\n\n"
                             )
 
                 # Keep task text clean; BaseAgent will inject context consistently.
-                user_message = message
+                user_message = message_with_attachments
+                messages.append(HumanMessage(content=user_message))
 
                 # Check if model supports vision
                 model_supports_vision = False
@@ -1971,7 +2267,8 @@ async def test_agent(
 
                 # Build message content based on model capabilities
                 multimodal_content = None  # Will be passed to agent for vision models
-                if model_supports_vision and file_refs:
+                has_image_attachments = any(file_ref.type == "image" for file_ref in file_refs)
+                if model_supports_vision and has_image_attachments:
                     # For vision models, use multimodal content format
                     multimodal_content = []
 
@@ -1994,8 +2291,6 @@ async def test_agent(
                                 image_data = image_stream.read()
 
                                 # Convert to base64
-                                import base64
-
                                 image_base64 = base64.b64encode(image_data).decode("utf-8")
 
                                 # Determine image format from content type
@@ -2028,12 +2323,6 @@ async def test_agent(
                         f"Built multimodal content with {len(multimodal_content)} parts "
                         f"for vision model"
                     )
-
-                else:
-                    # For non-vision models or no images, use text-only format
-                    # Append file processing results to message
-                    if file_processing_results:
-                        user_message += "\n\nAttached files:\n" + "\n".join(file_processing_results)
 
                 # Send status message before generating content
                 yield f"data: {json.dumps({'type': 'info', 'content': 'Generating response...'})}\n\n"
@@ -2396,7 +2685,7 @@ async def test_agent(
                     agent_id=UUID(agent_id),
                     user_id=UUID(current_user.user_id),
                     user_role=current_user.role,
-                    task_description=message,
+                    task_description=message_with_attachments,
                 )
 
                 executor = get_agent_executor()

@@ -208,13 +208,51 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
 
   if (!isOpen || !agent) return null;
 
+  const inferAttachmentType = (file: File): AttachedFile['type'] => {
+    const mime = (file.type || '').toLowerCase();
+    const filename = (file.name || '').toLowerCase();
+    const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.')) : '';
+
+    if (mime.startsWith('image/')) {
+      return 'image';
+    }
+
+    const documentExts = new Set([
+      '.pdf',
+      '.doc',
+      '.docx',
+      '.pptx',
+      '.xls',
+      '.xlsx',
+      '.txt',
+      '.md',
+      '.markdown',
+      '.html',
+      '.htm',
+      '.csv',
+    ]);
+
+    if (
+      documentExts.has(ext) ||
+      mime.includes('pdf') ||
+      mime.includes('document') ||
+      mime.includes('text/') ||
+      mime.includes('markdown') ||
+      mime.includes('spreadsheet') ||
+      mime.includes('excel') ||
+      mime.includes('presentation')
+    ) {
+      return 'document';
+    }
+
+    return 'other';
+  };
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     
     files.forEach((file) => {
-      const fileType = file.type.startsWith('image/') ? 'image' : 
-                      file.type.includes('pdf') || file.type.includes('document') ? 'document' : 
-                      'other';
+      const fileType = inferAttachmentType(file);
       
       const newFile: AttachedFile = {
         id: Math.random().toString(36).substring(2, 11),
@@ -831,7 +869,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
               ref={fileInputRef}
               type="file"
               multiple
-              accept="image/*,.pdf,.doc,.docx,.txt"
+              accept="image/*,.pdf,.doc,.docx,.pptx,.xls,.xlsx,.txt,.md,.markdown,.html,.htm,.csv"
               onChange={handleFileSelect}
               className="hidden"
             />
