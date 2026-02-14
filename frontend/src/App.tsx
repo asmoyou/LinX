@@ -13,7 +13,7 @@ import { useUserInitialization } from './hooks';
 // Lazy load pages for better performance (6.9.6)
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
 const Workforce = lazy(() => import('./pages/Workforce').then(m => ({ default: m.Workforce })));
-const Tasks = lazy(() => import('./pages/Tasks').then(m => ({ default: m.Tasks })));
+const Tasks = lazy(() => import('./pages/Missions').then(m => ({ default: m.Missions })));
 const Knowledge = lazy(() => import('./pages/Knowledge').then(m => ({ default: m.Knowledge })));
 const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memory })));
 const Skills = lazy(() => import('./pages/Skills'));

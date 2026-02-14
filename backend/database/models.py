@@ -233,6 +233,14 @@ class Task(Base):
         nullable=False,
         index=True,
     )
+    mission_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("missions.mission_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    acceptance_criteria = Column(Text, nullable=True)
+    task_metadata = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -240,6 +248,7 @@ class Task(Base):
     creator = relationship("User", back_populates="tasks")
     assigned_agent = relationship("Agent", back_populates="tasks")
     parent_task = relationship("Task", remote_side=[task_id], backref="subtasks")
+    mission = relationship("Mission", back_populates="tasks")
 
     # Indexes
     __table_args__ = (
@@ -247,6 +256,7 @@ class Task(Base):
         Index("idx_task_agent_status", "assigned_agent_id", "status"),
         Index("idx_task_created_at", "created_at"),
         Index("idx_task_parent", "parent_task_id"),
+        Index("idx_task_mission", "mission_id"),
     )
 
     def __repr__(self):

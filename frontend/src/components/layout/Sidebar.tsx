@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import {
   LayoutDashboard,
   Users,
-  Target,
+  Rocket,
   Database,
   BrainCircuit,
   Code2,
@@ -40,7 +40,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
   const navItems = [
     { path: '/', icon: LayoutDashboard, label: t('nav.dashboard') },
     { path: '/workforce', icon: Users, label: t('nav.workforce') },
-    { path: '/tasks', icon: Target, label: t('nav.tasks') },
+    { path: '/tasks', icon: Rocket, label: t('nav.tasks') },
     { path: '/knowledge', icon: Database, label: t('nav.knowledge') },
     { path: '/memory', icon: BrainCircuit, label: t('nav.memory') },
     { path: '/skills', icon: Code2, label: t('nav.skills') },

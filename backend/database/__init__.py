@@ -11,6 +11,12 @@ from .migrations import (
     get_migration_runner,
     run_migrations_on_startup,
 )
+from .mission_models import (
+    Mission,
+    MissionAgent,
+    MissionAttachment,
+    MissionEvent,
+)
 from .models import (
     ABACPolicyModel,
     Agent,
@@ -40,6 +46,11 @@ __all__ = [
     "ResourceQuota",
     "AuditLog",
     "ABACPolicyModel",
+    # Mission Models
+    "Mission",
+    "MissionAttachment",
+    "MissionAgent",
+    "MissionEvent",
     # Connection Pool
     "DatabaseConnectionPool",
     "get_connection_pool",

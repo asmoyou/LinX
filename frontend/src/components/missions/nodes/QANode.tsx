@@ -1,0 +1,50 @@
+import React, { memo } from 'react';
+import { Handle, Position } from 'reactflow';
+import { ShieldCheck, AlertTriangle, CheckCircle2 } from 'lucide-react';
+
+interface QANodeData {
+  verdict?: 'pass' | 'fail' | 'pending';
+  issues_count?: number;
+  summary?: string;
+}
+
+export const QANode: React.FC<{ data: QANodeData }> = memo(({ data }) => {
+  const verdictConfig = {
+    pass: { icon: CheckCircle2, color: 'border-green-400 bg-green-50 dark:bg-green-500/5', text: 'text-green-600', label: 'Passed' },
+    fail: { icon: AlertTriangle, color: 'border-red-400 bg-red-50 dark:bg-red-500/5', text: 'text-red-600', label: 'Failed' },
+    pending: { icon: ShieldCheck, color: 'border-indigo-300 bg-indigo-50 dark:bg-indigo-500/5', text: 'text-indigo-600', label: 'Pending' },
+  };
+
+  const config = verdictConfig[data.verdict || 'pending'];
+  const Icon = config.icon;
+
+  return (
+    <div className={`px-4 py-3 rounded-xl border-2 ${config.color} bg-white dark:bg-zinc-900 shadow-md min-w-[200px] max-w-[260px]`}>
+      <Handle type="target" position={Position.Top} className="!bg-indigo-500 !w-2.5 !h-2.5" />
+
+      <div className="flex items-center gap-2 mb-2">
+        <Icon className={`w-4 h-4 ${config.text}`} />
+        <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">QA Audit</span>
+        <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full ${config.color} ${config.text}`}>
+          {config.label}
+        </span>
+      </div>
+
+      {data.issues_count !== undefined && data.issues_count > 0 && (
+        <p className="text-[10px] text-red-500 mb-1">
+          {data.issues_count} issue{data.issues_count !== 1 ? 's' : ''} found
+        </p>
+      )}
+
+      {data.summary && (
+        <p className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-snug line-clamp-2">
+          {data.summary}
+        </p>
+      )}
+
+      <Handle type="source" position={Position.Bottom} className="!bg-indigo-500 !w-2.5 !h-2.5" />
+    </div>
+  );
+});
+
+QANode.displayName = 'QANode';

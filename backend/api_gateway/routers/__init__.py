@@ -14,6 +14,7 @@ from api_gateway.routers import (
     departments,
     knowledge,
     memory,
+    missions,
     roles,
     tasks,
     users,
@@ -29,4 +30,5 @@ __all__ = [
     "tasks",
     "knowledge",
     "memory",
+    "missions",
 ]

@@ -22,6 +22,9 @@ active_connections: Dict[str, Set[WebSocket]] = {}
 # Store task flow subscriptions: task_id -> set of websockets
 task_flow_subscriptions: Dict[UUID, Set[WebSocket]] = {}
 
+# Store mission subscriptions: mission_id -> set of websockets
+mission_subscriptions: Dict[UUID, Set[WebSocket]] = {}
+
 
 def _remove_active_connection(user_id: str, websocket: WebSocket) -> None:
     connections = active_connections.get(user_id)
@@ -216,3 +219,110 @@ async def broadcast_task_flow_update(task_id: UUID, update_type: str, data: dict
                 )
                 # Remove dead connection
                 task_flow_subscriptions[task_id].discard(connection)
+
+
+# ------------------------------------------------------------------
+# Mission WebSocket
+# ------------------------------------------------------------------
+
+
+def _remove_mission_subscription(mission_id: UUID, websocket: WebSocket) -> None:
+    subscriptions = mission_subscriptions.get(mission_id)
+    if not subscriptions:
+        return
+    subscriptions.discard(websocket)
+    if not subscriptions:
+        mission_subscriptions.pop(mission_id, None)
+
+
+@router.websocket("/missions/{mission_id}")
+async def websocket_mission_updates(websocket: WebSocket, mission_id: str):
+    """WebSocket endpoint for real-time mission event streaming."""
+    await websocket.accept()
+
+    mission_uuid: Optional[UUID] = None
+    try:
+        mission_uuid = UUID(mission_id)
+    except ValueError:
+        await websocket.send_json({"type": "error", "message": "Invalid mission ID format"})
+        await websocket.close()
+        return
+
+    if mission_uuid not in mission_subscriptions:
+        mission_subscriptions[mission_uuid] = set()
+    mission_subscriptions[mission_uuid].add(websocket)
+
+    logger.info(
+        "WebSocket connected to mission",
+        extra={"mission_id": mission_id, "endpoint": "missions"},
+    )
+
+    # Send current mission state as the initial message
+    try:
+        from mission_system.mission_repository import get_mission
+
+        mission = get_mission(mission_uuid)
+        if mission:
+            await websocket.send_json({
+                "type": "mission_state",
+                "data": {
+                    "mission_id": str(mission.mission_id),
+                    "status": mission.status,
+                    "total_tasks": mission.total_tasks,
+                    "completed_tasks": mission.completed_tasks,
+                    "failed_tasks": mission.failed_tasks,
+                },
+            })
+    except Exception as e:
+        logger.error(
+            "Failed to send initial mission state",
+            extra={"mission_id": mission_id, "error": str(e)},
+        )
+
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        logger.info(
+            "WebSocket disconnected from mission",
+            extra={"mission_id": mission_id},
+        )
+    except Exception as e:
+        logger.error(
+            "WebSocket mission error",
+            extra={"mission_id": mission_id, "error": str(e)},
+        )
+    finally:
+        if mission_uuid is not None:
+            _remove_mission_subscription(mission_uuid, websocket)
+
+
+def broadcast_mission_event(mission_id: UUID, event: dict) -> None:
+    """Broadcast a mission event to all WebSocket subscribers.
+
+    This is a synchronous helper; it schedules the send on the running
+    event loop (safe to call from sync code inside an async app).
+    """
+    import asyncio
+
+    subs = mission_subscriptions.get(mission_id)
+    if not subs:
+        return
+
+    message = {"type": "mission_event", "data": event}
+
+    async def _send():
+        stale = []
+        for ws in list(subs):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                stale.append(ws)
+        for ws in stale:
+            _remove_mission_subscription(mission_id, ws)
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_send())
+    except RuntimeError:
+        pass

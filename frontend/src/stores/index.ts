@@ -13,6 +13,7 @@ import { useAgentStore } from './agentStore';
 import { useTaskStore } from './taskStore';
 import { useKnowledgeStore } from './knowledgeStore';
 import { useMemoryStore } from './memoryStore';
+import { useMissionStore } from './missionStore';
 import { usePreferencesStore } from './preferencesStore';
 
 // Authentication and user management
@@ -30,6 +31,7 @@ export { useAgentStore } from './agentStore';
 export { useTaskStore } from './taskStore';
 export { useKnowledgeStore } from './knowledgeStore';
 export { useMemoryStore } from './memoryStore';
+export { useMissionStore } from './missionStore';
 
 // UI and preferences
 export { useThemeStore } from './themeStore';
@@ -98,6 +100,7 @@ export const resetAllStores = () => {
   const taskStore = useTaskStore.getState();
   const knowledgeStore = useKnowledgeStore.getState();
   const memoryStore = useMemoryStore.getState();
+  const missionStore = useMissionStore.getState();
   const preferencesStore = usePreferencesStore.getState();
 
   authStore.logout();
@@ -107,6 +110,7 @@ export const resetAllStores = () => {
   taskStore.reset();
   knowledgeStore.reset();
   memoryStore.reset();
+  missionStore.reset();
   preferencesStore.reset();
   // Note: Theme and notifications are intentionally not reset
 };
