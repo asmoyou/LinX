@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from memory_system.memory_interface import MemoryItem, MemoryType, SearchQuery
+from memory_system.memory_repository import get_memory_repository
 from memory_system.memory_system import MemorySystem, get_memory_system
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,63 @@ class AgentMemoryInterface:
         """
         self.memory_system = memory_system or get_memory_system()
         logger.info("AgentMemoryInterface initialized")
+
+    def _retrieve_memories_with_db_alignment(self, search_query: SearchQuery) -> List[MemoryItem]:
+        """Retrieve memories aligned with API semantics (DB mapping + text fallback)."""
+        repo = get_memory_repository()
+        semantic_items = self.memory_system.retrieve_memories(search_query)
+
+        milvus_ids: List[int] = []
+        for semantic_item in semantic_items:
+            if semantic_item.id is None:
+                continue
+            try:
+                milvus_ids.append(int(semantic_item.id))
+            except (TypeError, ValueError):
+                continue
+
+        mapped_by_milvus = repo.get_by_milvus_ids(milvus_ids)
+        items: List[MemoryItem] = []
+
+        for semantic_item in semantic_items:
+            mapped = None
+            try:
+                mapped = mapped_by_milvus.get(int(semantic_item.id))
+            except (TypeError, ValueError):
+                mapped = None
+
+            if mapped:
+                if search_query.user_id and str(mapped.user_id or "") != str(search_query.user_id):
+                    continue
+                db_item = mapped.to_memory_item(similarity_score=semantic_item.similarity_score)
+                if semantic_item.metadata:
+                    db_item.metadata = db_item.metadata or {}
+                    db_item.metadata.update(
+                        {
+                            k: v
+                            for k, v in semantic_item.metadata.items()
+                            if str(k).startswith("_")
+                        }
+                    )
+                items.append(db_item)
+            else:
+                # Keep API behavior: with user scope, fail-closed for unmapped legacy vectors.
+                if search_query.user_id:
+                    continue
+                items.append(semantic_item)
+
+        if items:
+            return items
+
+        fallback_rows = repo.search_text(
+            search_query.query_text,
+            memory_type=search_query.memory_type,
+            agent_id=search_query.agent_id,
+            user_id=search_query.user_id,
+            task_id=search_query.task_id,
+            limit=search_query.top_k or 10,
+        )
+        return [row.to_memory_item() for row in fallback_rows]
 
     def store_agent_memory(
         self,
@@ -167,7 +225,7 @@ class AgentMemoryInterface:
             top_k=top_k,
         )
 
-        results = self.memory_system.retrieve_memories(search_query)
+        results = self._retrieve_memories_with_db_alignment(search_query)
         logger.info(
             "Retrieved agent memories",
             extra={
@@ -202,7 +260,7 @@ class AgentMemoryInterface:
             top_k=top_k,
         )
 
-        results = self.memory_system.retrieve_memories(search_query)
+        results = self._retrieve_memories_with_db_alignment(search_query)
         logger.info(
             "Retrieved company memories",
             extra={

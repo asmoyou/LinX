@@ -18,6 +18,7 @@ from agent_framework.agent_status import AgentStatusTracker, StatusUpdate
 from agent_framework.agent_tools import AgentToolkit, create_langchain_tools
 from agent_framework.base_agent import AgentConfig, AgentStatus, BaseAgent
 from agent_framework.capability_matcher import CapabilityMatch, CapabilityMatcher
+from memory_system.memory_interface import MemoryItem, MemoryType
 
 
 class TestBaseAgent:
@@ -197,6 +198,94 @@ class TestAgentTools:
 
         assert len(toolkit.get_tools()) == 1
         assert toolkit.get_tool_by_name("TestTool") is not None
+
+
+class TestAgentMemoryInterface:
+    """Test AgentMemoryInterface retrieval alignment behavior."""
+
+    @patch("agent_framework.agent_memory_interface.get_memory_repository")
+    def test_retrieve_company_memory_drops_unmapped_legacy_vectors(self, mock_get_repository):
+        """User-scoped retrieval should ignore unmapped legacy Milvus rows."""
+        user_id = uuid4()
+        query_text = "Shared Data Fujian Technology Co., Ltd."
+
+        mock_memory_system = Mock()
+        mock_memory_system.retrieve_memories.return_value = [
+            MemoryItem(
+                id=101,
+                content="LinX platform details (legacy vector)",
+                memory_type=MemoryType.COMPANY,
+                user_id=str(user_id),
+                similarity_score=0.62,
+            )
+        ]
+
+        mock_repo = Mock()
+        mock_repo.get_by_milvus_ids.return_value = {}
+        mock_repo.search_text.return_value = []
+        mock_get_repository.return_value = mock_repo
+
+        interface = AgentMemoryInterface(memory_system=mock_memory_system)
+        results = interface.retrieve_company_memory(
+            user_id=user_id,
+            query=query_text,
+            top_k=5,
+        )
+
+        assert results == []
+        mock_repo.search_text.assert_called_once_with(
+            query_text,
+            memory_type=MemoryType.COMPANY,
+            agent_id=None,
+            user_id=str(user_id),
+            task_id=None,
+            limit=5,
+        )
+
+    @patch("agent_framework.agent_memory_interface.get_memory_repository")
+    def test_retrieve_company_memory_prefers_db_mapped_record(self, mock_get_repository):
+        """Mapped DB record should replace semantic row and keep rerank debug fields."""
+        user_id = uuid4()
+
+        semantic_item = MemoryItem(
+            id=202,
+            content="vector content",
+            memory_type=MemoryType.COMPANY,
+            user_id=str(user_id),
+            similarity_score=0.83,
+            metadata={"_rerank_score": 0.91, "plain": "ignored"},
+        )
+        mapped_item = MemoryItem(
+            id=2,
+            content="Shared Data Fujian supplier profile",
+            memory_type=MemoryType.COMPANY,
+            user_id=str(user_id),
+            metadata={"source": "db"},
+        )
+        mapped_row = Mock()
+        mapped_row.user_id = str(user_id)
+        mapped_row.to_memory_item.return_value = mapped_item
+
+        mock_memory_system = Mock()
+        mock_memory_system.retrieve_memories.return_value = [semantic_item]
+
+        mock_repo = Mock()
+        mock_repo.get_by_milvus_ids.return_value = {202: mapped_row}
+        mock_get_repository.return_value = mock_repo
+
+        interface = AgentMemoryInterface(memory_system=mock_memory_system)
+        results = interface.retrieve_company_memory(
+            user_id=user_id,
+            query="Shared Data Fujian Technology Co., Ltd.",
+            top_k=5,
+        )
+
+        assert len(results) == 1
+        assert results[0].content == "Shared Data Fujian supplier profile"
+        assert results[0].metadata["source"] == "db"
+        assert results[0].metadata["_rerank_score"] == 0.91
+        assert "plain" not in results[0].metadata
+        mock_repo.search_text.assert_not_called()
 
 
 class TestAgentExecutor:

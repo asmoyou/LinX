@@ -755,146 +755,19 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                   currentRoundData.statusMessages.length > 0 ||
                   currentRoundData.retryAttempts.length > 0 ||
                   currentRoundData.errorFeedback.length > 0) && (
-                  <div className="space-y-2">
-                    {/* Round header */}
-                    <div className="flex items-center gap-2 px-2">
-                      <div className="h-px flex-1 bg-gradient-to-r from-transparent via-emerald-300 dark:via-emerald-700 to-transparent" />
-                      <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 rounded-full animate-pulse">
-                        第 {currentRoundNumber} 轮 (进行中)
-                      </span>
-                      <div className="h-px flex-1 bg-gradient-to-r from-transparent via-emerald-300 dark:via-emerald-700 to-transparent" />
-                    </div>
-
-                    {/* Retry attempts */}
-                    {currentRoundData.retryAttempts.length > 0 && (
-                      <div className="space-y-1.5">
-                        {currentRoundData.retryAttempts.map((retry, idx) => (
-                          <RetryIndicator 
-                            key={idx} 
-                            retry={retry} 
-                            isActive={idx === currentRoundData.retryAttempts.length - 1}
-                          />
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Error feedback */}
-                    {currentRoundData.errorFeedback.length > 0 && (
-                      <div className="space-y-1.5">
-                        {currentRoundData.errorFeedback.map((feedback, idx) => (
-                          <ErrorFeedbackDisplay 
-                            key={idx} 
-                            feedback={feedback}
-                            defaultCollapsed={idx < currentRoundData.errorFeedback.length - 1}
-                          />
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Status messages */}
-                    {currentRoundData.statusMessages.length > 0 && (
-                      <div className="rounded-xl overflow-hidden border-2 border-emerald-300 dark:border-emerald-700 bg-white dark:bg-zinc-800 shadow-lg">
-                        <div className="px-4 py-2.5 bg-gradient-to-r from-emerald-50 to-emerald-100 dark:from-emerald-900/20 dark:to-emerald-800/20">
-                          <div className="flex items-center gap-2">
-                            <Brain className="w-4 h-4 text-emerald-500 animate-pulse" />
-                            <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">
-                              Processing... ({currentRoundData.statusMessages.length} steps)
-                            </span>
-                          </div>
-                        </div>
-                        <div className="px-4 py-3 space-y-2 bg-emerald-50/30 dark:bg-emerald-900/10">
-                          {currentRoundData.statusMessages.map((status, idx) => (
-                            <div key={idx} className="flex items-start gap-2.5 text-xs">
-                              <div
-                                className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${
-                                  status.type === 'start'
-                                    ? 'bg-blue-500 animate-pulse'
-                                    : status.type === 'info'
-                                    ? 'bg-cyan-500'
-                                    : status.type === 'tool_call'
-                                    ? 'bg-orange-500 animate-pulse'
-                                    : status.type === 'tool_result'
-                                    ? 'bg-green-500'
-                                    : status.type === 'tool_error'
-                                    ? 'bg-red-500'
-                                    : status.type === 'done'
-                                    ? 'bg-green-500'
-                                    : 'bg-zinc-500'
-                                }`}
-                              />
-                              <span className={`flex-1 leading-relaxed ${
-                                status.type === 'tool_call'
-                                  ? 'text-orange-700 dark:text-orange-300 font-medium'
-                                  : status.type === 'tool_result'
-                                  ? 'text-green-700 dark:text-green-300'
-                                  : status.type === 'tool_error'
-                                  ? 'text-red-700 dark:text-red-300'
-                                  : 'text-zinc-700 dark:text-zinc-300'
-                              }`}>
-                                {status.content}
-                              </span>
-                              {status.duration !== undefined && (
-                                <span className="text-zinc-500 dark:text-zinc-400 text-[10px] font-mono ml-2">
-                                  {status.duration.toFixed(2)}s
-                                </span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Thinking content */}
-                    {currentRoundData.thinking && (
-                      <div className="rounded-xl overflow-hidden border-2 border-purple-300 dark:border-purple-700 bg-gradient-to-br from-purple-50 to-purple-100/50 dark:from-purple-900/20 dark:to-purple-800/10 shadow-lg">
-                        <div className="px-4 py-2.5 bg-purple-100/80 dark:bg-purple-900/30 border-b border-purple-200 dark:border-purple-700">
-                          <div className="flex items-center gap-2">
-                            <Brain className="w-4 h-4 text-purple-600 dark:text-purple-400 animate-pulse" />
-                            <span className="text-xs font-semibold text-purple-700 dark:text-purple-300">
-                              Thinking...
-                            </span>
-                          </div>
-                        </div>
-                        <div className="px-4 py-3">
-                          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 text-purple-900 dark:text-purple-100">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                              {currentRoundData.thinking}
-                            </ReactMarkdown>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Response content */}
-                    {currentRoundData.content && (
-                      <div className="rounded-[24px] px-4 py-3 bg-white dark:bg-zinc-800 border-2 border-emerald-300 dark:border-emerald-700 shadow-lg shadow-emerald-500/10">
-                        <div className="flex items-center gap-2 mb-2">
-                          <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-                          <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                            Generating...
-                          </span>
-                        </div>
-                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                            {currentRoundData.content}
-                          </ReactMarkdown>
-                        </div>
-                        {currentRoundData.stats && (
-                          <div className="flex items-center gap-3 mt-3 pt-3 border-t border-emerald-200 dark:border-emerald-800 text-[10px] font-medium">
-                            <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
-                              ⚡ {currentRoundData.stats.timeToFirstToken}s
-                            </span>
-                            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-                              🚀 {currentRoundData.stats.tokensPerSecond} tok/s
-                            </span>
-                            <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400">
-                              📊 {currentRoundData.stats.inputTokens} / {currentRoundData.stats.outputTokens}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
+                  <ConversationRoundComponent
+                    round={{
+                      roundNumber: currentRoundNumber,
+                      thinking: currentRoundData.thinking,
+                      content: currentRoundData.content,
+                      statusMessages: currentRoundData.statusMessages,
+                      retryAttempts: currentRoundData.retryAttempts.length > 0 ? currentRoundData.retryAttempts : undefined,
+                      errorFeedback: currentRoundData.errorFeedback.length > 0 ? currentRoundData.errorFeedback : undefined,
+                      stats: currentRoundData.stats || undefined,
+                    }}
+                    isLatest={true}
+                    isStreaming={true}
+                  />
                 )}
               </div>
             </div>
