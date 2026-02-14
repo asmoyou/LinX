@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Brain,
@@ -14,7 +14,52 @@ import {
   Loader2,
 } from "lucide-react";
 import { GlassPanel } from "@/components/GlassPanel";
-import type { Memory } from "@/types/memory";
+import type { Memory, MemoryFact } from "@/types/memory";
+
+const parseFacts = (memory: Memory): MemoryFact[] => {
+  const raw = memory.metadata?.facts;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw
+    .filter((entry): entry is MemoryFact => {
+      return (
+        !!entry &&
+        typeof entry === "object" &&
+        typeof (entry as MemoryFact).key === "string" &&
+        typeof (entry as MemoryFact).value === "string" &&
+        Boolean((entry as MemoryFact).key.trim()) &&
+        Boolean((entry as MemoryFact).value.trim())
+      );
+    })
+    .map((entry) => ({
+      ...entry,
+      key: entry.key.trim(),
+      value: entry.value.trim(),
+    }));
+};
+
+const parseStructuredContentLines = (
+  content: string,
+): Array<{ key: string; value: string }> => {
+  return String(content || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const separatorIndex = line.indexOf("=");
+      if (separatorIndex <= 0) {
+        return null;
+      }
+      const key = line.slice(0, separatorIndex).trim();
+      const value = line.slice(separatorIndex + 1).trim();
+      if (!key || !value) {
+        return null;
+      }
+      return { key, value };
+    })
+    .filter((item): item is { key: string; value: string } => item !== null);
+};
 
 interface MemoryCardProps {
   memory: Memory;
@@ -32,6 +77,13 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
   isReindexing = false,
 }) => {
   const { t } = useTranslation();
+  const memoryFacts = useMemo(() => parseFacts(memory), [memory]);
+  const structuredLines = useMemo(
+    () => parseStructuredContentLines(memory.content),
+    [memory.content],
+  );
+  const factPreview = memoryFacts.slice(0, 2);
+  const structuredPreview = structuredLines.slice(0, 2);
 
   const getTypeIcon = (type: Memory["type"]) => {
     switch (type) {
@@ -150,9 +202,51 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
               {memory.summary}
             </p>
           )}
-          <p className="text-sm text-gray-600 dark:text-gray-400 line-clamp-3">
-            {memory.content}
-          </p>
+          {factPreview.length > 0 ? (
+            <div className="space-y-2">
+              {factPreview.map((fact, index) => (
+                <div key={`${fact.key}-${index}`} className="rounded-lg bg-white/10 p-2">
+                  <p className="text-[11px] text-indigo-600 dark:text-indigo-300 font-mono break-all">
+                    {fact.key}
+                  </p>
+                  <p className="text-sm text-gray-700 dark:text-gray-300 line-clamp-2">
+                    {fact.value}
+                  </p>
+                </div>
+              ))}
+              {memoryFacts.length > factPreview.length && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {t("memory.card.moreFacts", {
+                    count: memoryFacts.length - factPreview.length,
+                  })}
+                </p>
+              )}
+            </div>
+          ) : structuredPreview.length > 0 ? (
+            <div className="space-y-2">
+              {structuredPreview.map((line, index) => (
+                <div key={`${line.key}-${index}`} className="rounded-lg bg-white/10 p-2">
+                  <p className="text-[11px] text-indigo-600 dark:text-indigo-300 font-mono break-all">
+                    {line.key}
+                  </p>
+                  <p className="text-sm text-gray-700 dark:text-gray-300 line-clamp-2">
+                    {line.value}
+                  </p>
+                </div>
+              ))}
+              {structuredLines.length > structuredPreview.length && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {t("memory.card.moreFacts", {
+                    count: structuredLines.length - structuredPreview.length,
+                  })}
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-gray-600 dark:text-gray-400 line-clamp-4 whitespace-pre-wrap">
+              {memory.content}
+            </p>
+          )}
         </div>
 
         {/* Tags */}

@@ -12,10 +12,13 @@ References:
 - Design Section 6: Memory System Design
 """
 
+import hashlib
 import json
 import logging
+import math
+import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
@@ -30,7 +33,11 @@ from memory_system.memory_interface import (
     MemoryType,
     SearchQuery,
 )
-from memory_system.memory_repository import MemoryRepository, get_memory_repository
+from memory_system.memory_repository import (
+    MemoryRecordData,
+    MemoryRepository,
+    get_memory_repository,
+)
 from memory_system.milvus_connection import get_milvus_connection
 from shared.config import get_config
 
@@ -61,6 +68,34 @@ class MemorySystem(MemorySystemInterface):
         ... )
         >>> results = memory_system.retrieve_memories(query)
     """
+
+    _ALLOWED_FACT_PREFIXES_BY_TYPE: Dict[MemoryType, Tuple[str, ...]] = {
+        MemoryType.AGENT: (
+            "agent.identity.",
+            "interaction.",
+        ),
+        MemoryType.USER_CONTEXT: (
+            "user.",
+        ),
+        MemoryType.COMPANY: (
+            "company.",
+            "organization.",
+            "project.",
+            "policy.",
+            "workflow.",
+            "customer.",
+            "product.",
+            "user.",
+            "agent.",
+            "interaction.",
+        ),
+        MemoryType.TASK_CONTEXT: (
+            "task.",
+            "interaction.",
+            "user.",
+            "agent.",
+        ),
+    }
 
     def __init__(self):
         """Initialize the Memory System."""
@@ -199,14 +234,24 @@ class MemorySystem(MemorySystemInterface):
         )
         self._rerank_fail_until = 0.0
 
-        # Memory count limits from config.
-        agent_memory_cfg = memory_config.get("agent_memory", {})
+        # Memory count/retention configuration.
+        memory_types_cfg = memory_config.get("types", {})
+        if not isinstance(memory_types_cfg, dict):
+            memory_types_cfg = {}
+
+        agent_memory_cfg = memory_types_cfg.get(
+            "agent_memory", memory_config.get("agent_memory", {})
+        )
         if not isinstance(agent_memory_cfg, dict):
             agent_memory_cfg = {}
-        company_memory_cfg = memory_config.get("company_memory", {})
+        company_memory_cfg = memory_types_cfg.get(
+            "company_memory", memory_config.get("company_memory", {})
+        )
         if not isinstance(company_memory_cfg, dict):
             company_memory_cfg = {}
-        user_context_cfg = memory_config.get("user_context", {})
+        user_context_cfg = memory_types_cfg.get(
+            "user_context", memory_config.get("user_context", {})
+        )
         if not isinstance(user_context_cfg, dict):
             user_context_cfg = {}
 
@@ -221,6 +266,132 @@ class MemorySystem(MemorySystemInterface):
         self._max_items_per_user = _cfg_int(
             user_context_cfg.get("max_items_per_user"),
             default=5000,
+        )
+        self._retention_days_by_type = {
+            MemoryType.AGENT: _cfg_int(agent_memory_cfg.get("retention_days"), default=90),
+            MemoryType.COMPANY: _cfg_int(company_memory_cfg.get("retention_days"), default=365),
+            MemoryType.USER_CONTEXT: _cfg_int(user_context_cfg.get("retention_days"), default=365),
+        }
+
+        # Enhanced memory pipeline (fact extraction / dedup / merge / value-based eviction).
+        enhanced_cfg = memory_config.get("enhanced_memory", {})
+        if not isinstance(enhanced_cfg, dict):
+            enhanced_cfg = {}
+        dedupe_cfg = enhanced_cfg.get("dedupe", {})
+        if not isinstance(dedupe_cfg, dict):
+            dedupe_cfg = {}
+        ranking_cfg = enhanced_cfg.get("ranking", {})
+        if not isinstance(ranking_cfg, dict):
+            ranking_cfg = {}
+        core_cfg = enhanced_cfg.get("core_memory", {})
+        if not isinstance(core_cfg, dict):
+            core_cfg = {}
+        fact_cfg = enhanced_cfg.get("fact_extraction", {})
+        if not isinstance(fact_cfg, dict):
+            fact_cfg = {}
+
+        self._enhanced_memory_enabled = bool(enhanced_cfg.get("enabled", True))
+        self._exact_dedupe_window_minutes = _cfg_int(
+            dedupe_cfg.get("exact_window_minutes"),
+            default=4320,
+        )
+        self._semantic_dedupe_enabled = bool(dedupe_cfg.get("semantic_enabled", True))
+        self._semantic_dedupe_threshold = min(
+            max(_cfg_float(dedupe_cfg.get("semantic_similarity_threshold"), default=0.86), 0.0),
+            1.0,
+        )
+        self._semantic_merge_min_overlap = min(
+            max(_cfg_float(dedupe_cfg.get("min_fact_overlap"), default=0.35), 0.0),
+            1.0,
+        )
+        self._semantic_dedupe_candidate_limit = _cfg_int(
+            dedupe_cfg.get("candidate_limit"),
+            default=8,
+        )
+        self._dedupe_candidate_scan_limit = _cfg_int(
+            dedupe_cfg.get("db_candidate_limit"),
+            default=50,
+        )
+        self._max_fact_conflict_history = _cfg_int(
+            dedupe_cfg.get("max_conflict_history"),
+            default=5,
+        )
+
+        self._importance_weight = _cfg_float(
+            ranking_cfg.get("importance_weight"),
+            default=0.15,
+            minimum=0.0,
+        )
+        self._tier_weight = _cfg_float(
+            ranking_cfg.get("tier_weight"),
+            default=0.10,
+            minimum=0.0,
+        )
+        self._mention_weight = _cfg_float(
+            ranking_cfg.get("mention_weight"),
+            default=0.08,
+            minimum=0.0,
+        )
+        self._recency_half_life_days = max(
+            _cfg_float(ranking_cfg.get("recency_half_life_days"), default=14.0, minimum=0.1),
+            0.1,
+        )
+        self._score_weight_total = max(
+            self._similarity_weight
+            + self._recency_weight
+            + self._importance_weight
+            + self._tier_weight
+            + self._mention_weight,
+            1e-6,
+        )
+
+        self._core_protection_enabled = bool(core_cfg.get("protect_core", True))
+        self._core_importance_threshold = min(
+            max(_cfg_float(core_cfg.get("importance_threshold"), default=0.72), 0.0),
+            1.0,
+        )
+        self._retention_cleanup_interval_seconds = _cfg_float(
+            enhanced_cfg.get("retention_cleanup_interval_seconds"),
+            default=300.0,
+            minimum=1.0,
+        )
+        self._last_retention_cleanup_at = 0.0
+
+        llm_cfg = {}
+        try:
+            llm_cfg = self._config.get_section("llm")
+        except Exception:
+            llm_cfg = {}
+        if not isinstance(llm_cfg, dict):
+            llm_cfg = {}
+
+        self._fact_extraction_enabled = bool(fact_cfg.get("enabled", True))
+        self._fact_extraction_model_enabled = bool(fact_cfg.get("model_enabled", False))
+        self._fact_extraction_provider = _cfg_text(
+            fact_cfg.get("provider"),
+            llm_cfg.get("default_provider"),
+        )
+        self._fact_extraction_model = _cfg_text(fact_cfg.get("model"))
+        self._fact_extraction_timeout_seconds = _cfg_float(
+            fact_cfg.get("timeout_seconds"),
+            default=4.0,
+            minimum=0.5,
+        )
+        self._fact_extraction_max_facts = _cfg_int(
+            fact_cfg.get("max_facts"),
+            default=8,
+        )
+        self._fact_extraction_failure_backoff_seconds = _cfg_float(
+            fact_cfg.get("failure_backoff_seconds"),
+            default=60.0,
+            minimum=1.0,
+        )
+        self._fact_extract_fail_until = 0.0
+
+        # Heuristic quality guards for noisy auto-generated conversational memories.
+        self._low_value_min_chars = _cfg_int(
+            enhanced_cfg.get("low_value_min_chars"),
+            default=12,
         )
 
         self._collection_retry_attempts = _cfg_int(
@@ -260,8 +431,1004 @@ class MemorySystem(MemorySystemInterface):
                 "max_items_per_agent": self._max_items_per_agent,
                 "max_items_company": self._max_items_company,
                 "max_items_per_user": self._max_items_per_user,
+                "enhanced_memory_enabled": self._enhanced_memory_enabled,
+                "semantic_dedupe_enabled": self._semantic_dedupe_enabled,
+                "semantic_dedupe_threshold": self._semantic_dedupe_threshold,
+                "core_importance_threshold": self._core_importance_threshold,
+                "fact_extraction_model_enabled": self._fact_extraction_model_enabled,
             },
         )
+
+    @staticmethod
+    def _clamp_score(raw: object, default: float = 0.0) -> float:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = float(default)
+        return max(0.0, min(1.0, value))
+
+    @staticmethod
+    def _normalize_whitespace(text: object) -> str:
+        return re.sub(r"\s+", " ", str(text or "").strip())
+
+    @staticmethod
+    def _truncate_text(text: object, max_chars: int = 220) -> str:
+        normalized = MemorySystem._normalize_whitespace(text)
+        if len(normalized) <= max_chars:
+            return normalized
+        return normalized[: max_chars - 3].rstrip() + "..."
+
+    def _normalize_content_for_hash(self, content: object) -> str:
+        return self._normalize_whitespace(content).lower()
+
+    def _compute_content_hash(self, content: object) -> str:
+        normalized = self._normalize_content_for_hash(content)
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    def _is_auto_generated_memory(self, memory: MemoryItem) -> bool:
+        metadata = memory.metadata or {}
+        if bool(metadata.get("auto_generated")):
+            return True
+        source = str(metadata.get("source") or "").strip().lower()
+        if source in {"conversation", "agent_test_stream", "agent_executor"}:
+            return True
+
+        content = str(memory.content or "")
+        return (
+            ("Task:" in content and "Result:" in content)
+            or "User discussed:" in content
+            or "Topic:" in content
+        )
+
+    @staticmethod
+    def _sanitize_fact_key(raw_key: object) -> str:
+        key = str(raw_key or "").strip().lower()
+        key = re.sub(r"[^a-z0-9_.-]+", "_", key)
+        key = key.strip("_.-")
+        if not key:
+            return ""
+        if "." not in key:
+            key = f"memory.{key}"
+        return key[:120]
+
+    def _normalize_fact(
+        self,
+        raw_fact: Dict[str, Any],
+        *,
+        source: str,
+    ) -> Optional[Dict[str, Any]]:
+        key = self._sanitize_fact_key(raw_fact.get("key"))
+        value = self._truncate_text(raw_fact.get("value"), max_chars=260)
+        if not key or not value:
+            return None
+
+        fact = {
+            "key": key,
+            "value": value,
+            "category": self._truncate_text(raw_fact.get("category") or "general", max_chars=40),
+            "confidence": round(self._clamp_score(raw_fact.get("confidence"), default=0.75), 4),
+            "importance": round(self._clamp_score(raw_fact.get("importance"), default=0.5), 4),
+            "source": self._truncate_text(source, max_chars=32),
+        }
+        return fact
+
+    def _is_fact_allowed_for_memory_type(self, memory_type: MemoryType, fact_key: str) -> bool:
+        key = str(fact_key or "").strip().lower()
+        if not key:
+            return False
+        prefixes = self._ALLOWED_FACT_PREFIXES_BY_TYPE.get(memory_type)
+        if not prefixes:
+            return True
+        return any(key.startswith(prefix) for prefix in prefixes)
+
+    def _filter_facts_for_memory_type(
+        self, memory_type: MemoryType, facts: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        filtered: List[Dict[str, Any]] = []
+        for fact in facts:
+            if not isinstance(fact, dict):
+                continue
+            key = str(fact.get("key") or "").strip().lower()
+            if self._is_fact_allowed_for_memory_type(memory_type, key):
+                filtered.append(fact)
+        return filtered
+
+    def _normalize_text_for_evidence_match(self, text: object) -> str:
+        normalized = self._normalize_whitespace(text).lower()
+        return re.sub(r"[\s\W_]+", "", normalized, flags=re.UNICODE)
+
+    def _is_fact_value_grounded_in_content(self, content: str, value: object) -> bool:
+        text = str(content or "")
+        fact_value = str(value or "").strip()
+        if not text or not fact_value:
+            return False
+
+        if fact_value in text:
+            return True
+
+        lowered_text = text.lower()
+        lowered_value = fact_value.lower()
+        if lowered_value in lowered_text:
+            return True
+
+        normalized_text = self._normalize_text_for_evidence_match(text)
+        normalized_value = self._normalize_text_for_evidence_match(fact_value)
+        if len(normalized_value) < 2:
+            return False
+
+        return normalized_value in normalized_text
+
+    def _extract_heuristic_facts(self, memory: MemoryItem) -> List[Dict[str, Any]]:
+        """Extract deterministic structured facts from known memory formats."""
+        content = str(memory.content or "")
+        lines = [line.strip() for line in content.splitlines() if line and line.strip()]
+        facts: List[Dict[str, Any]] = []
+
+        def _append_fact(
+            key: str,
+            value: object,
+            *,
+            category: str,
+            importance: float,
+            confidence: float = 0.85,
+        ) -> None:
+            fact = self._normalize_fact(
+                {
+                    "key": key,
+                    "value": value,
+                    "category": category,
+                    "importance": importance,
+                    "confidence": confidence,
+                },
+                source="heuristic",
+            )
+            if fact:
+                facts.append(fact)
+
+        for line in lines:
+            if line.startswith("[Agent:") and line.endswith("]"):
+                name = line.replace("[Agent:", "", 1).rstrip("]").strip()
+                if name:
+                    _append_fact(
+                        "agent.identity.name",
+                        name,
+                        category="agent",
+                        importance=0.35,
+                        confidence=0.9,
+                    )
+            elif line.lower().startswith("task:"):
+                task_text = line.split(":", 1)[1].strip()
+                if task_text:
+                    _append_fact(
+                        "interaction.task.latest",
+                        task_text,
+                        category="task",
+                        importance=0.62,
+                        confidence=0.86,
+                    )
+            elif line.lower().startswith("result:"):
+                result_text = line.split(":", 1)[1].strip()
+                if result_text:
+                    # Keep concise interaction outcome; avoid storing long answer details.
+                    result_summary = re.split(r"[。！？.!?]", result_text, maxsplit=1)[0].strip()
+                    if not result_summary:
+                        result_summary = result_text
+                    _append_fact(
+                        "interaction.result.summary",
+                        self._truncate_text(result_summary, max_chars=140),
+                        category="result",
+                        importance=0.45,
+                        confidence=0.8,
+                    )
+            elif line.lower().startswith("user discussed:"):
+                discussed_text = line.split(":", 1)[1].strip()
+                if discussed_text:
+                    _append_fact(
+                        "user.topic.latest",
+                        discussed_text,
+                        category="user_context",
+                        importance=0.68,
+                        confidence=0.86,
+                    )
+            elif line.lower().startswith("topic:"):
+                topic_text = line.split(":", 1)[1].strip()
+                if topic_text:
+                    _append_fact(
+                        "user.topic.summary",
+                        topic_text,
+                        category="user_context",
+                        importance=0.6,
+                        confidence=0.84,
+                    )
+
+        # User preference/profile extraction should only run on user-context memories.
+        if memory.memory_type != MemoryType.USER_CONTEXT:
+            return facts
+
+        lowered = content.lower()
+        for match in re.finditer(
+            r"\b(?:i|user)\s+(?:prefer|preferred|like|likes|love|dislike|hate)\s+([^\n\.,;!?]{2,80})",
+            lowered,
+        ):
+            raw_value = match.group(1).strip()
+            suffix = self._sanitize_fact_key(raw_value.replace(" ", "_"))[:24] or "general"
+            _append_fact(
+                f"user.preference.{suffix}",
+                raw_value,
+                category="user_preference",
+                importance=0.88,
+                confidence=0.84,
+            )
+
+        for match in re.finditer(r"我(?:更)?(?:喜欢|偏好|不喜欢|讨厌)([^。！？\n]{1,40})", content):
+            raw_value = match.group(1).strip()
+            suffix = self._sanitize_fact_key(raw_value)[:24] or "general"
+            _append_fact(
+                f"user.preference.{suffix}",
+                raw_value,
+                category="user_preference",
+                importance=0.9,
+                confidence=0.82,
+            )
+
+        name_patterns = [
+            r"\bmy name is\s+([a-z0-9_ \-]{2,40})",
+            r"\bi am\s+([a-z0-9_ \-]{2,40})",
+            r"我是([^。！？\n]{1,20})",
+        ]
+        for pattern in name_patterns:
+            match = re.search(pattern, content, flags=re.IGNORECASE)
+            if not match:
+                continue
+            identity = match.group(1).strip()
+            if not identity:
+                continue
+            _append_fact(
+                "user.profile.identity",
+                identity,
+                category="user_profile",
+                importance=0.82,
+                confidence=0.8,
+            )
+            break
+
+        return facts
+
+    def _resolve_fact_extraction_model(self) -> str:
+        if self._fact_extraction_model:
+            return self._fact_extraction_model
+
+        from llm_providers.provider_resolver import resolve_provider
+
+        provider_cfg = resolve_provider(self._fact_extraction_provider)
+        raw_models = provider_cfg.get("models")
+        model_candidates: List[str] = []
+        if isinstance(raw_models, dict):
+            model_candidates.extend(
+                [str(value).strip() for value in raw_models.values() if str(value).strip()]
+            )
+        elif isinstance(raw_models, list):
+            model_candidates.extend(
+                [str(value).strip() for value in raw_models if str(value).strip()]
+            )
+        elif isinstance(raw_models, str) and raw_models.strip():
+            model_candidates.append(raw_models.strip())
+
+        preference_markers = ("instruct", "chat", "qwen", "gpt", "llama", "claude")
+        for candidate in model_candidates:
+            lowered = candidate.lower()
+            if any(marker in lowered for marker in preference_markers):
+                return candidate
+
+        return model_candidates[0] if model_candidates else ""
+
+    def _extract_json_from_text(self, text: str) -> Optional[Dict[str, Any]]:
+        stripped = str(text or "").strip()
+        if not stripped:
+            return None
+
+        candidates = [stripped]
+        fenced_matches = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, flags=re.DOTALL)
+        candidates.extend(fenced_matches)
+
+        brace_match = re.search(r"(\{.*\})", stripped, flags=re.DOTALL)
+        if brace_match:
+            candidates.append(brace_match.group(1))
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+
+        return None
+
+    def _extract_model_facts(self, memory: MemoryItem) -> List[Dict[str, Any]]:
+        if not self._fact_extraction_model_enabled or not self._fact_extraction_provider:
+            return []
+        now = time.monotonic()
+        if now < self._fact_extract_fail_until:
+            return []
+
+        model = self._resolve_fact_extraction_model()
+        if not model:
+            return []
+
+        from llm_providers.provider_resolver import resolve_provider
+
+        provider_cfg = resolve_provider(self._fact_extraction_provider)
+        base_url = str(provider_cfg.get("base_url") or "").strip()
+        if not base_url:
+            return []
+
+        headers = {"Content-Type": "application/json"}
+        api_key = provider_cfg.get("api_key")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        max_facts = max(int(self._fact_extraction_max_facts), 1)
+        if memory.memory_type == MemoryType.AGENT:
+            system_prompt = (
+                "Extract durable AGENT memory facts. Return ONLY JSON: "
+                '{"facts":[{"key":"domain.field","value":"...",'
+                '"category":"...","confidence":0.0,"importance":0.0}]}. '
+                "Allowed key prefixes: agent.identity.*, interaction.*. "
+                "Prefer only: agent.identity.*, interaction.task.latest, "
+                "interaction.result.summary, interaction.note.*. "
+                "Do NOT extract task-domain knowledge from assistant answers "
+                "(for example implementation details, procedural instructions, or specs). "
+                "Ignore temporary chatter and repeated statements."
+            )
+        elif memory.memory_type == MemoryType.USER_CONTEXT:
+            system_prompt = (
+                "Extract durable USER PROFILE facts. Return ONLY JSON: "
+                '{"facts":[{"key":"domain.field","value":"...",'
+                '"category":"...","confidence":0.0,"importance":0.0}]}. '
+                "Allowed key prefix: user.*. "
+                "Only keep facts explicitly stated in user text (or close paraphrases). "
+                "Do NOT infer personality, frequency, expertise, motivation, "
+                "or expectations unless explicitly written by user. "
+                "Ignore assistant self-introduction and one-off procedural details."
+            )
+        else:
+            system_prompt = (
+                "Extract durable memory facts from the text. Return ONLY JSON: "
+                '{"facts":[{"key":"domain.field","value":"...",'
+                '"category":"...","confidence":0.0,"importance":0.0}]}. '
+                "Ignore temporary chatter, acknowledgements, and repeated statements."
+            )
+        user_prompt = (
+            f"memory_type={memory.memory_type.value}\n"
+            f"content:\n{memory.content}\n\n"
+            f"max_facts={max_facts}"
+        )
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0,
+            "max_tokens": 500,
+        }
+
+        urls_to_try = [
+            f"{base_url.rstrip('/')}/v1/chat/completions",
+            f"{base_url.rstrip('/')}/chat/completions",
+        ]
+        last_error = ""
+        for url in urls_to_try:
+            try:
+                response = requests.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=max(float(self._fact_extraction_timeout_seconds), 0.5),
+                )
+                if response.status_code != 200:
+                    last_error = f"{url} -> HTTP {response.status_code}: {response.text[:140]}"
+                    continue
+                data = response.json()
+                if isinstance(data, dict) and isinstance(data.get("output"), str):
+                    wrapped = self._extract_json_from_text(data.get("output"))
+                    if wrapped:
+                        data = wrapped
+
+                content_text = ""
+                if isinstance(data, dict):
+                    choices = data.get("choices")
+                    if isinstance(choices, list) and choices:
+                        message = (
+                            choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+                        )
+                        content_text = str(
+                            message.get("content") or message.get("reasoning_content") or ""
+                        )
+                    elif isinstance(data.get("output"), str):
+                        content_text = data.get("output")
+
+                parsed = self._extract_json_from_text(content_text) if content_text else None
+                if not parsed and isinstance(data, dict):
+                    parsed = data if isinstance(data.get("facts"), list) else None
+                if not parsed:
+                    last_error = f"{url} -> model output missing JSON facts"
+                    continue
+
+                raw_facts = parsed.get("facts")
+                if not isinstance(raw_facts, list):
+                    last_error = f"{url} -> no facts array"
+                    continue
+
+                normalized: List[Dict[str, Any]] = []
+                for raw_fact in raw_facts[:max_facts]:
+                    if not isinstance(raw_fact, dict):
+                        continue
+                    fact = self._normalize_fact(raw_fact, source="model")
+                    if fact:
+                        normalized.append(fact)
+
+                if memory.memory_type in {MemoryType.AGENT, MemoryType.USER_CONTEXT}:
+                    normalized = [
+                        fact
+                        for fact in normalized
+                        if self._is_fact_value_grounded_in_content(
+                            str(memory.content or ""),
+                            fact.get("value"),
+                        )
+                    ]
+
+                if normalized:
+                    self._fact_extract_fail_until = 0.0
+                return normalized
+            except Exception as exc:
+                last_error = f"{url} -> {exc}"
+
+        if last_error:
+            logger.debug(
+                "Fact extraction model call failed",
+                extra={
+                    "provider": self._fact_extraction_provider,
+                    "model": model,
+                    "error": last_error,
+                },
+            )
+            self._fact_extract_fail_until = now + max(
+                self._fact_extraction_failure_backoff_seconds, 1.0
+            )
+
+        return []
+
+    def _merge_fact_lists(
+        self,
+        existing_facts: List[Dict[str, Any]],
+        incoming_facts: List[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Merge facts by key; conflicting values are overwritten by incoming values."""
+        merged: Dict[str, Dict[str, Any]] = {}
+        order: List[str] = []
+        conflicts: List[Dict[str, Any]] = []
+
+        for existing in existing_facts:
+            normalized = self._normalize_fact(existing, source=existing.get("source") or "existing")
+            if not normalized:
+                continue
+            key = normalized["key"]
+            if key not in order:
+                order.append(key)
+            merged[key] = normalized
+
+        for incoming in incoming_facts:
+            normalized = self._normalize_fact(incoming, source=incoming.get("source") or "incoming")
+            if not normalized:
+                continue
+            key = normalized["key"]
+            previous = merged.get(key)
+            if previous and previous.get("value") != normalized.get("value"):
+                conflicts.append(
+                    {
+                        "key": key,
+                        "old_value": previous.get("value"),
+                        "new_value": normalized.get("value"),
+                        "resolved_at": datetime.utcnow().isoformat(),
+                    }
+                )
+            merged[key] = normalized
+            if key not in order:
+                order.append(key)
+
+        if len(conflicts) > self._max_fact_conflict_history:
+            conflicts = conflicts[-self._max_fact_conflict_history :]
+
+        merged_facts = [merged[key] for key in order if key in merged]
+        return merged_facts, conflicts
+
+    def _collect_facts(
+        self, memory: MemoryItem
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        metadata = dict(memory.metadata or {})
+        seed_facts = metadata.get("facts", [])
+        if not isinstance(seed_facts, list):
+            seed_facts = []
+
+        normalized_seed: List[Dict[str, Any]] = []
+        for raw_seed in seed_facts:
+            if not isinstance(raw_seed, dict):
+                continue
+            fact = self._normalize_fact(raw_seed, source=raw_seed.get("source") or "seed")
+            if fact:
+                normalized_seed.append(fact)
+
+        heuristic_facts = self._extract_heuristic_facts(memory)
+        model_facts = self._extract_model_facts(memory) if self._fact_extraction_enabled else []
+        merged_facts, conflicts = self._merge_fact_lists(
+            normalized_seed,
+            heuristic_facts + model_facts,
+        )
+        merged_facts = self._filter_facts_for_memory_type(memory.memory_type, merged_facts)
+
+        fallback_key_map = {
+            MemoryType.AGENT: "interaction.note.latest",
+            MemoryType.USER_CONTEXT: "user.topic.latest",
+            MemoryType.COMPANY: "company.note.latest",
+            MemoryType.TASK_CONTEXT: "task.note.latest",
+        }
+        fallback_key = fallback_key_map.get(memory.memory_type, f"{memory.memory_type.value}.note.latest")
+
+        if not merged_facts:
+            fallback_fact = self._normalize_fact(
+                {
+                    "key": fallback_key,
+                    "value": self._truncate_text(memory.content, max_chars=260),
+                    "category": memory.memory_type.value,
+                    "importance": 0.28,
+                    "confidence": 0.5,
+                },
+                source="fallback",
+            )
+            if fallback_fact:
+                merged_facts = [fallback_fact]
+
+        return merged_facts, conflicts
+
+    def _build_structured_content(self, facts: List[Dict[str, Any]]) -> str:
+        lines = []
+        for fact in facts:
+            key = str(fact.get("key") or "").strip()
+            value = str(fact.get("value") or "").strip()
+            if key and value:
+                lines.append(f"{key} = {value}")
+        return "\n".join(lines[: max(int(self._fact_extraction_max_facts), 1)])
+
+    def _derive_importance_score(
+        self,
+        memory: MemoryItem,
+        facts: List[Dict[str, Any]],
+        *,
+        auto_generated: bool,
+    ) -> float:
+        metadata = dict(memory.metadata or {})
+        explicit_importance = metadata.get("importance_score")
+        if explicit_importance is not None:
+            return self._clamp_score(explicit_importance, default=0.5)
+
+        if facts:
+            mean_importance = sum(float(f.get("importance") or 0.0) for f in facts) / max(
+                len(facts), 1
+            )
+        else:
+            mean_importance = 0.35
+
+        if memory.memory_type == MemoryType.USER_CONTEXT:
+            mean_importance += 0.08
+        if any(str(f.get("key") or "").startswith("user.preference.") for f in facts):
+            mean_importance += 0.12
+        if any(str(f.get("key") or "").startswith("user.profile.") for f in facts):
+            mean_importance += 0.1
+        if (
+            auto_generated
+            and len(self._normalize_whitespace(memory.content)) <= self._low_value_min_chars
+        ):
+            mean_importance -= 0.25
+        elif auto_generated:
+            mean_importance -= 0.05
+
+        return self._clamp_score(mean_importance, default=0.5)
+
+    def _derive_importance_level(self, score: float) -> str:
+        if score >= 0.75:
+            return "high"
+        if score >= 0.45:
+            return "medium"
+        return "low"
+
+    def _derive_memory_tier(
+        self,
+        metadata: Dict[str, Any],
+        facts: List[Dict[str, Any]],
+        importance_score: float,
+    ) -> str:
+        explicit_tier = str(metadata.get("memory_tier") or "").strip().lower()
+        if explicit_tier in {"core", "archival"}:
+            return explicit_tier
+        if importance_score >= self._core_importance_threshold:
+            return "core"
+        if any(str(f.get("key") or "").startswith("user.preference.") for f in facts):
+            return "core"
+        return "archival"
+
+    def _prepare_memory_for_storage(self, memory: MemoryItem) -> MemoryItem:
+        """Normalize incoming memory into dedupe-friendly, fact-based representation."""
+        metadata = dict(memory.metadata or {})
+        auto_generated = self._is_auto_generated_memory(memory)
+        facts, new_conflicts = self._collect_facts(memory)
+        importance_score = self._derive_importance_score(
+            memory, facts, auto_generated=auto_generated
+        )
+        tier = self._derive_memory_tier(metadata, facts, importance_score)
+
+        structured_content = self._build_structured_content(facts)
+        use_structured_content = (
+            auto_generated
+            or memory.memory_type == MemoryType.USER_CONTEXT
+            or bool(metadata.get("force_structured_memory"))
+        )
+
+        content = (
+            structured_content
+            if use_structured_content
+            else self._normalize_whitespace(memory.content)
+        )
+        if not content:
+            content = structured_content or self._normalize_whitespace(memory.content)
+        content_hash = self._compute_content_hash(content)
+
+        mention_count = metadata.get("mention_count", 1)
+        try:
+            mention_count = max(int(mention_count), 1)
+        except (TypeError, ValueError):
+            mention_count = 1
+
+        existing_conflicts = metadata.get("conflict_history")
+        if not isinstance(existing_conflicts, list):
+            existing_conflicts = []
+        combined_conflicts = existing_conflicts + new_conflicts
+        if len(combined_conflicts) > self._max_fact_conflict_history:
+            combined_conflicts = combined_conflicts[-self._max_fact_conflict_history :]
+
+        metadata.update(
+            {
+                "facts": facts,
+                "fact_keys": [fact.get("key") for fact in facts if fact.get("key")],
+                "fact_version": "v2",
+                "content_hash": content_hash,
+                "importance_score": round(importance_score, 4),
+                "importance_level": self._derive_importance_level(importance_score),
+                "memory_tier": tier,
+                "mention_count": mention_count,
+                "last_seen_at": datetime.utcnow().isoformat(),
+                "auto_generated": bool(auto_generated),
+            }
+        )
+        if combined_conflicts:
+            metadata["conflict_history"] = combined_conflicts
+
+        if memory.user_id and "user_id" not in metadata:
+            metadata["user_id"] = memory.user_id
+        if memory.task_id and "task_id" not in metadata:
+            metadata["task_id"] = memory.task_id
+
+        memory.content = content
+        memory.metadata = metadata
+        if not memory.embedding:
+            memory.embedding = self._embedding_service.generate_embedding(memory.content)
+
+        return memory
+
+    def _scope_filters_for_memory(self, memory: MemoryItem) -> Dict[str, Optional[str]]:
+        return {
+            "memory_type": memory.memory_type,
+            "agent_id": memory.agent_id if memory.memory_type == MemoryType.AGENT else None,
+            "user_id": memory.user_id,
+        }
+
+    def _build_scope_filter_expression_for_memory(self, memory: MemoryItem) -> Optional[str]:
+        if memory.memory_type == MemoryType.AGENT:
+            filters = [f'agent_id == "{memory.agent_id}"']
+            if memory.user_id:
+                filters.append(f'metadata["user_id"] == "{memory.user_id}"')
+            return " && ".join(filters)
+
+        filters = []
+        if memory.user_id:
+            filters.append(f'user_id == "{memory.user_id}"')
+        filters.append(f'memory_type == "{memory.memory_type.value}"')
+        if memory.task_id:
+            filters.append(f'metadata["task_id"] == "{memory.task_id}"')
+        return " && ".join(filters)
+
+    def _fact_overlap_ratio(
+        self,
+        incoming_metadata: Dict[str, Any],
+        existing_metadata: Dict[str, Any],
+    ) -> float:
+        incoming_keys = {
+            str(key).strip()
+            for key in (incoming_metadata.get("fact_keys") or [])
+            if str(key).strip()
+        }
+        existing_keys = {
+            str(key).strip()
+            for key in (existing_metadata.get("fact_keys") or [])
+            if str(key).strip()
+        }
+        if incoming_keys and existing_keys:
+            shared = len(incoming_keys.intersection(existing_keys))
+            total = len(incoming_keys.union(existing_keys))
+            return shared / total if total else 0.0
+
+        incoming_tokens = set(
+            self._normalize_content_for_hash(incoming_metadata.get("content_hash")).split("_")
+        )
+        existing_tokens = set(
+            self._normalize_content_for_hash(existing_metadata.get("content_hash")).split("_")
+        )
+        if incoming_tokens and existing_tokens:
+            shared = len(incoming_tokens.intersection(existing_tokens))
+            total = len(incoming_tokens.union(existing_tokens))
+            return shared / total if total else 0.0
+
+        return 0.0
+
+    def _find_exact_duplicate(
+        self, memory: MemoryItem
+    ) -> Optional[Tuple[MemoryRecordData, float, str]]:
+        metadata = dict(memory.metadata or {})
+        content_hash = str(metadata.get("content_hash") or "").strip()
+        if not content_hash:
+            return None
+
+        scope = self._scope_filters_for_memory(memory)
+        existing = self._repository.find_recent_by_content_hash(
+            memory_type=scope["memory_type"],
+            content_hash=content_hash,
+            agent_id=scope["agent_id"],
+            user_id=scope["user_id"],
+            within_minutes=self._exact_dedupe_window_minutes,
+        )
+        if not existing:
+            return None
+        return existing, 1.0, "exact_hash"
+
+    def _find_semantic_duplicate(
+        self, memory: MemoryItem
+    ) -> Optional[Tuple[MemoryRecordData, float, str]]:
+        if not self._semantic_dedupe_enabled:
+            return None
+        if not memory.embedding:
+            return None
+
+        if memory.memory_type == MemoryType.AGENT:
+            collection_name = CollectionName.AGENT_MEMORIES
+            output_fields = ["agent_id", "content", "timestamp", "metadata"]
+        else:
+            collection_name = CollectionName.COMPANY_MEMORIES
+            output_fields = ["user_id", "content", "memory_type", "timestamp", "metadata"]
+
+        collection = self._milvus.get_collection(collection_name)
+        search_params = {
+            "metric_type": self._search_metric_type,
+            "params": {"nprobe": self._search_nprobe},
+        }
+        filter_expr = self._build_scope_filter_expression_for_memory(memory)
+
+        results = self._search_collection_with_retry(
+            collection=collection,
+            collection_name=collection_name,
+            query_embedding=memory.embedding,
+            search_params=search_params,
+            limit=max(int(self._semantic_dedupe_candidate_limit), 1),
+            filter_expr=filter_expr,
+            output_fields=output_fields,
+        )
+        best_candidate = None
+        best_similarity = 0.0
+        incoming_meta = dict(memory.metadata or {})
+        incoming_hash = str(incoming_meta.get("content_hash") or "").strip()
+        for hits in results:
+            for hit in hits:
+                similarity = self._distance_to_similarity(hit.distance)
+                if similarity < self._semantic_dedupe_threshold:
+                    continue
+                try:
+                    milvus_id = int(hit.id)
+                except (TypeError, ValueError):
+                    continue
+                existing = self._repository.get_by_milvus_id(milvus_id)
+                if not existing:
+                    continue
+                existing_meta = dict(existing.metadata or {})
+                if incoming_hash and incoming_hash == str(existing_meta.get("content_hash") or ""):
+                    return existing, 1.0, "semantic_hash_match"
+
+                overlap = self._fact_overlap_ratio(incoming_meta, existing_meta)
+                if overlap < self._semantic_merge_min_overlap and similarity < (
+                    self._semantic_dedupe_threshold + 0.08
+                ):
+                    continue
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_candidate = existing
+
+        if best_candidate:
+            return best_candidate, best_similarity, "semantic"
+        return None
+
+    def _resync_record_vector(self, record) -> None:
+        """Rebuild vector for an existing DB memory record after content merge/update."""
+        if record.milvus_id is not None:
+            try:
+                self.delete_memory(record.milvus_id, record.memory_type)
+            except Exception as exc:
+                logger.debug("Failed to delete old vector during merge sync: %s", exc)
+        self._repository.clear_milvus_link(record.id)
+
+        updated_item = MemoryItem(
+            content=record.content,
+            memory_type=record.memory_type,
+            agent_id=record.agent_id,
+            user_id=record.user_id,
+            task_id=record.task_id,
+            timestamp=record.timestamp,
+            metadata=dict(record.metadata or {}),
+        )
+        try:
+            milvus_id = self._insert_into_milvus(updated_item)
+            self._repository.mark_vector_synced(record.id, milvus_id)
+        except Exception as exc:
+            self._repository.mark_vector_failed(record.id, str(exc))
+            logger.warning("Merged memory vector sync failed for record=%s: %s", record.id, exc)
+
+    def _merge_into_existing_memory(
+        self,
+        *,
+        existing,
+        incoming: MemoryItem,
+        similarity: float,
+        reason: str,
+    ) -> int:
+        existing_meta = dict(existing.metadata or {})
+        incoming_meta = dict(incoming.metadata or {})
+        existing_facts = existing_meta.get("facts", [])
+        if not isinstance(existing_facts, list):
+            existing_facts = []
+        incoming_facts = incoming_meta.get("facts", [])
+        if not isinstance(incoming_facts, list):
+            incoming_facts = []
+
+        merged_facts, conflicts = self._merge_fact_lists(existing_facts, incoming_facts)
+        merged_content = self._build_structured_content(merged_facts)
+        if not merged_content:
+            merged_content = incoming.content or existing.content
+
+        existing_mention = existing_meta.get("mention_count", 1)
+        incoming_mention = incoming_meta.get("mention_count", 1)
+        try:
+            mention_count = max(int(existing_mention), 1) + max(int(incoming_mention), 1)
+        except (TypeError, ValueError):
+            mention_count = 2
+
+        merged_importance = max(
+            self._clamp_score(existing_meta.get("importance_score"), default=0.0),
+            self._clamp_score(incoming_meta.get("importance_score"), default=0.0),
+        )
+        merged_tier = (
+            "core"
+            if (
+                str(existing_meta.get("memory_tier") or "").lower() == "core"
+                or str(incoming_meta.get("memory_tier") or "").lower() == "core"
+                or merged_importance >= self._core_importance_threshold
+            )
+            else "archival"
+        )
+
+        merged_conflicts = existing_meta.get("conflict_history", [])
+        if not isinstance(merged_conflicts, list):
+            merged_conflicts = []
+        merged_conflicts.extend(conflicts)
+        if len(merged_conflicts) > self._max_fact_conflict_history:
+            merged_conflicts = merged_conflicts[-self._max_fact_conflict_history :]
+
+        merged_metadata = dict(existing_meta)
+        merged_metadata.update(
+            {
+                "facts": merged_facts,
+                "fact_keys": [fact.get("key") for fact in merged_facts if fact.get("key")],
+                "content_hash": self._compute_content_hash(merged_content),
+                "importance_score": round(merged_importance, 4),
+                "importance_level": self._derive_importance_level(merged_importance),
+                "memory_tier": merged_tier,
+                "mention_count": mention_count,
+                "last_seen_at": datetime.utcnow().isoformat(),
+                "last_merge_reason": reason,
+                "last_merge_similarity": round(float(similarity), 4),
+            }
+        )
+        if merged_conflicts:
+            merged_metadata["conflict_history"] = merged_conflicts
+        if incoming.task_id and not merged_metadata.get("task_id"):
+            merged_metadata["task_id"] = incoming.task_id
+        if incoming.user_id and not merged_metadata.get("user_id"):
+            merged_metadata["user_id"] = incoming.user_id
+
+        existing_hash = str(existing_meta.get("content_hash") or "")
+        merged_hash = str(merged_metadata.get("content_hash") or "")
+        content_changed = existing_hash != merged_hash or self._normalize_content_for_hash(
+            existing.content
+        ) != self._normalize_content_for_hash(merged_content)
+
+        updated = self._repository.update_record(
+            existing.id,
+            content=merged_content if content_changed else None,
+            metadata=merged_metadata,
+            timestamp=datetime.utcnow(),
+            mark_vector_pending=bool(content_changed),
+        )
+        if updated and content_changed:
+            self._resync_record_vector(updated)
+
+        logger.info(
+            "Merged duplicate memory",
+            extra={
+                "existing_id": existing.id,
+                "reason": reason,
+                "similarity": round(float(similarity), 4),
+                "content_changed": content_changed,
+            },
+        )
+        return int(existing.id)
+
+    def _cleanup_records(self, records: List[Any]) -> None:
+        for record in records:
+            if record.milvus_id is None:
+                continue
+            try:
+                self.delete_memory(record.milvus_id, record.memory_type)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to cleanup evicted vector milvus_id=%s: %s", record.milvus_id, exc
+                )
+
+    def _maybe_run_retention_cleanup(self, memory: MemoryItem) -> None:
+        now = time.monotonic()
+        if (now - self._last_retention_cleanup_at) < self._retention_cleanup_interval_seconds:
+            return
+        self._last_retention_cleanup_at = now
+
+        retention_days = self._retention_days_by_type.get(memory.memory_type, 0)
+        if retention_days <= 0:
+            return
+
+        cutoff = datetime.utcnow() - timedelta(days=retention_days)
+        evicted = self._repository.evict_older_than(
+            memory_type=memory.memory_type,
+            older_than=cutoff,
+            agent_id=memory.agent_id if memory.memory_type == MemoryType.AGENT else None,
+            user_id=memory.user_id if memory.memory_type == MemoryType.USER_CONTEXT else None,
+            protect_core=self._core_protection_enabled,
+            limit=500,
+        )
+        if evicted:
+            self._cleanup_records(evicted)
+            logger.info(
+                "Retention cleanup evicted memories",
+                extra={
+                    "count": len(evicted),
+                    "memory_type": memory.memory_type.value,
+                    "cutoff": cutoff.isoformat(),
+                },
+            )
 
     def _insert_into_milvus(self, memory: MemoryItem) -> int:
         """Insert a memory item into Milvus vector index.
@@ -369,11 +1536,13 @@ class MemorySystem(MemorySystemInterface):
         Store a memory item with PostgreSQL as source-of-truth.
 
         Flow:
-        1. Validate content and type
-        2. Enforce memory count limits (evict oldest if over limit)
-        3. Write to PostgreSQL via MemoryRepository
-        4. Best-effort insert into Milvus vector index
-        5. Return PostgreSQL record ID
+        1. Validate content and scope fields
+        2. Normalize to structured facts and memory quality metadata
+        3. Deduplicate/merge with existing memories when possible
+        4. Apply retention + value-aware capacity controls
+        5. Write to PostgreSQL via MemoryRepository
+        6. Best-effort insert into Milvus vector index
+        7. Return PostgreSQL record ID (or merged existing ID)
 
         Args:
             memory: Memory item to store
@@ -413,6 +1582,33 @@ class MemorySystem(MemorySystemInterface):
             memory.metadata["user_id"] = memory.user_id
 
         try:
+            if self._enhanced_memory_enabled:
+                try:
+                    memory = self._prepare_memory_for_storage(memory)
+                except Exception as prep_err:
+                    logger.warning(
+                        "Memory normalization failed; using original payload: %s", prep_err
+                    )
+
+                duplicate_match = self._find_exact_duplicate(memory)
+                if not duplicate_match:
+                    try:
+                        duplicate_match = self._find_semantic_duplicate(memory)
+                    except Exception as dedup_err:
+                        logger.debug(
+                            "Semantic dedup lookup failed; continuing with insert: %s", dedup_err
+                        )
+                if duplicate_match:
+                    existing, similarity, reason = duplicate_match
+                    return self._merge_into_existing_memory(
+                        existing=existing,
+                        incoming=memory,
+                        similarity=similarity,
+                        reason=reason,
+                    )
+
+            self._maybe_run_retention_cleanup(memory)
+
             # Enforce memory count limits before inserting
             self._enforce_memory_limits(memory)
 
@@ -447,7 +1643,7 @@ class MemorySystem(MemorySystemInterface):
             raise RuntimeError(f"Memory storage failed: {e}")
 
     def _enforce_memory_limits(self, memory: MemoryItem) -> None:
-        """Evict oldest memories when count exceeds configured limits.
+        """Evict low-value memories when count exceeds configured limits.
 
         Args:
             memory: The memory item about to be stored (used for type/scope)
@@ -477,27 +1673,17 @@ class MemorySystem(MemorySystemInterface):
                 return
 
             evict_count = current_count - limit + 1
-            evicted = self._repository.evict_oldest(
+            evicted = self._repository.evict_low_value(
                 memory_type=memory.memory_type,
                 agent_id=memory.agent_id if memory.memory_type == MemoryType.AGENT else None,
                 user_id=memory.user_id if memory.memory_type == MemoryType.USER_CONTEXT else None,
                 count=evict_count,
+                protect_core=self._core_protection_enabled,
             )
-
-            # Best-effort cleanup of evicted vectors from Milvus
-            for record in evicted:
-                if record.milvus_id is not None:
-                    try:
-                        self.delete_memory(record.milvus_id, record.memory_type)
-                    except Exception as exc:
-                        logger.debug(
-                            "Failed to delete evicted vector milvus_id=%s: %s",
-                            record.milvus_id,
-                            exc,
-                        )
+            self._cleanup_records(evicted)
 
             logger.info(
-                "Evicted %d oldest memories (type=%s, limit=%d, was=%d)",
+                "Evicted %d low-value memories (type=%s, limit=%d, was=%d)",
                 len(evicted),
                 memory.memory_type.value,
                 limit,
@@ -536,8 +1722,9 @@ class MemorySystem(MemorySystemInterface):
                 results = self._search_collection(collection_name, query_embedding, query)
                 all_results.extend(results)
 
-            # Rank results by relevance (similarity + recency).
+            # Rank results by relevance (similarity + recency + memory utility signals).
             ranked_results = self._rank_results(all_results)
+            ranked_results = self._collapse_duplicate_results(ranked_results)
 
             # Optional model-based rerank for top candidates.
             top_k = query.top_k or self._default_top_k
@@ -858,7 +2045,7 @@ class MemorySystem(MemorySystemInterface):
 
     def _rank_results(self, results: List[MemoryItem]) -> List[MemoryItem]:
         """
-        Rank results by relevance (similarity + recency).
+        Rank results by relevance (similarity + recency + memory utility scores).
 
         Args:
             results: List of memory items
@@ -869,37 +2056,85 @@ class MemorySystem(MemorySystemInterface):
         if not results:
             return []
 
-        # Calculate current time for recency scoring
+        # Calculate current time for recency scoring.
         current_time = datetime.utcnow()
 
-        # Calculate combined scores
+        # Calculate combined scores.
         for memory in results:
-            # Similarity score (already normalized 0-1)
             similarity_score = memory.similarity_score or 0.0
 
-            # Recency score (exponential decay)
+            metadata = dict(memory.metadata or {})
             if memory.timestamp:
                 age_seconds = (current_time - memory.timestamp).total_seconds()
                 age_days = age_seconds / 86400.0
-                recency_score = 1.0 / (1.0 + age_days)  # Decay over days
+                decay = math.log(2.0) / max(self._recency_half_life_days, 0.1)
+                recency_score = math.exp(-decay * max(age_days, 0.0))
             else:
                 recency_score = 0.0
 
-            # Combined score
-            combined_score = (
-                self._similarity_weight * similarity_score + self._recency_weight * recency_score
+            importance_score = self._clamp_score(metadata.get("importance_score"), default=0.0)
+            tier_score = (
+                1.0 if str(metadata.get("memory_tier") or "").strip().lower() == "core" else 0.0
             )
+            mention_count = metadata.get("mention_count", 1)
+            try:
+                mention_count = max(int(mention_count), 1)
+            except (TypeError, ValueError):
+                mention_count = 1
+            mention_score = min(math.log1p(mention_count) / math.log1p(20), 1.0)
 
-            # Store combined score in metadata for debugging
-            if not memory.metadata:
-                memory.metadata = {}
-            memory.metadata["_combined_score"] = combined_score
-            memory.metadata["_recency_score"] = recency_score
+            combined_score = (
+                self._similarity_weight * similarity_score
+                + self._recency_weight * recency_score
+                + self._importance_weight * importance_score
+                + self._tier_weight * tier_score
+                + self._mention_weight * mention_score
+            ) / self._score_weight_total
 
-        # Sort by combined score (descending)
-        ranked = sorted(results, key=lambda m: m.metadata.get("_combined_score", 0.0), reverse=True)
+            metadata["_combined_score"] = round(combined_score, 6)
+            metadata["_recency_score"] = round(recency_score, 6)
+            metadata["_importance_score"] = round(importance_score, 6)
+            metadata["_tier_score"] = round(tier_score, 6)
+            metadata["_mention_score"] = round(mention_score, 6)
+            memory.metadata = metadata
+
+        ranked = sorted(
+            results,
+            key=lambda memory_item: (memory_item.metadata or {}).get("_combined_score", 0.0),
+            reverse=True,
+        )
 
         return ranked
+
+    def _collapse_duplicate_results(self, ranked_results: List[MemoryItem]) -> List[MemoryItem]:
+        """Remove duplicate memories in retrieval results using content/fact signatures."""
+        collapsed: List[MemoryItem] = []
+        seen_signatures = set()
+
+        for item in ranked_results:
+            metadata = dict(item.metadata or {})
+            content_hash = str(metadata.get("content_hash") or "").strip()
+            if not content_hash:
+                content_hash = self._compute_content_hash(item.content)
+            fact_keys = (
+                metadata.get("fact_keys") if isinstance(metadata.get("fact_keys"), list) else []
+            )
+            fact_signature = "|".join(
+                sorted([str(key).strip() for key in fact_keys if str(key).strip()])[:8]
+            )
+            scope_id = item.agent_id if item.memory_type == MemoryType.AGENT else item.user_id
+            signature = (
+                str(item.memory_type.value),
+                str(scope_id or ""),
+                content_hash,
+                fact_signature,
+            )
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            collapsed.append(item)
+
+        return collapsed
 
     def _rerank_results(
         self,

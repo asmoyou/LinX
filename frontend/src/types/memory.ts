@@ -1,5 +1,30 @@
 export type MemoryType = "agent" | "company" | "user_context";
 
+export type MemoryFact = {
+  key: string;
+  value: string;
+  category?: string;
+  confidence?: number;
+  importance?: number;
+  source?: string;
+};
+
+export type MemoryMetadata = {
+  taskId?: string;
+  task_id?: string;
+  goalId?: string;
+  goal_id?: string;
+  documentId?: string;
+  document_id?: string;
+  facts?: MemoryFact[];
+  fact_keys?: string[];
+  memory_tier?: string;
+  importance_level?: string;
+  importance_score?: number;
+  auto_generated?: boolean;
+  [key: string]: unknown;
+};
+
 export type Memory = {
   id: string;
   type: MemoryType;
@@ -15,12 +40,7 @@ export type Memory = {
   relevanceScore?: number;
   indexStatus?: "pending" | "synced" | "failed" | string;
   indexError?: string;
-  metadata?: {
-    taskId?: string;
-    goalId?: string;
-    documentId?: string;
-    [key: string]: unknown;
-  };
+  metadata?: MemoryMetadata;
   isShared?: boolean;
   sharedWith?: string[];
   sharedWithNames?: string[];
@@ -54,6 +74,7 @@ export type MemoryIndexInfo = {
 export type MemoryConfig = {
   embedding: MemoryConfigEmbedding;
   retrieval: MemoryConfigRetrieval;
+  fact_extraction: MemoryConfigFactExtraction;
   runtime: MemoryConfigRuntime;
   recommended?: MemoryConfigRecommended;
 };
@@ -108,9 +129,29 @@ export type MemoryConfigRuntime = {
   [key: string]: unknown;
 };
 
+export type MemoryConfigFactExtraction = {
+  enabled?: boolean;
+  model_enabled?: boolean;
+  provider?: string;
+  model?: string;
+  timeout_seconds?: number;
+  max_facts?: number;
+  failure_backoff_seconds?: number;
+  effective?: {
+    provider?: string;
+    model?: string;
+  };
+  sources?: {
+    provider?: string;
+    model?: string;
+  };
+  [key: string]: unknown;
+};
+
 export type MemoryConfigRecommended = {
   embedding?: Partial<MemoryConfigEmbedding>;
   retrieval?: Partial<MemoryConfigRetrieval>;
+  fact_extraction?: Partial<MemoryConfigFactExtraction>;
   runtime?: Partial<MemoryConfigRuntime>;
   [key: string]: unknown;
 };

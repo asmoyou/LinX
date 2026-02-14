@@ -406,6 +406,7 @@ class MemoryConfigResponse(BaseModel):
 
     embedding: dict
     retrieval: dict
+    fact_extraction: dict
     runtime: dict
     recommended: Optional[dict] = None
 
@@ -415,6 +416,7 @@ class MemoryConfigUpdateRequest(BaseModel):
 
     embedding: Optional[dict] = None
     retrieval: Optional[dict] = None
+    fact_extraction: Optional[dict] = None
     runtime: Optional[dict] = None
 
 
@@ -447,6 +449,15 @@ _MEMORY_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "rerank_failure_backoff_seconds": 30,
         "rerank_doc_max_chars": 1200,
     },
+    "fact_extraction": {
+        "enabled": True,
+        "model_enabled": False,
+        "provider": "",
+        "model": "",
+        "timeout_seconds": 4,
+        "max_facts": 8,
+        "failure_backoff_seconds": 60,
+    },
     "runtime": {
         "collection_retry_attempts": 3,
         "collection_retry_delay_seconds": 0.35,
@@ -466,12 +477,45 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
     return merged
 
 
-def _build_memory_config_payload(memory_section: dict, kb_section: Optional[dict] = None) -> dict:
+def _resolve_provider_default_chat_model(llm_section: dict, provider: str) -> str:
+    providers_cfg = llm_section.get("providers", {}) if isinstance(llm_section, dict) else {}
+    if not isinstance(providers_cfg, dict):
+        return ""
+    provider_cfg = providers_cfg.get(provider, {})
+    if not isinstance(provider_cfg, dict):
+        return ""
+    raw_models = provider_cfg.get("models")
+    if isinstance(raw_models, dict):
+        for preferred_key in ("chat", "default", "completion", "instruct"):
+            candidate = str(raw_models.get(preferred_key) or "").strip()
+            if candidate:
+                return candidate
+        for value in raw_models.values():
+            candidate = str(value or "").strip()
+            if candidate:
+                return candidate
+        return ""
+    if isinstance(raw_models, list):
+        for value in raw_models:
+            candidate = str(value or "").strip()
+            if candidate:
+                return candidate
+        return ""
+    return str(raw_models or "").strip()
+
+
+def _build_memory_config_payload(
+    memory_section: dict,
+    kb_section: Optional[dict] = None,
+    llm_section: Optional[dict] = None,
+) -> dict:
     """Build memory config payload with effective resolved settings and source hints."""
     from memory_system.embedding_service import resolve_embedding_settings
 
     kb_section = kb_section if isinstance(kb_section, dict) else {}
+    llm_section = llm_section if isinstance(llm_section, dict) else {}
     kb_search = kb_section.get("search", {}) if isinstance(kb_section.get("search"), dict) else {}
+    llm_default_provider = str(llm_section.get("default_provider") or "").strip()
 
     embedding_cfg = (
         memory_section.get("embedding", {})
@@ -484,13 +528,22 @@ def _build_memory_config_payload(memory_section: dict, kb_section: Optional[dict
         else {}
     )
     runtime_cfg = (
-        memory_section.get("runtime", {})
-        if isinstance(memory_section.get("runtime"), dict)
+        memory_section.get("runtime", {}) if isinstance(memory_section.get("runtime"), dict) else {}
+    )
+    enhanced_cfg = (
+        memory_section.get("enhanced_memory", {})
+        if isinstance(memory_section.get("enhanced_memory"), dict)
+        else {}
+    )
+    fact_cfg = (
+        enhanced_cfg.get("fact_extraction", {})
+        if isinstance(enhanced_cfg.get("fact_extraction"), dict)
         else {}
     )
 
     embedding_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["embedding"], embedding_cfg)
     retrieval_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["retrieval"], retrieval_cfg)
+    fact_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["fact_extraction"], fact_cfg)
     runtime_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["runtime"], runtime_cfg)
     for key in _MEMORY_RUNTIME_KEYS:
         if key in memory_section:
@@ -548,9 +601,43 @@ def _build_memory_config_payload(memory_section: dict, kb_section: Optional[dict
         },
     }
 
+    configured_fact_provider = str(fact_cfg.get("provider") or "").strip()
+    configured_fact_model = str(fact_cfg.get("model") or "").strip()
+    effective_fact_provider = configured_fact_provider or llm_default_provider
+    effective_fact_model = configured_fact_model or _resolve_provider_default_chat_model(
+        llm_section,
+        effective_fact_provider,
+    )
+    fact_provider_source = (
+        "memory.enhanced_memory.fact_extraction.provider"
+        if configured_fact_provider
+        else ("llm.default_provider" if llm_default_provider else "none")
+    )
+    fact_model_source = (
+        "memory.enhanced_memory.fact_extraction.model"
+        if configured_fact_model
+        else (
+            f"llm.providers.{effective_fact_provider}.models.chat"
+            if effective_fact_model and effective_fact_provider
+            else "none"
+        )
+    )
+    fact_extraction_payload = {
+        **fact_merged,
+        "effective": {
+            "provider": effective_fact_provider,
+            "model": effective_fact_model,
+        },
+        "sources": {
+            "provider": fact_provider_source,
+            "model": fact_model_source,
+        },
+    }
+
     return {
         "embedding": embedding_payload,
         "retrieval": retrieval_effective,
+        "fact_extraction": fact_extraction_payload,
         "runtime": runtime_merged,
         "recommended": _MEMORY_RECOMMENDED_DEFAULTS,
     }
@@ -716,12 +803,7 @@ def _resolve_effective_user_id(
     agent_id: Optional[str] = None,
 ) -> Optional[str]:
     """Resolve user scope for search/list queries.
-
-    Agent memories are scoped by agent ownership checks, not user_id field filtering, because
-    many historical rows have null user_id while still belonging to a specific agent.
     """
-    if _is_agent_scoped_query(memory_type, agent_id=agent_id):
-        return None
     return requested_user_id or current_user.user_id
 
 
@@ -897,14 +979,10 @@ def _build_agent_memory_diagnostics_sync(
             or 0
         )
 
-        with_user_id = int(
-            active_query.filter(MemoryRecord.user_id.isnot(None)).count() or 0
-        )
+        with_user_id = int(active_query.filter(MemoryRecord.user_id.isnot(None)).count() or 0)
         without_user_id = max(total_active - with_user_id, 0)
 
-        with_milvus_id = int(
-            active_query.filter(MemoryRecord.milvus_id.isnot(None)).count() or 0
-        )
+        with_milvus_id = int(active_query.filter(MemoryRecord.milvus_id.isnot(None)).count() or 0)
         without_milvus_id = max(total_active - with_milvus_id, 0)
 
         raw_vector_status_rows = (
@@ -991,9 +1069,9 @@ def _build_agent_memory_diagnostics_sync(
             "without_milvus_id_count": without_milvus_id,
             "vector_status": vector_status_counts,
             "latest_memory_id": int(latest_row.id) if latest_row else None,
-            "latest_timestamp": latest_row.timestamp.isoformat()
-            if latest_row and latest_row.timestamp
-            else None,
+            "latest_timestamp": (
+                latest_row.timestamp.isoformat() if latest_row and latest_row.timestamp else None
+            ),
         },
         "milvus": {
             "collection": CollectionName.AGENT_MEMORIES,
@@ -1195,8 +1273,9 @@ def _retrieve_shared_sync(user_id: str):
 
 
 def _store_memory_sync(memory_item):
-    """Store memory with PostgreSQL as source-of-truth and best-effort Milvus indexing."""
+    """Store memory via MemorySystem to apply normalization/dedup/merge policies."""
     from memory_system.memory_interface import MemoryType
+    from memory_system.memory_system import get_memory_system
 
     from database.connection import get_db_session
 
@@ -1205,11 +1284,15 @@ def _store_memory_sync(memory_item):
     if memory_item.memory_type != MemoryType.AGENT and not memory_item.user_id:
         raise ValueError("user_id required for company/user_context memories")
 
+    memory_system = get_memory_system()
     repo = _get_memory_repository()
-    created = repo.create(memory_item)
-    synced = _sync_record_to_milvus_sync(created.id)
-    final_record = synced or repo.get(created.id) or created
-    item = final_record.to_memory_item()
+    memory_id = memory_system.store_memory(memory_item)
+    final_record = repo.get(memory_id)
+    if final_record:
+        item = final_record.to_memory_item()
+    else:
+        item = memory_item
+        item.id = memory_id
 
     with get_db_session() as session:
         agent_name = _lookup_agent_name(session, item.agent_id)
@@ -1996,7 +2079,10 @@ async def get_memory_config(
         config = get_config()
         memory_section = config.get_section("memory")
         kb_section = config.get_section("knowledge_base")
-        return MemoryConfigResponse(**_build_memory_config_payload(memory_section, kb_section))
+        llm_section = config.get_section("llm")
+        return MemoryConfigResponse(
+            **_build_memory_config_payload(memory_section, kb_section, llm_section)
+        )
     except Exception as e:
         logger.error("Failed to get memory config: %s", e, exc_info=True)
         raise HTTPException(
@@ -2041,6 +2127,15 @@ async def update_memory_config(
                 **(memory_cfg.get("retrieval", {}) or {}),
                 **update_data.retrieval,
             }
+        if update_data.fact_extraction is not None:
+            enhanced_cfg = memory_cfg.get("enhanced_memory", {})
+            if not isinstance(enhanced_cfg, dict):
+                enhanced_cfg = {}
+            enhanced_cfg["fact_extraction"] = {
+                **(enhanced_cfg.get("fact_extraction", {}) or {}),
+                **update_data.fact_extraction,
+            }
+            memory_cfg["enhanced_memory"] = enhanced_cfg
         if update_data.runtime is not None:
             for key in _MEMORY_RUNTIME_KEYS:
                 if key in update_data.runtime:
@@ -2052,7 +2147,10 @@ async def update_memory_config(
         reloaded = reload_config(config_path)
         updated_memory = reloaded.get_section("memory")
         updated_kb = reloaded.get_section("knowledge_base")
-        return MemoryConfigResponse(**_build_memory_config_payload(updated_memory, updated_kb))
+        updated_llm = reloaded.get_section("llm")
+        return MemoryConfigResponse(
+            **_build_memory_config_payload(updated_memory, updated_kb, updated_llm)
+        )
 
     except HTTPException:
         raise
@@ -2584,9 +2682,7 @@ async def cleanup_orphan_vectors(
 
     results = []
     for coll_name in collections_to_scan:
-        result = await asyncio.to_thread(
-            _find_orphan_vectors_sync, coll_name, batch_size, dry_run
-        )
+        result = await asyncio.to_thread(_find_orphan_vectors_sync, coll_name, batch_size, dry_run)
         results.append(result)
 
     total_orphans = sum(r.get("orphan_count", 0) for r in results)

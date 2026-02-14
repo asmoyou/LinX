@@ -6,6 +6,7 @@ import type {
   MemoryIndexInfo,
   MemoryConfig,
   MemoryConfigEmbedding,
+  MemoryConfigFactExtraction,
   MemoryConfigRetrieval,
   MemoryConfigRuntime,
 } from "../types/memory";
@@ -42,6 +43,7 @@ export interface ShareMemoryRequest {
 export interface UpdateMemoryConfigRequest {
   embedding?: Partial<Omit<MemoryConfigEmbedding, "effective" | "sources">>;
   retrieval?: Partial<Omit<MemoryConfigRetrieval, "sources">>;
+  fact_extraction?: Partial<Omit<MemoryConfigFactExtraction, "effective" | "sources">>;
   runtime?: Partial<MemoryConfigRuntime>;
 }
 

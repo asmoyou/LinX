@@ -6,7 +6,7 @@ Milvus remains a vector index. Business CRUD reads/writes must rely on this repo
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import desc, func
@@ -65,6 +65,31 @@ class MemoryRecordData:
 
 class MemoryRepository:
     """Repository for memory records persisted in PostgreSQL."""
+
+    @staticmethod
+    def _coerce_float(raw: Any, default: float = 0.0) -> float:
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return float(default)
+
+    @staticmethod
+    def _coerce_int(raw: Any, default: int = 0) -> int:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return int(default)
+
+    @classmethod
+    def _metadata_utility_score(cls, row: MemoryRecord) -> float:
+        """Compute utility score for eviction ordering (lower means easier to evict)."""
+        metadata = dict(row.memory_metadata or {})
+        importance = min(max(cls._coerce_float(metadata.get("importance_score"), 0.0), 0.0), 1.0)
+        mention_count = max(cls._coerce_int(metadata.get("mention_count"), 1), 1)
+        tier = str(metadata.get("memory_tier") or "").strip().lower()
+        core_boost = 0.2 if tier == "core" else 0.0
+        mention_boost = min(mention_count / 20.0, 0.2)
+        return importance + core_boost + mention_boost
 
     @staticmethod
     def _parse_memory_type(raw_type: Any) -> MemoryType:
@@ -239,6 +264,7 @@ class MemoryRepository:
         user_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         task_id: Optional[str] = None,
+        timestamp: Optional[datetime] = None,
         mark_vector_pending: bool = True,
     ) -> Optional[MemoryRecordData]:
         """Update selected fields on a memory record."""
@@ -264,6 +290,8 @@ class MemoryRepository:
                 row.agent_id = agent_id
             if task_id is not None:
                 row.task_id = task_id
+            if timestamp is not None:
+                row.timestamp = timestamp
 
             # Mark as pending re-index when content/type/identity fields changed.
             if mark_vector_pending:
@@ -274,6 +302,56 @@ class MemoryRepository:
             session.flush()
             session.refresh(row)
             return self._to_data(row)
+
+    def find_recent_by_content_hash(
+        self,
+        *,
+        memory_type: MemoryType,
+        content_hash: str,
+        agent_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        within_minutes: int = 10080,
+    ) -> Optional[MemoryRecordData]:
+        """Find the latest active memory that matches the same normalized content hash."""
+        normalized_hash = str(content_hash or "").strip()
+        if not normalized_hash:
+            return None
+
+        with get_db_session() as session:
+            query = session.query(MemoryRecord)
+            query = self._build_filters(
+                query,
+                memory_type=memory_type,
+                agent_id=agent_id,
+                user_id=user_id,
+            )
+            query = query.filter(
+                MemoryRecord.memory_metadata["content_hash"].astext == normalized_hash
+            )
+
+            if within_minutes and within_minutes > 0:
+                cutoff = datetime.utcnow() - timedelta(minutes=int(within_minutes))
+                query = query.filter(MemoryRecord.timestamp >= cutoff)
+
+            row = query.order_by(desc(MemoryRecord.timestamp)).first()
+            return self._to_data(row) if row else None
+
+    def list_scope_candidates(
+        self,
+        *,
+        memory_type: MemoryType,
+        agent_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[MemoryRecordData]:
+        """Return recent records in the same scope for merge/dedup decisions."""
+        safe_limit = max(int(limit), 1)
+        return self.list_memories(
+            memory_type=memory_type,
+            agent_id=agent_id,
+            user_id=user_id,
+            limit=safe_limit,
+        )
 
     def mark_vector_synced(self, memory_id: int, milvus_id: int) -> Optional[MemoryRecordData]:
         """Persist successful vector sync status."""
@@ -352,14 +430,119 @@ class MemoryRepository:
                 agent_id=agent_id,
                 user_id=user_id,
             )
-            oldest_rows = (
-                query.order_by(MemoryRecord.timestamp.asc())
-                .limit(count)
-                .all()
-            )
+            oldest_rows = query.order_by(MemoryRecord.timestamp.asc()).limit(count).all()
 
             evicted = []
             for row in oldest_rows:
+                evicted.append(self._to_data(row))
+                row.is_deleted = True
+                row.updated_at = datetime.utcnow()
+
+            return evicted
+
+    def evict_low_value(
+        self,
+        *,
+        memory_type: MemoryType,
+        agent_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        count: int = 1,
+        protect_core: bool = True,
+    ) -> List[MemoryRecordData]:
+        """Soft-delete lowest-value memories first (importance/mentions/tier aware)."""
+        safe_count = max(int(count), 0)
+        if safe_count <= 0:
+            return []
+
+        with get_db_session() as session:
+            query = session.query(MemoryRecord)
+            query = self._build_filters(
+                query,
+                memory_type=memory_type,
+                agent_id=agent_id,
+                user_id=user_id,
+            )
+            rows = query.all()
+            if not rows:
+                return []
+
+            non_core_rows: List[MemoryRecord] = []
+            core_rows: List[MemoryRecord] = []
+            for row in rows:
+                tier = str((row.memory_metadata or {}).get("memory_tier") or "").strip().lower()
+                if tier == "core":
+                    core_rows.append(row)
+                else:
+                    non_core_rows.append(row)
+
+            non_core_rows.sort(
+                key=lambda row: (
+                    self._metadata_utility_score(row),
+                    row.timestamp or datetime.utcnow(),
+                )
+            )
+            core_rows.sort(
+                key=lambda row: (
+                    self._metadata_utility_score(row),
+                    row.timestamp or datetime.utcnow(),
+                )
+            )
+
+            ordered_rows = (
+                non_core_rows + core_rows
+                if protect_core
+                else sorted(
+                    rows,
+                    key=lambda row: (
+                        self._metadata_utility_score(row),
+                        row.timestamp or datetime.utcnow(),
+                    ),
+                )
+            )
+
+            selected_rows = ordered_rows[:safe_count]
+            evicted: List[MemoryRecordData] = []
+            for row in selected_rows:
+                evicted.append(self._to_data(row))
+                row.is_deleted = True
+                row.updated_at = datetime.utcnow()
+
+            return evicted
+
+    def evict_older_than(
+        self,
+        *,
+        memory_type: MemoryType,
+        older_than: datetime,
+        agent_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        limit: Optional[int] = None,
+        protect_core: bool = True,
+    ) -> List[MemoryRecordData]:
+        """Soft-delete memories older than cutoff (optionally preserving core tier)."""
+        with get_db_session() as session:
+            query = session.query(MemoryRecord)
+            query = self._build_filters(
+                query,
+                memory_type=memory_type,
+                agent_id=agent_id,
+                user_id=user_id,
+            )
+            query = query.filter(MemoryRecord.timestamp < older_than)
+            rows = query.order_by(MemoryRecord.timestamp.asc()).all()
+
+            selected_rows: List[MemoryRecord] = []
+            for row in rows:
+                if protect_core:
+                    tier = str((row.memory_metadata or {}).get("memory_tier") or "").strip().lower()
+                    if tier == "core":
+                        continue
+                selected_rows.append(row)
+                if limit is not None and len(selected_rows) >= max(int(limit), 0):
+                    break
+
+            evicted: List[MemoryRecordData] = []
+            for row in selected_rows:
                 evicted.append(self._to_data(row))
                 row.is_deleted = True
                 row.updated_at = datetime.utcnow()

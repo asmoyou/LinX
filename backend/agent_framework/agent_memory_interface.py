@@ -20,7 +20,7 @@ def _format_agent_memory_content(
     task: str,
     result: str,
     agent_name: str = "",
-    max_result_length: int = 500,
+    max_result_length: int = 240,
 ) -> str:
     """Format agent memory content with structured layout and truncation.
 
@@ -209,13 +209,16 @@ class AgentMemoryInterface:
     def retrieve_agent_memory(
         self,
         agent_id: UUID,
+        user_id: UUID | str,
         query: str,
         top_k: int = 5,
+        min_similarity: Optional[float] = None,
     ) -> List[MemoryItem]:
         """Retrieve relevant memories from Agent Memory.
 
         Args:
             agent_id: Agent UUID
+            user_id: User UUID (strict agent-memory scope)
             query: Search query
             top_k: Number of results
 
@@ -226,7 +229,9 @@ class AgentMemoryInterface:
             query_text=query,
             memory_type=MemoryType.AGENT,
             agent_id=str(agent_id),
+            user_id=str(user_id),
             top_k=top_k,
+            min_similarity=min_similarity,
         )
 
         results = self._retrieve_memories_with_db_alignment(search_query)
@@ -234,7 +239,9 @@ class AgentMemoryInterface:
             "Retrieved agent memories",
             extra={
                 "agent_id": str(agent_id),
+                "user_id": str(user_id),
                 "top_k": top_k,
+                "min_similarity": min_similarity,
                 "hit_count": len(results),
                 "query_preview": (query or "")[:120],
             },
@@ -246,6 +253,7 @@ class AgentMemoryInterface:
         user_id: UUID,
         query: str,
         top_k: int = 5,
+        min_similarity: Optional[float] = None,
     ) -> List[MemoryItem]:
         """Retrieve relevant memories from Company Memory.
 
@@ -262,6 +270,7 @@ class AgentMemoryInterface:
             memory_type=MemoryType.COMPANY,
             user_id=str(user_id),
             top_k=top_k,
+            min_similarity=min_similarity,
         )
 
         results = self._retrieve_memories_with_db_alignment(search_query)
@@ -270,6 +279,7 @@ class AgentMemoryInterface:
             extra={
                 "user_id": str(user_id),
                 "top_k": top_k,
+                "min_similarity": min_similarity,
                 "hit_count": len(results),
                 "query_preview": (query or "")[:120],
             },

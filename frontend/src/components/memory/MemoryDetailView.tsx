@@ -19,7 +19,78 @@ import {
   Save,
 } from "lucide-react";
 import { ModalPanel } from "@/components/ModalPanel";
-import type { Memory, MemoryIndexInfo } from "@/types/memory";
+import type { Memory, MemoryFact, MemoryIndexInfo } from "@/types/memory";
+
+const parseFacts = (memory: Memory): MemoryFact[] => {
+  const raw = memory.metadata?.facts;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw
+    .filter((entry): entry is MemoryFact => {
+      return (
+        !!entry &&
+        typeof entry === "object" &&
+        typeof (entry as MemoryFact).key === "string" &&
+        typeof (entry as MemoryFact).value === "string" &&
+        Boolean((entry as MemoryFact).key.trim()) &&
+        Boolean((entry as MemoryFact).value.trim())
+      );
+    })
+    .map((entry) => ({
+      ...entry,
+      key: entry.key.trim(),
+      value: entry.value.trim(),
+    }));
+};
+
+const getMetadataText = (memory: Memory, ...candidates: string[]): string | undefined => {
+  const metadata = memory.metadata;
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+  for (const key of candidates) {
+    const raw = metadata[key];
+    if (typeof raw === "string" && raw.trim()) {
+      return raw.trim();
+    }
+  }
+  return undefined;
+};
+
+const getMetadataNumber = (memory: Memory, ...candidates: string[]): number | undefined => {
+  const metadata = memory.metadata;
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+  for (const key of candidates) {
+    const raw = metadata[key];
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+      return raw;
+    }
+    if (typeof raw === "string" && raw.trim()) {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return undefined;
+};
+
+const formatFactScore = (value: unknown): string | null => {
+  const numeric =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value)
+        : Number.NaN;
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  const bounded = Math.max(0, Math.min(1, numeric));
+  return `${(bounded * 100).toFixed(0)}%`;
+};
 
 interface MemoryDetailViewProps {
   memory: Memory | null;
@@ -73,6 +144,17 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
   const [reindexAfterSave, setReindexAfterSave] = useState(true);
 
   if (!isOpen || !memory) return null;
+  const extractedFacts = parseFacts(memory);
+  const taskId = getMetadataText(memory, "taskId", "task_id");
+  const goalId = getMetadataText(memory, "goalId", "goal_id");
+  const documentId = getMetadataText(memory, "documentId", "document_id");
+  const memoryTier = getMetadataText(memory, "memoryTier", "memory_tier");
+  const importanceLevel = getMetadataText(memory, "importanceLevel", "importance_level");
+  const importanceScore = getMetadataNumber(memory, "importanceScore", "importance_score");
+  const metadataPresent =
+    !!memory.metadata &&
+    typeof memory.metadata === "object" &&
+    Object.keys(memory.metadata).length > 0;
 
   const handleEditToggle = () => {
     if (isEditing) {
@@ -485,6 +567,58 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
           </div>
         ) : (
           <>
+            {/* Extracted Facts */}
+            {extractedFacts.length > 0 && (
+              <div className="mb-6">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <h3 className="text-lg font-semibold text-gray-800 dark:text-white">
+                    {t("memory.detail.extractedFacts")}
+                  </h3>
+                  <span className="text-xs px-2 py-1 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300">
+                    {t("memory.detail.factCount", { count: extractedFacts.length })}
+                  </span>
+                </div>
+                <div className="max-h-72 overflow-y-auto pr-1 space-y-2">
+                  {extractedFacts.map((fact, index) => {
+                    const confidence = formatFactScore(fact.confidence);
+                    const importance = formatFactScore(fact.importance);
+                    return (
+                      <div
+                        key={`${fact.key}-${index}`}
+                        className="rounded-lg bg-white/10 p-3 border border-white/10"
+                      >
+                        <div className="flex items-center justify-between gap-3 mb-1">
+                          <code className="text-xs font-medium text-indigo-600 dark:text-indigo-300 break-all">
+                            {fact.key}
+                          </code>
+                          <div className="flex items-center gap-2 text-[11px] text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                            {importance && (
+                              <span>
+                                {t("memory.detail.factImportance")}: {importance}
+                              </span>
+                            )}
+                            {confidence && (
+                              <span>
+                                {t("memory.detail.factConfidence")}: {confidence}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">
+                          {fact.value}
+                        </p>
+                        {fact.source && (
+                          <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                            {t("memory.detail.factSource")}: {fact.source}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Summary */}
             {memory.summary && (
               <div className="mb-6">
@@ -502,7 +636,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
               <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-2">
                 {t("memory.detail.content")}
               </h3>
-              <div className="text-gray-700 dark:text-gray-300 bg-white/10 p-4 rounded-lg whitespace-pre-wrap">
+              <div className="max-h-80 overflow-y-auto text-gray-700 dark:text-gray-300 bg-white/10 p-4 rounded-lg whitespace-pre-wrap break-words">
                 {memory.content}
               </div>
             </div>
@@ -564,6 +698,35 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
               </p>
             </div>
           )}
+
+          {memoryTier && (
+            <div className="p-4 bg-white/10 rounded-lg">
+              <div className="flex items-center gap-2 mb-2">
+                <CheckCircle2 className="w-5 h-5 text-indigo-500" />
+                <span className="text-sm text-gray-600 dark:text-gray-400">
+                  {t("memory.detail.tier")}
+                </span>
+              </div>
+              <p className="text-gray-800 dark:text-white font-medium capitalize">
+                {memoryTier}
+              </p>
+            </div>
+          )}
+
+          {(importanceLevel || importanceScore !== undefined) && (
+            <div className="p-4 bg-white/10 rounded-lg">
+              <div className="flex items-center gap-2 mb-2">
+                <TrendingUp className="w-5 h-5 text-amber-500" />
+                <span className="text-sm text-gray-600 dark:text-gray-400">
+                  {t("memory.detail.importance")}
+                </span>
+              </div>
+              <p className="text-gray-800 dark:text-white font-medium">
+                {importanceLevel ? importanceLevel : "-"}
+                {importanceScore !== undefined ? ` (${(importanceScore * 100).toFixed(0)}%)` : ""}
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Tags */}
@@ -587,37 +750,46 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
         )}
 
         {/* Related Items */}
-        {memory.metadata && Object.keys(memory.metadata).length > 0 && (
+        {metadataPresent && (
           <div className="mb-6">
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">
               {t("memory.detail.relatedItems")}
             </h3>
             <div className="space-y-2">
-              {memory.metadata.taskId && (
+              {taskId && (
                 <div className="flex items-center gap-2 p-3 bg-white/10 rounded-lg">
                   <LinkIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
                   <span className="text-sm text-gray-700 dark:text-gray-300">
-                    {t("memory.detail.task")}: {memory.metadata.taskId}
+                    {t("memory.detail.task")}: {taskId}
                   </span>
                 </div>
               )}
-              {memory.metadata.goalId && (
+              {goalId && (
                 <div className="flex items-center gap-2 p-3 bg-white/10 rounded-lg">
                   <LinkIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
                   <span className="text-sm text-gray-700 dark:text-gray-300">
-                    {t("memory.detail.goal")}: {memory.metadata.goalId}
+                    {t("memory.detail.goal")}: {goalId}
                   </span>
                 </div>
               )}
-              {memory.metadata.documentId && (
+              {documentId && (
                 <div className="flex items-center gap-2 p-3 bg-white/10 rounded-lg">
                   <LinkIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
                   <span className="text-sm text-gray-700 dark:text-gray-300">
-                    {t("memory.detail.document")}: {memory.metadata.documentId}
+                    {t("memory.detail.document")}: {documentId}
                   </span>
                 </div>
               )}
             </div>
+
+            <details className="mt-3">
+              <summary className="cursor-pointer text-sm text-gray-600 dark:text-gray-400">
+                {t("memory.detail.rawMetadata")}
+              </summary>
+              <pre className="mt-2 whitespace-pre-wrap break-all bg-white/10 rounded p-3 text-xs text-gray-700 dark:text-gray-300">
+                {JSON.stringify(memory.metadata, null, 2)}
+              </pre>
+            </details>
           </div>
         )}
 

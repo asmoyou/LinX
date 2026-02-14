@@ -6,8 +6,9 @@ References:
 """
 
 import logging
+import re
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from agent_framework.access_policy import resolve_memory_scopes
@@ -114,6 +115,124 @@ class AgentExecutor:
             return None
 
     @staticmethod
+    def _normalize_match_text(text: Optional[str]) -> str:
+        """Normalize text for lightweight overlap matching."""
+        raw = str(text or "").lower()
+        return re.sub(r"[\s\W_]+", "", raw, flags=re.UNICODE)
+
+    def _extract_query_terms(self, query_text: str) -> List[str]:
+        """Extract language-agnostic query terms for relevance guard."""
+        text = str(query_text or "").strip()
+        if not text:
+            return []
+
+        zh_stop_terms = {
+            "怎么",
+            "如何",
+            "一下",
+            "上次",
+            "还能",
+            "可以",
+            "是否",
+            "请问",
+            "这个",
+            "那个",
+            "什么",
+        }
+        en_stop_terms = {"what", "how", "can", "could", "would", "please", "about"}
+
+        terms: List[str] = []
+        seen = set()
+
+        for token in re.findall(r"[a-zA-Z0-9]{3,}", text.lower()):
+            if token in en_stop_terms or token in seen:
+                continue
+            seen.add(token)
+            terms.append(token)
+
+        for chunk in re.findall(r"[\u4e00-\u9fff]{2,}", text):
+            if len(chunk) <= 4:
+                if chunk in zh_stop_terms or chunk in seen:
+                    continue
+                seen.add(chunk)
+                terms.append(chunk)
+                continue
+
+            # For long CJK chunks, add compact n-grams to avoid relying on full-sentence match.
+            for n in (2, 3, 4):
+                for i in range(0, len(chunk) - n + 1):
+                    token = chunk[i : i + n]
+                    if token in zh_stop_terms or token in seen:
+                        continue
+                    seen.add(token)
+                    terms.append(token)
+                    if len(terms) >= 64:
+                        return terms
+        return terms
+
+    def _count_query_term_overlap(self, content: str, query_terms: List[str]) -> int:
+        """Count how many extracted query terms appear in memory content."""
+        if not query_terms:
+            return 0
+        raw_content = str(content or "")
+        lower_content = raw_content.lower()
+        normalized_content = self._normalize_match_text(raw_content)
+        overlap = 0
+        for term in query_terms:
+            if not term:
+                continue
+            if term.isascii():
+                if term.lower() in lower_content:
+                    overlap += 1
+                continue
+            term_norm = self._normalize_match_text(term)
+            if term in raw_content or (term_norm and term_norm in normalized_content):
+                overlap += 1
+        return overlap
+
+    def _is_context_memory_relevant(self, memory: Any, query_text: str) -> bool:
+        """Guard memory injection with a lightweight topic-relevance check."""
+        content = self._extract_content(memory)
+        if not content:
+            return False
+
+        similarity = self._extract_similarity_score(memory)
+        score = float(similarity) if similarity is not None else 0.0
+        # Keep only very high-confidence semantic matches without lexical overlap.
+        if score >= 0.86:
+            return True
+
+        query_terms = self._extract_query_terms(query_text)
+        if not query_terms:
+            return score >= 0.72
+
+        overlap_count = self._count_query_term_overlap(content, query_terms)
+        if overlap_count >= 2:
+            return True
+        if overlap_count >= 1 and score >= 0.4:
+            return True
+
+        # Avoid off-topic context bleed from loosely similar past conversations.
+        return False
+
+    def _filter_context_memories(
+        self,
+        memories: List[Any],
+        query_text: str,
+    ) -> Tuple[List[Any], int]:
+        """Filter out low-relevance memories before prompt injection."""
+        if not memories:
+            return [], 0
+        kept: List[Any] = []
+        filtered_out = 0
+        for item in memories:
+            if self._is_context_memory_relevant(item, query_text):
+                kept.append(item)
+            else:
+                filtered_out += 1
+        return kept, filtered_out
+
+    @staticmethod
     def _trim_text(text: Optional[str], max_chars: int = 120) -> str:
         """Trim text to a safe debug preview length."""
         if not text:
@@ -134,6 +253,16 @@ class AgentExecutor:
         if top_k <= 0:
             top_k = 3
 
+        memory_min_similarity: Optional[float] = None
+        if knowledge_min_relevance_score is not None:
+            try:
+                memory_min_similarity = max(
+                    0.0,
+                    min(float(knowledge_min_relevance_score), 1.0),
+                )
+            except (TypeError, ValueError):
+                memory_min_similarity = None
+
         config = getattr(agent, "config", None)
         access_level = self._normalize_access_level(getattr(config, "access_level", None))
         allowed_memory = self._normalize_string_list(getattr(config, "allowed_memory", None))
@@ -152,8 +281,11 @@ class AgentExecutor:
             "scopes": memory_scopes,
             "agent": {
                 "enabled": "agent" in memory_scopes,
-                "filter": f"agent_id={context.agent_id}",
+                "filter": f"agent_id={context.agent_id}, user_id={context.user_id}",
+                "min_similarity": memory_min_similarity,
+                "pre_filter_hit_count": 0,
                 "hit_count": 0,
+                "filtered_out_count": 0,
                 "hits": [],
                 "fallback_used": False,
                 "fallback_hit_count": 0,
@@ -163,7 +295,10 @@ class AgentExecutor:
             "company": {
                 "enabled": "company" in memory_scopes,
                 "filter": f"user_id={context.user_id}, memory_type=company",
+                "min_similarity": memory_min_similarity,
+                "pre_filter_hit_count": 0,
                 "hit_count": 0,
+                "filtered_out_count": 0,
                 "hits": [],
                 "fallback_used": False,
                 "fallback_hit_count": 0,
@@ -173,7 +308,10 @@ class AgentExecutor:
             "user_context": {
                 "enabled": "user_context" in memory_scopes,
                 "filter": f"user_id={context.user_id}, memory_type=user_context",
+                "min_similarity": memory_min_similarity,
+                "pre_filter_hit_count": 0,
                 "hit_count": 0,
+                "filtered_out_count": 0,
                 "hits": [],
                 "fallback_used": False,
                 "fallback_hit_count": 0,
@@ -186,8 +324,10 @@ class AgentExecutor:
             try:
                 agent_memories = self.memory_interface.retrieve_agent_memory(
                     agent_id=context.agent_id,
+                    user_id=context.user_id,
                     query=context.task_description,
                     top_k=top_k,
+                    min_similarity=memory_min_similarity,
                 )
                 logger.debug(f"Retrieved {len(agent_memories)} agent memories")
             except Exception as mem_error:
@@ -202,6 +342,7 @@ class AgentExecutor:
                     user_id=context.user_id,
                     query=context.task_description,
                     top_k=top_k,
+                    min_similarity=memory_min_similarity,
                 )
                 logger.debug(f"Retrieved {len(company_memories)} company memories")
             except Exception as mem_error:
@@ -217,6 +358,7 @@ class AgentExecutor:
                     memory_type=MemoryType.USER_CONTEXT,
                     user_id=str(context.user_id),
                     top_k=top_k,
+                    min_similarity=memory_min_similarity,
                 )
                 user_context_memories = self.memory_interface.memory_system.retrieve_memories(
                     user_context_query
@@ -392,6 +534,24 @@ class AgentExecutor:
             "knowledge_snippets": knowledge_snippets,
             "knowledge_hits": knowledge_hits,
         }
+
+        memory_debug["agent"]["pre_filter_hit_count"] = len(agent_memories)
+        memory_debug["company"]["pre_filter_hit_count"] = len(company_memories)
+        memory_debug["user_context"]["pre_filter_hit_count"] = len(user_context_memories)
+
+        agent_memories, agent_filtered = self._filter_context_memories(
+            agent_memories, context.task_description
+        )
+        company_memories, company_filtered = self._filter_context_memories(
+            company_memories, context.task_description
+        )
+        user_context_memories, user_context_filtered = self._filter_context_memories(
+            user_context_memories, context.task_description
+        )
+
+        memory_debug["agent"]["filtered_out_count"] = agent_filtered
+        memory_debug["company"]["filtered_out_count"] = company_filtered
+        memory_debug["user_context"]["filtered_out_count"] = user_context_filtered
 
         for memory in agent_memories:
             content = self._extract_content(memory)

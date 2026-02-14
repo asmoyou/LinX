@@ -112,8 +112,14 @@ def mock_repository():
     repo.mark_vector_failed.return_value = _make_record_data(
         record_id=42, agent_id="agent123", vector_status="failed"
     )
+    repo.update_record.return_value = _make_record_data(record_id=42, agent_id="agent123")
+    repo.find_recent_by_content_hash.return_value = None
+    repo.get_by_milvus_id.return_value = None
+    repo.clear_milvus_link.return_value = _make_record_data(record_id=42, agent_id="agent123")
+    repo.evict_older_than.return_value = []
     repo.count_memories.return_value = 0
     repo.evict_oldest.return_value = []
+    repo.evict_low_value.return_value = []
     return repo
 
 
@@ -374,42 +380,174 @@ class TestMemoryStorage:
         assert memory.timestamp is not None
         assert isinstance(memory.timestamp, datetime)
 
+    def test_store_memory_structures_auto_generated_user_context(
+        self, memory_system, mock_repository
+    ):
+        """Auto-generated user context should be stored as structured fact content."""
+        memory = MemoryItem(
+            content="User discussed: prefers dark mode\nTopic: dashboard settings",
+            memory_type=MemoryType.USER_CONTEXT,
+            user_id="user123",
+            metadata={"auto_generated": True, "source": "conversation"},
+        )
+
+        memory_system.store_memory(memory)
+
+        created_item = mock_repository.create.call_args[0][0]
+        assert "user.topic.latest" in created_item.content
+        assert created_item.metadata.get("fact_version") == "v2"
+        assert created_item.metadata.get("content_hash")
+        assert isinstance(created_item.metadata.get("facts"), list)
+
+    def test_extract_heuristic_facts_avoids_user_profile_from_agent_result(self, memory_system):
+        """Agent-result self-intro should not be misclassified as user profile."""
+        memory = MemoryItem(
+            content=(
+                "[Agent: 小新客服]\n"
+                "Task: PostgreSQL 索引怎么优化？\n"
+                "Result: 您好，我是新航物联网小新，很高兴为您服务。"
+            ),
+            memory_type=MemoryType.AGENT,
+            agent_id="agent123",
+            user_id="user123",
+        )
+
+        facts = memory_system._extract_heuristic_facts(memory)
+        fact_keys = [str(f.get("key") or "") for f in facts]
+
+        assert "agent.identity.name" in fact_keys
+        assert "interaction.task.latest" in fact_keys
+        assert not any(key.startswith("user.profile.") for key in fact_keys)
+
+    def test_collect_facts_filters_model_facts_by_memory_type(self, memory_system):
+        """Agent memories should drop task-domain model facts."""
+        memory = MemoryItem(
+            content="[Agent: 小新客服]\nTask: PostgreSQL 索引怎么优化？\nResult: 这是优化说明。",
+            memory_type=MemoryType.AGENT,
+            agent_id="agent123",
+            user_id="user123",
+        )
+
+        with patch.object(
+            memory_system,
+            "_extract_model_facts",
+            return_value=[
+                {
+                    "key": "topic.domain",
+                    "value": "数据库索引优化",
+                    "category": "domain",
+                    "importance": 1.0,
+                    "confidence": 1.0,
+                },
+                {
+                    "key": "interaction.task.latest",
+                    "value": "PostgreSQL 索引怎么优化？",
+                    "category": "task",
+                    "importance": 0.8,
+                    "confidence": 0.9,
+                },
+                {
+                    "key": "agent.name",
+                    "value": "小新客服",
+                    "category": "agent",
+                    "importance": 0.7,
+                    "confidence": 0.9,
+                },
+            ],
+        ):
+            facts, _ = memory_system._collect_facts(memory)
+
+        fact_keys = [str(f.get("key") or "") for f in facts]
+        assert "topic.domain" not in fact_keys
+        assert "agent.name" not in fact_keys
+        assert all(key.startswith("agent.") or key.startswith("interaction.") for key in fact_keys)
+
+    def test_fact_grounding_rejects_unsupported_user_inference(self, memory_system):
+        """Grounding helper should reject inferred values absent from source text."""
+        content = "User discussed: 我在学摄影，最近主要拍夜景，想提升构图。"
+
+        assert memory_system._is_fact_value_grounded_in_content(content, "摄影")
+        assert not memory_system._is_fact_value_grounded_in_content(
+            content,
+            "每周参加摄影课程",
+        )
+
+    def test_store_memory_merges_exact_duplicate_instead_of_insert(
+        self, memory_system, mock_repository
+    ):
+        """Exact duplicate should refresh existing memory instead of creating a new row."""
+        existing = _make_record_data(
+            record_id=7,
+            milvus_id=101,
+            memory_type=MemoryType.AGENT,
+            content="interaction.task.latest = summarize q4 report",
+            agent_id="agent123",
+            user_id="user123",
+            vector_status="synced",
+        )
+        existing.metadata = {
+            "content_hash": "same-hash",
+            "facts": [
+                {
+                    "key": "interaction.task.latest",
+                    "value": "summarize q4 report",
+                    "category": "task",
+                    "importance": 0.6,
+                    "confidence": 0.8,
+                    "source": "heuristic",
+                }
+            ],
+            "fact_keys": ["interaction.task.latest"],
+            "importance_score": 0.6,
+            "mention_count": 1,
+            "memory_tier": "core",
+        }
+        mock_repository.find_recent_by_content_hash.return_value = existing
+        mock_repository.update_record.return_value = existing
+
+        memory = MemoryItem(
+            content="Task: Summarize Q4 report\nResult: Completed summary",
+            memory_type=MemoryType.AGENT,
+            agent_id="agent123",
+            user_id="user123",
+        )
+
+        result_id = memory_system.store_memory(memory)
+
+        assert result_id == 7
+        mock_repository.create.assert_not_called()
+        mock_repository.update_record.assert_called()
+
 
 class TestMemoryLimits:
     """Tests for memory count limit enforcement."""
 
-    def test_store_memory_enforces_agent_limit(
-        self, memory_system, mock_repository
-    ):
+    def test_store_memory_enforces_agent_limit(self, memory_system, mock_repository):
         """Test that agent memory limit triggers eviction."""
         mock_repository.count_memories.return_value = 10000  # At limit
 
-        evicted_record = _make_record_data(
-            record_id=1, milvus_id=50, agent_id="agent123"
-        )
-        mock_repository.evict_oldest.return_value = [evicted_record]
+        evicted_record = _make_record_data(record_id=1, milvus_id=50, agent_id="agent123")
+        mock_repository.evict_low_value.return_value = [evicted_record]
 
         memory = MemoryItem(
             content="New agent memory", memory_type=MemoryType.AGENT, agent_id="agent123"
         )
         memory_system.store_memory(memory)
 
-        mock_repository.evict_oldest.assert_called_once()
-        call_kwargs = mock_repository.evict_oldest.call_args.kwargs
+        mock_repository.evict_low_value.assert_called_once()
+        call_kwargs = mock_repository.evict_low_value.call_args.kwargs
         assert call_kwargs["memory_type"] == MemoryType.AGENT
         assert call_kwargs["agent_id"] == "agent123"
         assert call_kwargs["count"] == 1
 
-    def test_store_memory_enforces_user_context_limit(
-        self, memory_system, mock_repository
-    ):
+    def test_store_memory_enforces_user_context_limit(self, memory_system, mock_repository):
         """Test that user context memory limit triggers eviction."""
         mock_repository.count_memories.return_value = 5000  # At limit
 
         evicted_record = _make_record_data(
             record_id=2, milvus_id=51, memory_type=MemoryType.USER_CONTEXT, user_id="user123"
         )
-        mock_repository.evict_oldest.return_value = [evicted_record]
+        mock_repository.evict_low_value.return_value = [evicted_record]
         mock_repository.create.return_value = _make_record_data(
             record_id=60, memory_type=MemoryType.USER_CONTEXT, user_id="user123"
         )
@@ -419,14 +557,12 @@ class TestMemoryLimits:
         )
         memory_system.store_memory(memory)
 
-        mock_repository.evict_oldest.assert_called_once()
-        call_kwargs = mock_repository.evict_oldest.call_args.kwargs
+        mock_repository.evict_low_value.assert_called_once()
+        call_kwargs = mock_repository.evict_low_value.call_args.kwargs
         assert call_kwargs["memory_type"] == MemoryType.USER_CONTEXT
         assert call_kwargs["user_id"] == "user123"
 
-    def test_no_eviction_below_limit(
-        self, memory_system, mock_repository
-    ):
+    def test_no_eviction_below_limit(self, memory_system, mock_repository):
         """Test that no eviction happens when below limit."""
         mock_repository.count_memories.return_value = 100  # Well below limit
 
@@ -435,7 +571,7 @@ class TestMemoryLimits:
         )
         memory_system.store_memory(memory)
 
-        mock_repository.evict_oldest.assert_not_called()
+        mock_repository.evict_low_value.assert_not_called()
 
 
 class TestMemoryRetrieval:
@@ -522,6 +658,29 @@ class TestMemoryRetrieval:
         assert len(results) == 2
         # Results should be ranked (recent + similar should rank higher)
         assert all(hasattr(r, "similarity_score") for r in results)
+
+    def test_rank_results_boosts_core_high_importance(self, memory_system):
+        """Core + high-importance memories should rank above archival peers."""
+        now = datetime.utcnow()
+        low = MemoryItem(
+            content="archival memory",
+            memory_type=MemoryType.USER_CONTEXT,
+            user_id="user123",
+            timestamp=now,
+            metadata={"importance_score": 0.1, "memory_tier": "archival", "mention_count": 1},
+            similarity_score=0.7,
+        )
+        high = MemoryItem(
+            content="core memory",
+            memory_type=MemoryType.USER_CONTEXT,
+            user_id="user123",
+            timestamp=now,
+            metadata={"importance_score": 0.95, "memory_tier": "core", "mention_count": 6},
+            similarity_score=0.7,
+        )
+
+        ranked = memory_system._rank_results([low, high])
+        assert ranked[0].content == "core memory"
 
     def test_retrieve_memories_respects_explicit_zero_min_similarity(
         self, memory_system, mock_milvus_connection

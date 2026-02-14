@@ -45,6 +45,15 @@ type MemoryConfigFormState = {
     milvus_metric_type: string;
     milvus_nprobe: number;
   };
+  fact_extraction: {
+    enabled: boolean;
+    model_enabled: boolean;
+    provider: string;
+    model: string;
+    timeout_seconds: number;
+    max_facts: number;
+    failure_backoff_seconds: number;
+  };
   runtime: {
     collection_retry_attempts: number;
     collection_retry_delay_seconds: number;
@@ -76,6 +85,15 @@ const DEFAULT_FORM_STATE: MemoryConfigFormState = {
     milvus_metric_type: "L2",
     milvus_nprobe: 10,
   },
+  fact_extraction: {
+    enabled: true,
+    model_enabled: false,
+    provider: "",
+    model: "",
+    timeout_seconds: 4,
+    max_facts: 8,
+    failure_backoff_seconds: 60,
+  },
   runtime: {
     collection_retry_attempts: 3,
     collection_retry_delay_seconds: 0.35,
@@ -89,11 +107,13 @@ const EMBEDDING_MODEL_NAME_PATTERN =
   /embed|embedding|bge|m3e|e5|gte|voyage|jina-embeddings/i;
 const RERANK_MODEL_NAME_PATTERN =
   /rerank|reranker|bge-reranker|jina-reranker|gte-rerank|cohere-rerank|bce-reranker/i;
+const CHAT_MODEL_NAME_PATTERN = /chat|instruct|gpt|qwen|llama|claude|deepseek/i;
 
-type ModelType = "embedding" | "rerank";
+type ModelType = "embedding" | "rerank" | "generation";
 type ProviderTypedModels = {
   embedding: string[];
   rerank: string[];
+  generation: string[];
 };
 
 const asObject = (value: unknown): Record<string, unknown> => {
@@ -143,8 +163,15 @@ const selectModelsByType = (
   metadataModels: Record<string, ModelMetadata>,
   modelType: ModelType,
 ): string[] => {
+  const generationExcludedTypes = new Set(["embedding", "rerank", "image_generation"]);
   const metadataMatches = Object.entries(metadataModels)
-    .filter(([, metadata]) => metadata.model_type?.toLowerCase() === modelType)
+    .filter(([, metadata]) => {
+      const normalized = metadata.model_type?.toLowerCase();
+      if (modelType === "generation") {
+        return normalized ? !generationExcludedTypes.has(normalized) : true;
+      }
+      return normalized === modelType;
+    })
     .map(([modelName]) => modelName);
 
   if (metadataMatches.length > 0) {
@@ -156,7 +183,9 @@ const selectModelsByType = (
   const matcher =
     modelType === "embedding"
       ? EMBEDDING_MODEL_NAME_PATTERN
-      : RERANK_MODEL_NAME_PATTERN;
+      : modelType === "rerank"
+        ? RERANK_MODEL_NAME_PATTERN
+        : CHAT_MODEL_NAME_PATTERN;
   const heuristicMatches = providerModels.filter((model) => matcher.test(model));
   if (heuristicMatches.length > 0) {
     return dedupeModels(heuristicMatches);
@@ -170,6 +199,7 @@ const toFormState = (config: MemoryConfig | null): MemoryConfigFormState => {
     return {
       embedding: { ...DEFAULT_FORM_STATE.embedding },
       retrieval: { ...DEFAULT_FORM_STATE.retrieval },
+      fact_extraction: { ...DEFAULT_FORM_STATE.fact_extraction },
       runtime: { ...DEFAULT_FORM_STATE.runtime },
     };
   }
@@ -208,6 +238,18 @@ const toFormState = (config: MemoryConfig | null): MemoryConfigFormState => {
       rerank_doc_max_chars: asNumber(config.retrieval?.rerank_doc_max_chars, 1200),
       milvus_metric_type: asString(retrievalMilvus.metric_type, "L2"),
       milvus_nprobe: asNumber(retrievalMilvus.nprobe, 10),
+    },
+    fact_extraction: {
+      enabled: asBoolean(config.fact_extraction?.enabled, true),
+      model_enabled: asBoolean(config.fact_extraction?.model_enabled, false),
+      provider: asString(config.fact_extraction?.provider, ""),
+      model: asString(config.fact_extraction?.model, ""),
+      timeout_seconds: asNumber(config.fact_extraction?.timeout_seconds, 4),
+      max_facts: asNumber(config.fact_extraction?.max_facts, 8),
+      failure_backoff_seconds: asNumber(
+        config.fact_extraction?.failure_backoff_seconds,
+        60,
+      ),
     },
     runtime: {
       collection_retry_attempts: asNumber(runtime.collection_retry_attempts, 3),
@@ -248,6 +290,15 @@ const toUpdatePayload = (
         metric_type: formState.retrieval.milvus_metric_type.trim() || "L2",
         nprobe: Math.max(1, Math.floor(formState.retrieval.milvus_nprobe)),
       },
+    },
+    fact_extraction: {
+      enabled: formState.fact_extraction.enabled,
+      model_enabled: formState.fact_extraction.model_enabled,
+      provider: formState.fact_extraction.provider.trim(),
+      model: formState.fact_extraction.model.trim(),
+      timeout_seconds: Math.max(0.5, formState.fact_extraction.timeout_seconds),
+      max_facts: Math.max(1, Math.floor(formState.fact_extraction.max_facts)),
+      failure_backoff_seconds: Math.max(1, formState.fact_extraction.failure_backoff_seconds),
     },
     runtime: {
       collection_retry_attempts: Math.max(
@@ -357,6 +408,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
           [provider]: {
             embedding: [],
             rerank: [],
+            generation: [],
           },
         }));
         return;
@@ -379,6 +431,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
               "embedding",
             ),
             rerank: selectModelsByType(providerModels, modelsMetadata, "rerank"),
+            generation: selectModelsByType(providerModels, modelsMetadata, "generation"),
           },
         }));
       } catch {
@@ -387,6 +440,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
           [provider]: {
             embedding: selectModelsByType(providerModels, {}, "embedding"),
             rerank: selectModelsByType(providerModels, {}, "rerank"),
+            generation: selectModelsByType(providerModels, {}, "generation"),
           },
         }));
       } finally {
@@ -413,6 +467,13 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     void ensureProviderTypedModels(formState.retrieval.rerank_provider);
   }, [ensureProviderTypedModels, formState.retrieval.rerank_provider]);
 
+  useEffect(() => {
+    if (!formState.fact_extraction.provider) {
+      return;
+    }
+    void ensureProviderTypedModels(formState.fact_extraction.provider);
+  }, [ensureProviderTypedModels, formState.fact_extraction.provider]);
+
   const embeddingModels = useMemo(() => {
     if (!formState.embedding.provider) {
       return [];
@@ -427,6 +488,13 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     return typedModelsByProvider[formState.retrieval.rerank_provider]?.rerank || [];
   }, [formState.retrieval.rerank_provider, typedModelsByProvider]);
 
+  const factExtractionModels = useMemo(() => {
+    if (!formState.fact_extraction.provider) {
+      return [];
+    }
+    return typedModelsByProvider[formState.fact_extraction.provider]?.generation || [];
+  }, [formState.fact_extraction.provider, typedModelsByProvider]);
+
   const isEmbeddingModelsLoading = Boolean(
     formState.embedding.provider &&
       loadingModelMetadataByProvider[formState.embedding.provider],
@@ -435,6 +503,10 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     formState.retrieval.rerank_provider &&
       loadingModelMetadataByProvider[formState.retrieval.rerank_provider],
   );
+  const isFactExtractionModelsLoading = Boolean(
+    formState.fact_extraction.provider &&
+      loadingModelMetadataByProvider[formState.fact_extraction.provider],
+  );
 
   const embeddingModelMissing =
     Boolean(formState.embedding.model) &&
@@ -442,11 +514,15 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
   const rerankModelMissing =
     Boolean(formState.retrieval.rerank_model) &&
     !rerankModels.includes(formState.retrieval.rerank_model);
+  const factExtractionModelMissing =
+    Boolean(formState.fact_extraction.model) &&
+    !factExtractionModels.includes(formState.fact_extraction.model);
 
   const applyRecommended = () => {
     const recommendedRoot = asObject(config?.recommended);
     const recommendedEmbedding = asObject(recommendedRoot.embedding);
     const recommendedRetrieval = asObject(recommendedRoot.retrieval);
+    const recommendedFactExtraction = asObject(recommendedRoot.fact_extraction);
     const recommendedRuntime = asObject(recommendedRoot.runtime);
 
     setFormState((prev) => ({
@@ -514,6 +590,31 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
         milvus_nprobe: asNumber(
           asObject(recommendedRetrieval.milvus).nprobe,
           prev.retrieval.milvus_nprobe,
+        ),
+      },
+      fact_extraction: {
+        ...prev.fact_extraction,
+        enabled: asBoolean(recommendedFactExtraction.enabled, prev.fact_extraction.enabled),
+        model_enabled: asBoolean(
+          recommendedFactExtraction.model_enabled,
+          prev.fact_extraction.model_enabled,
+        ),
+        provider: asString(
+          recommendedFactExtraction.provider,
+          prev.fact_extraction.provider,
+        ),
+        model: asString(recommendedFactExtraction.model, prev.fact_extraction.model),
+        timeout_seconds: asNumber(
+          recommendedFactExtraction.timeout_seconds,
+          prev.fact_extraction.timeout_seconds,
+        ),
+        max_facts: asNumber(
+          recommendedFactExtraction.max_facts,
+          prev.fact_extraction.max_facts,
+        ),
+        failure_backoff_seconds: asNumber(
+          recommendedFactExtraction.failure_backoff_seconds,
+          prev.fact_extraction.failure_backoff_seconds,
         ),
       },
       runtime: {
@@ -586,6 +687,19 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     }));
   };
 
+  const handleFactExtractionProviderChange = (provider: string) => {
+    void ensureProviderTypedModels(provider);
+    const candidates = typedModelsByProvider[provider]?.generation || [];
+    setFormState((prev) => ({
+      ...prev,
+      fact_extraction: {
+        ...prev.fact_extraction,
+        provider,
+        model: candidates[0] || "",
+      },
+    }));
+  };
+
   useEffect(() => {
     const provider = formState.embedding.provider;
     if (!provider || embeddingModels.length === 0) {
@@ -625,6 +739,30 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     formState.retrieval.rerank_model,
     formState.retrieval.rerank_provider,
     rerankModels,
+  ]);
+
+  useEffect(() => {
+    const provider = formState.fact_extraction.provider;
+    if (!provider || factExtractionModels.length === 0) {
+      return;
+    }
+    if (
+      formState.fact_extraction.model &&
+      factExtractionModels.includes(formState.fact_extraction.model)
+    ) {
+      return;
+    }
+    setFormState((prev) => ({
+      ...prev,
+      fact_extraction: {
+        ...prev.fact_extraction,
+        model: factExtractionModels[0] || "",
+      },
+    }));
+  }, [
+    factExtractionModels,
+    formState.fact_extraction.model,
+    formState.fact_extraction.provider,
   ]);
 
   if (!isOpen) {
@@ -1325,6 +1463,223 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
               <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
                 {t("memory.config.effective", "Effective")}: {config?.retrieval?.rerank_provider || "-"} / {config?.retrieval?.rerank_model || "-"}
                 {` (${t("memory.config.source", "Source")}: ${config?.retrieval?.sources?.rerank_provider || "-"})`}
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-zinc-200/80 dark:border-zinc-700/80 bg-white/60 dark:bg-zinc-900/50 p-4">
+              <div className="mb-3">
+                <h3 className="text-base font-semibold text-zinc-800 dark:text-zinc-100">
+                  {t("memory.config.factExtraction", "Fact Extraction")}
+                </h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                  {t(
+                    "memory.config.factExtractionHint",
+                    "Extract structured facts and deduplicate conversational memory noise.",
+                  )}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={formState.fact_extraction.enabled}
+                      onChange={(event) =>
+                        setFormState((prev) => ({
+                          ...prev,
+                          fact_extraction: {
+                            ...prev.fact_extraction,
+                            enabled: event.target.checked,
+                          },
+                        }))
+                      }
+                      className="rounded"
+                    />
+                    {t("memory.config.factExtractionEnabled", "Enable fact extraction")}
+                  </label>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                    {t(
+                      "memory.config.factExtractionEnabledHint",
+                      "Enable rule-based extraction and dedupe pipeline.",
+                    )}
+                  </p>
+                </div>
+
+                <div>
+                  <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={formState.fact_extraction.model_enabled}
+                      onChange={(event) =>
+                        setFormState((prev) => ({
+                          ...prev,
+                          fact_extraction: {
+                            ...prev.fact_extraction,
+                            model_enabled: event.target.checked,
+                          },
+                        }))
+                      }
+                      className="rounded"
+                    />
+                    {t("memory.config.factExtractionModel", "Enable model extraction")}
+                  </label>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                    {t(
+                      "memory.config.factExtractionModelHint",
+                      "Call LLM to enrich facts on top of rule-based extraction.",
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                  <span className="block mb-1">
+                    {t("memory.config.provider", "Provider")}
+                  </span>
+                  <select
+                    value={formState.fact_extraction.provider}
+                    onChange={(event) =>
+                      handleFactExtractionProviderChange(event.target.value)
+                    }
+                    className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                  >
+                    <option value="">{t("memory.config.none", "None")}</option>
+                    {providerOptions.map((provider) => (
+                      <option key={provider} value={provider}>
+                        {provider}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                  <span className="block mb-1">
+                    {t("memory.config.factExtractionMaxFacts", "Max Facts")}
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={formState.fact_extraction.max_facts}
+                    onChange={(event) =>
+                      setFormState((prev) => ({
+                        ...prev,
+                        fact_extraction: {
+                          ...prev.fact_extraction,
+                          max_facts: asNumber(
+                            event.target.value,
+                            prev.fact_extraction.max_facts,
+                          ),
+                        },
+                      }))
+                    }
+                    className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                  />
+                </label>
+              </div>
+
+              <label className="block text-sm text-zinc-700 dark:text-zinc-300 mt-3">
+                <span className="block mb-1">
+                  {t("memory.config.model", "Model")}
+                </span>
+                <select
+                  value={formState.fact_extraction.model}
+                  onChange={(event) =>
+                    setFormState((prev) => ({
+                      ...prev,
+                      fact_extraction: {
+                        ...prev.fact_extraction,
+                        model: event.target.value,
+                      },
+                    }))
+                  }
+                  disabled={!formState.fact_extraction.provider}
+                  className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                >
+                  {!formState.fact_extraction.provider ? (
+                    <option value="">
+                      {t("memory.config.selectProviderFirst", "Select provider first")}
+                    </option>
+                  ) : isFactExtractionModelsLoading ? (
+                    <option value="">
+                      {t("memory.config.loadingModels", "Loading models")}
+                    </option>
+                  ) : factExtractionModels.length === 0 ? (
+                    <option value="">
+                      {t("memory.config.noModels", "No models available")}
+                    </option>
+                  ) : null}
+                  {factExtractionModelMissing && (
+                    <option value={formState.fact_extraction.model}>
+                      {t("memory.config.currentModel", "Current")}: {formState.fact_extraction.model}
+                    </option>
+                  )}
+                  {factExtractionModels.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                  <span className="block mb-1">
+                    {t("memory.config.factExtractionTimeout", "Request Timeout (s)")}
+                  </span>
+                  <input
+                    type="number"
+                    min={0.5}
+                    step="0.1"
+                    value={formState.fact_extraction.timeout_seconds}
+                    onChange={(event) =>
+                      setFormState((prev) => ({
+                        ...prev,
+                        fact_extraction: {
+                          ...prev.fact_extraction,
+                          timeout_seconds: asNumber(
+                            event.target.value,
+                            prev.fact_extraction.timeout_seconds,
+                          ),
+                        },
+                      }))
+                    }
+                    className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                  />
+                </label>
+
+                <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                  <span className="block mb-1">
+                    {t(
+                      "memory.config.factExtractionBackoff",
+                      "Failure Backoff (s)",
+                    )}
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={formState.fact_extraction.failure_backoff_seconds}
+                    onChange={(event) =>
+                      setFormState((prev) => ({
+                        ...prev,
+                        fact_extraction: {
+                          ...prev.fact_extraction,
+                          failure_backoff_seconds: asNumber(
+                            event.target.value,
+                            prev.fact_extraction.failure_backoff_seconds,
+                          ),
+                        },
+                      }))
+                    }
+                    className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                  />
+                </label>
+              </div>
+
+              <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                {t("memory.config.effective", "Effective")}: {config?.fact_extraction?.effective?.provider || "-"} / {config?.fact_extraction?.effective?.model || "-"}
+                {` (${t("memory.config.source", "Source")}: ${config?.fact_extraction?.sources?.provider || "-"})`}
               </p>
             </div>
           </div>

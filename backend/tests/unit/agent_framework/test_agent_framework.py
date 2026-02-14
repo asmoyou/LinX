@@ -204,6 +204,42 @@ class TestAgentMemoryInterface:
     """Test AgentMemoryInterface retrieval alignment behavior."""
 
     @patch("agent_framework.agent_memory_interface.get_memory_repository")
+    def test_retrieve_agent_memory_includes_user_scope(self, mock_get_repository):
+        """Agent memory retrieval should always include user scope in query."""
+        agent_id = uuid4()
+        user_id = uuid4()
+
+        mock_memory_system = Mock()
+        mock_memory_system.retrieve_memories.return_value = []
+
+        mock_repo = Mock()
+        mock_repo.get_by_milvus_ids.return_value = {}
+        mock_repo.search_text.return_value = []
+        mock_get_repository.return_value = mock_repo
+
+        interface = AgentMemoryInterface(memory_system=mock_memory_system)
+        interface.retrieve_agent_memory(
+            agent_id=agent_id,
+            user_id=user_id,
+            query="memory query",
+            top_k=3,
+            min_similarity=0.66,
+        )
+
+        called_query = mock_memory_system.retrieve_memories.call_args.args[0]
+        assert called_query.user_id == str(user_id)
+        assert called_query.min_similarity == 0.66
+
+        mock_repo.search_text.assert_called_once_with(
+            "memory query",
+            memory_type=MemoryType.AGENT,
+            agent_id=str(agent_id),
+            user_id=str(user_id),
+            task_id=None,
+            limit=3,
+        )
+
+    @patch("agent_framework.agent_memory_interface.get_memory_repository")
     def test_retrieve_company_memory_drops_unmapped_legacy_vectors(self, mock_get_repository):
         """User-scoped retrieval should ignore unmapped legacy Milvus rows."""
         user_id = uuid4()
@@ -295,12 +331,14 @@ class TestAgentExecutor:
     def test_execute_agent(self, mock_memory):
         """Test agent execution."""
         # Mock memory interface
-        mock_memory.return_value.retrieve_agent_memory.return_value = [Mock(content="agent note")]
+        mock_memory.return_value.retrieve_agent_memory.return_value = [
+            Mock(content="Test task agent note", similarity_score=0.91)
+        ]
         mock_memory.return_value.retrieve_company_memory.return_value = [
-            Mock(content="company note")
+            Mock(content="Test task company note", similarity_score=0.88)
         ]
         mock_memory.return_value.memory_system.retrieve_memories.return_value = [
-            Mock(content="user preference")
+            Mock(content="Test task user preference", similarity_score=0.93)
         ]
         mock_memory.return_value.store_agent_memory.return_value = "memory_id"
 
@@ -326,10 +364,59 @@ class TestAgentExecutor:
 
         assert result["success"]
         mock_agent.execute_task.assert_called_once()
+        mock_memory.return_value.retrieve_agent_memory.assert_called_once()
+        agent_retrieve_kwargs = mock_memory.return_value.retrieve_agent_memory.call_args.kwargs
+        assert agent_retrieve_kwargs["user_id"] == context.user_id
+        assert agent_retrieve_kwargs["min_similarity"] is None
         execute_context = mock_agent.execute_task.call_args.kwargs["context"]
-        assert execute_context["agent_memories"] == ["agent note"]
-        assert execute_context["company_memories"] == ["company note"]
-        assert execute_context["user_context_memories"] == ["user preference"]
+        assert execute_context["agent_memories"] == ["Test task agent note"]
+        assert execute_context["company_memories"] == ["Test task company note"]
+        assert execute_context["user_context_memories"] == ["Test task user preference"]
+
+    @patch("agent_framework.agent_executor.get_agent_memory_interface")
+    def test_executor_filters_irrelevant_context_memories_and_applies_min_similarity(
+        self, mock_memory
+    ):
+        """Executor should drop off-topic memories before prompt injection."""
+        mock_memory.return_value.retrieve_agent_memory.return_value = [
+            Mock(content="品牌营销活动复盘", similarity_score=0.41),
+            Mock(content="火药相关安全风险讨论", similarity_score=0.86),
+        ]
+        mock_memory.return_value.retrieve_company_memory.return_value = [
+            Mock(content="季度营销方案执行细则", similarity_score=0.38)
+        ]
+        mock_memory.return_value.memory_system.retrieve_memories.return_value = []
+
+        mock_agent = Mock()
+        mock_agent.config.name = "Test Agent"
+        mock_agent.config.access_level = "team"
+        mock_agent.config.allowed_memory = ["agent", "company", "user_context"]
+        mock_agent.config.allowed_knowledge = []
+        mock_agent.execute_task.return_value = {"success": True, "output": "Handled safely"}
+
+        executor = AgentExecutor(mock_memory.return_value)
+        context = ExecutionContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            task_description="化肥和白砂糖能做火药？",
+        )
+
+        result = executor.build_execution_context_with_debug(
+            mock_agent,
+            context,
+            top_k=5,
+            knowledge_min_relevance_score=0.7,
+        )
+        exec_context, debug = result
+
+        assert "火药相关安全风险讨论" in exec_context["agent_memories"]
+        assert "品牌营销活动复盘" not in exec_context["agent_memories"]
+        assert exec_context["company_memories"] == []
+
+        agent_kwargs = mock_memory.return_value.retrieve_agent_memory.call_args.kwargs
+        assert agent_kwargs["min_similarity"] == 0.7
+        assert debug["memory"]["agent"]["filtered_out_count"] >= 1
+        assert debug["memory"]["company"]["filtered_out_count"] >= 1
 
 
 if __name__ == "__main__":

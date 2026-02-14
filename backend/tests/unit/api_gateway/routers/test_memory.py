@@ -514,6 +514,16 @@ class TestMemoryConfigPayload:
                 "rerank_model": "kb-rerank-model",
             }
         }
+        llm_section = {
+            "default_provider": "ollama",
+            "providers": {
+                "ollama": {
+                    "models": {
+                        "chat": "qwen3",
+                    }
+                }
+            },
+        }
 
         with patch(
             "memory_system.embedding_service.resolve_embedding_settings",
@@ -526,7 +536,7 @@ class TestMemoryConfigPayload:
                 "dimension_source": "memory.embedding.dimension",
             },
         ):
-            payload = _build_memory_config_payload(memory_section, kb_section)
+            payload = _build_memory_config_payload(memory_section, kb_section, llm_section)
 
         assert payload["retrieval"]["rerank_provider"] == "memory-rerank-provider"
         assert payload["retrieval"]["rerank_model"] == "memory-rerank-model"
@@ -535,6 +545,9 @@ class TestMemoryConfigPayload:
         )
         assert payload["retrieval"]["sources"]["rerank_model"] == "memory.retrieval.rerank_model"
         assert payload["embedding"]["effective"]["provider"] == "effective-embed-provider"
+        assert payload["fact_extraction"]["effective"]["provider"] == "ollama"
+        assert payload["fact_extraction"]["effective"]["model"] == "qwen3"
+        assert payload["fact_extraction"]["sources"]["provider"] == "llm.default_provider"
         assert payload["runtime"]["collection_retry_attempts"] == 3
         assert payload["runtime"]["search_timeout_seconds"] == 2.0
 
@@ -545,6 +558,12 @@ class TestMemoryConfigPayload:
             "embedding": {},
             "retrieval": {
                 "enable_reranking": True,
+            },
+            "enhanced_memory": {
+                "fact_extraction": {
+                    "provider": "custom-provider",
+                    "model": "custom-model",
+                }
             },
         }
         kb_section = {
@@ -576,6 +595,12 @@ class TestMemoryConfigPayload:
         assert (
             payload["retrieval"]["sources"]["rerank_model"] == "knowledge_base.search.rerank_model"
         )
+        assert payload["fact_extraction"]["effective"]["provider"] == "custom-provider"
+        assert payload["fact_extraction"]["effective"]["model"] == "custom-model"
+        assert (
+            payload["fact_extraction"]["sources"]["provider"]
+            == "memory.enhanced_memory.fact_extraction.provider"
+        )
         assert payload["runtime"]["delete_timeout_seconds"] == 2.0
 
 
@@ -590,6 +615,7 @@ class TestMemoryConfigEndpoints:
         mock_config.get_section.side_effect = lambda section: {
             "memory": {"embedding": {}, "retrieval": {}},
             "knowledge_base": {"search": {}},
+            "llm": {"default_provider": "ollama"},
         }.get(section, {})
 
         payload = {
@@ -604,6 +630,12 @@ class TestMemoryConfigEndpoints:
                 },
             },
             "retrieval": {"top_k": 10, "enable_reranking": True},
+            "fact_extraction": {
+                "enabled": True,
+                "model_enabled": False,
+                "provider": "ollama",
+                "model": "qwen3",
+            },
             "runtime": {"search_timeout_seconds": 2.0},
             "recommended": {},
         }
@@ -616,6 +648,7 @@ class TestMemoryConfigEndpoints:
 
         assert response.embedding["provider"] == "cfg-provider"
         assert response.retrieval["top_k"] == 10
+        assert response.fact_extraction["provider"] == "ollama"
         assert response.runtime["search_timeout_seconds"] == 2.0
 
     @pytest.mark.asyncio
@@ -639,6 +672,14 @@ class TestMemoryConfigEndpoints:
             "memory": {
                 "embedding": {"provider": "old-provider", "model": "old-model"},
                 "retrieval": {"top_k": 10},
+                "enhanced_memory": {
+                    "fact_extraction": {
+                        "enabled": True,
+                        "model_enabled": False,
+                        "provider": "old-fact-provider",
+                        "model": "old-fact-model",
+                    }
+                },
                 "search_timeout_seconds": 2.0,
             },
             "knowledge_base": {
@@ -651,9 +692,18 @@ class TestMemoryConfigEndpoints:
             "memory": {
                 "embedding": {"provider": "new-provider", "model": "old-model"},
                 "retrieval": {"top_k": 20, "rerank_model": "new-rerank-model"},
+                "enhanced_memory": {
+                    "fact_extraction": {
+                        "enabled": True,
+                        "model_enabled": True,
+                        "provider": "new-fact-provider",
+                        "model": "new-fact-model",
+                    }
+                },
                 "search_timeout_seconds": 4,
             },
             "knowledge_base": {"search": {"rerank_provider": "kb-provider"}},
+            "llm": {"default_provider": "ollama"},
         }.get(section, {})
 
         payload = {
@@ -668,6 +718,12 @@ class TestMemoryConfigEndpoints:
                 "top_k": 20,
                 "enable_reranking": True,
                 "rerank_model": "new-rerank-model",
+            },
+            "fact_extraction": {
+                "enabled": True,
+                "model_enabled": True,
+                "provider": "new-fact-provider",
+                "model": "new-fact-model",
             },
             "runtime": {"search_timeout_seconds": 4},
             "recommended": {},
@@ -687,6 +743,11 @@ class TestMemoryConfigEndpoints:
                                 update_data=MemoryConfigUpdateRequest(
                                     embedding={"provider": "new-provider"},
                                     retrieval={"top_k": 20, "rerank_model": "new-rerank-model"},
+                                    fact_extraction={
+                                        "model_enabled": True,
+                                        "provider": "new-fact-provider",
+                                        "model": "new-fact-model",
+                                    },
                                     runtime={"search_timeout_seconds": 4},
                                 ),
                                 current_user=mock_admin_user,
@@ -697,16 +758,21 @@ class TestMemoryConfigEndpoints:
         assert dumped_config["memory"]["embedding"]["model"] == "old-model"
         assert dumped_config["memory"]["retrieval"]["top_k"] == 20
         assert dumped_config["memory"]["retrieval"]["rerank_model"] == "new-rerank-model"
+        assert dumped_config["memory"]["enhanced_memory"]["fact_extraction"]["provider"] == (
+            "new-fact-provider"
+        )
+        assert dumped_config["memory"]["enhanced_memory"]["fact_extraction"]["model_enabled"] is True
         assert dumped_config["memory"]["search_timeout_seconds"] == 4
         assert response.embedding["provider"] == "new-provider"
         assert response.retrieval["top_k"] == 20
+        assert response.fact_extraction["provider"] == "new-fact-provider"
         assert response.runtime["search_timeout_seconds"] == 4
 
 
 class TestAgentMemoryAccessHelpers:
     """Test helper utilities for agent-memory query scope and filtering."""
 
-    def test_resolve_effective_user_id_skips_user_scope_for_agent_queries(self):
+    def test_resolve_effective_user_id_always_defaults_to_current_user(self):
         from api_gateway.routers.memory import _resolve_effective_user_id
         from memory_system.memory_interface import MemoryType
 
@@ -716,27 +782,36 @@ class TestAgentMemoryAccessHelpers:
             role=Role.USER.value,
             token_jti="jti-1",
         )
+        requested_1 = str(uuid4())
+        requested_2 = str(uuid4())
 
         assert (
             _resolve_effective_user_id(
                 MemoryType.AGENT,
                 current_user,
-                requested_user_id=str(uuid4()),
+                requested_user_id=requested_1,
             )
-            is None
+            == requested_1
         )
         assert (
             _resolve_effective_user_id(
                 None,
                 current_user,
-                requested_user_id=str(uuid4()),
+                requested_user_id=requested_2,
                 agent_id=str(uuid4()),
             )
-            is None
+            == requested_2
         )
         assert (
             _resolve_effective_user_id(
                 MemoryType.COMPANY,
+                current_user,
+            )
+            == current_user.user_id
+        )
+        assert (
+            _resolve_effective_user_id(
+                MemoryType.AGENT,
                 current_user,
             )
             == current_user.user_id

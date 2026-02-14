@@ -313,8 +313,20 @@ def _build_retrieval_process_messages(context_debug: Dict[str, Any]) -> List[str
         if scope_filter:
             messages.append(f"[记忆检索][{scope_label}] 过滤条件: {scope_filter}")
 
+        min_similarity = scope_info.get("min_similarity")
+        if isinstance(min_similarity, (int, float)):
+            messages.append(f"[记忆检索][{scope_label}] 最小相似度阈值: {float(min_similarity):.2f}")
+
+        pre_filter_hit_count = int(scope_info.get("pre_filter_hit_count") or 0)
         hit_count = int(scope_info.get("hit_count") or 0)
         messages.append(f"[记忆检索][{scope_label}] 命中 {hit_count} 条")
+
+        filtered_out_count = int(scope_info.get("filtered_out_count") or 0)
+        if pre_filter_hit_count or filtered_out_count:
+            messages.append(
+                f"[记忆检索][{scope_label}] 原始命中 {pre_filter_hit_count} 条，"
+                f"过滤后 {hit_count} 条，剔除 {filtered_out_count} 条"
+            )
 
         if scope_info.get("fallback_used"):
             fallback_count = int(scope_info.get("fallback_hit_count") or hit_count)
@@ -2089,7 +2101,10 @@ async def test_agent(
                             user_context_content = _format_user_context_content(
                                 user_message=message,
                                 agent_name=agent_info.name,
-                                response_summary=final_response[0][:200] if final_response[0] else "",
+                                # Avoid stuffing assistant answer into user profile memory.
+                                # Keep user context centered on user intent; model extraction can
+                                # add richer facts later if enabled.
+                                response_summary="",
                             )
                             mem_interface.store_user_context(
                                 user_id=UUID(current_user.user_id),
