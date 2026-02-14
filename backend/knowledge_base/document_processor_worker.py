@@ -25,6 +25,10 @@ from shared.config import get_config
 logger = logging.getLogger(__name__)
 
 
+class ProcessingCancelledError(RuntimeError):
+    """Raised when a knowledge processing job is cancelled by user request."""
+
+
 class DocumentProcessorWorker:
     """Worker for processing documents in background."""
 
@@ -112,8 +116,11 @@ class DocumentProcessorWorker:
                     stage="queued",
                 )
 
+                self._raise_if_cancellation_requested(job)
+
                 # Process document
                 result_meta = self._process_document(job)
+                self._raise_if_cancellation_requested(job)
 
                 self.queue.update_status(job.job_id, JobStatus.COMPLETED)
 
@@ -129,6 +136,24 @@ class DocumentProcessorWorker:
 
                 logger.info(f"Job completed: {job.job_id}")
 
+            except ProcessingCancelledError as cancelled_error:
+                if job:
+                    logger.info(
+                        "Job cancelled by user",
+                        extra={"job_id": job.job_id, "document_id": job.document_id},
+                    )
+                    self.queue.update_status(
+                        job.job_id,
+                        JobStatus.CANCELLED,
+                        error_message=str(cancelled_error),
+                    )
+                    self._update_knowledge_status(
+                        job.document_id,
+                        "failed",
+                        error_message=str(cancelled_error),
+                        progress=100,
+                        stage="cancelled",
+                    )
             except Exception as e:
                 logger.error(f"Job processing failed: {e}", exc_info=True)
                 if job:
@@ -170,6 +195,7 @@ class DocumentProcessorWorker:
             temp_path = Path(f.name)
 
         try:
+            self._raise_if_cancellation_requested(job)
             self._update_processing_progress(job.document_id, progress=15, stage="extracting")
 
             # Step 1: Parse / extract text
@@ -179,6 +205,7 @@ class DocumentProcessorWorker:
                     "No extractable text was found in the document. "
                     "Please check parsing method and model configuration."
                 )
+            self._raise_if_cancellation_requested(job)
             self._update_processing_progress(job.document_id, progress=40, stage="parsed")
 
             # Step 2: Chunk document
@@ -196,6 +223,7 @@ class DocumentProcessorWorker:
                     "Document parsing produced no chunks. "
                     "Please adjust parsing/chunking settings and retry."
                 )
+            self._raise_if_cancellation_requested(job)
             self._update_processing_progress(job.document_id, progress=65, stage="chunked")
 
             # Step 3: LLM enrichment (if enabled)
@@ -218,6 +246,7 @@ class DocumentProcessorWorker:
                 )
 
             # Step 4: Index chunks to Milvus + PostgreSQL
+            self._raise_if_cancellation_requested(job)
             self._update_processing_progress(job.document_id, progress=85, stage="indexing")
             self.indexer.index_chunks(
                 document_id=job.document_id,
@@ -225,6 +254,7 @@ class DocumentProcessorWorker:
                 chunk_metadata=chunk_metadata,
                 user_id=job.user_id,
             )
+            self._raise_if_cancellation_requested(job)
             self._update_processing_progress(job.document_id, progress=95, stage="indexed")
 
             return {
@@ -246,6 +276,50 @@ class DocumentProcessorWorker:
             return loop.run_until_complete(coro)
         finally:
             loop.close()
+
+    @staticmethod
+    def _has_substantive_text(text: str) -> bool:
+        """Return True when text contains at least one alphanumeric character."""
+        return any(char.isalnum() for char in text)
+
+    @staticmethod
+    def _is_document_cancel_requested(document_id: str) -> bool:
+        """Check persistent cancellation flag in KnowledgeItem metadata."""
+        try:
+            from database.connection import get_db_session
+            from database.models import KnowledgeItem
+
+            with get_db_session() as session:
+                item = (
+                    session.query(KnowledgeItem)
+                    .filter(KnowledgeItem.knowledge_id == document_id)
+                    .first()
+                )
+                if not item or not item.item_metadata:
+                    return False
+                return bool(item.item_metadata.get("cancel_requested"))
+        except Exception:
+            return False
+
+    def _is_cancellation_requested(self, job) -> bool:
+        """Check queue and DB metadata for cancellation request."""
+        job_id = getattr(job, "job_id", None)
+        if job_id:
+            try:
+                if self.queue.is_cancel_requested(job_id):
+                    return True
+            except Exception:
+                pass
+
+        document_id = getattr(job, "document_id", None)
+        if document_id:
+            return self._is_document_cancel_requested(document_id)
+        return False
+
+    def _raise_if_cancellation_requested(self, job) -> None:
+        """Abort current processing flow when a cancellation is requested."""
+        if self._is_cancellation_requested(job):
+            raise ProcessingCancelledError("Processing cancelled by user.")
 
     def _extract_text(self, file_path: Path, mime_type: str) -> str:
         """Extract text from file based on type and parsing method.
@@ -375,24 +449,43 @@ class DocumentProcessorWorker:
         else:
             extractor = get_extractor(effective_type)
             result = extractor.extract(file_path)
+            standard_text = (result.text or "").strip()
 
             # Auto mode: if extracted text is sparse, try vision for PDFs
-            if (
+            should_try_pdf_vision_fallback = (
                 self.parsing_method == "auto"
                 and "pdf" in effective_type
-                and len(result.text.strip()) < 100
-            ):
+                and (
+                    len(standard_text) < 100
+                    or not self._has_substantive_text(standard_text)
+                )
+            )
+            if should_try_pdf_vision_fallback:
                 try:
                     from knowledge_base.vision_parser import get_vision_parser
 
                     parser = get_vision_parser()
                     vision_result = self._run_async(parser.parse_pdf(file_path))
-                    if len(vision_result.text.strip()) > len(result.text.strip()):
-                        return vision_result.text
-                except Exception:
-                    pass  # Fall through to standard result
+                    vision_text = (vision_result.text or "").strip()
+                    if vision_text and (
+                        len(vision_text) > len(standard_text)
+                        or not self._has_substantive_text(standard_text)
+                    ):
+                        logger.info(
+                            "Using vision fallback for PDF extraction",
+                            extra={
+                                "file_path": str(file_path),
+                                "standard_length": len(standard_text),
+                                "vision_length": len(vision_text),
+                            },
+                        )
+                        return vision_text
+                except Exception as vision_err:
+                    logger.warning(
+                        f"Auto vision fallback for PDF failed, keeping standard extraction: {vision_err}"
+                    )
 
-            return result.text
+            return standard_text
 
     def _extract_video_with_vision(self, file_path: Path) -> str:
         """Fallback extraction for videos using sampled frames and vision model."""
@@ -523,6 +616,10 @@ class DocumentProcessorWorker:
                         meta.setdefault("started_at", now_iso)
                         meta["completed_at"] = now_iso
                         meta["error_message"] = error_message
+
+                    if status in {"completed", "failed"}:
+                        meta.pop("cancel_requested", None)
+                        meta.pop("cancel_requested_at", None)
 
                     if progress is None:
                         if status == "processing":

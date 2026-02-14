@@ -26,6 +26,7 @@ class JobStatus(Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -44,6 +45,8 @@ class ProcessingJob:
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     error_message: Optional[str] = None
+    cancel_requested: bool = False
+    cancel_requested_at: Optional[str] = None
 
 
 class ProcessingQueue:
@@ -173,7 +176,7 @@ class ProcessingQueue:
 
         if status == JobStatus.PROCESSING:
             job_dict["started_at"] = datetime.utcnow().isoformat()
-        elif status in [JobStatus.COMPLETED, JobStatus.FAILED]:
+        elif status in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED]:
             job_dict["completed_at"] = datetime.utcnow().isoformat()
 
         if error_message:
@@ -181,6 +184,52 @@ class ProcessingQueue:
 
         self._client.set(job_key, json.dumps(job_dict))
         logger.info(f"Job status updated: {job_id} -> {status.value}")
+
+    def request_cancel(self, job_id: str, error_message: Optional[str] = None) -> bool:
+        """Request cancellation for a queued/processing job.
+
+        Args:
+            job_id: Job identifier
+            error_message: Optional cancellation message
+
+        Returns:
+            True if cancellation was recorded, else False
+        """
+        job_key = f"{self.job_prefix}{job_id}"
+        job_data = self._client.get(job_key)
+
+        if not job_data:
+            logger.warning(f"Job not found for cancellation: {job_id}")
+            return False
+
+        job_dict = json.loads(job_data)
+        current_status = JobStatus(job_dict.get("status", JobStatus.QUEUED.value))
+        if current_status in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}:
+            return False
+
+        now_iso = datetime.utcnow().isoformat()
+        job_dict["cancel_requested"] = True
+        job_dict["cancel_requested_at"] = now_iso
+        job_dict["status"] = JobStatus.CANCELLED.value
+        job_dict["completed_at"] = now_iso
+        job_dict["error_message"] = (
+            error_message or job_dict.get("error_message") or "Processing cancelled by user."
+        )
+
+        # If still queued, remove pending job id from Redis list.
+        if current_status == JobStatus.QUEUED:
+            self._client.lrem(self.queue_key, 0, job_id)
+
+        self._client.set(job_key, json.dumps(job_dict))
+        logger.info(f"Cancellation requested for job: {job_id}")
+        return True
+
+    def is_cancel_requested(self, job_id: str) -> bool:
+        """Check whether cancellation was requested for a job."""
+        job = self.get_job(job_id)
+        if not job:
+            return False
+        return bool(job.cancel_requested or job.status == JobStatus.CANCELLED)
 
     def get_job(self, job_id: str) -> Optional[ProcessingJob]:
         """Get job by ID.

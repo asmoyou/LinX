@@ -732,10 +732,16 @@ def _build_item_response(item: KnowledgeItem, owner_username: str) -> KnowledgeI
     tags = metadata.get("tags", [])
     description = metadata.get("description")
     thumbnail_reference = metadata.get("thumbnail_reference")
-    processing_status = metadata.get("processing_status", "completed")
+    raw_processing_status = metadata.get("processing_status", "completed")
+    processing_status = _normalize_processing_status(raw_processing_status)
     chunk_count = metadata.get("chunk_count")
     token_count = metadata.get("token_count")
     error_message = metadata.get("error_message")
+    if (
+        not error_message
+        and str(raw_processing_status).lower() in {"cancelled", "canceled"}
+    ):
+        error_message = "Processing cancelled by user."
     processing_progress = metadata.get("processing_progress")
     if processing_progress is not None:
         try:
@@ -774,6 +780,18 @@ def _map_access_level(level: str) -> str:
         "public": "public",
     }
     return mapping.get(level, level)
+
+
+def _normalize_processing_status(status: Any) -> str:
+    """Normalize internal processing status to frontend-safe values."""
+    normalized = str(status or "completed").strip().lower()
+    if normalized == "queued":
+        return "processing"
+    if normalized in {"cancelled", "canceled"}:
+        return "failed"
+    if normalized in {"uploading", "processing", "completed", "failed"}:
+        return normalized
+    return "processing"
 
 
 def _map_access_level_to_backend(level: str) -> str:
@@ -2206,6 +2224,111 @@ async def list_collection_items(
         )
 
 
+@router.post("/{knowledge_id}/cancel", response_model=KnowledgeItemResponse)
+async def cancel_knowledge_processing(
+    knowledge_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Cancel an in-flight knowledge processing task."""
+    cancel_message = "Processing cancelled by user."
+    try:
+        job_id: Optional[str] = None
+        queue_cancel_signal_sent = False
+        response_payload: Optional[KnowledgeItemResponse] = None
+
+        with get_db_session() as session:
+            try:
+                kid = UUID(knowledge_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid knowledge ID format"
+                )
+
+            item = session.query(KnowledgeItem).filter(KnowledgeItem.knowledge_id == kid).first()
+            if not item:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge item not found"
+                )
+
+            if not check_knowledge_write_permission(
+                current_user=current_user,
+                knowledge_id=knowledge_id,
+                owner_user_id=str(item.owner_user_id),
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to stop processing this item",
+                )
+
+            metadata = dict(item.item_metadata or {})
+            current_status = _normalize_processing_status(metadata.get("processing_status"))
+            existing_error = str(metadata.get("error_message") or "")
+            if current_status != "processing":
+                if current_status == "failed" and "cancel" in existing_error.lower():
+                    owner = session.query(User).filter(User.user_id == item.owner_user_id).first()
+                    owner_name = owner.username if owner else "Unknown"
+                    return _build_item_response(item, owner_name)
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Document is not currently processing",
+                )
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            metadata["cancel_requested"] = True
+            metadata["cancel_requested_at"] = now_iso
+            metadata["processing_status"] = "failed"
+            metadata["processing_stage"] = "cancelled"
+            metadata["processing_progress"] = 100
+            metadata["error_message"] = cancel_message
+            metadata.setdefault("created_at", now_iso)
+            metadata.setdefault("started_at", now_iso)
+            metadata["completed_at"] = now_iso
+            item.item_metadata = metadata
+            session.flush()
+
+            job_id = metadata.get("job_id")
+            owner = session.query(User).filter(User.user_id == item.owner_user_id).first()
+            owner_name = owner.username if owner else "Unknown"
+            response_payload = _build_item_response(item, owner_name)
+
+        if response_payload is None:
+            raise RuntimeError("Failed to prepare cancellation response payload")
+
+        if job_id and not str(job_id).startswith("local-"):
+            try:
+                from knowledge_base.processing_queue import get_processing_queue
+
+                queue = get_processing_queue()
+                queue_cancel_signal_sent = queue.request_cancel(
+                    str(job_id), error_message=cancel_message
+                )
+            except Exception as queue_error:
+                logger.warning(
+                    f"Failed to request queue cancellation for knowledge item {knowledge_id}: "
+                    f"{queue_error}"
+                )
+
+        logger.info(
+            "Knowledge processing cancellation requested",
+            extra={
+                "knowledge_id": knowledge_id,
+                "job_id": job_id,
+                "queue_cancel_signal_sent": queue_cancel_signal_sent,
+                "user_id": current_user.user_id,
+            },
+        )
+        return response_payload
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to cancel knowledge processing: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cancel processing: {str(e)}",
+        )
+
+
 @router.post("/{knowledge_id}/reprocess", response_model=KnowledgeItemResponse)
 async def reprocess_knowledge(
     knowledge_id: str,
@@ -2297,6 +2420,8 @@ async def reprocess_knowledge(
             metadata.pop("error_message", None)
             metadata.pop("chunk_count", None)
             metadata.pop("token_count", None)
+            metadata.pop("cancel_requested", None)
+            metadata.pop("cancel_requested_at", None)
             item.item_metadata = metadata
             session.flush()
 
@@ -2995,9 +3120,8 @@ async def get_processing_status(
                 )
 
             metadata = item.item_metadata or {}
-            stored_status = metadata.get("processing_status", "completed")
-            if stored_status == "queued":
-                stored_status = "processing"
+            stored_status_raw = metadata.get("processing_status", "completed")
+            stored_status = _normalize_processing_status(stored_status_raw)
             job_id = metadata.get("job_id")
             if not job_id:
                 # Keep response fields stable even for legacy rows created before job_id existed.
@@ -3008,6 +3132,11 @@ async def get_processing_status(
             chunk_count = metadata.get("chunk_count")
             token_count = metadata.get("token_count")
             error_message = metadata.get("error_message")
+            if (
+                not error_message
+                and str(stored_status_raw).lower() in {"cancelled", "canceled"}
+            ):
+                error_message = "Processing cancelled by user."
             processed_at = metadata.get("processed_at")
             progress_percent = metadata.get("processing_progress")
             if progress_percent is not None:
@@ -3068,14 +3197,17 @@ async def get_processing_status(
                 queue = get_processing_queue()
                 queue_job = queue.get_job(job_id)
                 if queue_job:
-                    stored_status = queue_job.status.value
-                    if stored_status == "queued":
-                        # Frontend status model does not expose queued; treat as early processing.
-                        stored_status = "processing"
+                    raw_queue_status = queue_job.status.value
+                    stored_status = _normalize_processing_status(raw_queue_status)
                     created_at = queue_job.created_at or created_at
                     started_at = queue_job.started_at or started_at
                     completed_at = queue_job.completed_at or completed_at
                     error_message = queue_job.error_message or error_message
+                    if (
+                        not error_message
+                        and raw_queue_status in {"cancelled", "canceled"}
+                    ):
+                        error_message = "Processing cancelled by user."
         except Exception:
             pass
 

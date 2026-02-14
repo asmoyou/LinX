@@ -387,6 +387,14 @@ export const knowledgeApi = {
   },
 
   /**
+   * Cancel an in-flight processing document
+   */
+  cancelProcessing: async (documentId: string): Promise<Document> => {
+    const response = await apiClient.post<Document>(`/knowledge/${documentId}/cancel`);
+    return response.data;
+  },
+
+  /**
    * Get knowledge base pipeline configuration
    */
   getConfig: async (): Promise<KBConfigResponse> => {

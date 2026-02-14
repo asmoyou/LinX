@@ -18,6 +18,7 @@ import {
   Layers,
   Hash,
   RotateCcw,
+  Square,
   Pencil,
   Shield,
   Globe,
@@ -38,6 +39,7 @@ interface DocumentCardProps {
   onDelete: (document: Document) => void;
   onEdit?: (document: Document) => void;
   onReprocess?: (document: Document) => void;
+  onStopProcessing?: (document: Document) => void;
   draggable?: boolean;
   onDragStart?: (document: Document) => void;
   onDragEnd?: () => void;
@@ -53,6 +55,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
   onDelete,
   onEdit,
   onReprocess,
+  onStopProcessing,
   draggable = false,
   onDragStart,
   onDragEnd,
@@ -533,15 +536,25 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
 
         {/* Actions */}
         <div className="flex items-center gap-2 mt-auto">
-          <button
-            onClick={() => onView(document)}
-            disabled={
-              document.status === "uploading" || document.status === "processing"
-            }
-            className="flex-1 px-4 py-2 bg-gradient-to-r from-indigo-500 to-blue-500 text-white rounded-lg hover:from-indigo-600 hover:to-blue-600 transition-all shadow-md shadow-indigo-500/20 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {t("document.view")}
-          </button>
+          {document.status === "processing" && onStopProcessing ? (
+            <button
+              onClick={() => onStopProcessing(document)}
+              className="flex-1 px-4 py-2 bg-gradient-to-r from-rose-500 to-orange-500 text-white rounded-lg hover:from-rose-600 hover:to-orange-600 transition-all shadow-md shadow-rose-500/20 text-sm font-semibold flex items-center justify-center gap-2"
+            >
+              <Square className="w-4 h-4" />
+              {t("document.stopProcessing", "Stop Analysis")}
+            </button>
+          ) : (
+            <button
+              onClick={() => onView(document)}
+              disabled={
+                document.status === "uploading" || document.status === "processing"
+              }
+              className="flex-1 px-4 py-2 bg-gradient-to-r from-indigo-500 to-blue-500 text-white rounded-lg hover:from-indigo-600 hover:to-blue-600 transition-all shadow-md shadow-indigo-500/20 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {t("document.view")}
+            </button>
+          )}
           
           <div className="relative">
             <button
@@ -657,4 +670,3 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
     </motion.div>
   );
 };
-

@@ -31,6 +31,9 @@ const fallbackProgressForStatus = (status: DocumentStatus): number => {
 };
 
 const normalizeStatus = (status: string): DocumentStatus => {
+  if (status === "cancelled" || status === "canceled") {
+    return "failed";
+  }
   if (status === "completed" || status === "failed" || status === "uploading") {
     return status;
   }
@@ -131,6 +134,7 @@ interface KnowledgeState {
   deleteDocument: (id: string) => Promise<void>;
   downloadDocument: (id: string, filename?: string) => Promise<boolean>;
   reprocessDocument: (id: string) => Promise<void>;
+  cancelProcessingDocument: (id: string) => Promise<void>;
   pollProcessingStatus: (id: string) => Promise<void>;
   pollAllProcessing: () => void;
 
@@ -379,6 +383,28 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : "Failed to reprocess document";
+      set({ error: message });
+      throw error;
+    }
+  },
+
+  cancelProcessingDocument: async (id: string) => {
+    try {
+      stopPollingDocument(id);
+      const updated = await knowledgeApi.cancelProcessing(id);
+      const normalizedStatus = normalizeStatus(updated.status);
+      const fallbackError = "Processing cancelled by user.";
+      get().updateDocument(id, {
+        status: normalizedStatus,
+        processingProgress: normalizedStatus === "failed" ? 100 : 99,
+        processedAt: updated.processedAt,
+        processingCompletedAt: updated.processedAt,
+        error: updated.errorMessage || updated.error || fallbackError,
+        errorMessage: updated.errorMessage || updated.error || fallbackError,
+      });
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "Failed to cancel processing";
       set({ error: message });
       throw error;
     }

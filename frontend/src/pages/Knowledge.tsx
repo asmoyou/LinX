@@ -116,6 +116,7 @@ export const Knowledge: React.FC = () => {
     updateDocument,
     downloadDocument,
     reprocessDocument,
+    cancelProcessingDocument,
     pollAllProcessing,
   } = useKnowledgeStore();
 
@@ -257,6 +258,35 @@ export const Knowledge: React.FC = () => {
       }
     },
     [reprocessDocument, t],
+  );
+
+  const handleStopProcessing = useCallback(
+    async (document: Document) => {
+      if (
+        !confirm(
+          t("document.stopProcessingConfirm", {
+            name: document.name,
+          }),
+        )
+      ) {
+        return;
+      }
+
+      try {
+        await cancelProcessingDocument(document.id);
+        toast.success(
+          t("document.stopProcessingSuccess", { name: document.name }),
+          {
+            id: `stop-processing-${document.id}`,
+          },
+        );
+      } catch {
+        toast.error(t("document.stopProcessingFailed"), {
+          id: `stop-processing-err-${document.id}`,
+        });
+      }
+    },
+    [cancelProcessingDocument, t],
   );
 
   // ============= Collection handlers =============
@@ -910,6 +940,7 @@ export const Knowledge: React.FC = () => {
                       onDelete={handleDelete}
                       onEdit={openEditDocument}
                       onReprocess={handleReprocess}
+                      onStopProcessing={handleStopProcessing}
                       draggable
                       onDragStart={handleDocumentDragStart}
                       onDragEnd={handleDocumentDragEnd}
@@ -946,6 +977,7 @@ export const Knowledge: React.FC = () => {
                 onDelete={handleDelete}
                 onEdit={openEditDocument}
                 onReprocess={handleReprocess}
+                onStopProcessing={handleStopProcessing}
               />
             ))
           )}
