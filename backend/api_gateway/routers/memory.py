@@ -15,6 +15,7 @@ import logging
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -354,7 +355,14 @@ class MemoryShareRequest(BaseModel):
     """Share memory request."""
 
     user_ids: List[str] = Field(default_factory=list)
+    # Backward compatibility only: agent_ids are mapped to owner user IDs.
     agent_ids: List[str] = Field(default_factory=list)
+    scope: Optional[str] = Field(
+        None,
+        pattern=r"^(explicit|department|department_tree|account|private|public)$",
+    )
+    expires_at: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class MemoryResponse(BaseModel):
@@ -672,6 +680,18 @@ def _memory_item_to_response(
     else:
         final_shared_names = []
 
+    memory_type_value = (
+        item.memory_type.value if hasattr(item.memory_type, "value") else str(item.memory_type)
+    )
+    visibility = _resolve_memory_visibility(str(memory_type_value), meta)
+    meta["visibility"] = visibility
+    is_published_scope = visibility in {"explicit", "department", "department_tree", "public"}
+    publish_mode = str(meta.get("publish_mode") or "").strip().lower()
+    shared_with_user_ids = meta.get("shared_with_user_ids", [])
+    if not isinstance(shared_with_user_ids, list):
+        shared_with_user_ids = []
+    has_promotion_backlink = bool(meta.get("last_promoted_memory_id"))
+
     # Remove internal scoring fields
     meta.pop("_combined_score", None)
     meta.pop("_recency_score", None)
@@ -697,7 +717,14 @@ def _memory_item_to_response(
         "tags": tags if isinstance(tags, list) else [],
         "relevanceScore": item.similarity_score,
         "metadata": meta if meta else None,
-        "isShared": bool(shared_from) or bool(shared_with),
+        "isShared": (
+            bool(shared_from)
+            or bool(shared_with)
+            or bool(shared_with_user_ids)
+            or is_published_scope
+            or publish_mode == "promote"
+            or has_promotion_backlink
+        ),
         "sharedWith": shared_with,
         "sharedWithNames": final_shared_names,
         "indexStatus": index_status,
@@ -742,9 +769,10 @@ def _dedupe_preserve_order(values: List[str]) -> List[str]:
 
 
 def _resolve_share_targets(agent_ids: List[str], user_ids: List[str]) -> Dict[str, List[str]]:
-    """Resolve share targets into user IDs and human-readable names."""
-    from uuid import UUID
+    """Resolve share targets into explicit user IDs and human-readable names.
 
+    `agent_ids` are compatibility input only and are mapped to agent owners.
+    """
     from database.connection import get_db_session
     from database.models import Agent
 
@@ -753,7 +781,7 @@ def _resolve_share_targets(agent_ids: List[str], user_ids: List[str]) -> Dict[st
 
     target_user_ids: List[str] = []
     target_entity_ids: List[str] = []
-    target_entity_names: List[str] = []
+    entity_name_map: Dict[str, str] = {}
 
     with get_db_session() as session:
         if normalized_agent_ids:
@@ -773,19 +801,30 @@ def _resolve_share_targets(agent_ids: List[str], user_ids: List[str]) -> Dict[st
                 row = rows_by_id.get(raw_agent_id)
                 if not row:
                     continue
-                target_user_ids.append(str(row.owner_user_id))
-                target_entity_ids.append(str(row.agent_id))
-                target_entity_names.append(row.name or str(row.agent_id))
+                owner_user_id = str(row.owner_user_id) if row.owner_user_id else ""
+                if not owner_user_id:
+                    continue
+                target_user_ids.append(owner_user_id)
+                target_entity_ids.append(owner_user_id)
+                if owner_user_id not in entity_name_map:
+                    entity_name_map[owner_user_id] = (
+                        _lookup_user_name(session, owner_user_id)
+                        or row.name
+                        or owner_user_id
+                    )
 
         for raw_user_id in normalized_user_ids:
             target_user_ids.append(raw_user_id)
             target_entity_ids.append(raw_user_id)
-            target_entity_names.append(_lookup_user_name(session, raw_user_id) or raw_user_id)
+            if raw_user_id not in entity_name_map:
+                entity_name_map[raw_user_id] = _lookup_user_name(session, raw_user_id) or raw_user_id
+
+    deduped_entity_ids = _dedupe_preserve_order(target_entity_ids)
 
     return {
         "target_user_ids": _dedupe_preserve_order(target_user_ids),
-        "target_entity_ids": _dedupe_preserve_order(target_entity_ids),
-        "target_entity_names": _dedupe_preserve_order(target_entity_names),
+        "target_entity_ids": deduped_entity_ids,
+        "target_entity_names": [entity_name_map.get(entity_id, entity_id) for entity_id in deduped_entity_ids],
     }
 
 
@@ -804,7 +843,435 @@ def _resolve_effective_user_id(
 ) -> Optional[str]:
     """Resolve user scope for search/list queries.
     """
-    return requested_user_id or current_user.user_id
+    from memory_system.memory_interface import MemoryType
+
+    requested = str(requested_user_id).strip() if requested_user_id else None
+
+    if memory_type == MemoryType.AGENT or agent_id:
+        return requested or current_user.user_id
+    if memory_type == MemoryType.USER_CONTEXT:
+        return requested or current_user.user_id
+
+    # For company/org discovery, avoid hard user_id constraint so policy-based
+    # sharing (department/publish/ACL) can be evaluated in application layer.
+    if requested and requested == str(current_user.user_id):
+        return requested
+    if requested and current_user.role in {"admin", "manager"}:
+        return requested
+    return None
+
+
+def _parse_uuid(raw_value: Optional[str]) -> Optional[UUID]:
+    if not raw_value:
+        return None
+    try:
+        return UUID(str(raw_value))
+    except Exception:
+        return None
+
+
+def _is_admin_or_manager(current_user: CurrentUser) -> bool:
+    return str(current_user.role).strip().lower() in {"admin", "manager"}
+
+
+def _resolve_memory_visibility(memory_type_value: str, metadata: Dict[str, Any]) -> str:
+    normalized_type = str(memory_type_value or "").strip().lower()
+    configured = str(metadata.get("visibility") or "").strip().lower()
+
+    if normalized_type == "user_context":
+        if configured in {"private", "explicit"}:
+            return configured
+        return "private"
+
+    if configured:
+        return configured
+    if normalized_type == "agent":
+        return "private"
+    # Company/org memory defaults to department hierarchy inheritance.
+    return "department_tree"
+
+
+def _resolve_user_department_id_sync(user_id: Optional[str]) -> Optional[str]:
+    from database.connection import get_db_session
+    from database.models import User
+
+    parsed_user_id = _parse_uuid(user_id)
+    if parsed_user_id is None:
+        return None
+
+    with get_db_session() as session:
+        row = session.query(User.department_id).filter(User.user_id == parsed_user_id).first()
+    return str(row[0]) if row and row[0] else None
+
+
+def _resolve_agent_department_id_sync(agent_id: Optional[str]) -> Optional[str]:
+    from database.connection import get_db_session
+    from database.models import Agent
+
+    parsed_agent_id = _parse_uuid(agent_id)
+    if parsed_agent_id is None:
+        return None
+
+    with get_db_session() as session:
+        row = session.query(Agent.department_id).filter(Agent.agent_id == parsed_agent_id).first()
+    return str(row[0]) if row and row[0] else None
+
+
+def _build_user_department_context_sync(current_user: CurrentUser) -> Dict[str, Any]:
+    from collections import defaultdict, deque
+
+    from database.connection import get_db_session
+    from database.models import Department, User
+
+    context: Dict[str, Any] = {
+        "department_id": None,
+        "managed_department_ids": set(),
+    }
+    parsed_user_id = _parse_uuid(current_user.user_id)
+    if parsed_user_id is None:
+        return context
+
+    with get_db_session() as session:
+        user = session.query(User).filter(User.user_id == parsed_user_id).first()
+        if not user:
+            return context
+
+        context["department_id"] = str(user.department_id) if user.department_id else None
+        rows = (
+            session.query(Department.department_id, Department.parent_id, Department.manager_id)
+            .filter(Department.status == "active")
+            .all()
+        )
+
+    children: Dict[str, List[str]] = defaultdict(list)
+    managed_roots: List[str] = []
+    for department_id, parent_id, manager_id in rows:
+        dep_id = str(department_id)
+        if parent_id:
+            children[str(parent_id)].append(dep_id)
+        if manager_id and str(manager_id) == str(current_user.user_id):
+            managed_roots.append(dep_id)
+
+    managed_ids = set()
+    queue = deque(managed_roots)
+    while queue:
+        dep_id = queue.popleft()
+        if dep_id in managed_ids:
+            continue
+        managed_ids.add(dep_id)
+        for child in children.get(dep_id, []):
+            queue.append(child)
+
+    context["managed_department_ids"] = managed_ids
+    return context
+
+
+def _load_memory_acl_map_sync(memory_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
+    repo = _get_memory_repository()
+    return repo.list_active_acl_entries(memory_ids)
+
+
+def _matches_acl_principal(
+    entry: Dict[str, Any],
+    current_user: CurrentUser,
+    user_department_context: Dict[str, Any],
+) -> bool:
+    principal_type = str(entry.get("principal_type") or "").strip().lower()
+    principal_id = str(entry.get("principal_id") or "").strip()
+    if not principal_type or not principal_id:
+        return False
+
+    if principal_type == "user":
+        return principal_id == str(current_user.user_id)
+    if principal_type == "agent":
+        active_agent_id = str(
+            getattr(current_user, "agent_id", None)
+            or user_department_context.get("active_agent_id")
+            or ""
+        ).strip()
+        if active_agent_id and principal_id == active_agent_id:
+            return True
+        return _agent_owned_by_user_sync(principal_id, current_user.user_id)
+    if principal_type == "role":
+        return principal_id == str(current_user.role)
+    if principal_type == "department":
+        return principal_id == str(user_department_context.get("department_id") or "")
+    return False
+
+
+def _evaluate_acl_decision(
+    entries: List[Dict[str, Any]],
+    current_user: CurrentUser,
+    user_department_context: Dict[str, Any],
+) -> Optional[bool]:
+    matched_deny = False
+    matched_allow = False
+    for entry in entries:
+        if not _matches_acl_principal(entry, current_user, user_department_context):
+            continue
+        effect = str(entry.get("effect") or "").strip().lower()
+        if effect == "deny":
+            matched_deny = True
+            break
+        if effect == "allow":
+            matched_allow = True
+
+    if matched_deny:
+        return False
+    if matched_allow:
+        return True
+    return None
+
+
+def _is_explicit_metadata_allow(metadata: Dict[str, Any], current_user: CurrentUser) -> bool:
+    target_user_ids = metadata.get("shared_with_user_ids")
+    if isinstance(target_user_ids, list):
+        normalized = {str(raw_id) for raw_id in target_user_ids if str(raw_id).strip()}
+        if str(current_user.user_id) in normalized:
+            return True
+
+    # Backward compatibility with old metadata shapes.
+    direct_target = str(metadata.get("shared_to_user_id") or "").strip()
+    if direct_target and direct_target == str(current_user.user_id):
+        return True
+    return False
+
+
+def _company_visibility_allows(
+    *,
+    visibility: str,
+    owner_user_id: str,
+    resource_department_id: Optional[str],
+    current_user: CurrentUser,
+    user_department_context: Dict[str, Any],
+) -> bool:
+    current_user_id = str(current_user.user_id)
+    user_department_id = str(user_department_context.get("department_id") or "")
+
+    if visibility == "private":
+        return owner_user_id == current_user_id
+    if visibility == "account":
+        if not resource_department_id:
+            return owner_user_id == current_user_id
+        if str(resource_department_id) == user_department_id:
+            return True
+        managed = user_department_context.get("managed_department_ids") or set()
+        return str(resource_department_id) in managed
+    if visibility == "department":
+        if not resource_department_id or not user_department_id:
+            return False
+        return str(resource_department_id) == user_department_id
+    if visibility == "department_tree":
+        if not resource_department_id:
+            return False
+        if str(resource_department_id) == user_department_id:
+            return True
+        managed = user_department_context.get("managed_department_ids") or set()
+        return str(resource_department_id) in managed
+    if visibility == "public":
+        return True
+    if visibility == "explicit":
+        return False
+    return owner_user_id == current_user_id
+
+
+def _can_read_company_memory_item_sync(
+    item: Dict[str, Any],
+    current_user: CurrentUser,
+    user_department_context: Dict[str, Any],
+    acl_entries: List[Dict[str, Any]],
+) -> bool:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    memory_type_value = str(item.get("type") or "").strip().lower()
+
+    # Priority #1: explicit deny in ACL.
+    acl_decision = _evaluate_acl_decision(acl_entries, current_user, user_department_context)
+    if acl_decision is False:
+        return False
+
+    # Priority #2: explicit allow in ACL or metadata share target.
+    if acl_decision is True or _is_explicit_metadata_allow(metadata, current_user):
+        return True
+
+    owner_user_id = str(
+        metadata.get("owner_user_id")
+        or item.get("userId")
+        or item.get("user_id")
+        or ""
+    ).strip()
+    owner_agent_id = str(
+        metadata.get("owner_agent_id")
+        or item.get("agentId")
+        or item.get("agent_id")
+        or ""
+    ).strip()
+    resource_department_id = str(metadata.get("department_id") or "").strip() or None
+    visibility = _resolve_memory_visibility(memory_type_value, metadata)
+
+    # Priority #3: owner(user/agent) check.
+    if owner_user_id and owner_user_id == str(current_user.user_id):
+        return True
+    if owner_agent_id and _agent_owned_by_user_sync(owner_agent_id, current_user.user_id):
+        return True
+
+    # User profile memory remains private by default.
+    if memory_type_value == "user_context":
+        return False
+
+    # Priority #4: department inheritance scope.
+    if _company_visibility_allows(
+        visibility=visibility,
+        owner_user_id=owner_user_id,
+        resource_department_id=resource_department_id,
+        current_user=current_user,
+        user_department_context=user_department_context,
+    ):
+        return True
+
+    # Priority #5: role override.
+    if _is_admin_or_manager(current_user):
+        return True
+
+    return False
+
+
+def _filter_company_memory_access_sync(
+    responses: List[dict],
+    current_user: CurrentUser,
+) -> List[dict]:
+    """Filter non-agent memories using ACL + ownership + department inheritance."""
+    memory_ids = []
+    for item in responses:
+        if str(item.get("type") or "").strip().lower() == "agent":
+            continue
+        try:
+            memory_ids.append(int(item.get("id")))
+        except (TypeError, ValueError):
+            continue
+
+    acl_map = _load_memory_acl_map_sync(memory_ids)
+    user_department_context = _build_user_department_context_sync(current_user)
+
+    filtered: List[dict] = []
+    for item in responses:
+        item_type = str(item.get("type") or "").strip().lower()
+        if item_type == "agent":
+            filtered.append(item)
+            continue
+
+        item_id: Optional[int] = None
+        try:
+            item_id = int(item.get("id"))
+        except (TypeError, ValueError):
+            item_id = None
+
+        acl_entries = acl_map.get(item_id or -1, [])
+        if _can_read_company_memory_item_sync(
+            item,
+            current_user=current_user,
+            user_department_context=user_department_context,
+            acl_entries=acl_entries,
+        ):
+            filtered.append(item)
+
+    return filtered
+
+
+def _agent_owned_by_user_sync(agent_id: Optional[str], user_id: str) -> bool:
+    from database.connection import get_db_session
+    from database.models import Agent
+
+    parsed_agent_id = _parse_uuid(agent_id)
+    if parsed_agent_id is None:
+        return False
+
+    with get_db_session() as session:
+        row = session.query(Agent.owner_user_id).filter(Agent.agent_id == parsed_agent_id).first()
+    return bool(row and str(row[0]) == str(user_id))
+
+
+def _can_manage_memory_item_sync(item: Dict[str, Any], current_user: CurrentUser) -> bool:
+    if _is_admin_or_manager(current_user):
+        return True
+
+    item_type = str(item.get("type") or "").strip().lower()
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    owner_user_id = str(
+        metadata.get("owner_user_id")
+        or item.get("userId")
+        or item.get("user_id")
+        or ""
+    ).strip()
+    owner_agent_id = str(
+        metadata.get("owner_agent_id")
+        or item.get("agentId")
+        or item.get("agent_id")
+        or ""
+    ).strip()
+    if owner_user_id and owner_user_id == str(current_user.user_id):
+        return True
+    if owner_agent_id and _agent_owned_by_user_sync(owner_agent_id, current_user.user_id):
+        return True
+
+    if item_type == "agent":
+        agent_id = str(item.get("agentId") or item.get("agent_id") or "").strip()
+        if agent_id and _agent_owned_by_user_sync(agent_id, current_user.user_id):
+            return True
+
+    return False
+
+
+def _require_memory_read_access_sync(item: Dict[str, Any], current_user: CurrentUser) -> None:
+    item_type = str(item.get("type") or "").strip().lower()
+    if item_type == "agent":
+        agent_id = str(item.get("agentId") or item.get("agent_id") or "").strip()
+        _require_agent_read_access_sync(agent_id, current_user)
+        return
+
+    allowed_items = _filter_company_memory_access_sync([item], current_user)
+    if not allowed_items:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to access this memory",
+        )
+
+
+def _require_memory_manage_access_sync(item: Dict[str, Any], current_user: CurrentUser) -> None:
+    if not _can_manage_memory_item_sync(item, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to modify this memory",
+        )
+
+
+def _enrich_memory_security_metadata_sync(memory_item) -> None:
+    """Normalize ownership/visibility metadata before storing memory records."""
+    memory_type_value = (
+        memory_item.memory_type.value
+        if hasattr(memory_item.memory_type, "value")
+        else str(memory_item.memory_type)
+    )
+    metadata = dict(memory_item.metadata or {})
+
+    owner_user_id = str(metadata.get("owner_user_id") or memory_item.user_id or "").strip() or None
+    owner_agent_id = (
+        str(metadata.get("owner_agent_id") or memory_item.agent_id or "").strip() or None
+    )
+    visibility = _resolve_memory_visibility(memory_type_value, metadata)
+    sensitivity = str(metadata.get("sensitivity") or "internal").strip().lower() or "internal"
+    department_id = str(metadata.get("department_id") or "").strip() or None
+    if not department_id:
+        if memory_type_value == "agent":
+            department_id = _resolve_agent_department_id_sync(memory_item.agent_id)
+        else:
+            department_id = _resolve_user_department_id_sync(owner_user_id)
+
+    metadata["owner_user_id"] = owner_user_id
+    metadata["owner_agent_id"] = owner_agent_id
+    metadata["department_id"] = department_id
+    metadata["visibility"] = visibility
+    metadata["sensitivity"] = sensitivity
+    memory_item.metadata = metadata
 
 
 def _filter_agent_memory_access_sync(
@@ -1248,16 +1715,16 @@ def _retrieve_memories_sync(query):
     return _items_to_responses(fallback_items)
 
 
-def _retrieve_shared_sync(user_id: str):
-    """Retrieve shared memories synchronously."""
+def _retrieve_shared_sync(current_user: CurrentUser):
+    """Retrieve accessible memories that are shared/published by others."""
     from memory_system.memory_interface import MemoryType, SearchQuery
     from memory_system.memory_system import get_memory_system
 
     query = SearchQuery(
         query_text="*",
         memory_type=MemoryType.COMPANY,
-        user_id=user_id,
-        top_k=100,
+        user_id=None,
+        top_k=300,
     )
     try:
         responses = _list_memories_without_embedding_sync(query)
@@ -1269,7 +1736,25 @@ def _retrieve_shared_sync(user_id: str):
             items = []
         responses = _items_to_responses(items)
 
-    return [r for r in responses if r.get("metadata") and r["metadata"].get("shared_from")]
+    visible = _filter_company_memory_access_sync(responses, current_user)
+    shared: List[dict] = []
+    for item in visible:
+        if str(item.get("type") or "").strip().lower() == "agent":
+            continue
+        owner_user_id = str(
+            ((item.get("metadata") or {}).get("owner_user_id") if isinstance(item.get("metadata"), dict) else "")
+            or item.get("userId")
+            or ""
+        ).strip()
+        if owner_user_id and owner_user_id == str(current_user.user_id):
+            continue
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        visibility = _resolve_memory_visibility(str(item.get("type") or ""), metadata)
+        if visibility in {"explicit", "department", "department_tree", "public", "account"} or metadata.get(
+            "shared_with_user_ids"
+        ):
+            shared.append(item)
+    return shared
 
 
 def _store_memory_sync(memory_item):
@@ -1283,6 +1768,8 @@ def _store_memory_sync(memory_item):
         raise ValueError("agent_id required for agent memories")
     if memory_item.memory_type != MemoryType.AGENT and not memory_item.user_id:
         raise ValueError("user_id required for company/user_context memories")
+
+    _enrich_memory_security_metadata_sync(memory_item)
 
     memory_system = get_memory_system()
     repo = _get_memory_repository()
@@ -1752,12 +2239,13 @@ def _share_memory_sync(
     type_str: Optional[str],
     user_ids: List[str],
     agent_ids: List[str],
+    scope: Optional[str],
+    expires_at: Optional[str],
+    reason: Optional[str],
+    shared_by_user_id: Optional[str],
 ):
-    """Share a memory synchronously."""
-    from memory_system.collections import CollectionName
+    """Apply publish/share policy on a memory and upsert explicit ACL entries."""
     from memory_system.memory_interface import MemoryItem, MemoryType
-    from memory_system.memory_system import get_memory_system
-    from memory_system.milvus_connection import get_milvus_connection
 
     repo = _get_memory_repository()
     source_record = repo.get(memory_id)
@@ -1772,76 +2260,133 @@ def _share_memory_sync(
         target_user_ids = share_targets["target_user_ids"]
         target_entity_ids = share_targets["target_entity_ids"]
         target_entity_names = share_targets["target_entity_names"]
+        normalized_scope = str(scope or "").strip().lower()
+        normalized_reason = str(reason or "").strip() or None
+        if not normalized_scope:
+            if target_user_ids:
+                normalized_scope = "explicit"
+            elif source_record.memory_type == MemoryType.USER_CONTEXT:
+                normalized_scope = "private"
+            else:
+                normalized_scope = "department_tree"
+        if target_user_ids and not normalized_reason:
+            raise ValueError("reason is required when explicit user exceptions are configured")
+        if source_record.memory_type == MemoryType.USER_CONTEXT:
+            if normalized_scope not in {"private", "explicit"}:
+                raise ValueError(
+                    "User-context memories only support private or explicit visibility",
+                )
+            if normalized_scope == "explicit" and not target_user_ids:
+                normalized_scope = "private"
+        elif normalized_scope == "explicit" and not target_user_ids:
+            normalized_scope = "department_tree"
 
-        existing_shared_records = repo.list_shared_children(source_record.id)
-        existing_by_user_id = {}
-        for shared_record in existing_shared_records:
-            if shared_record.user_id and shared_record.user_id not in existing_by_user_id:
-                existing_by_user_id[shared_record.user_id] = shared_record
+        expires_dt = _parse_datetime_safe(expires_at)
+        if expires_at and expires_dt is None:
+            raise ValueError("Invalid expires_at format, expected ISO date/datetime")
 
-        current_user_ids = set(existing_by_user_id.keys())
-        desired_user_ids = set(target_user_ids)
-
-        users_to_add = sorted(desired_user_ids - current_user_ids)
-        users_to_remove = sorted(current_user_ids - desired_user_ids)
-
-        memory_system = get_memory_system()
-
-        for user_id_to_remove in users_to_remove:
-            shared_record = existing_by_user_id.get(user_id_to_remove)
-            if not shared_record:
-                continue
-            if shared_record.milvus_id is not None:
-                try:
-                    memory_system.delete_memory(shared_record.milvus_id, shared_record.memory_type)
-                except Exception as exc:
-                    logger.warning(
-                        "Failed deleting shared vector row source=%s child=%s: %s",
-                        source_record.id,
-                        shared_record.id,
-                        exc,
-                    )
+        # Phase out legacy copy-based shares by cleaning child copies.
+        for shared_record in repo.list_shared_children(source_record.id):
             repo.soft_delete(shared_record.id)
 
-        for target_user_id in users_to_add:
-            shared_meta = {
-                **(source_record.metadata or {}),
-                "shared_from": source_record.id,
-                "shared_at": datetime.utcnow().isoformat(),
-                "shared_to_user_id": target_user_id,
-            }
-            shared_item = MemoryItem(
+        source_meta = dict(source_record.metadata or {})
+        source_meta["visibility"] = normalized_scope
+        source_meta["shared_with"] = target_entity_ids
+        source_meta["shared_with_user_ids"] = target_user_ids
+        source_meta["shared_with_names"] = target_entity_names
+        source_meta["share_reason"] = normalized_reason
+        source_meta["shared_updated_at"] = datetime.utcnow().isoformat()
+        source_meta["shared_updated_by"] = shared_by_user_id
+        source_meta["expires_at"] = expires_dt.isoformat() if expires_dt else None
+
+        # publish/promote: agent_working_memory -> team/org(company) memory
+        # when scope goes beyond private.
+        if (
+            source_record.memory_type == MemoryType.AGENT
+            and normalized_scope in {"explicit", "department", "department_tree", "public", "account"}
+        ):
+            owner_user_id = source_record.owner_user_id or source_record.user_id
+            promoted_meta = dict(source_meta)
+            promoted_meta["source_memory_id"] = source_record.id
+            promoted_meta["publish_mode"] = "promote"
+            promoted_memory = MemoryItem(
                 content=source_record.content,
                 memory_type=MemoryType.COMPANY,
-                user_id=target_user_id,
+                user_id=owner_user_id,
                 timestamp=datetime.utcnow(),
-                metadata=shared_meta,
+                metadata=promoted_meta,
             )
-            created = repo.create(shared_item)
+            _enrich_memory_security_metadata_sync(promoted_memory)
+            created = repo.create(promoted_memory)
             _sync_record_to_milvus_sync(created.id)
+            target_memory_id = int(created.id)
 
-        source_meta = dict(source_record.metadata or {})
-        if target_entity_ids:
-            source_meta["shared_with"] = target_entity_ids
-            source_meta["shared_with_names"] = target_entity_names
+            # Keep backlink on source agent memory for traceability.
+            source_meta["last_promoted_memory_id"] = target_memory_id
+            repo.update_record(
+                source_record.id,
+                metadata=source_meta,
+                mark_vector_pending=False,
+            )
         else:
-            source_meta.pop("shared_with", None)
-            source_meta.pop("shared_with_names", None)
+            updated = repo.update_record(
+                source_record.id,
+                metadata=source_meta,
+                visibility=normalized_scope,
+                expires_at=expires_dt,
+                clear_expires_at=expires_dt is None,
+                mark_vector_pending=False,
+            )
+            if not updated:
+                return None
+            target_memory_id = int(updated.id)
 
-        updated = repo.update_record(
-            source_record.id,
-            metadata=source_meta,
-            mark_vector_pending=False,
+        acl_entries = []
+        for target_user_id in target_user_ids:
+            acl_entries.append(
+                {
+                    "effect": "allow",
+                    "principal_type": "user",
+                    "principal_id": target_user_id,
+                    "reason": normalized_reason,
+                    "expires_at": expires_dt.isoformat() if expires_dt else None,
+                }
+            )
+        repo.replace_acl_entries(
+            target_memory_id,
+            acl_entries,
+            created_by=shared_by_user_id,
         )
-        if not updated:
+
+        refreshed = repo.get(target_memory_id)
+        if not refreshed:
             return None
 
-        item = updated.to_memory_item()
+        item = refreshed.to_memory_item()
         from database.connection import get_db_session
+        from database.models import AuditLog
 
         with get_db_session() as session:
             agent_name = _lookup_agent_name(session, item.agent_id)
             user_name = _lookup_user_name(session, item.user_id)
+
+            session.add(
+                AuditLog(
+                    user_id=_parse_uuid(shared_by_user_id),
+                    agent_id=_parse_uuid(item.agent_id),
+                    action="memory.publish" if source_record.memory_type == MemoryType.AGENT else "memory.share",
+                    resource_type="memory",
+                    resource_id=None,
+                    details={
+                        "memory_id": target_memory_id,
+                        "source_memory_id": source_record.id,
+                        "scope": normalized_scope,
+                        "target_user_ids": target_user_ids,
+                        "reason": normalized_reason,
+                        "expires_at": expires_dt.isoformat() if expires_dt else None,
+                    },
+                )
+            )
 
         return _memory_item_to_response(
             item,
@@ -1855,78 +2400,7 @@ def _share_memory_sync(
         if not type_str:
             return None
 
-    mem_type = MemoryType(type_str)
-    memory_system = get_memory_system()
-
-    target_ids = agent_ids or user_ids
-    success = memory_system.share_memory(memory_id, mem_type, target_ids)
-    if not success:
-        return None
-
-    # Re-fetch to return updated data
-    if mem_type == MemoryType.AGENT:
-        collection_name = CollectionName.AGENT_MEMORIES
-        output_fields = ["agent_id", "content", "timestamp", "metadata"]
-    else:
-        collection_name = CollectionName.COMPANY_MEMORIES
-        output_fields = ["user_id", "content", "memory_type", "timestamp", "metadata"]
-
-    milvus = get_milvus_connection()
-    results = _query_collection_with_retry(
-        milvus,
-        collection_name,
-        lambda col: col.query(
-            expr=f"id == {memory_id}",
-            output_fields=output_fields,
-        ),
-    )
-
-    if not results:
-        return {
-            "id": str(memory_id),
-            "type": type_str,
-            "content": "",
-            "createdAt": datetime.utcnow().isoformat(),
-            "tags": [],
-            "isShared": True,
-            "sharedWith": target_ids,
-        }
-
-    row = results[0]
-    timestamp = datetime.fromtimestamp(row["timestamp"] / 1000.0) if row.get("timestamp") else None
-
-    item = MemoryItem(
-        id=memory_id,
-        content=row["content"],
-        memory_type=mem_type,
-        agent_id=row.get("agent_id"),
-        user_id=row.get("user_id"),
-        timestamp=timestamp,
-        metadata=row.get("metadata"),
-    )
-
-    if not item.metadata:
-        item.metadata = {}
-    item.metadata["shared_with"] = target_ids
-
-    from database.connection import get_db_session
-
-    with get_db_session() as session:
-        agent_name = _lookup_agent_name(session, item.agent_id)
-        user_name = _lookup_user_name(session, item.user_id)
-        shared_with_names = [
-            _lookup_agent_name(session, str(target_id))
-            or _lookup_user_name(session, str(target_id))
-            or str(target_id)
-            for target_id in target_ids
-        ]
-
-    return _memory_item_to_response(
-        item,
-        agent_name=agent_name,
-        user_name=user_name,
-        shared_with_names=shared_with_names,
-    )
+    return None
 
 
 def _purge_memories_sync(memory_type: str, agent_id: Optional[str]):
@@ -2052,8 +2526,8 @@ async def list_memories(
         date_to=date_to,
         tags=tags,
     )
-    if _is_agent_scoped_query(memory_type, agent_id=agent_id):
-        results = await asyncio.to_thread(_filter_agent_memory_access_sync, results, current_user)
+    results = await asyncio.to_thread(_filter_agent_memory_access_sync, results, current_user)
+    results = await asyncio.to_thread(_filter_company_memory_access_sync, results, current_user)
 
     return [MemoryResponse(**r) for r in results]
 
@@ -2167,7 +2641,7 @@ async def get_shared_memories(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get memories shared with the current user."""
-    results = await asyncio.to_thread(_retrieve_shared_sync, current_user.user_id)
+    results = await asyncio.to_thread(_retrieve_shared_sync, current_user)
     return [MemoryResponse(**r) for r in results]
 
 
@@ -2208,8 +2682,8 @@ async def get_memories_by_type(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve memories: {e}",
         )
-    if mem_type == MemoryType.AGENT:
-        results = await asyncio.to_thread(_filter_agent_memory_access_sync, results, current_user)
+    results = await asyncio.to_thread(_filter_agent_memory_access_sync, results, current_user)
+    results = await asyncio.to_thread(_filter_company_memory_access_sync, results, current_user)
 
     return [MemoryResponse(**r) for r in results]
 
@@ -2241,6 +2715,7 @@ async def get_memories_by_agent(
             detail=str(e),
         )
     results = await asyncio.to_thread(_filter_agent_memory_access_sync, results, current_user)
+    results = await asyncio.to_thread(_filter_company_memory_access_sync, results, current_user)
     return [MemoryResponse(**r) for r in results]
 
 
@@ -2314,6 +2789,7 @@ async def get_memory(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Memory not found",
         )
+    await asyncio.to_thread(_require_memory_read_access_sync, result, current_user)
     return MemoryResponse(**result)
 
 
@@ -2400,8 +2876,8 @@ async def search_memories(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to search memories: {e}",
         )
-    if memory_type == MemoryType.AGENT:
-        results = await asyncio.to_thread(_filter_agent_memory_access_sync, results, current_user)
+    results = await asyncio.to_thread(_filter_agent_memory_access_sync, results, current_user)
+    results = await asyncio.to_thread(_filter_company_memory_access_sync, results, current_user)
 
     return [MemoryResponse(**r) for r in results]
 
@@ -2414,6 +2890,14 @@ async def update_memory(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update a memory (delete + re-insert in Milvus). Type is auto-detected if not provided."""
+    existing = await asyncio.to_thread(_get_memory_by_id_sync, memory_id, type)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Memory not found",
+        )
+    await asyncio.to_thread(_require_memory_manage_access_sync, existing, current_user)
+
     try:
         result = await asyncio.to_thread(
             _update_memory_sync, memory_id, type, request, current_user.user_id
@@ -2445,6 +2929,14 @@ async def reindex_memory(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Manually rebuild vector index for one memory."""
+    existing = await asyncio.to_thread(_get_memory_by_id_sync, memory_id, type)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Memory not found",
+        )
+    await asyncio.to_thread(_require_memory_manage_access_sync, existing, current_user)
+
     result = await asyncio.to_thread(_reindex_memory_sync, memory_id, type)
     if result is None:
         raise HTTPException(
@@ -2483,6 +2975,14 @@ async def delete_memory(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Delete a memory by Milvus ID. Type is auto-detected if not provided."""
+    existing = await asyncio.to_thread(_get_memory_by_id_sync, memory_id, type)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Memory not found",
+        )
+    await asyncio.to_thread(_require_memory_manage_access_sync, existing, current_user)
+
     success = await asyncio.to_thread(_delete_memory_sync, memory_id, type)
     if not success:
         raise HTTPException(
@@ -2503,14 +3003,32 @@ async def share_memory(
     type: Optional[str] = Query(None, pattern=r"^(agent|company|user_context|task_context)$"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Share a memory with specific users/agents (full replacement)."""
-    result = await asyncio.to_thread(
-        _share_memory_sync,
-        memory_id,
-        type,
-        request.user_ids or [],
-        request.agent_ids or [],
-    )
+    """Apply share policy with optional explicit user exceptions (full replacement)."""
+    existing = await asyncio.to_thread(_get_memory_by_id_sync, memory_id, type)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Memory not found",
+        )
+    await asyncio.to_thread(_require_memory_manage_access_sync, existing, current_user)
+
+    try:
+        result = await asyncio.to_thread(
+            _share_memory_sync,
+            memory_id,
+            type,
+            request.user_ids or [],
+            request.agent_ids or [],
+            request.scope,
+            request.expires_at,
+            request.reason,
+            current_user.user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
     if result is None:
         raise HTTPException(
@@ -2522,11 +3040,53 @@ async def share_memory(
         "Memory shared",
         extra={
             "memory_id": memory_id,
-            "shared_user_ids": request.user_ids,
-            "shared_agent_ids": request.agent_ids,
+            "shared_target_user_ids": request.user_ids,
+            "scope": request.scope,
         },
     )
 
+    return MemoryResponse(**result)
+
+
+@router.post("/{memory_id}/publish", response_model=MemoryResponse)
+async def publish_memory(
+    memory_id: int,
+    request: MemoryShareRequest,
+    type: Optional[str] = Query(None, pattern=r"^(agent|company|user_context|task_context)$"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Publish/promote memory to team/org scopes (scope-first semantics)."""
+    existing = await asyncio.to_thread(_get_memory_by_id_sync, memory_id, type)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Memory not found",
+        )
+    await asyncio.to_thread(_require_memory_manage_access_sync, existing, current_user)
+
+    scope = request.scope or "department_tree"
+    try:
+        result = await asyncio.to_thread(
+            _share_memory_sync,
+            memory_id,
+            type,
+            request.user_ids or [],
+            request.agent_ids or [],
+            scope,
+            request.expires_at,
+            request.reason,
+            current_user.user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Memory not found or publish failed",
+        )
     return MemoryResponse(**result)
 
 

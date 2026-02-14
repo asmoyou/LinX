@@ -22,6 +22,17 @@ export type MemoryMetadata = {
   importance_level?: string;
   importance_score?: number;
   auto_generated?: boolean;
+  owner_user_id?: string;
+  owner_agent_id?: string;
+  department_id?: string;
+  visibility?: "explicit" | "department" | "department_tree" | "account" | "private" | "public" | string;
+  sensitivity?: string;
+  source_memory_id?: number;
+  last_promoted_memory_id?: number;
+  expires_at?: string;
+  share_reason?: string;
+  publish_mode?: string;
+  shared_updated_at?: string;
   [key: string]: unknown;
 };
 

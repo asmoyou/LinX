@@ -1,25 +1,173 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { X, Share2, Users, Check, Loader2 } from "lucide-react";
+import {
+  CalendarClock,
+  Info,
+  Loader2,
+  Plus,
+  Search,
+  Send,
+  Share2,
+  Shield,
+  X,
+} from "lucide-react";
 import { ModalPanel } from "@/components/ModalPanel";
-import { agentsApi } from "@/api/agents";
+import { adminUsersApi, type AdminUser } from "@/api/adminUsers";
 import type { Memory } from "@/types/memory";
 
-interface ShareTarget {
-  id: string;
-  name: string;
-  type: "agent" | "user";
+type VisibilityScope =
+  | "explicit"
+  | "department"
+  | "department_tree"
+  | "account"
+  | "private"
+  | "public";
+
+const VALID_SCOPES: VisibilityScope[] = [
+  "private",
+  "explicit",
+  "department",
+  "department_tree",
+  "account",
+  "public",
+];
+
+const parseUserIds = (raw: string): string[] => {
+  const items = raw
+    .split(/[\n,，]/g)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return Array.from(new Set(items));
+};
+
+const toDateTimeLocal = (isoValue?: string): string => {
+  if (!isoValue) return "";
+  const date = new Date(isoValue);
+  if (Number.isNaN(date.getTime())) return "";
+  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
+  const local = new Date(date.getTime() - offsetMs);
+  return local.toISOString().slice(0, 16);
+};
+
+const toIsoDateTime = (dateTimeLocal?: string): string | undefined => {
+  if (!dateTimeLocal) return undefined;
+  const date = new Date(dateTimeLocal);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return date.toISOString();
+};
+
+const defaultScopeByType = (type: Memory["type"]): VisibilityScope => {
+  if (type === "agent") return "department_tree";
+  if (type === "user_context") return "private";
+  return "department_tree";
+};
+
+const resolveInitialScope = (memory: Memory): VisibilityScope => {
+  const metadata = memory.metadata || {};
+  const visibility = String(metadata.visibility || "").trim().toLowerCase();
+
+  if (memory.type === "user_context") {
+    if (visibility === "private" || visibility === "explicit") {
+      return visibility as VisibilityScope;
+    }
+    return "private";
+  }
+
+  if (VALID_SCOPES.includes(visibility as VisibilityScope)) {
+    return visibility as VisibilityScope;
+  }
+  return defaultScopeByType(memory.type);
+};
+
+const scopeOptionsByType = (
+  type: Memory["type"],
+): Array<{ value: VisibilityScope; labelKey: string; descKey: string }> => {
+  if (type === "user_context") {
+    return [
+      {
+        value: "private",
+        labelKey: "memory.share.scope.private",
+        descKey: "memory.share.scopeDesc.privateUser",
+      },
+      {
+        value: "explicit",
+        labelKey: "memory.share.scope.explicit",
+        descKey: "memory.share.scopeDesc.explicitException",
+      },
+    ];
+  }
+  return [
+    {
+      value: "private",
+      labelKey: "memory.share.scope.private",
+      descKey: "memory.share.scopeDesc.private",
+    },
+    {
+      value: "department",
+      labelKey: "memory.share.scope.department",
+      descKey: "memory.share.scopeDesc.department",
+    },
+    {
+      value: "department_tree",
+      labelKey: "memory.share.scope.departmentTree",
+      descKey: "memory.share.scopeDesc.departmentTree",
+    },
+    {
+      value: "account",
+      labelKey: "memory.share.scope.account",
+      descKey: "memory.share.scopeDesc.account",
+    },
+    {
+      value: "public",
+      labelKey: "memory.share.scope.public",
+      descKey: "memory.share.scopeDesc.public",
+    },
+    {
+      value: "explicit",
+      labelKey: "memory.share.scope.explicit",
+      descKey: "memory.share.scopeDesc.explicit",
+    },
+  ];
+};
+
+interface MemorySharingPayload {
+  mode: "share" | "publish";
+  scope: VisibilityScope;
+  userIds: string[];
+  expiresAt?: string;
+  reason?: string;
 }
 
 interface MemorySharingModalProps {
   memory: Memory | null;
   isOpen: boolean;
   onClose: () => void;
-  onShare: (
-    memoryId: string,
-    payload: { agentIds: string[]; userIds: string[] },
-  ) => Promise<void> | void;
+  onShare: (memoryId: string, payload: MemorySharingPayload) => Promise<void> | void;
 }
+
+const getUserLabel = (user: AdminUser): string =>
+  String(user.displayName || "").trim() ||
+  String(user.username || "").trim() ||
+  String(user.email || "").trim() ||
+  String(user.id);
+
+const getUserLabelById = (userId: string, userById: Map<string, AdminUser>): string => {
+  const matched = userById.get(userId);
+  return matched ? getUserLabel(matched) : userId;
+};
+
+const getUserSearchText = (user: AdminUser): string => {
+  return [
+    user.id,
+    user.username,
+    user.displayName,
+    user.email,
+    user.departmentName,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+};
 
 export const MemorySharingModal: React.FC<MemorySharingModalProps> = ({
   memory,
@@ -28,107 +176,189 @@ export const MemorySharingModal: React.FC<MemorySharingModalProps> = ({
   onShare,
 }) => {
   const { t } = useTranslation();
-  const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
-  const [initialSelectedUsers, setInitialSelectedUsers] = useState<string[]>(
-    [],
-  );
-  const [availableTargets, setAvailableTargets] = useState<ShareTarget[]>([]);
-  const [isLoadingTargets, setIsLoadingTargets] = useState(false);
+  const [scope, setScope] = useState<VisibilityScope>("account");
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  const [userSearch, setUserSearch] = useState("");
+  const [manualUserInput, setManualUserInput] = useState("");
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false);
+  const [usersLoadError, setUsersLoadError] = useState("");
+  const [expiresAtLocal, setExpiresAtLocal] = useState("");
+  const [reason, setReason] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string>("");
+
+  const mode: "share" | "publish" =
+    memory?.type === "agent" ? "publish" : "share";
+
+  const scopeOptions = useMemo(
+    () => scopeOptionsByType(memory?.type || "company"),
+    [memory?.type],
+  );
 
   useEffect(() => {
     if (!isOpen || !memory) return;
-    const initial = (memory.sharedWith || []).map((id) => String(id));
-    setSelectedUsers(initial);
-    setInitialSelectedUsers(initial);
-  }, [isOpen, memory]);
 
-  // Fetch real agents when modal opens
-  useEffect(() => {
-    if (!isOpen) return;
+    let cancelled = false;
 
-    const fetchTargets = async () => {
-      setIsLoadingTargets(true);
+    setSubmitError("");
+    setScope(resolveInitialScope(memory));
+    setSelectedUserIds(
+      Array.from(new Set((memory.sharedWith || []).map((id) => String(id)))),
+    );
+    setUserSearch("");
+    setManualUserInput("");
+    setExpiresAtLocal(toDateTimeLocal(String(memory.metadata?.expires_at || "")));
+    setReason(String(memory.metadata?.share_reason || ""));
+    setUsersLoadError("");
+    setIsLoadingUsers(true);
+
+    const loadUsers = async () => {
       try {
-        const agents = await agentsApi.getAll();
-        const agentTargets: ShareTarget[] = agents.map((agent) => ({
-          id: String(agent.agentId || agent.id),
-          name: agent.name,
-          type: "agent" as const,
-        }));
+        const pageSize = 100;
+        const maxPages = 20;
+        let page = 1;
+        let total = Number.POSITIVE_INFINITY;
+        let allUsers: AdminUser[] = [];
 
-        const sharedIds = (memory?.sharedWith || []).map((id) => String(id));
-        const sharedNames = (memory?.sharedWithNames || []).map((name) =>
-          String(name),
-        );
-        const sharedNameMap = new Map(
-          sharedIds.map((id, index) => [id, sharedNames[index] || id]),
-        );
-        const knownAgentIds = new Set(agentTargets.map((target) => target.id));
-        const missingTargets: ShareTarget[] = sharedIds
-          .filter((id) => !knownAgentIds.has(id))
-          .map((id) => ({
-            id,
-            name: sharedNameMap.get(id) || id,
-            type: "user" as const,
-          }));
+        while (page <= maxPages && allUsers.length < total) {
+          const result = await adminUsersApi.list({
+            page,
+            page_size: pageSize,
+            status: "active",
+          });
 
-        setAvailableTargets([...agentTargets, ...missingTargets]);
+          const pageUsers = result.users || [];
+          allUsers = allUsers.concat(pageUsers);
+          total = Number.isFinite(result.total) ? Number(result.total) : allUsers.length;
+
+          if (pageUsers.length < pageSize) {
+            break;
+          }
+          page += 1;
+        }
+
+        if (cancelled) return;
+        const dedupedUsers = Array.from(
+          new Map(allUsers.map((user) => [String(user.id), user])).values(),
+        );
+        const enabledUsers = dedupedUsers.filter((user) => !user.isDisabled);
+        setUsers(enabledUsers);
       } catch {
-        setAvailableTargets([]);
+        if (cancelled) return;
+        setUsers([]);
+        setUsersLoadError(t("memory.share.userLoadError"));
       } finally {
-        setIsLoadingTargets(false);
+        if (!cancelled) {
+          setIsLoadingUsers(false);
+        }
       }
     };
 
-    fetchTargets();
-  }, [isOpen, memory]);
+    void loadUsers();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, memory, t]);
+
+  const userById = useMemo(() => {
+    const map = new Map<string, AdminUser>();
+    for (const user of users) {
+      map.set(String(user.id), user);
+    }
+    return map;
+  }, [users]);
+
+  const filteredUsers = useMemo(() => {
+    const keyword = userSearch.trim().toLowerCase();
+    if (!keyword) {
+      return users;
+    }
+    return users.filter((user) => getUserSearchText(user).includes(keyword));
+  }, [users, userSearch]);
+
+  const initialSnapshot = useMemo(() => {
+    if (!memory) return "";
+    return JSON.stringify({
+      scope: resolveInitialScope(memory),
+      userIds: (memory.sharedWith || []).map((id) => String(id)),
+      expiresAt: toDateTimeLocal(String(memory.metadata?.expires_at || "")),
+      reason: String(memory.metadata?.share_reason || ""),
+    });
+  }, [memory]);
+
+  const currentSnapshot = useMemo(
+    () =>
+      JSON.stringify({
+        scope,
+        userIds: selectedUserIds,
+        expiresAt: expiresAtLocal,
+        reason: reason.trim(),
+      }),
+    [scope, selectedUserIds, expiresAtLocal, reason],
+  );
+
+  const hasChanges = initialSnapshot !== currentSnapshot;
 
   if (!isOpen || !memory) return null;
 
-  const handleToggleUser = (userId: string) => {
-    setSelectedUsers((prev) =>
-      prev.includes(userId)
-        ? prev.filter((id) => id !== userId)
-        : [...prev, userId],
-    );
+  const actionTitle =
+    mode === "publish" ? t("memory.share.publishTitle") : t("memory.share.title");
+  const actionButtonText =
+    mode === "publish"
+      ? t("memory.share.applyPublish")
+      : t("memory.share.applyChanges");
+  const scopeHintKey =
+    mode === "publish" ? "memory.share.publishHint" : "memory.share.shareHint";
+
+  const toggleUser = (userId: string) => {
+    setSelectedUserIds((current) => {
+      if (current.includes(userId)) {
+        return current.filter((id) => id !== userId);
+      }
+      return [...current, userId];
+    });
   };
 
-  const handleShare = async () => {
-    const selectedTypeMap = new Map(
-      availableTargets.map((target) => [target.id, target.type]),
-    );
-    const agentIds = selectedUsers.filter(
-      (id) => selectedTypeMap.get(id) === "agent",
-    );
-    const userIds = selectedUsers.filter(
-      (id) => selectedTypeMap.get(id) === "user",
-    );
+  const removeSelectedUser = (userId: string) => {
+    setSelectedUserIds((current) => current.filter((id) => id !== userId));
+  };
+
+  const handleAddManualUsers = () => {
+    const parsed = parseUserIds(manualUserInput);
+    if (parsed.length === 0) return;
+
+    setSelectedUserIds((current) => {
+      return Array.from(new Set([...current, ...parsed]));
+    });
+    setManualUserInput("");
+  };
+
+  const handleSubmit = async () => {
+    setSubmitError("");
+    if (scope === "explicit" && selectedUserIds.length === 0) {
+      setSubmitError(t("memory.share.explicitNeedsUsers"));
+      return;
+    }
+    if (selectedUserIds.length > 0 && !reason.trim()) {
+      setSubmitError(t("memory.share.reasonRequired"));
+      return;
+    }
 
     setIsSubmitting(true);
     try {
-      await onShare(memory.id, { agentIds, userIds });
+      await onShare(memory.id, {
+        mode,
+        scope,
+        userIds: selectedUserIds,
+        expiresAt: toIsoDateTime(expiresAtLocal),
+        reason: reason.trim() || undefined,
+      });
       onClose();
     } finally {
       setIsSubmitting(false);
     }
   };
-
-  const selectedSet = new Set(selectedUsers);
-  const initialSet = new Set(initialSelectedUsers);
-  const hasChanges =
-    selectedSet.size !== initialSet.size ||
-    Array.from(selectedSet).some((id) => !initialSet.has(id));
-  const targetNameMap = new Map(
-    availableTargets.map((target) => [target.id, target.name]),
-  );
-  const selectedTargetNames = selectedUsers.map(
-    (targetId) => targetNameMap.get(targetId) || targetId,
-  );
-  const currentSharedNames =
-    memory.sharedWithNames && memory.sharedWithNames.length > 0
-      ? memory.sharedWithNames
-      : memory.sharedWith || [];
 
   return (
     <div
@@ -136,12 +366,11 @@ export const MemorySharingModal: React.FC<MemorySharingModalProps> = ({
       style={{ marginLeft: "var(--sidebar-width, 0px)" }}
     >
       <ModalPanel className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <Share2 className="w-6 h-6 text-indigo-500" />
             <h2 className="text-2xl font-bold text-gray-800 dark:text-white">
-              {t("memory.share.title")}
+              {actionTitle}
             </h2>
           </div>
           <button
@@ -152,100 +381,208 @@ export const MemorySharingModal: React.FC<MemorySharingModalProps> = ({
           </button>
         </div>
 
-        {/* Memory Preview */}
-        <div className="mb-6 p-4 bg-white/10 rounded-lg">
-          <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
-            {t("memory.share.sharing")}
+        <div className="mb-5 p-4 bg-white/10 rounded-lg space-y-2">
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            {t("memory.share.workingOn")}
           </p>
           <p className="text-gray-800 dark:text-white line-clamp-2">
             {memory.summary || memory.content}
           </p>
-          <p className="text-xs text-indigo-500 mt-2">
-            {t("memory.share.defaultVisibility")}
-          </p>
-          <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-            {t("memory.share.extraShareHint")}
-          </p>
-          <p className="text-xs text-gray-600 dark:text-gray-400 mt-2">
-            {t("memory.share.currentSharedWith")}:{" "}
-            {currentSharedNames.length > 0
-              ? currentSharedNames.join(", ")
-              : t("memory.share.notShared")}
+          <p className="text-xs text-indigo-500 flex items-center gap-1">
+            <Info className="w-3.5 h-3.5" />
+            {t(scopeHintKey)}
           </p>
         </div>
 
-        {/* Share With */}
-        <div className="mb-6">
-          <div className="flex items-center justify-between mb-3">
-            <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
-              <Users className="w-4 h-4" />
-              {t("memory.share.shareWithExternal")} ({selectedUsers.length}{" "}
-              {t("memory.share.selected")})
-            </label>
-            <button
-              onClick={() => setSelectedUsers([])}
-              className="text-xs text-indigo-500 hover:text-indigo-400 transition-colors"
-            >
-              {t("memory.share.clearSelection")}
-            </button>
-          </div>
-          {selectedTargetNames.length > 0 && (
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-              {t("memory.share.selectedNames")}:{" "}
-              {selectedTargetNames.join(", ")}
-            </p>
-          )}
-          {isLoadingTargets ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
-            </div>
-          ) : availableTargets.length === 0 ? (
-            <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-              {t("memory.share.noTargets")}
-            </div>
-          ) : (
-            <div className="space-y-2 max-h-64 overflow-y-auto">
-              {availableTargets.map((target) => (
-                <button
-                  key={target.id}
-                  onClick={() => handleToggleUser(target.id)}
-                  className={`w-full flex items-center justify-between p-3 rounded-lg transition-colors ${
-                    selectedUsers.includes(target.id)
-                      ? "bg-indigo-500/20 border-2 border-indigo-500"
-                      : "bg-white/10 border-2 border-transparent hover:bg-white/20"
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                        target.type === "agent"
-                          ? "bg-blue-500/20"
-                          : "bg-purple-500/20"
-                      }`}
-                    >
-                      <span className="text-sm font-medium">
-                        {target.name.charAt(0)}
-                      </span>
-                    </div>
-                    <div className="text-left">
-                      <p className="text-sm font-medium text-gray-800 dark:text-white">
-                        {target.name}
-                      </p>
-                      <p className="text-xs text-gray-600 dark:text-gray-400 capitalize">
-                        {target.type}
-                      </p>
-                    </div>
+        <div className="mb-5">
+          <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+            <Shield className="w-4 h-4" />
+            {t("memory.share.scopeLabel")}
+          </label>
+          <div className="space-y-2">
+            {scopeOptions.map((option) => (
+              <label
+                key={option.value}
+                className={`block rounded-lg border p-3 cursor-pointer transition-colors ${
+                  scope === option.value
+                    ? "border-indigo-500 bg-indigo-500/10"
+                    : "border-gray-300 dark:border-gray-600 bg-white/10 hover:bg-white/20"
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <input
+                    type="radio"
+                    name="memory_scope"
+                    className="mt-1"
+                    checked={scope === option.value}
+                    onChange={() => setScope(option.value)}
+                  />
+                  <div>
+                    <p className="text-sm font-medium text-gray-800 dark:text-white">
+                      {t(option.labelKey)}
+                    </p>
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                      {t(option.descKey)}
+                    </p>
                   </div>
-                  {selectedUsers.includes(target.id) && (
-                    <Check className="w-5 h-5 text-indigo-500" />
-                  )}
-                </button>
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="mb-5 space-y-3">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            {t("memory.share.explicitUsers")}
+          </label>
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3 top-3 text-gray-500" />
+            <input
+              type="text"
+              value={userSearch}
+              onChange={(event) => setUserSearch(event.target.value)}
+              placeholder={t("memory.share.userSearchPlaceholder")}
+              className="w-full pl-9 pr-3 py-2 bg-white/10 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-800 dark:text-white placeholder-gray-500"
+            />
+          </div>
+          <div className="max-h-52 overflow-y-auto rounded-lg border border-gray-300 dark:border-gray-600 bg-white/5">
+            {isLoadingUsers ? (
+              <div className="px-3 py-4 text-sm text-gray-500 dark:text-gray-400 flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                {t("common.loading")}
+              </div>
+            ) : filteredUsers.length === 0 ? (
+              <div className="px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
+                {usersLoadError || t("memory.share.noUsersFound")}
+              </div>
+            ) : (
+              filteredUsers.map((user) => {
+                const userId = String(user.id);
+                const checked = selectedUserIds.includes(userId);
+                return (
+                  <label
+                    key={userId}
+                    className="flex items-start gap-3 px-3 py-2 border-b border-gray-200/50 dark:border-gray-700/50 last:border-b-0 cursor-pointer hover:bg-white/10"
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={checked}
+                      onChange={() => toggleUser(userId)}
+                    />
+                    <div className="min-w-0">
+                      <p className="text-sm text-gray-800 dark:text-white truncate">
+                        {getUserLabel(user)}
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                        {user.username} · {user.email}
+                      </p>
+                    </div>
+                  </label>
+                );
+              })
+            )}
+          </div>
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              {t("memory.share.explicitUsersHint", { count: selectedUserIds.length })}
+            </p>
+            {selectedUserIds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setSelectedUserIds([])}
+                className="text-xs text-indigo-500 hover:text-indigo-600"
+              >
+                {t("memory.share.clearSelection")}
+              </button>
+            )}
+          </div>
+          {selectedUserIds.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {selectedUserIds.map((userId) => (
+                <span
+                  key={userId}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 text-xs max-w-full"
+                >
+                  <span className="truncate max-w-[220px]">
+                    {getUserLabelById(userId, userById)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => removeSelectedUser(userId)}
+                    className="hover:text-indigo-900 dark:hover:text-indigo-200"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
               ))}
             </div>
           )}
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={manualUserInput}
+              onChange={(event) => setManualUserInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  handleAddManualUsers();
+                }
+              }}
+              placeholder={t("memory.share.explicitUsersPlaceholder")}
+              className="flex-1 px-3 py-2 bg-white/10 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-800 dark:text-white placeholder-gray-500"
+            />
+            <button
+              type="button"
+              onClick={handleAddManualUsers}
+              className="inline-flex items-center gap-1 px-3 py-2 rounded-lg bg-indigo-500 text-white hover:bg-indigo-600 transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              {t("memory.share.addUser")}
+            </button>
+          </div>
+          {usersLoadError && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {usersLoadError}
+            </p>
+          )}
         </div>
 
-        {/* Actions */}
+        <div className="mb-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              {t("memory.share.expiresAt")}
+            </label>
+            <div className="relative">
+              <CalendarClock className="w-4 h-4 absolute left-3 top-3 text-gray-500" />
+              <input
+                type="datetime-local"
+                value={expiresAtLocal}
+                onChange={(event) => setExpiresAtLocal(event.target.value)}
+                className="w-full pl-9 pr-3 py-2 bg-white/10 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-800 dark:text-white"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              {t("memory.share.reason")}
+            </label>
+            <input
+              type="text"
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder={t("memory.share.reasonPlaceholder")}
+              className="w-full px-3 py-2 bg-white/10 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-800 dark:text-white placeholder-gray-500"
+            />
+          </div>
+        </div>
+
+        {submitError && (
+          <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/40 text-sm text-red-600 dark:text-red-400">
+            {submitError}
+          </div>
+        )}
+
         <div className="flex items-center gap-3">
           <button
             onClick={onClose}
@@ -254,16 +591,16 @@ export const MemorySharingModal: React.FC<MemorySharingModalProps> = ({
             {t("memory.share.cancel")}
           </button>
           <button
-            onClick={handleShare}
+            onClick={handleSubmit}
             disabled={!hasChanges || isSubmitting}
             className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isSubmitting ? (
               <Loader2 className="w-5 h-5 animate-spin" />
             ) : (
-              <Share2 className="w-5 h-5" />
+              <Send className="w-5 h-5" />
             )}
-            {t("memory.share.applyChanges")}
+            {actionButtonText}
           </button>
         </div>
       </ModalPanel>

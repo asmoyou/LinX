@@ -366,6 +366,18 @@ class MemoryRecord(Base):
     user_id = Column(String(255), nullable=True, index=True)
     agent_id = Column(String(255), nullable=True, index=True)
     task_id = Column(String(255), nullable=True, index=True)
+    owner_user_id = Column(String(255), nullable=True, index=True)
+    owner_agent_id = Column(String(255), nullable=True, index=True)
+    department_id = Column(String(255), nullable=True, index=True)
+    visibility = Column(String(50), nullable=False, default="account", index=True)
+    sensitivity = Column(String(50), nullable=False, default="internal", index=True)
+    source_memory_id = Column(
+        BigInteger,
+        ForeignKey("memory_records.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
     memory_metadata = Column(JSONB, nullable=True)
     timestamp = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
@@ -379,15 +391,57 @@ class MemoryRecord(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
+    # Relationships
+    acl_entries = relationship(
+        "MemoryACL",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        backref="memory_record",
+    )
+
     __table_args__ = (
         Index("idx_memory_type_user", "memory_type", "user_id"),
         Index("idx_memory_type_agent", "memory_type", "agent_id"),
+        Index("idx_memory_visibility_scope", "visibility", "department_id"),
     )
 
     def __repr__(self):
         return (
             f"<MemoryRecord(id={self.id}, type={self.memory_type}, "
             f"milvus_id={self.milvus_id}, status={self.vector_status})>"
+        )
+
+
+class MemoryACL(Base):
+    """Explicit allow/deny access control entries for memory records."""
+
+    __tablename__ = "memory_acl"
+
+    acl_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    memory_id = Column(
+        BigInteger,
+        ForeignKey("memory_records.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    effect = Column(String(20), nullable=False, index=True)  # allow, deny
+    principal_type = Column(String(50), nullable=False, index=True)  # user, agent, department, role
+    principal_id = Column(String(255), nullable=False, index=True)
+    reason = Column(Text, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    created_by = Column(String(255), nullable=True)
+    acl_metadata = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_memory_acl_principal", "principal_type", "principal_id"),
+        Index("idx_memory_acl_memory_effect", "memory_id", "effect"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<MemoryACL(acl_id={self.acl_id}, memory_id={self.memory_id}, "
+            f"effect={self.effect}, principal={self.principal_type}:{self.principal_id})>"
         )
 
 

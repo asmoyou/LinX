@@ -37,7 +37,9 @@ export interface SearchMemoriesRequest {
 
 export interface ShareMemoryRequest {
   user_ids?: string[];
-  agent_ids?: string[];
+  scope?: "explicit" | "department" | "department_tree" | "account" | "private" | "public";
+  expires_at?: string;
+  reason?: string;
 }
 
 export interface UpdateMemoryConfigRequest {
@@ -135,6 +137,20 @@ export const memoriesApi = {
   ): Promise<Memory> => {
     const response = await apiClient.post<Memory>(
       `/memories/${memoryId}/share`,
+      data,
+    );
+    return response.data;
+  },
+
+  /**
+   * Publish memory (promote agent memory to team/org memory when applicable)
+   */
+  publish: async (
+    memoryId: string,
+    data: ShareMemoryRequest,
+  ): Promise<Memory> => {
+    const response = await apiClient.post<Memory>(
+      `/memories/${memoryId}/publish`,
       data,
     );
     return response.data;

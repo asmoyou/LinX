@@ -251,6 +251,20 @@ class TestShareMemory:
         assert len(req.user_ids) == 1
         assert len(req.agent_ids) == 2
 
+    def test_share_validation_with_scope_and_expiry(self):
+        """Scope, expiry and reason fields should be accepted."""
+        from api_gateway.routers.memory import MemoryShareRequest
+
+        req = MemoryShareRequest(
+            user_ids=["user-1"],
+            scope="department_tree",
+            expires_at="2026-12-31T23:59:59+00:00",
+            reason="Temporary incident response",
+        )
+        assert req.scope == "department_tree"
+        assert req.expires_at == "2026-12-31T23:59:59+00:00"
+        assert req.reason == "Temporary incident response"
+
 
 class TestMemoryUpdate:
     """Test PUT /api/v1/memories/{memory_id}."""
@@ -396,7 +410,8 @@ class TestMemoryItemToResponse:
         result = _memory_item_to_response(item)
         assert result["tags"] == []
         assert result["summary"] is None
-        assert result["isShared"] is False
+        assert result["isShared"] is True
+        assert result["metadata"]["visibility"] == "department_tree"
 
     def test_conversion_shared_memory(self):
         from api_gateway.routers.memory import _memory_item_to_response
@@ -416,6 +431,41 @@ class TestMemoryItemToResponse:
         result = _memory_item_to_response(item)
         assert result["isShared"] is True
         assert result["sharedWith"] == ["user-2", "user-3"]
+
+    def test_conversion_department_visibility_counts_as_shared(self):
+        from api_gateway.routers.memory import _memory_item_to_response
+
+        item = MemoryItem(
+            id=6,
+            content="Department-published content",
+            memory_type=MemoryType.COMPANY,
+            user_id="user-1",
+            timestamp=datetime(2026, 1, 15),
+            metadata={
+                "visibility": "department_tree",
+                "department_id": "dep-1",
+            },
+        )
+        result = _memory_item_to_response(item)
+        assert result["isShared"] is True
+
+    def test_conversion_promoted_backlink_counts_as_shared(self):
+        from api_gateway.routers.memory import _memory_item_to_response
+
+        item = MemoryItem(
+            id=7,
+            content="Published from agent memory",
+            memory_type=MemoryType.AGENT,
+            user_id="user-1",
+            agent_id="agent-1",
+            timestamp=datetime(2026, 1, 15),
+            metadata={
+                "visibility": "account",
+                "last_promoted_memory_id": 99,
+            },
+        )
+        result = _memory_item_to_response(item)
+        assert result["isShared"] is True
 
     def test_internal_scores_removed(self):
         from api_gateway.routers.memory import _memory_item_to_response
@@ -467,6 +517,7 @@ class TestRouteRegistration:
             "/api/v1/memories/admin/backfill-agent-user-ids",
             "/api/v1/memories/{memory_id}",
             "/api/v1/memories/{memory_id}/share",
+            "/api/v1/memories/{memory_id}/publish",
         ]
         for path in expected_paths:
             assert path in route_map, f"Route {path} not found in app routes"
@@ -488,6 +539,105 @@ class TestRouteRegistration:
         assert "PUT" in route_map.get("/api/v1/memories/{memory_id}", set())
         assert "DELETE" in route_map.get("/api/v1/memories/{memory_id}", set())
         assert "POST" in route_map.get("/api/v1/memories/{memory_id}/share", set())
+        assert "POST" in route_map.get("/api/v1/memories/{memory_id}/publish", set())
+
+
+class TestMemoryPolicyHelpers:
+    """Unit tests for memory policy helper functions."""
+
+    def test_resolve_effective_user_id_company_defaults_to_none(self, mock_current_user):
+        from api_gateway.routers.memory import _resolve_effective_user_id
+        from memory_system.memory_interface import MemoryType
+
+        assert _resolve_effective_user_id(MemoryType.COMPANY, mock_current_user) is None
+
+    def test_resolve_effective_user_id_user_context_is_scoped(self, mock_current_user):
+        from api_gateway.routers.memory import _resolve_effective_user_id
+        from memory_system.memory_interface import MemoryType
+
+        assert (
+            _resolve_effective_user_id(MemoryType.USER_CONTEXT, mock_current_user)
+            == mock_current_user.user_id
+        )
+
+    def test_visibility_defaults(self):
+        from api_gateway.routers.memory import _resolve_memory_visibility
+
+        assert _resolve_memory_visibility("user_context", {}) == "private"
+        assert _resolve_memory_visibility("agent", {}) == "private"
+        assert _resolve_memory_visibility("company", {}) == "department_tree"
+
+    def test_acl_deny_has_highest_priority_even_for_owner(self, mock_current_user):
+        from api_gateway.routers.memory import _can_read_company_memory_item_sync
+
+        item = {
+            "id": "100",
+            "type": "company",
+            "userId": mock_current_user.user_id,
+            "metadata": {
+                "owner_user_id": mock_current_user.user_id,
+                "visibility": "department_tree",
+                "department_id": "dep-1",
+            },
+        }
+        acl_entries = [
+            {
+                "effect": "deny",
+                "principal_type": "user",
+                "principal_id": mock_current_user.user_id,
+            }
+        ]
+        allowed = _can_read_company_memory_item_sync(
+            item=item,
+            current_user=mock_current_user,
+            user_department_context={"department_id": "dep-1", "managed_department_ids": set()},
+            acl_entries=acl_entries,
+        )
+        assert allowed is False
+
+    def test_acl_agent_principal_matches_owned_agent(self, mock_current_user):
+        from api_gateway.routers.memory import _matches_acl_principal
+
+        entry = {
+            "effect": "allow",
+            "principal_type": "agent",
+            "principal_id": "agent-123",
+        }
+        with patch("api_gateway.routers.memory._agent_owned_by_user_sync", return_value=True):
+            assert _matches_acl_principal(entry, mock_current_user, {}) is True
+
+    def test_owner_agent_grants_read(self, mock_current_user):
+        from api_gateway.routers.memory import _can_read_company_memory_item_sync
+
+        item = {
+            "id": "101",
+            "type": "company",
+            "metadata": {
+                "owner_agent_id": "agent-abc",
+                "visibility": "private",
+            },
+        }
+        with patch("api_gateway.routers.memory._agent_owned_by_user_sync", return_value=True):
+            allowed = _can_read_company_memory_item_sync(
+                item=item,
+                current_user=mock_current_user,
+                user_department_context={"department_id": None, "managed_department_ids": set()},
+                acl_entries=[],
+            )
+        assert allowed is True
+
+    def test_owner_agent_grants_manage(self, mock_current_user):
+        from api_gateway.routers.memory import _can_manage_memory_item_sync
+
+        item = {
+            "id": "102",
+            "type": "company",
+            "metadata": {
+                "owner_agent_id": "agent-xyz",
+            },
+        }
+        with patch("api_gateway.routers.memory._agent_owned_by_user_sync", return_value=True):
+            assert _can_manage_memory_item_sync(item, mock_current_user) is True
 
 
 class TestMemoryConfigPayload:
@@ -772,7 +922,7 @@ class TestMemoryConfigEndpoints:
 class TestAgentMemoryAccessHelpers:
     """Test helper utilities for agent-memory query scope and filtering."""
 
-    def test_resolve_effective_user_id_always_defaults_to_current_user(self):
+    def test_resolve_effective_user_id_uses_scope_rules(self):
         from api_gateway.routers.memory import _resolve_effective_user_id
         from memory_system.memory_interface import MemoryType
 
@@ -807,7 +957,7 @@ class TestAgentMemoryAccessHelpers:
                 MemoryType.COMPANY,
                 current_user,
             )
-            == current_user.user_id
+            is None
         )
         assert (
             _resolve_effective_user_id(

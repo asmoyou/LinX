@@ -5,14 +5,14 @@ Milvus remains a vector index. Business CRUD reads/writes must rely on this repo
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import desc, func
 
 from database.connection import get_db_session
-from database.models import MemoryRecord
+from database.models import MemoryACL, MemoryRecord
 from memory_system.memory_interface import MemoryItem, MemoryType
 
 VECTOR_STATUS_PENDING = "pending"
@@ -25,17 +25,24 @@ class MemoryRecordData:
     """Serializable memory record view detached from SQLAlchemy session."""
 
     id: int
-    milvus_id: Optional[int]
-    memory_type: MemoryType
-    content: str
-    user_id: Optional[str]
-    agent_id: Optional[str]
-    task_id: Optional[str]
-    metadata: Dict[str, Any]
-    timestamp: datetime
-    vector_status: str
-    vector_error: Optional[str]
-    vector_updated_at: Optional[datetime]
+    milvus_id: Optional[int] = None
+    memory_type: MemoryType = MemoryType.COMPANY
+    content: str = ""
+    user_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    task_id: Optional[str] = None
+    owner_user_id: Optional[str] = None
+    owner_agent_id: Optional[str] = None
+    department_id: Optional[str] = None
+    visibility: str = "account"
+    sensitivity: str = "internal"
+    source_memory_id: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+    vector_status: str = VECTOR_STATUS_PENDING
+    vector_error: Optional[str] = None
+    vector_updated_at: Optional[datetime] = None
 
     def to_memory_item(
         self,
@@ -45,6 +52,13 @@ class MemoryRecordData:
     ) -> MemoryItem:
         """Convert record data to API-facing MemoryItem."""
         metadata = dict(self.metadata or {})
+        metadata.setdefault("owner_user_id", self.owner_user_id)
+        metadata.setdefault("owner_agent_id", self.owner_agent_id)
+        metadata.setdefault("department_id", self.department_id)
+        metadata.setdefault("visibility", self.visibility)
+        metadata.setdefault("sensitivity", self.sensitivity)
+        metadata.setdefault("source_memory_id", self.source_memory_id)
+        metadata.setdefault("expires_at", self.expires_at.isoformat() if self.expires_at else None)
         if include_vector_status:
             metadata.setdefault("vector_status", self.vector_status)
             if self.vector_error:
@@ -65,6 +79,111 @@ class MemoryRecordData:
 
 class MemoryRepository:
     """Repository for memory records persisted in PostgreSQL."""
+
+    @staticmethod
+    def _parse_datetime(raw: Any) -> Optional[datetime]:
+        if raw is None:
+            return None
+        if isinstance(raw, datetime):
+            return raw
+        text = str(raw).strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _coerce_optional_int(raw: Any) -> Optional[int]:
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _default_visibility(memory_type: MemoryType) -> str:
+        if memory_type in {MemoryType.AGENT, MemoryType.USER_CONTEXT}:
+            return "private"
+        return "department_tree"
+
+    def _normalize_security_fields(
+        self,
+        *,
+        memory_type: MemoryType,
+        metadata: Dict[str, Any],
+        user_id: Optional[str],
+        agent_id: Optional[str],
+        owner_user_id: Optional[str] = None,
+        owner_agent_id: Optional[str] = None,
+        department_id: Optional[str] = None,
+        visibility: Optional[str] = None,
+        sensitivity: Optional[str] = None,
+        source_memory_id: Optional[int] = None,
+        expires_at: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        normalized = dict(metadata or {})
+
+        resolved_owner_user_id = (
+            owner_user_id
+            if owner_user_id is not None
+            else str(normalized.get("owner_user_id") or user_id or "").strip() or None
+        )
+        resolved_owner_agent_id = (
+            owner_agent_id
+            if owner_agent_id is not None
+            else str(normalized.get("owner_agent_id") or agent_id or "").strip() or None
+        )
+        resolved_department_id = (
+            department_id
+            if department_id is not None
+            else str(normalized.get("department_id") or "").strip() or None
+        )
+        resolved_visibility = (
+            str(visibility).strip().lower()
+            if visibility is not None
+            else str(normalized.get("visibility") or "").strip().lower()
+        )
+        if not resolved_visibility:
+            resolved_visibility = self._default_visibility(memory_type)
+
+        resolved_sensitivity = (
+            str(sensitivity).strip().lower()
+            if sensitivity is not None
+            else str(normalized.get("sensitivity") or "").strip().lower()
+        )
+        if not resolved_sensitivity:
+            resolved_sensitivity = "internal"
+
+        resolved_source_memory_id = (
+            source_memory_id
+            if source_memory_id is not None
+            else self._coerce_optional_int(normalized.get("source_memory_id"))
+        )
+        resolved_expires_at = (
+            expires_at if expires_at is not None else self._parse_datetime(normalized.get("expires_at"))
+        )
+
+        normalized["owner_user_id"] = resolved_owner_user_id
+        normalized["owner_agent_id"] = resolved_owner_agent_id
+        normalized["department_id"] = resolved_department_id
+        normalized["visibility"] = resolved_visibility
+        normalized["sensitivity"] = resolved_sensitivity
+        normalized["source_memory_id"] = resolved_source_memory_id
+        normalized["expires_at"] = resolved_expires_at.isoformat() if resolved_expires_at else None
+
+        return {
+            "metadata": normalized,
+            "owner_user_id": resolved_owner_user_id,
+            "owner_agent_id": resolved_owner_agent_id,
+            "department_id": resolved_department_id,
+            "visibility": resolved_visibility,
+            "sensitivity": resolved_sensitivity,
+            "source_memory_id": resolved_source_memory_id,
+            "expires_at": resolved_expires_at,
+        }
 
     @staticmethod
     def _coerce_float(raw: Any, default: float = 0.0) -> float:
@@ -101,6 +220,13 @@ class MemoryRepository:
     @classmethod
     def _to_data(cls, row: MemoryRecord) -> MemoryRecordData:
         metadata = dict(row.memory_metadata or {})
+        metadata.setdefault("owner_user_id", row.owner_user_id)
+        metadata.setdefault("owner_agent_id", row.owner_agent_id)
+        metadata.setdefault("department_id", row.department_id)
+        metadata.setdefault("visibility", row.visibility)
+        metadata.setdefault("sensitivity", row.sensitivity)
+        metadata.setdefault("source_memory_id", row.source_memory_id)
+        metadata.setdefault("expires_at", row.expires_at.isoformat() if row.expires_at else None)
         return MemoryRecordData(
             id=int(row.id),
             milvus_id=int(row.milvus_id) if row.milvus_id is not None else None,
@@ -109,6 +235,13 @@ class MemoryRepository:
             user_id=row.user_id,
             agent_id=row.agent_id,
             task_id=row.task_id,
+            owner_user_id=row.owner_user_id,
+            owner_agent_id=row.owner_agent_id,
+            department_id=row.department_id,
+            visibility=row.visibility or "account",
+            sensitivity=row.sensitivity or "internal",
+            source_memory_id=int(row.source_memory_id) if row.source_memory_id is not None else None,
+            expires_at=row.expires_at,
             metadata=metadata,
             timestamp=row.timestamp,
             vector_status=row.vector_status or VECTOR_STATUS_PENDING,
@@ -143,6 +276,13 @@ class MemoryRepository:
         timestamp = memory_item.timestamp or datetime.utcnow()
         metadata = dict(memory_item.metadata or {})
         task_id = memory_item.task_id or metadata.get("task_id")
+        security = self._normalize_security_fields(
+            memory_type=memory_item.memory_type,
+            metadata=metadata,
+            user_id=memory_item.user_id,
+            agent_id=memory_item.agent_id,
+        )
+        metadata = security["metadata"]
 
         with get_db_session() as session:
             row = MemoryRecord(
@@ -151,6 +291,13 @@ class MemoryRepository:
                 user_id=memory_item.user_id,
                 agent_id=memory_item.agent_id,
                 task_id=task_id,
+                owner_user_id=security["owner_user_id"],
+                owner_agent_id=security["owner_agent_id"],
+                department_id=security["department_id"],
+                visibility=security["visibility"],
+                sensitivity=security["sensitivity"],
+                source_memory_id=security["source_memory_id"],
+                expires_at=security["expires_at"],
                 memory_metadata=metadata,
                 timestamp=timestamp,
                 vector_status=VECTOR_STATUS_PENDING,
@@ -265,6 +412,14 @@ class MemoryRepository:
         agent_id: Optional[str] = None,
         task_id: Optional[str] = None,
         timestamp: Optional[datetime] = None,
+        owner_user_id: Optional[str] = None,
+        owner_agent_id: Optional[str] = None,
+        department_id: Optional[str] = None,
+        visibility: Optional[str] = None,
+        sensitivity: Optional[str] = None,
+        source_memory_id: Optional[int] = None,
+        expires_at: Optional[datetime] = None,
+        clear_expires_at: bool = False,
         mark_vector_pending: bool = True,
     ) -> Optional[MemoryRecordData]:
         """Update selected fields on a memory record."""
@@ -280,8 +435,7 @@ class MemoryRepository:
 
             if content is not None:
                 row.content = content
-            if metadata is not None:
-                row.memory_metadata = metadata
+            incoming_metadata = dict(metadata) if metadata is not None else None
             if memory_type is not None:
                 row.memory_type = memory_type.value
             if user_id is not None:
@@ -292,12 +446,66 @@ class MemoryRepository:
                 row.task_id = task_id
             if timestamp is not None:
                 row.timestamp = timestamp
+            if owner_user_id is not None:
+                row.owner_user_id = owner_user_id
+            if owner_agent_id is not None:
+                row.owner_agent_id = owner_agent_id
+            if department_id is not None:
+                row.department_id = department_id
+            if visibility is not None:
+                row.visibility = visibility
+            if sensitivity is not None:
+                row.sensitivity = sensitivity
+            if source_memory_id is not None:
+                row.source_memory_id = source_memory_id
+            if expires_at is not None:
+                row.expires_at = expires_at
+            elif clear_expires_at:
+                row.expires_at = None
 
             # Mark as pending re-index when content/type/identity fields changed.
             if mark_vector_pending:
                 row.vector_status = VECTOR_STATUS_PENDING
                 row.vector_error = None
                 row.vector_updated_at = None
+
+            security_changed = any(
+                value is not None
+                for value in (
+                    owner_user_id,
+                    owner_agent_id,
+                    department_id,
+                    visibility,
+                    sensitivity,
+                    source_memory_id,
+                    expires_at,
+                    clear_expires_at,
+                )
+            )
+
+            if incoming_metadata is not None or security_changed:
+                row_type = self._parse_memory_type(row.memory_type)
+                security = self._normalize_security_fields(
+                    memory_type=row_type,
+                    metadata=incoming_metadata if incoming_metadata is not None else dict(row.memory_metadata or {}),
+                    user_id=row.user_id,
+                    agent_id=row.agent_id,
+                    owner_user_id=row.owner_user_id,
+                    owner_agent_id=row.owner_agent_id,
+                    department_id=row.department_id,
+                    visibility=row.visibility,
+                    sensitivity=row.sensitivity,
+                    source_memory_id=row.source_memory_id,
+                    expires_at=row.expires_at,
+                )
+                row.memory_metadata = security["metadata"]
+                row.owner_user_id = security["owner_user_id"]
+                row.owner_agent_id = security["owner_agent_id"]
+                row.department_id = security["department_id"]
+                row.visibility = security["visibility"]
+                row.sensitivity = security["sensitivity"]
+                row.source_memory_id = security["source_memory_id"]
+                row.expires_at = security["expires_at"]
 
             session.flush()
             session.refresh(row)
@@ -594,6 +802,87 @@ class MemoryRepository:
                 .all()
             )
             return [self._to_data(row) for row in rows]
+
+    def replace_acl_entries(
+        self,
+        memory_id: int,
+        entries: List[Dict[str, Any]],
+        *,
+        created_by: Optional[str] = None,
+    ) -> int:
+        """Replace memory ACL entries for a record."""
+        now = datetime.utcnow()
+        with get_db_session() as session:
+            (
+                session.query(MemoryACL)
+                .filter(MemoryACL.memory_id == memory_id)
+                .delete(synchronize_session=False)
+            )
+
+            created = 0
+            for entry in entries:
+                effect = str(entry.get("effect") or "").strip().lower()
+                principal_type = str(entry.get("principal_type") or "").strip().lower()
+                principal_id = str(entry.get("principal_id") or "").strip()
+                if effect not in {"allow", "deny"}:
+                    continue
+                if principal_type not in {"user", "agent", "department", "role"}:
+                    continue
+                if not principal_id:
+                    continue
+
+                acl = MemoryACL(
+                    memory_id=memory_id,
+                    effect=effect,
+                    principal_type=principal_type,
+                    principal_id=principal_id,
+                    reason=entry.get("reason"),
+                    expires_at=self._parse_datetime(entry.get("expires_at")),
+                    created_by=created_by,
+                    acl_metadata=entry.get("metadata") if isinstance(entry.get("metadata"), dict) else None,
+                    created_at=now,
+                )
+                session.add(acl)
+                created += 1
+
+            return created
+
+    def list_active_acl_entries(
+        self,
+        memory_ids: List[int],
+        *,
+        now: Optional[datetime] = None,
+    ) -> Dict[int, List[Dict[str, Any]]]:
+        """List non-expired ACL entries keyed by memory_id."""
+        if not memory_ids:
+            return {}
+
+        as_of = now or datetime.utcnow()
+        unique_ids = sorted({int(mid) for mid in memory_ids})
+        with get_db_session() as session:
+            rows = (
+                session.query(MemoryACL)
+                .filter(MemoryACL.memory_id.in_(unique_ids))
+                .filter((MemoryACL.expires_at.is_(None)) | (MemoryACL.expires_at > as_of))
+                .order_by(MemoryACL.created_at.asc())
+                .all()
+            )
+
+        grouped: Dict[int, List[Dict[str, Any]]] = {mid: [] for mid in unique_ids}
+        for row in rows:
+            grouped.setdefault(int(row.memory_id), []).append(
+                {
+                    "effect": row.effect,
+                    "principal_type": row.principal_type,
+                    "principal_id": row.principal_id,
+                    "reason": row.reason,
+                    "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+                    "created_by": row.created_by,
+                    "metadata": row.acl_metadata if isinstance(row.acl_metadata, dict) else None,
+                }
+            )
+
+        return grouped
 
 
 _memory_repository: Optional[MemoryRepository] = None

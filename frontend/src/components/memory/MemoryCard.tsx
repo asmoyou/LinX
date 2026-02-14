@@ -167,6 +167,70 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
       ? memory.sharedWithNames
       : memory.sharedWith || []
   ).slice(0, 3);
+  const publishMode = String(memory.metadata?.publish_mode || "")
+    .trim()
+    .toLowerCase();
+  const hasPromotionBacklink = Boolean(memory.metadata?.last_promoted_memory_id);
+  const rawVisibility = String(memory.metadata?.visibility || "")
+    .trim()
+    .toLowerCase();
+  const visibility = (() => {
+    if (memory.type === "user_context") {
+      return rawVisibility === "explicit" || rawVisibility === "private"
+        ? rawVisibility
+        : "private";
+    }
+    if (rawVisibility) {
+      return rawVisibility;
+    }
+    if (memory.type === "agent") {
+      return "private";
+    }
+    return "department_tree";
+  })();
+  const hasPolicyScope = [
+    "explicit",
+    "department",
+    "department_tree",
+    "public",
+  ].includes(visibility);
+  const isPublished =
+    publishMode === "promote" ||
+    hasPromotionBacklink ||
+    (memory.type === "agent" &&
+      ["explicit", "department", "department_tree", "public", "account"].includes(visibility));
+  const sharingBadgeText = isPublished
+    ? t("memory.card.published")
+    : t("memory.card.shared");
+  const scopeSuffix = (() => {
+    switch (visibility) {
+      case "private":
+        return t("memory.share.scope.private");
+      case "account":
+        return t("memory.share.scope.account");
+      case "department":
+        return t("memory.share.scope.department");
+      case "department_tree":
+        return t("memory.share.scope.departmentTree");
+      case "public":
+        return t("memory.share.scope.public");
+      case "explicit":
+        return t("memory.share.scope.explicit");
+      default:
+        return "";
+    }
+  })();
+  const isPolicyShared = Boolean(memory.isShared) || hasPolicyScope || isPublished;
+  const policyHintText =
+    sharedTargetNames.length > 0
+      ? t("memory.card.sharedWithNames", {
+          names: sharedTargetNames.join(", "),
+        })
+      : scopeSuffix
+        ? t("memory.card.scopeLabel", { scope: scopeSuffix })
+        : isPolicyShared
+          ? t("memory.card.policyApplied")
+          : "";
 
   return (
     <div onClick={() => onClick(memory)} className="cursor-pointer">
@@ -282,20 +346,18 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
               </span>
             )}
           </div>
-          {memory.isShared && (
+          {isPolicyShared && (
             <div className="flex items-center gap-1 text-indigo-500">
               <Share2 className="w-3 h-3" />
-              <span>{t("memory.card.shared")}</span>
+              <span>{sharingBadgeText}</span>
             </div>
           )}
         </div>
 
         <div className="flex items-center justify-between mt-2">
-          {memory.isShared && sharedTargetNames.length > 0 ? (
+          {policyHintText ? (
             <p className="text-xs text-gray-500 dark:text-gray-400 truncate pr-2">
-              {t("memory.card.sharedWithNames", {
-                names: sharedTargetNames.join(", "),
-              })}
+              {policyHintText}
             </p>
           ) : (
             <span />

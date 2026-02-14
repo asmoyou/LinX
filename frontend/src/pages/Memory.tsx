@@ -402,26 +402,54 @@ export const Memory: React.FC = () => {
     setIsDetailViewOpen(true);
   };
 
-  const handleShare = (memory: MemoryType) => {
+  const handleShare = async (memory: MemoryType) => {
     setSharingMemory(memory);
     setIsSharingModalOpen(true);
+    try {
+      const latest = await memoriesApi.getById(memory.id);
+      setSharingMemory(latest);
+    } catch {
+      // Keep initial memory snapshot if refresh fails.
+    }
   };
 
   const handleShareSubmit = async (
     memoryId: string,
-    payload: { agentIds: string[]; userIds: string[] },
+    payload: {
+      mode: "share" | "publish";
+      scope:
+        | "explicit"
+        | "department"
+        | "department_tree"
+        | "account"
+        | "private"
+        | "public";
+      userIds: string[];
+      expiresAt?: string;
+      reason?: string;
+    },
   ) => {
     try {
-      const updated = await memoriesApi.share(memoryId, {
-        agent_ids: payload.agentIds,
+      const request = {
         user_ids: payload.userIds,
-      });
+        scope: payload.scope,
+        expires_at: payload.expiresAt,
+        reason: payload.reason,
+      };
+      const updated =
+        payload.mode === "publish"
+          ? await memoriesApi.publish(memoryId, request)
+          : await memoriesApi.share(memoryId, request);
       updateMemory(memoryId, updated);
       if (selectedMemory?.id === memoryId) {
         setSelectedMemory(updated);
       }
       fetchActiveTabMemories();
-      toast.success(t("memory.share.success"));
+      toast.success(
+        payload.mode === "publish"
+          ? t("memory.share.publishSuccess")
+          : t("memory.share.success"),
+      );
     } catch (error: unknown) {
       toast.error(getErrorDetail(error) || t("memory.share.error"));
       throw error;

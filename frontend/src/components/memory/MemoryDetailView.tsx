@@ -14,6 +14,7 @@ import {
   RefreshCw,
   CheckCircle2,
   AlertTriangle,
+  ShieldAlert,
   Loader2,
   Pencil,
   Save,
@@ -218,6 +219,62 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
     }
   };
 
+  const rawVisibility = String(memory.metadata?.visibility || "")
+    .trim()
+    .toLowerCase();
+  const visibility = (() => {
+    if (memory.type === "user_context") {
+      return rawVisibility === "explicit" || rawVisibility === "private"
+        ? rawVisibility
+        : "private";
+    }
+    if (rawVisibility) {
+      return rawVisibility;
+    }
+    if (memory.type === "agent") {
+      return "private";
+    }
+    return "department_tree";
+  })();
+  const hasPolicyScope = [
+    "explicit",
+    "department",
+    "department_tree",
+    "public",
+  ].includes(visibility);
+  const publishMode = String(memory.metadata?.publish_mode || "")
+    .trim()
+    .toLowerCase();
+  const hasPromotionBacklink = Boolean(memory.metadata?.last_promoted_memory_id);
+  const isPublished =
+    publishMode === "promote" ||
+    hasPromotionBacklink ||
+    (memory.type === "agent" &&
+      ["explicit", "department", "department_tree", "public", "account"].includes(visibility));
+  const sharingScopeLabel = (() => {
+    switch (visibility) {
+      case "private":
+        return t("memory.share.scope.private");
+      case "explicit":
+        return t("memory.share.scope.explicit");
+      case "department":
+        return t("memory.share.scope.department");
+      case "department_tree":
+        return t("memory.share.scope.departmentTree");
+      case "account":
+        return t("memory.share.scope.account");
+      case "public":
+        return t("memory.share.scope.public");
+      default:
+        return t("memory.share.scope.unknown");
+    }
+  })();
+  const sharingTitle = memory.type === "agent"
+    ? t("memory.share.publishTitle")
+    : t("memory.share.title");
+  const isPolicyShared =
+    Boolean(memory.isShared) || hasPolicyScope || isPublished;
+
   const formatTimestamp = (value?: string | null) => {
     if (!value) return "-";
 
@@ -342,7 +399,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
               <button
                 onClick={() => onShare(memory)}
                 className="p-2 hover:bg-white/20 rounded-lg transition-colors"
-                title={t("memory.share.title")}
+                title={sharingTitle}
               >
                 <Share2 className="w-5 h-5 text-gray-700 dark:text-gray-300" />
               </button>
@@ -793,26 +850,48 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
           </div>
         )}
 
-        {/* Sharing Status */}
-        {memory.isShared && (
-          <div className="p-4 bg-indigo-500/10 border border-indigo-500/30 rounded-lg">
+        {/* Visibility / Sharing Status */}
+        <div className="p-4 bg-indigo-500/10 border border-indigo-500/30 rounded-lg">
+          {!isPolicyShared && !isPublished ? (
+            <div className="flex items-center gap-2 mb-2">
+              <ShieldAlert className="w-5 h-5 text-indigo-500" />
+              <span className="text-sm font-medium text-gray-800 dark:text-white">
+                {t("memory.detail.visibilityScope")}
+              </span>
+            </div>
+          ) : null}
+          {(isPolicyShared || isPublished) && (
             <div className="flex items-center gap-2 mb-2">
               <Share2 className="w-5 h-5 text-indigo-500" />
               <span className="text-sm font-medium text-gray-800 dark:text-white">
-                {t("memory.detail.sharedMemory")}
+                {isPublished ? t("memory.detail.publishedMemory") : t("memory.detail.sharedMemory")}
               </span>
             </div>
-            {memory.sharedWith && memory.sharedWith.length > 0 && (
-              <p className="text-sm text-gray-600 dark:text-gray-400">
-                {t("memory.detail.sharedWith")}:{" "}
-                {(memory.sharedWithNames && memory.sharedWithNames.length > 0
-                  ? memory.sharedWithNames
-                  : memory.sharedWith
-                ).join(", ")}
-              </p>
-            )}
-          </div>
-        )}
+          )}
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            {t("memory.share.scopeLabel")}: {sharingScopeLabel}
+          </p>
+          {memory.metadata?.expires_at && (
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {t("memory.share.expiresAt")}:{" "}
+              {formatTimestamp(String(memory.metadata.expires_at))}
+            </p>
+          )}
+          {memory.metadata?.share_reason && (
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {t("memory.share.reason")}: {String(memory.metadata.share_reason)}
+            </p>
+          )}
+          {memory.sharedWith && memory.sharedWith.length > 0 && (
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {t("memory.detail.sharedWith")}:{" "}
+              {(memory.sharedWithNames && memory.sharedWithNames.length > 0
+                ? memory.sharedWithNames
+                : memory.sharedWith
+              ).join(", ")}
+            </p>
+          )}
+        </div>
       </ModalPanel>
     </div>
   );
