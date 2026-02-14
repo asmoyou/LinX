@@ -190,18 +190,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
         </div>
       );
     }
-    if (document.status === "completed" && document.chunkCount != null) {
-      return (
-        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 uppercase tracking-tight">
-          {document.chunkCount} CHUNKS
-        </span>
-      );
-    }
-    return (
-      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 border border-zinc-500/20">
-        {documentTypeLabel}
-      </span>
-    );
+    return null;
   };
 
   const getFileIcon = (
@@ -239,25 +228,25 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
     switch (status) {
       case "completed":
         return {
-          icon: <CheckCircle className="w-3 h-3" />,
+          icon: <CheckCircle className="w-4 h-4" />,
           label: "READY",
           color: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
         };
       case "failed":
         return {
-          icon: <XCircle className="w-3 h-3" />,
+          icon: <XCircle className="w-4 h-4" />,
           label: "FAILED",
           color: "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20"
         };
       case "processing":
         return {
-          icon: <Loader2 className="w-3 h-3 animate-spin" />,
+          icon: <Loader2 className="w-4 h-4 animate-spin" />,
           label: "PROCESSING",
           color: "bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20"
         };
       case "uploading":
         return {
-          icon: <Loader2 className="w-3 h-3 animate-spin" />,
+          icon: <Loader2 className="w-4 h-4 animate-spin" />,
           label: "UPLOADING",
           color: "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/20"
         };
@@ -268,22 +257,22 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
     switch (level) {
       case "public":
         return {
-          icon: <Globe className="w-3 h-3" />,
+          icon: <Globe className="w-4 h-4" />,
           color: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
         };
       case "internal":
         return {
-          icon: <Users className="w-3 h-3" />,
+          icon: <Users className="w-4 h-4" />,
           color: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20"
         };
       case "confidential":
         return {
-          icon: <Shield className="w-3 h-3" />,
+          icon: <Shield className="w-4 h-4" />,
           color: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
         };
       case "restricted":
         return {
-          icon: <Lock className="w-3 h-3" />,
+          icon: <Lock className="w-4 h-4" />,
           color: "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20"
         };
     }
@@ -338,6 +327,24 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
           onDragEnd?.();
         }}
       >
+        {/* Top-right Badges - Compact Icon-only style */}
+        <div className={`absolute top-4 right-4 z-10 flex items-center gap-2 transition-opacity duration-300 ${isHovered ? 'opacity-100' : 'opacity-90'}`}>
+          <motion.span
+            whileHover={{ scale: 1.1 }}
+            title={statusInfo.label}
+            className={`flex items-center justify-center w-7 h-7 rounded-full border shadow-lg backdrop-blur-md transition-colors ${statusInfo.color}`}
+          >
+            {statusInfo.icon}
+          </motion.span>
+          <motion.span
+            whileHover={{ scale: 1.1 }}
+            title={document.accessLevel.toUpperCase()}
+            className={`flex items-center justify-center w-7 h-7 rounded-full border shadow-lg backdrop-blur-md transition-colors ${accessInfo.color}`}
+          >
+            {accessInfo.icon}
+          </motion.span>
+        </div>
+
         {/* Thumbnail or compact icon strip */}
         <div
           className={`mb-4 rounded-xl overflow-hidden relative z-0 transition-all duration-500 group ${previewContainerClass}`}
@@ -393,24 +400,6 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
               {renderCompactHint()}
             </div>
           )}
-        </div>
-
-        {/* Badges Row - Moved from top-right to avoid blocking content */}
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <motion.span
-            animate={{ scale: isHovered ? 1.02 : 1 }}
-            className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-[9px] font-bold border shadow-sm ${statusInfo.color}`}
-          >
-            {statusInfo.icon}
-            <span className="tracking-wider">{statusInfo.label}</span>
-          </motion.span>
-          <motion.span
-            animate={{ scale: isHovered ? 1.02 : 1 }}
-            className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-[9px] font-bold border shadow-sm ${accessInfo.color}`}
-          >
-            {accessInfo.icon}
-            <span className="uppercase tracking-wider">{document.accessLevel}</span>
-          </motion.span>
         </div>
 
         {/* Document Info */}
