@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 
 from database.connection import get_db_session
 from database.models import MemoryRecord
@@ -318,6 +318,53 @@ class MemoryRepository:
             session.flush()
             session.refresh(row)
             return self._to_data(row)
+
+    def count_memories(
+        self,
+        memory_type: MemoryType,
+        agent_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> int:
+        """Count active memories matching the given scope."""
+        with get_db_session() as session:
+            query = session.query(func.count(MemoryRecord.id))
+            query = self._build_filters(
+                query,
+                memory_type=memory_type,
+                agent_id=agent_id,
+                user_id=user_id,
+            )
+            return query.scalar() or 0
+
+    def evict_oldest(
+        self,
+        memory_type: MemoryType,
+        agent_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        count: int = 1,
+    ) -> List[MemoryRecordData]:
+        """Soft-delete the oldest N memories and return their data for vector cleanup."""
+        with get_db_session() as session:
+            query = session.query(MemoryRecord)
+            query = self._build_filters(
+                query,
+                memory_type=memory_type,
+                agent_id=agent_id,
+                user_id=user_id,
+            )
+            oldest_rows = (
+                query.order_by(MemoryRecord.timestamp.asc())
+                .limit(count)
+                .all()
+            )
+
+            evicted = []
+            for row in oldest_rows:
+                evicted.append(self._to_data(row))
+                row.is_deleted = True
+                row.updated_at = datetime.utcnow()
+
+            return evicted
 
     def soft_delete(self, memory_id: int) -> bool:
         """Soft delete memory record."""

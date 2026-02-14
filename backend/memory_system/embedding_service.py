@@ -197,9 +197,16 @@ def _normalize_embedding_vector(raw_vector: object) -> Optional[List[float]]:
         return None
 
     try:
-        return [float(value) for value in raw_vector]
+        vector = [float(value) for value in raw_vector]
     except (TypeError, ValueError):
         return None
+
+    # Normalize to unit length so L2 distances remain comparable across providers.
+    norm = sum(value * value for value in vector) ** 0.5
+    if norm <= 0:
+        return vector
+
+    return [value / norm for value in vector]
 
 
 def _extract_embedding_vectors(response_data: object) -> List[List[float]]:

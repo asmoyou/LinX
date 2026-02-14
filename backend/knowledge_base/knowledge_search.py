@@ -228,12 +228,17 @@ class KnowledgeSearch:
                 stage_ms["heuristic_rerank"] = 0.0
 
             # Apply configurable relevance gate (similar to RAGFlow similarity_threshold).
+            # When model rerank is unavailable and heuristic rerank is used, scores are in a
+            # different (lower) range, so we auto-lower the threshold to avoid filtering
+            # out all results.
             relevance_gate_start = time.perf_counter()
             effective_min_score = (
                 search_filter.min_relevance_score
                 if search_filter.min_relevance_score is not None
                 else self.min_relevance_score
             )
+            if not model_rerank_applied and effective_min_score > 0.3:
+                effective_min_score = max(effective_min_score * 0.5, 0.1)
             filtered_results = [
                 result
                 for result in filtered_results
@@ -1258,6 +1263,7 @@ class KnowledgeSearch:
             urls_to_try = [
                 f"{base_url.rstrip('/')}/v1/rerank",
                 f"{base_url.rstrip('/')}/rerank",
+                f"{base_url.rstrip('/')}/api/rerank",
             ]
             per_attempt_timeout = max(total_timeout / max(len(urls_to_try), 1), 1.0)
 

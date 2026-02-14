@@ -113,7 +113,7 @@ class SearchQuery:
         user_id: Filter by user ID (for user context)
         task_id: Filter by task ID (for task context)
         top_k: Number of results to return
-        min_similarity: Minimum similarity score threshold
+        min_similarity: Optional minimum similarity threshold. None means use system default.
         include_metadata: Whether to include metadata in results
     """
 
@@ -123,7 +123,7 @@ class SearchQuery:
     user_id: Optional[str] = None
     task_id: Optional[str] = None
     top_k: int = 10
-    min_similarity: float = 0.0
+    min_similarity: Optional[float] = None
     include_metadata: bool = True
 
 

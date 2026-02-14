@@ -173,6 +173,9 @@ export interface KBConfigResponse {
     rerank_provider?: string;
     rerank_model?: string;
     rerank_top_k?: number;
+    cross_language_expansion_enabled?: boolean;
+    cross_language_provider?: string;
+    cross_language_model?: string;
   };
   recommended?: {
     processing?: Partial<KBConfigResponse['processing']>;

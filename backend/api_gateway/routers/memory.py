@@ -186,7 +186,7 @@ def _sync_record_to_milvus_sync(memory_id: int):
             timestamp=record.timestamp,
             metadata=record.metadata,
         )
-        milvus_id = int(memory_system.store_memory(memory_item))
+        milvus_id = int(memory_system._insert_into_milvus(memory_item))
         return repo.mark_vector_synced(memory_id, milvus_id)
     except Exception as exc:
         repo.mark_vector_failed(memory_id, str(exc))
@@ -2094,3 +2094,150 @@ async def purge_memories(
     )
 
     return result
+
+
+def _find_orphan_vectors_sync(
+    collection_name: str,
+    batch_size: int = 1000,
+    dry_run: bool = True,
+) -> dict:
+    """Scan Milvus for vectors without matching PostgreSQL milvus_id records.
+
+    Args:
+        collection_name: Milvus collection to scan
+        batch_size: Number of vectors to scan per batch
+        dry_run: If True, only report orphans; if False, delete them
+
+    Returns:
+        dict with scan results
+    """
+    from memory_system.milvus_connection import get_milvus_connection
+
+    repo = _get_memory_repository()
+    milvus = get_milvus_connection()
+
+    try:
+        collection = milvus.get_collection(collection_name)
+    except Exception as exc:
+        return {"error": f"Failed to get collection '{collection_name}': {exc}"}
+
+    orphan_ids = []
+    scanned = 0
+
+    try:
+        rows = _query_collection_with_retry(
+            milvus,
+            collection_name,
+            lambda col: col.query(
+                expr="id >= 0",
+                output_fields=["id"],
+                limit=batch_size,
+            ),
+        )
+    except Exception as exc:
+        return {"error": f"Failed to query collection: {exc}"}
+
+    if not rows:
+        return {
+            "collection": collection_name,
+            "scanned": 0,
+            "orphan_count": 0,
+            "orphan_ids": [],
+            "deleted": 0,
+            "dry_run": dry_run,
+        }
+
+    milvus_ids = []
+    for row in rows:
+        mid = row.get("id")
+        if mid is not None:
+            milvus_ids.append(int(mid))
+
+    scanned = len(milvus_ids)
+
+    # Batch-check against PostgreSQL
+    existing_map = repo.get_by_milvus_ids(milvus_ids)
+    for mid in milvus_ids:
+        if mid not in existing_map:
+            orphan_ids.append(mid)
+
+    deleted = 0
+    if not dry_run and orphan_ids:
+        try:
+            expr = f"id in {orphan_ids}"
+            collection.delete(expr=expr)
+            deleted = len(orphan_ids)
+            logger.info(
+                "Deleted %d orphan vectors from %s",
+                deleted,
+                collection_name,
+            )
+        except Exception as exc:
+            logger.error("Failed to delete orphan vectors: %s", exc)
+            return {
+                "collection": collection_name,
+                "scanned": scanned,
+                "orphan_count": len(orphan_ids),
+                "orphan_ids": orphan_ids[:50],
+                "deleted": 0,
+                "dry_run": dry_run,
+                "error": str(exc),
+            }
+
+    return {
+        "collection": collection_name,
+        "scanned": scanned,
+        "orphan_count": len(orphan_ids),
+        "orphan_ids": orphan_ids[:50],
+        "deleted": deleted,
+        "dry_run": dry_run,
+    }
+
+
+@router.post("/admin/cleanup-orphans")
+async def cleanup_orphan_vectors(
+    dry_run: bool = Query(True, description="If true, only report orphans without deleting"),
+    collection: Optional[str] = Query(
+        None, description="Specific collection to scan (default: scan all memory collections)"
+    ),
+    batch_size: int = Query(1000, ge=100, le=10000),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Scan Milvus for orphan vectors not linked to any PostgreSQL record.
+
+    Requires admin role. Use dry_run=true (default) to preview before deleting.
+    """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can run orphan cleanup",
+        )
+
+    from memory_system.collections import CollectionName
+
+    if collection:
+        collections_to_scan = [collection]
+    else:
+        collections_to_scan = [
+            CollectionName.AGENT_MEMORIES,
+            CollectionName.COMPANY_MEMORIES,
+        ]
+
+    results = []
+    for coll_name in collections_to_scan:
+        result = await asyncio.to_thread(
+            _find_orphan_vectors_sync, coll_name, batch_size, dry_run
+        )
+        results.append(result)
+
+    total_orphans = sum(r.get("orphan_count", 0) for r in results)
+    total_deleted = sum(r.get("deleted", 0) for r in results)
+    total_scanned = sum(r.get("scanned", 0) for r in results)
+
+    return {
+        "dry_run": dry_run,
+        "total_scanned": total_scanned,
+        "total_orphans": total_orphans,
+        "total_deleted": total_deleted,
+        "collections": results,
+    }

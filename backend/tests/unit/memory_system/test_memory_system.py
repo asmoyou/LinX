@@ -1,11 +1,12 @@
 """Tests for Memory System implementation.
 
 This module tests the multi-tiered memory system including:
-- Memory storage and retrieval
+- Memory storage and retrieval (DB-first with Milvus sync)
 - Semantic similarity search
 - Memory type classification
 - Memory sharing
 - Memory archival
+- Memory count limit enforcement
 
 References:
 - Requirements 3, 3.1, 3.2: Multi-Tiered Memory System
@@ -24,6 +25,7 @@ from memory_system.memory_interface import (
     MemoryType,
     SearchQuery,
 )
+from memory_system.memory_repository import MemoryRecordData
 from memory_system.memory_system import MemorySystem
 
 
@@ -48,6 +50,32 @@ class MockEmbeddingService:
         return self._dimension
 
 
+def _make_record_data(
+    record_id: int = 1,
+    milvus_id: int = None,
+    memory_type: MemoryType = MemoryType.AGENT,
+    content: str = "test content",
+    agent_id: str = None,
+    user_id: str = None,
+    vector_status: str = "pending",
+) -> MemoryRecordData:
+    """Build a MemoryRecordData for tests."""
+    return MemoryRecordData(
+        id=record_id,
+        milvus_id=milvus_id,
+        memory_type=memory_type,
+        content=content,
+        user_id=user_id,
+        agent_id=agent_id,
+        task_id=None,
+        metadata={},
+        timestamp=datetime.utcnow(),
+        vector_status=vector_status,
+        vector_error=None,
+        vector_updated_at=None,
+    )
+
+
 @pytest.fixture
 def mock_embedding_service():
     """Fixture for mock embedding service."""
@@ -61,7 +89,7 @@ def mock_milvus_connection():
     mock_collection = Mock()
 
     # Mock collection methods
-    mock_collection.insert.return_value = Mock(primary_keys=[1])
+    mock_collection.insert.return_value = Mock(primary_keys=[100])
     mock_collection.search.return_value = [[]]
     mock_collection.query.return_value = []
     mock_collection.delete.return_value = None
@@ -73,16 +101,37 @@ def mock_milvus_connection():
 
 
 @pytest.fixture
-def memory_system(mock_embedding_service, mock_milvus_connection):
+def mock_repository():
+    """Fixture for mock MemoryRepository."""
+    repo = Mock()
+    repo.create.return_value = _make_record_data(record_id=42, agent_id="agent123")
+    repo.mark_vector_synced.return_value = _make_record_data(
+        record_id=42, milvus_id=100, agent_id="agent123", vector_status="synced"
+    )
+    repo.mark_vector_failed.return_value = _make_record_data(
+        record_id=42, agent_id="agent123", vector_status="failed"
+    )
+    repo.count_memories.return_value = 0
+    repo.evict_oldest.return_value = []
+    return repo
+
+
+@pytest.fixture
+def memory_system(mock_embedding_service, mock_milvus_connection, mock_repository):
     """Fixture for Memory System with mocked dependencies."""
     with patch(
         "memory_system.memory_system.get_embedding_service", return_value=mock_embedding_service
     ):
         with patch(
-            "memory_system.memory_system.get_milvus_connection", return_value=mock_milvus_connection
+            "memory_system.memory_system.get_milvus_connection",
+            return_value=mock_milvus_connection,
         ):
-            system = MemorySystem()
-            return system
+            with patch(
+                "memory_system.memory_system.get_memory_repository",
+                return_value=mock_repository,
+            ):
+                system = MemorySystem()
+                return system
 
 
 class TestMemoryItem:
@@ -147,38 +196,113 @@ class TestMemoryItem:
 class TestMemoryStorage:
     """Tests for memory storage operations."""
 
-    def test_store_agent_memory(self, memory_system):
-        """Test storing an agent memory."""
+    def test_store_agent_memory(self, memory_system, mock_repository):
+        """Test storing an agent memory returns DB id."""
         memory = MemoryItem(
             content="Agent learned something new", memory_type=MemoryType.AGENT, agent_id="agent123"
         )
 
         memory_id = memory_system.store_memory(memory)
 
-        assert memory_id == 1
-        assert memory.embedding is not None
-        assert len(memory.embedding) == 768
+        assert memory_id == 42  # DB record id, not Milvus id
+        mock_repository.create.assert_called_once()
 
-    def test_store_user_context_memory(self, memory_system):
+    def test_store_memory_writes_db_first_then_milvus(
+        self, memory_system, mock_repository, mock_milvus_connection
+    ):
+        """Test that store_memory writes to DB before Milvus."""
+        call_order = []
+        mock_repository.create.side_effect = lambda item: (
+            call_order.append("db_create"),
+            _make_record_data(record_id=42, agent_id="agent123"),
+        )[1]
+
+        mock_collection = mock_milvus_connection.get_collection.return_value
+        original_insert = mock_collection.insert.return_value
+
+        def milvus_insert_side_effect(data):
+            call_order.append("milvus_insert")
+            return original_insert
+
+        mock_collection.insert.side_effect = milvus_insert_side_effect
+
+        memory = MemoryItem(
+            content="Test content", memory_type=MemoryType.AGENT, agent_id="agent123"
+        )
+        memory_system.store_memory(memory)
+
+        assert call_order == ["db_create", "milvus_insert"]
+
+    def test_store_memory_returns_db_id(self, memory_system, mock_repository):
+        """Test that store_memory returns PostgreSQL record ID."""
+        mock_repository.create.return_value = _make_record_data(record_id=99, agent_id="agent123")
+
+        memory = MemoryItem(
+            content="Test content", memory_type=MemoryType.AGENT, agent_id="agent123"
+        )
+        result = memory_system.store_memory(memory)
+
+        assert result == 99
+
+    def test_store_memory_marks_synced_on_success(
+        self, memory_system, mock_repository, mock_milvus_connection
+    ):
+        """Test that successful Milvus sync marks record as synced."""
+        mock_collection = mock_milvus_connection.get_collection.return_value
+        mock_collection.insert.return_value = Mock(primary_keys=[200])
+
+        memory = MemoryItem(
+            content="Test content", memory_type=MemoryType.AGENT, agent_id="agent123"
+        )
+        memory_system.store_memory(memory)
+
+        mock_repository.mark_vector_synced.assert_called_once_with(42, 200)
+
+    def test_store_memory_marks_failed_on_milvus_error(
+        self, memory_system, mock_repository, mock_milvus_connection
+    ):
+        """Test that Milvus failure marks record as failed but DB record is preserved."""
+        mock_collection = mock_milvus_connection.get_collection.return_value
+        mock_collection.insert.side_effect = Exception("Milvus down")
+
+        memory = MemoryItem(
+            content="Test content", memory_type=MemoryType.AGENT, agent_id="agent123"
+        )
+        memory_id = memory_system.store_memory(memory)
+
+        # Should still return DB id
+        assert memory_id == 42
+        mock_repository.create.assert_called_once()
+        mock_repository.mark_vector_failed.assert_called_once()
+        assert "Milvus down" in mock_repository.mark_vector_failed.call_args[0][1]
+
+    def test_store_user_context_memory(self, memory_system, mock_repository):
         """Test storing a user context memory."""
+        mock_repository.create.return_value = _make_record_data(
+            record_id=50, memory_type=MemoryType.USER_CONTEXT, user_id="user123"
+        )
+
         memory = MemoryItem(
             content="User prefers dark mode", memory_type=MemoryType.USER_CONTEXT, user_id="user123"
         )
 
         memory_id = memory_system.store_memory(memory)
 
-        assert memory_id == 1
-        assert memory.embedding is not None
+        assert memory_id == 50
 
-    def test_store_company_memory(self, memory_system):
+    def test_store_company_memory(self, memory_system, mock_repository):
         """Test storing a company memory."""
+        mock_repository.create.return_value = _make_record_data(
+            record_id=60, memory_type=MemoryType.COMPANY, user_id="user123"
+        )
+
         memory = MemoryItem(
             content="Company policy update", memory_type=MemoryType.COMPANY, user_id="user123"
         )
 
         memory_id = memory_system.store_memory(memory)
 
-        assert memory_id == 1
+        assert memory_id == 60
 
     def test_store_memory_without_content_fails(self, memory_system):
         """Test that storing memory without content fails."""
@@ -213,6 +337,69 @@ class TestMemoryStorage:
 
         assert memory.timestamp is not None
         assert isinstance(memory.timestamp, datetime)
+
+
+class TestMemoryLimits:
+    """Tests for memory count limit enforcement."""
+
+    def test_store_memory_enforces_agent_limit(
+        self, memory_system, mock_repository
+    ):
+        """Test that agent memory limit triggers eviction."""
+        mock_repository.count_memories.return_value = 10000  # At limit
+
+        evicted_record = _make_record_data(
+            record_id=1, milvus_id=50, agent_id="agent123"
+        )
+        mock_repository.evict_oldest.return_value = [evicted_record]
+
+        memory = MemoryItem(
+            content="New agent memory", memory_type=MemoryType.AGENT, agent_id="agent123"
+        )
+        memory_system.store_memory(memory)
+
+        mock_repository.evict_oldest.assert_called_once()
+        call_kwargs = mock_repository.evict_oldest.call_args.kwargs
+        assert call_kwargs["memory_type"] == MemoryType.AGENT
+        assert call_kwargs["agent_id"] == "agent123"
+        assert call_kwargs["count"] == 1
+
+    def test_store_memory_enforces_user_context_limit(
+        self, memory_system, mock_repository
+    ):
+        """Test that user context memory limit triggers eviction."""
+        mock_repository.count_memories.return_value = 5000  # At limit
+
+        evicted_record = _make_record_data(
+            record_id=2, milvus_id=51, memory_type=MemoryType.USER_CONTEXT, user_id="user123"
+        )
+        mock_repository.evict_oldest.return_value = [evicted_record]
+        mock_repository.create.return_value = _make_record_data(
+            record_id=60, memory_type=MemoryType.USER_CONTEXT, user_id="user123"
+        )
+
+        memory = MemoryItem(
+            content="New user context", memory_type=MemoryType.USER_CONTEXT, user_id="user123"
+        )
+        memory_system.store_memory(memory)
+
+        mock_repository.evict_oldest.assert_called_once()
+        call_kwargs = mock_repository.evict_oldest.call_args.kwargs
+        assert call_kwargs["memory_type"] == MemoryType.USER_CONTEXT
+        assert call_kwargs["user_id"] == "user123"
+
+    def test_no_eviction_below_limit(
+        self, memory_system, mock_repository
+    ):
+        """Test that no eviction happens when below limit."""
+        mock_repository.count_memories.return_value = 100  # Well below limit
+
+        memory = MemoryItem(
+            content="New agent memory", memory_type=MemoryType.AGENT, agent_id="agent123"
+        )
+        memory_system.store_memory(memory)
+
+        mock_repository.evict_oldest.assert_not_called()
 
 
 class TestMemoryRetrieval:
@@ -299,6 +486,33 @@ class TestMemoryRetrieval:
         assert len(results) == 2
         # Results should be ranked (recent + similar should rank higher)
         assert all(hasattr(r, "similarity_score") for r in results)
+
+    def test_retrieve_memories_respects_explicit_zero_min_similarity(
+        self, memory_system, mock_milvus_connection
+    ):
+        """Explicit `min_similarity=0` should bypass default threshold filtering."""
+        mock_hit = Mock()
+        mock_hit.id = 1
+        mock_hit.distance = 200.0  # Low normalized similarity for L2 metric
+        mock_hit.entity = {
+            "content": "Low similarity memory",
+            "timestamp": int(datetime.utcnow().timestamp() * 1000),
+            "metadata": {},
+            "agent_id": "agent123",
+        }
+
+        mock_collection = mock_milvus_connection.get_collection.return_value
+        mock_collection.search.return_value = [[mock_hit]]
+
+        default_results = memory_system.retrieve_memories(
+            SearchQuery(query_text="test query", agent_id="agent123")
+        )
+        zero_threshold_results = memory_system.retrieve_memories(
+            SearchQuery(query_text="test query", agent_id="agent123", min_similarity=0.0)
+        )
+
+        assert default_results == []
+        assert len(zero_threshold_results) == 1
 
 
 class TestMemoryClassification:

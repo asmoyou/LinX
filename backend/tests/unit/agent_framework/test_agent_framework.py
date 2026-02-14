@@ -206,13 +206,21 @@ class TestAgentExecutor:
     def test_execute_agent(self, mock_memory):
         """Test agent execution."""
         # Mock memory interface
-        mock_memory.return_value.retrieve_agent_memory.return_value = []
-        mock_memory.return_value.retrieve_company_memory.return_value = []
+        mock_memory.return_value.retrieve_agent_memory.return_value = [Mock(content="agent note")]
+        mock_memory.return_value.retrieve_company_memory.return_value = [
+            Mock(content="company note")
+        ]
+        mock_memory.return_value.memory_system.retrieve_memories.return_value = [
+            Mock(content="user preference")
+        ]
         mock_memory.return_value.store_agent_memory.return_value = "memory_id"
 
         # Create mock agent
         mock_agent = Mock()
         mock_agent.config.name = "Test Agent"
+        mock_agent.config.access_level = "team"
+        mock_agent.config.allowed_memory = ["agent", "company", "user_context"]
+        mock_agent.config.allowed_knowledge = []
         mock_agent.execute_task.return_value = {
             "success": True,
             "output": "Task completed",
@@ -228,7 +236,11 @@ class TestAgentExecutor:
         result = executor.execute(mock_agent, context)
 
         assert result["success"]
-        assert mock_agent.execute_task.called
+        mock_agent.execute_task.assert_called_once()
+        execute_context = mock_agent.execute_task.call_args.kwargs["context"]
+        assert execute_context["agent_memories"] == ["agent note"]
+        assert execute_context["company_memories"] == ["company note"]
+        assert execute_context["user_context_memories"] == ["user preference"]
 
 
 if __name__ == "__main__":

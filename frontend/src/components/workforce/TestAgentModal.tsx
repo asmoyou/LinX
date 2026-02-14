@@ -296,8 +296,10 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
 
     // Build conversation history (exclude system messages)
     const history = messages
-      .filter(m => m.role !== 'system')
-      .map(m => ({ role: m.role, content: m.content }));
+      .filter(
+        (m) => m.role !== 'system' && typeof m.content === 'string' && m.content.trim().length > 0
+      )
+      .map((m) => ({ role: m.role, content: m.content.trim() }));
 
     try {
       const filesToUpload = attachedFiles.map(af => af.file);
@@ -524,12 +526,15 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
           
           // Create assistant message with all rounds
           if (rounds.length > 0) {
-            // Use the last round's content as the main message content
-            const lastRound = rounds[rounds.length - 1];
+            // Use the latest non-empty assistant content as message content.
+            const finalContentRound = [...rounds]
+              .reverse()
+              .find((round) => Boolean(round.content && round.content.trim()));
+            const assistantContent = finalContentRound?.content?.trim() || '';
             
             const newMessage: Message = {
               role: 'assistant',
-              content: lastRound.content || lastRound.thinking || '',
+              content: assistantContent,
               timestamp: new Date(),
               rounds: rounds,
             };

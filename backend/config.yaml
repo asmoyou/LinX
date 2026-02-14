@@ -464,8 +464,8 @@ memory:
     top_k: 10
     similarity_threshold: 0.3
     enable_reranking: true
-    rerank_provider: ollama
-    rerank_model: qllama/bge-reranker-v2-m3:latest
+    rerank_provider: ''
+    rerank_model: ''
     rerank_top_k: 30
     rerank_weight: 0.75
     rerank_timeout_seconds: 8
@@ -531,7 +531,7 @@ knowledge_base:
     model: bge-m3
     dimension: 1024
   enrichment:
-    enabled: true
+    enabled: false
     provider: ollama
     model: qwen3-vl:30b
     keywords_topn: 5
@@ -563,8 +563,8 @@ knowledge_base:
     embedding_failure_backoff_seconds: 30
     rerank_enabled: true
     rerank_weight: 0.85
-    rerank_provider: ollama
-    rerank_model: qllama/bge-reranker-v2-m3:latest
+    rerank_provider: llm-pool
+    rerank_model: BAAI/bge-reranker-v2-m3
     rerank_top_k: 30
     rerank_timeout_seconds: 10
     rerank_failure_backoff_seconds: 60
@@ -573,8 +573,8 @@ knowledge_base:
     cross_language_languages:
     - en
     - zh-CN
-    cross_language_provider: ''
-    cross_language_model: ''
+    cross_language_provider: ollama
+    cross_language_model: qwen3-vl:30b
     cross_language_timeout_seconds: 4
     cross_language_failure_backoff_seconds: 60
     cross_language_max_expansions: 2

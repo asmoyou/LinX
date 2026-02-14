@@ -226,6 +226,22 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
     });
   };
 
+  const handleCrossLangProviderChange = (provider: string) => {
+    const models = availableProviders[provider] || [];
+    if (!config) return;
+    const chatModels = models.filter(
+      (m) => !/embed|rerank/i.test(m)
+    );
+    setConfig({
+      ...config,
+      search: {
+        ...config.search,
+        cross_language_provider: provider,
+        cross_language_model: chatModels[0] || models[0] || '',
+      },
+    });
+  };
+
   const handleVisionProviderChange = (provider: string) => {
     const models = availableProviders[provider] || [];
     if (!config) return;
@@ -1054,6 +1070,65 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({ isOpen, onClose })
                 </div>
               </div>
             </section>
+
+            {/* Cross-Language Expansion */}
+            {showAdvanced && (
+              <section>
+                <h3 className="text-base font-semibold text-gray-800 dark:text-gray-200 mb-3">
+                  {t('kbConfig.crossLanguage', '跨语言检索扩展')}
+                </h3>
+                <div className="space-y-4 bg-white/5 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+                  <label className="flex items-center gap-3 cursor-pointer mb-4">
+                    <input
+                      type="checkbox"
+                      checked={config.search.cross_language_expansion_enabled ?? true}
+                      onChange={(e) => updateSearch('cross_language_expansion_enabled', e.target.checked)}
+                      className="w-4 h-4 accent-indigo-500"
+                    />
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {t('kbConfig.enableCrossLanguage', '启用跨语言扩展')}
+                    </span>
+                  </label>
+                  {config.search.cross_language_expansion_enabled && (
+                    <>
+                      <div className="grid grid-cols-2 gap-4 mb-4">
+                        <div>
+                          <label className={labelClass}>{t('kbConfig.crossLangProvider', '扩展模型供应商')}</label>
+                          <select
+                            value={config.search.cross_language_provider || ''}
+                            onChange={(e) => handleCrossLangProviderChange(e.target.value)}
+                            className={selectClass}
+                          >
+                            <option value="">{t('kbConfig.autoResolve', '自动（继承默认）')}</option>
+                            {Object.keys(availableProviders).map((p) => (
+                              <option key={p} value={p}>{p}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className={labelClass}>{t('kbConfig.crossLangModel', '扩展模型')}</label>
+                          <select
+                            value={config.search.cross_language_model || ''}
+                            onChange={(e) => updateSearchStr('cross_language_model', e.target.value)}
+                            className={selectClass}
+                          >
+                            <option value="">{t('kbConfig.autoResolve', '自动（继承默认）')}</option>
+                            {(availableProviders[config.search.cross_language_provider || ''] || [])
+                              .filter((m) => !/embed|rerank/i.test(m))
+                              .map((m) => (
+                                <option key={m} value={m}>{m}</option>
+                              ))}
+                          </select>
+                        </div>
+                      </div>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {t('kbConfig.crossLanguageHint', '将用户查询自动翻译为其他语言以提升多语言检索效果。留空表示自动从供应商配置中选取。')}
+                      </p>
+                    </>
+                  )}
+                </div>
+              </section>
+            )}
 
             {/* Save Button */}
             <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">

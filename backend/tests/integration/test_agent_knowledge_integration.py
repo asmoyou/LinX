@@ -1,206 +1,111 @@
-"""Integration tests for Agent → Knowledge Base.
+"""Integration tests for AgentExecutor knowledge-base context wiring."""
 
-Tests the integration between Agent Framework and Knowledge Base components.
-
-References:
-- Task 8.2.4: Test Agent → Knowledge Base integration
-"""
-
-import io
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
-import pytest
+from agent_framework.agent_executor import AgentExecutor, ExecutionContext
 
 
-@pytest.fixture
-def mock_knowledge_search():
-    """Mock knowledge search."""
-    with patch("knowledge_base.knowledge_search.KnowledgeSearch") as mock:
-        search = Mock()
-        search.search = AsyncMock(
-            return_value=[
-                {
-                    "knowledge_id": str(uuid4()),
-                    "title": "Company Policy Document",
-                    "content_snippet": "Relevant policy information...",
-                    "relevance_score": 0.92,
-                }
-            ]
-        )
-        mock.return_value = search
-        yield search
+def _build_agent(*, allowed_knowledge=None):
+    agent = Mock()
+    agent.config.name = "Knowledge Integration Agent"
+    agent.config.access_level = "private"
+    agent.config.allowed_memory = []
+    agent.config.allowed_knowledge = allowed_knowledge if allowed_knowledge is not None else []
+    agent.execute_task.return_value = {"success": True, "output": "done"}
+    return agent
 
 
-@pytest.fixture
-def mock_document_upload():
-    """Mock document upload."""
-    with patch("knowledge_base.document_upload.DocumentUpload") as mock:
-        upload = Mock()
-        upload.upload_document = AsyncMock(
-            return_value={"knowledge_id": str(uuid4()), "status": "processing"}
-        )
-        mock.return_value = upload
-        yield upload
+def _build_memory_interface():
+    memory_interface = Mock()
+    memory_interface.retrieve_agent_memory.return_value = []
+    memory_interface.retrieve_company_memory.return_value = []
+    memory_interface.memory_system.retrieve_memories.return_value = []
+    memory_interface.store_agent_memory.return_value = "memory-id"
+    return memory_interface
 
 
-class TestAgentKnowledgeIntegration:
-    """Test Agent → Knowledge Base integration."""
+def test_executor_injects_knowledge_snippets_into_execution_context():
+    """Knowledge search results should be injected into agent context."""
+    memory_interface = _build_memory_interface()
+    agent = _build_agent(allowed_knowledge=[])
+    executor = AgentExecutor(memory_interface)
+    context = ExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        task_description="How do we handle retention policy?",
+    )
 
-    @pytest.mark.asyncio
-    async def test_agent_searches_knowledge_base(self, mock_knowledge_search):
-        """Test that agent can search the knowledge base."""
-        from agent_framework.base_agent import AgentConfig, BaseAgent
+    search_service = Mock()
+    search_service.search.return_value = [
+        {
+            "document_id": str(uuid4()),
+            "chunk_id": str(uuid4()),
+            "content_snippet": "Knowledge snippet A",
+            "similarity_score": 0.91,
+            "metadata": {
+                "title": "Retention Handbook",
+                "file_reference": "knowledge/retention-handbook.pdf",
+            },
+        },
+        {
+            "document_id": str(uuid4()),
+            "chunk_id": str(uuid4()),
+            "content_snippet": "Knowledge snippet B",
+            "similarity_score": 0.87,
+            "metadata": {
+                "title": "客服标准流程",
+                "file_reference": "knowledge/customer-service-sop.docx",
+            },
+        },
+    ]
 
-        config = AgentConfig(
-            agent_id=uuid4(),
-            name="Research Agent",
-            agent_type="researcher",
-            owner_user_id=uuid4(),
-            capabilities=["knowledge_retrieval"],
-        )
+    with patch("knowledge_base.knowledge_search.get_knowledge_search", return_value=search_service):
+        context_data, debug_info = executor.build_execution_context_with_debug(agent, context)
 
-        agent = BaseAgent(config=config)
+    assert context_data["knowledge_snippets"] == ["Knowledge snippet A", "Knowledge snippet B"]
+    assert context_data["knowledge_hits"][0]["title"] == "Retention Handbook"
+    assert context_data["knowledge_hits"][0]["file_reference"] == "knowledge/retention-handbook.pdf"
+    assert debug_info["knowledge"]["hit_count"] == 2
 
-        # Agent searches for relevant documents
-        results = await agent.search_knowledge(query="company data retention policy", limit=5)
 
-        assert len(results) > 0
-        assert results[0]["relevance_score"] > 0.8
+def test_executor_skips_knowledge_search_when_allowed_collections_are_invalid():
+    """Invalid allowed_knowledge IDs should skip search without failing execution."""
+    memory_interface = _build_memory_interface()
+    agent = _build_agent(allowed_knowledge=["not-a-uuid"])
+    executor = AgentExecutor(memory_interface)
+    context = ExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        task_description="Try retrieving filtered knowledge",
+    )
 
-        # Verify knowledge search was called
-        mock_knowledge_search.search.assert_called_once()
+    with patch("knowledge_base.knowledge_search.get_knowledge_search") as mock_get_search:
+        result = executor.execute(agent, context)
 
-    @pytest.mark.asyncio
-    async def test_agent_retrieves_document_content(self, mock_knowledge_search):
-        """Test that agent can retrieve full document content."""
-        from agent_framework.base_agent import AgentConfig, BaseAgent
+    assert result["success"] is True
+    mock_get_search.assert_not_called()
+    execute_context = agent.execute_task.call_args.kwargs["context"]
+    assert execute_context["knowledge_snippets"] == []
 
-        config = AgentConfig(
-            agent_id=uuid4(),
-            name="Research Agent",
-            agent_type="researcher",
-            owner_user_id=uuid4(),
-            capabilities=["document_analysis"],
-        )
 
-        agent = BaseAgent(config=config)
-        knowledge_id = uuid4()
+def test_executor_continues_when_knowledge_search_throws():
+    """Knowledge-base failures should not block agent execution."""
+    memory_interface = _build_memory_interface()
+    agent = _build_agent(allowed_knowledge=[])
+    executor = AgentExecutor(memory_interface)
+    context = ExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        task_description="Knowledge lookup should degrade gracefully",
+    )
 
-        # Mock document retrieval
-        with patch("knowledge_base.knowledge_search.KnowledgeSearch.get_document") as mock_get:
-            mock_get.return_value = {
-                "knowledge_id": str(knowledge_id),
-                "title": "Full Document",
-                "content": "Complete document content...",
-                "metadata": {"pages": 10},
-            }
+    with patch(
+        "knowledge_base.knowledge_search.get_knowledge_search",
+        side_effect=RuntimeError("kb unavailable"),
+    ):
+        result = executor.execute(agent, context)
 
-            # Agent retrieves full document
-            document = await agent.get_document(knowledge_id)
-
-            assert document is not None
-            assert "content" in document
-            assert len(document["content"]) > 0
-
-    @pytest.mark.asyncio
-    async def test_agent_uploads_generated_document(self, mock_document_upload):
-        """Test that agent can upload generated documents to knowledge base."""
-        from agent_framework.base_agent import AgentConfig, BaseAgent
-
-        config = AgentConfig(
-            agent_id=uuid4(),
-            name="Report Generator",
-            agent_type="generator",
-            owner_user_id=uuid4(),
-            capabilities=["report_generation"],
-        )
-
-        agent = BaseAgent(config=config)
-
-        # Agent generates and uploads a report
-        report_content = "# Quarterly Report\n\nAnalysis results..."
-        file_data = io.BytesIO(report_content.encode())
-
-        result = await agent.upload_document(
-            filename="Q4_Report.md",
-            file_data=file_data,
-            title="Q4 2024 Report",
-            content_type="report",
-        )
-
-        assert result["status"] == "processing"
-        assert "knowledge_id" in result
-
-        # Verify upload was called
-        mock_document_upload.upload_document.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_agent_filters_knowledge_by_access_level(self, mock_knowledge_search):
-        """Test that agent only accesses knowledge it has permission for."""
-        from agent_framework.base_agent import AgentConfig, BaseAgent
-
-        user_id = uuid4()
-        config = AgentConfig(
-            agent_id=uuid4(),
-            name="Limited Agent",
-            agent_type="assistant",
-            owner_user_id=user_id,
-            capabilities=["knowledge_retrieval"],
-        )
-
-        agent = BaseAgent(config=config)
-
-        # Mock filtered search results
-        mock_knowledge_search.search = AsyncMock(
-            return_value=[
-                {
-                    "knowledge_id": str(uuid4()),
-                    "title": "Public Document",
-                    "access_level": "public",
-                    "relevance_score": 0.90,
-                }
-            ]
-        )
-
-        # Agent searches with access control
-        results = await agent.search_knowledge(query="company information", limit=5)
-
-        # Verify only accessible documents are returned
-        assert all(doc["access_level"] in ["public", "team"] for doc in results)
-
-        # Verify search included user context
-        call_args = mock_knowledge_search.search.call_args
-        assert "user_id" in call_args[1] or "owner_user_id" in call_args[1]
-
-    @pytest.mark.asyncio
-    async def test_agent_waits_for_document_processing(self, mock_document_upload):
-        """Test that agent can wait for document processing to complete."""
-        from agent_framework.base_agent import AgentConfig, BaseAgent
-
-        config = AgentConfig(
-            agent_id=uuid4(),
-            name="Document Processor",
-            agent_type="processor",
-            owner_user_id=uuid4(),
-            capabilities=["document_processing"],
-        )
-
-        agent = BaseAgent(config=config)
-        knowledge_id = uuid4()
-
-        # Mock processing status checks
-        with patch(
-            "knowledge_base.knowledge_search.KnowledgeSearch.get_processing_status"
-        ) as mock_status:
-            # First call: processing, second call: completed
-            mock_status.side_effect = [
-                {"status": "processing", "progress": 50},
-                {"status": "completed", "progress": 100},
-            ]
-
-            # Agent waits for processing
-            status = await agent.wait_for_processing(knowledge_id=knowledge_id, timeout=30)
-
-            assert status["status"] == "completed"
-            assert mock_status.call_count == 2
+    assert result["success"] is True
+    execute_context = agent.execute_task.call_args.kwargs["context"]
+    assert execute_context["knowledge_snippets"] == []

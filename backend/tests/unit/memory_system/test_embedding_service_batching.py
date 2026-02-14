@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import requests
+import pytest
 
 from memory_system.embedding_service import VLLMEmbeddingService
 
@@ -69,4 +70,9 @@ def test_vllm_batch_splits_when_payload_too_large() -> None:
         embeddings = service.generate_embeddings_batch(texts)
 
     assert call_sizes == [4, 2, 2]
-    assert [vector[0] for vector in embeddings] == [0.0, 1.0, 2.0, 3.0]
+    assert len(embeddings) == 4
+    for idx, vector in enumerate(embeddings):
+        expected_norm = (float(idx) ** 2 + 1.0) ** 0.5
+        assert vector[0] == pytest.approx(float(idx) / expected_norm)
+        assert vector[1] == pytest.approx(1.0 / expected_norm)
+        assert (vector[0] ** 2 + vector[1] ** 2) ** 0.5 == pytest.approx(1.0)

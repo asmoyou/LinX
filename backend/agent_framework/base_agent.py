@@ -718,124 +718,86 @@ class BaseAgent:
                     # Check if output contains tool calls
                     import re
                     import json
-                    
-                    # Pattern 1: JSON block with ```json wrapper
-                    json_pattern1 = r'```json\s*\n\s*(\{[^}]*"tool"\s*:\s*"([^"]+)"[^}]*\})\s*\n\s*```'
-                    
-                    # Pattern 2: Plain JSON without wrapper (more common)
-                    json_pattern2 = r'\{[^}]*"tool"\s*:\s*"([^"]+)"[^}]*\}'
-                    
-                    # Try pattern 1 first (with wrapper)
-                    matches1 = re.findall(json_pattern1, round_output, re.DOTALL)
-                    
-                    # Try pattern 2 (without wrapper)
-                    matches2 = re.findall(json_pattern2, round_output, re.DOTALL)
-                    
-                    # Combine matches
+
+                    parsed_calls, parsed_errors = self._parse_tool_calls(round_output)
                     tool_json_blocks = []
-                    
-                    # Process pattern 1 matches
-                    for json_str, tool_name in matches1:
-                        tool_json_blocks.append(json_str)
-                    
-                    # Process pattern 2 matches (only if pattern 1 didn't match)
-                    if not matches1 and matches2:
-                        for tool_name in matches2:
-                            # Extract the full JSON block
-                            match = re.search(r'\{[^}]*"tool"\s*:\s*"' + re.escape(tool_name) + r'"[^}]*\}', round_output)
-                            if match:
-                                tool_json_blocks.append(match.group(0))
+                    for tc in parsed_calls:
+                        tool_json_blocks.append(tc.raw_json)
                     
                     if tool_json_blocks:
                         # This round contains tool calls
                         logger.info(
-                            f"[TOOL-LOOP] Found {len(tool_json_blocks)} tool calls in round {iteration}",
+                            f"[TOOL-LOOP] Found {len(parsed_calls)} tool calls in round {iteration}",
                             extra={"agent_id": str(self.config.agent_id)}
                         )
-                        
+
                         # Note: thinking and content already sent during streaming above
                         # Now just execute tools and send tool execution info
-                        
+
                         # Execute tools
                         tool_results = []
-                        for json_str in tool_json_blocks:
-                            try:
-                                tool_data = json.loads(json_str)
-                                tool_name = tool_data.get("tool")
-                                
-                                # Find the tool
-                                tool = self.tools_by_name.get(tool_name)
-                                if tool:
-                                    # Prepare arguments based on tool
-                                    if tool_name == "calculator":
-                                        tool_args = {"expression": tool_data.get("expression", "")}
-                                    else:
-                                        # Generic args extraction
-                                        tool_args = {k: v for k, v in tool_data.items() if k != "tool"}
-                                    
-                                    # Send "calling tool" message BEFORE execution
+                        for tc in parsed_calls:
+                            tool_name = tc.tool_name
+                            tool_args = tc.arguments
+                            tool = self.tools_by_name.get(tool_name)
+                            if tool:
+                                # Send "calling tool" message BEFORE execution
+                                stream_callback((
+                                    f"\n\n🔧 **调用工具: {tool_name}**\n参数: {tool_args}\n",
+                                    "tool_call"
+                                ))
+
+                                logger.info(
+                                    f"Executing tool: {tool_name}",
+                                    extra={
+                                        "agent_id": str(self.config.agent_id),
+                                        "tool_name": tool_name,
+                                        "tool_args": str(tool_args)
+                                    }
+                                )
+
+                                # Execute tool
+                                try:
+                                    result = tool.invoke(tool_args)
+                                    tool_calls_made.append({
+                                        "name": tool_name,
+                                        "args": tool_args,
+                                        "result": str(result)
+                                    })
+                                    tool_results.append({
+                                        "tool": tool_name,
+                                        "args": tool_args,
+                                        "result": str(result)
+                                    })
+
+                                    # Send tool execution result to frontend
                                     stream_callback((
-                                        f"\n\n🔧 **调用工具: {tool_name}**\n参数: {tool_args}\n",
-                                        "tool_call"
+                                        f"✅ **执行结果**: {result}\n",
+                                        "tool_result"
                                     ))
-                                    
+
                                     logger.info(
-                                        f"Executing tool: {tool_name}",
-                                        extra={
-                                            "agent_id": str(self.config.agent_id),
-                                            "tool_name": tool_name,
-                                            "tool_args": str(tool_args)
-                                        }
+                                        f"Tool executed successfully: {tool_name} = {result}",
+                                        extra={"agent_id": str(self.config.agent_id)}
                                     )
-                                    
-                                    # Execute tool
-                                    try:
-                                        result = tool.invoke(tool_args)
-                                        tool_calls_made.append({
-                                            "name": tool_name,
-                                            "args": tool_args,
-                                            "result": str(result)
-                                        })
-                                        tool_results.append({
-                                            "tool": tool_name,
-                                            "args": tool_args,
-                                            "result": str(result)
-                                        })
-                                        
-                                        # Send tool execution result to frontend
-                                        stream_callback((
-                                            f"✅ **执行结果**: {result}\n",
-                                            "tool_result"
-                                        ))
-                                        
-                                        logger.info(
-                                            f"Tool executed successfully: {tool_name} = {result}",
-                                            extra={"agent_id": str(self.config.agent_id)}
-                                        )
-                                    except Exception as tool_error:
-                                        logger.error(f"Tool execution failed: {tool_error}", exc_info=True)
-                                        stream_callback((
-                                            f"❌ **执行失败**: {str(tool_error)}\n",
-                                            "tool_error"
-                                        ))
-                                        tool_results.append({
-                                            "tool": tool_name,
-                                            "args": tool_args,
-                                            "error": str(tool_error)
-                                        })
-                                else:
-                                    logger.warning(f"Tool not found: {tool_name}")
+                                except Exception as tool_error:
+                                    logger.error(f"Tool execution failed: {tool_error}", exc_info=True)
                                     stream_callback((
-                                        f"⚠️ 工具未找到: {tool_name}\n",
+                                        f"❌ **执行失败**: {str(tool_error)}\n",
                                         "tool_error"
                                     ))
-                            except json.JSONDecodeError as e:
-                                logger.warning(f"Failed to parse tool JSON: {e}")
+                                    tool_results.append({
+                                        "tool": tool_name,
+                                        "args": tool_args,
+                                        "error": str(tool_error)
+                                    })
+                            else:
+                                logger.warning(f"Tool not found: {tool_name}")
                                 stream_callback((
-                                    f"⚠️ 工具调用格式错误: {e}\n",
+                                    f"⚠️ 工具未找到: {tool_name}\n",
                                     "tool_error"
                                 ))
-                        
+
                         # If tools were executed, continue to next round with tool results
                         if tool_results:
                             logger.info(
@@ -989,30 +951,97 @@ class BaseAgent:
 
     def _parse_tool_calls(self, llm_output: str) -> Tuple[List[ToolCall], List[ParseError]]:
         """Parse tool calls from LLM output, collecting all errors.
-        
+
         Args:
             llm_output: Raw output from LLM
-            
+
         Returns:
             Tuple of (tool_calls, parse_errors)
         """
         import re
         import json
-        
+
         tool_calls = []
         parse_errors = []
-        
+
+        # Pre-process: convert model-native tool call formats to standard JSON format.
+        # GLM format: <tool_call>tool_name<|end_of_box|> <tool_call>key: value<|end_of_box|>
+        # Qwen format: <tool_call>\n{"name":"tool","arguments":{"key":"val"}}\n</tool_call>
+        # Generic XML: <function_call>{"name":"tool",...}</function_call>
+        preprocessed = llm_output
+
+        # Qwen/ChatGLM <tool_call>JSON</tool_call> format
+        qwen_tool_pattern = r'<tool_call>\s*(\{.*?\})\s*</tool_call>'
+        qwen_matches = re.findall(qwen_tool_pattern, preprocessed, re.DOTALL)
+        for qwen_json in qwen_matches:
+            try:
+                data = json.loads(qwen_json)
+                # Normalize: Qwen uses {"name":"x","arguments":{...}}
+                if "name" in data and "arguments" in data:
+                    tool_name = data["name"]
+                    args = data["arguments"] if isinstance(data["arguments"], dict) else {}
+                    normalized = json.dumps({"tool": tool_name, **args})
+                    preprocessed = preprocessed.replace(
+                        re.search(qwen_tool_pattern, preprocessed, re.DOTALL).group(0),
+                        f"```json\n{normalized}\n```",
+                        1,
+                    )
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+        # GLM <tool_call>name<|end_of_box|> <tool_call>key: val<|end_of_box|> format
+        glm_blocks = re.findall(
+            r'<tool_call>\s*(.*?)\s*(?:<\|end_of_box\|>|</tool_call>)',
+            preprocessed,
+            re.DOTALL,
+        )
+        if glm_blocks and not qwen_matches:
+            # First block is typically the tool name, subsequent blocks are parameters
+            tool_name = None
+            args = {}
+            for block in glm_blocks:
+                block = block.strip()
+                if ":" in block:
+                    key, _, val = block.partition(":")
+                    args[key.strip()] = val.strip()
+                elif not tool_name:
+                    tool_name = block
+            if tool_name and tool_name in (self.tools_by_name or {}):
+                normalized = json.dumps({"tool": tool_name, **args})
+                preprocessed += f"\n```json\n{normalized}\n```"
+
+        # <function_call>JSON</function_call> format
+        fc_pattern = r'<function_call>\s*(\{.*?\})\s*</function_call>'
+        fc_matches = re.findall(fc_pattern, preprocessed, re.DOTALL)
+        for fc_json in fc_matches:
+            try:
+                data = json.loads(fc_json)
+                if "name" in data:
+                    tool_name = data.pop("name")
+                    args = data.get("arguments", data)
+                    if isinstance(args, dict):
+                        normalized = json.dumps({"tool": tool_name, **args})
+                    else:
+                        normalized = json.dumps({"tool": tool_name})
+                    preprocessed = preprocessed.replace(
+                        re.search(fc_pattern, preprocessed, re.DOTALL).group(0),
+                        f"```json\n{normalized}\n```",
+                        1,
+                    )
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
         # Pattern 1: JSON block with ```json wrapper
         json_pattern1 = r'```json\s*\n\s*(\{[^}]*"tool"\s*:\s*"([^"]+)"[^}]*\})\s*\n\s*```'
-        
+
         # Pattern 2: Plain JSON without wrapper (more common)
         json_pattern2 = r'\{[^}]*"tool"\s*:\s*"([^"]+)"[^}]*\}'
-        
+
         # Try pattern 1 first (with wrapper)
-        matches1 = re.findall(json_pattern1, llm_output, re.DOTALL)
-        
+        matches1 = re.findall(json_pattern1, preprocessed, re.DOTALL)
+
         # Try pattern 2 (without wrapper)
-        matches2 = re.findall(json_pattern2, llm_output, re.DOTALL)
+        matches2 = re.findall(json_pattern2, preprocessed, re.DOTALL)
         
         # Combine matches
         json_blocks = []

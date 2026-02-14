@@ -15,6 +15,66 @@ from memory_system.memory_system import MemorySystem, get_memory_system
 logger = logging.getLogger(__name__)
 
 
+def _format_agent_memory_content(
+    task: str,
+    result: str,
+    agent_name: str = "",
+    max_result_length: int = 500,
+) -> str:
+    """Format agent memory content with structured layout and truncation.
+
+    Args:
+        task: Task description or user message
+        result: Agent response or execution output
+        agent_name: Name of the agent
+        max_result_length: Maximum characters for the result field
+
+    Returns:
+        Structured memory content string
+    """
+    task_trimmed = (task or "").strip()[:300]
+    result_trimmed = (result or "").strip()
+    if len(result_trimmed) > max_result_length:
+        result_trimmed = result_trimmed[:max_result_length] + "..."
+
+    parts = []
+    if agent_name:
+        parts.append(f"[Agent: {agent_name}]")
+    parts.append(f"Task: {task_trimmed}")
+    parts.append(f"Result: {result_trimmed}")
+    return "\n".join(parts)
+
+
+def _format_user_context_content(
+    user_message: str,
+    agent_name: str = "",
+    response_summary: str = "",
+    max_message_length: int = 300,
+) -> str:
+    """Format user context memory with structured layout and truncation.
+
+    Args:
+        user_message: The user's message/query
+        agent_name: Name of the responding agent
+        response_summary: Brief summary of the response topic
+        max_message_length: Maximum characters for user message
+
+    Returns:
+        Structured user context string
+    """
+    msg_trimmed = (user_message or "").strip()
+    if len(msg_trimmed) > max_message_length:
+        msg_trimmed = msg_trimmed[:max_message_length] + "..."
+
+    parts = [f"User discussed: {msg_trimmed}"]
+    if agent_name:
+        parts.append(f"Agent: {agent_name}")
+    if response_summary:
+        summary_trimmed = (response_summary or "").strip()[:200]
+        parts.append(f"Topic: {summary_trimmed}")
+    return "\n".join(parts)
+
+
 class AgentMemoryInterface:
     """Interface for agents to access memory systems."""
 
@@ -52,7 +112,7 @@ class AgentMemoryInterface:
 
         memory_id = self.memory_system.store_memory(memory_item)
         logger.info(f"Agent memory stored: {memory_id}")
-        return memory_id
+        return str(memory_id)
 
     def store_company_memory(
         self,
@@ -82,7 +142,7 @@ class AgentMemoryInterface:
 
         memory_id = self.memory_system.store_memory(memory_item)
         logger.info(f"Company memory stored: {memory_id}")
-        return memory_id
+        return str(memory_id)
 
     def retrieve_agent_memory(
         self,
@@ -108,7 +168,15 @@ class AgentMemoryInterface:
         )
 
         results = self.memory_system.retrieve_memories(search_query)
-        logger.info(f"Retrieved {len(results)} agent memories")
+        logger.info(
+            "Retrieved agent memories",
+            extra={
+                "agent_id": str(agent_id),
+                "top_k": top_k,
+                "hit_count": len(results),
+                "query_preview": (query or "")[:120],
+            },
+        )
         return results
 
     def retrieve_company_memory(
@@ -135,7 +203,15 @@ class AgentMemoryInterface:
         )
 
         results = self.memory_system.retrieve_memories(search_query)
-        logger.info(f"Retrieved {len(results)} company memories")
+        logger.info(
+            "Retrieved company memories",
+            extra={
+                "user_id": str(user_id),
+                "top_k": top_k,
+                "hit_count": len(results),
+                "query_preview": (query or "")[:120],
+            },
+        )
         return results
 
     def store_user_context(
@@ -172,7 +248,7 @@ class AgentMemoryInterface:
 
         memory_id = self.memory_system.store_memory(memory_item)
         logger.info(f"User context stored: {memory_id}")
-        return memory_id
+        return str(memory_id)
 
 
 # Singleton instance

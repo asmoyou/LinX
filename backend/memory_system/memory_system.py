@@ -29,6 +29,7 @@ from memory_system.memory_interface import (
     MemoryType,
     SearchQuery,
 )
+from memory_system.memory_repository import MemoryRepository, get_memory_repository
 from memory_system.milvus_connection import get_milvus_connection
 from shared.config import get_config
 
@@ -65,6 +66,7 @@ class MemorySystem(MemorySystemInterface):
         self._config = get_config()
         self._milvus = get_milvus_connection()
         self._embedding_service = get_embedding_service(scope="memory")
+        self._repository = get_memory_repository()
 
         # Load memory configuration with retrieval-section priority and root compatibility fallback.
         memory_config = self._config.get_section("memory")
@@ -196,6 +198,30 @@ class MemorySystem(MemorySystemInterface):
         )
         self._rerank_fail_until = 0.0
 
+        # Memory count limits from config.
+        agent_memory_cfg = memory_config.get("agent_memory", {})
+        if not isinstance(agent_memory_cfg, dict):
+            agent_memory_cfg = {}
+        company_memory_cfg = memory_config.get("company_memory", {})
+        if not isinstance(company_memory_cfg, dict):
+            company_memory_cfg = {}
+        user_context_cfg = memory_config.get("user_context", {})
+        if not isinstance(user_context_cfg, dict):
+            user_context_cfg = {}
+
+        self._max_items_per_agent = _cfg_int(
+            agent_memory_cfg.get("max_items_per_agent"),
+            default=10000,
+        )
+        self._max_items_company = _cfg_int(
+            company_memory_cfg.get("max_items"),
+            default=100000,
+        )
+        self._max_items_per_user = _cfg_int(
+            user_context_cfg.get("max_items_per_user"),
+            default=5000,
+        )
+
         self._collection_retry_attempts = _cfg_int(
             memory_config.get("collection_retry_attempts"),
             default=3,
@@ -230,54 +256,43 @@ class MemorySystem(MemorySystemInterface):
                 "rerank_model": self._rerank_model,
                 "metric_type": self._search_metric_type,
                 "nprobe": self._search_nprobe,
+                "max_items_per_agent": self._max_items_per_agent,
+                "max_items_company": self._max_items_company,
+                "max_items_per_user": self._max_items_per_user,
             },
         )
 
-    def store_memory(self, memory: MemoryItem) -> int:
-        """
-        Store a memory item in the appropriate collection.
+    def _insert_into_milvus(self, memory: MemoryItem) -> int:
+        """Insert a memory item into Milvus vector index.
 
         Args:
-            memory: Memory item to store
+            memory: Memory item with content (embedding generated if missing)
 
         Returns:
-            int: ID of the stored memory
+            int: Milvus primary key ID
 
         Raises:
-            ValueError: If memory data is invalid
-            RuntimeError: If storage fails
+            RuntimeError: If Milvus insertion fails
         """
-        # Validate memory
-        if not memory.content or not memory.content.strip():
-            raise ValueError("Memory content cannot be empty")
-
-        if not memory.memory_type:
-            raise ValueError("Memory type must be specified")
-
-        # Set timestamp if not provided
-        if not memory.timestamp:
-            memory.timestamp = datetime.utcnow()
-
         try:
-            # Generate embedding
-            embedding = self._embedding_service.generate_embedding(memory.content)
-            memory.embedding = embedding
+            # Generate embedding if not already present
+            if not memory.embedding:
+                memory.embedding = self._embedding_service.generate_embedding(memory.content)
+
+            embedding = memory.embedding
 
             # Determine target collection
             if memory.memory_type == MemoryType.AGENT:
                 collection_name = CollectionName.AGENT_MEMORIES
-                if not memory.agent_id:
-                    raise ValueError("agent_id required for agent memories")
             else:
-                # Company, user_context, and task_context all go to company_memories
                 collection_name = CollectionName.COMPANY_MEMORIES
-                if not memory.user_id:
-                    raise ValueError("user_id required for company/user_context memories")
 
             # Get collection
             collection = self._milvus.get_collection(collection_name)
 
             # Prepare data for insertion
+            if not memory.timestamp:
+                memory.timestamp = datetime.utcnow()
             timestamp_ms = int(memory.timestamp.timestamp() * 1000)
             metadata_payload = dict(memory.metadata or {})
             if memory.user_id and "user_id" not in metadata_payload:
@@ -305,22 +320,151 @@ class MemorySystem(MemorySystemInterface):
 
             # Insert into Milvus
             result = collection.insert(data)
-
-            # Get the inserted ID
-            memory_id = result.primary_keys[0]
+            milvus_id = result.primary_keys[0]
 
             logger.info(
-                f"Stored memory: id={memory_id}, type={memory.memory_type.value}, "
-                f"collection={collection_name}"
+                "Inserted vector into Milvus: milvus_id=%s, type=%s, collection=%s",
+                milvus_id,
+                memory.memory_type.value,
+                collection_name,
             )
 
-            return memory_id
+            return milvus_id
+
+        except Exception as e:
+            raise RuntimeError(f"Milvus insertion failed: {e}")
+
+    def store_memory(self, memory: MemoryItem) -> int:
+        """
+        Store a memory item with PostgreSQL as source-of-truth.
+
+        Flow:
+        1. Validate content and type
+        2. Enforce memory count limits (evict oldest if over limit)
+        3. Write to PostgreSQL via MemoryRepository
+        4. Best-effort insert into Milvus vector index
+        5. Return PostgreSQL record ID
+
+        Args:
+            memory: Memory item to store
+
+        Returns:
+            int: PostgreSQL record ID of the stored memory
+
+        Raises:
+            ValueError: If memory data is invalid
+            RuntimeError: If PostgreSQL storage fails
+        """
+        # Validate memory
+        if not memory.content or not memory.content.strip():
+            raise ValueError("Memory content cannot be empty")
+
+        if not memory.memory_type:
+            raise ValueError("Memory type must be specified")
+
+        if memory.memory_type == MemoryType.AGENT and not memory.agent_id:
+            raise ValueError("agent_id required for agent memories")
+
+        if memory.memory_type != MemoryType.AGENT and not memory.user_id:
+            raise ValueError("user_id required for company/user_context memories")
+
+        # Set timestamp if not provided
+        if not memory.timestamp:
+            memory.timestamp = datetime.utcnow()
+
+        try:
+            # Enforce memory count limits before inserting
+            self._enforce_memory_limits(memory)
+
+            # Write to PostgreSQL (source of truth)
+            record = self._repository.create(memory)
+            db_id = record.id
+
+            # Best-effort Milvus vector sync
+            try:
+                milvus_id = self._insert_into_milvus(memory)
+                self._repository.mark_vector_synced(db_id, milvus_id)
+                logger.info(
+                    "Stored memory: db_id=%s, milvus_id=%s, type=%s",
+                    db_id,
+                    milvus_id,
+                    memory.memory_type.value,
+                )
+            except Exception as milvus_err:
+                self._repository.mark_vector_failed(db_id, str(milvus_err))
+                logger.warning(
+                    "Milvus sync failed for memory db_id=%s (DB record preserved): %s",
+                    db_id,
+                    milvus_err,
+                )
+
+            return db_id
 
         except ValueError:
             raise
         except Exception as e:
             logger.error(f"Failed to store memory: {e}")
             raise RuntimeError(f"Memory storage failed: {e}")
+
+    def _enforce_memory_limits(self, memory: MemoryItem) -> None:
+        """Evict oldest memories when count exceeds configured limits.
+
+        Args:
+            memory: The memory item about to be stored (used for type/scope)
+        """
+        try:
+            if memory.memory_type == MemoryType.AGENT:
+                limit = self._max_items_per_agent
+                current_count = self._repository.count_memories(
+                    memory_type=MemoryType.AGENT,
+                    agent_id=memory.agent_id,
+                )
+            elif memory.memory_type == MemoryType.USER_CONTEXT:
+                limit = self._max_items_per_user
+                current_count = self._repository.count_memories(
+                    memory_type=MemoryType.USER_CONTEXT,
+                    user_id=memory.user_id,
+                )
+            elif memory.memory_type == MemoryType.COMPANY:
+                limit = self._max_items_company
+                current_count = self._repository.count_memories(
+                    memory_type=MemoryType.COMPANY,
+                )
+            else:
+                return
+
+            if current_count < limit:
+                return
+
+            evict_count = current_count - limit + 1
+            evicted = self._repository.evict_oldest(
+                memory_type=memory.memory_type,
+                agent_id=memory.agent_id if memory.memory_type == MemoryType.AGENT else None,
+                user_id=memory.user_id if memory.memory_type == MemoryType.USER_CONTEXT else None,
+                count=evict_count,
+            )
+
+            # Best-effort cleanup of evicted vectors from Milvus
+            for record in evicted:
+                if record.milvus_id is not None:
+                    try:
+                        self.delete_memory(record.milvus_id, record.memory_type)
+                    except Exception as exc:
+                        logger.debug(
+                            "Failed to delete evicted vector milvus_id=%s: %s",
+                            record.milvus_id,
+                            exc,
+                        )
+
+            logger.info(
+                "Evicted %d oldest memories (type=%s, limit=%d, was=%d)",
+                len(evicted),
+                memory.memory_type.value,
+                limit,
+                current_count,
+            )
+        except Exception as e:
+            logger.warning("Memory limit enforcement failed (continuing): %s", e)
 
     def retrieve_memories(self, query: SearchQuery) -> List[MemoryItem]:
         """
@@ -457,18 +601,34 @@ class MemorySystem(MemorySystemInterface):
                 output_fields=output_fields,
             )
 
-            # Convert results to MemoryItem objects
-            effective_min_similarity = (
-                query.min_similarity
-                if (query.min_similarity and query.min_similarity > 0.0)
-                else self._default_similarity_threshold
-            )
+            # Convert results to MemoryItem objects.
+            if query.min_similarity is None:
+                effective_min_similarity = self._default_similarity_threshold
+            else:
+                try:
+                    effective_min_similarity = max(float(query.min_similarity), 0.0)
+                except (TypeError, ValueError):
+                    effective_min_similarity = self._default_similarity_threshold
+
+            raw_hit_count = 0
             memories = []
             for hits in results:
                 for hit in hits:
+                    raw_hit_count += 1
                     memory = self._hit_to_memory_item(hit, collection_name)
                     if memory and memory.similarity_score >= effective_min_similarity:
                         memories.append(memory)
+
+            logger.debug(
+                "Memory search filtered results",
+                extra={
+                    "collection": collection_name,
+                    "raw_hit_count": raw_hit_count,
+                    "kept_hit_count": len(memories),
+                    "effective_min_similarity": effective_min_similarity,
+                    "query_min_similarity": query.min_similarity,
+                },
+            )
 
             return memories
 
@@ -830,6 +990,7 @@ class MemorySystem(MemorySystemInterface):
         urls_to_try = [
             f"{base_url.rstrip('/')}/v1/rerank",
             f"{base_url.rstrip('/')}/rerank",
+            f"{base_url.rstrip('/')}/api/rerank",
         ]
         per_attempt_timeout = max(total_timeout / max(len(urls_to_try), 1), 1.0)
 

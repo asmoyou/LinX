@@ -8,7 +8,7 @@ References:
 import base64
 import io
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 import psutil  # For system memory monitoring
@@ -183,6 +183,197 @@ def _validate_allowed_memory(allowed_memory: Optional[List[str]]) -> Optional[Li
             detail=f"Invalid memory scopes: {', '.join(invalid_scopes)}",
         )
     return normalized_scopes
+
+
+def _trim_process_text(text: Optional[str], max_chars: int = 120) -> str:
+    """Trim long text for process/debug stream display."""
+    if not text:
+        return ""
+    normalized = " ".join(str(text).split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 3] + "..."
+
+
+def _short_id(value: Optional[str], keep: int = 8) -> str:
+    """Shorten long ids for process logs."""
+    if not value:
+        return "-"
+    text = str(value)
+    if len(text) <= keep:
+        return text
+    return text[:keep]
+
+
+_HISTORY_ALLOWED_ROLES = {"user", "assistant"}
+_MAX_HISTORY_MESSAGES = 24
+_MAX_HISTORY_CONTENT_CHARS = 4000
+
+
+def _normalize_history_content(content: Any) -> str:
+    """Normalize content payload into plain text."""
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        text_parts: List[str] = []
+        ignored_item_types = {
+            "thinking",
+            "reasoning",
+            "info",
+            "status",
+            "round_stats",
+            "tool_call",
+            "tool_result",
+            "tool_error",
+            "error_feedback",
+        }
+        for item in content:
+            if isinstance(item, str) and item.strip():
+                text_parts.append(item.strip())
+                continue
+            if isinstance(item, dict):
+                item_type = str(item.get("type") or "").strip().lower()
+                if item_type in ignored_item_types:
+                    continue
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str) and text.strip():
+                    text_parts.append(text.strip())
+        return "\n".join(text_parts)
+
+    if content is None:
+        return ""
+
+    return str(content)
+
+
+def _sanitize_history_messages(raw_history: Any) -> List[Dict[str, str]]:
+    """Sanitize history payload to avoid context pollution and token explosion."""
+    if not isinstance(raw_history, list):
+        return []
+
+    sanitized: List[Dict[str, str]] = []
+    for entry in raw_history:
+        if not isinstance(entry, dict):
+            continue
+
+        role = str(entry.get("role") or "").strip().lower()
+        if role not in _HISTORY_ALLOWED_ROLES:
+            continue
+
+        content = _normalize_history_content(entry.get("content")).strip()
+        if not content:
+            continue
+
+        if len(content) > _MAX_HISTORY_CONTENT_CHARS:
+            content = content[:_MAX_HISTORY_CONTENT_CHARS]
+
+        sanitized.append({"role": role, "content": content})
+
+    if len(sanitized) > _MAX_HISTORY_MESSAGES:
+        sanitized = sanitized[-_MAX_HISTORY_MESSAGES:]
+
+    return sanitized
+
+
+def _build_retrieval_process_messages(context_debug: Dict[str, Any]) -> List[str]:
+    """Build user-facing retrieval debug messages for SSE process stream."""
+    messages: List[str] = []
+
+    memory_debug = context_debug.get("memory") or {}
+    memory_query = _trim_process_text(memory_debug.get("query"), 180)
+    if memory_query:
+        messages.append(f"[记忆检索] 查询: {memory_query}")
+
+    top_k = memory_debug.get("top_k")
+    if isinstance(top_k, int):
+        messages.append(f"[记忆检索] top_k: {top_k}")
+
+    scopes = memory_debug.get("scopes") or []
+    if scopes:
+        messages.append(f"[记忆检索] 有效作用域: {', '.join(scopes)}")
+
+    for scope_key, scope_label in (
+        ("agent", "agent"),
+        ("company", "company"),
+        ("user_context", "user_context"),
+    ):
+        scope_info = memory_debug.get(scope_key) or {}
+        if not scope_info.get("enabled"):
+            continue
+
+        scope_error = scope_info.get("error")
+        if scope_error:
+            messages.append(
+                f"[记忆检索][{scope_label}] 失败: {_trim_process_text(scope_error, 180)}"
+            )
+            continue
+
+        scope_filter = _trim_process_text(scope_info.get("filter"), 140)
+        if scope_filter:
+            messages.append(f"[记忆检索][{scope_label}] 过滤条件: {scope_filter}")
+
+        hit_count = int(scope_info.get("hit_count") or 0)
+        messages.append(f"[记忆检索][{scope_label}] 命中 {hit_count} 条")
+
+        if scope_info.get("fallback_used"):
+            fallback_count = int(scope_info.get("fallback_hit_count") or hit_count)
+            messages.append(
+                f"[记忆检索][{scope_label}] 触发兜底检索(min_similarity=0)，命中 {fallback_count} 条"
+            )
+
+        fallback_error = scope_info.get("fallback_error")
+        if fallback_error:
+            messages.append(
+                f"[记忆检索][{scope_label}] 兜底检索失败: {_trim_process_text(fallback_error, 180)}"
+            )
+
+        for idx, hit in enumerate(scope_info.get("hits") or [], start=1):
+            messages.append(f"[记忆命中][{scope_label}#{idx}] {_trim_process_text(str(hit), 180)}")
+
+    knowledge_debug = context_debug.get("knowledge") or {}
+    if knowledge_debug:
+        knowledge_query = _trim_process_text(knowledge_debug.get("query"), 180)
+        if knowledge_query:
+            messages.append(f"[知识库检索] 查询: {knowledge_query}")
+
+        knowledge_top_k = knowledge_debug.get("top_k")
+        if isinstance(knowledge_top_k, int):
+            messages.append(f"[知识库检索] top_k: {knowledge_top_k}")
+
+        candidate_count = knowledge_debug.get("candidate_document_count")
+        if candidate_count is None:
+            messages.append("[知识库检索] 候选文档范围: 全部可访问文档")
+        else:
+            messages.append(f"[知识库检索] 候选文档数: {candidate_count}")
+
+        candidate_preview = knowledge_debug.get("candidate_document_ids_preview") or []
+        if candidate_preview:
+            preview_text = ", ".join(_short_id(doc_id) for doc_id in candidate_preview[:5])
+            messages.append(f"[知识库检索] 候选文档预览: {preview_text}")
+
+        knowledge_error = knowledge_debug.get("error")
+        if knowledge_error:
+            messages.append(f"[知识库检索] 失败: {_trim_process_text(knowledge_error, 180)}")
+        else:
+            hit_count = int(knowledge_debug.get("hit_count") or 0)
+            messages.append(f"[知识库检索] 命中 {hit_count} 条")
+
+            for idx, hit in enumerate((knowledge_debug.get("hits") or [])[:5], start=1):
+                title = _trim_process_text(hit.get("title") or "-", 80)
+                file_ref = _trim_process_text(hit.get("file_reference") or "-", 100)
+                doc_id = _short_id(hit.get("document_id"))
+                score = hit.get("similarity_score")
+                score_text = f"{float(score):.3f}" if isinstance(score, (int, float)) else "-"
+                excerpt = _trim_process_text(hit.get("excerpt") or "", 180)
+
+                messages.append(
+                    f"[知识命中#{idx}] title={title}; file={file_ref}; doc={doc_id}; score={score_text}"
+                )
+                if excerpt:
+                    messages.append(f"[知识片段#{idx}] {excerpt}")
+
+    return messages
 
 
 # Agent cache with TTL (Time To Live) and memory-aware sizing
@@ -1139,11 +1330,22 @@ async def test_agent(
     from llm_providers.custom_openai_provider import CustomOpenAIChat
 
     try:
-        # Parse history from JSON string
-        parsed_history = []
+        # Parse and sanitize history from JSON string.
+        parsed_history: List[Dict[str, str]] = []
         if history:
             try:
-                parsed_history = json.loads(history)
+                raw_history = json.loads(history)
+                parsed_history = _sanitize_history_messages(raw_history)
+
+                if isinstance(raw_history, list) and len(parsed_history) != len(raw_history):
+                    logger.info(
+                        "Sanitized conversation history for agent test",
+                        extra={
+                            "agent_id": agent_id,
+                            "received_messages": len(raw_history),
+                            "kept_messages": len(parsed_history),
+                        },
+                    )
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse history JSON: {e}")
 
@@ -1262,7 +1464,7 @@ async def test_agent(
                 from agent_framework.session_manager import get_session_manager
 
                 session_mgr = get_session_manager()
-                session, is_new_session = await session_mgr.get_or_create_session(
+                conversation_session, is_new_session = await session_mgr.get_or_create_session(
                     agent_id=UUID(agent_id),
                     user_id=UUID(current_user.user_id),
                     session_id=session_id,
@@ -1271,23 +1473,23 @@ async def test_agent(
                 # Emit session event to frontend
                 session_event = {
                     "type": "session",
-                    "session_id": session.session_id,
+                    "session_id": conversation_session.session_id,
                     "new_session": is_new_session,
-                    "workdir": str(session.workdir),
-                    "use_sandbox": session.use_sandbox,
-                    "sandbox_id": session.sandbox_id,
+                    "workdir": str(conversation_session.workdir),
+                    "use_sandbox": conversation_session.use_sandbox,
+                    "sandbox_id": conversation_session.sandbox_id,
                 }
                 yield f"data: {json.dumps(session_event)}\n\n"
 
                 logger.info(
-                    f"Session {'created' if is_new_session else 'resumed'}: {session.session_id}",
+                    f"Session {'created' if is_new_session else 'resumed'}: {conversation_session.session_id}",
                     extra={
-                        "session_id": session.session_id,
+                        "session_id": conversation_session.session_id,
                         "agent_id": agent_id,
                         "new_session": is_new_session,
-                        "workdir": str(session.workdir),
-                        "use_sandbox": session.use_sandbox,
-                        "sandbox_id": session.sandbox_id,
+                        "workdir": str(conversation_session.workdir),
+                        "use_sandbox": conversation_session.use_sandbox,
+                        "sandbox_id": conversation_session.sandbox_id,
                     },
                 )
 
@@ -1413,16 +1615,11 @@ async def test_agent(
                     "[STREAM] Sent status: type='info', content='Retrieving relevant memories and processing...'"
                 )
 
-                # Get memory context
+                # Build memory/knowledge context via AgentExecutor to keep
+                # streaming and non-streaming behavior consistent.
                 context = {}
+                context_debug: Dict[str, Any] = {}
                 try:
-                    from database.connection import get_db_session
-                    from memory_system.memory_interface import MemoryType, SearchQuery
-                    from memory_system.memory_system import get_memory_system
-
-                    # Use memory system global configuration (memory/knowledge settings).
-                    memory_system = get_memory_system()
-
                     memory_scopes = resolve_memory_scopes(
                         access_level=agent_info.access_level,
                         allowed_memory=agent_info.allowed_memory,
@@ -1438,98 +1635,34 @@ async def test_agent(
                         + "\n\n"
                     )
 
-                    if "agent" in memory_scopes:
-                        agent_query = SearchQuery(
-                            query_text=message,
-                            agent_id=str(agent_id),
-                            memory_type=MemoryType.AGENT,
-                            top_k=agent_info.top_k or 5,
-                        )
-                        agent_memories = memory_system.retrieve_memories(agent_query)
-                        context["agent_memories"] = [m.content for m in agent_memories]
+                    exec_context = ExecutionContext(
+                        agent_id=UUID(agent_id),
+                        user_id=UUID(current_user.user_id),
+                        user_role=current_user.role,
+                        task_description=message,
+                    )
+                    executor = get_agent_executor()
+                    context, context_debug = await asyncio.to_thread(
+                        executor.build_execution_context_with_debug,
+                        agent,
+                        exec_context,
+                        agent_info.top_k or 5,
+                        agent_info.similarity_threshold,
+                    )
 
-                    if "company" in memory_scopes:
-                        company_query = SearchQuery(
-                            query_text=message,
-                            user_id=current_user.user_id,
-                            memory_type=MemoryType.COMPANY,
-                            top_k=agent_info.top_k or 5,
-                        )
-                        company_memories = memory_system.retrieve_memories(company_query)
-                        context["company_memories"] = [m.content for m in company_memories]
-
-                    if "user_context" in memory_scopes:
-                        user_context_query = SearchQuery(
-                            query_text=message,
-                            user_id=current_user.user_id,
-                            memory_type=MemoryType.USER_CONTEXT,
-                            top_k=agent_info.top_k or 5,
-                        )
-                        user_context_memories = memory_system.retrieve_memories(user_context_query)
-                        context["user_context_memories"] = [
-                            m.content for m in user_context_memories
-                        ]
-
-                    # Retrieve knowledge snippets, narrowed by allowed knowledge collections when set.
-                    knowledge_document_ids = None
-                    if agent_info.allowed_knowledge:
-                        from access_control.knowledge_filter import filter_knowledge_query
-                        from database.models import KnowledgeItem
-
-                        knowledge_collection_uuids = []
-                        for collection_id in agent_info.allowed_knowledge:
-                            try:
-                                knowledge_collection_uuids.append(UUID(collection_id))
-                            except ValueError:
-                                continue
-
-                        if knowledge_collection_uuids:
-                            with get_db_session() as session:
-                                knowledge_query = session.query(KnowledgeItem.knowledge_id)
-                                knowledge_query = filter_knowledge_query(knowledge_query, current_user)
-                                knowledge_query = knowledge_query.filter(
-                                    KnowledgeItem.collection_id.in_(knowledge_collection_uuids)
-                                )
-                                knowledge_document_ids = [
-                                    str(row[0]) for row in knowledge_query.all()
-                                ]
-                        else:
-                            knowledge_document_ids = []
-
-                    if knowledge_document_ids != []:
-                        from knowledge_base.knowledge_search import SearchFilter, get_knowledge_search
-
-                        knowledge_search = get_knowledge_search()
-                        knowledge_filter = SearchFilter(
-                            user_id=current_user.user_id,
-                            user_role=current_user.role,
-                            document_ids=knowledge_document_ids,
-                            top_k=agent_info.top_k or 5,
-                            min_relevance_score=agent_info.similarity_threshold,
-                        )
-                        knowledge_results = knowledge_search.search(
-                            query=message,
-                            search_filter=knowledge_filter,
-                        )
-                        context["knowledge_snippets"] = [
-                            result.content for result in knowledge_results[:3]
-                        ]
+                    for debug_message in _build_retrieval_process_messages(context_debug):
                         yield (
                             "data: "
-                            + json.dumps(
-                                {
-                                    "type": "info",
-                                    "content": (
-                                        "Knowledge snippets retrieved: "
-                                        f"{len(context['knowledge_snippets'])}"
-                                    ),
-                                }
-                            )
+                            + json.dumps({"type": "info", "content": debug_message})
                             + "\n\n"
                         )
 
-                except Exception as mem_error:
-                    logger.error(f"Failed to retrieve memories: {mem_error}", exc_info=True)
+                except Exception as context_error:
+                    logger.error(
+                        "Failed to retrieve execution context: %s",
+                        context_error,
+                        exc_info=True,
+                    )
 
                 # Build messages with conversation history
                 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -1606,21 +1739,8 @@ async def test_agent(
                                 f"[File: {file_ref.name}] - Processing failed: {str(process_error)}"
                             )
 
-                # Add current message with file processing results
+                # Keep task text clean; BaseAgent will inject context consistently.
                 user_message = message
-                if context:
-                    context_info = []
-                    if context.get("agent_memories"):
-                        context_info.append(
-                            f"Relevant memories: {', '.join(context['agent_memories'][:3])}"
-                        )
-                    if context.get("company_memories"):
-                        context_info.append(
-                            f"Company knowledge: {', '.join(context['company_memories'][:3])}"
-                        )
-
-                    if context_info:
-                        user_message = f"{message}\n\nContext:\n" + "\n".join(context_info)
 
                 # Check if model supports vision
                 model_supports_vision = False
@@ -1757,8 +1877,8 @@ async def test_agent(
                             task_description=user_message,
                             context=context,
                             stream_callback=stream_callback,
-                            session_workdir=session.workdir,
-                            container_id=session.sandbox_id,  # Docker container for sandbox execution
+                            session_workdir=conversation_session.workdir,
+                            container_id=conversation_session.sandbox_id,  # Docker container for sandbox execution
                             message_content=multimodal_content,
                         )
 
@@ -1945,13 +2065,30 @@ async def test_agent(
                     if final_response[0]:
                         try:
                             from agent_framework.agent_memory_interface import (
+                                _format_agent_memory_content,
+                                _format_user_context_content,
                                 get_agent_memory_interface,
                             )
 
                             mem_interface = get_agent_memory_interface()
-                            user_context_content = (
-                                f"User discussed: {message[:200]}\n"
-                                f"Agent {agent_info.name} responded about this topic."
+                            agent_memory_content = _format_agent_memory_content(
+                                task=message,
+                                result=final_response[0],
+                                agent_name=agent_info.name,
+                            )
+                            mem_interface.store_agent_memory(
+                                agent_id=UUID(agent_id),
+                                content=agent_memory_content,
+                                metadata={
+                                    "source": "agent_test_stream",
+                                    "session_id": conversation_session.session_id,
+                                },
+                            )
+
+                            user_context_content = _format_user_context_content(
+                                user_message=message,
+                                agent_name=agent_info.name,
+                                response_summary=final_response[0][:200] if final_response[0] else "",
                             )
                             mem_interface.store_user_context(
                                 user_id=UUID(current_user.user_id),
@@ -1959,14 +2096,12 @@ async def test_agent(
                                 content=user_context_content,
                                 metadata={
                                     "agent_name": agent_info.name,
-                                    "session_id": session.session_id,
+                                    "session_id": conversation_session.session_id,
                                 },
                             )
                             logger.debug("User context memory stored for conversation")
                         except Exception as uc_error:
-                            logger.warning(
-                                f"Failed to store user context (continuing): {uc_error}"
-                            )
+                            logger.warning(f"Failed to store user context (continuing): {uc_error}")
 
                 logger.info(
                     f"Agent test completed: {agent_info.name} (tokens: {input_tokens}/{output_tokens}, speed: {tokens_per_second:.1f} tok/s)"
