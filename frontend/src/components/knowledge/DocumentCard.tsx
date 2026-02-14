@@ -488,22 +488,6 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
             </div>
           )}
 
-        {/* Reprocess Button for failed/completed documents */}
-        {onReprocess &&
-          (document.status === "failed" || document.status === "completed") && (
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => onReprocess(document)}
-              className="mb-4 w-full flex items-center justify-center gap-2 px-3 py-2 bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 rounded-xl hover:bg-amber-500/20 transition-colors text-[10px] font-bold uppercase tracking-widest"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              {document.status === "failed"
-                ? t("kbConfig.retryProcessing")
-                : t("kbConfig.reprocess")}
-            </motion.button>
-          )}
-
         {/* Tags */}
         {document.tags && document.tags.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-4">
@@ -650,6 +634,25 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
             <Clock className="w-3 h-3 text-indigo-500/70" />
             <span>{formatDateTime(lastUpdatedAt)}</span>
           </div>
+
+          {/* Compact Reprocess Button */}
+          {onReprocess &&
+            (document.status === "failed" || document.status === "completed") && (
+              <motion.button
+                whileHover={{ scale: 1.1, backgroundColor: "rgba(245, 158, 11, 0.2)" }}
+                whileTap={{ scale: 0.9 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onReprocess(document);
+                }}
+                className="flex items-center gap-1 px-2 py-0.5 bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 rounded-full transition-colors font-bold uppercase tracking-tighter"
+                title={document.status === "failed" ? t("kbConfig.retryProcessing") : t("kbConfig.reprocess")}
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span className="text-[9px]">{document.status === "failed" ? "RETRY" : "REDO"}</span>
+              </motion.button>
+            )}
+
           <div className="flex items-center gap-1">
             <FileBox className="w-3 h-3 text-zinc-500" />
             <span className="uppercase">{document.type}</span>
