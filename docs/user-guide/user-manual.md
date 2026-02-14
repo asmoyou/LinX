@@ -350,7 +350,7 @@ Generate API keys for programmatic access:
 
 ### Document Upload Failing
 
-- Check file size (max 100MB)
+- Check file size (regular files max 200MB, ZIP archives max 3GB)
 - Verify file format is supported
 - Check storage quota
 - Try uploading smaller files

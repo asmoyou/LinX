@@ -433,7 +433,8 @@
       "titleTooLong": "文档标题不能超过100个字符",
       "descriptionTooLong": "描述不能超过500个字符",
       "noFile": "请选择要上传的文件",
-      "fileTooBig": "文件大小超过限制",
+      "fileTooBig": "文件大小超过 200MB 限制",
+      "zipTooBig": "ZIP 压缩包大小超过 3GB 限制",
       "unsupportedFormat": "不支持的文件格式",
       "legacyPptNotSupported": "不支持旧版 .ppt，请先另存为 .pptx 后再上传。",
       "failed": "上传文档失败，请重试。"

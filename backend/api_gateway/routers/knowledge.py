@@ -84,6 +84,8 @@ _SEARCH_MAX_CONCURRENT_REQUESTS, _SEARCH_REQUEST_TIMEOUT_SECONDS = _load_search_
 _SEARCH_REQUEST_SEMAPHORE = asyncio.Semaphore(_SEARCH_MAX_CONCURRENT_REQUESTS)
 _THUMBNAIL_BACKFILL_RETRY_COOLDOWN_SECONDS = 60 * 60
 _THUMBNAIL_BACKFILL_ERROR_MAX_LENGTH = 300
+_MAX_UPLOAD_FILE_SIZE_BYTES = 200 * 1024 * 1024  # 200MB for non-archive uploads
+_MAX_UPLOAD_ZIP_SIZE_BYTES = 3 * 1024 * 1024 * 1024  # 3GB for ZIP archives
 
 # MIME type to document category mapping
 MIME_TYPE_MAP = {
@@ -874,6 +876,14 @@ def _is_zip_file(filename: str, content_type: Optional[str]) -> bool:
     return ext == ".zip"
 
 
+def _get_upload_file_size(file: UploadFile) -> int:
+    """Return upload size in bytes without changing final stream position."""
+    file.file.seek(0, os.SEEK_END)
+    size = file.file.tell()
+    file.file.seek(0)
+    return size
+
+
 def _handle_zip_upload(
     file_data,
     filename: str,
@@ -1154,8 +1164,18 @@ async def upload_knowledge(
             # Handle comma-separated tags
             parsed_tags = [t.strip() for t in tags.split(",") if t.strip()]
 
+        file_size = _get_upload_file_size(file)
+
         # Check if ZIP file
         if _is_zip_file(file.filename or "", file.content_type):
+            if file_size > _MAX_UPLOAD_ZIP_SIZE_BYTES:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=(
+                        f"ZIP archive size exceeds maximum allowed "
+                        f"({_MAX_UPLOAD_ZIP_SIZE_BYTES // (1024 * 1024 * 1024)}GB)"
+                    ),
+                )
             return _handle_zip_upload(
                 file_data=file.file,
                 filename=file.filename or "archive.zip",
@@ -1165,6 +1185,15 @@ async def upload_knowledge(
                 parsed_tags=parsed_tags,
                 description=description,
                 current_user=current_user,
+            )
+
+        if file_size > _MAX_UPLOAD_FILE_SIZE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    f"File size exceeds maximum allowed "
+                    f"({_MAX_UPLOAD_FILE_SIZE_BYTES // (1024 * 1024)}MB)"
+                ),
             )
 
         # Use filename as title if not provided
@@ -1209,11 +1238,6 @@ async def upload_knowledge(
             file_reference = None
             bucket_name = ""
             object_key = ""
-
-        # Get file size
-        file.file.seek(0, 2)
-        file_size = file.file.tell()
-        file.file.seek(0)
 
         thumbnail_reference = None
         thumbnail_mime_type = None

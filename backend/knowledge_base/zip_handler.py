@@ -44,7 +44,9 @@ SKIP_PATTERNS = {"__MACOSX", ".DS_Store", "Thumbs.db", ".git", "__pycache__"}
 
 # Limits
 MAX_FILES = 100
-MAX_TOTAL_SIZE = 500 * 1024 * 1024  # 500MB
+MAX_SINGLE_FILE_SIZE = 200 * 1024 * 1024  # 200MB per extracted file
+MAX_ZIP_SIZE = 3 * 1024 * 1024 * 1024  # 3GB compressed archive size
+MAX_TOTAL_SIZE = 3 * 1024 * 1024 * 1024  # 3GB total extracted size
 MAX_COMPRESSION_RATIO = 100  # zip bomb protection
 
 
@@ -108,6 +110,13 @@ def extract_zip(zip_data: BinaryIO) -> ZipExtractionResult:
         result.errors.append("ZIP file is empty")
         return result
 
+    if compressed_size > MAX_ZIP_SIZE:
+        result.errors.append(
+            f"ZIP file size ({compressed_size / 1024 / 1024 / 1024:.2f}GB) "
+            f"exceeds limit ({MAX_ZIP_SIZE / 1024 / 1024 / 1024:.0f}GB)"
+        )
+        return result
+
     try:
         zf = zipfile.ZipFile(zip_data, "r")
     except zipfile.BadZipFile:
@@ -155,6 +164,14 @@ def extract_zip(zip_data: BinaryIO) -> ZipExtractionResult:
             ext = os.path.splitext(basename)[1].lower()
             if ext not in SUPPORTED_EXTENSIONS:
                 result.skipped_files.append(f"{original_path} (unsupported: {ext})")
+                continue
+
+            # Check per-file size limit before extracting content
+            if info.file_size > MAX_SINGLE_FILE_SIZE:
+                result.errors.append(
+                    f"File '{original_path}' size ({info.file_size / 1024 / 1024:.1f}MB) "
+                    f"exceeds per-file limit ({MAX_SINGLE_FILE_SIZE / 1024 / 1024:.0f}MB)"
+                )
                 continue
 
             # Check file count limit

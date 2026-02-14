@@ -20,7 +20,8 @@ interface UploadDocumentFormProps {
   collectionId?: string;
 }
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB for regular files
+const MAX_ZIP_SIZE = 3 * 1024 * 1024 * 1024; // 3GB for ZIP archives
 const SUPPORTED_FORMATS = [
   ".pdf",
   ".doc",
@@ -76,14 +77,21 @@ export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({
   const descriptionValue = watch("description") || "";
 
   const handleFileSelect = (file: File) => {
+    const extPart = file.name.split(".").pop()?.toLowerCase() || "";
+    const fileExt = extPart ? `.${extPart}` : "";
+    const maxSize = fileExt === ".zip" ? MAX_ZIP_SIZE : MAX_FILE_SIZE;
+
     // Validate file size
-    if (file.size > MAX_FILE_SIZE) {
-      toast.error(t("document.errors.fileTooBig", "File size exceeds limit"));
+    if (file.size > maxSize) {
+      toast.error(
+        fileExt === ".zip"
+          ? t("document.errors.zipTooBig", "ZIP size exceeds 3GB limit")
+          : t("document.errors.fileTooBig", "File size exceeds 200MB limit"),
+      );
       return;
     }
 
     // Validate file format
-    const fileExt = "." + file.name.split(".").pop()?.toLowerCase();
     if (fileExt === ".ppt") {
       toast.error(
         t(
@@ -226,7 +234,7 @@ export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({
                 {t("document.supportedFormats", "Supported Formats")}: PDF, DOC,
                 DOCX, PPTX, XLS, XLSX, TXT, MD, Images, Audio, Video, ZIP
               </p>
-              <p>{t("document.maxSize", "Max File Size")}: 50MB</p>
+              <p>{t("document.maxSize", "Max File Size")}: 200MB (ZIP: 3GB)</p>
             </div>
           </div>
         ) : (
@@ -254,8 +262,8 @@ export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({
       {/* ZIP Info Note */}
       {selectedFile && selectedFile.name.toLowerCase().endsWith(".zip") && (
         <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-sm text-amber-700 dark:text-amber-400">
-          ZIP files will be automatically extracted. Each file inside will be
-          processed independently.
+          ZIP files will be automatically extracted. Each file inside is
+          limited to 200MB and processed independently.
         </div>
       )}
 

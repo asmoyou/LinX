@@ -843,10 +843,14 @@ export const Knowledge: React.FC = () => {
         <>
           {/* Collections Section */}
           {collections.length > 0 && (
-            <div className="mb-8">
-              <h2 className="text-lg font-semibold text-gray-700 dark:text-gray-300 mb-4">
-                {t("collection.collections")}
-              </h2>
+            <div className="mb-10">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-1 h-6 bg-amber-500 rounded-full" />
+                <h2 className="text-xl font-bold text-gray-800 dark:text-white">
+                  {t("collection.collections")}
+                </h2>
+                <div className="flex-1 h-px bg-gray-100 dark:bg-white/5 ml-4" />
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                 {collections.map((collection) => (
                   <CollectionCard
@@ -874,9 +878,13 @@ export const Knowledge: React.FC = () => {
           {(!isLoading || documents.length > 0) && (
             <div>
               {collections.length > 0 && documents.length > 0 && (
-                <h2 className="text-lg font-semibold text-gray-700 dark:text-gray-300 mb-4">
-                  {t("collection.standaloneDocuments")}
-                </h2>
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="w-1 h-6 bg-indigo-500 rounded-full" />
+                  <h2 className="text-xl font-bold text-gray-800 dark:text-white">
+                    {t("collection.standaloneDocuments")}
+                  </h2>
+                  <div className="flex-1 h-px bg-gray-100 dark:bg-white/5 ml-4" />
+                </div>
               )}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                 {filteredDocuments.length === 0 ? (

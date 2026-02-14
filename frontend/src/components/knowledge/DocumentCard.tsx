@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   FileText,
   FileSpreadsheet,
-  Image,
+  Image as ImageIcon,
   Music,
   Video,
   File,
@@ -19,8 +19,14 @@ import {
   Hash,
   RotateCcw,
   Pencil,
+  Shield,
+  Globe,
+  Users,
+  Lock,
+  FileBox,
 } from "lucide-react";
 import { GlassPanel } from "@/components/GlassPanel";
+import { motion, AnimatePresence } from "framer-motion";
 import { knowledgeApi } from "@/api/knowledge";
 import type { Document } from "@/types/document";
 
@@ -53,6 +59,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = React.useState(false);
+  const [isHovered, setIsHovered] = React.useState(false);
   const [thumbnailBlobUrl, setThumbnailBlobUrl] = React.useState<string | null>(
     null,
   );
@@ -161,43 +168,37 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
       : undefined);
   const hasMediaPreview = Boolean(previewMediaUrl);
   const previewContainerClass = hasMediaPreview
-    ? "h-32 bg-white/10"
-    : "h-16 bg-white/5 border border-white/20";
+    ? "h-40 bg-zinc-900/50"
+    : "h-20 bg-gradient-to-br from-white/10 to-white/5 dark:from-white/5 dark:to-transparent border border-white/10";
 
   const renderCompactHint = () => {
     if (document.type === "audio") {
       return (
-        <div className="flex items-end gap-0.5 h-5">
-          {[6, 12, 8, 14, 10].map((height, idx) => (
-            <span
+        <div className="flex items-end gap-1 h-6">
+          {[6, 12, 8, 14, 10, 16, 8].map((height, idx) => (
+            <motion.span
               key={idx}
-              className="w-1 rounded-full bg-purple-500/60"
+              animate={{ height: isHovered ? [height, height * 0.5, height] : height }}
+              transition={{ repeat: Infinity, duration: 1, delay: idx * 0.1 }}
+              className="w-1 rounded-full bg-indigo-500/60"
               style={{ height: `${height}px` }}
             />
           ))}
         </div>
       );
     }
-    if (
-      document.type === "pdf" ||
-      document.type === "docx" ||
-      document.type === "ppt" ||
-      document.type === "excel"
-    ) {
-      return (
-        <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 text-gray-600 dark:text-gray-300">
-          {documentTypeLabel}
-        </span>
-      );
-    }
     if (document.status === "completed" && document.chunkCount != null) {
       return (
-        <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 text-gray-600 dark:text-gray-300">
-          {document.chunkCount} chunks
+        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 uppercase tracking-tight">
+          {document.chunkCount} CHUNKS
         </span>
       );
     }
-    return null;
+    return (
+      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 border border-zinc-500/20">
+        {documentTypeLabel}
+      </span>
+    );
   };
 
   const getFileIcon = (
@@ -221,7 +222,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
         }
         return <FileText className={`${className} text-blue-500`} />;
       case "image":
-        return <Image className={`${className} text-green-500`} />;
+        return <ImageIcon className={`${className} text-green-500`} />;
       case "audio":
         return <Music className={`${className} text-purple-500`} />;
       case "video":
@@ -231,56 +232,57 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
     }
   };
 
-  const getStatusIcon = (
-    status: Document["status"],
-    className: string = "w-3.5 h-3.5",
-  ) => {
+  const getStatusInfo = (status: Document["status"]) => {
     switch (status) {
       case "completed":
-        return <CheckCircle className={className} />;
+        return {
+          icon: <CheckCircle className="w-3 h-3" />,
+          label: "READY",
+          color: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+        };
       case "failed":
-        return <XCircle className={className} />;
+        return {
+          icon: <XCircle className="w-3 h-3" />,
+          label: "FAILED",
+          color: "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20"
+        };
       case "processing":
+        return {
+          icon: <Loader2 className="w-3 h-3 animate-spin" />,
+          label: "PROCESSING",
+          color: "bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20"
+        };
       case "uploading":
-        return <Loader2 className={`${className} animate-spin`} />;
+        return {
+          icon: <Loader2 className="w-3 h-3 animate-spin" />,
+          label: "UPLOADING",
+          color: "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/20"
+        };
     }
   };
 
-  const getStatusLabel = (status: Document["status"]) => {
-    switch (status) {
-      case "completed":
-        return "ready";
-      case "failed":
-        return "failed";
-      case "processing":
-        return "processing";
-      case "uploading":
-        return "uploading";
-    }
-  };
-
-  const getStatusBadgeClass = (status: Document["status"]) => {
-    switch (status) {
-      case "completed":
-        return "bg-emerald-600 text-white";
-      case "failed":
-        return "bg-rose-600 text-white";
-      case "processing":
-      case "uploading":
-        return "bg-sky-600 text-white";
-    }
-  };
-
-  const getAccessLevelBadgeClass = (level: Document["accessLevel"]) => {
+  const getAccessInfo = (level: Document["accessLevel"]) => {
     switch (level) {
       case "public":
-        return "bg-emerald-600 text-white";
+        return {
+          icon: <Globe className="w-3 h-3" />,
+          color: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+        };
       case "internal":
-        return "bg-sky-600 text-white";
+        return {
+          icon: <Users className="w-3 h-3" />,
+          color: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20"
+        };
       case "confidential":
-        return "bg-amber-400 text-gray-900";
+        return {
+          icon: <Shield className="w-3 h-3" />,
+          color: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
+        };
       case "restricted":
-        return "bg-rose-600 text-white";
+        return {
+          icon: <Lock className="w-3 h-3" />,
+          color: "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20"
+        };
     }
   };
 
@@ -299,304 +301,360 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
-      second: "2-digit",
       hour12: false,
     });
   };
 
+  const statusInfo = getStatusInfo(document.status);
+  const accessInfo = getAccessInfo(document.accessLevel);
+
   return (
-    <GlassPanel
-      className={`hover:scale-105 transition-transform duration-200 relative ${
-        draggable ? "cursor-grab active:cursor-grabbing" : ""
-      }`}
-      draggable={draggable}
-      onDragStart={(event) => {
-        if (!draggable) return;
-        event.dataTransfer.effectAllowed = "move";
-        onDragStart?.(document);
-      }}
-      onDragEnd={() => {
-        if (!draggable) return;
-        onDragEnd?.();
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      whileHover={{ y: -5 }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => {
+        setIsHovered(false);
+        setShowMenu(false);
       }}
     >
-      {/* Status Badge */}
-      <div className="absolute top-4 right-4 z-20 pointer-events-none">
-        <div className="flex flex-col items-end gap-1.5">
-          <span
-            className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide shadow-lg ${getStatusBadgeClass(document.status)}`}
-          >
-            {getStatusIcon(document.status)}
-            {getStatusLabel(document.status)}
-          </span>
-          <span
-            className={`inline-flex items-center rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide shadow-lg ${getAccessLevelBadgeClass(document.accessLevel)}`}
-          >
-            {document.accessLevel}
-          </span>
-        </div>
-      </div>
-
-      {/* Thumbnail or compact icon strip */}
-      <div
-        className={`mb-4 rounded-lg overflow-hidden relative z-0 ${previewContainerClass}`}
+      <GlassPanel
+        className={`h-full transition-all duration-300 relative border-transparent hover:border-indigo-500/30 overflow-hidden ${
+          draggable ? "cursor-grab active:cursor-grabbing" : ""
+        }`}
+        draggable={draggable}
+        onDragStart={(event) => {
+          if (!draggable) return;
+          event.dataTransfer.effectAllowed = "move";
+          onDragStart?.(document);
+        }}
+        onDragEnd={() => {
+          if (!draggable) return;
+          onDragEnd?.();
+        }}
       >
-        {hasMediaPreview ? (
-          <>
-            {hasGeneratedThumbnail ? (
-              <img
-                src={previewMediaUrl}
-                alt={document.name}
-                className="h-full w-full object-cover"
-                draggable={false}
-              />
-            ) : document.type === "video" ? (
-              <video
-                src={previewMediaUrl}
-                className="h-full w-full object-cover"
-                muted
-                playsInline
-                preload="metadata"
-              />
-            ) : document.type === "pdf" ? (
-              <iframe
-                src={`${previewMediaUrl}#page=1&toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
-                title={document.name}
-                className="h-full w-full pointer-events-none"
-              />
-            ) : (
-              <img
-                src={previewMediaUrl}
-                alt={document.name}
-                className="h-full w-full object-cover"
-                draggable={false}
-              />
-            )}
-            <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/55 to-transparent pointer-events-none" />
-          </>
-        ) : (
-          <div className="h-full px-3 flex items-center justify-between">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-10 h-10 rounded-md bg-white/20 flex items-center justify-center shrink-0">
-                {getFileIcon(document.type, "w-5 h-5")}
-              </div>
-              <div className="min-w-0">
-                <p className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                  {document.type}
-                </p>
-                <p className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">
-                  {formatFileSize(document.size)}
-                </p>
-              </div>
-            </div>
-            {renderCompactHint()}
-          </div>
-        )}
-      </div>
-
-      {/* Document Info */}
-      <div className="mb-4">
-        <h3
-          className="text-sm font-semibold text-gray-800 dark:text-white mb-1 truncate"
-          title={document.name}
+        {/* Thumbnail or compact icon strip */}
+        <div
+          className={`mb-4 rounded-xl overflow-hidden relative z-0 transition-all duration-500 group ${previewContainerClass}`}
         >
-          {document.name}
-        </h3>
-        <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
-          <span className="px-1.5 py-0.5 rounded bg-white/20">
-            {documentTypeLabel}
-          </span>
-          <span>{formatFileSize(document.size)}</span>
-        </div>
-        {document.description && (
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 line-clamp-2">
-            {document.description}
-          </p>
-        )}
-      </div>
-
-      {/* Progress Bar */}
-      {(document.status === "uploading" ||
-        document.status === "processing") && (
-        <div className="mb-4">
-          <div className="flex items-center justify-between text-xs mb-1">
-            <span className="text-gray-600 dark:text-gray-400">
-              {document.status === "uploading" ? "Uploading" : "Processing..."}
-            </span>
-            <span className="text-gray-800 dark:text-white font-medium">
-              {document.status === "uploading"
-                ? uploadProgress
-                : processingProgress}
-              %
-            </span>
-          </div>
-          <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-blue-500 transition-all duration-300"
-              style={{
-                width: `${document.status === "uploading" ? uploadProgress : processingProgress}%`,
-              }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Processing Result Details */}
-      {document.status === "completed" &&
-        (document.chunkCount || document.tokenCount) && (
-          <div className="mb-4 flex items-center gap-3 text-xs text-gray-600 dark:text-gray-400">
-            {document.chunkCount != null && (
-              <span className="flex items-center gap-1">
-                <Layers className="w-3 h-3" />
-                {document.chunkCount} chunks
-              </span>
-            )}
-            {document.tokenCount != null && (
-              <span className="flex items-center gap-1">
-                <Hash className="w-3 h-3" />
-                {document.tokenCount.toLocaleString()} tokens
-              </span>
-            )}
-          </div>
-        )}
-
-      {/* Failed Error Banner */}
-      {document.status === "failed" &&
-        (document.errorMessage || document.error) && (
-          <div className="mb-4 p-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-700 dark:text-red-400">
-            {document.errorMessage || document.error}
-          </div>
-        )}
-
-      {/* Reprocess Button for failed/completed documents */}
-      {onReprocess &&
-        (document.status === "failed" || document.status === "completed") && (
-          <button
-            onClick={() => onReprocess(document)}
-            className="mb-4 w-full flex items-center justify-center gap-2 px-3 py-1.5 bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30 rounded-lg hover:bg-amber-500/30 transition-colors text-xs font-medium"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            {document.status === "failed"
-              ? t("kbConfig.retryProcessing")
-              : t("kbConfig.reprocess")}
-          </button>
-        )}
-
-      {/* Tags */}
-      {document.tags && document.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1 mb-4">
-          {document.tags.slice(0, 2).map((tag) => (
-            <span
-              key={tag}
-              className="text-xs px-2 py-0.5 bg-white/20 rounded-full text-gray-700 dark:text-gray-300"
-            >
-              {tag}
-            </span>
-          ))}
-          {document.tags.length > 2 && (
-            <span className="text-xs px-2 py-0.5 bg-white/20 rounded-full text-gray-700 dark:text-gray-300">
-              +{document.tags.length - 2}
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Actions */}
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => onView(document)}
-          disabled={
-            document.status === "uploading" || document.status === "processing"
-          }
-          className="flex-1 px-3 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {t("document.view")}
-        </button>
-        <div className="relative">
-          <button
-            onClick={() => setShowMenu(!showMenu)}
-            className="p-2 hover:bg-white/20 rounded-lg transition-colors"
-          >
-            <MoreVertical className="w-5 h-5 text-gray-700 dark:text-gray-300" />
-          </button>
-
-          {showMenu && (
+          {hasMediaPreview ? (
             <>
-              <div
-                className="fixed inset-0 z-40"
-                onClick={() => setShowMenu(false)}
-              />
-              <div className="absolute right-0 mt-2 w-48 glass rounded-lg shadow-lg z-50 overflow-hidden">
-                <button
-                  onClick={() => {
-                    onView(document);
-                    setShowMenu(false);
-                  }}
-                  disabled={
-                    document.status === "uploading" ||
-                    document.status === "processing"
-                  }
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2 disabled:opacity-50"
-                >
-                  <Eye className="w-4 h-4" />
-                  {t("document.viewDetails")}
-                </button>
-                {onEdit && (
-                  <button
-                    onClick={() => {
-                      onEdit(document);
-                      setShowMenu(false);
-                    }}
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2"
-                  >
-                    <Pencil className="w-4 h-4" />
-                    {t("common.edit")}
-                  </button>
-                )}
-                <button
-                  onClick={() => {
-                    onDownload(document);
-                    setShowMenu(false);
-                  }}
-                  disabled={
-                    document.status === "uploading" ||
-                    document.status === "processing" ||
-                    isDownloading
-                  }
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2 disabled:opacity-50"
-                >
-                  {isDownloading ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Download className="w-4 h-4" />
-                  )}
-                  {isDownloading
-                    ? t("document.downloading")
-                    : t("document.download")}
-                </button>
-                <button
-                  onClick={() => {
-                    onDelete(document);
-                    setShowMenu(false);
-                  }}
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2 text-red-500"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  {t("common.delete")}
-                </button>
-              </div>
+              {hasGeneratedThumbnail ? (
+                <img
+                  src={previewMediaUrl}
+                  alt={document.name}
+                  className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-110"
+                  draggable={false}
+                />
+              ) : document.type === "video" ? (
+                <video
+                  src={previewMediaUrl}
+                  className="h-full w-full object-cover"
+                  muted
+                  playsInline
+                  preload="metadata"
+                />
+              ) : document.type === "pdf" ? (
+                <iframe
+                  src={`${previewMediaUrl}#page=1&toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
+                  title={document.name}
+                  className="h-full w-full pointer-events-none"
+                />
+              ) : (
+                <img
+                  src={previewMediaUrl}
+                  alt={document.name}
+                  className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-110"
+                  draggable={false}
+                />
+              )}
+              <div className="absolute inset-0 bg-indigo-500/0 group-hover:bg-indigo-500/10 transition-colors duration-500 pointer-events-none" />
             </>
+          ) : (
+            <div className="h-full px-4 flex items-center justify-between bg-gradient-to-br from-indigo-500/5 to-transparent">
+              <div className="flex items-center gap-4 min-w-0">
+                <div className="w-12 h-12 rounded-xl bg-white/10 flex items-center justify-center shrink-0 border border-white/10 shadow-lg group-hover:border-indigo-500/30 transition-colors">
+                  {getFileIcon(document.type, "w-6 h-6")}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase font-bold tracking-widest text-indigo-500/70">
+                    {document.type}
+                  </p>
+                  <p className="text-xs font-semibold text-gray-700 dark:text-gray-200 truncate">
+                    {formatFileSize(document.size)}
+                  </p>
+                </div>
+              </div>
+              {renderCompactHint()}
+            </div>
           )}
         </div>
-      </div>
 
-      {/* Metadata */}
-      <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
-        <div className="flex items-center gap-1">
-          <Clock className="w-3 h-3" />
-          {t("document.lastUpdated")}: {formatDateTime(lastUpdatedAt)}
+        {/* Badges Row - Moved from top-right to avoid blocking content */}
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <motion.span
+            animate={{ scale: isHovered ? 1.02 : 1 }}
+            className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-[9px] font-bold border shadow-sm ${statusInfo.color}`}
+          >
+            {statusInfo.icon}
+            <span className="tracking-wider">{statusInfo.label}</span>
+          </motion.span>
+          <motion.span
+            animate={{ scale: isHovered ? 1.02 : 1 }}
+            className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-[9px] font-bold border shadow-sm ${accessInfo.color}`}
+          >
+            {accessInfo.icon}
+            <span className="uppercase tracking-wider">{document.accessLevel}</span>
+          </motion.span>
         </div>
-      </div>
-    </GlassPanel>
+
+        {/* Document Info */}
+        <div className="px-1 mb-4">
+          <h3
+            className="text-base font-bold text-gray-800 dark:text-white mb-1 truncate group-hover:text-indigo-500 transition-colors"
+            title={document.name}
+          >
+            {document.name}
+          </h3>
+          <div className="flex items-center gap-2 text-xs font-medium text-gray-500 dark:text-gray-400">
+            <span className="px-1.5 py-0.5 rounded bg-zinc-500/10 border border-zinc-500/20 text-[10px] font-bold uppercase tracking-tight">
+              {documentTypeLabel}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <div className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600" />
+              {formatFileSize(document.size)}
+            </span>
+          </div>
+          {document.description && (
+            <p className="mt-2 text-xs text-gray-500 dark:text-gray-500 line-clamp-2 leading-relaxed">
+              {document.description}
+            </p>
+          )}
+        </div>
+
+        {/* Progress Bar */}
+        <AnimatePresence>
+          {(document.status === "uploading" ||
+            document.status === "processing") && (
+            <motion.div 
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="mb-4"
+            >
+              <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider mb-1.5">
+                <span className="text-indigo-600 dark:text-indigo-400">
+                  {document.status === "uploading" ? "Uploading" : "Processing"}
+                </span>
+                <span className="text-gray-800 dark:text-white">
+                  {document.status === "uploading"
+                    ? uploadProgress
+                    : processingProgress}
+                  %
+                </span>
+              </div>
+              <div className="w-full h-1.5 bg-gray-200 dark:bg-zinc-800 rounded-full overflow-hidden border border-black/5 dark:border-white/5">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ 
+                    width: `${document.status === "uploading" ? uploadProgress : processingProgress}%` 
+                  }}
+                  className="h-full bg-gradient-to-r from-indigo-500 to-blue-500"
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Processing Result Details */}
+        {document.status === "completed" &&
+          (document.chunkCount || document.tokenCount) && (
+            <div className="mb-4 flex flex-wrap gap-2">
+              {document.chunkCount != null && (
+                <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-indigo-500/5 border border-indigo-500/10 text-[10px] font-bold text-indigo-600 dark:text-indigo-400">
+                  <Layers className="w-3 h-3" />
+                  {document.chunkCount} CHUNKS
+                </div>
+              )}
+              {document.tokenCount != null && (
+                <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[10px] font-bold text-blue-600 dark:text-blue-400">
+                  <Hash className="w-3 h-3" />
+                  {document.tokenCount.toLocaleString()} TOKENS
+                </div>
+              )}
+            </div>
+          )}
+
+        {/* Failed Error Banner */}
+        {document.status === "failed" &&
+          (document.errorMessage || document.error) && (
+            <div className="mb-4 p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-[11px] text-rose-700 dark:text-rose-400 leading-relaxed italic">
+              <span className="font-bold not-italic mr-1">ERROR:</span>
+              {document.errorMessage || document.error}
+            </div>
+          )}
+
+        {/* Reprocess Button for failed/completed documents */}
+        {onReprocess &&
+          (document.status === "failed" || document.status === "completed") && (
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => onReprocess(document)}
+              className="mb-4 w-full flex items-center justify-center gap-2 px-3 py-2 bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 rounded-xl hover:bg-amber-500/20 transition-colors text-[10px] font-bold uppercase tracking-widest"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              {document.status === "failed"
+                ? t("kbConfig.retryProcessing")
+                : t("kbConfig.reprocess")}
+            </motion.button>
+          )}
+
+        {/* Tags */}
+        {document.tags && document.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-4">
+            {document.tags.slice(0, 3).map((tag) => (
+              <span
+                key={tag}
+                className="text-[10px] font-bold px-2 py-0.5 bg-zinc-500/5 border border-zinc-500/10 rounded-full text-zinc-600 dark:text-zinc-400 hover:bg-zinc-500/10 transition-colors"
+              >
+                #{tag}
+              </span>
+            ))}
+            {document.tags.length > 3 && (
+              <span className="text-[10px] font-bold px-2 py-0.5 bg-zinc-500/5 border border-zinc-500/10 rounded-full text-zinc-600 dark:text-zinc-400">
+                +{document.tags.length - 3}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex items-center gap-2 mt-auto">
+          <button
+            onClick={() => onView(document)}
+            disabled={
+              document.status === "uploading" || document.status === "processing"
+            }
+            className="flex-1 px-4 py-2 bg-gradient-to-r from-indigo-500 to-blue-500 text-white rounded-lg hover:from-indigo-600 hover:to-blue-600 transition-all shadow-md shadow-indigo-500/20 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {t("document.view")}
+          </button>
+          
+          <div className="relative">
+            <button
+              onClick={() => setShowMenu(!showMenu)}
+              className="p-2 hover:bg-white/10 dark:hover:bg-zinc-800/50 rounded-lg transition-colors border border-transparent hover:border-white/20"
+            >
+              <MoreVertical className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+            </button>
+
+            <AnimatePresence>
+              {showMenu && (
+                <>
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="fixed inset-0 z-40"
+                    onClick={() => setShowMenu(false)}
+                  />
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                    className="absolute right-0 bottom-full mb-2 w-52 bg-white dark:bg-zinc-900 rounded-xl shadow-2xl z-50 overflow-hidden border border-gray-200 dark:border-white/10"
+                  >
+                    <button
+                      onClick={() => {
+                        onView(document);
+                        setShowMenu(false);
+                      }}
+                      disabled={
+                        document.status === "uploading" ||
+                        document.status === "processing"
+                      }
+                      className="w-full px-4 py-3 text-left text-sm hover:bg-gray-100 dark:hover:bg-white/5 transition-colors flex items-center gap-3 text-gray-700 dark:text-gray-200 disabled:opacity-50"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center">
+                        <Eye className="w-4 h-4 text-indigo-500" />
+                      </div>
+                      <span className="font-semibold">{t("document.viewDetails")}</span>
+                    </button>
+                    {onEdit && (
+                      <button
+                        onClick={() => {
+                          onEdit(document);
+                          setShowMenu(false);
+                        }}
+                        className="w-full px-4 py-3 text-left text-sm hover:bg-gray-100 dark:hover:bg-white/5 transition-colors flex items-center gap-3 text-gray-700 dark:text-gray-200"
+                      >
+                        <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
+                          <Pencil className="w-4 h-4 text-blue-500" />
+                        </div>
+                        <span className="font-semibold">{t("common.edit")}</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        onDownload(document);
+                        setShowMenu(false);
+                      }}
+                      disabled={
+                        document.status === "uploading" ||
+                        document.status === "processing" ||
+                        isDownloading
+                      }
+                      className="w-full px-4 py-3 text-left text-sm hover:bg-gray-100 dark:hover:bg-white/5 transition-colors flex items-center gap-3 text-gray-700 dark:text-gray-200 disabled:opacity-50"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+                        {isDownloading ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-emerald-500" />
+                        ) : (
+                          <Download className="w-4 h-4 text-emerald-500" />
+                        )}
+                      </div>
+                      <span className="font-semibold">
+                        {isDownloading
+                          ? t("document.downloading")
+                          : t("document.download")}
+                      </span>
+                    </button>
+                    <div className="h-px bg-gray-100 dark:bg-white/5 mx-2 my-1" />
+                    <button
+                      onClick={() => {
+                        onDelete(document);
+                        setShowMenu(false);
+                      }}
+                      className="w-full px-4 py-3 text-left text-sm hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors flex items-center gap-3 text-red-600 dark:text-red-500"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center">
+                        <Trash2 className="w-4 h-4 text-red-600 dark:text-red-500" />
+                      </div>
+                      <span className="font-semibold">{t("common.delete")}</span>
+                    </button>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+
+        {/* Metadata */}
+        <div className="mt-4 pt-4 border-t border-gray-100 dark:border-white/5 flex items-center justify-between text-[10px] text-gray-500 dark:text-gray-400">
+          <div className="flex items-center gap-1.5 font-medium">
+            <Clock className="w-3 h-3 text-indigo-500/70" />
+            <span>{formatDateTime(lastUpdatedAt)}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <FileBox className="w-3 h-3 text-zinc-500" />
+            <span className="uppercase">{document.type}</span>
+          </div>
+        </div>
+      </GlassPanel>
+    </motion.div>
   );
 };
+

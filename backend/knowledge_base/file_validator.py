@@ -68,7 +68,7 @@ class FileValidator:
 
     def __init__(
         self,
-        max_file_size: int = 100 * 1024 * 1024,  # 100MB default
+        max_file_size: int = 200 * 1024 * 1024,  # 200MB default
         enable_malware_scan: bool = False,
     ):
         """Initialize file validator.
@@ -259,7 +259,7 @@ _file_validator: Optional[FileValidator] = None
 
 
 def get_file_validator(
-    max_file_size: int = 100 * 1024 * 1024,
+    max_file_size: int = 200 * 1024 * 1024,
     enable_malware_scan: bool = False,
 ) -> FileValidator:
     """Get or create the file validator singleton.

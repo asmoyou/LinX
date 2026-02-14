@@ -433,7 +433,8 @@
       "titleTooLong": "Document title must not exceed 100 characters",
       "descriptionTooLong": "Description must not exceed 500 characters",
       "noFile": "Please select a file to upload",
-      "fileTooBig": "File size exceeds limit",
+      "fileTooBig": "File size exceeds 200MB limit",
+      "zipTooBig": "ZIP size exceeds 3GB limit",
       "unsupportedFormat": "Unsupported file format",
       "legacyPptNotSupported": "Legacy .ppt is not supported. Please resave as .pptx and upload.",
       "failed": "Failed to upload document. Please try again."
