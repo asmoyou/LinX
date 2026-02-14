@@ -28,6 +28,7 @@ interface DocumentCardProps {
   document: Document;
   onView: (document: Document) => void;
   onDownload: (document: Document) => void;
+  isDownloading?: boolean;
   onDelete: (document: Document) => void;
   onEdit?: (document: Document) => void;
   onReprocess?: (document: Document) => void;
@@ -42,6 +43,7 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
   document,
   onView,
   onDownload,
+  isDownloading = false,
   onDelete,
   onEdit,
   onReprocess,
@@ -148,7 +150,8 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
   );
   const lastUpdatedAt = document.processedAt || document.uploadedAt;
   const hasGeneratedThumbnail = Boolean(thumbnailBlobUrl);
-  const documentTypeLabel = document.type === "ppt" ? "PPTX" : document.type.toUpperCase();
+  const documentTypeLabel =
+    document.type === "ppt" ? "PPTX" : document.type.toUpperCase();
   const previewMediaUrl =
     thumbnailBlobUrl ||
     (document.type === "image" ||
@@ -557,12 +560,19 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({
                   }}
                   disabled={
                     document.status === "uploading" ||
-                    document.status === "processing"
+                    document.status === "processing" ||
+                    isDownloading
                   }
                   className="w-full px-4 py-2 text-left text-sm hover:bg-white/20 transition-colors flex items-center gap-2 disabled:opacity-50"
                 >
-                  <Download className="w-4 h-4" />
-                  {t("document.download")}
+                  {isDownloading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Download className="w-4 h-4" />
+                  )}
+                  {isDownloading
+                    ? t("document.downloading")
+                    : t("document.download")}
                 </button>
                 <button
                   onClick={() => {

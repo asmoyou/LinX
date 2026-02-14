@@ -2,7 +2,12 @@ import React, { useState, useEffect, useRef } from "react";
 import { Loader2, Download } from "lucide-react";
 import { renderAsync } from "docx-preview";
 import { AgGridReact } from "ag-grid-react";
-import { ModuleRegistry, AllCommunityModule, type ColDef } from "ag-grid-community";
+import { useTranslation } from "react-i18next";
+import {
+  ModuleRegistry,
+  AllCommunityModule,
+  type ColDef,
+} from "ag-grid-community";
 import * as XLSX from "xlsx";
 import { knowledgeApi } from "@/api/knowledge";
 import type { Document } from "@/types/document";
@@ -14,11 +19,14 @@ ModuleRegistry.registerModules([AllCommunityModule]);
 interface DocumentPreviewProps {
   document: Document;
   onDownload?: (document: Document) => void;
+  isDownloading?: boolean;
 }
 
 const MAX_TEXT_SIZE = 50 * 1024; // 50KB
 const EXCEL_MAX_PREVIEW_ROWS = 200;
 const EXCEL_MAX_PREVIEW_COLS = 40;
+const PPT_PREVIEW_CHUNK_PAGE_SIZE = 50;
+const PPT_MAX_PREVIEW_SLIDES = 20;
 const DOCX_ZIP_MAGIC = [0x50, 0x4b, 0x03, 0x04];
 
 interface ExcelSheetPreview {
@@ -32,6 +40,11 @@ interface ExcelSheetPreview {
   colCount: number;
   truncatedRows: boolean;
   truncatedCols: boolean;
+}
+
+interface PptSlidePreview {
+  slideNumber: number;
+  content: string;
 }
 
 const isDocxZipBuffer = (buffer: ArrayBuffer): boolean => {
@@ -62,6 +75,14 @@ const mergeChunksToText = (
   return { text: mergedText, truncated: false };
 };
 
+const mergeChunksRawText = (chunks: Array<{ content?: string }>): string => {
+  return (chunks || [])
+    .map((chunk) => (chunk.content || "").trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+};
+
 const buildExcelSheetPreview = (
   name: string,
   rawRows: unknown[][],
@@ -72,7 +93,10 @@ const buildExcelSheetPreview = (
   const [headerRow = [], ...dataRows] = rows;
   const dataRowCount = dataRows.length;
   const colCount = rawRows.reduce((max, row) => Math.max(max, row.length), 0);
-  const visibleColCount = Math.max(Math.min(colCount, EXCEL_MAX_PREVIEW_COLS), 1);
+  const visibleColCount = Math.max(
+    Math.min(colCount, EXCEL_MAX_PREVIEW_COLS),
+    1,
+  );
   const truncatedRows = dataRowCount > EXCEL_MAX_PREVIEW_ROWS;
   const truncatedCols = colCount > EXCEL_MAX_PREVIEW_COLS;
 
@@ -81,13 +105,15 @@ const buildExcelSheetPreview = (
     headerName: (headerRow[idx] || `C${idx + 1}`).trim(),
   }));
 
-  const previewRows = dataRows.slice(0, EXCEL_MAX_PREVIEW_ROWS).map((row, rowIdx) => {
-    const rowData: Record<string, string | number> = { __row: rowIdx + 1 };
-    columns.forEach((column, colIdx) => {
-      rowData[column.field] = row[colIdx] || "";
+  const previewRows = dataRows
+    .slice(0, EXCEL_MAX_PREVIEW_ROWS)
+    .map((row, rowIdx) => {
+      const rowData: Record<string, string | number> = { __row: rowIdx + 1 };
+      columns.forEach((column, colIdx) => {
+        rowData[column.field] = row[colIdx] || "";
+      });
+      return rowData;
     });
-    return rowData;
-  });
 
   return {
     name,
@@ -100,7 +126,9 @@ const buildExcelSheetPreview = (
   };
 };
 
-const parseExcelPreviewFromWorkbook = (buffer: ArrayBuffer): ExcelSheetPreview[] => {
+const parseExcelPreviewFromWorkbook = (
+  buffer: ArrayBuffer,
+): ExcelSheetPreview[] => {
   const workbook = XLSX.read(buffer, {
     type: "array",
     dense: true,
@@ -124,7 +152,9 @@ const parseExcelPreviewFromWorkbook = (buffer: ArrayBuffer): ExcelSheetPreview[]
   });
 };
 
-const parseExcelPreviewFromExtractedText = (text: string): ExcelSheetPreview[] => {
+const parseExcelPreviewFromExtractedText = (
+  text: string,
+): ExcelSheetPreview[] => {
   const normalized = (text || "").replace(/\r\n/g, "\n").trim();
   if (!normalized) return [];
 
@@ -156,10 +186,51 @@ const parseExcelPreviewFromExtractedText = (text: string): ExcelSheetPreview[] =
   return sheets;
 };
 
+const buildPptSlidesFromText = (text: string): PptSlidePreview[] => {
+  const normalized = (text || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const markerRegex = /\[Slide\s+(\d+)\]\s*/gi;
+  const markers = Array.from(normalized.matchAll(markerRegex));
+
+  if (markers.length === 0) {
+    return [{ slideNumber: 1, content: normalized }];
+  }
+
+  const slides: PptSlidePreview[] = [];
+  markers.forEach((marker, index) => {
+    if (marker.index == null) return;
+
+    const start = marker.index + marker[0].length;
+    const end = markers[index + 1]?.index ?? normalized.length;
+    const parsedSlideNumber = Number.parseInt(marker[1] || "", 10);
+    const slideNumber = Number.isFinite(parsedSlideNumber)
+      ? parsedSlideNumber
+      : index + 1;
+    const content = normalized.slice(start, end).trim();
+
+    const last = slides[slides.length - 1];
+    if (last && last.slideNumber === slideNumber) {
+      if (content && !last.content.includes(content)) {
+        last.content = `${last.content}\n\n${content}`.trim();
+      }
+      return;
+    }
+
+    slides.push({ slideNumber, content });
+  });
+
+  return slides;
+};
+
 export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
   document,
   onDownload,
+  isDownloading = false,
 }) => {
+  const { t } = useTranslation();
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
@@ -171,9 +242,16 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
     null,
   );
   const [activeExcelSheet, setActiveExcelSheet] = useState(0);
+  const [pptSlides, setPptSlides] = useState<PptSlidePreview[] | null>(null);
+  const [activePptSlide, setActivePptSlide] = useState(0);
   const [isTruncated, setIsTruncated] = useState(false);
   const blobUrlRef = useRef<string | null>(null);
   const docxContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const handleDownloadClick = React.useCallback(() => {
+    if (!onDownload || isDownloading) return;
+    onDownload(document);
+  }, [document, isDownloading, onDownload]);
 
   const loadChunkTextFallback = React.useCallback(
     async (pageSize: number = 20) => {
@@ -194,6 +272,8 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
       setDocxArrayBuffer(null);
       setExcelSheets(null);
       setActiveExcelSheet(0);
+      setPptSlides(null);
+      setActivePptSlide(0);
       setIsTruncated(false);
 
       // Excel preview: use SheetJS for workbook parsing, fallback to extracted chunk text.
@@ -202,13 +282,15 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           document.status === "processing" ||
           document.status === "uploading"
         ) {
-          setError("Document is still being processed...");
+          setError(t("document.preview.errors.processingInProgress"));
           setIsLoading(false);
           return;
         }
         if (document.status === "failed") {
           setError(
-            document.errorMessage || document.error || "Processing failed",
+            document.errorMessage ||
+              document.error ||
+              t("document.preview.errors.processingFailed"),
           );
           setIsLoading(false);
           return;
@@ -246,7 +328,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           if (cancelled) return;
 
           if (!text) {
-            setError("No extracted worksheet content available for preview");
+            setError(t("document.preview.errors.noWorksheetText"));
           } else {
             const sheets = parseExcelPreviewFromExtractedText(text);
             if (sheets.length > 0) {
@@ -264,7 +346,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           }
         } catch {
           if (!cancelled) {
-            setError("Failed to load preview");
+            setError(t("document.preview.errors.loadFailed"));
           }
         } finally {
           if (!cancelled) {
@@ -280,31 +362,56 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           document.status === "processing" ||
           document.status === "uploading"
         ) {
-          setError("Document is still being processed...");
+          setError(t("document.preview.errors.processingInProgress"));
           setIsLoading(false);
           return;
         }
         if (document.status === "failed") {
           setError(
-            document.errorMessage || document.error || "Processing failed",
+            document.errorMessage ||
+              document.error ||
+              t("document.preview.errors.processingFailed"),
           );
           setIsLoading(false);
           return;
         }
 
         try {
-          const { text, truncated } = await loadChunkTextFallback(50);
+          const chunkResp = await knowledgeApi.getChunks(
+            document.id,
+            1,
+            PPT_PREVIEW_CHUNK_PAGE_SIZE,
+          );
           if (cancelled) return;
 
+          const text = mergeChunksRawText(chunkResp.chunks || []);
           if (!text) {
-            setError("No extracted slide text available for preview");
+            setError(t("document.preview.errors.noSlideText"));
           } else {
-            setTextContent(text);
-            setIsTruncated(truncated);
+            const parsedSlides = buildPptSlidesFromText(text);
+
+            if (parsedSlides.length === 0) {
+              setError(t("document.preview.errors.noSlideText"));
+            } else {
+              const limitedSlides = parsedSlides.slice(
+                0,
+                PPT_MAX_PREVIEW_SLIDES,
+              );
+              const chunkCount = chunkResp.chunks?.length || 0;
+              const hasMoreChunkPages =
+                typeof chunkResp.total === "number" &&
+                chunkResp.total > chunkCount;
+              const hasMoreSlides = parsedSlides.length > limitedSlides.length;
+
+              setPptSlides(limitedSlides);
+              setActivePptSlide(0);
+              setTextContent(null);
+              setIsTruncated(hasMoreChunkPages || hasMoreSlides);
+            }
           }
         } catch {
           if (!cancelled) {
-            setError("Failed to load preview");
+            setError(t("document.preview.errors.loadFailed"));
           }
         } finally {
           if (!cancelled) {
@@ -320,13 +427,15 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           document.status === "processing" ||
           document.status === "uploading"
         ) {
-          setError("Document is still being processed...");
+          setError(t("document.preview.errors.processingInProgress"));
           setIsLoading(false);
           return;
         }
         if (document.status === "failed") {
           setError(
-            document.errorMessage || document.error || "Processing failed",
+            document.errorMessage ||
+              document.error ||
+              t("document.preview.errors.processingFailed"),
           );
           setIsLoading(false);
           return;
@@ -359,14 +468,14 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           if (cancelled) return;
 
           if (!text) {
-            setError("No extracted text available for preview");
+            setError(t("document.preview.errors.noText"));
           } else {
             setTextContent(text);
             setIsTruncated(truncated);
           }
         } catch {
           if (!cancelled) {
-            setError("Failed to load preview");
+            setError(t("document.preview.errors.loadFailed"));
           }
         } finally {
           if (!cancelled) {
@@ -385,13 +494,15 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           document.status === "processing" ||
           document.status === "uploading"
         ) {
-          setError("Document is still being processed...");
+          setError(t("document.preview.errors.processingInProgress"));
         } else if (document.status === "failed") {
           setError(
-            document.errorMessage || document.error || "Processing failed",
+            document.errorMessage ||
+              document.error ||
+              t("document.preview.errors.processingFailed"),
           );
         } else {
-          setError("File not available for preview");
+          setError(t("document.preview.fileNotAvailable"));
         }
         setIsLoading(false);
         return;
@@ -424,7 +535,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
         }
       } catch {
         if (!cancelled) {
-          setError("Failed to load preview");
+          setError(t("document.preview.errors.loadFailed"));
         }
       } finally {
         if (!cancelled) {
@@ -450,6 +561,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
     document.error,
     document.errorMessage,
     loadChunkTextFallback,
+    t,
   ]);
 
   useEffect(() => {
@@ -478,7 +590,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           if (cancelled) return;
 
           if (!text) {
-            setError("No extracted text available for preview");
+            setError(t("document.preview.errors.noText"));
           } else {
             setError(null);
             setTextContent(text);
@@ -486,7 +598,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           }
         } catch {
           if (!cancelled) {
-            setError("Failed to render Word preview");
+            setError(t("document.preview.errors.renderWordFailed"));
           }
         }
       }
@@ -498,14 +610,14 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
       cancelled = true;
       container.innerHTML = "";
     };
-  }, [document.type, docxArrayBuffer, loadChunkTextFallback]);
+  }, [document.type, docxArrayBuffer, loadChunkTextFallback, t]);
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <Loader2 className="w-8 h-8 text-indigo-500 animate-spin" />
         <span className="ml-3 text-gray-500 dark:text-gray-400">
-          Loading preview...
+          {t("document.preview.loading")}
         </span>
       </div>
     );
@@ -517,11 +629,18 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
         <p className="text-gray-600 dark:text-gray-400 mb-4">{error}</p>
         {onDownload && (
           <button
-            onClick={() => onDownload(document)}
-            className="px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors"
+            onClick={handleDownloadClick}
+            disabled={isDownloading}
+            className="px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Download className="w-4 h-4 inline mr-2" />
-            Download to View
+            {isDownloading ? (
+              <Loader2 className="w-4 h-4 inline mr-2 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4 inline mr-2" />
+            )}
+            {isDownloading
+              ? t("document.downloading")
+              : t("document.preview.downloadToView")}
           </button>
         )}
       </div>
@@ -540,14 +659,17 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
         {isTruncated && (
           <div className="mt-3 text-center">
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">
-              Content truncated (file too large for preview)
+              {t("document.preview.truncated")}
             </p>
             {onDownload && (
               <button
-                onClick={() => onDownload(document)}
-                className="text-sm text-indigo-500 hover:text-indigo-600"
+                onClick={handleDownloadClick}
+                disabled={isDownloading}
+                className="text-sm text-indigo-500 hover:text-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Download full file
+                {isDownloading
+                  ? t("document.downloading")
+                  : t("document.preview.downloadFullFile")}
               </button>
             )}
           </div>
@@ -557,10 +679,79 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
   }
 
   // Plain text
+  if (document.type === "ppt" && pptSlides && pptSlides.length > 0) {
+    const safeSlideIndex = Math.min(
+      Math.max(activePptSlide, 0),
+      pptSlides.length - 1,
+    );
+    const currentSlide = pptSlides[safeSlideIndex];
+    const canPrev = safeSlideIndex > 0;
+    const canNext = safeSlideIndex < pptSlides.length - 1;
+    const slideText = currentSlide.content.trim();
+
+    return (
+      <div className="min-h-[400px] space-y-3">
+        <div className="flex items-center justify-between gap-3 text-sm">
+          <p className="text-gray-600 dark:text-gray-400">
+            {t("document.preview.ppt.pageIndicator", {
+              slide: currentSlide.slideNumber,
+              current: safeSlideIndex + 1,
+              total: pptSlides.length,
+            })}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setActivePptSlide((prev) => Math.max(prev - 1, 0))}
+              disabled={!canPrev}
+              className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/10 transition-colors"
+            >
+              {t("document.preview.ppt.previous")}
+            </button>
+            <button
+              onClick={() =>
+                setActivePptSlide((prev) =>
+                  Math.min(prev + 1, pptSlides.length - 1),
+                )
+              }
+              disabled={!canNext}
+              className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/10 transition-colors"
+            >
+              {t("document.preview.ppt.next")}
+            </button>
+          </div>
+        </div>
+
+        <pre className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200 p-4 bg-white/5 rounded-lg overflow-auto max-h-[520px] font-mono">
+          {slideText || t("document.preview.ppt.emptySlide")}
+        </pre>
+
+        <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
+          {t("document.preview.ppt.downloadTip")}
+          {onDownload && (
+            <button
+              onClick={handleDownloadClick}
+              disabled={isDownloading}
+              className="ml-2 text-amber-700 dark:text-amber-200 underline hover:no-underline disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isDownloading
+                ? t("document.downloading")
+                : t("document.download")}
+            </button>
+          )}
+        </div>
+
+        {isTruncated && (
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            {t("document.preview.limitedContent")}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  // Plain text
   if (
-    (document.type === "txt" ||
-      document.type === "docx" ||
-      document.type === "ppt") &&
+    (document.type === "txt" || document.type === "docx") &&
     textContent !== null
   ) {
     return (
@@ -571,14 +762,17 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
         {isTruncated && (
           <div className="mt-3 text-center">
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">
-              Content truncated (file too large for preview)
+              {t("document.preview.truncated")}
             </p>
             {onDownload && (
               <button
-                onClick={() => onDownload(document)}
-                className="text-sm text-indigo-500 hover:text-indigo-600"
+                onClick={handleDownloadClick}
+                disabled={isDownloading}
+                className="text-sm text-indigo-500 hover:text-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Download full file
+                {isDownloading
+                  ? t("document.downloading")
+                  : t("document.preview.downloadFullFile")}
               </button>
             )}
           </div>
@@ -645,11 +839,27 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           </div>
         </div>
 
-        {(isTruncated || activeSheet.truncatedRows || activeSheet.truncatedCols) && (
+        {(isTruncated ||
+          activeSheet.truncatedRows ||
+          activeSheet.truncatedCols) && (
           <div className="text-sm text-gray-500 dark:text-gray-400">
-            Preview is truncated for performance.
-            {activeSheet.truncatedRows && ` Rows: showing first ${EXCEL_MAX_PREVIEW_ROWS}.`}
-            {activeSheet.truncatedCols && ` Columns: showing first ${EXCEL_MAX_PREVIEW_COLS}.`}
+            <span>{t("document.preview.excel.truncatedForPerformance")}</span>
+            {activeSheet.truncatedRows && (
+              <span>
+                {" "}
+                {t("document.preview.excel.rowsLimited", {
+                  count: EXCEL_MAX_PREVIEW_ROWS,
+                })}
+              </span>
+            )}
+            {activeSheet.truncatedCols && (
+              <span>
+                {" "}
+                {t("document.preview.excel.colsLimited", {
+                  count: EXCEL_MAX_PREVIEW_COLS,
+                })}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -666,14 +876,17 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
         {isTruncated && (
           <div className="mt-3 text-center">
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">
-              Content truncated (file too large for preview)
+              {t("document.preview.truncated")}
             </p>
             {onDownload && (
               <button
-                onClick={() => onDownload(document)}
-                className="text-sm text-indigo-500 hover:text-indigo-600"
+                onClick={handleDownloadClick}
+                disabled={isDownloading}
+                className="text-sm text-indigo-500 hover:text-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Download full file
+                {isDownloading
+                  ? t("document.downloading")
+                  : t("document.preview.downloadFullFile")}
               </button>
             )}
           </div>
@@ -746,15 +959,24 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
   return (
     <div className="flex flex-col items-center justify-center min-h-[400px] text-center">
       <p className="text-gray-600 dark:text-gray-400 mb-4">
-        Preview not available for {document.type.toUpperCase()} files
+        {t("document.preview.notAvailableForType", {
+          type: document.type.toUpperCase(),
+        })}
       </p>
       {onDownload && (
         <button
-          onClick={() => onDownload(document)}
-          className="px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors"
+          onClick={handleDownloadClick}
+          disabled={isDownloading}
+          className="px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <Download className="w-4 h-4 inline mr-2" />
-          Download to View
+          {isDownloading ? (
+            <Loader2 className="w-4 h-4 inline mr-2 animate-spin" />
+          ) : (
+            <Download className="w-4 h-4 inline mr-2" />
+          )}
+          {isDownloading
+            ? t("document.downloading")
+            : t("document.preview.downloadToView")}
         </button>
       )}
     </div>

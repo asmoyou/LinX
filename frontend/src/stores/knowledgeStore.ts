@@ -1,41 +1,57 @@
-import { create } from 'zustand';
-import type { Document, DocumentType, DocumentStatus, Collection } from '../types/document';
-import { knowledgeApi } from '../api/knowledge';
-import type { UploadDocumentRequest, ZipUploadResponse } from '../api/knowledge';
+import { create } from "zustand";
+import type {
+  Document,
+  DocumentType,
+  DocumentStatus,
+  Collection,
+} from "../types/document";
+import { knowledgeApi } from "../api/knowledge";
+import type {
+  UploadDocumentRequest,
+  ZipUploadResponse,
+} from "../api/knowledge";
 
 const MAX_POLL_ATTEMPTS = 60;
 const POLL_INTERVAL_MS = 2000;
-const pollState = new Map<string, { attempts: number; timer?: ReturnType<typeof setTimeout> }>();
+const DOWNLOAD_DEBOUNCE_MS = 1200;
+const pollState = new Map<
+  string,
+  { attempts: number; timer?: ReturnType<typeof setTimeout> }
+>();
+const downloadState = new Map<string, { lastTriggeredAt: number }>();
 
-const clampProgress = (value: number): number => Math.max(0, Math.min(100, value));
+const clampProgress = (value: number): number =>
+  Math.max(0, Math.min(100, value));
 
 const fallbackProgressForStatus = (status: DocumentStatus): number => {
-  if (status === 'uploading') return 0;
-  if (status === 'processing') return 50;
-  if (status === 'completed') return 100;
+  if (status === "uploading") return 0;
+  if (status === "processing") return 50;
+  if (status === "completed") return 100;
   return 100;
 };
 
 const normalizeStatus = (status: string): DocumentStatus => {
-  if (status === 'completed' || status === 'failed' || status === 'uploading') {
+  if (status === "completed" || status === "failed" || status === "uploading") {
     return status;
   }
-  return 'processing';
+  return "processing";
 };
 
 const normalizeProcessingProgress = (doc: Document): Document => {
   const status = doc.status;
   const fallback = fallbackProgressForStatus(status);
   const current =
-    doc.processingProgress != null ? clampProgress(doc.processingProgress) : fallback;
+    doc.processingProgress != null
+      ? clampProgress(doc.processingProgress)
+      : fallback;
 
-  if (status === 'processing') {
+  if (status === "processing") {
     return { ...doc, processingProgress: Math.max(1, Math.min(99, current)) };
   }
-  if (status === 'uploading') {
+  if (status === "uploading") {
     return { ...doc, processingProgress: 0 };
   }
-  if (status === 'completed') {
+  if (status === "completed") {
     return { ...doc, processingProgress: 100 };
   }
   return { ...doc, processingProgress: current };
@@ -79,8 +95,8 @@ interface KnowledgeState {
   downloadingId: string | null;
 
   // Filters
-  typeFilter: DocumentType | 'all';
-  statusFilter: DocumentStatus | 'all';
+  typeFilter: DocumentType | "all";
+  statusFilter: DocumentStatus | "all";
   searchQuery: string;
 
   // Async API actions
@@ -91,9 +107,11 @@ interface KnowledgeState {
     access_level?: string;
     department_id?: string;
   }) => Promise<void>;
-  uploadDocument: (data: UploadDocumentRequest) => Promise<Document | ZipUploadResponse>;
+  uploadDocument: (
+    data: UploadDocumentRequest,
+  ) => Promise<Document | ZipUploadResponse>;
   deleteDocument: (id: string) => Promise<void>;
-  downloadDocument: (id: string, filename?: string) => Promise<void>;
+  downloadDocument: (id: string, filename?: string) => Promise<boolean>;
   reprocessDocument: (id: string) => Promise<void>;
   pollProcessingStatus: (id: string) => Promise<void>;
   pollAllProcessing: () => void;
@@ -101,9 +119,15 @@ interface KnowledgeState {
   // Collection actions
   fetchCollections: () => Promise<void>;
   createCollection: (name: string, description?: string) => Promise<Collection>;
-  updateCollection: (id: string, data: { name?: string; description?: string }) => Promise<void>;
+  updateCollection: (
+    id: string,
+    data: { name?: string; description?: string },
+  ) => Promise<void>;
   deleteCollection: (id: string) => Promise<void>;
-  moveDocumentToCollection: (documentId: string, collectionId: string) => Promise<Document>;
+  moveDocumentToCollection: (
+    documentId: string,
+    collectionId: string,
+  ) => Promise<Document>;
   setActiveCollection: (id: string | null) => void;
 
   // Actions - Documents
@@ -125,8 +149,8 @@ interface KnowledgeState {
   clearError: () => void;
 
   // Filters
-  setTypeFilter: (type: DocumentType | 'all') => void;
-  setStatusFilter: (status: DocumentStatus | 'all') => void;
+  setTypeFilter: (type: DocumentType | "all") => void;
+  setStatusFilter: (status: DocumentStatus | "all") => void;
   setSearchQuery: (query: string) => void;
 
   // Computed
@@ -154,9 +178,9 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   isUploading: false,
   isDownloading: false,
   downloadingId: null,
-  typeFilter: 'all',
-  statusFilter: 'all',
-  searchQuery: '',
+  typeFilter: "all",
+  statusFilter: "all",
+  searchQuery: "",
 
   // Async API actions
   fetchDocuments: async (params) => {
@@ -171,7 +195,8 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         access_level: params?.access_level,
         department_id: params?.department_id,
         // When at root level, only show items without a collection
-        collection_id: activeCollectionId === null ? 'none' : activeCollectionId,
+        collection_id:
+          activeCollectionId === null ? "none" : activeCollectionId,
       });
       set({
         documents: response.items.map(normalizeProcessingProgress),
@@ -180,7 +205,8 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         isLoading: false,
       });
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to fetch documents';
+      const message =
+        error instanceof Error ? error.message : "Failed to fetch documents";
       set({ error: message, isLoading: false });
     }
   },
@@ -197,11 +223,14 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       const result = await knowledgeApi.upload(uploadData);
 
       // Check if ZIP upload response
-      if ('collection' in result) {
+      if ("collection" in result) {
         // ZIP upload: add all extracted items + the new collection
         const zipResult = result as ZipUploadResponse;
         set((state) => ({
-          documents: [...zipResult.items.map(normalizeProcessingProgress), ...state.documents],
+          documents: [
+            ...zipResult.items.map(normalizeProcessingProgress),
+            ...state.documents,
+          ],
           totalDocuments: state.totalDocuments + zipResult.items.length,
           collections: [zipResult.collection, ...state.collections],
           isUploading: false,
@@ -209,7 +238,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
 
         // Start polling for each extracted item
         zipResult.items.forEach((item) => {
-          if (item.status === 'processing' || item.status === 'uploading') {
+          if (item.status === "processing" || item.status === "uploading") {
             get().pollProcessingStatus(item.id);
           }
         });
@@ -225,14 +254,15 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         }));
 
         // Start polling for processing status if document is still processing
-        if (doc.status === 'processing' || doc.status === 'uploading') {
+        if (doc.status === "processing" || doc.status === "uploading") {
           get().pollProcessingStatus(doc.id);
         }
 
         return doc;
       }
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to upload document';
+      const message =
+        error instanceof Error ? error.message : "Failed to upload document";
       set({ error: message, isUploading: false });
       throw error;
     }
@@ -242,36 +272,53 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     try {
       await knowledgeApi.delete(id);
       stopPollingDocument(id);
+      downloadState.delete(id);
       set((state) => ({
         documents: state.documents.filter((doc) => doc.id !== id),
-        selectedDocument: state.selectedDocument?.id === id ? null : state.selectedDocument,
+        selectedDocument:
+          state.selectedDocument?.id === id ? null : state.selectedDocument,
         totalDocuments: state.totalDocuments - 1,
       }));
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to delete document';
+      const message =
+        error instanceof Error ? error.message : "Failed to delete document";
       set({ error: message });
       throw error;
     }
   },
 
   downloadDocument: async (id: string, filename?: string) => {
-    // Prevent duplicate downloads
-    if (get().downloadingId === id) return;
+    const now = Date.now();
+    const existing = downloadState.get(id);
+
+    // Prevent duplicate downloads for the same document while in-flight.
+    if (get().downloadingId === id) return false;
+
+    // Debounce rapid repeated clicks on the same document.
+    if (existing && now - existing.lastTriggeredAt < DOWNLOAD_DEBOUNCE_MS) {
+      return false;
+    }
+
+    downloadState.set(id, { lastTriggeredAt: now });
 
     set({ isDownloading: true, downloadingId: id });
     try {
-      const { blob, filename: serverFilename } = await knowledgeApi.download(id);
+      const { blob, filename: serverFilename } =
+        await knowledgeApi.download(id);
       const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
+      const link = document.createElement("a");
       link.href = url;
-      link.download = serverFilename || filename || 'download';
+      link.download = serverFilename || filename || "download";
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
+      return true;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to download document';
+      const message =
+        error instanceof Error ? error.message : "Failed to download document";
       set({ error: message });
+      downloadState.delete(id);
       throw error;
     } finally {
       set({ isDownloading: false, downloadingId: null });
@@ -300,7 +347,8 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       // Start polling for the reprocessing result
       get().pollProcessingStatus(id);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to reprocess document';
+      const message =
+        error instanceof Error ? error.message : "Failed to reprocess document";
       set({ error: message });
       throw error;
     }
@@ -329,22 +377,25 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         const status = await knowledgeApi.getProcessingStatus(id);
         const normalizedStatus = normalizeStatus(status.status);
         const progress = clampProgress(
-          status.progress_percent ?? fallbackProgressForStatus(normalizedStatus)
+          status.progress_percent ??
+            fallbackProgressForStatus(normalizedStatus),
         );
 
         get().updateDocument(id, {
           status: normalizedStatus,
           processingProgress: progress,
           processedAt: status.processed_at || status.completed_at || undefined,
-          processingStartedAt: status.started_at || status.created_at || undefined,
-          processingCompletedAt: status.completed_at || status.processed_at || undefined,
+          processingStartedAt:
+            status.started_at || status.created_at || undefined,
+          processingCompletedAt:
+            status.completed_at || status.processed_at || undefined,
           error: status.error_message || undefined,
           errorMessage: status.error_message || undefined,
           chunkCount: status.chunk_count,
           tokenCount: status.token_count,
         });
 
-        if (normalizedStatus === 'completed' || normalizedStatus === 'failed') {
+        if (normalizedStatus === "completed" || normalizedStatus === "failed") {
           stopPollingDocument(id);
           return;
         }
@@ -363,7 +414,9 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   pollAllProcessing: () => {
     const { documents, pollProcessingStatus } = get();
     documents
-      .filter((doc) => doc.status === 'processing' || doc.status === 'uploading')
+      .filter(
+        (doc) => doc.status === "processing" || doc.status === "uploading",
+      )
       .forEach((doc) => pollProcessingStatus(doc.id));
   },
 
@@ -374,33 +427,42 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       const response = await knowledgeApi.getCollections({ page_size: 100 });
       set({ collections: response.collections, isLoadingCollections: false });
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to fetch collections';
+      const message =
+        error instanceof Error ? error.message : "Failed to fetch collections";
       set({ error: message, isLoadingCollections: false });
     }
   },
 
   createCollection: async (name: string, description?: string) => {
     try {
-      const collection = await knowledgeApi.createCollection({ name, description });
+      const collection = await knowledgeApi.createCollection({
+        name,
+        description,
+      });
       set((state) => ({
         collections: [collection, ...state.collections],
       }));
       return collection;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to create collection';
+      const message =
+        error instanceof Error ? error.message : "Failed to create collection";
       set({ error: message });
       throw error;
     }
   },
 
-  updateCollection: async (id: string, data: { name?: string; description?: string }) => {
+  updateCollection: async (
+    id: string,
+    data: { name?: string; description?: string },
+  ) => {
     try {
       const updated = await knowledgeApi.updateCollection(id, data);
       set((state) => ({
         collections: state.collections.map((c) => (c.id === id ? updated : c)),
       }));
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to update collection';
+      const message =
+        error instanceof Error ? error.message : "Failed to update collection";
       set({ error: message });
       throw error;
     }
@@ -411,26 +473,33 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       await knowledgeApi.deleteCollection(id);
       set((state) => ({
         collections: state.collections.filter((c) => c.id !== id),
-        activeCollectionId: state.activeCollectionId === id ? null : state.activeCollectionId,
+        activeCollectionId:
+          state.activeCollectionId === id ? null : state.activeCollectionId,
       }));
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to delete collection';
+      const message =
+        error instanceof Error ? error.message : "Failed to delete collection";
       set({ error: message });
       throw error;
     }
   },
 
-  moveDocumentToCollection: async (documentId: string, collectionId: string) => {
+  moveDocumentToCollection: async (
+    documentId: string,
+    collectionId: string,
+  ) => {
     const sourceDocument = get().documents.find((doc) => doc.id === documentId);
     if (!sourceDocument) {
-      throw new Error('Document not found');
+      throw new Error("Document not found");
     }
     if (sourceDocument.collectionId === collectionId) {
       return sourceDocument;
     }
 
     try {
-      const updated = await knowledgeApi.update(documentId, { collection_id: collectionId });
+      const updated = await knowledgeApi.update(documentId, {
+        collection_id: collectionId,
+      });
       const previousCollectionId = sourceDocument.collectionId;
 
       set((state) => {
@@ -439,7 +508,10 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
             return { ...collection, itemCount: collection.itemCount + 1 };
           }
           if (previousCollectionId && collection.id === previousCollectionId) {
-            return { ...collection, itemCount: Math.max(0, collection.itemCount - 1) };
+            return {
+              ...collection,
+              itemCount: Math.max(0, collection.itemCount - 1),
+            };
           }
           return collection;
         });
@@ -453,7 +525,9 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         const isRootView = state.activeCollectionId === null;
         const nextDocuments = isRootView
           ? state.documents.filter((doc) => doc.id !== documentId)
-          : state.documents.map((doc) => (doc.id === documentId ? updatedDocument : doc));
+          : state.documents.map((doc) =>
+              doc.id === documentId ? updatedDocument : doc,
+            );
 
         return {
           collections: updatedCollections,
@@ -462,13 +536,16 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
             ? Math.max(0, state.totalDocuments - 1)
             : state.totalDocuments,
           selectedDocument:
-            state.selectedDocument?.id === documentId ? updatedDocument : state.selectedDocument,
+            state.selectedDocument?.id === documentId
+              ? updatedDocument
+              : state.selectedDocument,
         };
       });
 
       return updated;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to move document';
+      const message =
+        error instanceof Error ? error.message : "Failed to move document";
       set({ error: message });
       throw error;
     }
@@ -478,42 +555,62 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     set({ activeCollectionId: id, documents: [], currentPage: 1 });
   },
 
-  setDocuments: (documents) => set({ documents: documents.map(normalizeProcessingProgress) }),
+  setDocuments: (documents) =>
+    set({ documents: documents.map(normalizeProcessingProgress) }),
 
-  addDocument: (document) => set((state) => ({
-    documents: [...state.documents, normalizeProcessingProgress(document)],
-  })),
+  addDocument: (document) =>
+    set((state) => ({
+      documents: [...state.documents, normalizeProcessingProgress(document)],
+    })),
 
-  updateDocument: (id, updates) => set((state) => ({
-    documents: state.documents.map((doc) =>
-      doc.id === id ? normalizeProcessingProgress({ ...doc, ...updates }) : doc
-    ),
-    selectedDocument: state.selectedDocument?.id === id
-      ? normalizeProcessingProgress({ ...state.selectedDocument, ...updates })
-      : state.selectedDocument,
-    uploadQueue: state.uploadQueue.map((doc) =>
-      doc.id === id ? normalizeProcessingProgress({ ...doc, ...updates }) : doc
-    ),
-  })),
+  updateDocument: (id, updates) =>
+    set((state) => ({
+      documents: state.documents.map((doc) =>
+        doc.id === id
+          ? normalizeProcessingProgress({ ...doc, ...updates })
+          : doc,
+      ),
+      selectedDocument:
+        state.selectedDocument?.id === id
+          ? normalizeProcessingProgress({
+              ...state.selectedDocument,
+              ...updates,
+            })
+          : state.selectedDocument,
+      uploadQueue: state.uploadQueue.map((doc) =>
+        doc.id === id
+          ? normalizeProcessingProgress({ ...doc, ...updates })
+          : doc,
+      ),
+    })),
 
   removeDocument: (id) => {
     stopPollingDocument(id);
+    downloadState.delete(id);
     set((state) => ({
       documents: state.documents.filter((doc) => doc.id !== id),
-      selectedDocument: state.selectedDocument?.id === id ? null : state.selectedDocument,
+      selectedDocument:
+        state.selectedDocument?.id === id ? null : state.selectedDocument,
     }));
   },
 
   setSelectedDocument: (document) =>
-    set({ selectedDocument: document ? normalizeProcessingProgress(document) : null }),
+    set({
+      selectedDocument: document ? normalizeProcessingProgress(document) : null,
+    }),
 
-  addToUploadQueue: (document) => set((state) => ({
-    uploadQueue: [...state.uploadQueue, normalizeProcessingProgress(document)],
-  })),
+  addToUploadQueue: (document) =>
+    set((state) => ({
+      uploadQueue: [
+        ...state.uploadQueue,
+        normalizeProcessingProgress(document),
+      ],
+    })),
 
-  removeFromUploadQueue: (id) => set((state) => ({
-    uploadQueue: state.uploadQueue.filter((doc) => doc.id !== id),
-  })),
+  removeFromUploadQueue: (id) =>
+    set((state) => ({
+      uploadQueue: state.uploadQueue.filter((doc) => doc.id !== id),
+    })),
 
   updateUploadProgress: (id, progress) => {
     get().updateDocument(id, { uploadProgress: progress });
@@ -539,12 +636,12 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     let filtered = documents;
 
     // Filter by type
-    if (typeFilter !== 'all') {
+    if (typeFilter !== "all") {
       filtered = filtered.filter((doc) => doc.type === typeFilter);
     }
 
     // Filter by status
-    if (statusFilter !== 'all') {
+    if (statusFilter !== "all") {
       filtered = filtered.filter((doc) => doc.status === statusFilter);
     }
 
@@ -555,7 +652,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         (doc) =>
           doc.name.toLowerCase().includes(query) ||
           doc.description?.toLowerCase().includes(query) ||
-          doc.tags?.some((tag) => tag.toLowerCase().includes(query))
+          doc.tags?.some((tag) => tag.toLowerCase().includes(query)),
       );
     }
 
@@ -576,6 +673,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
 
   reset: () => {
     stopAllPolling();
+    downloadState.clear();
     set({
       documents: [],
       selectedDocument: null,
@@ -590,9 +688,9 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       collections: [],
       activeCollectionId: null,
       isLoadingCollections: false,
-      typeFilter: 'all',
-      statusFilter: 'all',
-      searchQuery: '',
+      typeFilter: "all",
+      statusFilter: "all",
+      searchQuery: "",
     });
   },
 }));
