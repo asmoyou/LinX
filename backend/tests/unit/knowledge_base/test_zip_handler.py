@@ -55,3 +55,16 @@ def test_extract_zip_extracts_supported_file_within_limits(monkeypatch) -> None:
     assert result.extracted_files[0].filename == "note.txt"
     assert result.extracted_files[0].size == 2
     assert not result.errors
+
+
+def test_decode_zip_filename_decodes_legacy_gbk_titles() -> None:
+    """Legacy ZIP entries without UTF-8 flag should recover readable Chinese names."""
+    raw_bytes = "中文资料.txt".encode("gbk")
+    mojibake_name = raw_bytes.decode("cp437")
+    info = zipfile.ZipInfo("placeholder.txt")
+    info.filename = mojibake_name
+    info.flag_bits = 0
+
+    decoded = zip_handler._decode_zip_filename(info)
+
+    assert decoded == "中文资料.txt"

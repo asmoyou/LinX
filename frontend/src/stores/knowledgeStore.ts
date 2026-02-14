@@ -57,6 +57,24 @@ const normalizeProcessingProgress = (doc: Document): Document => {
   return { ...doc, processingProgress: current };
 };
 
+const isDocumentVisibleInCurrentView = (
+  doc: Document,
+  activeCollectionId: string | null,
+): boolean => {
+  if (activeCollectionId === null) {
+    return !doc.collectionId;
+  }
+  return doc.collectionId === activeCollectionId;
+};
+
+const upsertCollection = (
+  collections: Collection[],
+  incoming: Collection,
+): Collection[] => {
+  const filtered = collections.filter((collection) => collection.id !== incoming.id);
+  return [incoming, ...filtered];
+};
+
 const stopPollingDocument = (id: string): void => {
   const state = pollState.get(id);
   if (state?.timer) {
@@ -224,20 +242,23 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
 
       // Check if ZIP upload response
       if ("collection" in result) {
-        // ZIP upload: add all extracted items + the new collection
+        // ZIP upload: only show items in the current view.
         const zipResult = result as ZipUploadResponse;
+        const visibleItems = zipResult.items
+          .map(normalizeProcessingProgress)
+          .filter((item) =>
+            isDocumentVisibleInCurrentView(item, activeCollectionId),
+          );
+
         set((state) => ({
-          documents: [
-            ...zipResult.items.map(normalizeProcessingProgress),
-            ...state.documents,
-          ],
-          totalDocuments: state.totalDocuments + zipResult.items.length,
-          collections: [zipResult.collection, ...state.collections],
+          documents: [...visibleItems, ...state.documents],
+          totalDocuments: state.totalDocuments + visibleItems.length,
+          collections: upsertCollection(state.collections, zipResult.collection),
           isUploading: false,
         }));
 
-        // Start polling for each extracted item
-        zipResult.items.forEach((item) => {
+        // Start polling only for visible extracted items in this view.
+        visibleItems.forEach((item) => {
           if (item.status === "processing" || item.status === "uploading") {
             get().pollProcessingStatus(item.id);
           }
@@ -247,14 +268,23 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       } else {
         // Regular file upload
         const doc = normalizeProcessingProgress(result as Document);
+        const shouldDisplay = isDocumentVisibleInCurrentView(
+          doc,
+          activeCollectionId,
+        );
         set((state) => ({
-          documents: [doc, ...state.documents],
-          totalDocuments: state.totalDocuments + 1,
+          documents: shouldDisplay ? [doc, ...state.documents] : state.documents,
+          totalDocuments: shouldDisplay
+            ? state.totalDocuments + 1
+            : state.totalDocuments,
           isUploading: false,
         }));
 
-        // Start polling for processing status if document is still processing
-        if (doc.status === "processing" || doc.status === "uploading") {
+        // Start polling only for documents visible in this view.
+        if (
+          shouldDisplay &&
+          (doc.status === "processing" || doc.status === "uploading")
+        ) {
           get().pollProcessingStatus(doc.id);
         }
 

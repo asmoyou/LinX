@@ -5,9 +5,10 @@ Extracts files from ZIP archives with validation, filtering, and safety checks.
 
 import io
 import os
+import unicodedata
 import zipfile
 from dataclasses import dataclass, field
-from typing import BinaryIO, List, Tuple
+from typing import BinaryIO, List
 
 import logging
 
@@ -48,6 +49,8 @@ MAX_SINGLE_FILE_SIZE = 200 * 1024 * 1024  # 200MB per extracted file
 MAX_ZIP_SIZE = 3 * 1024 * 1024 * 1024  # 3GB compressed archive size
 MAX_TOTAL_SIZE = 3 * 1024 * 1024 * 1024  # 3GB total extracted size
 MAX_COMPRESSION_RATIO = 100  # zip bomb protection
+ZIP_UTF8_FLAG = 0x800
+FILENAME_DECODE_ENCODINGS = ("utf-8", "gb18030", "gbk", "big5")
 
 
 @dataclass
@@ -66,6 +69,93 @@ class ZipExtractionResult:
     extracted_files: List[ExtractedFile] = field(default_factory=list)
     skipped_files: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+
+
+def _is_cjk(char: str) -> bool:
+    """Return True when char belongs to common CJK Unicode ranges."""
+    code_point = ord(char)
+    return (
+        0x4E00 <= code_point <= 0x9FFF  # CJK Unified Ideographs
+        or 0x3400 <= code_point <= 0x4DBF  # CJK Unified Ideographs Extension A
+        or 0x3000 <= code_point <= 0x303F  # CJK Symbols and Punctuation
+    )
+
+
+def _score_filename_candidate(value: str) -> float:
+    """Score decoded filename candidates.
+
+    Higher score indicates a likely human-readable filename.
+    """
+    if not value:
+        return float("-inf")
+
+    score = 0.0
+    for ch in value:
+        if ch == "\ufffd":
+            score -= 8.0
+            continue
+
+        code_point = ord(ch)
+        category = unicodedata.category(ch)
+
+        if _is_cjk(ch):
+            score += 4.0
+        elif ch.isascii():
+            # Favor standard filename-safe ASCII symbols.
+            if ch.isalnum() or ch in "._- /()[]":
+                score += 0.4
+            elif ch in "\\:":
+                score += 0.2
+            else:
+                score -= 0.1
+        else:
+            # Penalize common mojibake box drawing blocks heavily.
+            if 0x2500 <= code_point <= 0x259F:
+                score -= 3.0
+            # Penalize private/control characters.
+            elif category.startswith("C"):
+                score -= 2.0
+            else:
+                score += 0.2
+
+    return score
+
+
+def _decode_zip_filename(info: zipfile.ZipInfo) -> str:
+    """Decode ZIP filename with fallbacks for legacy encodings (e.g. GBK)."""
+    decoded_name = info.filename or ""
+    if not decoded_name:
+        return decoded_name
+
+    # Respect UTF-8 flag from ZIP spec.
+    if info.flag_bits & ZIP_UTF8_FLAG:
+        return decoded_name
+
+    try:
+        raw_bytes = decoded_name.encode("cp437")
+    except UnicodeEncodeError:
+        return decoded_name
+
+    candidates = [decoded_name]
+    for encoding in FILENAME_DECODE_ENCODINGS:
+        try:
+            decoded_candidate = raw_bytes.decode(encoding)
+            if decoded_candidate not in candidates:
+                candidates.append(decoded_candidate)
+        except UnicodeDecodeError:
+            continue
+
+    if len(candidates) == 1:
+        return decoded_name
+
+    best_name = candidates[0]
+    best_score = _score_filename_candidate(best_name)
+    for candidate in candidates[1:]:
+        candidate_score = _score_filename_candidate(candidate)
+        if candidate_score > best_score:
+            best_name = candidate
+            best_score = candidate_score
+    return best_name
 
 
 def _should_skip(name: str) -> bool:
@@ -148,7 +238,7 @@ def extract_zip(zip_data: BinaryIO) -> ZipExtractionResult:
             if info.is_dir():
                 continue
 
-            original_path = info.filename
+            original_path = _decode_zip_filename(info)
 
             # Skip hidden/system files
             if _should_skip(original_path):
