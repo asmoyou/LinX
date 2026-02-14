@@ -1,6 +1,8 @@
 """Unit tests for vision parser provider integration."""
 
 import asyncio
+import sys
+from unittest.mock import AsyncMock
 
 from knowledge_base.vision_parser import VisionDocumentParser
 
@@ -143,3 +145,62 @@ def test_openai_summarize_video_batches_uses_text_only_prompt(monkeypatch):
     message = captured["messages"][0]
     assert isinstance(message.content, str)
     assert "Segment 1" in message.content
+
+
+def test_parse_pdf_avoids_len_on_closed_document(monkeypatch, tmp_path):
+    """parse_pdf should not touch document length after document context exits."""
+    parser = _build_parser(api_format="openai")
+    parser._extract_with_vision = AsyncMock(return_value="page text")
+
+    class FakePixmap:
+        def tobytes(self, fmt):
+            assert fmt == "png"
+            return b"fake-png"
+
+    class FakePage:
+        def get_pixmap(self, dpi=200):
+            assert dpi == 200
+            return FakePixmap()
+
+    class FakeDoc:
+        def __init__(self, page_count: int):
+            self._page_count = page_count
+            self.closed = False
+
+        def __len__(self):
+            if self.closed:
+                raise ValueError("document closed")
+            return self._page_count
+
+        def load_page(self, page_num: int):
+            if self.closed:
+                raise ValueError("document closed")
+            assert 0 <= page_num < self._page_count
+            return FakePage()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.closed = True
+            return False
+
+    fake_doc = FakeDoc(page_count=2)
+
+    class FakeFitz:
+        @staticmethod
+        def open(path):
+            assert path.endswith(".pdf")
+            return fake_doc
+
+    monkeypatch.setitem(sys.modules, "fitz", FakeFitz)
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+
+    result = asyncio.run(parser.parse_pdf(pdf_path))
+
+    assert result.text == "page text\n\npage text"
+    assert result.pages == 2
+    assert fake_doc.closed is True
+    assert parser._extract_with_vision.await_count == 2

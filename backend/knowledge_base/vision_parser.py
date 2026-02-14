@@ -126,37 +126,37 @@ class VisionDocumentParser:
             logger.error("PyMuPDF (fitz) not installed. Install with: pip install PyMuPDF")
             raise ImportError("PyMuPDF required for vision PDF parsing")
 
-        doc = fitz.open(str(file_path))
         all_text = []
         sections = []
+        page_count = 0
 
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-            # Render page to image at 200 DPI
-            pix = page.get_pixmap(dpi=200)
-            img_bytes = pix.tobytes("png")
-            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+        with fitz.open(str(file_path)) as doc:
+            page_count = len(doc)
+            for page_num in range(page_count):
+                page = doc.load_page(page_num)
+                # Render page to image at 200 DPI
+                pix = page.get_pixmap(dpi=200)
+                img_bytes = pix.tobytes("png")
+                img_b64 = base64.b64encode(img_bytes).decode("utf-8")
 
-            # Send to vision LLM
-            page_prompt = (
-                f"This is page {page_num + 1} of a document. "
-                f"{_build_extraction_prompt(self._get_output_language())}"
-            )
-            page_text = await self._extract_with_vision(
-                img_b64,
-                page_prompt,
-            )
-
-            if page_text:
-                all_text.append(page_text)
-                sections.append(
-                    {
-                        "page": page_num + 1,
-                        "text_length": len(page_text),
-                    }
+                # Send to vision LLM
+                page_prompt = (
+                    f"This is page {page_num + 1} of a document. "
+                    f"{_build_extraction_prompt(self._get_output_language())}"
+                )
+                page_text = await self._extract_with_vision(
+                    img_b64,
+                    page_prompt,
                 )
 
-        doc.close()
+                if page_text:
+                    all_text.append(page_text)
+                    sections.append(
+                        {
+                            "page": page_num + 1,
+                            "text_length": len(page_text),
+                        }
+                    )
 
         combined_text = "\n\n".join(all_text)
 
@@ -164,7 +164,7 @@ class VisionDocumentParser:
             "PDF parsed with vision",
             extra={
                 "file": str(file_path),
-                "pages": len(doc),
+                "pages": page_count,
                 "text_length": len(combined_text),
             },
         )
