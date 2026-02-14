@@ -702,6 +702,311 @@ def _resolve_share_targets(agent_ids: List[str], user_ids: List[str]) -> Dict[st
     }
 
 
+def _is_agent_scoped_query(memory_type, agent_id: Optional[str] = None) -> bool:
+    """Whether the query should be treated as agent-memory scoped."""
+    from memory_system.memory_interface import MemoryType
+
+    return memory_type == MemoryType.AGENT or (memory_type is None and bool(agent_id))
+
+
+def _resolve_effective_user_id(
+    memory_type,
+    current_user: CurrentUser,
+    requested_user_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve user scope for search/list queries.
+
+    Agent memories are scoped by agent ownership checks, not user_id field filtering, because
+    many historical rows have null user_id while still belonging to a specific agent.
+    """
+    if _is_agent_scoped_query(memory_type, agent_id=agent_id):
+        return None
+    return requested_user_id or current_user.user_id
+
+
+def _filter_agent_memory_access_sync(
+    responses: List[dict],
+    current_user: CurrentUser,
+) -> List[dict]:
+    """Filter agent-memory responses by agent ownership + RBAC rules."""
+    from uuid import UUID
+
+    from access_control.memory_filter import can_access_agent_memory
+    from access_control.rbac import Action
+    from database.connection import get_db_session
+    from database.models import Agent
+
+    agent_ids = {
+        str(item.get("agentId"))
+        for item in responses
+        if item.get("type") == "agent" and item.get("agentId")
+    }
+    if not agent_ids:
+        return responses
+
+    parsed_agent_ids = []
+    for raw_agent_id in agent_ids:
+        try:
+            parsed_agent_ids.append(UUID(raw_agent_id))
+        except Exception:
+            continue
+
+    owner_by_agent_id: Dict[str, str] = {}
+    if parsed_agent_ids:
+        with get_db_session() as session:
+            rows = (
+                session.query(Agent.agent_id, Agent.owner_user_id)
+                .filter(Agent.agent_id.in_(parsed_agent_ids))
+                .all()
+            )
+        owner_by_agent_id = {str(row.agent_id): str(row.owner_user_id) for row in rows}
+
+    filtered: List[dict] = []
+    for item in responses:
+        if item.get("type") != "agent":
+            filtered.append(item)
+            continue
+
+        agent_id = str(item.get("agentId") or "").strip()
+        if not agent_id:
+            continue
+
+        agent_owner_id = owner_by_agent_id.get(agent_id, "")
+        if can_access_agent_memory(current_user, agent_id, agent_owner_id, Action.READ):
+            filtered.append(item)
+
+    return filtered
+
+
+def _require_agent_read_access_sync(agent_id: str, current_user: CurrentUser) -> None:
+    """Ensure current user can read this agent's memories."""
+    from uuid import UUID
+
+    from access_control.memory_filter import can_access_agent_memory
+    from access_control.rbac import Action
+    from database.connection import get_db_session
+    from database.models import Agent
+
+    try:
+        parsed_agent_id = UUID(str(agent_id))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid agent_id: {agent_id}",
+        ) from exc
+
+    with get_db_session() as session:
+        agent = session.query(Agent).filter(Agent.agent_id == parsed_agent_id).first()
+
+    if not agent:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Agent not found",
+        )
+
+    allowed = can_access_agent_memory(
+        current_user=current_user,
+        agent_id=str(agent.agent_id),
+        agent_owner_id=str(agent.owner_user_id),
+        action=Action.READ,
+    )
+
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to access this agent memory",
+        )
+
+
+def _infer_agent_memory_diagnostic_hints(
+    *,
+    active_db_count: int,
+    without_user_id_count: int,
+    vector_status_counts: Dict[str, int],
+    milvus_count: Optional[int],
+    milvus_error: Optional[str],
+) -> Dict[str, Any]:
+    """Infer likely root causes when agent-memory visibility looks abnormal."""
+    hints: List[str] = []
+    if active_db_count <= 0:
+        hints.append("no_agent_memory_in_db")
+
+    if active_db_count > 0 and without_user_id_count > 0:
+        hints.append("agent_memory_rows_missing_user_id")
+
+    if int(vector_status_counts.get("failed", 0) or 0) > 0:
+        hints.append("vector_sync_failures_present")
+
+    if milvus_error:
+        hints.append("milvus_query_error")
+    elif active_db_count > 0 and milvus_count == 0:
+        hints.append("milvus_has_no_rows_for_agent")
+
+    primary = hints[0] if hints else "healthy_or_no_obvious_issue"
+    return {
+        "primary": primary,
+        "hints": hints,
+    }
+
+
+def _build_agent_memory_diagnostics_sync(
+    agent_id: str,
+    include_samples: bool = True,
+    sample_limit: int = 5,
+    milvus_scan_limit: int = 10000,
+) -> Optional[Dict[str, Any]]:
+    """Build diagnostic report for one agent's memories."""
+    from uuid import UUID
+
+    from sqlalchemy import func
+
+    from database.connection import get_db_session
+    from database.models import Agent, MemoryRecord
+    from memory_system.collections import CollectionName
+    from memory_system.milvus_connection import get_milvus_connection
+
+    try:
+        parsed_agent_id = UUID(str(agent_id))
+    except Exception as exc:
+        raise ValueError(f"Invalid agent_id: {agent_id}") from exc
+
+    sample_limit = max(1, min(int(sample_limit or 5), 20))
+    milvus_scan_limit = max(100, min(int(milvus_scan_limit or 10000), 50000))
+
+    with get_db_session() as session:
+        agent = session.query(Agent).filter(Agent.agent_id == parsed_agent_id).first()
+        if not agent:
+            return None
+
+        active_query = session.query(MemoryRecord).filter(
+            MemoryRecord.agent_id == str(agent.agent_id),
+            MemoryRecord.memory_type == "agent",
+            MemoryRecord.is_deleted.is_(False),
+        )
+        total_active = int(active_query.count() or 0)
+
+        total_deleted = int(
+            session.query(func.count(MemoryRecord.id))
+            .filter(
+                MemoryRecord.agent_id == str(agent.agent_id),
+                MemoryRecord.memory_type == "agent",
+                MemoryRecord.is_deleted.is_(True),
+            )
+            .scalar()
+            or 0
+        )
+
+        with_user_id = int(
+            active_query.filter(MemoryRecord.user_id.isnot(None)).count() or 0
+        )
+        without_user_id = max(total_active - with_user_id, 0)
+
+        with_milvus_id = int(
+            active_query.filter(MemoryRecord.milvus_id.isnot(None)).count() or 0
+        )
+        without_milvus_id = max(total_active - with_milvus_id, 0)
+
+        raw_vector_status_rows = (
+            session.query(MemoryRecord.vector_status, func.count(MemoryRecord.id))
+            .filter(
+                MemoryRecord.agent_id == str(agent.agent_id),
+                MemoryRecord.memory_type == "agent",
+                MemoryRecord.is_deleted.is_(False),
+            )
+            .group_by(MemoryRecord.vector_status)
+            .all()
+        )
+        vector_status_counts: Dict[str, int] = {
+            "pending": 0,
+            "synced": 0,
+            "failed": 0,
+            "unknown": 0,
+        }
+        for status_value, status_count in raw_vector_status_rows:
+            key = (status_value or "").strip().lower() or "unknown"
+            if key in vector_status_counts:
+                vector_status_counts[key] = int(status_count or 0)
+            else:
+                vector_status_counts["unknown"] += int(status_count or 0)
+
+        latest_row = active_query.order_by(MemoryRecord.timestamp.desc()).first()
+
+        sample_rows: List[Dict[str, Any]] = []
+        if include_samples:
+            rows = active_query.order_by(MemoryRecord.timestamp.desc()).limit(sample_limit).all()
+            for row in rows:
+                meta = row.memory_metadata if isinstance(row.memory_metadata, dict) else {}
+                content = (row.content or "").strip()
+                sample_rows.append(
+                    {
+                        "id": int(row.id),
+                        "milvus_id": int(row.milvus_id) if row.milvus_id is not None else None,
+                        "user_id": row.user_id,
+                        "vector_status": row.vector_status,
+                        "vector_error": row.vector_error,
+                        "timestamp": row.timestamp.isoformat() if row.timestamp else None,
+                        "content_preview": content[:160] + ("..." if len(content) > 160 else ""),
+                        "metadata_keys": sorted(str(k) for k in meta.keys())[:20],
+                    }
+                )
+
+    milvus_count: Optional[int] = None
+    milvus_error: Optional[str] = None
+    milvus_truncated = False
+    try:
+        milvus = get_milvus_connection()
+        rows = _query_collection_with_retry(
+            milvus,
+            CollectionName.AGENT_MEMORIES,
+            lambda col: col.query(
+                expr=f'agent_id == "{str(parsed_agent_id)}"',
+                output_fields=["id"],
+                limit=milvus_scan_limit,
+            ),
+        )
+        milvus_count = len(rows or [])
+        milvus_truncated = bool(milvus_count >= milvus_scan_limit)
+    except Exception as exc:
+        milvus_error = str(exc)
+
+    diagnosis = _infer_agent_memory_diagnostic_hints(
+        active_db_count=total_active,
+        without_user_id_count=without_user_id,
+        vector_status_counts=vector_status_counts,
+        milvus_count=milvus_count,
+        milvus_error=milvus_error,
+    )
+
+    return {
+        "agent_id": str(agent.agent_id),
+        "agent_name": agent.name,
+        "owner_user_id": str(agent.owner_user_id),
+        "db": {
+            "active_count": total_active,
+            "deleted_count": total_deleted,
+            "with_user_id_count": with_user_id,
+            "without_user_id_count": without_user_id,
+            "with_milvus_id_count": with_milvus_id,
+            "without_milvus_id_count": without_milvus_id,
+            "vector_status": vector_status_counts,
+            "latest_memory_id": int(latest_row.id) if latest_row else None,
+            "latest_timestamp": latest_row.timestamp.isoformat()
+            if latest_row and latest_row.timestamp
+            else None,
+        },
+        "milvus": {
+            "collection": CollectionName.AGENT_MEMORIES,
+            "count_for_agent": milvus_count,
+            "scan_limit": milvus_scan_limit,
+            "scan_truncated": milvus_truncated,
+            "error": milvus_error,
+        },
+        "samples": sample_rows,
+        "diagnosis": diagnosis,
+    }
+
+
 def _items_to_responses(items) -> List[dict]:
     """Convert memory items to response dicts with name lookups. Runs in thread."""
     from database.connection import get_db_session
@@ -1628,7 +1933,12 @@ async def list_memories(
     from memory_system.memory_interface import MemoryType, SearchQuery
 
     memory_type = MemoryType(type) if type else None
-    effective_user_id = user_id or current_user.user_id
+    effective_user_id = _resolve_effective_user_id(
+        memory_type,
+        current_user,
+        requested_user_id=user_id,
+        agent_id=agent_id,
+    )
 
     query = SearchQuery(
         query_text="*",
@@ -1659,6 +1969,8 @@ async def list_memories(
         date_to=date_to,
         tags=tags,
     )
+    if _is_agent_scoped_query(memory_type, agent_id=agent_id):
+        results = await asyncio.to_thread(_filter_agent_memory_access_sync, results, current_user)
 
     return [MemoryResponse(**r) for r in results]
 
@@ -1780,7 +2092,7 @@ async def get_memories_by_type(
     query = SearchQuery(
         query_text="*",
         memory_type=mem_type,
-        user_id=current_user.user_id,
+        user_id=_resolve_effective_user_id(mem_type, current_user),
         top_k=100,
     )
 
@@ -1798,6 +2110,8 @@ async def get_memories_by_type(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve memories: {e}",
         )
+    if mem_type == MemoryType.AGENT:
+        results = await asyncio.to_thread(_filter_agent_memory_access_sync, results, current_user)
 
     return [MemoryResponse(**r) for r in results]
 
@@ -1810,11 +2124,13 @@ async def get_memories_by_agent(
     """Get memories for a specific agent."""
     from memory_system.memory_interface import MemoryType, SearchQuery
 
+    await asyncio.to_thread(_require_agent_read_access_sync, agent_id, current_user)
+
     query = SearchQuery(
         query_text="*",
         memory_type=MemoryType.AGENT,
         agent_id=agent_id,
-        user_id=current_user.user_id,
+        user_id=_resolve_effective_user_id(MemoryType.AGENT, current_user, agent_id=agent_id),
         top_k=100,
     )
 
@@ -1826,7 +2142,57 @@ async def get_memories_by_agent(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(e),
         )
+    results = await asyncio.to_thread(_filter_agent_memory_access_sync, results, current_user)
     return [MemoryResponse(**r) for r in results]
+
+
+@router.get("/diagnostics/agent/{agent_id}")
+async def diagnose_agent_memory(
+    agent_id: str,
+    include_samples: bool = Query(True, description="Include sample memory rows"),
+    sample_limit: int = Query(5, ge=1, le=20),
+    milvus_scan_limit: int = Query(
+        10000,
+        ge=100,
+        le=50000,
+        description="Max number of Milvus rows to scan for this agent",
+    ),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Diagnose one agent's memory visibility and indexing health."""
+    await asyncio.to_thread(_require_agent_read_access_sync, agent_id, current_user)
+
+    try:
+        report = await asyncio.to_thread(
+            _build_agent_memory_diagnostics_sync,
+            agent_id,
+            include_samples,
+            sample_limit,
+            milvus_scan_limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        logger.error("Failed to build agent memory diagnostics: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to diagnose agent memory: {exc}",
+        ) from exc
+
+    if not report:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Agent not found",
+        )
+
+    report["requested_by"] = {
+        "user_id": current_user.user_id,
+        "role": current_user.role,
+    }
+    return report
 
 
 @router.get("/{memory_id}", response_model=MemoryResponse)
@@ -1907,11 +2273,12 @@ async def search_memories(
     from memory_system.memory_interface import MemoryType, SearchQuery
 
     memory_type = MemoryType(request.type) if request.type else None
+    effective_user_id = _resolve_effective_user_id(memory_type, current_user)
 
     query = SearchQuery(
         query_text=request.query,
         memory_type=memory_type,
-        user_id=current_user.user_id,
+        user_id=effective_user_id,
         top_k=request.limit or 10,
         min_similarity=request.min_score or 0.0,
     )
@@ -1935,6 +2302,8 @@ async def search_memories(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to search memories: {e}",
         )
+    if memory_type == MemoryType.AGENT:
+        results = await asyncio.to_thread(_filter_agent_memory_access_sync, results, current_user)
 
     return [MemoryResponse(**r) for r in results]
 
@@ -2096,6 +2465,62 @@ async def purge_memories(
     return result
 
 
+@router.post("/admin/backfill-agent-user-ids")
+async def backfill_agent_user_ids(
+    dry_run: bool = Query(True, description="If true, only report affected rows"),
+    agent_id: Optional[str] = Query(
+        None,
+        description="Optional agent UUID to scope this operation",
+    ),
+    limit: Optional[int] = Query(
+        None,
+        ge=1,
+        le=50000,
+        description="Optional max rows to process in this run",
+    ),
+    reindex_vectors: bool = Query(
+        False,
+        description="Rebuild Milvus vectors for updated rows (requires dry_run=false)",
+    ),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Admin maintenance endpoint to backfill missing user_id for agent memories."""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can run agent-memory user_id backfill",
+        )
+
+    if reindex_vectors and dry_run:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="reindex_vectors requires dry_run=false",
+        )
+
+    from memory_system.agent_memory_backfill import backfill_agent_memory_user_ids
+
+    try:
+        result = await asyncio.to_thread(
+            backfill_agent_memory_user_ids,
+            dry_run=dry_run,
+            agent_id=agent_id,
+            limit=limit,
+            reindex_vectors=reindex_vectors,
+        )
+    except Exception as exc:
+        logger.error("Agent-memory user_id backfill failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Backfill failed: {exc}",
+        ) from exc
+
+    result["requested_by"] = {
+        "user_id": current_user.user_id,
+        "role": current_user.role,
+    }
+    return result
+
+
 def _find_orphan_vectors_sync(
     collection_name: str,
     batch_size: int = 1000,
@@ -2111,87 +2536,21 @@ def _find_orphan_vectors_sync(
     Returns:
         dict with scan results
     """
-    from memory_system.milvus_connection import get_milvus_connection
+    from memory_system.orphan_vector_cleanup import (
+        load_orphan_cleanup_settings,
+        scan_orphan_vectors,
+    )
 
-    repo = _get_memory_repository()
-    milvus = get_milvus_connection()
+    settings = load_orphan_cleanup_settings()
 
-    try:
-        collection = milvus.get_collection(collection_name)
-    except Exception as exc:
-        return {"error": f"Failed to get collection '{collection_name}': {exc}"}
-
-    orphan_ids = []
-    scanned = 0
-
-    try:
-        rows = _query_collection_with_retry(
-            milvus,
-            collection_name,
-            lambda col: col.query(
-                expr="id >= 0",
-                output_fields=["id"],
-                limit=batch_size,
-            ),
-        )
-    except Exception as exc:
-        return {"error": f"Failed to query collection: {exc}"}
-
-    if not rows:
-        return {
-            "collection": collection_name,
-            "scanned": 0,
-            "orphan_count": 0,
-            "orphan_ids": [],
-            "deleted": 0,
-            "dry_run": dry_run,
-        }
-
-    milvus_ids = []
-    for row in rows:
-        mid = row.get("id")
-        if mid is not None:
-            milvus_ids.append(int(mid))
-
-    scanned = len(milvus_ids)
-
-    # Batch-check against PostgreSQL
-    existing_map = repo.get_by_milvus_ids(milvus_ids)
-    for mid in milvus_ids:
-        if mid not in existing_map:
-            orphan_ids.append(mid)
-
-    deleted = 0
-    if not dry_run and orphan_ids:
-        try:
-            expr = f"id in {orphan_ids}"
-            collection.delete(expr=expr)
-            deleted = len(orphan_ids)
-            logger.info(
-                "Deleted %d orphan vectors from %s",
-                deleted,
-                collection_name,
-            )
-        except Exception as exc:
-            logger.error("Failed to delete orphan vectors: %s", exc)
-            return {
-                "collection": collection_name,
-                "scanned": scanned,
-                "orphan_count": len(orphan_ids),
-                "orphan_ids": orphan_ids[:50],
-                "deleted": 0,
-                "dry_run": dry_run,
-                "error": str(exc),
-            }
-
-    return {
-        "collection": collection_name,
-        "scanned": scanned,
-        "orphan_count": len(orphan_ids),
-        "orphan_ids": orphan_ids[:50],
-        "deleted": deleted,
-        "dry_run": dry_run,
-    }
+    return scan_orphan_vectors(
+        collection_name,
+        batch_size=batch_size,
+        dry_run=dry_run,
+        max_scan=settings.max_scan_per_collection,
+        max_delete=settings.max_delete_per_collection,
+        query_timeout_seconds=settings.query_timeout_seconds,
+    )
 
 
 @router.post("/admin/cleanup-orphans")

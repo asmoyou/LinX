@@ -2079,6 +2079,7 @@ async def test_agent(
                             mem_interface.store_agent_memory(
                                 agent_id=UUID(agent_id),
                                 content=agent_memory_content,
+                                user_id=current_user.user_id,
                                 metadata={
                                     "source": "agent_test_stream",
                                     "session_id": conversation_session.session_id,

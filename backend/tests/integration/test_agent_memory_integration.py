@@ -136,6 +136,7 @@ def test_executor_stores_successful_response_as_agent_memory():
     memory_interface.store_agent_memory.assert_called_once()
     call_kwargs = memory_interface.store_agent_memory.call_args.kwargs
     assert call_kwargs["agent_id"] == context.agent_id
+    assert call_kwargs["user_id"] == context.user_id
     # New structured format uses _format_agent_memory_content
     assert "Task: Summarize Q4 report" in call_kwargs["content"]
     assert "[Agent: Memory Integration Agent]" in call_kwargs["content"]

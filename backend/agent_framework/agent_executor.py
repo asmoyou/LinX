@@ -494,6 +494,7 @@ class AgentExecutor:
                     self.memory_interface.store_agent_memory(
                         agent_id=context.agent_id,
                         content=content,
+                        user_id=context.user_id,
                         metadata={"task_id": str(context.task_id) if context.task_id else None},
                     )
                     logger.debug("Stored execution result in agent memory")

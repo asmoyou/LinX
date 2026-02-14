@@ -19,6 +19,7 @@ References:
 
 import pytest
 from datetime import datetime, timezone
+from uuid import UUID, uuid4
 from unittest.mock import MagicMock, mock_open, patch
 
 from fastapi import HTTPException, status
@@ -462,6 +463,8 @@ class TestRouteRegistration:
             "/api/v1/memories/search",
             "/api/v1/memories/type/{memory_type}",
             "/api/v1/memories/agent/{agent_id}",
+            "/api/v1/memories/diagnostics/agent/{agent_id}",
+            "/api/v1/memories/admin/backfill-agent-user-ids",
             "/api/v1/memories/{memory_id}",
             "/api/v1/memories/{memory_id}/share",
         ]
@@ -479,6 +482,8 @@ class TestRouteRegistration:
         assert "GET" in route_map.get("/api/v1/memories/config", set())
         assert "PUT" in route_map.get("/api/v1/memories/config", set())
         assert "GET" in route_map.get("/api/v1/memories/shared", set())
+        assert "GET" in route_map.get("/api/v1/memories/diagnostics/agent/{agent_id}", set())
+        assert "POST" in route_map.get("/api/v1/memories/admin/backfill-agent-user-ids", set())
         assert "GET" in route_map.get("/api/v1/memories/{memory_id}", set())
         assert "PUT" in route_map.get("/api/v1/memories/{memory_id}", set())
         assert "DELETE" in route_map.get("/api/v1/memories/{memory_id}", set())
@@ -696,3 +701,157 @@ class TestMemoryConfigEndpoints:
         assert response.embedding["provider"] == "new-provider"
         assert response.retrieval["top_k"] == 20
         assert response.runtime["search_timeout_seconds"] == 4
+
+
+class TestAgentMemoryAccessHelpers:
+    """Test helper utilities for agent-memory query scope and filtering."""
+
+    def test_resolve_effective_user_id_skips_user_scope_for_agent_queries(self):
+        from api_gateway.routers.memory import _resolve_effective_user_id
+        from memory_system.memory_interface import MemoryType
+
+        current_user = CurrentUser(
+            user_id=str(uuid4()),
+            username="u1",
+            role=Role.USER.value,
+            token_jti="jti-1",
+        )
+
+        assert (
+            _resolve_effective_user_id(
+                MemoryType.AGENT,
+                current_user,
+                requested_user_id=str(uuid4()),
+            )
+            is None
+        )
+        assert (
+            _resolve_effective_user_id(
+                None,
+                current_user,
+                requested_user_id=str(uuid4()),
+                agent_id=str(uuid4()),
+            )
+            is None
+        )
+        assert (
+            _resolve_effective_user_id(
+                MemoryType.COMPANY,
+                current_user,
+            )
+            == current_user.user_id
+        )
+
+    def test_filter_agent_memory_access_sync_keeps_only_owner_for_user(self):
+        from api_gateway.routers.memory import _filter_agent_memory_access_sync
+
+        current_user = CurrentUser(
+            user_id=str(uuid4()),
+            username="u1",
+            role=Role.USER.value,
+            token_jti="jti-2",
+        )
+        own_agent_id = str(uuid4())
+        other_agent_id = str(uuid4())
+
+        responses = [
+            {"id": "m1", "type": "agent", "agentId": own_agent_id},
+            {"id": "m2", "type": "agent", "agentId": other_agent_id},
+            {"id": "m3", "type": "company", "agentId": None},
+        ]
+
+        row_own = MagicMock(agent_id=UUID(own_agent_id), owner_user_id=UUID(current_user.user_id))
+        row_other = MagicMock(agent_id=UUID(other_agent_id), owner_user_id=uuid4())
+
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = [row_own, row_other]
+        session_ctx = MagicMock()
+        session_ctx.__enter__.return_value = session
+        session_ctx.__exit__.return_value = False
+
+        with patch("database.connection.get_db_session", return_value=session_ctx):
+            filtered = _filter_agent_memory_access_sync(responses, current_user)
+
+        assert {item["id"] for item in filtered} == {"m1", "m3"}
+
+    def test_require_agent_read_access_sync_allows_owner(self):
+        from api_gateway.routers.memory import _require_agent_read_access_sync
+
+        agent_id = str(uuid4())
+        owner_id = str(uuid4())
+        current_user = CurrentUser(
+            user_id=owner_id,
+            username="owner",
+            role=Role.USER.value,
+            token_jti="jti-3",
+        )
+
+        mock_agent = MagicMock(agent_id=UUID(agent_id), owner_user_id=UUID(owner_id))
+        session = MagicMock()
+        session.query.return_value.filter.return_value.first.return_value = mock_agent
+        session_ctx = MagicMock()
+        session_ctx.__enter__.return_value = session
+        session_ctx.__exit__.return_value = False
+
+        with patch("database.connection.get_db_session", return_value=session_ctx):
+            with patch(
+                "access_control.memory_filter.can_access_agent_memory", return_value=True
+            ) as mock_can_access:
+                _require_agent_read_access_sync(agent_id, current_user)
+
+        mock_can_access.assert_called_once()
+
+    def test_require_agent_read_access_sync_not_found(self):
+        from api_gateway.routers.memory import _require_agent_read_access_sync
+
+        agent_id = str(uuid4())
+        current_user = CurrentUser(
+            user_id=str(uuid4()),
+            username="u1",
+            role=Role.USER.value,
+            token_jti="jti-4",
+        )
+
+        session = MagicMock()
+        session.query.return_value.filter.return_value.first.return_value = None
+        session_ctx = MagicMock()
+        session_ctx.__enter__.return_value = session
+        session_ctx.__exit__.return_value = False
+
+        with patch("database.connection.get_db_session", return_value=session_ctx):
+            with pytest.raises(HTTPException) as exc_info:
+                _require_agent_read_access_sync(agent_id, current_user)
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+
+class TestAgentMemoryDiagnosticHints:
+    """Test agent memory diagnostics hint inference."""
+
+    def test_diagnostic_hints_detects_missing_user_id_case(self):
+        from api_gateway.routers.memory import _infer_agent_memory_diagnostic_hints
+
+        result = _infer_agent_memory_diagnostic_hints(
+            active_db_count=12,
+            without_user_id_count=12,
+            vector_status_counts={"pending": 0, "synced": 12, "failed": 0, "unknown": 0},
+            milvus_count=10,
+            milvus_error=None,
+        )
+
+        assert result["primary"] == "agent_memory_rows_missing_user_id"
+        assert "agent_memory_rows_missing_user_id" in result["hints"]
+
+    def test_diagnostic_hints_detects_empty_db_case(self):
+        from api_gateway.routers.memory import _infer_agent_memory_diagnostic_hints
+
+        result = _infer_agent_memory_diagnostic_hints(
+            active_db_count=0,
+            without_user_id_count=0,
+            vector_status_counts={"pending": 0, "synced": 0, "failed": 0, "unknown": 0},
+            milvus_count=0,
+            milvus_error=None,
+        )
+
+        assert result["primary"] == "no_agent_memory_in_db"
+        assert "no_agent_memory_in_db" in result["hints"]

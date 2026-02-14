@@ -149,6 +149,7 @@ class AgentMemoryInterface:
         self,
         agent_id: UUID,
         content: str,
+        user_id: Optional[UUID | str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Store memory in Agent Memory (private).
@@ -156,6 +157,8 @@ class AgentMemoryInterface:
         Args:
             agent_id: Agent UUID
             content: Memory content
+            user_id: Optional user UUID (owner/initiator). If omitted, storage layer attempts
+                owner resolution by agent_id.
             metadata: Optional metadata
 
         Returns:
@@ -165,6 +168,7 @@ class AgentMemoryInterface:
             content=content,
             memory_type=MemoryType.AGENT,
             agent_id=str(agent_id),
+            user_id=str(user_id) if user_id else None,
             metadata=metadata or {},
         )
 

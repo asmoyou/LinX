@@ -17,6 +17,7 @@ import logging
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import UUID
 
 from pymilvus import Collection
 import requests
@@ -334,6 +335,35 @@ class MemorySystem(MemorySystemInterface):
         except Exception as e:
             raise RuntimeError(f"Milvus insertion failed: {e}")
 
+    def _resolve_agent_owner_user_id(self, agent_id: Optional[str]) -> Optional[str]:
+        """Resolve agent owner user_id for agent memories when caller omits it."""
+        if not agent_id:
+            return None
+
+        try:
+            parsed_agent_id = UUID(str(agent_id))
+        except Exception:
+            return None
+
+        try:
+            from database.connection import get_db_session
+            from database.models import Agent
+
+            with get_db_session() as session:
+                row = (
+                    session.query(Agent.owner_user_id)
+                    .filter(Agent.agent_id == parsed_agent_id)
+                    .first()
+                )
+            return str(row[0]) if row and row[0] else None
+        except Exception as exc:
+            logger.debug(
+                "Failed to resolve owner user_id for agent_id=%s: %s",
+                agent_id,
+                exc,
+            )
+            return None
+
     def store_memory(self, memory: MemoryItem) -> int:
         """
         Store a memory item with PostgreSQL as source-of-truth.
@@ -365,12 +395,22 @@ class MemorySystem(MemorySystemInterface):
         if memory.memory_type == MemoryType.AGENT and not memory.agent_id:
             raise ValueError("agent_id required for agent memories")
 
+        if memory.memory_type == MemoryType.AGENT and not memory.user_id:
+            resolved_user_id = self._resolve_agent_owner_user_id(memory.agent_id)
+            if resolved_user_id:
+                memory.user_id = resolved_user_id
+
         if memory.memory_type != MemoryType.AGENT and not memory.user_id:
             raise ValueError("user_id required for company/user_context memories")
 
         # Set timestamp if not provided
         if not memory.timestamp:
             memory.timestamp = datetime.utcnow()
+
+        # Keep metadata consistent with principal fields for downstream filtering.
+        memory.metadata = dict(memory.metadata or {})
+        if memory.user_id and "user_id" not in memory.metadata:
+            memory.metadata["user_id"] = memory.user_id
 
         try:
             # Enforce memory count limits before inserting

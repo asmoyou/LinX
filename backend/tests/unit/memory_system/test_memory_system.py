@@ -16,6 +16,7 @@ References:
 from datetime import datetime, timedelta
 from typing import List
 from unittest.mock import MagicMock, Mock, patch
+from uuid import UUID
 
 import pytest
 
@@ -206,6 +207,41 @@ class TestMemoryStorage:
 
         assert memory_id == 42  # DB record id, not Milvus id
         mock_repository.create.assert_called_once()
+
+    def test_store_agent_memory_resolves_missing_user_id(self, memory_system, mock_repository):
+        """Agent memory should auto-resolve user_id from owner when omitted."""
+        memory = MemoryItem(
+            content="Agent learned something new",
+            memory_type=MemoryType.AGENT,
+            agent_id=str(UUID(int=1)),
+        )
+
+        with patch.object(
+            memory_system, "_resolve_agent_owner_user_id", return_value="owner-user-1"
+        ) as mock_resolve:
+            memory_system.store_memory(memory)
+
+        mock_resolve.assert_called_once()
+        created_item = mock_repository.create.call_args[0][0]
+        assert created_item.user_id == "owner-user-1"
+        assert created_item.metadata.get("user_id") == "owner-user-1"
+
+    def test_store_agent_memory_preserves_explicit_user_id(self, memory_system, mock_repository):
+        """Explicit user_id should bypass owner-resolution lookup."""
+        memory = MemoryItem(
+            content="Agent learned something new",
+            memory_type=MemoryType.AGENT,
+            agent_id="agent123",
+            user_id="explicit-user-1",
+        )
+
+        with patch.object(memory_system, "_resolve_agent_owner_user_id") as mock_resolve:
+            memory_system.store_memory(memory)
+
+        mock_resolve.assert_not_called()
+        created_item = mock_repository.create.call_args[0][0]
+        assert created_item.user_id == "explicit-user-1"
+        assert created_item.metadata.get("user_id") == "explicit-user-1"
 
     def test_store_memory_writes_db_first_then_milvus(
         self, memory_system, mock_repository, mock_milvus_connection
