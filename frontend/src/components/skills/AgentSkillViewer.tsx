@@ -5,13 +5,12 @@
  * Supports both view and edit modes
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, File, Folder, FolderOpen, ChevronRight, ChevronDown, Loader2, Edit2, Save, Upload } from 'lucide-react';
 import { skillsApi, type FileTreeItem } from '@/api/skills';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { ModalPanel } from '@/components/ModalPanel';
+import { FileCodePreview } from '@/components/common/FileCodePreview';
 import toast from 'react-hot-toast';
 
 interface AgentSkillViewerProps {
@@ -21,6 +20,40 @@ interface AgentSkillViewerProps {
   skillName: string;
   mode?: 'view' | 'edit';
   onUpdate?: () => void;
+}
+
+interface ApiErrorLike {
+  response?: {
+    data?: {
+      detail?: string;
+      message?: string;
+    };
+  };
+  message?: string;
+}
+
+function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (typeof error === 'object' && error !== null) {
+    const typedError = error as ApiErrorLike;
+    return typedError.response?.data?.detail
+      || typedError.response?.data?.message
+      || typedError.message
+      || fallback;
+  }
+  return fallback;
+}
+
+function findFileByName(items: FileTreeItem[], name: string): FileTreeItem | null {
+  for (const item of items) {
+    if (item.type === 'file' && item.name === name) {
+      return item;
+    }
+    if (item.type === 'directory' && item.children) {
+      const found = findFileByName(item.children, name);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
@@ -46,47 +79,7 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
-  // Load file list when modal opens
-  useEffect(() => {
-    if (isOpen && skillId) {
-      loadFiles();
-    }
-  }, [isOpen, skillId]);
-
-  const loadFiles = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await skillsApi.getFiles(skillId);
-      setFiles(data.files);
-      
-      // Auto-select SKILL.md if it exists
-      const skillMd = findFile(data.files, 'SKILL.md');
-      if (skillMd) {
-        handleFileSelect(skillMd.path);
-      }
-    } catch (err: any) {
-      console.error('Failed to load files:', err);
-      setError(err.response?.data?.message || 'Failed to load files');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const findFile = (items: FileTreeItem[], name: string): FileTreeItem | null => {
-    for (const item of items) {
-      if (item.type === 'file' && item.name === name) {
-        return item;
-      }
-      if (item.type === 'directory' && item.children) {
-        const found = findFile(item.children, name);
-        if (found) return found;
-      }
-    }
-    return null;
-  };
-
-  const handleFileSelect = async (filePath: string) => {
+  const handleFileSelect = useCallback(async (filePath: string) => {
     setSelectedFile(filePath);
     setContentLoading(true);
     setError(null);
@@ -95,15 +88,42 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
       const data = await skillsApi.getFileContent(skillId, filePath);
       setFileContent(data.content);
       setEditedContent(data.content);
-    } catch (err: any) {
-      console.error('Failed to load file content:', err);
-      setError(err.response?.data?.detail || err.message || 'Failed to load file content');
+    } catch (error: unknown) {
+      console.error('Failed to load file content:', error);
+      setError(getApiErrorMessage(error, 'Failed to load file content'));
       setFileContent('');
       setEditedContent('');
     } finally {
       setContentLoading(false);
     }
-  };
+  }, [skillId]);
+
+  const loadFiles = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await skillsApi.getFiles(skillId);
+      setFiles(data.files);
+
+      // Auto-select SKILL.md if it exists
+      const skillMd = findFileByName(data.files, 'SKILL.md');
+      if (skillMd) {
+        void handleFileSelect(skillMd.path);
+      }
+    } catch (error: unknown) {
+      console.error('Failed to load files:', error);
+      setError(getApiErrorMessage(error, 'Failed to load files'));
+    } finally {
+      setLoading(false);
+    }
+  }, [handleFileSelect, skillId]);
+
+  // Load file list when modal opens
+  useEffect(() => {
+    if (isOpen && skillId) {
+      void loadFiles();
+    }
+  }, [isOpen, skillId, loadFiles]);
 
   const handleSaveFile = async () => {
     if (!selectedFile) return;
@@ -115,9 +135,9 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
       setFileContent(editedContent);
       toast.success(t('skills.fileSaved'));
       if (onUpdate) onUpdate();
-    } catch (err: any) {
-      console.error('Failed to save file:', err);
-      toast.error(err.response?.data?.detail || t('skills.failedToSaveFile'));
+    } catch (error: unknown) {
+      console.error('Failed to save file:', error);
+      toast.error(getApiErrorMessage(error, t('skills.failedToSaveFile')));
     } finally {
       setSaving(false);
     }
@@ -137,9 +157,9 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
       setUploadFile(null);
       await loadFiles();
       if (onUpdate) onUpdate();
-    } catch (err: any) {
-      console.error('Failed to upload package:', err);
-      toast.error(err.response?.data?.detail || t('skills.failedToUploadPackage'));
+    } catch (error: unknown) {
+      console.error('Failed to upload package:', error);
+      toast.error(getApiErrorMessage(error, t('skills.failedToUploadPackage')));
     } finally {
       setSaving(false);
     }
@@ -185,29 +205,6 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
       newExpanded.add(path);
     }
     setExpandedFolders(newExpanded);
-  };
-
-  const getLanguageFromExtension = (filename: string): string => {
-    const ext = filename.split('.').pop()?.toLowerCase();
-    const languageMap: Record<string, string> = {
-      py: 'python',
-      js: 'javascript',
-      ts: 'typescript',
-      jsx: 'jsx',
-      tsx: 'tsx',
-      json: 'json',
-      yaml: 'yaml',
-      yml: 'yaml',
-      md: 'markdown',
-      txt: 'text',
-      sh: 'bash',
-      bash: 'bash',
-      css: 'css',
-      html: 'html',
-      xml: 'xml',
-      sql: 'sql',
-    };
-    return languageMap[ext || ''] || 'text';
   };
 
   const renderFileTree = (items: FileTreeItem[], level = 0) => {
@@ -376,20 +373,7 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
                       style={{ tabSize: 2 }}
                     />
                   ) : (
-                    <SyntaxHighlighter
-                      language={getLanguageFromExtension(selectedFile)}
-                      style={vscDarkPlus}
-                      customStyle={{
-                        margin: 0,
-                        padding: '1.5rem',
-                        background: 'transparent',
-                        fontSize: '0.875rem',
-                        lineHeight: '1.5',
-                      }}
-                      showLineNumbers
-                    >
-                      {fileContent}
-                    </SyntaxHighlighter>
+                    <FileCodePreview filename={selectedFile} content={fileContent} />
                   )}
                 </div>
               </>

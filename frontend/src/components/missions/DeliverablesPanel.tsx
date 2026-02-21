@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import {
   X,
   Download,
@@ -15,11 +13,10 @@ import {
   File,
   Star,
 } from 'lucide-react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { missionsApi } from '@/api/missions';
 import type { MissionDeliverable } from '@/types/mission';
 import type { WorkspaceFile } from '@/api/missions';
+import { FileCodePreview } from '@/components/common/FileCodePreview';
 
 interface DeliverablesPanelProps {
   missionId: string;
@@ -31,7 +28,6 @@ type PreviewKind =
   | 'empty'
   | 'loading'
   | 'text'
-  | 'markdown'
   | 'image'
   | 'pdf'
   | 'binary'
@@ -95,29 +91,6 @@ function normalizePath(path: string): string {
 function getExtension(filename: string): string {
   const ext = filename.split('.').pop();
   return ext ? ext.toLowerCase() : '';
-}
-
-function getLanguageFromExtension(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase();
-  const languageMap: Record<string, string> = {
-    py: 'python',
-    js: 'javascript',
-    ts: 'typescript',
-    jsx: 'jsx',
-    tsx: 'tsx',
-    json: 'json',
-    yaml: 'yaml',
-    yml: 'yaml',
-    md: 'markdown',
-    txt: 'text',
-    sh: 'bash',
-    bash: 'bash',
-    css: 'css',
-    html: 'html',
-    xml: 'xml',
-    sql: 'sql',
-  };
-  return languageMap[ext || ''] || 'text';
 }
 
 function formatFileSize(bytes: number): string {
@@ -399,10 +372,6 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
             }
           }
           setPreviewText(content);
-          if (ext === 'md' || ext === 'markdown') {
-            setPreviewKind('markdown');
-            return;
-          }
           setPreviewKind('text');
           return;
         }
@@ -590,101 +559,10 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
                 )}
 
                 {previewKind === 'text' && (
-                  <SyntaxHighlighter
-                    language={getLanguageFromExtension(selectedNode?.name || '')}
-                    style={vscDarkPlus}
-                    customStyle={{
-                      margin: 0,
-                      padding: '1.5rem',
-                      background: 'transparent',
-                      fontSize: '0.875rem',
-                      lineHeight: '1.5',
-                    }}
-                    showLineNumbers
-                  >
-                    {previewText}
-                  </SyntaxHighlighter>
-                )}
-
-                {previewKind === 'markdown' && (
-                  <div className="p-6 text-sm leading-7 text-zinc-200">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={{
-                        code({ className, children, ...props }) {
-                          const match = /language-(\w+)/.exec(className || '');
-                          const language = match?.[1] || 'text';
-                          const value = String(children).replace(/\n$/, '');
-                          if (!className) {
-                            return (
-                              <code className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-100" {...props}>
-                                {children}
-                              </code>
-                            );
-                          }
-                          return (
-                            <SyntaxHighlighter
-                              language={language}
-                              style={vscDarkPlus}
-                              customStyle={{
-                                margin: '0.75rem 0',
-                                padding: '1rem',
-                                borderRadius: '0.5rem',
-                                background: '#0f172a',
-                                fontSize: '0.8rem',
-                                lineHeight: '1.5',
-                              }}
-                              showLineNumbers
-                            >
-                              {value}
-                            </SyntaxHighlighter>
-                          );
-                        },
-                        p({ children }) {
-                          return <p className="mb-4 text-zinc-200">{children}</p>;
-                        },
-                        h1({ children }) {
-                          return <h1 className="mb-4 mt-2 text-2xl font-bold text-zinc-100">{children}</h1>;
-                        },
-                        h2({ children }) {
-                          return <h2 className="mb-3 mt-6 text-xl font-semibold text-zinc-100">{children}</h2>;
-                        },
-                        h3({ children }) {
-                          return <h3 className="mb-2 mt-5 text-lg font-semibold text-zinc-100">{children}</h3>;
-                        },
-                        ul({ children }) {
-                          return <ul className="mb-4 ml-5 list-disc">{children}</ul>;
-                        },
-                        ol({ children }) {
-                          return <ol className="mb-4 ml-5 list-decimal">{children}</ol>;
-                        },
-                        li({ children }) {
-                          return <li className="mb-1">{children}</li>;
-                        },
-                        blockquote({ children }) {
-                          return (
-                            <blockquote className="my-4 border-l-4 border-zinc-600 pl-3 text-zinc-300">
-                              {children}
-                            </blockquote>
-                          );
-                        },
-                        a({ href, children }) {
-                          return (
-                            <a
-                              href={href}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-cyan-300 hover:text-cyan-200 underline"
-                            >
-                              {children}
-                            </a>
-                          );
-                        },
-                      }}
-                    >
-                      {previewText}
-                    </ReactMarkdown>
-                  </div>
+                  <FileCodePreview
+                    filename={selectedNode?.name || 'file.txt'}
+                    content={previewText}
+                  />
                 )}
 
                 {previewKind === 'image' && previewUrl && (
