@@ -335,6 +335,10 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
                         { label: t('missions.leader'), config: missionSettings.leader_config },
                         { label: t('missions.supervisor'), config: missionSettings.supervisor_config },
                         { label: t('missions.qaAuditor'), config: missionSettings.qa_config },
+                        {
+                          label: t('missions.temporaryWorker'),
+                          config: missionSettings.temporary_worker_config,
+                        },
                       ].map(({ label, config: roleConfig }) => (
                         <div key={label} className="flex items-center justify-between text-xs text-zinc-500 py-1.5 border-b border-zinc-100 dark:border-zinc-800 last:border-0">
                           <span className="font-medium text-zinc-600 dark:text-zinc-400">{label}</span>

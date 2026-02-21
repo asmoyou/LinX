@@ -61,6 +61,7 @@ class MissionSettingsRequest(BaseModel):
     leader_config: Optional[MissionRoleConfigSchema] = None
     supervisor_config: Optional[MissionRoleConfigSchema] = None
     qa_config: Optional[MissionRoleConfigSchema] = None
+    temporary_worker_config: Optional[MissionRoleConfigSchema] = None
     execution_config: Optional[MissionExecutionConfigSchema] = None
 
 
@@ -286,7 +287,13 @@ async def update_settings(
     try:
         data = request.model_dump(exclude_none=True)
         # Convert nested Pydantic models to plain dicts
-        for key in ["leader_config", "supervisor_config", "qa_config", "execution_config"]:
+        for key in [
+            "leader_config",
+            "supervisor_config",
+            "qa_config",
+            "temporary_worker_config",
+            "execution_config",
+        ]:
             if key in data and hasattr(data[key], "model_dump"):
                 data[key] = data[key].model_dump()
         settings = upsert_mission_settings(UUID(current_user.user_id), data)

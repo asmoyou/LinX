@@ -1548,6 +1548,7 @@
     "leader": "领导者",
     "supervisor": "监督者",
     "qaAuditor": "质检审计",
+    "temporaryWorker": "临时执行者",
     "provider": "提供商",
     "model": "模型",
     "temperature": "温度",

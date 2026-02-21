@@ -292,6 +292,13 @@ DEFAULT_QA_CONFIG = {
     "max_tokens": 4096,
 }
 
+DEFAULT_TEMPORARY_WORKER_CONFIG = {
+    "llm_provider": "ollama",
+    "llm_model": "qwen2.5:14b",
+    "temperature": 0.3,
+    "max_tokens": 4096,
+}
+
 DEFAULT_EXECUTION_CONFIG = {
     "max_retries": 3,
     "task_timeout_s": 600,
@@ -307,6 +314,7 @@ def _default_mission_settings() -> Dict[str, Any]:
         "leader_config": DEFAULT_LEADER_CONFIG.copy(),
         "supervisor_config": DEFAULT_SUPERVISOR_CONFIG.copy(),
         "qa_config": DEFAULT_QA_CONFIG.copy(),
+        "temporary_worker_config": DEFAULT_TEMPORARY_WORKER_CONFIG.copy(),
         "execution_config": DEFAULT_EXECUTION_CONFIG.copy(),
     }
 
@@ -319,6 +327,19 @@ def get_mission_settings(user_id: UUID) -> Dict[str, Any]:
                 session.query(MissionSettings).filter(MissionSettings.user_id == user_id).first()
             )
             if settings:
+                execution_config = {
+                    **DEFAULT_EXECUTION_CONFIG,
+                    **(settings.execution_config or {}),
+                }
+                temporary_worker_config = {
+                    **DEFAULT_TEMPORARY_WORKER_CONFIG,
+                    **(
+                        execution_config.get("temporary_worker_config")
+                        if isinstance(execution_config.get("temporary_worker_config"), dict)
+                        else {}
+                    ),
+                }
+                execution_config.pop("temporary_worker_config", None)
                 result = {
                     "leader_config": {
                         **DEFAULT_LEADER_CONFIG,
@@ -332,10 +353,8 @@ def get_mission_settings(user_id: UUID) -> Dict[str, Any]:
                         **DEFAULT_QA_CONFIG,
                         **(settings.qa_config or {}),
                     },
-                    "execution_config": {
-                        **DEFAULT_EXECUTION_CONFIG,
-                        **(settings.execution_config or {}),
-                    },
+                    "temporary_worker_config": temporary_worker_config,
+                    "execution_config": execution_config,
                 }
                 return result
     except SQLAlchemyError as exc:
@@ -367,8 +386,17 @@ def upsert_mission_settings(user_id: UUID, data: Dict[str, Any]) -> Dict[str, An
                 settings.supervisor_config = data["supervisor_config"]
             if "qa_config" in data:
                 settings.qa_config = data["qa_config"]
-            if "execution_config" in data:
-                settings.execution_config = data["execution_config"]
+            if "execution_config" in data or "temporary_worker_config" in data:
+                merged_execution_config = dict(settings.execution_config or {})
+                if "execution_config" in data and isinstance(data["execution_config"], dict):
+                    merged_execution_config.update(data["execution_config"])
+                if "temporary_worker_config" in data and isinstance(
+                    data["temporary_worker_config"], dict
+                ):
+                    merged_execution_config["temporary_worker_config"] = data[
+                        "temporary_worker_config"
+                    ]
+                settings.execution_config = merged_execution_config
 
             session.flush()
     except SQLAlchemyError as exc:

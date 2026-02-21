@@ -192,15 +192,21 @@ class MissionOrchestrator:
         cfg = mission.mission_config or {}
         # Try settings-merged format first (e.g. "leader_config"), then legacy (e.g. "leader")
         role_cfg = cfg.get(f"{role}_config", cfg.get(role, {}))
+        inherited_cfg: Dict[str, Any] = {}
+        if role == "temporary_worker":
+            inherited_cfg = cfg.get("leader_config", cfg.get("leader", {})) or {}
+        merged_role_cfg = {**inherited_cfg, **(role_cfg or {})}
         return {
-            "llm_provider": role_cfg.get(
-                "llm_provider", role_cfg.get("provider", cfg.get("provider", "ollama"))
+            "llm_provider": merged_role_cfg.get(
+                "llm_provider",
+                merged_role_cfg.get("provider", cfg.get("provider", "ollama")),
             ),
-            "llm_model": role_cfg.get(
-                "llm_model", role_cfg.get("model", cfg.get("model", "qwen2.5:14b"))
+            "llm_model": merged_role_cfg.get(
+                "llm_model",
+                merged_role_cfg.get("model", cfg.get("model", "qwen2.5:14b")),
             ),
-            "temperature": float(role_cfg.get("temperature", cfg.get("temperature", 0.7))),
-            "max_tokens": int(role_cfg.get("max_tokens", cfg.get("max_tokens", 4096))),
+            "temperature": float(merged_role_cfg.get("temperature", cfg.get("temperature", 0.7))),
+            "max_tokens": int(merged_role_cfg.get("max_tokens", cfg.get("max_tokens", 4096))),
         }
 
     @staticmethod
@@ -758,7 +764,7 @@ class MissionOrchestrator:
 
         Returns True on success, False on failure.
         """
-        llm_cfg = self._get_llm_config(mission, "leader")
+        llm_cfg = self._get_llm_config(mission, "temporary_worker")
         task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
         resolved_agent_id: Optional[UUID] = getattr(task_obj, "assigned_agent_id", None)
         agent = None

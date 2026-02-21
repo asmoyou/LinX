@@ -32,7 +32,7 @@ export interface Mission {
   container_id?: string;
   workspace_bucket?: string;
   mission_config?: MissionConfig;
-  result?: Record<string, any>;
+  result?: Record<string, unknown>;
   error_message?: string;
   total_tasks: number;
   completed_tasks: number;
@@ -71,7 +71,7 @@ export interface MissionEvent {
   event_type: string;
   agent_id?: string;
   task_id?: string;
-  event_data?: Record<string, any>;
+  event_data?: Record<string, unknown>;
   message?: string;
   created_at: string;
 }
@@ -92,8 +92,8 @@ export interface MissionTask {
   assigned_agent_id?: string;
   assigned_agent_name?: string;
   acceptance_criteria?: string;
-  result?: Record<string, any>;
-  task_metadata?: Record<string, any>;
+  result?: Record<string, unknown>;
+  task_metadata?: Record<string, unknown>;
   dependencies?: string[];
   parent_task_id?: string;
 }
@@ -117,5 +117,6 @@ export interface MissionSettings {
   leader_config: MissionRoleConfig;
   supervisor_config: MissionRoleConfig;
   qa_config: MissionRoleConfig;
+  temporary_worker_config: MissionRoleConfig;
   execution_config: MissionExecutionConfig;
 }

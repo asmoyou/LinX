@@ -28,12 +28,17 @@ const DEFAULT_EXECUTION_CONFIG: MissionExecutionConfig = {
   max_concurrent_tasks: 3,
 };
 
-type RoleKey = 'leader_config' | 'supervisor_config' | 'qa_config';
+type RoleKey =
+  | 'leader_config'
+  | 'supervisor_config'
+  | 'qa_config'
+  | 'temporary_worker_config';
 
 const ROLES: { key: RoleKey; labelKey: string }[] = [
   { key: 'leader_config', labelKey: 'missions.leader' },
   { key: 'supervisor_config', labelKey: 'missions.supervisor' },
   { key: 'qa_config', labelKey: 'missions.qaAuditor' },
+  { key: 'temporary_worker_config', labelKey: 'missions.temporaryWorker' },
 ];
 
 export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOpen, onClose }) => {
@@ -44,11 +49,15 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
   const [leaderConfig, setLeaderConfig] = useState<MissionRoleConfig>({ ...DEFAULT_ROLE_CONFIG });
   const [supervisorConfig, setSupervisorConfig] = useState<MissionRoleConfig>({ ...DEFAULT_ROLE_CONFIG });
   const [qaConfig, setQaConfig] = useState<MissionRoleConfig>({ ...DEFAULT_ROLE_CONFIG });
+  const [temporaryWorkerConfig, setTemporaryWorkerConfig] = useState<MissionRoleConfig>({
+    ...DEFAULT_ROLE_CONFIG,
+  });
   const [executionConfig, setExecutionConfig] = useState<MissionExecutionConfig>({ ...DEFAULT_EXECUTION_CONFIG });
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     leader_config: true,
     supervisor_config: false,
     qa_config: false,
+    temporary_worker_config: false,
     execution: true,
   });
   const [isSaving, setIsSaving] = useState(false);
@@ -70,6 +79,10 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
       setLeaderConfig({ ...DEFAULT_ROLE_CONFIG, ...missionSettings.leader_config });
       setSupervisorConfig({ ...DEFAULT_ROLE_CONFIG, ...missionSettings.supervisor_config });
       setQaConfig({ ...DEFAULT_ROLE_CONFIG, ...missionSettings.qa_config });
+      setTemporaryWorkerConfig({
+        ...DEFAULT_ROLE_CONFIG,
+        ...missionSettings.temporary_worker_config,
+      });
       setExecutionConfig({ ...DEFAULT_EXECUTION_CONFIG, ...missionSettings.execution_config });
     }
   }, [missionSettings]);
@@ -99,6 +112,7 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
         leader_config: leaderConfig,
         supervisor_config: supervisorConfig,
         qa_config: qaConfig,
+        temporary_worker_config: temporaryWorkerConfig,
         execution_config: executionConfig,
       };
       await updateMissionSettings(data);
@@ -126,6 +140,7 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
       case 'leader_config': return [leaderConfig, setLeaderConfig];
       case 'supervisor_config': return [supervisorConfig, setSupervisorConfig];
       case 'qa_config': return [qaConfig, setQaConfig];
+      case 'temporary_worker_config': return [temporaryWorkerConfig, setTemporaryWorkerConfig];
     }
   };
 
@@ -138,6 +153,7 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
         leaderConfig.llm_provider,
         supervisorConfig.llm_provider,
         qaConfig.llm_provider,
+        temporaryWorkerConfig.llm_provider,
       ].filter((provider): provider is string => Boolean(provider))
     )
   );

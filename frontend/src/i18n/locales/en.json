@@ -1548,6 +1548,7 @@
     "leader": "Leader",
     "supervisor": "Supervisor",
     "qaAuditor": "QA Auditor",
+    "temporaryWorker": "Temporary Worker",
     "provider": "Provider",
     "model": "Model",
     "temperature": "Temperature",

@@ -23,6 +23,7 @@ def test_get_mission_settings_falls_back_to_defaults(monkeypatch):
     assert result["leader_config"]["llm_provider"] == "ollama"
     assert result["supervisor_config"]["llm_provider"] == "ollama"
     assert result["qa_config"]["llm_provider"] == "ollama"
+    assert result["temporary_worker_config"]["llm_provider"] == "ollama"
     assert result["execution_config"]["max_retries"] == 3
 
 

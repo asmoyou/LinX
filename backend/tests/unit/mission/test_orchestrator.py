@@ -48,6 +48,25 @@ def test_detect_instruction_language_defaults_to_english():
     assert language == "English"
 
 
+def test_get_llm_config_temporary_worker_inherits_leader_by_default():
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    mission = SimpleNamespace(
+        mission_config={
+            "leader_config": {
+                "llm_provider": "openai",
+                "llm_model": "gpt-4.1",
+                "temperature": 0.4,
+                "max_tokens": 6000,
+            }
+        }
+    )
+    cfg = MissionOrchestrator._get_llm_config(orchestrator, mission, "temporary_worker")
+    assert cfg["llm_provider"] == "openai"
+    assert cfg["llm_model"] == "gpt-4.1"
+    assert cfg["temperature"] == 0.4
+    assert cfg["max_tokens"] == 6000
+
+
 def test_transition_allows_idempotent_target(monkeypatch):
     mission_id = uuid4()
     orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
