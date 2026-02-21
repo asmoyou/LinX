@@ -1,6 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Play, XCircle, Package, Maximize } from 'lucide-react';
+import { Play, XCircle, Package, Maximize, ListTodo } from 'lucide-react';
 import { useMissionStore } from '@/stores/missionStore';
 import type { MissionStatus } from '@/types/mission';
 
@@ -18,11 +18,15 @@ const statusColors: Record<MissionStatus, string> = {
 
 interface MissionControlsProps {
   onOpenDeliverables: () => void;
+  onToggleTaskList: () => void;
+  isTaskListOpen: boolean;
   onFitView: () => void;
 }
 
 export const MissionControls: React.FC<MissionControlsProps> = ({
   onOpenDeliverables,
+  onToggleTaskList,
+  isTaskListOpen,
   onFitView,
 }) => {
   const { t } = useTranslation();
@@ -35,6 +39,7 @@ export const MissionControls: React.FC<MissionControlsProps> = ({
     selectedMission.status
   );
   const canOpenDeliverables = selectedMission.status !== 'draft';
+  const canOpenTaskList = selectedMission.status !== 'draft';
   const handleStart = () => {
     void startMission(selectedMission.mission_id).catch(() => {
       // Error toast is handled by API interceptor/store.
@@ -104,6 +109,20 @@ export const MissionControls: React.FC<MissionControlsProps> = ({
         >
           <Package className="w-3.5 h-3.5" />
           {t('missions.deliverables')}
+        </button>
+      )}
+
+      {canOpenTaskList && (
+        <button
+          onClick={onToggleTaskList}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+            isTaskListOpen
+              ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300'
+              : 'text-zinc-700 dark:text-zinc-300 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+          }`}
+        >
+          <ListTodo className="w-3.5 h-3.5" />
+          {t('missions.taskListTitle', 'Task List')}
         </button>
       )}
 

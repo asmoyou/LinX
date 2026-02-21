@@ -1589,6 +1589,13 @@
     "otherFiles": "其他文件",
     "workspaceFiles": "工作区文件",
     "download": "下载",
+    "taskListTitle": "任务清单",
+    "noPlannedTasksYet": "任务尚未规划",
+    "unknownAgent": "未知 Agent",
+    "unassigned": "未分配",
+    "owner": "负责人",
+    "priorityShort": "优先级",
+    "dependenciesShort": "依赖",
     "markdownSource": "源码",
     "markdownPreview": "预览"
   }

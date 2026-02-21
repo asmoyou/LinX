@@ -1589,6 +1589,13 @@
     "otherFiles": "Other Files",
     "workspaceFiles": "Workspace Files",
     "download": "Download",
+    "taskListTitle": "Task List",
+    "noPlannedTasksYet": "Tasks have not been planned yet.",
+    "unknownAgent": "Agent",
+    "unassigned": "Unassigned",
+    "owner": "Owner",
+    "priorityShort": "P",
+    "dependenciesShort": "Deps",
     "markdownSource": "Source",
     "markdownPreview": "Preview"
   }

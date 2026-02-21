@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Plus,
@@ -16,6 +16,7 @@ import { MissionCreateWizard } from '@/components/missions/MissionCreateWizard';
 import { MissionControls } from '@/components/missions/MissionControls';
 import { ClarificationPanel } from '@/components/missions/ClarificationPanel';
 import { DeliverablesPanel } from '@/components/missions/DeliverablesPanel';
+import { TaskListPanel } from '@/components/missions/TaskListPanel';
 import { MissionSettingsPanel } from '@/components/missions/MissionSettingsPanel';
 import type { Mission, MissionStatus } from '@/types/mission';
 
@@ -66,20 +67,12 @@ export const Missions: React.FC = () => {
   const [showWizard, setShowWizard] = useState(false);
   const [showClarification, setShowClarification] = useState(false);
   const [showDeliverables, setShowDeliverables] = useState(false);
+  const [showTaskList, setShowTaskList] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [deletingMissionId, setDeletingMissionId] = useState<string | null>(null);
   const autoOpenedClarificationRef = useRef<string>('');
   const selectedMissionId = selectedMission?.mission_id;
   const selectedMissionStatus = selectedMission?.status;
-  const agentNameById = useMemo(
-    () =>
-      new Map(
-        missionAgents
-          .filter((agent) => Boolean(agent.agent_id))
-          .map((agent) => [agent.agent_id, agent.agent_name || agent.role || 'Agent'])
-      ),
-    [missionAgents]
-  );
 
   useEffect(() => {
     fetchMissions();
@@ -117,6 +110,7 @@ export const Missions: React.FC = () => {
     selectMission(null);
     setShowClarification(false);
     setShowDeliverables(false);
+    setShowTaskList(false);
   };
 
   const handleDeleteMission = async (mission: Mission) => {
@@ -167,6 +161,7 @@ export const Missions: React.FC = () => {
           <button
             onClick={() => {
               setShowDeliverables(false);
+              setShowTaskList(false);
               setShowClarification(!showClarification);
             }}
             className={`p-2 rounded-lg transition-colors ${
@@ -193,102 +188,17 @@ export const Missions: React.FC = () => {
         <MissionControls
           onOpenDeliverables={() => {
             setShowClarification(false);
-            setShowDeliverables(true);
+            setShowTaskList(false);
+            setShowDeliverables((prev) => !prev);
           }}
+          onToggleTaskList={() => {
+            setShowClarification(false);
+            setShowDeliverables(false);
+            setShowTaskList((prev) => !prev);
+          }}
+          isTaskListOpen={showTaskList}
           onFitView={() => {/* handled by react flow */}}
         />
-
-        <section className="glass-panel rounded-xl border border-zinc-200 dark:border-zinc-700 p-4 space-y-3">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h2 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
-                {t('missions.taskListTitle', 'Task List')}
-              </h2>
-              <p className="text-xs text-zinc-500 mt-0.5">
-                {t(
-                  'missions.taskListSubtitle',
-                  'See who is executing each task and current dependency progress.'
-                )}
-              </p>
-            </div>
-            <span className="text-xs font-medium px-2 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300">
-              {missionTasks.length} {t('missions.tasksCountLabel', 'tasks')}
-            </span>
-          </div>
-
-          {missionAgents.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {missionAgents.map((agent) => (
-                <span
-                  key={agent.id}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] bg-cyan-50 text-cyan-700 dark:bg-cyan-500/10 dark:text-cyan-300 border border-cyan-200 dark:border-cyan-500/20"
-                >
-                  <span className="font-semibold">
-                    {agent.agent_name || t('missions.unknownAgent', 'Agent')}
-                  </span>
-                  <span className="opacity-80">({agent.role})</span>
-                </span>
-              ))}
-            </div>
-          )}
-
-          {missionTasks.length === 0 ? (
-            <div className="text-sm text-zinc-500 py-3">
-              {t('missions.noPlannedTasksYet', 'Tasks have not been planned yet.')}
-            </div>
-          ) : (
-            <div className="space-y-2 max-h-72 overflow-y-auto pr-1 custom-scrollbar">
-              {missionTasks.map((task) => {
-                const owner =
-                  task.assigned_agent_name ||
-                  (task.assigned_agent_id ? agentNameById.get(task.assigned_agent_id) : undefined) ||
-                  t('missions.unassigned', 'Unassigned');
-
-                return (
-                  <div
-                    key={task.task_id}
-                    className="rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-2.5 bg-white/70 dark:bg-zinc-900/60"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <p className="text-sm text-zinc-800 dark:text-zinc-200 leading-6">
-                        {task.goal_text}
-                      </p>
-                      <span
-                        className={`text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap ${
-                          task.status === 'completed'
-                            ? 'bg-green-100 text-green-700 dark:bg-green-500/10 dark:text-green-400'
-                            : task.status === 'in_progress'
-                              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400'
-                              : task.status === 'failed'
-                                ? 'bg-red-100 text-red-700 dark:bg-red-500/10 dark:text-red-400'
-                                : task.status === 'reviewing'
-                                  ? 'bg-purple-100 text-purple-700 dark:bg-purple-500/10 dark:text-purple-400'
-                                  : 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'
-                        }`}
-                      >
-                        {task.status}
-                      </span>
-                    </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
-                      <span>
-                        {t('missions.owner', 'Owner')}: {owner}
-                      </span>
-                      <span>•</span>
-                      <span>
-                        {t('missions.priorityShort', 'P')}: {task.priority ?? 0}
-                      </span>
-                      <span>•</span>
-                      <span>
-                        {t('missions.dependenciesShort', 'Deps')}:{' '}
-                        {Array.isArray(task.dependencies) ? task.dependencies.length : 0}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
 
         {/* Flow canvas */}
         <MissionFlowCanvas missionId={selectedMission.mission_id} />
@@ -303,6 +213,12 @@ export const Missions: React.FC = () => {
           missionId={selectedMission.mission_id}
           isOpen={showDeliverables}
           onClose={() => setShowDeliverables(false)}
+        />
+        <TaskListPanel
+          isOpen={showTaskList}
+          onClose={() => setShowTaskList(false)}
+          tasks={missionTasks}
+          agents={missionAgents}
         />
       </div>
     );
