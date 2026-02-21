@@ -12,6 +12,7 @@
     "knowledge": "知识库",
     "memory": "记忆系统",
     "skills": "技能库",
+    "robots": "机器人",
     "settings": "设置",
     "departments": "部门管理",
     "userManagement": "用户管理",
@@ -1598,5 +1599,53 @@
     "dependenciesShort": "依赖",
     "markdownSource": "源码",
     "markdownPreview": "预览"
+  },
+  "robots": {
+    "title": "机器人管理",
+    "subtitle": "管理和调度您的物理实体机器人",
+    "addRobot": "添加机器人",
+    "demoTitle": "展示示例",
+    "demoNotice": "演示说明",
+    "demoNoticeContent": "该页面目前仅供功能展示。如需在真实环境中接入并管理您的实体机器人（如宇树机器狗、工业协作机械臂等），请联系服务商进行定制化开发对接。",
+    "contactSupport": "联系技术支持",
+    "types": {
+      "humanoid": "人形机器人",
+      "quadruped": "四足机器人",
+      "computer": "智能终端",
+      "arm": "机械臂"
+    },
+    "status": {
+      "online": "在线",
+      "offline": "离线",
+      "working": "任务中",
+      "charging": "充电中"
+    },
+    "examples": {
+      "unitree_h2": {
+        "name": "宇树 H2",
+        "description": "通用人形机器人，具备更强的载重与复杂任务处理能力。"
+      },
+      "unitree_a2": {
+        "name": "宇树 A2",
+        "description": "高性能四足机器人，适用于复杂地形的自主作业与物资运输。"
+      },
+      "openclaw_pc": {
+        "name": "OpenClaw 智能工作站",
+        "description": "搭载高性能算力与机械臂的智能终端，可执行精密办公自动化。"
+      }
+    },
+    "fields": {
+      "model": "型号",
+      "location": "位置",
+      "task": "当前任务",
+      "battery": "电量",
+      "signal": "信号",
+      "firmware": "固件版本"
+    },
+    "actions": {
+      "control": "远程控制",
+      "detail": "查看详情",
+      "logs": "运行日志"
+    }
   }
 }

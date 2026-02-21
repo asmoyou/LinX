@@ -12,6 +12,7 @@
     "knowledge": "Knowledge Base",
     "memory": "Memory System",
     "skills": "Skills",
+    "robots": "Robots",
     "settings": "Settings",
     "departments": "Departments",
     "userManagement": "User Management",
@@ -1598,5 +1599,53 @@
     "dependenciesShort": "Deps",
     "markdownSource": "Source",
     "markdownPreview": "Preview"
+  },
+  "robots": {
+    "title": "Robotic Workers",
+    "subtitle": "Manage and coordinate your physical robotic entities",
+    "addRobot": "Add Robot",
+    "demoTitle": "Demonstration Examples",
+    "demoNotice": "Demonstration Only",
+    "demoNoticeContent": "This page is currently for demonstration purposes only. To integrate and manage your physical robots (such as Unitree robot dogs, industrial collaborative arms, etc.) in a real environment, please contact the service provider for customized integration development.",
+    "contactSupport": "Contact Support",
+    "types": {
+      "humanoid": "Humanoid",
+      "quadruped": "Quadruped",
+      "computer": "Smart Terminal",
+      "arm": "Robotic Arm"
+    },
+    "status": {
+      "online": "Online",
+      "offline": "Offline",
+      "working": "Working",
+      "charging": "Charging"
+    },
+    "examples": {
+      "unitree_h2": {
+        "name": "Unitree H2",
+        "description": "General humanoid robot with enhanced payload and complex task capabilities."
+      },
+      "unitree_a2": {
+        "name": "Unitree A2",
+        "description": "High-performance quadruped for autonomous operation and transport in complex terrain."
+      },
+      "openclaw_pc": {
+        "name": "OpenClaw Smart Workstation",
+        "description": "Intelligent terminal with high-performance computing for precise office automation."
+      }
+    },
+    "fields": {
+      "model": "Model",
+      "location": "Location",
+      "task": "Current Task",
+      "battery": "Battery",
+      "signal": "Signal",
+      "firmware": "Firmware"
+    },
+    "actions": {
+      "control": "Control",
+      "detail": "Details",
+      "logs": "Logs"
+    }
   }
 }

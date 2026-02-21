@@ -16,6 +16,7 @@ const Workforce = lazy(() => import('./pages/Workforce').then(m => ({ default: m
 const Tasks = lazy(() => import('./pages/Missions').then(m => ({ default: m.Missions })));
 const Knowledge = lazy(() => import('./pages/Knowledge').then(m => ({ default: m.Knowledge })));
 const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memory })));
+const Robots = lazy(() => import('./pages/Robots').then(m => ({ default: m.Robots })));
 const Skills = lazy(() => import('./pages/Skills'));
 const Departments = lazy(() => import('./pages/Departments').then(m => ({ default: m.Departments })));
 const UserManagement = lazy(() => import('./pages/UserManagement').then(m => ({ default: m.UserManagement })));
@@ -172,6 +173,23 @@ const AnimatedRoutes = () => {
                     transition={{ duration: 0.3 }}
                   >
                     <Skills />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
+            }
+          />
+          <Route
+            path="robots"
+            element={
+              <PageErrorBoundary pageName="机器人">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <Robots />
                   </motion.div>
                 </Suspense>
               </PageErrorBoundary>
