@@ -266,7 +266,7 @@ class MissionOrchestrator:
             name=self._build_temporary_agent_name(task_title, task_obj.task_id),
             agent_type="mission_temp_worker",
             owner_user_id=mission.created_by_user_id,
-            capabilities=["mission_execution", "task_specialist"],
+            capabilities=[],
             llm_provider=llm_cfg.get("llm_provider"),
             llm_model=llm_cfg.get("llm_model"),
             temperature=float(llm_cfg.get("temperature", 0.7)),
@@ -1360,10 +1360,41 @@ class MissionOrchestrator:
         """Clean up workspace and internal tracking."""
         self._clarification_events.pop(mission_id, None)
         self._clarification_responses.pop(mission_id, None)
+        self._cleanup_temporary_agents(mission_id)
         try:
             self._workspace.cleanup_workspace(mission_id)
         except Exception:
             logger.exception("Workspace cleanup failed for mission %s", mission_id)
+
+    def _cleanup_temporary_agents(self, mission_id: UUID) -> None:
+        """Delete temporary agents created for a mission."""
+        from agent_framework.agent_registry import AgentRegistry
+        from mission_system.mission_repository import list_mission_agents
+
+        try:
+            mission_agents = list_mission_agents(mission_id)
+        except Exception:
+            logger.exception("Failed to list mission agents during cleanup for %s", mission_id)
+            return
+
+        registry = AgentRegistry()
+        for mission_agent in mission_agents:
+            if not getattr(mission_agent, "is_temporary", False):
+                continue
+            try:
+                deleted = registry.delete_agent(mission_agent.agent_id)
+                if deleted:
+                    logger.info(
+                        "Deleted temporary agent %s for mission %s",
+                        mission_agent.agent_id,
+                        mission_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to delete temporary agent %s for mission %s",
+                    mission_agent.agent_id,
+                    mission_id,
+                )
 
 
 # ------------------------------------------------------------------

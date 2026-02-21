@@ -804,6 +804,17 @@ class AgentResponse(BaseModel):
     updatedAt: datetime
 
 
+def _public_agent_skills(agent_type: str, capabilities: Optional[List[str]]) -> List[str]:
+    """Normalize capabilities for API responses.
+
+    Temporary mission workers may carry internal capabilities that are not platform skills.
+    Hide them from the workforce skills UI to avoid misleading counts/configuration state.
+    """
+    if agent_type == "mission_temp_worker":
+        return []
+    return capabilities or []
+
+
 class AvailableProvidersResponse(BaseModel):
     """Available LLM providers and models for agent configuration."""
 
@@ -905,7 +916,7 @@ async def create_agent(
             tasksCompleted=0,
             uptime="0h 0m",
             systemPrompt=agent_info.system_prompt,
-            skills=agent_info.capabilities,
+            skills=_public_agent_skills(agent_info.agent_type, agent_info.capabilities),
             model=agent_info.llm_model,
             provider=agent_info.llm_provider,
             temperature=agent_info.temperature,
@@ -948,7 +959,7 @@ async def list_agents(current_user: CurrentUser = Depends(get_current_user)):
                 tasksCompleted=0,  # TODO: Count from tasks table
                 uptime="0h 0m",  # TODO: Calculate from created_at
                 systemPrompt=agent.system_prompt,
-                skills=agent.capabilities,
+                skills=_public_agent_skills(agent.agent_type, agent.capabilities),
                 model=agent.llm_model,
                 provider=agent.llm_provider,
                 temperature=agent.temperature,
@@ -1004,7 +1015,7 @@ async def get_agent(agent_id: str, current_user: CurrentUser = Depends(get_curre
             tasksCompleted=0,
             uptime="0h 0m",
             systemPrompt=agent.system_prompt,
-            skills=agent.capabilities,
+            skills=_public_agent_skills(agent.agent_type, agent.capabilities),
             model=agent.llm_model,
             provider=agent.llm_provider,
             temperature=agent.temperature,
@@ -1104,7 +1115,7 @@ async def update_agent(
             tasksCompleted=0,
             uptime="0h 0m",
             systemPrompt=updated_agent.system_prompt,
-            skills=updated_agent.capabilities,
+            skills=_public_agent_skills(updated_agent.agent_type, updated_agent.capabilities),
             model=updated_agent.llm_model,
             provider=updated_agent.llm_provider,
             temperature=updated_agent.temperature,
@@ -2915,9 +2926,16 @@ async def get_agent_skills(agent_id: str, current_user: CurrentUser = Depends(ge
                     }
                 )
 
+        available_skill_names = {item["name"] for item in available_skills}
+        configured_skills = [
+            name for name in (agent_info.capabilities or []) if name in available_skill_names
+        ]
+        if agent_info.agent_type == "mission_temp_worker":
+            configured_skills = []
+
         return AgentSkillsResponse(
             agent_id=agent_id,
-            configured_skills=agent_info.capabilities or [],
+            configured_skills=configured_skills,
             available_skills=available_skills,
         )
 
@@ -3004,7 +3022,7 @@ async def update_agent_skills(
             name=updated_agent.name,
             type=updated_agent.agent_type,
             avatar=_resolve_agent_avatar(updated_agent.avatar),
-            skills=updated_agent.capabilities,
+            skills=_public_agent_skills(updated_agent.agent_type, updated_agent.capabilities),
             status=updated_agent.status,
             systemPrompt=updated_agent.system_prompt,
             currentTask=None,

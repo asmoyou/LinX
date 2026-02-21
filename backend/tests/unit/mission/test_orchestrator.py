@@ -242,3 +242,107 @@ async def test_execute_task_with_retry_falls_back_to_temporary_agent(monkeypatch
         (temporary_agent_id, "active"),
         (temporary_agent_id, "idle"),
     ]
+
+
+def test_cleanup_deletes_temporary_agents(monkeypatch):
+    mission_id = uuid4()
+    temporary_agent_id = uuid4()
+    persistent_agent_id = uuid4()
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._clarification_events = {mission_id: object()}
+    orchestrator._clarification_responses = {mission_id: "ok"}
+    workspace_cleanup_calls = []
+    orchestrator._workspace = SimpleNamespace(
+        cleanup_workspace=lambda _mission_id: workspace_cleanup_calls.append(_mission_id)
+    )
+
+    monkeypatch.setattr(
+        "mission_system.mission_repository.list_mission_agents",
+        lambda _mission_id: [
+            SimpleNamespace(agent_id=temporary_agent_id, is_temporary=True),
+            SimpleNamespace(agent_id=persistent_agent_id, is_temporary=False),
+        ],
+    )
+
+    deleted_ids = []
+
+    class _FakeRegistry:
+        def delete_agent(self, agent_id):
+            deleted_ids.append(agent_id)
+            return True
+
+    monkeypatch.setattr("agent_framework.agent_registry.AgentRegistry", _FakeRegistry)
+
+    MissionOrchestrator._cleanup(orchestrator, mission_id)
+
+    assert deleted_ids == [temporary_agent_id]
+    assert workspace_cleanup_calls == [mission_id]
+    assert mission_id not in orchestrator._clarification_events
+    assert mission_id not in orchestrator._clarification_responses
+
+
+def test_provision_temporary_worker_agent_registers_without_default_skills(monkeypatch):
+    mission_id = uuid4()
+    task_id = uuid4()
+    owner_user_id = uuid4()
+    temp_agent_id = uuid4()
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: None)
+
+    mission = SimpleNamespace(created_by_user_id=owner_user_id)
+    task_obj = SimpleNamespace(
+        task_id=task_id,
+        task_metadata={"title": "Implement API"},
+        assigned_agent_id=None,
+    )
+
+    captured_capabilities = {}
+
+    class _FakeRegistry:
+        def register_agent(self, **kwargs):
+            captured_capabilities["value"] = kwargs.get("capabilities")
+            return SimpleNamespace(agent_id=temp_agent_id, name="temp-worker")
+
+    monkeypatch.setattr("agent_framework.agent_registry.AgentRegistry", _FakeRegistry)
+    monkeypatch.setattr("mission_system.orchestrator.assign_mission_agent", lambda **kwargs: None)
+
+    class _FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return SimpleNamespace(task_metadata={}, assigned_agent_id=None)
+
+    class _FakeSession:
+        def query(self, *args, **kwargs):
+            return _FakeQuery()
+
+    class _FakeSessionContext:
+        def __enter__(self):
+            return _FakeSession()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("database.connection.get_db_session", lambda: _FakeSessionContext())
+
+    llm_cfg = {
+        "llm_provider": "ollama",
+        "llm_model": "qwen2.5:14b",
+        "temperature": 0.3,
+        "max_tokens": 4096,
+    }
+    result_id = MissionOrchestrator._provision_temporary_worker_agent(
+        orchestrator,
+        mission_id=mission_id,
+        mission=mission,
+        task_obj=task_obj,
+        llm_cfg=llm_cfg,
+    )
+
+    assert result_id == temp_agent_id
+    assert captured_capabilities["value"] == []
+    assert task_obj.assigned_agent_id == temp_agent_id
+    assert task_obj.task_metadata["assigned_agent_temporary"] is True
