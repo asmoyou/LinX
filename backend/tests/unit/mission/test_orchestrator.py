@@ -101,3 +101,125 @@ async def test_phase_complete_rejects_unfinished_tasks(monkeypatch):
 
     assert update_calls["fields"] == 0
     assert update_calls["status"] == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_task_with_retry_falls_back_to_temporary_agent(monkeypatch):
+    mission_id = uuid4()
+    owner_user_id = uuid4()
+    unavailable_agent_id = uuid4()
+    temporary_agent_id = uuid4()
+    task_id = uuid4()
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: None)
+
+    mission = SimpleNamespace(
+        created_by_user_id=owner_user_id,
+        mission_config={
+            "leader_config": {
+                "llm_provider": "ollama",
+                "llm_model": "qwen2.5:14b",
+                "temperature": 0.2,
+                "max_tokens": 1024,
+            }
+        },
+    )
+    task_obj = SimpleNamespace(
+        task_id=task_id,
+        goal_text="Implement endpoint",
+        acceptance_criteria="All checks pass",
+        task_metadata={"title": "Implement endpoint"},
+        assigned_agent_id=unavailable_agent_id,
+    )
+
+    class _FakeQuery:
+        def __init__(self, task):
+            self._task = task
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return self._task
+
+    class _FakeSession:
+        def __init__(self, task):
+            self._task = task
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._task)
+
+    class _FakeSessionContext:
+        def __init__(self, task):
+            self._task = task
+
+        def __enter__(self):
+            return _FakeSession(self._task)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    db_task = SimpleNamespace(
+        status="pending",
+        assigned_agent_id=unavailable_agent_id,
+        result=None,
+        completed_at=None,
+    )
+
+    status_updates = []
+
+    async def _fake_create_registered(agent_id, owner_user_id):
+        if agent_id == temporary_agent_id:
+            return SimpleNamespace(agent_id=agent_id, name="temporary-worker")
+        return None
+
+    async def _fake_execute_agent_task(agent, prompt):
+        return {"output": "done"}
+
+    provision_calls = {"count": 0}
+
+    def _fake_provision(self, mission_id, mission, task_obj, llm_cfg):
+        provision_calls["count"] += 1
+        task_obj.assigned_agent_id = temporary_agent_id
+        return temporary_agent_id
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.create_registered_mission_agent",
+        _fake_create_registered,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_execute_agent_task",
+        staticmethod(_fake_execute_agent_task),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_provision_temporary_worker_agent",
+        _fake_provision,
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(db_task),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_agent_status",
+        lambda mission_id, agent_id, status: status_updates.append((agent_id, status)),
+    )
+
+    success = await MissionOrchestrator._execute_task_with_retry(
+        orchestrator,
+        mission_id=mission_id,
+        mission=mission,
+        task_obj=task_obj,
+        max_retries=0,
+    )
+
+    assert success is True
+    assert provision_calls["count"] == 1
+    assert db_task.status == "completed"
+    assert db_task.assigned_agent_id == temporary_agent_id
+    assert status_updates == [
+        (temporary_agent_id, "active"),
+        (temporary_agent_id, "idle"),
+    ]

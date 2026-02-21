@@ -235,6 +235,87 @@ class MissionOrchestrator:
         return "English"
 
     @staticmethod
+    def _build_temporary_agent_name(task_title: str, task_id: UUID) -> str:
+        """Build a stable, readable temporary worker name for a task."""
+        slug = re.sub(r"[^a-zA-Z0-9]+", "-", task_title).strip("-").lower()
+        if not slug:
+            slug = "task"
+        return f"temp-worker-{slug[:24]}-{str(task_id)[:8]}"
+
+    def _provision_temporary_worker_agent(
+        self,
+        mission_id: UUID,
+        mission: Any,
+        task_obj: Any,
+        llm_cfg: Dict[str, Any],
+    ) -> UUID:
+        """Register and assign a temporary platform agent for a task."""
+        from agent_framework.agent_registry import AgentRegistry
+        from database.connection import get_db_session
+        from database.models import Task
+
+        task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
+        registry = AgentRegistry()
+        temp_agent = registry.register_agent(
+            name=self._build_temporary_agent_name(task_title, task_obj.task_id),
+            agent_type="mission_temp_worker",
+            owner_user_id=mission.created_by_user_id,
+            capabilities=["mission_execution", "task_specialist"],
+            llm_provider=llm_cfg.get("llm_provider"),
+            llm_model=llm_cfg.get("llm_model"),
+            temperature=float(llm_cfg.get("temperature", 0.7)),
+            max_tokens=int(llm_cfg.get("max_tokens", 4096)),
+            access_level="private",
+            system_prompt=(
+                "You are a temporary specialist worker spawned for a mission task. "
+                "Focus on completing the assigned task and producing concrete artifacts."
+            ),
+        )
+
+        try:
+            assign_mission_agent(
+                mission_id=mission_id,
+                agent_id=temp_agent.agent_id,
+                role="worker",
+                is_temporary=True,
+            )
+        except Exception:
+            logger.debug(
+                "Mission temporary worker assignment already exists",
+                extra={"mission_id": str(mission_id), "agent_id": str(temp_agent.agent_id)},
+            )
+
+        with get_db_session() as session:
+            task = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+            if task:
+                task.assigned_agent_id = temp_agent.agent_id
+                metadata = dict(task.task_metadata or {})
+                metadata["assigned_agent_name"] = temp_agent.name
+                metadata["assigned_agent_temporary"] = True
+                task.task_metadata = metadata
+
+        task_obj.assigned_agent_id = temp_agent.agent_id
+        task_metadata = dict(task_obj.task_metadata or {})
+        task_metadata["assigned_agent_name"] = temp_agent.name
+        task_metadata["assigned_agent_temporary"] = True
+        task_obj.task_metadata = task_metadata
+
+        self._emitter.emit(
+            mission_id=mission_id,
+            event_type="TASK_AGENT_ASSIGNED",
+            task_id=task_obj.task_id,
+            agent_id=temp_agent.agent_id,
+            data={
+                "title": task_title,
+                "agent_id": str(temp_agent.agent_id),
+                "agent_name": temp_agent.name,
+                "is_temporary": True,
+            },
+            message=f"Temporary worker assigned: {temp_agent.name}",
+        )
+        return temp_agent.agent_id
+
+    @staticmethod
     async def _execute_agent_task(agent: Any, prompt: str) -> Dict[str, Any]:
         """Run blocking agent calls in a worker thread so the event loop stays responsive."""
         return await asyncio.to_thread(agent.execute_task, prompt)
@@ -392,7 +473,8 @@ class MissionOrchestrator:
         requirements_doc = mission.requirements_doc or mission.instructions
         assignment_instruction = (
             "For each task, include `assigned_agent_id` using one of the provided agent IDs. "
-            "If no good match exists, set it to an empty string."
+            "If no good match exists, set it to an empty string so the runtime can spawn a "
+            "temporary specialist worker."
             if available_agents
             else "Set `assigned_agent_id` to an empty string for each task."
         )
@@ -437,10 +519,6 @@ class MissionOrchestrator:
                 assigned_agent_raw = str(task_def.get("assigned_agent_id") or "").strip()
                 if assigned_agent_raw and assigned_agent_raw in agent_id_map:
                     assigned_agent_id = agent_id_map[assigned_agent_raw].agent_id
-                elif available_agents:
-                    # Fallback: keep tasks executable and visible by assigning round-robin workers.
-                    fallback_agent = available_agents[idx % len(available_agents)]
-                    assigned_agent_id = fallback_agent.agent_id
 
                 if assigned_agent_id:
                     used_agent_ids.add(assigned_agent_id)
@@ -682,27 +760,41 @@ class MissionOrchestrator:
         """
         llm_cfg = self._get_llm_config(mission, "leader")
         task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
+        resolved_agent_id: Optional[UUID] = getattr(task_obj, "assigned_agent_id", None)
+        agent = None
+
+        if resolved_agent_id:
+            agent = await create_registered_mission_agent(
+                agent_id=resolved_agent_id,
+                owner_user_id=mission.created_by_user_id,
+            )
+            if agent is None:
+                logger.warning(
+                    "Assigned agent %s unavailable for task %s, creating temporary worker",
+                    resolved_agent_id,
+                    task_obj.task_id,
+                )
+                resolved_agent_id = None
+
+        if resolved_agent_id is None:
+            resolved_agent_id = self._provision_temporary_worker_agent(
+                mission_id=mission_id,
+                mission=mission,
+                task_obj=task_obj,
+                llm_cfg=llm_cfg,
+            )
+            agent = await create_registered_mission_agent(
+                agent_id=resolved_agent_id,
+                owner_user_id=mission.created_by_user_id,
+            )
+            if agent is None:
+                raise MissionError(
+                    mission_id,
+                    f"Failed to initialize temporary worker agent for task {task_obj.task_id}",
+                )
 
         for attempt in range(max_retries + 1):
             try:
-                resolved_agent_id: Optional[UUID] = None
-                agent = None
-                if getattr(task_obj, "assigned_agent_id", None):
-                    resolved_agent_id = task_obj.assigned_agent_id
-                    agent = await create_registered_mission_agent(
-                        agent_id=task_obj.assigned_agent_id,
-                        owner_user_id=mission.created_by_user_id,
-                    )
-
-                if agent is None:
-                    # Fallback to an ephemeral worker profile when no registered agent was assigned.
-                    leader_config = get_leader_config(
-                        owner_user_id=mission.created_by_user_id,
-                        temperature=llm_cfg["temperature"],
-                    )
-                    agent = await create_mission_agent(agent_config=leader_config, **llm_cfg)
-                    resolved_agent_id = None
-
                 # Update task status
                 from database.connection import get_db_session
                 from database.models import Task
@@ -711,15 +803,13 @@ class MissionOrchestrator:
                     t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
                     if t:
                         t.status = "in_progress"
-                        if resolved_agent_id:
-                            t.assigned_agent_id = resolved_agent_id
+                        t.assigned_agent_id = resolved_agent_id
 
-                if resolved_agent_id:
-                    update_mission_agent_status(
-                        mission_id=mission_id,
-                        agent_id=resolved_agent_id,
-                        status="active",
-                    )
+                update_mission_agent_status(
+                    mission_id=mission_id,
+                    agent_id=resolved_agent_id,
+                    status="active",
+                )
 
                 self._emitter.emit(
                     mission_id=mission_id,
@@ -728,7 +818,7 @@ class MissionOrchestrator:
                     data={
                         "title": task_title,
                         "attempt": attempt + 1,
-                        "agent_id": str(resolved_agent_id or agent.agent_id),
+                        "agent_id": str(resolved_agent_id),
                         "agent_name": getattr(agent, "name", "worker"),
                     },
                     message=f"Executing task: {task_title} (attempt {attempt + 1})",
@@ -760,12 +850,11 @@ class MissionOrchestrator:
                     data={"title": task_title},
                     message=f"Task completed: {task_title}",
                 )
-                if resolved_agent_id:
-                    update_mission_agent_status(
-                        mission_id=mission_id,
-                        agent_id=resolved_agent_id,
-                        status="idle",
-                    )
+                update_mission_agent_status(
+                    mission_id=mission_id,
+                    agent_id=resolved_agent_id,
+                    status="idle",
+                )
                 return True
 
             except Exception as exc:
@@ -793,12 +882,11 @@ class MissionOrchestrator:
                         data={"title": task_title, "error": str(exc)},
                         message=f"Task failed: {task_title}",
                     )
-                    if getattr(task_obj, "assigned_agent_id", None):
-                        update_mission_agent_status(
-                            mission_id=mission_id,
-                            agent_id=task_obj.assigned_agent_id,
-                            status="failed",
-                        )
+                    update_mission_agent_status(
+                        mission_id=mission_id,
+                        agent_id=resolved_agent_id,
+                        status="failed",
+                    )
                     return False
 
         return False
