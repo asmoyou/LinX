@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 import re
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -51,6 +51,7 @@ _TRANSITIONS: Dict[str, set] = {
 
 MAX_REVIEW_CYCLES = 2
 MAX_QA_CYCLES = 1
+MAX_ALLOWED_REWORK_CYCLES = 5
 
 
 class MissionOrchestrator:
@@ -96,14 +97,23 @@ class MissionOrchestrator:
 
     async def cancel_mission(self, mission_id: UUID) -> None:
         """Cancel a running mission and clean up resources."""
-        task = self._active_missions.pop(mission_id, None)
+        task = self._active_missions.get(mission_id)
         if task and not task.done():
             task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Mission %s raised while cancelling", mission_id)
 
-        # Let the task's except-CancelledError handler update status,
-        # but force it if the task wasn't running.
+        self._active_missions.pop(mission_id, None)
+
         try:
             update_mission_status(mission_id, "cancelled")
+        except ValueError:
+            # The mission may already have been deleted after cancellation.
+            logger.info("Mission %s not found while setting cancelled status", mission_id)
         except Exception:
             logger.exception("Failed to update cancelled status for %s", mission_id)
 
@@ -140,16 +150,20 @@ class MissionOrchestrator:
             await self._phase_complete(mission_id)
         except asyncio.CancelledError:
             logger.info("Mission %s was cancelled", mission_id)
-            update_mission_status(mission_id, "cancelled")
+            try:
+                self._snapshot_deliverables(mission_id)
+                update_mission_status(mission_id, "cancelled")
+            except Exception:
+                logger.exception("Failed to set cancelled status for mission %s", mission_id)
             raise
         except MissionCancelledException:
             logger.info("Mission %s cancelled via exception", mission_id)
+            self._snapshot_deliverables(mission_id)
             update_mission_status(mission_id, "cancelled")
         except Exception as exc:
             logger.exception("Mission %s failed: %s", mission_id, exc)
-            update_mission_status(
-                mission_id, "failed", error_message=str(exc)
-            )
+            self._snapshot_deliverables(mission_id)
+            update_mission_status(mission_id, "failed", error_message=str(exc))
             self._emitter.emit(
                 mission_id=mission_id,
                 event_type="MISSION_FAILED",
@@ -182,13 +196,45 @@ class MissionOrchestrator:
             "llm_model": role_cfg.get(
                 "llm_model", role_cfg.get("model", cfg.get("model", "qwen2.5:14b"))
             ),
-            "temperature": float(
-                role_cfg.get("temperature", cfg.get("temperature", 0.7))
-            ),
-            "max_tokens": int(
-                role_cfg.get("max_tokens", cfg.get("max_tokens", 4096))
-            ),
+            "temperature": float(role_cfg.get("temperature", cfg.get("temperature", 0.7))),
+            "max_tokens": int(role_cfg.get("max_tokens", cfg.get("max_tokens", 4096))),
         }
+
+    @staticmethod
+    def _get_execution_config(mission: Any) -> Dict[str, Any]:
+        """Extract execution config, supporting nested and legacy top-level keys."""
+        cfg = mission.mission_config or {}
+        exec_cfg = cfg.get("execution_config", {})
+        if not isinstance(exec_cfg, dict):
+            exec_cfg = {}
+
+        merged = dict(exec_cfg)
+        for key in ("max_retries", "task_timeout_s", "max_rework_cycles", "max_concurrent_tasks"):
+            if key in cfg:
+                merged[key] = cfg[key]
+        if "network_access" in cfg:
+            merged["network_access"] = cfg["network_access"]
+        elif "network_access" not in merged and "network_enabled" in cfg:
+            merged["network_access"] = bool(cfg["network_enabled"])
+        return merged
+
+    @staticmethod
+    def _detect_instruction_language(text: str) -> str:
+        """Detect a preferred response language from mission instructions."""
+        if not text:
+            return "English"
+        if re.search(r"[\u4e00-\u9fff]", text):
+            return "Simplified Chinese"
+        if re.search(r"[\u3040-\u30ff]", text):
+            return "Japanese"
+        if re.search(r"[\uac00-\ud7af]", text):
+            return "Korean"
+        return "English"
+
+    @staticmethod
+    async def _execute_agent_task(agent: Any, prompt: str) -> Dict[str, Any]:
+        """Run blocking agent calls in a worker thread so the event loop stays responsive."""
+        return await asyncio.to_thread(agent.execute_task, prompt)
 
     async def _phase_requirements(self, mission_id: UUID) -> None:
         """Leader analyses instructions and gathers requirements."""
@@ -214,12 +260,16 @@ class MissionOrchestrator:
         if mission.attachments:
             attachment_dicts = [
                 {
-                    "bucket_name": att.file_reference.split("/")[0]
-                    if "/" in att.file_reference
-                    else "documents",
-                    "object_key": att.file_reference.split("/", 1)[1]
-                    if "/" in att.file_reference
-                    else att.file_reference,
+                    "bucket_name": (
+                        att.file_reference.split("/")[0]
+                        if "/" in att.file_reference
+                        else "documents"
+                    ),
+                    "object_key": (
+                        att.file_reference.split("/", 1)[1]
+                        if "/" in att.file_reference
+                        else att.file_reference
+                    ),
                     "filename": att.filename,
                 }
                 for att in mission.attachments
@@ -232,9 +282,7 @@ class MissionOrchestrator:
             owner_user_id=mission.created_by_user_id,
             temperature=llm_cfg["temperature"],
         )
-        leader = await create_mission_agent(
-            agent_config=leader_config, **llm_cfg
-        )
+        leader = await create_mission_agent(agent_config=leader_config, **llm_cfg)
 
         # Build task prompt
         attachment_names = (
@@ -242,16 +290,20 @@ class MissionOrchestrator:
             if mission.attachments
             else "None"
         )
+        response_language = self._detect_instruction_language(mission.instructions)
         task_prompt = (
             "Analyse the following mission instructions and produce a structured "
             "requirements document.\n\n"
             f"## Mission Instructions\n{mission.instructions}\n\n"
             f"## Attached Files\n{attachment_names}\n\n"
+            f"Respond in {response_language}.\n"
             "If anything is ambiguous or unclear, list specific clarifying questions "
-            "prefixed with 'CLARIFICATION:'. Otherwise produce the full requirements."
+            "prefixed with 'CLARIFICATION:' (keep this prefix in English exactly). "
+            f"Write the question content in {response_language}. "
+            f"Otherwise produce the full requirements in {response_language}."
         )
 
-        result = leader.execute_task(task_prompt)
+        result = await self._execute_agent_task(leader, task_prompt)
         output = result.get("output", "")
 
         # Handle clarification loop
@@ -274,17 +326,15 @@ class MissionOrchestrator:
             # Re-invoke with user answers
             followup_prompt = (
                 f"The user responded to your clarifications:\n\n{user_response}\n\n"
-                "Now produce the complete requirements document."
+                f"Now produce the complete requirements document in {response_language}."
             )
-            result = leader.execute_task(followup_prompt)
+            result = await self._execute_agent_task(leader, followup_prompt)
             output = result.get("output", "")
 
         # Persist requirements
         requirements_doc = output
         update_mission_fields(mission_id, requirements_doc=requirements_doc)
-        self._workspace.write_file(
-            mission_id, "shared/requirements.md", requirements_doc
-        )
+        self._workspace.write_file(mission_id, "shared/requirements.md", requirements_doc)
 
         self._emitter.emit(
             mission_id=mission_id,
@@ -313,9 +363,7 @@ class MissionOrchestrator:
             owner_user_id=mission.created_by_user_id,
             temperature=llm_cfg["temperature"],
         )
-        leader = await create_mission_agent(
-            agent_config=leader_config, **llm_cfg
-        )
+        leader = await create_mission_agent(agent_config=leader_config, **llm_cfg)
 
         requirements_doc = mission.requirements_doc or mission.instructions
         task_prompt = (
@@ -327,7 +375,7 @@ class MissionOrchestrator:
             f"## Requirements\n{requirements_doc}"
         )
 
-        result = leader.execute_task(task_prompt)
+        result = await self._execute_agent_task(leader, task_prompt)
         output = result.get("output", "")
 
         # Parse JSON task list from agent output
@@ -369,18 +417,10 @@ class MissionOrchestrator:
             session.flush()
 
             # Resolve dependency title references to task_id arrays
-            tasks_in_session = (
-                session.query(Task)
-                .filter(Task.mission_id == mission_id)
-                .all()
-            )
+            tasks_in_session = session.query(Task).filter(Task.mission_id == mission_id).all()
             for t in tasks_in_session:
                 dep_titles = (t.task_metadata or {}).get("dependencies", [])
-                dep_ids = [
-                    str(title_to_id[dt])
-                    for dt in dep_titles
-                    if dt in title_to_id
-                ]
+                dep_ids = [str(title_to_id[dt]) for dt in dep_titles if dt in title_to_id]
                 t.dependencies = dep_ids
 
         # Update mission counters
@@ -455,14 +495,11 @@ class MissionOrchestrator:
         sorted_tasks = self._topological_sort(task_data)
 
         # Execute with concurrency limiter from execution config
-        exec_cfg = (mission.mission_config or {}).get("execution_config", {})
+        exec_cfg = self._get_execution_config(mission)
         max_concurrent = int(exec_cfg.get("max_concurrent_tasks", 3))
         semaphore = asyncio.Semaphore(max_concurrent)
-        completed_count = 0
-        failed_count = 0
 
         async def _execute_single(task_obj: Any) -> None:
-            nonlocal completed_count, failed_count
             async with semaphore:
                 # Wait for dependencies to complete
                 dep_ids = task_obj.dependencies or []
@@ -470,35 +507,82 @@ class MissionOrchestrator:
                     with get_db_session() as session:
                         dep_statuses = {
                             str(t.task_id): t.status
-                            for t in session.query(Task)
-                            .filter(Task.task_id.in_(dep_ids))
-                            .all()
+                            for t in session.query(Task).filter(Task.task_id.in_(dep_ids)).all()
                         }
-                    all_done = all(
-                        dep_statuses.get(d) in ("completed", "failed")
-                        for d in dep_ids
-                    )
+
+                    missing_deps = [dep_id for dep_id in dep_ids if dep_id not in dep_statuses]
+                    if missing_deps:
+                        with get_db_session() as session:
+                            t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+                            if t:
+                                t.status = "failed"
+                                t.result = {
+                                    "error": f"Missing dependencies: {', '.join(missing_deps)}"
+                                }
+                        self._emitter.emit(
+                            mission_id=mission_id,
+                            event_type="TASK_FAILED",
+                            task_id=task_obj.task_id,
+                            data={
+                                "title": (task_obj.task_metadata or {}).get("title", "Untitled"),
+                                "error": f"Missing dependencies: {', '.join(missing_deps)}",
+                            },
+                            message="Task failed due to missing dependencies",
+                        )
+                        return
+
+                    failed_deps = [
+                        dep_id for dep_id in dep_ids if dep_statuses.get(dep_id) == "failed"
+                    ]
+                    if failed_deps:
+                        with get_db_session() as session:
+                            t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+                            if t:
+                                t.status = "failed"
+                                t.result = {
+                                    "error": f"Blocked by failed dependencies: {', '.join(failed_deps)}"
+                                }
+                        self._emitter.emit(
+                            mission_id=mission_id,
+                            event_type="TASK_FAILED",
+                            task_id=task_obj.task_id,
+                            data={
+                                "title": (task_obj.task_metadata or {}).get("title", "Untitled"),
+                                "error": (
+                                    "Blocked by failed dependencies: "
+                                    f"{', '.join(failed_deps)}"
+                                ),
+                            },
+                            message="Task failed due to failed dependencies",
+                        )
+                        return
+
+                    all_done = all(dep_statuses.get(dep_id) == "completed" for dep_id in dep_ids)
                     if all_done:
                         break
                     await asyncio.sleep(2)
 
-                success = await self._execute_task_with_retry(
-                    mission_id, mission, task_obj,
+                await self._execute_task_with_retry(
+                    mission_id,
+                    mission,
+                    task_obj,
                     max_retries=int(exec_cfg.get("max_retries", 2)),
                 )
-                if success:
-                    completed_count += 1
-                else:
-                    failed_count += 1
 
         await asyncio.gather(
             *[_execute_single(t) for t in sorted_tasks],
             return_exceptions=True,
         )
 
-        # Update mission counters
+        counts = self._get_task_status_counts(mission_id)
+        completed_count = counts.get("completed", 0)
+        failed_count = counts.get("failed", 0)
+        total_count = sum(counts.values())
+
+        # Update mission counters based on actual DB task statuses
         update_mission_fields(
             mission_id,
+            total_tasks=max(mission.total_tasks, total_count),
             completed_tasks=completed_count,
             failed_tasks=failed_count,
         )
@@ -510,6 +594,7 @@ class MissionOrchestrator:
                 "phase": "executing",
                 "completed": completed_count,
                 "failed": failed_count,
+                "total": total_count,
             },
             message=f"Task execution completed: {completed_count} done, {failed_count} failed",
         )
@@ -530,32 +615,34 @@ class MissionOrchestrator:
 
         for attempt in range(max_retries + 1):
             try:
+                # Create worker agent for this attempt and bind it to the task for observability.
+                leader_config = get_leader_config(
+                    owner_user_id=mission.created_by_user_id,
+                    temperature=llm_cfg["temperature"],
+                )
+                agent = await create_mission_agent(agent_config=leader_config, **llm_cfg)
+
                 # Update task status
                 from database.connection import get_db_session
                 from database.models import Task
 
                 with get_db_session() as session:
-                    t = session.query(Task).filter(
-                        Task.task_id == task_obj.task_id
-                    ).first()
+                    t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
                     if t:
                         t.status = "in_progress"
+                        t.assigned_agent_id = agent.agent_id
 
                 self._emitter.emit(
                     mission_id=mission_id,
                     event_type="TASK_STARTED",
                     task_id=task_obj.task_id,
-                    data={"title": task_title, "attempt": attempt + 1},
+                    data={
+                        "title": task_title,
+                        "attempt": attempt + 1,
+                        "agent_id": str(agent.agent_id),
+                        "agent_name": getattr(agent, "name", "worker"),
+                    },
                     message=f"Executing task: {task_title} (attempt {attempt + 1})",
-                )
-
-                # Create worker agent
-                leader_config = get_leader_config(
-                    owner_user_id=mission.created_by_user_id,
-                    temperature=llm_cfg["temperature"],
-                )
-                agent = await create_mission_agent(
-                    agent_config=leader_config, **llm_cfg
                 )
 
                 task_prompt = (
@@ -566,14 +653,12 @@ class MissionOrchestrator:
                     "Produce the deliverable and confirm completion."
                 )
 
-                result = agent.execute_task(task_prompt)
+                result = await self._execute_agent_task(agent, task_prompt)
                 output = result.get("output", "")
 
                 # Mark task completed
                 with get_db_session() as session:
-                    t = session.query(Task).filter(
-                        Task.task_id == task_obj.task_id
-                    ).first()
+                    t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
                     if t:
                         t.status = "completed"
                         t.result = {"output": output}
@@ -591,17 +676,17 @@ class MissionOrchestrator:
             except Exception as exc:
                 logger.warning(
                     "Task %s attempt %d failed: %s",
-                    task_obj.task_id, attempt + 1, exc,
+                    task_obj.task_id,
+                    attempt + 1,
+                    exc,
                 )
                 if attempt < max_retries:
-                    backoff = 2 ** attempt
+                    backoff = 2**attempt
                     await asyncio.sleep(backoff)
                 else:
                     # Final failure
                     with get_db_session() as session:
-                        t = session.query(Task).filter(
-                            Task.task_id == task_obj.task_id
-                        ).first()
+                        t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
                         if t:
                             t.status = "failed"
                             t.result = {"error": str(exc)}
@@ -637,23 +722,14 @@ class MissionOrchestrator:
             owner_user_id=mission.created_by_user_id,
             temperature=llm_cfg["temperature"],
         )
-        supervisor = await create_mission_agent(
-            agent_config=supervisor_config, **llm_cfg
-        )
+        supervisor = await create_mission_agent(agent_config=supervisor_config, **llm_cfg)
 
-        # Fetch completed tasks
+        # Fetch all mission tasks so incomplete tasks are also considered failures.
         from database.connection import get_db_session
         from database.models import Task
 
         with get_db_session() as session:
-            tasks = (
-                session.query(Task)
-                .filter(
-                    Task.mission_id == mission_id,
-                    Task.status == "completed",
-                )
-                .all()
-            )
+            tasks = session.query(Task).filter(Task.mission_id == mission_id).all()
             task_data = []
             for t in tasks:
                 session.expunge(t)
@@ -662,6 +738,34 @@ class MissionOrchestrator:
         failed_tasks: List[UUID] = []
         for task_obj in task_data:
             task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
+            if task_obj.status != "completed":
+                failed_tasks.append(task_obj.task_id)
+                with get_db_session() as session:
+                    t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+                    if t:
+                        t.status = "failed"
+                        meta = t.task_metadata or {}
+                        review_cycle = int(meta.get("review_cycle_count", 0)) + 1
+                        meta["review_cycle_count"] = review_cycle
+                        meta["review_feedback"] = (
+                            f"Task status is '{task_obj.status}', expected 'completed' before review."
+                        )
+                        t.task_metadata = meta
+                        t.completed_at = None
+
+                self._emitter.emit(
+                    mission_id=mission_id,
+                    event_type="TASK_REVIEWED",
+                    task_id=task_obj.task_id,
+                    data={
+                        "title": task_title,
+                        "verdict": "FAIL",
+                        "reason": "task_not_completed",
+                    },
+                    message=f"Task review: {task_title} -> FAIL (task not completed)",
+                )
+                continue
+
             task_output = (task_obj.result or {}).get("output", "No output")
 
             review_prompt = (
@@ -674,10 +778,10 @@ class MissionOrchestrator:
                 "If FAIL, provide specific actionable feedback."
             )
 
-            result = supervisor.execute_task(review_prompt)
+            result = await self._execute_agent_task(supervisor, review_prompt)
             review_output = result.get("output", "")
 
-            verdict = "PASS" if "PASS" in review_output.upper().split("\n")[0] else "FAIL"
+            verdict = self._extract_binary_verdict(review_output)
 
             self._emitter.emit(
                 mission_id=mission_id,
@@ -690,9 +794,7 @@ class MissionOrchestrator:
             if verdict == "FAIL":
                 failed_tasks.append(task_obj.task_id)
                 with get_db_session() as session:
-                    t = session.query(Task).filter(
-                        Task.task_id == task_obj.task_id
-                    ).first()
+                    t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
                     if t:
                         t.status = "failed"
                         meta = t.task_metadata or {}
@@ -701,6 +803,28 @@ class MissionOrchestrator:
                         meta["review_feedback"] = review_output
                         t.task_metadata = meta
                         t.completed_at = None
+
+        exec_cfg = self._get_execution_config(mission)
+        configured_max_rework_cycles = int(
+            exec_cfg.get("max_rework_cycles", MAX_REVIEW_CYCLES)
+        )
+        max_rework_cycles = max(
+            0,
+            min(configured_max_rework_cycles, MAX_ALLOWED_REWORK_CYCLES),
+        )
+        if configured_max_rework_cycles != max_rework_cycles:
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="REVIEW_CYCLE_LIMIT_ADJUSTED",
+                data={
+                    "configured": configured_max_rework_cycles,
+                    "effective": max_rework_cycles,
+                },
+                message=(
+                    "Review cycle limit capped to avoid runaway retries: "
+                    f"{configured_max_rework_cycles} -> {max_rework_cycles}"
+                ),
+            )
 
         # If there are failed tasks and we haven't exceeded review cycles, loop back
         if failed_tasks:
@@ -713,19 +837,33 @@ class MissionOrchestrator:
                         cycle = (t.task_metadata or {}).get("review_cycle_count", 0)
                         max_cycle = max(max_cycle, cycle)
 
-            if max_cycle < MAX_REVIEW_CYCLES:
+            if max_cycle <= max_rework_cycles:
                 self._emitter.emit(
                     mission_id=mission_id,
                     event_type="REVIEW_CYCLE_RETRY",
                     data={"failed_count": len(failed_tasks), "cycle": max_cycle},
                     message=f"Review found {len(failed_tasks)} failures, retrying execution",
                 )
-                # Transition back to executing for retry
-                update_mission_status(mission_id, "executing")
+                # Transition back to executing for retry is handled in _phase_execution.
                 await self._phase_execution(mission_id)
                 # Re-enter review after re-execution
                 await self._phase_review(mission_id)
                 return
+            raise MissionError(
+                mission_id,
+                (
+                    f"Review failed after {max_cycle} cycle(s); configured max_rework_cycles="
+                    f"{max_rework_cycles}, unresolved tasks={len(failed_tasks)}"
+                ),
+            )
+
+        counts = self._get_task_status_counts(mission_id)
+        update_mission_fields(
+            mission_id,
+            completed_tasks=counts.get("completed", 0),
+            failed_tasks=counts.get("failed", 0),
+            total_tasks=max(mission.total_tasks, sum(counts.values())),
+        )
 
         self._emitter.emit(
             mission_id=mission_id,
@@ -754,20 +892,14 @@ class MissionOrchestrator:
             owner_user_id=mission.created_by_user_id,
             temperature=llm_cfg["temperature"],
         )
-        qa_agent = await create_mission_agent(
-            agent_config=qa_config, **llm_cfg
-        )
+        qa_agent = await create_mission_agent(agent_config=qa_config, **llm_cfg)
 
         # Gather all task outputs for audit
         from database.connection import get_db_session
         from database.models import Task
 
         with get_db_session() as session:
-            tasks = (
-                session.query(Task)
-                .filter(Task.mission_id == mission_id)
-                .all()
-            )
+            tasks = session.query(Task).filter(Task.mission_id == mission_id).all()
             task_summaries = []
             for t in tasks:
                 title = (t.task_metadata or {}).get("title", "Untitled")
@@ -787,11 +919,10 @@ class MissionOrchestrator:
             "Produce a structured audit report. End with a clear PASS or FAIL verdict."
         )
 
-        result = qa_agent.execute_task(audit_prompt)
+        result = await self._execute_agent_task(qa_agent, audit_prompt)
         qa_output = result.get("output", "")
 
-        # Parse verdict from last lines
-        verdict = "PASS" if "PASS" in qa_output.upper().rsplit("\n", 5)[-1] else "FAIL"
+        verdict = self._extract_binary_verdict(qa_output)
 
         self._emitter.emit(
             mission_id=mission_id,
@@ -804,24 +935,28 @@ class MissionOrchestrator:
             # Check QA cycle count
             mission = get_mission(mission_id)
             cfg = mission.mission_config or {} if mission else {}
-            qa_cycle = cfg.get("qa_cycle_count", 0) + 1
+            qa_cycle = int(cfg.get("qa_cycle_count", 0)) + 1
 
-            if qa_cycle < MAX_QA_CYCLES:
-                # Save cycle count and route back to review
-                update_mission_fields(
-                    mission_id,
-                    mission_config={**(mission.mission_config or {}), "qa_cycle_count": qa_cycle},
-                )
+            # Persist cycle count for observability and retry tracking
+            update_mission_fields(
+                mission_id,
+                mission_config={**(mission.mission_config or {}), "qa_cycle_count": qa_cycle},
+            )
+            if qa_cycle <= MAX_QA_CYCLES:
                 self._emitter.emit(
                     mission_id=mission_id,
                     event_type="QA_CYCLE_RETRY",
                     data={"cycle": qa_cycle},
                     message="QA failed, routing back to review",
                 )
-                update_mission_status(mission_id, "reviewing")
+                # Transition back to reviewing is handled in _phase_review.
                 await self._phase_review(mission_id)
                 await self._phase_qa(mission_id)
                 return
+            raise MissionError(
+                mission_id,
+                f"QA audit failed after {qa_cycle} cycle(s)",
+            )
 
         # Save QA report to workspace
         self._workspace.write_file(mission_id, "shared/qa_report.md", qa_output)
@@ -835,10 +970,32 @@ class MissionOrchestrator:
 
     async def _phase_complete(self, mission_id: UUID) -> None:
         """Collect deliverables and finalise."""
+        mission = get_mission(mission_id)
+        if mission is None:
+            raise MissionError(mission_id, "Mission not found")
+
+        counts = self._get_task_status_counts(mission_id)
+        total_tasks = sum(counts.values())
+        completed_count = counts.get("completed", 0)
+        failed_count = counts.get("failed", 0)
+        unfinished_count = total_tasks - completed_count - failed_count
+
+        if total_tasks > 0 and (unfinished_count > 0 or failed_count > 0):
+            raise MissionError(
+                mission_id,
+                (
+                    "Mission cannot be completed while tasks remain unfinished "
+                    f"(completed={completed_count}, failed={failed_count}, unfinished={unfinished_count})"
+                ),
+            )
+
         deliverables = self._workspace.collect_deliverables(mission_id)
         update_mission_fields(
             mission_id,
             result={"deliverables": [d.__dict__ for d in deliverables]},
+            total_tasks=max(mission.total_tasks, total_tasks),
+            completed_tasks=completed_count,
+            failed_tasks=failed_count,
         )
         update_mission_status(mission_id, "completed")
         self._emitter.emit(
@@ -847,6 +1004,24 @@ class MissionOrchestrator:
             data={"deliverable_count": len(deliverables)},
             message="Mission completed successfully",
         )
+
+    def _snapshot_deliverables(self, mission_id: UUID) -> None:
+        """Best-effort snapshot of artifacts before workspace cleanup."""
+        try:
+            deliverables = self._workspace.collect_deliverables(mission_id)
+        except Exception:
+            # Workspace may not exist (e.g. failed before requirements phase).
+            return
+        if not deliverables:
+            return
+
+        try:
+            mission = get_mission(mission_id)
+            existing_result = dict(mission.result or {}) if mission else {}
+            existing_result["deliverables"] = [d.__dict__ for d in deliverables]
+            update_mission_fields(mission_id, result=existing_result)
+        except Exception:
+            logger.exception("Failed to persist deliverable snapshot for mission %s", mission_id)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -881,6 +1056,45 @@ class MissionOrchestrator:
                 pass
 
         return []
+
+    @staticmethod
+    def _extract_binary_verdict(text: str) -> str:
+        """Extract a PASS/FAIL verdict from model output.
+
+        Uses the trailing lines first and defaults to FAIL when ambiguous.
+        """
+        if not text:
+            return "FAIL"
+
+        lines = [line.strip().upper() for line in text.splitlines() if line.strip()]
+        recent = lines[-10:] if len(lines) > 10 else lines
+
+        # Prefer explicit verdict lines near the end.
+        for line in reversed(recent):
+            if re.search(r"\bFAIL\b", line) and ("VERDICT" in line or "FINAL" in line):
+                return "FAIL"
+            if re.search(r"\bPASS\b", line) and ("VERDICT" in line or "FINAL" in line):
+                return "PASS"
+
+        # Fallback to the latest binary signal.
+        for line in reversed(recent):
+            if re.search(r"\bFAIL\b", line):
+                return "FAIL"
+            if re.search(r"\bPASS\b", line):
+                return "PASS"
+
+        return "FAIL"
+
+    @staticmethod
+    def _get_task_status_counts(mission_id: UUID) -> Dict[str, int]:
+        """Get per-status task counts for a mission."""
+        from database.connection import get_db_session
+        from database.models import Task
+
+        with get_db_session() as session:
+            statuses = session.query(Task.status).filter(Task.mission_id == mission_id).all()
+        counter = Counter(status for (status,) in statuses)
+        return dict(counter)
 
     @staticmethod
     def _topological_sort(tasks: List[Any]) -> List[Any]:
@@ -936,6 +1150,9 @@ class MissionOrchestrator:
             raise MissionError(mission_id, "Mission not found")
 
         current = mission.status
+        if current == target_status:
+            # Idempotent transition: retries/re-entrancy may re-request current state.
+            return
         allowed = _TRANSITIONS.get(current, set())
         if target_status not in allowed:
             raise MissionError(

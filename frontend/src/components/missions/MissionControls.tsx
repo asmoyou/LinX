@@ -34,7 +34,17 @@ export const MissionControls: React.FC<MissionControlsProps> = ({
   const canCancel = ['requirements', 'planning', 'executing', 'reviewing', 'qa'].includes(
     selectedMission.status
   );
-  const isTerminal = ['completed', 'failed', 'cancelled'].includes(selectedMission.status);
+  const canOpenDeliverables = selectedMission.status !== 'draft';
+  const handleStart = () => {
+    void startMission(selectedMission.mission_id).catch(() => {
+      // Error toast is handled by API interceptor/store.
+    });
+  };
+  const handleCancel = () => {
+    void cancelMission(selectedMission.mission_id).catch(() => {
+      // Error toast is handled by API interceptor/store.
+    });
+  };
 
   return (
     <div className="flex items-center gap-3 p-3 glass-panel rounded-xl border border-zinc-200 dark:border-zinc-700">
@@ -69,7 +79,7 @@ export const MissionControls: React.FC<MissionControlsProps> = ({
       {/* Actions */}
       {canStart && (
         <button
-          onClick={() => startMission(selectedMission.mission_id)}
+          onClick={handleStart}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors"
         >
           <Play className="w-3.5 h-3.5" />
@@ -79,7 +89,7 @@ export const MissionControls: React.FC<MissionControlsProps> = ({
 
       {canCancel && (
         <button
-          onClick={() => cancelMission(selectedMission.mission_id)}
+          onClick={handleCancel}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 rounded-lg transition-colors"
         >
           <XCircle className="w-3.5 h-3.5" />
@@ -87,7 +97,7 @@ export const MissionControls: React.FC<MissionControlsProps> = ({
         </button>
       )}
 
-      {isTerminal && (
+      {canOpenDeliverables && (
         <button
           onClick={onOpenDeliverables}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-300 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-lg transition-colors"

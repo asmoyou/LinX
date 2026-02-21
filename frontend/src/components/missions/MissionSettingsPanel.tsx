@@ -1,8 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Settings, X, Loader2, ChevronDown, ChevronUp, Save } from 'lucide-react';
+import axios from 'axios';
+import toast from 'react-hot-toast';
 import { useMissionStore } from '@/stores/missionStore';
 import { llmApi } from '@/api/llm';
+import { ModalPanel } from '@/components/ModalPanel';
 import type { MissionRoleConfig, MissionExecutionConfig, MissionSettings } from '@/types/mission';
 
 interface MissionSettingsPanelProps {
@@ -50,10 +53,13 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
   });
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [isLoadingProviders, setIsLoadingProviders] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
+      setSaveSuccess(false);
+      setSaveError(null);
       fetchMissionSettings();
       loadProviders();
     }
@@ -71,7 +77,7 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
   const loadProviders = async () => {
     setIsLoadingProviders(true);
     try {
-      const data = await llmApi.getAvailableProviders();
+      const data = await llmApi.getAvailableProviders({ suppressErrorToast: true });
       setProviders(data);
     } catch {
       // providers will remain empty
@@ -87,6 +93,7 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
   const handleSave = async () => {
     setIsSaving(true);
     setSaveSuccess(false);
+    setSaveError(null);
     try {
       const data: Partial<MissionSettings> = {
         leader_config: leaderConfig,
@@ -96,9 +103,19 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
       };
       await updateMissionSettings(data);
       setSaveSuccess(true);
+      toast.success(t('missions.settingsSaved'));
+      onClose();
       setTimeout(() => setSaveSuccess(false), 2000);
-    } catch {
-      // error handled by store
+    } catch (error) {
+      let message = t('missions.settingsSaveFailed');
+      if (axios.isAxiosError(error)) {
+        const responseData = error.response?.data as { detail?: string; message?: string } | undefined;
+        message = responseData?.detail || responseData?.message || error.message || message;
+      } else if (error instanceof Error) {
+        message = error.message;
+      }
+      setSaveError(message);
+      toast.error(message);
     } finally {
       setIsSaving(false);
     }
@@ -114,14 +131,23 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
 
   if (!isOpen) return null;
 
-  const providerNames = Object.keys(providers);
+  const providerNames = Array.from(
+    new Set(
+      [
+        ...Object.keys(providers),
+        leaderConfig.llm_provider,
+        supervisorConfig.llm_provider,
+        qaConfig.llm_provider,
+      ].filter((provider): provider is string => Boolean(provider))
+    )
+  );
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm animate-in fade-in duration-200"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-200"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="bg-white dark:bg-zinc-900 rounded-[24px] shadow-2xl max-w-3xl w-full max-h-[85vh] overflow-hidden flex flex-col">
+      <ModalPanel className="max-w-3xl w-full max-h-[85vh] overflow-hidden flex flex-col p-0">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200 dark:border-zinc-700">
           <div className="flex items-center gap-2.5">
@@ -149,7 +175,10 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
           {ROLES.map(({ key, labelKey }) => {
             const [config, setConfig] = getConfigState(key);
             const isExpanded = expandedSections[key];
-            const modelsForProvider = config.llm_provider ? (providers[config.llm_provider] || []) : [];
+            const configuredModels = config.llm_provider ? providers[config.llm_provider] || [] : [];
+            const modelsForProvider = config.llm_model
+              ? Array.from(new Set([config.llm_model, ...configuredModels]))
+              : configuredModels;
 
             return (
               <div key={key} className="border border-zinc-200 dark:border-zinc-700 rounded-xl overflow-hidden">
@@ -352,8 +381,8 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
 
         {/* Footer */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-zinc-200 dark:border-zinc-700">
-          <div className="text-xs text-emerald-600">
-            {saveSuccess && t('missions.settingsSaved')}
+          <div className={`text-xs ${saveError ? 'text-red-600' : 'text-emerald-600'}`}>
+            {saveError || (saveSuccess ? t('missions.settingsSaved') : null)}
           </div>
           <div className="flex items-center gap-3">
             <button
@@ -376,7 +405,7 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
             </button>
           </div>
         </div>
-      </div>
+      </ModalPanel>
     </div>
   );
 };

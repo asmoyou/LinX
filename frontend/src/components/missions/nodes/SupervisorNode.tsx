@@ -5,18 +5,35 @@ import { Eye, CheckCircle2, XCircle } from 'lucide-react';
 interface SupervisorNodeData {
   task_id: string;
   task_label: string;
-  verdict?: 'approved' | 'rework' | 'pending';
+  verdict?: string;
   feedback?: string;
 }
 
-export const SupervisorNode: React.FC<{ data: SupervisorNodeData }> = memo(({ data }) => {
+export const SupervisorNode: React.FC<{ data?: SupervisorNodeData }> = memo(({ data }) => {
+  const safeData = data ?? { task_id: '', task_label: 'Review' };
   const verdictConfig = {
     approved: { icon: CheckCircle2, color: 'border-green-400 bg-green-50 dark:bg-green-500/5', text: 'text-green-600' },
     rework: { icon: XCircle, color: 'border-red-400 bg-red-50 dark:bg-red-500/5', text: 'text-red-600' },
     pending: { icon: Eye, color: 'border-amber-300 bg-amber-50 dark:bg-amber-500/5', text: 'text-amber-600' },
   };
 
-  const config = verdictConfig[data.verdict || 'pending'];
+  const normalizedVerdict = (() => {
+    const rawVerdict = String(safeData.verdict || '').trim().toLowerCase();
+    if (rawVerdict === 'pass' || rawVerdict === 'approved' || rawVerdict === 'success') {
+      return 'approved' as const;
+    }
+    if (
+      rawVerdict === 'fail' ||
+      rawVerdict === 'rework' ||
+      rawVerdict === 'rejected' ||
+      rawVerdict === 'reject'
+    ) {
+      return 'rework' as const;
+    }
+    return 'pending' as const;
+  })();
+
+  const config = verdictConfig[normalizedVerdict] ?? verdictConfig.pending;
   const Icon = config.icon;
 
   return (
@@ -29,12 +46,12 @@ export const SupervisorNode: React.FC<{ data: SupervisorNodeData }> = memo(({ da
       </div>
 
       <p className="text-[11px] text-zinc-600 dark:text-zinc-400 mb-1 truncate">
-        {data.task_label}
+        {safeData.task_label}
       </p>
 
-      {data.feedback && (
+      {safeData.feedback && (
         <p className="text-[10px] text-zinc-500 italic leading-snug line-clamp-2">
-          {data.feedback}
+          {safeData.feedback}
         </p>
       )}
 

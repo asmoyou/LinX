@@ -296,58 +296,69 @@ class MissionWorkspaceManager:
         self,
         mission_id: UUID,
     ) -> List[DeliverableInfo]:
-        """Collect files from /workspace/output/ and upload them to MinIO.
+        """Collect files from workspace output/shared directories and upload to MinIO.
 
         Returns:
             List of DeliverableInfo with download metadata.
         """
         workspace = self._get_workspace(mission_id)
-        output_dir = f"{WORKSPACE_ROOT}/output"
-
-        # List output files
-        exit_code, stdout, stderr = self._container_manager.exec_in_container(
-            workspace.container_id,
-            f"find '{output_dir}' -type f -printf '%s %p\\n'",
-        )
-        if exit_code != 0 or not stdout.strip():
-            return []
-
         minio = get_minio_client()
         deliverables: List[DeliverableInfo] = []
+        source_dirs = [
+            (f"{WORKSPACE_ROOT}/output", True),
+            (f"{WORKSPACE_ROOT}/shared", False),
+            (f"{WORKSPACE_ROOT}/tasks", False),
+            (f"{WORKSPACE_ROOT}/logs", False),
+            (f"{WORKSPACE_ROOT}/input", False),
+        ]
 
-        for line in stdout.strip().splitlines():
-            parts = line.split(None, 1)
-            if len(parts) != 2:
-                continue
-            size_str, filepath = parts
-            filename = filepath.rsplit("/", 1)[-1]
-
-            # Read file content from container
-            rc, content, err = self._container_manager.exec_in_container(
+        seen_filepaths = set()
+        for source_dir, is_target in source_dirs:
+            exit_code, stdout, _stderr = self._container_manager.exec_in_container(
                 workspace.container_id,
-                f"base64 '{filepath}'",
+                f"find '{source_dir}' -type f -printf '%s %p\\n'",
             )
-            if rc != 0:
-                logger.warning("Failed to read deliverable %s: %s", filename, err)
+            if exit_code != 0 or not stdout.strip():
                 continue
 
-            file_bytes = base64.b64decode(content.strip())
-            file_stream = io.BytesIO(file_bytes)
+            for line in stdout.strip().splitlines():
+                parts = line.split(None, 1)
+                if len(parts) != 2:
+                    continue
+                size_str, filepath = parts
+                if filepath in seen_filepaths:
+                    continue
+                seen_filepaths.add(filepath)
 
-            bucket_name, object_key = minio.upload_file(
-                bucket_type="artifacts",
-                file_data=file_stream,
-                filename=filename,
-                user_id=str(mission_id),
-            )
+                relative_path = filepath.replace(f"{WORKSPACE_ROOT}/", "", 1)
 
-            deliverables.append(
-                DeliverableInfo(
-                    filename=filename,
-                    path=f"{bucket_name}/{object_key}",
-                    size=int(size_str) if size_str.isdigit() else len(file_bytes),
+                # Read file content from container
+                rc, content, err = self._container_manager.exec_in_container(
+                    workspace.container_id,
+                    f"base64 '{filepath}'",
                 )
-            )
+                if rc != 0:
+                    logger.warning("Failed to read deliverable %s: %s", relative_path, err)
+                    continue
+
+                file_bytes = base64.b64decode(content.strip())
+                file_stream = io.BytesIO(file_bytes)
+
+                bucket_name, object_key = minio.upload_file(
+                    bucket_type="artifacts",
+                    file_data=file_stream,
+                    filename=relative_path,
+                    user_id=str(mission_id),
+                )
+
+                deliverables.append(
+                    DeliverableInfo(
+                        filename=relative_path,
+                        path=f"{bucket_name}/{object_key}",
+                        size=int(size_str) if size_str.isdigit() else len(file_bytes),
+                        is_target=is_target,
+                    )
+                )
 
         logger.info(
             "Collected %d deliverables for mission %s",
@@ -402,7 +413,17 @@ class MissionWorkspaceManager:
         - 24-hour max lifetime (enforced externally)
         - Network access configurable via mission_config
         """
-        network_enabled = mission_config.get("network_enabled", True)
+        execution_config = mission_config.get("execution_config", {})
+        if not isinstance(execution_config, dict):
+            execution_config = {}
+
+        if "network_access" in execution_config:
+            network_enabled = bool(execution_config["network_access"])
+        elif "network_access" in mission_config:
+            network_enabled = bool(mission_config["network_access"])
+        else:
+            # Backward compatibility with older key name.
+            network_enabled = bool(mission_config.get("network_enabled", True))
 
         config = ContainerConfig(
             image=mission_config.get("image", "python:3.11-bookworm"),

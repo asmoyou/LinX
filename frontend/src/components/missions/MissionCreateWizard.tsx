@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Upload, ChevronRight, ChevronLeft, Rocket, FileText, Settings, Eye, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { useMissionStore } from '@/stores/missionStore';
 import { ModalPanel } from '@/components/ModalPanel';
 import type { MissionConfig } from '@/types/mission';
@@ -80,7 +81,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleSubmit = async () => {
+  const submitMission = async () => {
     setIsSubmitting(true);
     try {
       const mission = await createMission({
@@ -94,16 +95,22 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
         await uploadAttachment(mission.mission_id, file);
       }
 
-      // Auto-start the mission
-      await startMission(mission.mission_id);
-
       onClose();
       resetForm();
+
+      // Start mission in background so UI doesn't hang on long-running startup.
+      void startMission(mission.mission_id).catch(() => {
+        toast.error(t('missions.startFailed'));
+      });
     } catch {
       // error handled by store
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleSubmit = async () => {
+    await submitMission();
   };
 
   const resetForm = () => {
@@ -118,7 +125,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-in fade-in duration-200" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-in fade-in duration-200">
       <ModalPanel className="w-full max-w-2xl flex flex-col max-h-[85vh]">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200 dark:border-zinc-700">
@@ -170,14 +177,14 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
           {step === 'instructions' && (
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
-                  Title
-                </label>
+                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
+                  {t('missions.fieldTitle')}
+                  </label>
                 <input
                   type="text"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  placeholder="e.g., Build landing page for product launch"
+                  placeholder={t('missions.titlePlaceholder')}
                   className="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
                 />
               </div>
@@ -188,7 +195,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
                 <textarea
                   value={instructions}
                   onChange={(e) => setInstructions(e.target.value)}
-                  placeholder="Describe what you want the AI team to accomplish..."
+                  placeholder={t('missions.instructionsPlaceholder')}
                   rows={8}
                   className="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 resize-none"
                 />
@@ -206,10 +213,10 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
               >
                 <Upload className="w-8 h-8 text-zinc-400 mx-auto mb-2" />
                 <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                  Drop files here or click to browse
+                  {t('missions.dropFilesHere')}
                 </p>
                 <p className="text-xs text-zinc-400 mt-1">
-                  PDF, DOCX, TXT, images, and more
+                  {t('missions.fileTypesHint')}
                 </p>
                 <input
                   id="file-upload"
@@ -254,7 +261,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-zinc-500 mb-1">
-                    Max Retries
+                    {t('missions.maxRetries')}
                   </label>
                   <input
                     type="number"
@@ -267,7 +274,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-zinc-500 mb-1">
-                    Task Timeout (seconds)
+                    {t('missions.taskTimeout')}
                   </label>
                   <input
                     type="number"
@@ -281,7 +288,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-zinc-500 mb-1">
-                    Max Rework Cycles
+                    {t('missions.maxReworkCycles')}
                   </label>
                   <input
                     type="number"
@@ -302,7 +309,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
                     />
                     <div className="w-9 h-5 bg-zinc-200 dark:bg-zinc-700 peer-focus:ring-2 peer-focus:ring-emerald-500/30 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500" />
                   </label>
-                  <span className="text-xs font-medium text-zinc-500">Network Access</span>
+                  <span className="text-xs font-medium text-zinc-500">{t('missions.networkAccess')}</span>
                 </div>
               </div>
 
@@ -334,7 +341,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
                           <span>
                             {roleConfig.llm_provider && roleConfig.llm_model
                               ? `${roleConfig.llm_provider} / ${roleConfig.llm_model} (T: ${roleConfig.temperature})`
-                              : 'Not configured'}
+                              : t('missions.notConfigured')}
                           </span>
                         </div>
                       ))}
@@ -351,7 +358,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
           {step === 'review' && (
             <div className="space-y-4">
               <div className="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700">
-                <h4 className="text-xs font-semibold text-zinc-500 uppercase mb-2">Title</h4>
+                <h4 className="text-xs font-semibold text-zinc-500 uppercase mb-2">{t('missions.fieldTitle')}</h4>
                 <p className="text-sm text-zinc-800 dark:text-zinc-200">{title}</p>
               </div>
               <div className="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700">
@@ -376,14 +383,16 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
               <div className="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700">
                 <h4 className="text-xs font-semibold text-zinc-500 uppercase mb-2">{t('missions.configuration')}</h4>
                 <div className="grid grid-cols-2 gap-2 text-sm">
-                  <span className="text-zinc-500">Max Retries:</span>
+                  <span className="text-zinc-500">{t('missions.maxRetries')}:</span>
                   <span className="text-zinc-800 dark:text-zinc-200">{config.max_retries}</span>
-                  <span className="text-zinc-500">Timeout:</span>
+                  <span className="text-zinc-500">{t('missions.timeoutShort')}:</span>
                   <span className="text-zinc-800 dark:text-zinc-200">{config.task_timeout_s}s</span>
-                  <span className="text-zinc-500">Rework Cycles:</span>
+                  <span className="text-zinc-500">{t('missions.reworkCyclesShort')}:</span>
                   <span className="text-zinc-800 dark:text-zinc-200">{config.max_rework_cycles}</span>
-                  <span className="text-zinc-500">Network:</span>
-                  <span className="text-zinc-800 dark:text-zinc-200">{config.network_access ? 'Yes' : 'No'}</span>
+                  <span className="text-zinc-500">{t('missions.networkShort')}:</span>
+                  <span className="text-zinc-800 dark:text-zinc-200">
+                    {config.network_access ? t('missions.yes') : t('missions.no')}
+                  </span>
                 </div>
               </div>
             </div>
@@ -397,18 +406,30 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
             className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
           >
             <ChevronLeft className="w-4 h-4" />
-            {currentStep > 0 ? 'Back' : 'Cancel'}
+            {currentStep > 0 ? t('missions.back') : t('missions.cancel')}
           </button>
 
           {currentStep < STEPS.length - 1 ? (
-            <button
-              onClick={() => setCurrentStep(currentStep + 1)}
-              disabled={!canProceed()}
-              className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
-            >
-              Next
-              <ChevronRight className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-2">
+              {currentStep === 0 && (
+                <button
+                  onClick={handleSubmit}
+                  disabled={!canProceed() || isSubmitting}
+                  className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-500/10 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+                >
+                  <Rocket className="w-4 h-4" />
+                  {isSubmitting ? t('missions.creating') : t('missions.quickStart')}
+                </button>
+              )}
+              <button
+                onClick={() => setCurrentStep(currentStep + 1)}
+                disabled={!canProceed() || isSubmitting}
+                className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+              >
+                {t('missions.next')}
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
           ) : (
             <button
               onClick={handleSubmit}
@@ -416,7 +437,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
               className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
             >
               <Rocket className="w-4 h-4" />
-              {isSubmitting ? 'Creating...' : t('missions.start')}
+              {isSubmitting ? t('missions.creating') : t('missions.start')}
             </button>
           )}
         </div>
@@ -424,4 +445,3 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
     </div>
   );
 };
-

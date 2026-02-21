@@ -126,6 +126,8 @@
 - [ ] 11.5 Integration tests for missions API endpoints
 - [ ] 11.6 Frontend component tests for MissionCreateWizard
 - [ ] 11.7 Frontend store tests for missionStore
+- [x] 11.A Add regression test for mission settings DB fallback behavior
+- [x] 11.B Add regression test to prevent completion with unfinished tasks
 
 ## Phase 12: Documentation
 - [ ] 12.1 API documentation for all mission endpoints

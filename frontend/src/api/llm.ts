@@ -1,4 +1,5 @@
 import apiClient from './client';
+import type { RequestConfigWithMeta } from './client';
 
 /**
  * LLM Provider API
@@ -115,6 +116,10 @@ export interface ProviderModelsMetadata {
   models: Record<string, ModelMetadata>;
 }
 
+export interface ApiRequestOptions {
+  suppressErrorToast?: boolean;
+}
+
 export const llmApi = {
   /**
    * Test connection to a provider
@@ -180,9 +185,15 @@ export const llmApi = {
   /**
    * Get available providers and models for agent configuration
    */
-  getAvailableProviders: async (): Promise<Record<string, string[]>> => {
+  getAvailableProviders: async (
+    options?: ApiRequestOptions
+  ): Promise<Record<string, string[]>> => {
+    const requestConfig: RequestConfigWithMeta = {
+      suppressErrorToast: options?.suppressErrorToast,
+    };
     const response = await apiClient.get<Record<string, string[]>>(
-      '/llm/providers/available'
+      '/llm/providers/available',
+      requestConfig
     );
     return response.data;
   },

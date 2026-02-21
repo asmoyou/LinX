@@ -1,4 +1,5 @@
 import apiClient from './client';
+import type { RequestConfigWithMeta } from './client';
 import type {
   Mission,
   MissionAgent,
@@ -47,7 +48,18 @@ export const missionsApi = {
     page?: number;
     page_size?: number;
   }): Promise<MissionListResponse> => {
-    const response = await apiClient.get<MissionListResponse>('/missions', { params });
+    const queryParams = params
+      ? (() => {
+          const { status, ...rest } = params;
+          return {
+            ...rest,
+            ...(status ? { status_filter: status } : {}),
+          };
+        })()
+      : undefined;
+    const response = await apiClient.get<MissionListResponse>('/missions', {
+      params: queryParams,
+    });
     return response.data;
   },
 
@@ -147,11 +159,28 @@ export const missionsApi = {
   },
 
   getWorkspaceFiles: async (missionId: string, path?: string): Promise<WorkspaceFile[]> => {
-    const response = await apiClient.get<WorkspaceFile[]>(
-      `/missions/${missionId}/workspace`,
-      { params: { path } }
+    const requestConfig: RequestConfigWithMeta = {
+      params: path ? { path } : undefined,
+      suppressErrorToast: true,
+    };
+    const response = await apiClient.get<Array<{
+      name: string;
+      path: string;
+      size: number;
+      is_directory?: boolean;
+      is_dir?: boolean;
+      modified_at?: string;
+    }>>(
+      `/missions/${missionId}/workspace/files`,
+      requestConfig
     );
-    return response.data;
+    return response.data.map((item) => ({
+      name: item.name,
+      path: item.path,
+      size: item.size,
+      is_dir: item.is_dir ?? Boolean(item.is_directory),
+      modified_at: item.modified_at,
+    }));
   },
 
   getSettings: async (): Promise<MissionSettings> => {
@@ -160,7 +189,12 @@ export const missionsApi = {
   },
 
   updateSettings: async (data: Partial<MissionSettings>): Promise<MissionSettings> => {
-    const response = await apiClient.put<MissionSettings>('/missions/settings', data);
+    const requestConfig: RequestConfigWithMeta = { suppressErrorToast: true };
+    const response = await apiClient.put<MissionSettings>(
+      '/missions/settings',
+      data,
+      requestConfig
+    );
     return response.data;
   },
 };

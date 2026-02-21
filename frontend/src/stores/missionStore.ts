@@ -11,6 +11,30 @@ import type {
   MissionSettings,
 } from '../types/mission';
 
+const normalizeMissionStatus = (mission: Mission): Mission => {
+  if (
+    mission.status === 'completed' &&
+    mission.total_tasks > 0 &&
+    (mission.completed_tasks < mission.total_tasks || mission.failed_tasks > 0)
+  ) {
+    return {
+      ...mission,
+      status: mission.failed_tasks > 0 ? 'failed' : 'executing',
+    };
+  }
+  return mission;
+};
+
+const getErrorMessage = (error: unknown, fallback: string): string => {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === 'string' && error) {
+    return error;
+  }
+  return fallback;
+};
+
 interface MissionState {
   missions: Mission[];
   selectedMission: Mission | null;
@@ -90,40 +114,57 @@ export const useMissionStore = create<MissionState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const response = await missionsApi.getAll(params);
-      set({ missions: response.items, isLoading: false });
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to fetch missions', isLoading: false });
+      set({
+        missions: response.items.map(normalizeMissionStatus),
+        isLoading: false,
+      });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to fetch missions'), isLoading: false });
     }
   },
 
   fetchMission: async (missionId) => {
     set({ isLoading: true, error: null });
     try {
-      const mission = await missionsApi.getById(missionId);
+      const mission = normalizeMissionStatus(await missionsApi.getById(missionId));
       set({ selectedMission: mission, isLoading: false });
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to fetch mission', isLoading: false });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to fetch mission'), isLoading: false });
     }
   },
 
   createMission: async (data) => {
     set({ isLoading: true, error: null });
     try {
-      const mission = await missionsApi.create(data);
+      const mission = normalizeMissionStatus(await missionsApi.create(data));
       set((state) => ({
         missions: [mission, ...state.missions],
         isLoading: false,
       }));
       return mission;
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to create mission', isLoading: false });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to create mission'), isLoading: false });
       throw err;
     }
   },
 
   startMission: async (missionId) => {
+    // Optimistic transition prevents long backend startup from looking "stuck in draft".
+    set((state) => ({
+      missions: state.missions.map((m) =>
+        m.mission_id === missionId && m.status === 'draft'
+          ? { ...m, status: 'requirements' }
+          : m
+      ),
+      selectedMission:
+        state.selectedMission?.mission_id === missionId &&
+        state.selectedMission.status === 'draft'
+          ? { ...state.selectedMission, status: 'requirements' }
+          : state.selectedMission,
+    }));
+
     try {
-      const updated = await missionsApi.start(missionId);
+      const updated = normalizeMissionStatus(await missionsApi.start(missionId));
       if (updated?.mission_id) {
         set((state) => ({
           missions: state.missions.map((m) =>
@@ -134,7 +175,7 @@ export const useMissionStore = create<MissionState>((set, get) => ({
         }));
       } else {
         // Fallback: re-fetch the mission if the response wasn't a full object
-        const mission = await missionsApi.getById(missionId);
+        const mission = normalizeMissionStatus(await missionsApi.getById(missionId));
         set((state) => ({
           missions: state.missions.map((m) =>
             m.mission_id === missionId ? mission : m
@@ -143,15 +184,28 @@ export const useMissionStore = create<MissionState>((set, get) => ({
             state.selectedMission?.mission_id === missionId ? mission : state.selectedMission,
         }));
       }
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to start mission' });
+    } catch (err: unknown) {
+      // Rollback optimistic status with authoritative backend state when possible.
+      try {
+        const mission = normalizeMissionStatus(await missionsApi.getById(missionId));
+        set((state) => ({
+          missions: state.missions.map((m) =>
+            m.mission_id === missionId ? mission : m
+          ),
+          selectedMission:
+            state.selectedMission?.mission_id === missionId ? mission : state.selectedMission,
+        }));
+      } catch {
+        // keep optimistic state if rollback fetch fails; error is surfaced below
+      }
+      set({ error: getErrorMessage(err, 'Failed to start mission') });
       throw err;
     }
   },
 
   cancelMission: async (missionId) => {
     try {
-      const updated = await missionsApi.cancel(missionId);
+      const updated = normalizeMissionStatus(await missionsApi.cancel(missionId));
       if (updated?.mission_id) {
         set((state) => ({
           missions: state.missions.map((m) =>
@@ -161,7 +215,7 @@ export const useMissionStore = create<MissionState>((set, get) => ({
             state.selectedMission?.mission_id === missionId ? updated : state.selectedMission,
         }));
       } else {
-        const mission = await missionsApi.getById(missionId);
+        const mission = normalizeMissionStatus(await missionsApi.getById(missionId));
         set((state) => ({
           missions: state.missions.map((m) =>
             m.mission_id === missionId ? mission : m
@@ -170,8 +224,8 @@ export const useMissionStore = create<MissionState>((set, get) => ({
             state.selectedMission?.mission_id === missionId ? mission : state.selectedMission,
         }));
       }
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to cancel mission' });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to cancel mission') });
       throw err;
     }
   },
@@ -182,11 +236,11 @@ export const useMissionStore = create<MissionState>((set, get) => ({
       // Only push to events if we got a valid event back
       if (response?.event_id) {
         set((state) => ({
-          missionEvents: [...state.missionEvents, response as unknown as MissionEvent],
+          missionEvents: [...state.missionEvents, response],
         }));
       }
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to send clarification' });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to send clarification') });
       throw err;
     }
   },
@@ -199,8 +253,8 @@ export const useMissionStore = create<MissionState>((set, get) => ({
         selectedMission:
           state.selectedMission?.mission_id === missionId ? null : state.selectedMission,
       }));
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to delete mission' });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to delete mission') });
       throw err;
     }
   },
@@ -211,8 +265,8 @@ export const useMissionStore = create<MissionState>((set, get) => ({
     try {
       const tasks = await missionsApi.getTasks(missionId);
       set({ missionTasks: tasks });
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to fetch tasks' });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to fetch tasks') });
     }
   },
 
@@ -220,8 +274,8 @@ export const useMissionStore = create<MissionState>((set, get) => ({
     try {
       const agents = await missionsApi.getAgents(missionId);
       set({ missionAgents: agents });
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to fetch agents' });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to fetch agents') });
     }
   },
 
@@ -229,8 +283,8 @@ export const useMissionStore = create<MissionState>((set, get) => ({
     try {
       const events = await missionsApi.getEvents(missionId);
       set({ missionEvents: events });
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to fetch events' });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to fetch events') });
     }
   },
 
@@ -238,8 +292,8 @@ export const useMissionStore = create<MissionState>((set, get) => ({
     try {
       const attachments = await missionsApi.getAttachments(missionId);
       set({ missionAttachments: attachments });
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to fetch attachments' });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to fetch attachments') });
     }
   },
 
@@ -249,8 +303,8 @@ export const useMissionStore = create<MissionState>((set, get) => ({
       set((state) => ({
         missionAttachments: [...state.missionAttachments, attachment],
       }));
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to upload attachment' });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to upload attachment') });
       throw err;
     }
   },
@@ -263,8 +317,8 @@ export const useMissionStore = create<MissionState>((set, get) => ({
           (a) => a.attachment_id !== attachmentId
         ),
       }));
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to delete attachment' });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to delete attachment') });
       throw err;
     }
   },
@@ -273,8 +327,8 @@ export const useMissionStore = create<MissionState>((set, get) => ({
     try {
       const settings = await missionsApi.getSettings();
       set({ missionSettings: settings });
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to fetch mission settings' });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to fetch mission settings') });
     }
   },
 
@@ -282,27 +336,34 @@ export const useMissionStore = create<MissionState>((set, get) => ({
     try {
       const settings = await missionsApi.updateSettings(data);
       set({ missionSettings: settings });
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to update mission settings' });
+    } catch (err: unknown) {
+      set({ error: getErrorMessage(err, 'Failed to update mission settings') });
       throw err;
     }
   },
 
   // WebSocket handlers
   handleMissionEvent: (event) => {
-    set((state) => ({
-      missionEvents: [...state.missionEvents, event],
-    }));
+    set((state) => {
+      if (state.missionEvents.some((existing) => existing.event_id === event.event_id)) {
+        return state;
+      }
+      const nextEvents = [...state.missionEvents, event];
+      return {
+        missionEvents: nextEvents.slice(-500),
+      };
+    });
   },
 
   handleMissionStatusUpdate: ({ mission_id, status, updates }) => {
     set((state) => ({
-      missions: state.missions.map((m) =>
-        m.mission_id === mission_id ? { ...m, status, ...updates } : m
-      ),
+      missions: state.missions.map((m) => {
+        if (m.mission_id !== mission_id) return m;
+        return normalizeMissionStatus({ ...m, status, ...updates });
+      }),
       selectedMission:
         state.selectedMission?.mission_id === mission_id
-          ? { ...state.selectedMission, status, ...updates }
+          ? normalizeMissionStatus({ ...state.selectedMission, status, ...updates })
           : state.selectedMission,
     }));
   },

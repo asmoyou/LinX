@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { X, Download, FileText, Folder, Star } from 'lucide-react';
 import { missionsApi } from '@/api/missions';
 import type { MissionDeliverable } from '@/types/mission';
+import type { WorkspaceFile } from '@/api/missions';
 
 interface DeliverablesPanelProps {
   missionId: string;
@@ -25,17 +26,45 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
 }) => {
   const { t } = useTranslation();
   const [deliverables, setDeliverables] = useState<MissionDeliverable[]>([]);
+  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
-    setIsLoading(true);
-    missionsApi
-      .getDeliverables(missionId)
-      .then(setDeliverables)
-      .catch(() => setDeliverables([]))
+    queueMicrotask(() => {
+      setIsLoading(true);
+      setLoadError(null);
+    });
+    Promise.allSettled([
+      missionsApi.getDeliverables(missionId),
+      missionsApi.getWorkspaceFiles(missionId),
+    ])
+      .then(([deliverablesResult, workspaceResult]) => {
+        if (deliverablesResult.status === 'fulfilled') {
+          setDeliverables(
+            Array.isArray(deliverablesResult.value) ? deliverablesResult.value : []
+          );
+        } else {
+          setDeliverables([]);
+        }
+
+        if (workspaceResult.status === 'fulfilled') {
+          const files = Array.isArray(workspaceResult.value) ? workspaceResult.value : [];
+          setWorkspaceFiles(files.filter((file) => !file.is_dir));
+        } else {
+          setWorkspaceFiles([]);
+        }
+
+        if (
+          deliverablesResult.status === 'rejected' &&
+          workspaceResult.status === 'rejected'
+        ) {
+          setLoadError(t('missions.deliverablesLoadFailed'));
+        }
+      })
       .finally(() => setIsLoading(false));
-  }, [missionId, isOpen]);
+  }, [missionId, isOpen, t]);
 
   const handleDownload = async (deliverable: MissionDeliverable) => {
     try {
@@ -57,9 +86,16 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
 
   const targetFiles = deliverables.filter((d) => d.is_target);
   const otherFiles = deliverables.filter((d) => !d.is_target);
+  const hasWorkspaceFiles = workspaceFiles.length > 0;
 
   return (
-    <div className="fixed right-0 top-0 h-full w-96 glass-panel border-l border-zinc-200 dark:border-zinc-700 z-40 flex flex-col animate-in slide-in-from-right duration-300" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
+    <div
+      className="fixed right-0 w-96 glass-panel border-l border-zinc-200 dark:border-zinc-700 z-[60] pointer-events-auto flex flex-col animate-in slide-in-from-right duration-300 shadow-2xl"
+      style={{
+        top: 'var(--app-header-height, 4rem)',
+        height: 'calc(100vh - var(--app-header-height, 4rem))',
+      }}
+    >
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-zinc-200 dark:border-zinc-700">
         <div className="flex items-center gap-2">
@@ -70,6 +106,7 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
           <span className="text-xs text-zinc-400">({deliverables.length})</span>
         </div>
         <button
+          type="button"
           onClick={onClose}
           className="p-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
         >
@@ -80,12 +117,16 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4">
         {isLoading && (
-          <div className="text-center text-zinc-400 text-sm py-8">Loading...</div>
+          <div className="text-center text-zinc-400 text-sm py-8">{t('missions.loading')}</div>
         )}
 
-        {!isLoading && deliverables.length === 0 && (
+        {!isLoading && loadError && (
+          <div className="text-center text-red-500 text-sm py-4">{loadError}</div>
+        )}
+
+        {!isLoading && deliverables.length === 0 && !hasWorkspaceFiles && (
           <div className="text-center text-zinc-400 text-sm py-8">
-            No deliverables yet
+            {t('missions.noDeliverablesYet')}
           </div>
         )}
 
@@ -94,7 +135,7 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
           <div className="mb-4">
             <h4 className="text-xs font-semibold text-zinc-500 uppercase mb-2 flex items-center gap-1">
               <Star className="w-3 h-3 text-amber-500" />
-              Target Deliverables
+              {t('missions.targetDeliverables')}
             </h4>
             <div className="space-y-2">
               {targetFiles.map((d) => (
@@ -109,12 +150,37 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
           <div>
             {targetFiles.length > 0 && (
               <h4 className="text-xs font-semibold text-zinc-500 uppercase mb-2">
-                Other Files
+                {t('missions.otherFiles')}
               </h4>
             )}
             <div className="space-y-2">
               {otherFiles.map((d) => (
                 <FileItem key={d.path} deliverable={d} onDownload={handleDownload} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {!isLoading && deliverables.length === 0 && hasWorkspaceFiles && (
+          <div>
+            <h4 className="text-xs font-semibold text-zinc-500 uppercase mb-2">
+              {t('missions.workspaceFiles')}
+            </h4>
+            <div className="space-y-2">
+              {workspaceFiles.map((file) => (
+                <div
+                  key={file.path}
+                  className="flex items-center gap-3 p-3 rounded-lg border border-zinc-200 dark:border-zinc-700"
+                >
+                  <FileText className="w-5 h-5 text-zinc-400 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200 truncate">
+                      {file.name}
+                    </p>
+                    <p className="text-[10px] text-zinc-400 truncate">{file.path}</p>
+                  </div>
+                  <p className="text-[10px] text-zinc-400">{formatFileSize(file.size)}</p>
+                </div>
               ))}
             </div>
           </div>
@@ -129,6 +195,7 @@ const FileItem: React.FC<{
   onDownload: (d: MissionDeliverable) => void;
   highlight?: boolean;
 }> = ({ deliverable, onDownload, highlight }) => {
+  const { t } = useTranslation();
   return (
     <div
       className={`flex items-center gap-3 p-3 rounded-lg border transition-colors ${
@@ -145,9 +212,10 @@ const FileItem: React.FC<{
         <p className="text-[10px] text-zinc-400">{formatFileSize(deliverable.size)}</p>
       </div>
       <button
+        type="button"
         onClick={() => onDownload(deliverable)}
         className="p-1.5 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-lg transition-colors"
-        title="Download"
+        title={t('missions.download')}
       >
         <Download className="w-4 h-4 text-zinc-500" />
       </button>

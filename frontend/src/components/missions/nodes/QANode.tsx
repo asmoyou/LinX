@@ -3,19 +3,31 @@ import { Handle, Position } from 'reactflow';
 import { ShieldCheck, AlertTriangle, CheckCircle2 } from 'lucide-react';
 
 interface QANodeData {
-  verdict?: 'pass' | 'fail' | 'pending';
+  verdict?: string;
   issues_count?: number;
   summary?: string;
 }
 
-export const QANode: React.FC<{ data: QANodeData }> = memo(({ data }) => {
+export const QANode: React.FC<{ data?: QANodeData }> = memo(({ data }) => {
+  const safeData = data ?? {};
   const verdictConfig = {
     pass: { icon: CheckCircle2, color: 'border-green-400 bg-green-50 dark:bg-green-500/5', text: 'text-green-600', label: 'Passed' },
     fail: { icon: AlertTriangle, color: 'border-red-400 bg-red-50 dark:bg-red-500/5', text: 'text-red-600', label: 'Failed' },
     pending: { icon: ShieldCheck, color: 'border-indigo-300 bg-indigo-50 dark:bg-indigo-500/5', text: 'text-indigo-600', label: 'Pending' },
   };
 
-  const config = verdictConfig[data.verdict || 'pending'];
+  const normalizedVerdict = (() => {
+    const rawVerdict = String(safeData.verdict || '').trim().toLowerCase();
+    if (rawVerdict === 'pass' || rawVerdict === 'approved' || rawVerdict === 'success') {
+      return 'pass' as const;
+    }
+    if (rawVerdict === 'fail' || rawVerdict === 'rework' || rawVerdict === 'rejected') {
+      return 'fail' as const;
+    }
+    return 'pending' as const;
+  })();
+
+  const config = verdictConfig[normalizedVerdict] ?? verdictConfig.pending;
   const Icon = config.icon;
 
   return (
@@ -30,15 +42,15 @@ export const QANode: React.FC<{ data: QANodeData }> = memo(({ data }) => {
         </span>
       </div>
 
-      {data.issues_count !== undefined && data.issues_count > 0 && (
+      {safeData.issues_count !== undefined && safeData.issues_count > 0 && (
         <p className="text-[10px] text-red-500 mb-1">
-          {data.issues_count} issue{data.issues_count !== 1 ? 's' : ''} found
+          {safeData.issues_count} issue{safeData.issues_count !== 1 ? 's' : ''} found
         </p>
       )}
 
-      {data.summary && (
+      {safeData.summary && (
         <p className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-snug line-clamp-2">
-          {data.summary}
+          {safeData.summary}
         </p>
       )}
 

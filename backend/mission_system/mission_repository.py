@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import desc
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import joinedload
 
 from database.connection import get_db_session
@@ -116,12 +117,7 @@ def list_missions(
             query = query.filter(Mission.created_by_user_id == user_id)
         if status is not None:
             query = query.filter(Mission.status == status)
-        missions = (
-            query.order_by(desc(Mission.created_at))
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
+        missions = query.order_by(desc(Mission.created_at)).offset(offset).limit(limit).all()
         for m in missions:
             session.expunge(m)
         return missions
@@ -139,6 +135,20 @@ def count_missions(
         if status is not None:
             query = query.filter(Mission.status == status)
         return query.count()
+
+
+def delete_mission(mission_id: UUID) -> bool:
+    """Delete a mission by ID.
+
+    Returns:
+        bool: True when a mission row was deleted, False when it did not exist.
+    """
+    with get_db_session() as session:
+        mission = session.query(Mission).filter(Mission.mission_id == mission_id).first()
+        if mission is None:
+            return False
+        session.delete(mission)
+        return True
 
 
 # ------------------------------------------------------------------
@@ -230,11 +240,7 @@ def update_agent_status(
 def list_mission_agents(mission_id: UUID) -> List[MissionAgent]:
     """List all agents assigned to a mission."""
     with get_db_session() as session:
-        agents = (
-            session.query(MissionAgent)
-            .filter(MissionAgent.mission_id == mission_id)
-            .all()
-        )
+        agents = session.query(MissionAgent).filter(MissionAgent.mission_id == mission_id).all()
         for a in agents:
             session.expunge(a)
         return agents
@@ -252,17 +258,10 @@ def list_events(
 ) -> List[MissionEvent]:
     """List events for a mission, newest first."""
     with get_db_session() as session:
-        query = (
-            session.query(MissionEvent)
-            .filter(MissionEvent.mission_id == mission_id)
-        )
+        query = session.query(MissionEvent).filter(MissionEvent.mission_id == mission_id)
         if event_type:
             query = query.filter(MissionEvent.event_type == event_type)
-        events = (
-            query.order_by(desc(MissionEvent.created_at))
-            .limit(limit)
-            .all()
-        )
+        events = query.order_by(desc(MissionEvent.created_at)).limit(limit).all()
         for e in events:
             session.expunge(e)
         return events
@@ -302,28 +301,8 @@ DEFAULT_EXECUTION_CONFIG = {
 }
 
 
-def get_mission_settings(user_id: UUID) -> Optional[Dict[str, Any]]:
-    """Get mission settings for a user, returning defaults if not found."""
-    with get_db_session() as session:
-        settings = (
-            session.query(MissionSettings)
-            .filter(MissionSettings.user_id == user_id)
-            .first()
-        )
-        if settings:
-            result = {
-                "leader_config": {**DEFAULT_LEADER_CONFIG, **(settings.leader_config or {})},
-                "supervisor_config": {
-                    **DEFAULT_SUPERVISOR_CONFIG,
-                    **(settings.supervisor_config or {}),
-                },
-                "qa_config": {**DEFAULT_QA_CONFIG, **(settings.qa_config or {})},
-                "execution_config": {
-                    **DEFAULT_EXECUTION_CONFIG,
-                    **(settings.execution_config or {}),
-                },
-            }
-            return result
+def _default_mission_settings() -> Dict[str, Any]:
+    """Build a deep-copied default mission settings payload."""
     return {
         "leader_config": DEFAULT_LEADER_CONFIG.copy(),
         "supervisor_config": DEFAULT_SUPERVISOR_CONFIG.copy(),
@@ -332,30 +311,72 @@ def get_mission_settings(user_id: UUID) -> Optional[Dict[str, Any]]:
     }
 
 
+def get_mission_settings(user_id: UUID) -> Dict[str, Any]:
+    """Get mission settings for a user, returning defaults if not found."""
+    try:
+        with get_db_session() as session:
+            settings = (
+                session.query(MissionSettings).filter(MissionSettings.user_id == user_id).first()
+            )
+            if settings:
+                result = {
+                    "leader_config": {
+                        **DEFAULT_LEADER_CONFIG,
+                        **(settings.leader_config or {}),
+                    },
+                    "supervisor_config": {
+                        **DEFAULT_SUPERVISOR_CONFIG,
+                        **(settings.supervisor_config or {}),
+                    },
+                    "qa_config": {
+                        **DEFAULT_QA_CONFIG,
+                        **(settings.qa_config or {}),
+                    },
+                    "execution_config": {
+                        **DEFAULT_EXECUTION_CONFIG,
+                        **(settings.execution_config or {}),
+                    },
+                }
+                return result
+    except SQLAlchemyError as exc:
+        logger.warning(
+            "Falling back to default mission settings for user %s due to DB error: %s",
+            user_id,
+            exc,
+        )
+    return _default_mission_settings()
+
+
 def upsert_mission_settings(user_id: UUID, data: Dict[str, Any]) -> Dict[str, Any]:
     """Create or update mission settings for a user."""
-    with get_db_session() as session:
-        settings = (
-            session.query(MissionSettings)
-            .filter(MissionSettings.user_id == user_id)
-            .first()
-        )
-        if settings is None:
-            settings = MissionSettings(
-                id=uuid4(),
-                user_id=user_id,
+    try:
+        with get_db_session() as session:
+            settings = (
+                session.query(MissionSettings).filter(MissionSettings.user_id == user_id).first()
             )
-            session.add(settings)
+            if settings is None:
+                settings = MissionSettings(
+                    id=uuid4(),
+                    user_id=user_id,
+                )
+                session.add(settings)
 
-        if "leader_config" in data:
-            settings.leader_config = data["leader_config"]
-        if "supervisor_config" in data:
-            settings.supervisor_config = data["supervisor_config"]
-        if "qa_config" in data:
-            settings.qa_config = data["qa_config"]
-        if "execution_config" in data:
-            settings.execution_config = data["execution_config"]
+            if "leader_config" in data:
+                settings.leader_config = data["leader_config"]
+            if "supervisor_config" in data:
+                settings.supervisor_config = data["supervisor_config"]
+            if "qa_config" in data:
+                settings.qa_config = data["qa_config"]
+            if "execution_config" in data:
+                settings.execution_config = data["execution_config"]
 
-        session.flush()
+            session.flush()
+    except SQLAlchemyError as exc:
+        logger.exception(
+            "Failed to persist mission settings for user %s due to DB error: %s",
+            user_id,
+            exc,
+        )
+        raise
 
     return get_mission_settings(user_id)

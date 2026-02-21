@@ -3,6 +3,16 @@ import type { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import { useAuthStore } from '../stores/authStore';
 import toast from 'react-hot-toast';
 
+export interface RequestConfigWithMeta extends AxiosRequestConfig {
+  _retry?: boolean;
+  suppressErrorToast?: boolean;
+}
+
+type ApiErrorPayload = {
+  message?: string;
+  detail?: string;
+};
+
 /**
  * API Client Configuration
  */
@@ -106,7 +116,7 @@ apiClient.interceptors.response.use(
     return response;
   },
   async (error: AxiosError) => {
-    const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean };
+    const originalRequest = error.config as RequestConfigWithMeta;
 
     // Log error in development
     if (import.meta.env.DEV) {
@@ -178,11 +188,13 @@ apiClient.interceptors.response.use(
       }
     }
 
+    const suppressErrorToast = Boolean(originalRequest?.suppressErrorToast);
+
     // Handle specific error status codes
     // Skip error toast for 401 (already handled above)
-    if (error.response && error.response.status !== 401) {
+    if (error.response && error.response.status !== 401 && !suppressErrorToast) {
       const status = error.response.status;
-      const errorData = error.response.data as any;
+      const errorData = error.response.data as ApiErrorPayload | undefined;
       
       switch (status) {
         case 400:
@@ -215,46 +227,57 @@ apiClient.interceptors.response.use(
 
         case 500:
           // Internal Server Error
-          toast.error('An unexpected error occurred. Please try again later.', {
+          toast.error(errorData?.message || errorData?.detail || 'An unexpected error occurred. Please try again later.', {
             duration: 5000,
           });
           break;
 
         case 502:
           // Bad Gateway
-          toast.error('The service is temporarily unavailable. Please try again later.', {
-            duration: 5000,
-          });
+          toast.error(
+            errorData?.message ||
+              errorData?.detail ||
+              'The service is temporarily unavailable. Please try again later.',
+            {
+              duration: 5000,
+            }
+          );
           break;
 
         case 503:
           // Service Unavailable
-          toast.error('The service is under maintenance. Please try again later.', {
-            duration: 5000,
-          });
+          toast.error(
+            errorData?.message ||
+              errorData?.detail ||
+              'The service is under maintenance. Please try again later.',
+            {
+              duration: 5000,
+            }
+          );
           break;
 
         default:
           // Catch-all for other HTTP errors (4xx, 5xx)
           if (status >= 400) {
-            const message = errorData?.message || errorData?.detail || `Request failed with status ${status}`;
+            const message =
+              errorData?.message || errorData?.detail || `Request failed with status ${status}`;
             toast.error(message, {
               duration: 5000,
             });
           }
           break;
       }
-    } else if (error.message === 'Network Error') {
+    } else if (error.message === 'Network Error' && !suppressErrorToast) {
       // Handle network errors
       toast.error('Unable to connect to the server. Please check your connection.', {
         duration: 5000,
       });
-    } else if (error.code === 'ECONNABORTED') {
+    } else if (error.code === 'ECONNABORTED' && !suppressErrorToast) {
       // Handle timeout
       toast.error('The request took too long to complete. Please try again.', {
         duration: 5000,
       });
-    } else if (!error.response) {
+    } else if (!error.response && !suppressErrorToast) {
       // Catch-all for any other errors (but not HTTP errors)
       toast.error(error.message || 'An unexpected error occurred.', {
         duration: 4000,

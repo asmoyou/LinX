@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from access_control.permissions import CurrentUser, get_current_user
@@ -158,6 +159,16 @@ def _mission_to_response(m) -> dict:
     }
 
 
+def _assert_mission_accessible(mission_id: UUID, user_id: str):
+    """Ensure the mission exists and belongs to the current user."""
+    from mission_system.mission_repository import get_mission as repo_get
+
+    mission = repo_get(mission_id)
+    if mission is None or mission.created_by_user_id != UUID(user_id):
+        raise HTTPException(status_code=404, detail="Mission not found")
+    return mission
+
+
 # ------------------------------------------------------------------
 # Mission CRUD
 # ------------------------------------------------------------------
@@ -180,6 +191,34 @@ async def create_mission(
     if request.mission_config:
         merged_config.update(request.mission_config)
 
+        # Backward compatibility: map legacy top-level execution keys into execution_config.
+        legacy_exec: Dict[str, Any] = {}
+        for key in (
+            "max_retries",
+            "task_timeout_s",
+            "max_rework_cycles",
+            "max_concurrent_tasks",
+            "network_access",
+        ):
+            if key in request.mission_config:
+                legacy_exec[key] = request.mission_config[key]
+        if "network_enabled" in request.mission_config and "network_access" not in legacy_exec:
+            legacy_exec["network_access"] = bool(request.mission_config["network_enabled"])
+
+        request_exec = request.mission_config.get("execution_config", {})
+        if not isinstance(request_exec, dict):
+            request_exec = {}
+
+        if legacy_exec or request_exec:
+            effective_exec: Dict[str, Any] = {}
+            if isinstance(user_settings.get("execution_config"), dict):
+                effective_exec.update(user_settings["execution_config"])
+            if isinstance(merged_config.get("execution_config"), dict):
+                effective_exec.update(merged_config["execution_config"])
+            effective_exec.update(request_exec)
+            effective_exec.update(legacy_exec)
+            merged_config["execution_config"] = effective_exec
+
     mission = repo_create(
         title=request.title,
         instructions=request.instructions,
@@ -192,6 +231,7 @@ async def create_mission(
 
 @router.get("")
 async def list_missions(
+    status: Optional[str] = None,
     status_filter: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
@@ -204,13 +244,14 @@ async def list_missions(
     )
 
     user_id = UUID(current_user.user_id)
+    effective_status = status_filter or status
     missions = repo_list(
         user_id=user_id,
-        status=status_filter,
+        status=effective_status,
         limit=limit,
         offset=offset,
     )
-    total = count_missions(user_id=user_id, status=status_filter)
+    total = count_missions(user_id=user_id, status=effective_status)
     return {
         "items": [_mission_to_response(m) for m in missions],
         "total": total,
@@ -240,14 +281,30 @@ async def update_settings(
 ):
     """Update the current user's mission settings defaults."""
     from mission_system.mission_repository import upsert_mission_settings
+    from sqlalchemy.exc import SQLAlchemyError
 
-    data = request.model_dump(exclude_none=True)
-    # Convert nested Pydantic models to plain dicts
-    for key in ["leader_config", "supervisor_config", "qa_config", "execution_config"]:
-        if key in data and hasattr(data[key], "model_dump"):
-            data[key] = data[key].model_dump()
-    settings = upsert_mission_settings(UUID(current_user.user_id), data)
-    return settings
+    try:
+        data = request.model_dump(exclude_none=True)
+        # Convert nested Pydantic models to plain dicts
+        for key in ["leader_config", "supervisor_config", "qa_config", "execution_config"]:
+            if key in data and hasattr(data[key], "model_dump"):
+                data[key] = data[key].model_dump()
+        settings = upsert_mission_settings(UUID(current_user.user_id), data)
+        return settings
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Mission settings storage is unavailable. "
+                "Please run database migrations and try again."
+            ),
+        )
+    except Exception as exc:
+        logger.exception("Failed to update mission settings for user %s", current_user.user_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update mission settings: {exc}",
+        )
 
 
 @router.get("/{mission_id}")
@@ -280,9 +337,7 @@ async def update_mission(
     if mission is None:
         raise HTTPException(status_code=404, detail="Mission not found")
     if mission.status != "draft":
-        raise HTTPException(
-            status_code=400, detail="Only draft missions can be updated"
-        )
+        raise HTTPException(status_code=400, detail="Only draft missions can be updated")
 
     updates = {k: v for k, v in request.model_dump().items() if v is not None}
     if updates:
@@ -295,21 +350,27 @@ async def delete_mission(
     mission_id: UUID,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Delete a draft mission or cancel a running one."""
+    """Delete a mission. Running missions are cancelled first, then deleted."""
     from mission_system.mission_repository import (
+        delete_mission as repo_delete,
         get_mission as repo_get,
-        update_mission_status,
     )
     from mission_system.orchestrator import get_orchestrator
 
     mission = repo_get(mission_id)
     if mission is None:
         raise HTTPException(status_code=404, detail="Mission not found")
+    if mission.created_by_user_id != UUID(current_user.user_id):
+        raise HTTPException(status_code=404, detail="Mission not found")
 
     if mission.status in ("executing", "requirements", "planning", "reviewing", "qa"):
         await get_orchestrator().cancel_mission(mission_id)
-    else:
-        update_mission_status(mission_id, "cancelled")
+    if not repo_delete(mission_id):
+        raise HTTPException(status_code=404, detail="Mission not found")
+    # Defensive verification to avoid "deleted locally but reappears after refresh" surprises.
+    if repo_get(mission_id) is not None:
+        logger.error("Mission %s still exists after delete attempt", mission_id)
+        raise HTTPException(status_code=500, detail="Mission deletion did not persist")
 
 
 # ------------------------------------------------------------------
@@ -432,13 +493,9 @@ async def start_mission(
     if mission is None:
         raise HTTPException(status_code=404, detail="Mission not found")
     if mission.status != "draft":
-        raise HTTPException(
-            status_code=400, detail="Only draft missions can be started"
-        )
+        raise HTTPException(status_code=400, detail="Only draft missions can be started")
 
-    await get_orchestrator().start_mission(
-        mission_id, UUID(current_user.user_id)
-    )
+    await get_orchestrator().start_mission(mission_id, UUID(current_user.user_id))
     # Re-fetch to return the updated mission with new status
     updated = repo_get(mission_id)
     return _mission_to_response(updated)
@@ -497,19 +554,33 @@ async def list_mission_agents(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """List agents assigned to a mission."""
-    from mission_system.mission_repository import list_mission_agents as repo_list
+    _assert_mission_accessible(mission_id, current_user.user_id)
 
-    return [
-        {
-            "id": a.id,
-            "mission_id": a.mission_id,
-            "agent_id": a.agent_id,
-            "role": a.role,
-            "status": a.status,
-            "is_temporary": a.is_temporary,
-        }
-        for a in repo_list(mission_id)
-    ]
+    from database.connection import get_db_session
+    from database.mission_models import MissionAgent
+    from database.models import Agent
+
+    with get_db_session() as session:
+        rows = (
+            session.query(MissionAgent, Agent)
+            .outerjoin(Agent, MissionAgent.agent_id == Agent.agent_id)
+            .filter(MissionAgent.mission_id == mission_id)
+            .order_by(MissionAgent.assigned_at)
+            .all()
+        )
+        return [
+            {
+                "id": mission_agent.id,
+                "mission_id": mission_agent.mission_id,
+                "agent_id": mission_agent.agent_id,
+                "agent_name": agent.name if agent else None,
+                "role": mission_agent.role,
+                "status": mission_agent.status,
+                "is_temporary": mission_agent.is_temporary,
+                "avatar": agent.avatar if agent else None,
+            }
+            for mission_agent, agent in rows
+        ]
 
 
 @router.get("/{mission_id}/tasks")
@@ -518,12 +589,15 @@ async def list_mission_tasks(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """List tasks belonging to a mission."""
+    _assert_mission_accessible(mission_id, current_user.user_id)
+
     from database.connection import get_db_session
-    from database.models import Task
+    from database.models import Agent, Task
 
     with get_db_session() as session:
-        tasks = (
-            session.query(Task)
+        rows = (
+            session.query(Task, Agent.name.label("assigned_agent_name"))
+            .outerjoin(Agent, Task.assigned_agent_id == Agent.agent_id)
             .filter(Task.mission_id == mission_id)
             .order_by(Task.created_at)
             .all()
@@ -535,10 +609,14 @@ async def list_mission_tasks(
                 "status": t.status,
                 "priority": t.priority,
                 "assigned_agent_id": t.assigned_agent_id,
+                "assigned_agent_name": assigned_agent_name,
+                "dependencies": t.dependencies or [],
+                "parent_task_id": t.parent_task_id,
                 "acceptance_criteria": t.acceptance_criteria,
+                "result": t.result,
                 "task_metadata": t.task_metadata,
             }
-            for t in tasks
+            for t, assigned_agent_name in rows
         ]
 
 
@@ -550,12 +628,15 @@ async def list_mission_events(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """List events for a mission."""
+    _assert_mission_accessible(mission_id, current_user.user_id)
+
     from mission_system.mission_repository import list_events
 
     events = list_events(mission_id, event_type=event_type, limit=limit)
     return [
         {
             "event_id": e.event_id,
+            "mission_id": e.mission_id,
             "event_type": e.event_type,
             "agent_id": e.agent_id,
             "task_id": e.task_id,
@@ -573,14 +654,53 @@ async def list_deliverables(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """List deliverables produced by a completed mission."""
+    mission = _assert_mission_accessible(mission_id, current_user.user_id)
+
+    result = mission.result or {}
+    return result.get("deliverables", [])
+
+
+@router.get("/{mission_id}/deliverables/download")
+async def download_deliverable(
+    mission_id: UUID,
+    path: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Download a mission deliverable by storage path."""
     from mission_system.mission_repository import get_mission as repo_get
+    from object_storage.minio_client import get_minio_client
 
     mission = repo_get(mission_id)
     if mission is None:
         raise HTTPException(status_code=404, detail="Mission not found")
+    if mission.created_by_user_id != UUID(current_user.user_id):
+        raise HTTPException(status_code=404, detail="Mission not found")
 
-    result = mission.result or {}
-    return result.get("deliverables", [])
+    deliverables = (mission.result or {}).get("deliverables", [])
+    matched = next(
+        (
+            item
+            for item in deliverables
+            if isinstance(item, dict) and item.get("path") == path
+        ),
+        None,
+    )
+    if matched is None:
+        raise HTTPException(status_code=404, detail="Deliverable not found")
+
+    if "/" not in path:
+        raise HTTPException(status_code=400, detail="Invalid deliverable path")
+    bucket_name, object_key = path.split("/", 1)
+
+    try:
+        stream, metadata = get_minio_client().download_file(bucket_name, object_key)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    filename = str(matched.get("filename") or object_key.rsplit("/", 1)[-1])
+    media_type = (metadata or {}).get("content_type") or "application/octet-stream"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(stream, media_type=media_type, headers=headers)
 
 
 @router.get("/{mission_id}/workspace/files")
@@ -590,6 +710,8 @@ async def list_workspace_files(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Browse the workspace file tree for a running mission."""
+    _assert_mission_accessible(mission_id, current_user.user_id)
+
     from mission_system.workspace_manager import get_workspace_manager
 
     try:
@@ -600,8 +722,13 @@ async def list_workspace_files(
                 "path": f.path,
                 "size": f.size,
                 "is_directory": f.is_directory,
+                "modified_at": f.modified_at,
             }
             for f in files
         ]
     except RuntimeError as e:
+        if str(e).startswith("No workspace found for mission"):
+            # Completed/failed missions may have already cleaned up sandboxes.
+            # Frontend should still be able to render deliverables without treating this as a hard error.
+            return []
         raise HTTPException(status_code=404, detail=str(e))
