@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { createPortal } from 'react-dom';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   X,
   Download,
@@ -24,7 +27,16 @@ interface DeliverablesPanelProps {
   onClose: () => void;
 }
 
-type PreviewKind = 'empty' | 'loading' | 'text' | 'image' | 'pdf' | 'binary' | 'unsupported' | 'error';
+type PreviewKind =
+  | 'empty'
+  | 'loading'
+  | 'text'
+  | 'markdown'
+  | 'image'
+  | 'pdf'
+  | 'binary'
+  | 'unsupported'
+  | 'error';
 
 interface FileEntry {
   path: string;
@@ -86,6 +98,7 @@ function getExtension(filename: string): string {
 }
 
 function getLanguageFromExtension(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase();
   const languageMap: Record<string, string> = {
     py: 'python',
     js: 'javascript',
@@ -96,15 +109,15 @@ function getLanguageFromExtension(filename: string): string {
     yaml: 'yaml',
     yml: 'yaml',
     md: 'markdown',
+    txt: 'text',
     sh: 'bash',
     bash: 'bash',
     css: 'css',
     html: 'html',
     xml: 'xml',
     sql: 'sql',
-    csv: 'csv',
   };
-  return languageMap[getExtension(filename)] || 'text';
+  return languageMap[ext || ''] || 'text';
 }
 
 function formatFileSize(bytes: number): string {
@@ -377,8 +390,19 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
         }
 
         if (TEXT_EXTENSIONS.has(ext) || mime.startsWith('text/') || mime.includes('json')) {
-          const content = await blob.text();
+          let content = await blob.text();
+          if (ext === 'json' || mime.includes('json')) {
+            try {
+              content = JSON.stringify(JSON.parse(content), null, 2);
+            } catch {
+              // Keep original text if parsing fails.
+            }
+          }
           setPreviewText(content);
+          if (ext === 'md' || ext === 'markdown') {
+            setPreviewKind('markdown');
+            return;
+          }
           setPreviewKind('text');
           return;
         }
@@ -483,7 +507,7 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
 
   if (!isOpen) return null;
 
-  return (
+  const panel = (
     <div
       className="fixed right-0 z-[60] glass-panel border-l border-zinc-200 dark:border-zinc-700 pointer-events-auto flex flex-col animate-in slide-in-from-right duration-300 shadow-2xl"
       style={{
@@ -524,13 +548,13 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
             {t('missions.noDeliverablesYet')}
           </div>
         ) : (
-          <div className="h-full grid grid-cols-[300px_1fr]">
-            <div className="border-r border-zinc-200 dark:border-zinc-700 overflow-y-auto p-2 custom-scrollbar">
+          <div className="h-full min-h-0 flex overflow-hidden">
+            <div className="w-[300px] shrink-0 border-r border-zinc-200 dark:border-zinc-700 overflow-y-auto p-2 custom-scrollbar">
               {renderTree(fileTree)}
             </div>
 
-            <div className="min-w-0 flex flex-col">
-              <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-700 flex items-center justify-between gap-3">
+            <div className="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
+              <div className="shrink-0 px-4 py-3 border-b border-zinc-200 dark:border-zinc-700 flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-xs font-medium text-zinc-700 dark:text-zinc-200 truncate">
                     {selectedNode?.path || t('missions.selectFileToView', 'Select a file to preview')}
@@ -554,7 +578,10 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
                 )}
               </div>
 
-              <div className="flex-1 min-h-0 overflow-auto bg-zinc-950/95">
+              <div
+                className="flex-1 min-h-0 overflow-auto bg-zinc-950/95 custom-scrollbar"
+                onWheelCapture={(event) => event.stopPropagation()}
+              >
                 {previewKind === 'loading' && (
                   <div className="h-full flex items-center justify-center text-zinc-300 text-sm">
                     <Loader2 className="w-4 h-4 animate-spin mr-2" />
@@ -568,15 +595,96 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
                     style={vscDarkPlus}
                     customStyle={{
                       margin: 0,
-                      minHeight: '100%',
-                      padding: '1rem',
+                      padding: '1.5rem',
                       background: 'transparent',
-                      fontSize: '12px',
+                      fontSize: '0.875rem',
+                      lineHeight: '1.5',
                     }}
                     showLineNumbers
                   >
                     {previewText}
                   </SyntaxHighlighter>
+                )}
+
+                {previewKind === 'markdown' && (
+                  <div className="p-6 text-sm leading-7 text-zinc-200">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        code({ className, children, ...props }) {
+                          const match = /language-(\w+)/.exec(className || '');
+                          const language = match?.[1] || 'text';
+                          const value = String(children).replace(/\n$/, '');
+                          if (!className) {
+                            return (
+                              <code className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-100" {...props}>
+                                {children}
+                              </code>
+                            );
+                          }
+                          return (
+                            <SyntaxHighlighter
+                              language={language}
+                              style={vscDarkPlus}
+                              customStyle={{
+                                margin: '0.75rem 0',
+                                padding: '1rem',
+                                borderRadius: '0.5rem',
+                                background: '#0f172a',
+                                fontSize: '0.8rem',
+                                lineHeight: '1.5',
+                              }}
+                              showLineNumbers
+                            >
+                              {value}
+                            </SyntaxHighlighter>
+                          );
+                        },
+                        p({ children }) {
+                          return <p className="mb-4 text-zinc-200">{children}</p>;
+                        },
+                        h1({ children }) {
+                          return <h1 className="mb-4 mt-2 text-2xl font-bold text-zinc-100">{children}</h1>;
+                        },
+                        h2({ children }) {
+                          return <h2 className="mb-3 mt-6 text-xl font-semibold text-zinc-100">{children}</h2>;
+                        },
+                        h3({ children }) {
+                          return <h3 className="mb-2 mt-5 text-lg font-semibold text-zinc-100">{children}</h3>;
+                        },
+                        ul({ children }) {
+                          return <ul className="mb-4 ml-5 list-disc">{children}</ul>;
+                        },
+                        ol({ children }) {
+                          return <ol className="mb-4 ml-5 list-decimal">{children}</ol>;
+                        },
+                        li({ children }) {
+                          return <li className="mb-1">{children}</li>;
+                        },
+                        blockquote({ children }) {
+                          return (
+                            <blockquote className="my-4 border-l-4 border-zinc-600 pl-3 text-zinc-300">
+                              {children}
+                            </blockquote>
+                          );
+                        },
+                        a({ href, children }) {
+                          return (
+                            <a
+                              href={href}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-cyan-300 hover:text-cyan-200 underline"
+                            >
+                              {children}
+                            </a>
+                          );
+                        },
+                      }}
+                    >
+                      {previewText}
+                    </ReactMarkdown>
+                  </div>
                 )}
 
                 {previewKind === 'image' && previewUrl && (
@@ -630,4 +738,9 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
       </div>
     </div>
   );
+
+  if (typeof document === 'undefined') {
+    return panel;
+  }
+  return createPortal(panel, document.body);
 };
