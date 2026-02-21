@@ -6,8 +6,10 @@ with LLM providers, extracting the pattern from agents.py router.
 
 import logging
 from typing import Any, Optional
+from uuid import UUID
 
 from agent_framework.base_agent import AgentConfig, BaseAgent
+from agent_framework.agent_registry import AgentRegistry
 from llm_providers.custom_openai_provider import CustomOpenAIChat
 
 logger = logging.getLogger(__name__)
@@ -136,3 +138,42 @@ async def create_mission_agent(
 
     await agent.initialize()
     return agent
+
+
+async def create_registered_mission_agent(
+    agent_id: UUID,
+    owner_user_id: UUID,
+    max_iterations: int = 20,
+) -> Optional[BaseAgent]:
+    """Create a mission execution agent from an existing platform agent definition.
+
+    Returns None when the requested agent does not exist or is not owned by the user.
+    """
+    registry = AgentRegistry()
+    agent_info = registry.get_agent(agent_id)
+    if agent_info is None:
+        return None
+    if agent_info.owner_user_id != owner_user_id:
+        return None
+
+    config = AgentConfig(
+        agent_id=agent_info.agent_id,
+        name=agent_info.name,
+        agent_type=agent_info.agent_type,
+        owner_user_id=owner_user_id,
+        capabilities=agent_info.capabilities or [],
+        access_level=agent_info.access_level or "private",
+        allowed_knowledge=agent_info.allowed_knowledge or [],
+        allowed_memory=agent_info.allowed_memory or [],
+        llm_model=agent_info.llm_model or "qwen2.5:14b",
+        temperature=agent_info.temperature or 0.7,
+        max_iterations=max_iterations,
+        system_prompt=agent_info.system_prompt,
+    )
+    return await create_mission_agent(
+        agent_config=config,
+        llm_provider=agent_info.llm_provider or "ollama",
+        llm_model=agent_info.llm_model or "qwen2.5:14b",
+        temperature=agent_info.temperature or 0.7,
+        max_tokens=agent_info.max_tokens or 4096,
+    )

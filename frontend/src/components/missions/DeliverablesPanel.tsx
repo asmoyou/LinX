@@ -1,6 +1,19 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Download, FileText, Folder, Star } from 'lucide-react';
+import {
+  X,
+  Download,
+  Folder,
+  FolderOpen,
+  FileText,
+  ChevronRight,
+  ChevronDown,
+  Loader2,
+  File,
+  Star,
+} from 'lucide-react';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { missionsApi } from '@/api/missions';
 import type { MissionDeliverable } from '@/types/mission';
 import type { WorkspaceFile } from '@/api/missions';
@@ -11,12 +24,182 @@ interface DeliverablesPanelProps {
   onClose: () => void;
 }
 
+type PreviewKind = 'empty' | 'loading' | 'text' | 'image' | 'pdf' | 'binary' | 'unsupported' | 'error';
+
+interface FileEntry {
+  path: string;
+  name: string;
+  size: number;
+  source: 'deliverable' | 'workspace';
+  isTarget: boolean;
+  deliverable?: MissionDeliverable;
+}
+
+interface FileTreeNode {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  source: 'deliverable' | 'workspace';
+  size?: number;
+  isTarget?: boolean;
+  deliverable?: MissionDeliverable;
+  children?: FileTreeNode[];
+}
+
+const TEXT_EXTENSIONS = new Set([
+  'txt',
+  'md',
+  'markdown',
+  'json',
+  'yaml',
+  'yml',
+  'toml',
+  'ini',
+  'py',
+  'js',
+  'ts',
+  'tsx',
+  'jsx',
+  'css',
+  'scss',
+  'html',
+  'xml',
+  'sh',
+  'bash',
+  'sql',
+  'log',
+  'csv',
+  'env',
+  'conf',
+  'config',
+]);
+
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg']);
+
+function normalizePath(path: string): string {
+  return path.replace(/^\/workspace\//, '').replace(/^\/+/, '');
+}
+
+function getExtension(filename: string): string {
+  const ext = filename.split('.').pop();
+  return ext ? ext.toLowerCase() : '';
+}
+
+function getLanguageFromExtension(filename: string): string {
+  const languageMap: Record<string, string> = {
+    py: 'python',
+    js: 'javascript',
+    ts: 'typescript',
+    jsx: 'jsx',
+    tsx: 'tsx',
+    json: 'json',
+    yaml: 'yaml',
+    yml: 'yaml',
+    md: 'markdown',
+    sh: 'bash',
+    bash: 'bash',
+    css: 'css',
+    html: 'html',
+    xml: 'xml',
+    sql: 'sql',
+    csv: 'csv',
+  };
+  return languageMap[getExtension(filename)] || 'text';
+}
+
 function formatFileSize(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+  if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
+  const sorted = [...nodes].sort((a, b) => {
+    if (a.type !== b.type) {
+      return a.type === 'directory' ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  return sorted.map((node) =>
+    node.type === 'directory' && node.children
+      ? { ...node, children: sortTree(node.children) }
+      : node
+  );
+}
+
+function buildFileTree(entries: FileEntry[]): FileTreeNode[] {
+  const root: FileTreeNode[] = [];
+
+  const ensureDirectory = (container: FileTreeNode[], name: string, path: string): FileTreeNode => {
+    const existing = container.find((node) => node.type === 'directory' && node.path === path);
+    if (existing) return existing;
+    const created: FileTreeNode = {
+      name,
+      path,
+      type: 'directory',
+      source: 'deliverable',
+      children: [],
+    };
+    container.push(created);
+    return created;
+  };
+
+  entries.forEach((entry) => {
+    const parts = entry.path.split('/').filter(Boolean);
+    if (parts.length === 0) return;
+
+    let currentLevel = root;
+    let currentPath = '';
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i];
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      const isLeaf = i === parts.length - 1;
+
+      if (isLeaf) {
+        currentLevel.push({
+          name: part,
+          path: entry.path,
+          type: 'file',
+          source: entry.source,
+          size: entry.size,
+          isTarget: entry.isTarget,
+          deliverable: entry.deliverable,
+        });
+      } else {
+        const directory = ensureDirectory(currentLevel, part, currentPath);
+        directory.source = entry.source;
+        currentLevel = directory.children || [];
+        directory.children = currentLevel;
+      }
+    }
+  });
+
+  return sortTree(root);
+}
+
+function findNodeByPath(nodes: FileTreeNode[], path: string): FileTreeNode | null {
+  for (const node of nodes) {
+    if (node.path === path) return node;
+    if (node.type === 'directory' && node.children) {
+      const found = findNodeByPath(node.children, path);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findFirstFile(nodes: FileTreeNode[]): FileTreeNode | null {
+  for (const node of nodes) {
+    if (node.type === 'file') return node;
+    if (node.children) {
+      const found = findFirstFile(node.children);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
@@ -29,22 +212,51 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [previewKind, setPreviewKind] = useState<PreviewKind>('empty');
+  const [previewText, setPreviewText] = useState('');
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewMime, setPreviewMime] = useState('');
+  const [previewMessage, setPreviewMessage] = useState('');
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) {
+        window.URL.revokeObjectURL(previewUrl);
+      }
+    };
+  }, [previewUrl]);
+
+  const resetPreview = useCallback(() => {
+    if (previewUrl) {
+      window.URL.revokeObjectURL(previewUrl);
+    }
+    setPreviewUrl(null);
+    setPreviewText('');
+    setPreviewMime('');
+    setPreviewMessage('');
+    setPreviewKind('empty');
+  }, [previewUrl]);
 
   useEffect(() => {
     if (!isOpen) return;
+
     queueMicrotask(() => {
       setIsLoading(true);
       setLoadError(null);
+      setExpandedFolders(new Set());
+      setSelectedPath(null);
+      resetPreview();
     });
+
     Promise.allSettled([
       missionsApi.getDeliverables(missionId),
       missionsApi.getWorkspaceFiles(missionId),
     ])
       .then(([deliverablesResult, workspaceResult]) => {
         if (deliverablesResult.status === 'fulfilled') {
-          setDeliverables(
-            Array.isArray(deliverablesResult.value) ? deliverablesResult.value : []
-          );
+          setDeliverables(Array.isArray(deliverablesResult.value) ? deliverablesResult.value : []);
         } else {
           setDeliverables([]);
         }
@@ -64,7 +276,138 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
         }
       })
       .finally(() => setIsLoading(false));
-  }, [missionId, isOpen, t]);
+  }, [isOpen, missionId, resetPreview, t]);
+
+  const fileEntries = useMemo<FileEntry[]>(() => {
+    if (deliverables.length > 0) {
+      return deliverables.map((item) => ({
+        path: normalizePath(item.filename || item.path),
+        name: item.filename ? item.filename.split('/').pop() || item.filename : item.path,
+        size: item.size,
+        source: 'deliverable',
+        isTarget: Boolean(item.is_target),
+        deliverable: item,
+      }));
+    }
+
+    return workspaceFiles.map((item) => {
+      const normalized = normalizePath(item.path || item.name);
+      return {
+        path: normalized,
+        name: normalized.split('/').pop() || item.name,
+        size: item.size,
+        source: 'workspace',
+        isTarget: false,
+      };
+    });
+  }, [deliverables, workspaceFiles]);
+
+  const fileTree = useMemo(() => buildFileTree(fileEntries), [fileEntries]);
+  const selectedNode = useMemo(
+    () => (selectedPath ? findNodeByPath(fileTree, selectedPath) : null),
+    [fileTree, selectedPath]
+  );
+
+  useEffect(() => {
+    if (!isOpen || fileTree.length === 0) return;
+    if (selectedPath && selectedNode?.type === 'file') return;
+
+    const firstFile = findFirstFile(fileTree);
+    if (!firstFile) return;
+
+    const folders = firstFile.path
+      .split('/')
+      .slice(0, -1)
+      .reduce<string[]>((acc, part, index) => {
+        const parent = index === 0 ? part : `${acc[index - 1]}/${part}`;
+        acc.push(parent);
+        return acc;
+      }, []);
+    queueMicrotask(() => {
+      setSelectedPath(firstFile.path);
+      setExpandedFolders(new Set(folders));
+    });
+  }, [fileTree, isOpen, selectedNode, selectedPath]);
+
+  const toggleFolder = (path: string) => {
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  };
+
+  const loadPreview = useCallback(
+    async (node: FileTreeNode) => {
+      resetPreview();
+      if (node.source !== 'deliverable' || !node.deliverable) {
+        setPreviewKind('unsupported');
+        setPreviewMessage(
+          t(
+            'missions.workspacePreviewUnavailable',
+            'Running workspace files do not support direct preview yet.'
+          )
+        );
+        return;
+      }
+
+      setPreviewKind('loading');
+      try {
+        const blob = await missionsApi.downloadDeliverable(missionId, node.deliverable.path);
+        const ext = getExtension(node.name);
+        const mime = blob.type || 'application/octet-stream';
+        setPreviewMime(mime);
+
+        if (IMAGE_EXTENSIONS.has(ext)) {
+          const objectUrl = window.URL.createObjectURL(blob);
+          setPreviewUrl(objectUrl);
+          setPreviewKind('image');
+          return;
+        }
+
+        if (ext === 'pdf' || mime === 'application/pdf') {
+          const objectUrl = window.URL.createObjectURL(blob);
+          setPreviewUrl(objectUrl);
+          setPreviewKind('pdf');
+          return;
+        }
+
+        if (TEXT_EXTENSIONS.has(ext) || mime.startsWith('text/') || mime.includes('json')) {
+          const content = await blob.text();
+          setPreviewText(content);
+          setPreviewKind('text');
+          return;
+        }
+
+        setPreviewKind('binary');
+        setPreviewMessage(
+          t(
+            'missions.binaryPreviewUnavailable',
+            'Binary file preview is not supported. Please download the file.'
+          )
+        );
+      } catch (error) {
+        setPreviewKind('error');
+        setPreviewMessage(
+          error instanceof Error
+            ? error.message
+            : t('missions.deliverablesLoadFailed')
+        );
+      }
+    },
+    [missionId, resetPreview, t]
+  );
+
+  useEffect(() => {
+    if (!selectedNode || selectedNode.type !== 'file') return;
+    queueMicrotask(() => {
+      void loadPreview(selectedNode);
+    });
+  }, [loadPreview, selectedNode]);
 
   const handleDownload = async (deliverable: MissionDeliverable) => {
     try {
@@ -72,38 +415,90 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = deliverable.filename;
+      a.download = deliverable.filename.split('/').pop() || deliverable.filename;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
     } catch {
-      // error is handled by apiClient interceptor
+      // error handled by api client toast
     }
   };
 
-  if (!isOpen) return null;
+  const renderTree = (nodes: FileTreeNode[], level = 0): React.ReactNode =>
+    nodes.map((node) => {
+      if (node.type === 'directory') {
+        const isExpanded = expandedFolders.has(node.path);
+        return (
+          <div key={node.path}>
+            <button
+              type="button"
+              onClick={() => toggleFolder(node.path)}
+              className="w-full flex items-center gap-1.5 py-1.5 px-2 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-md transition-colors"
+              style={{ paddingLeft: `${level * 16 + 8}px` }}
+            >
+              {isExpanded ? (
+                <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
+              ) : (
+                <ChevronRight className="w-3.5 h-3.5 text-zinc-500" />
+              )}
+              {isExpanded ? (
+                <FolderOpen className="w-4 h-4 text-cyan-500" />
+              ) : (
+                <Folder className="w-4 h-4 text-cyan-500" />
+              )}
+              <span className="text-xs text-zinc-700 dark:text-zinc-200 truncate">
+                {node.name}
+              </span>
+            </button>
+            {isExpanded && node.children && <div>{renderTree(node.children, level + 1)}</div>}
+          </div>
+        );
+      }
 
-  const targetFiles = deliverables.filter((d) => d.is_target);
-  const otherFiles = deliverables.filter((d) => !d.is_target);
-  const hasWorkspaceFiles = workspaceFiles.length > 0;
+      const isSelected = selectedPath === node.path;
+      return (
+        <button
+          key={node.path}
+          type="button"
+          onClick={() => setSelectedPath(node.path)}
+          className={`w-full flex items-center gap-1.5 py-1.5 px-2 text-left rounded-md transition-colors ${
+            isSelected
+              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
+              : 'hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-200'
+          }`}
+          style={{ paddingLeft: `${level * 16 + 28}px` }}
+        >
+          <File className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="text-xs truncate flex-1">{node.name}</span>
+          {node.isTarget && (
+            <Star className="w-3 h-3 text-amber-500 flex-shrink-0" />
+          )}
+          <span className="text-[10px] text-zinc-400 flex-shrink-0">
+            {formatFileSize(node.size || 0)}
+          </span>
+        </button>
+      );
+    });
+
+  if (!isOpen) return null;
 
   return (
     <div
-      className="fixed right-0 w-96 glass-panel border-l border-zinc-200 dark:border-zinc-700 z-[60] pointer-events-auto flex flex-col animate-in slide-in-from-right duration-300 shadow-2xl"
+      className="fixed right-0 z-[60] glass-panel border-l border-zinc-200 dark:border-zinc-700 pointer-events-auto flex flex-col animate-in slide-in-from-right duration-300 shadow-2xl"
       style={{
         top: 'var(--app-header-height, 4rem)',
         height: 'calc(100vh - var(--app-header-height, 4rem))',
+        width: 'min(75vw, 960px)',
       }}
     >
-      {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-zinc-200 dark:border-zinc-700">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           <Folder className="w-4 h-4 text-emerald-500" />
-          <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+          <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 truncate">
             {t('missions.deliverables')}
           </h3>
-          <span className="text-xs text-zinc-400">({deliverables.length})</span>
+          <span className="text-xs text-zinc-400">({fileEntries.length})</span>
         </div>
         <button
           type="button"
@@ -114,111 +509,125 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
         </button>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto p-4">
-        {isLoading && (
-          <div className="text-center text-zinc-400 text-sm py-8">{t('missions.loading')}</div>
-        )}
-
-        {!isLoading && loadError && (
-          <div className="text-center text-red-500 text-sm py-4">{loadError}</div>
-        )}
-
-        {!isLoading && deliverables.length === 0 && !hasWorkspaceFiles && (
-          <div className="text-center text-zinc-400 text-sm py-8">
+      <div className="flex-1 min-h-0">
+        {isLoading ? (
+          <div className="flex items-center justify-center h-full text-zinc-400 text-sm">
+            <Loader2 className="w-4 h-4 animate-spin mr-2" />
+            {t('missions.loading')}
+          </div>
+        ) : loadError ? (
+          <div className="flex items-center justify-center h-full text-sm text-red-500 px-4 text-center">
+            {loadError}
+          </div>
+        ) : fileTree.length === 0 ? (
+          <div className="flex items-center justify-center h-full text-zinc-400 text-sm px-4 text-center">
             {t('missions.noDeliverablesYet')}
           </div>
-        )}
-
-        {/* Target files */}
-        {targetFiles.length > 0 && (
-          <div className="mb-4">
-            <h4 className="text-xs font-semibold text-zinc-500 uppercase mb-2 flex items-center gap-1">
-              <Star className="w-3 h-3 text-amber-500" />
-              {t('missions.targetDeliverables')}
-            </h4>
-            <div className="space-y-2">
-              {targetFiles.map((d) => (
-                <FileItem key={d.path} deliverable={d} onDownload={handleDownload} highlight />
-              ))}
+        ) : (
+          <div className="h-full grid grid-cols-[300px_1fr]">
+            <div className="border-r border-zinc-200 dark:border-zinc-700 overflow-y-auto p-2 custom-scrollbar">
+              {renderTree(fileTree)}
             </div>
-          </div>
-        )}
 
-        {/* Other files */}
-        {otherFiles.length > 0 && (
-          <div>
-            {targetFiles.length > 0 && (
-              <h4 className="text-xs font-semibold text-zinc-500 uppercase mb-2">
-                {t('missions.otherFiles')}
-              </h4>
-            )}
-            <div className="space-y-2">
-              {otherFiles.map((d) => (
-                <FileItem key={d.path} deliverable={d} onDownload={handleDownload} />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {!isLoading && deliverables.length === 0 && hasWorkspaceFiles && (
-          <div>
-            <h4 className="text-xs font-semibold text-zinc-500 uppercase mb-2">
-              {t('missions.workspaceFiles')}
-            </h4>
-            <div className="space-y-2">
-              {workspaceFiles.map((file) => (
-                <div
-                  key={file.path}
-                  className="flex items-center gap-3 p-3 rounded-lg border border-zinc-200 dark:border-zinc-700"
-                >
-                  <FileText className="w-5 h-5 text-zinc-400 flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200 truncate">
-                      {file.name}
+            <div className="min-w-0 flex flex-col">
+              <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-700 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                    {selectedNode?.path || t('missions.selectFileToView', 'Select a file to preview')}
+                  </p>
+                  {selectedNode?.type === 'file' && (
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      {formatFileSize(selectedNode.size || 0)}
+                      {previewMime ? ` • ${previewMime}` : ''}
                     </p>
-                    <p className="text-[10px] text-zinc-400 truncate">{file.path}</p>
-                  </div>
-                  <p className="text-[10px] text-zinc-400">{formatFileSize(file.size)}</p>
+                  )}
                 </div>
-              ))}
+                {selectedNode?.deliverable && (
+                  <button
+                    type="button"
+                    onClick={() => handleDownload(selectedNode.deliverable!)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    {t('missions.download')}
+                  </button>
+                )}
+              </div>
+
+              <div className="flex-1 min-h-0 overflow-auto bg-zinc-950/95">
+                {previewKind === 'loading' && (
+                  <div className="h-full flex items-center justify-center text-zinc-300 text-sm">
+                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    {t('missions.loading')}
+                  </div>
+                )}
+
+                {previewKind === 'text' && (
+                  <SyntaxHighlighter
+                    language={getLanguageFromExtension(selectedNode?.name || '')}
+                    style={vscDarkPlus}
+                    customStyle={{
+                      margin: 0,
+                      minHeight: '100%',
+                      padding: '1rem',
+                      background: 'transparent',
+                      fontSize: '12px',
+                    }}
+                    showLineNumbers
+                  >
+                    {previewText}
+                  </SyntaxHighlighter>
+                )}
+
+                {previewKind === 'image' && previewUrl && (
+                  <div className="h-full flex items-center justify-center p-4">
+                    <img src={previewUrl} alt={selectedNode?.name || 'preview'} className="max-h-full max-w-full object-contain" />
+                  </div>
+                )}
+
+                {previewKind === 'pdf' && previewUrl && (
+                  <iframe title={selectedNode?.name || 'pdf-preview'} src={previewUrl} className="w-full h-full border-0" />
+                )}
+
+                {(previewKind === 'binary' || previewKind === 'unsupported') && (
+                  <div className="h-full flex items-center justify-center p-6">
+                    <div className="text-center max-w-md">
+                      <FileText className="w-10 h-10 text-zinc-400 mx-auto mb-3" />
+                      <p className="text-sm text-zinc-200 mb-2">
+                        {previewMessage}
+                      </p>
+                      {selectedNode?.deliverable && (
+                        <button
+                          type="button"
+                          onClick={() => handleDownload(selectedNode.deliverable!)}
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-emerald-600 hover:bg-emerald-700 text-white transition-colors"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          {t('missions.download')}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {previewKind === 'error' && (
+                  <div className="h-full flex items-center justify-center p-6">
+                    <div className="text-center max-w-md">
+                      <p className="text-sm text-red-300">{previewMessage}</p>
+                    </div>
+                  </div>
+                )}
+
+                {previewKind === 'empty' && (
+                  <div className="h-full flex items-center justify-center text-zinc-400 text-sm">
+                    {t('missions.selectFileToView', 'Select a file to preview')}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
       </div>
-    </div>
-  );
-};
-
-const FileItem: React.FC<{
-  deliverable: MissionDeliverable;
-  onDownload: (d: MissionDeliverable) => void;
-  highlight?: boolean;
-}> = ({ deliverable, onDownload, highlight }) => {
-  const { t } = useTranslation();
-  return (
-    <div
-      className={`flex items-center gap-3 p-3 rounded-lg border transition-colors ${
-        highlight
-          ? 'border-amber-200 bg-amber-50/50 dark:border-amber-500/20 dark:bg-amber-500/5'
-          : 'border-zinc-200 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800'
-      }`}
-    >
-      <FileText className="w-5 h-5 text-zinc-400 flex-shrink-0" />
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200 truncate">
-          {deliverable.filename}
-        </p>
-        <p className="text-[10px] text-zinc-400">{formatFileSize(deliverable.size)}</p>
-      </div>
-      <button
-        type="button"
-        onClick={() => onDownload(deliverable)}
-        className="p-1.5 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-lg transition-colors"
-        title={t('missions.download')}
-      >
-        <Download className="w-4 h-4 text-zinc-500" />
-      </button>
     </div>
   );
 };

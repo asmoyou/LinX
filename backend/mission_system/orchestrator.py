@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from mission_system.agent_factory import create_mission_agent
+from mission_system.agent_factory import create_registered_mission_agent
 from mission_system.agent_roles import (
     get_leader_config,
     get_qa_config,
@@ -28,7 +29,9 @@ from mission_system.exceptions import (
     MissionError,
 )
 from mission_system.mission_repository import (
+    assign_agent as assign_mission_agent,
     get_mission,
+    update_agent_status as update_mission_agent_status,
     update_mission_fields,
     update_mission_status,
 )
@@ -365,12 +368,42 @@ class MissionOrchestrator:
         )
         leader = await create_mission_agent(agent_config=leader_config, **llm_cfg)
 
+        # Build available platform agent catalog so planning can assign real workers.
+        from agent_framework.agent_registry import AgentRegistry
+
+        registry = AgentRegistry()
+        available_agents = [
+            agent
+            for agent in registry.list_agents(owner_user_id=mission.created_by_user_id, limit=500)
+            if agent.status in {"active", "idle", "initializing"}
+        ]
+        agent_id_map = {str(agent.agent_id): agent for agent in available_agents}
+        agent_catalog = (
+            "\n".join(
+                (
+                    f"- id={agent.agent_id}, name={agent.name}, "
+                    f"capabilities={','.join(agent.capabilities or []) or 'general'}"
+                )
+                for agent in available_agents
+            )
+            or "No pre-registered platform agents available."
+        )
+
         requirements_doc = mission.requirements_doc or mission.instructions
+        assignment_instruction = (
+            "For each task, include `assigned_agent_id` using one of the provided agent IDs. "
+            "If no good match exists, set it to an empty string."
+            if available_agents
+            else "Set `assigned_agent_id` to an empty string for each task."
+        )
         task_prompt = (
             "Decompose the following requirements into an ordered list of tasks "
             "with acceptance criteria. Return them as a JSON array where each "
             "element has keys: title, instructions, acceptance_criteria, "
-            "dependencies (list of task titles), priority (integer 0-10).\n\n"
+            "dependencies (list of task titles), priority (integer 0-10), "
+            "assigned_agent_id (string UUID or empty string).\n\n"
+            f"{assignment_instruction}\n\n"
+            f"## Available Platform Agents\n{agent_catalog}\n\n"
             "Return ONLY the JSON array inside a ```json code block.\n\n"
             f"## Requirements\n{requirements_doc}"
         )
@@ -391,6 +424,7 @@ class MissionOrchestrator:
         from database.models import Task
 
         title_to_id: Dict[str, UUID] = {}
+        used_agent_ids: set[UUID] = set()
         with get_db_session() as session:
             for idx, task_def in enumerate(task_list):
                 from uuid import uuid4
@@ -399,6 +433,18 @@ class MissionOrchestrator:
                 title = task_def.get("title", f"Task {idx + 1}")
                 title_to_id[title] = task_id
 
+                assigned_agent_id: Optional[UUID] = None
+                assigned_agent_raw = str(task_def.get("assigned_agent_id") or "").strip()
+                if assigned_agent_raw and assigned_agent_raw in agent_id_map:
+                    assigned_agent_id = agent_id_map[assigned_agent_raw].agent_id
+                elif available_agents:
+                    # Fallback: keep tasks executable and visible by assigning round-robin workers.
+                    fallback_agent = available_agents[idx % len(available_agents)]
+                    assigned_agent_id = fallback_agent.agent_id
+
+                if assigned_agent_id:
+                    used_agent_ids.add(assigned_agent_id)
+
                 task = Task(
                     task_id=task_id,
                     goal_text=task_def.get("instructions", title),
@@ -406,10 +452,16 @@ class MissionOrchestrator:
                     priority=int(task_def.get("priority", idx)),
                     created_by_user_id=mission.created_by_user_id,
                     mission_id=mission_id,
+                    assigned_agent_id=assigned_agent_id,
                     acceptance_criteria=task_def.get("acceptance_criteria"),
                     task_metadata={
                         "title": title,
                         "dependencies": task_def.get("dependencies", []),
+                        "assigned_agent_name": (
+                            agent_id_map[str(assigned_agent_id)].name
+                            if assigned_agent_id and str(assigned_agent_id) in agent_id_map
+                            else None
+                        ),
                     },
                 )
                 session.add(task)
@@ -422,6 +474,24 @@ class MissionOrchestrator:
                 dep_titles = (t.task_metadata or {}).get("dependencies", [])
                 dep_ids = [str(title_to_id[dt]) for dt in dep_titles if dt in title_to_id]
                 t.dependencies = dep_ids
+
+        for worker_agent_id in used_agent_ids:
+            try:
+                assign_mission_agent(
+                    mission_id=mission_id,
+                    agent_id=worker_agent_id,
+                    role="worker",
+                    is_temporary=False,
+                )
+            except Exception:
+                # MissionAgent has a unique (mission_id, agent_id) constraint; duplicates are benign.
+                logger.debug(
+                    "Mission worker assignment already exists",
+                    extra={
+                        "mission_id": str(mission_id),
+                        "agent_id": str(worker_agent_id),
+                    },
+                )
 
         # Update mission counters
         update_mission_fields(mission_id, total_tasks=len(task_list))
@@ -615,12 +685,23 @@ class MissionOrchestrator:
 
         for attempt in range(max_retries + 1):
             try:
-                # Create worker agent for this attempt and bind it to the task for observability.
-                leader_config = get_leader_config(
-                    owner_user_id=mission.created_by_user_id,
-                    temperature=llm_cfg["temperature"],
-                )
-                agent = await create_mission_agent(agent_config=leader_config, **llm_cfg)
+                resolved_agent_id: Optional[UUID] = None
+                agent = None
+                if getattr(task_obj, "assigned_agent_id", None):
+                    resolved_agent_id = task_obj.assigned_agent_id
+                    agent = await create_registered_mission_agent(
+                        agent_id=task_obj.assigned_agent_id,
+                        owner_user_id=mission.created_by_user_id,
+                    )
+
+                if agent is None:
+                    # Fallback to an ephemeral worker profile when no registered agent was assigned.
+                    leader_config = get_leader_config(
+                        owner_user_id=mission.created_by_user_id,
+                        temperature=llm_cfg["temperature"],
+                    )
+                    agent = await create_mission_agent(agent_config=leader_config, **llm_cfg)
+                    resolved_agent_id = None
 
                 # Update task status
                 from database.connection import get_db_session
@@ -630,7 +711,15 @@ class MissionOrchestrator:
                     t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
                     if t:
                         t.status = "in_progress"
-                        t.assigned_agent_id = agent.agent_id
+                        if resolved_agent_id:
+                            t.assigned_agent_id = resolved_agent_id
+
+                if resolved_agent_id:
+                    update_mission_agent_status(
+                        mission_id=mission_id,
+                        agent_id=resolved_agent_id,
+                        status="active",
+                    )
 
                 self._emitter.emit(
                     mission_id=mission_id,
@@ -639,7 +728,7 @@ class MissionOrchestrator:
                     data={
                         "title": task_title,
                         "attempt": attempt + 1,
-                        "agent_id": str(agent.agent_id),
+                        "agent_id": str(resolved_agent_id or agent.agent_id),
                         "agent_name": getattr(agent, "name", "worker"),
                     },
                     message=f"Executing task: {task_title} (attempt {attempt + 1})",
@@ -671,6 +760,12 @@ class MissionOrchestrator:
                     data={"title": task_title},
                     message=f"Task completed: {task_title}",
                 )
+                if resolved_agent_id:
+                    update_mission_agent_status(
+                        mission_id=mission_id,
+                        agent_id=resolved_agent_id,
+                        status="idle",
+                    )
                 return True
 
             except Exception as exc:
@@ -698,6 +793,12 @@ class MissionOrchestrator:
                         data={"title": task_title, "error": str(exc)},
                         message=f"Task failed: {task_title}",
                     )
+                    if getattr(task_obj, "assigned_agent_id", None):
+                        update_mission_agent_status(
+                            mission_id=mission_id,
+                            agent_id=task_obj.assigned_agent_id,
+                            status="failed",
+                        )
                     return False
 
         return False

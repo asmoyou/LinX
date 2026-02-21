@@ -609,7 +609,8 @@ async def list_mission_tasks(
                 "status": t.status,
                 "priority": t.priority,
                 "assigned_agent_id": t.assigned_agent_id,
-                "assigned_agent_name": assigned_agent_name,
+                "assigned_agent_name": assigned_agent_name
+                or ((t.task_metadata or {}).get("assigned_agent_name")),
                 "dependencies": t.dependencies or [],
                 "parent_task_id": t.parent_task_id,
                 "acceptance_criteria": t.acceptance_criteria,
