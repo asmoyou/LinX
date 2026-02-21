@@ -250,12 +250,14 @@ class MissionWorkspaceManager:
         self,
         mission_id: UUID,
         path: str = "",
+        recursive: bool = False,
     ) -> List[FileInfo]:
         """List files in a workspace directory.
 
         Args:
             mission_id: Mission UUID.
             path: Relative path from /workspace (default: root).
+            recursive: Whether to include nested files/directories recursively.
 
         Returns:
             List of FileInfo objects.
@@ -264,10 +266,15 @@ class MissionWorkspaceManager:
         target = f"{WORKSPACE_ROOT}/{path}" if path else WORKSPACE_ROOT
 
         # Use ls -la with a machine-friendly format
+        find_command = (
+            f"find '{target}' -mindepth 1 "
+            + ("" if recursive else "-maxdepth 1 ")
+            + "-printf '%y %s %T@ %p\\n' 2>/dev/null || "
+            + f"ls -la '{target}'"
+        )
         exit_code, stdout, stderr = self._container_manager.exec_in_container(
             workspace.container_id,
-            f"find '{target}' -maxdepth 1 -printf '%y %s %T@ %p\\n' 2>/dev/null || "
-            f"ls -la '{target}'",
+            find_command,
         )
         if exit_code != 0:
             raise RuntimeError(f"Failed to list files at {path}: {stderr}")
@@ -291,6 +298,37 @@ class MissionWorkspaceManager:
                 )
             )
         return files
+
+    def read_file_bytes(self, mission_id: UUID, path: str) -> bytes:
+        """Read a file from the workspace container as bytes.
+
+        Args:
+            mission_id: Mission UUID.
+            path: Relative path from /workspace.
+
+        Returns:
+            Raw file bytes.
+        """
+        workspace = self._get_workspace(mission_id)
+        safe_path = path.replace("\\", "/").lstrip("/")
+        if safe_path.startswith("workspace/"):
+            safe_path = safe_path[len("workspace/"):]
+
+        if not safe_path:
+            raise RuntimeError("Invalid file path")
+
+        full_path = f"{WORKSPACE_ROOT}/{safe_path}"
+        exit_code, stdout, stderr = self._container_manager.exec_in_container(
+            workspace.container_id,
+            f"base64 '{full_path}'",
+        )
+        if exit_code != 0:
+            raise RuntimeError(f"Failed to read file {path}: {stderr}")
+
+        try:
+            return base64.b64decode(stdout.strip())
+        except Exception as exc:
+            raise RuntimeError(f"Failed to decode file {path}: {exc}")
 
     def collect_deliverables(
         self,

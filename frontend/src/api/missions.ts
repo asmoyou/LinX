@@ -158,9 +158,16 @@ export const missionsApi = {
     return response.data;
   },
 
-  getWorkspaceFiles: async (missionId: string, path?: string): Promise<WorkspaceFile[]> => {
+  getWorkspaceFiles: async (
+    missionId: string,
+    path?: string,
+    recursive = false
+  ): Promise<WorkspaceFile[]> => {
     const requestConfig: RequestConfigWithMeta = {
-      params: path ? { path } : undefined,
+      params: {
+        ...(path ? { path } : {}),
+        ...(recursive ? { recursive: true } : {}),
+      },
       suppressErrorToast: true,
     };
     const response = await apiClient.get<Array<{
@@ -181,6 +188,14 @@ export const missionsApi = {
       is_dir: item.is_dir ?? Boolean(item.is_directory),
       modified_at: item.modified_at,
     }));
+  },
+
+  downloadWorkspaceFile: async (missionId: string, path: string): Promise<Blob> => {
+    const response = await apiClient.get(
+      `/missions/${missionId}/workspace/download`,
+      { params: { path }, responseType: 'blob' }
+    );
+    return response.data;
   },
 
   getSettings: async (): Promise<MissionSettings> => {

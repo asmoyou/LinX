@@ -235,67 +235,106 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
     setMarkdownViewMode('source');
   }, [previewUrl]);
 
+  const loadPanelFiles = useCallback(
+    async (showLoading: boolean) => {
+      if (showLoading) {
+        setIsLoading(true);
+        setLoadError(null);
+      }
+
+      const [deliverablesResult, workspaceResult] = await Promise.allSettled([
+        missionsApi.getDeliverables(missionId),
+        missionsApi.getWorkspaceFiles(missionId, '', true),
+      ]);
+
+      if (deliverablesResult.status === 'fulfilled') {
+        setDeliverables(Array.isArray(deliverablesResult.value) ? deliverablesResult.value : []);
+      } else if (showLoading) {
+        setDeliverables([]);
+      }
+
+      if (workspaceResult.status === 'fulfilled') {
+        const files = Array.isArray(workspaceResult.value) ? workspaceResult.value : [];
+        setWorkspaceFiles(files.filter((file) => !file.is_dir));
+      } else if (showLoading) {
+        setWorkspaceFiles([]);
+      }
+
+      if (
+        deliverablesResult.status === 'rejected' &&
+        workspaceResult.status === 'rejected'
+      ) {
+        setLoadError(t('missions.deliverablesLoadFailed'));
+      } else {
+        setLoadError(null);
+      }
+
+      if (showLoading) {
+        setIsLoading(false);
+      }
+    },
+    [missionId, t]
+  );
+
   useEffect(() => {
     if (!isOpen) return;
 
     queueMicrotask(() => {
-      setIsLoading(true);
-      setLoadError(null);
       setExpandedFolders(new Set());
       setSelectedPath(null);
       resetPreview();
     });
 
-    Promise.allSettled([
-      missionsApi.getDeliverables(missionId),
-      missionsApi.getWorkspaceFiles(missionId),
-    ])
-      .then(([deliverablesResult, workspaceResult]) => {
-        if (deliverablesResult.status === 'fulfilled') {
-          setDeliverables(Array.isArray(deliverablesResult.value) ? deliverablesResult.value : []);
-        } else {
-          setDeliverables([]);
-        }
+    const initialLoadTimer = window.setTimeout(() => {
+      void loadPanelFiles(true);
+    }, 0);
+    const interval = window.setInterval(() => {
+      void loadPanelFiles(false);
+    }, 4000);
 
-        if (workspaceResult.status === 'fulfilled') {
-          const files = Array.isArray(workspaceResult.value) ? workspaceResult.value : [];
-          setWorkspaceFiles(files.filter((file) => !file.is_dir));
-        } else {
-          setWorkspaceFiles([]);
-        }
-
-        if (
-          deliverablesResult.status === 'rejected' &&
-          workspaceResult.status === 'rejected'
-        ) {
-          setLoadError(t('missions.deliverablesLoadFailed'));
-        }
-      })
-      .finally(() => setIsLoading(false));
-  }, [isOpen, missionId, resetPreview, t]);
+    return () => {
+      window.clearTimeout(initialLoadTimer);
+      window.clearInterval(interval);
+    };
+  }, [isOpen, loadPanelFiles, resetPreview]);
 
   const fileEntries = useMemo<FileEntry[]>(() => {
-    if (deliverables.length > 0) {
-      return deliverables.map((item) => ({
-        path: normalizePath(item.filename || item.path),
-        name: item.filename ? item.filename.split('/').pop() || item.filename : item.path,
-        size: item.size,
-        source: 'deliverable',
-        isTarget: Boolean(item.is_target),
-        deliverable: item,
-      }));
-    }
+    const entryByPath = new Map<string, FileEntry>();
 
-    return workspaceFiles.map((item) => {
+    workspaceFiles.forEach((item) => {
       const normalized = normalizePath(item.path || item.name);
-      return {
+      entryByPath.set(normalized, {
         path: normalized,
         name: normalized.split('/').pop() || item.name,
         size: item.size,
         source: 'workspace',
         isTarget: false,
-      };
+      });
     });
+
+    deliverables.forEach((item) => {
+      const normalized = normalizePath(item.filename || item.path);
+      const existing = entryByPath.get(normalized);
+      if (existing) {
+        entryByPath.set(normalized, {
+          ...existing,
+          isTarget: existing.isTarget || Boolean(item.is_target),
+          deliverable: item,
+        });
+        return;
+      }
+
+      entryByPath.set(normalized, {
+        path: normalized,
+        name: item.filename ? item.filename.split('/').pop() || item.filename : item.path,
+        size: item.size,
+        source: 'deliverable',
+        isTarget: Boolean(item.is_target),
+        deliverable: item,
+      });
+    });
+
+    return Array.from(entryByPath.values()).sort((a, b) => a.path.localeCompare(b.path));
   }, [deliverables, workspaceFiles]);
 
   const fileTree = useMemo(() => buildFileTree(fileEntries), [fileEntries]);
@@ -346,20 +385,21 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
   const loadPreview = useCallback(
     async (node: FileTreeNode) => {
       resetPreview();
-      if (node.source !== 'deliverable' || !node.deliverable) {
-        setPreviewKind('unsupported');
-        setPreviewMessage(
-          t(
-            'missions.workspacePreviewUnavailable',
-            'Running workspace files do not support direct preview yet.'
-          )
-        );
-        return;
-      }
-
       setPreviewKind('loading');
       try {
-        const blob = await missionsApi.downloadDeliverable(missionId, node.deliverable.path);
+        let blob: Blob;
+        if (node.source === 'workspace') {
+          blob = await missionsApi.downloadWorkspaceFile(missionId, node.path);
+        } else if (node.deliverable) {
+          blob = await missionsApi.downloadDeliverable(missionId, node.deliverable.path);
+        } else {
+          setPreviewKind('unsupported');
+          setPreviewMessage(
+            t('missions.deliverableUnavailable', 'The file is temporarily unavailable.')
+          );
+          return;
+        }
+
         const ext = getExtension(node.name);
         const mime = blob.type || 'application/octet-stream';
         setPreviewMime(mime);
@@ -422,13 +462,22 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
   const isMarkdownSelected = isMarkdownExtension(selectedExtension);
   const showMarkdownToggle = previewKind === 'text' && isMarkdownSelected;
 
-  const handleDownload = async (deliverable: MissionDeliverable) => {
+  const handleDownloadNode = async (node: FileTreeNode) => {
+    if (node.type !== 'file') return;
+
     try {
-      const blob = await missionsApi.downloadDeliverable(missionId, deliverable.path);
+      const blob =
+        node.source === 'workspace'
+          ? await missionsApi.downloadWorkspaceFile(missionId, node.path)
+          : node.deliverable
+            ? await missionsApi.downloadDeliverable(missionId, node.deliverable.path)
+            : null;
+      if (!blob) return;
+
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = deliverable.filename.split('/').pop() || deliverable.filename;
+      a.download = node.name;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -582,10 +631,10 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
                       </button>
                     </div>
                   )}
-                  {selectedNode?.deliverable && (
+                  {selectedNode?.type === 'file' && (
                     <button
                       type="button"
-                      onClick={() => handleDownload(selectedNode.deliverable!)}
+                      onClick={() => handleDownloadNode(selectedNode)}
                       className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 transition-colors"
                     >
                       <Download className="w-3.5 h-3.5" />
@@ -684,10 +733,10 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
                       <p className="text-sm text-zinc-200 mb-2">
                         {previewMessage}
                       </p>
-                      {selectedNode?.deliverable && (
+                      {selectedNode?.type === 'file' && (
                         <button
                           type="button"
-                          onClick={() => handleDownload(selectedNode.deliverable!)}
+                          onClick={() => handleDownloadNode(selectedNode)}
                           className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-emerald-600 hover:bg-emerald-700 text-white transition-colors"
                         >
                           <Download className="w-3.5 h-3.5" />

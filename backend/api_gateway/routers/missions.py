@@ -4,6 +4,8 @@ Provides endpoints for creating, managing, and monitoring missions
 through their full lifecycle.
 """
 
+import io
+import mimetypes
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -715,6 +717,7 @@ async def download_deliverable(
 async def list_workspace_files(
     mission_id: UUID,
     path: str = "",
+    recursive: bool = False,
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Browse the workspace file tree for a running mission."""
@@ -723,7 +726,11 @@ async def list_workspace_files(
     from mission_system.workspace_manager import get_workspace_manager
 
     try:
-        files = get_workspace_manager().list_files(mission_id, path)
+        files = get_workspace_manager().list_files(
+            mission_id,
+            path,
+            recursive=recursive,
+        )
         return [
             {
                 "name": f.name,
@@ -740,3 +747,34 @@ async def list_workspace_files(
             # Frontend should still be able to render deliverables without treating this as a hard error.
             return []
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/{mission_id}/workspace/download")
+async def download_workspace_file(
+    mission_id: UUID,
+    path: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Download a file directly from the live mission workspace."""
+    _assert_mission_accessible(mission_id, current_user.user_id)
+
+    from mission_system.workspace_manager import get_workspace_manager
+
+    normalized = path.replace("\\", "/").lstrip("/")
+    if normalized.startswith("workspace/"):
+        normalized = normalized[len("workspace/"):]
+
+    if not normalized or ".." in normalized.split("/"):
+        raise HTTPException(status_code=400, detail="Invalid workspace file path")
+
+    try:
+        content = get_workspace_manager().read_file_bytes(mission_id, normalized)
+    except RuntimeError as exc:
+        if str(exc).startswith("No workspace found for mission"):
+            raise HTTPException(status_code=404, detail="Workspace is no longer available")
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    filename = normalized.rsplit("/", 1)[-1]
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(io.BytesIO(content), media_type=media_type, headers=headers)
