@@ -1588,6 +1588,8 @@
     "targetDeliverables": "目标交付物",
     "otherFiles": "其他文件",
     "workspaceFiles": "工作区文件",
-    "download": "下载"
+    "download": "下载",
+    "markdownSource": "源码",
+    "markdownPreview": "预览"
   }
 }

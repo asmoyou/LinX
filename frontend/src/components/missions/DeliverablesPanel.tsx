@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   X,
   Download,
@@ -33,6 +35,8 @@ type PreviewKind =
   | 'binary'
   | 'unsupported'
   | 'error';
+
+type MarkdownViewMode = 'source' | 'preview';
 
 interface FileEntry {
   path: string;
@@ -91,6 +95,10 @@ function normalizePath(path: string): string {
 function getExtension(filename: string): string {
   const ext = filename.split('.').pop();
   return ext ? ext.toLowerCase() : '';
+}
+
+function isMarkdownExtension(ext: string): boolean {
+  return ext === 'md' || ext === 'markdown';
 }
 
 function formatFileSize(bytes: number): string {
@@ -205,6 +213,7 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewMime, setPreviewMime] = useState('');
   const [previewMessage, setPreviewMessage] = useState('');
+  const [markdownViewMode, setMarkdownViewMode] = useState<MarkdownViewMode>('source');
 
   useEffect(() => {
     return () => {
@@ -223,6 +232,7 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
     setPreviewMime('');
     setPreviewMessage('');
     setPreviewKind('empty');
+    setMarkdownViewMode('source');
   }, [previewUrl]);
 
   useEffect(() => {
@@ -311,9 +321,15 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
       }, []);
     queueMicrotask(() => {
       setSelectedPath(firstFile.path);
+      setMarkdownViewMode('source');
       setExpandedFolders(new Set(folders));
     });
   }, [fileTree, isOpen, selectedNode, selectedPath]);
+
+  const handleSelectPath = useCallback((path: string) => {
+    setSelectedPath(path);
+    setMarkdownViewMode('source');
+  }, []);
 
   const toggleFolder = (path: string) => {
     setExpandedFolders((prev) => {
@@ -402,6 +418,10 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
     });
   }, [loadPreview, selectedNode]);
 
+  const selectedExtension = selectedNode?.type === 'file' ? getExtension(selectedNode.name) : '';
+  const isMarkdownSelected = isMarkdownExtension(selectedExtension);
+  const showMarkdownToggle = previewKind === 'text' && isMarkdownSelected;
+
   const handleDownload = async (deliverable: MissionDeliverable) => {
     try {
       const blob = await missionsApi.downloadDeliverable(missionId, deliverable.path);
@@ -454,7 +474,7 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
         <button
           key={node.path}
           type="button"
-          onClick={() => setSelectedPath(node.path)}
+          onClick={() => handleSelectPath(node.path)}
           className={`w-full flex items-center gap-1.5 py-1.5 px-2 text-left rounded-md transition-colors ${
             isSelected
               ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
@@ -535,16 +555,44 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
                     </p>
                   )}
                 </div>
-                {selectedNode?.deliverable && (
-                  <button
-                    type="button"
-                    onClick={() => handleDownload(selectedNode.deliverable!)}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 transition-colors"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    {t('missions.download')}
-                  </button>
-                )}
+                <div className="flex items-center gap-2">
+                  {showMarkdownToggle && (
+                    <div className="inline-flex items-center rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-100/60 dark:bg-zinc-800/70 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setMarkdownViewMode('source')}
+                        className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
+                          markdownViewMode === 'source'
+                            ? 'bg-emerald-600 text-white'
+                            : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+                        }`}
+                      >
+                        {t('missions.markdownSource', 'Source')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMarkdownViewMode('preview')}
+                        className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
+                          markdownViewMode === 'preview'
+                            ? 'bg-emerald-600 text-white'
+                            : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+                        }`}
+                      >
+                        {t('missions.markdownPreview', 'Preview')}
+                      </button>
+                    </div>
+                  )}
+                  {selectedNode?.deliverable && (
+                    <button
+                      type="button"
+                      onClick={() => handleDownload(selectedNode.deliverable!)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 transition-colors"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      {t('missions.download')}
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div
@@ -558,12 +606,66 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
                   </div>
                 )}
 
-                {previewKind === 'text' && (
-                  <FileCodePreview
-                    filename={selectedNode?.name || 'file.txt'}
-                    content={previewText}
-                  />
-                )}
+                {previewKind === 'text' &&
+                  (isMarkdownSelected && markdownViewMode === 'preview' ? (
+                    <div className="p-6 text-sm leading-7 text-zinc-200">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          p: ({ children }) => <p className="mb-4">{children}</p>,
+                          h1: ({ children }) => (
+                            <h1 className="mb-4 mt-2 text-2xl font-bold text-zinc-100">{children}</h1>
+                          ),
+                          h2: ({ children }) => (
+                            <h2 className="mb-3 mt-6 text-xl font-semibold text-zinc-100">{children}</h2>
+                          ),
+                          h3: ({ children }) => (
+                            <h3 className="mb-2 mt-5 text-lg font-semibold text-zinc-100">{children}</h3>
+                          ),
+                          ul: ({ children }) => <ul className="mb-4 ml-5 list-disc">{children}</ul>,
+                          ol: ({ children }) => <ol className="mb-4 ml-5 list-decimal">{children}</ol>,
+                          li: ({ children }) => <li className="mb-1">{children}</li>,
+                          code: ({ children, className }) => {
+                            const isBlockCode = Boolean(className);
+                            if (!isBlockCode) {
+                              return (
+                                <code className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-100">
+                                  {children}
+                                </code>
+                              );
+                            }
+                            return (
+                              <pre className="my-3 overflow-x-auto rounded-lg bg-zinc-900 p-3 text-zinc-100">
+                                <code className={className}>{children}</code>
+                              </pre>
+                            );
+                          },
+                          blockquote: ({ children }) => (
+                            <blockquote className="my-4 border-l-4 border-zinc-600 pl-3 text-zinc-300">
+                              {children}
+                            </blockquote>
+                          ),
+                          a: ({ href, children }) => (
+                            <a
+                              href={href}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-cyan-300 hover:text-cyan-200 underline"
+                            >
+                              {children}
+                            </a>
+                          ),
+                        }}
+                      >
+                        {previewText}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <FileCodePreview
+                      filename={selectedNode?.name || 'file.txt'}
+                      content={previewText}
+                    />
+                  ))}
 
                 {previewKind === 'image' && previewUrl && (
                   <div className="h-full flex items-center justify-center p-4">

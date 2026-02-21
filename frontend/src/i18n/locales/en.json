@@ -1588,6 +1588,8 @@
     "targetDeliverables": "Target Deliverables",
     "otherFiles": "Other Files",
     "workspaceFiles": "Workspace Files",
-    "download": "Download"
+    "download": "Download",
+    "markdownSource": "Source",
+    "markdownPreview": "Preview"
   }
 }
