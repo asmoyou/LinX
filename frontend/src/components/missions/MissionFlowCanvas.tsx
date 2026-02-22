@@ -47,13 +47,7 @@ const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
   agentNode: { width: 240, height: 140 },
 };
 
-const ACTIVE_STATUSES = new Set([
-  'requirements',
-  'planning',
-  'executing',
-  'reviewing',
-  'qa',
-]);
+const FLOW_POLL_INTERVAL_MS = 10_000;
 
 function getNodeDimensions(node: Node): { width: number; height: number } {
   const fallback = NODE_DIMENSIONS[node.type || ''] || {
@@ -156,6 +150,8 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
 
   const wsRef = useRef<WebSocket | null>(null);
   const pollingInFlightRef = useRef(false);
+  const previousStructureSignatureRef = useRef<string>('');
+  const previousMissionIdRef = useRef<string | null>(null);
 
   // Load data
   useEffect(() => {
@@ -215,13 +211,6 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     };
   }, [missionId]);
 
-  const pollIntervalMs = useMemo(() => {
-    if (selectedMission && ACTIVE_STATUSES.has(selectedMission.status)) {
-      return 4000;
-    }
-    return 12000;
-  }, [selectedMission]);
-
   // Polling fallback when websocket updates are delayed or disconnected.
   useEffect(() => {
     let cancelled = false;
@@ -251,7 +240,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     }, 1500);
     const intervalId = window.setInterval(() => {
       void pollMissionState();
-    }, pollIntervalMs);
+    }, FLOW_POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
@@ -260,7 +249,6 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     };
   }, [
     missionId,
-    pollIntervalMs,
     fetchMission,
     fetchMissionTasks,
     fetchMissionAgents,
@@ -583,16 +571,67 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     () => getLayoutedElements(initialNodes, initialEdges),
     [initialNodes, initialEdges]
   );
+  const structureSignature = useMemo(() => {
+    const nodePart = initialNodes
+      .map((node) => `${node.id}:${node.type || 'default'}`)
+      .sort()
+      .join('|');
+    const edgePart = initialEdges
+      .map((edge) => `${edge.id}:${edge.source}->${edge.target}:${edge.type || 'default'}`)
+      .sort()
+      .join('|');
+    return `${nodePart}__${edgePart}`;
+  }, [initialNodes, initialEdges]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(layoutedNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(layoutedEdges);
 
   // Re-layout when data changes
   useEffect(() => {
-    const { nodes: ln, edges: le } = getLayoutedElements(initialNodes, initialEdges);
-    setNodes(ln);
-    setEdges(le);
-  }, [initialNodes, initialEdges, setNodes, setEdges]);
+    const missionSwitched = previousMissionIdRef.current !== missionId;
+    const structureChanged = previousStructureSignatureRef.current !== structureSignature;
+    previousMissionIdRef.current = missionId;
+    previousStructureSignatureRef.current = structureSignature;
+
+    if (missionSwitched || structureChanged) {
+      const { nodes: ln, edges: le } = getLayoutedElements(initialNodes, initialEdges);
+      setNodes(ln);
+      setEdges(le);
+      return;
+    }
+
+    // Incremental patch: update node/edge data in place so we don't reset positions or cause flicker.
+    const latestNodeById = new Map(initialNodes.map((node) => [node.id, node] as const));
+    const latestEdgeById = new Map(initialEdges.map((edge) => [edge.id, edge] as const));
+
+    setNodes((prevNodes) =>
+      prevNodes.map((node) => {
+        const latest = latestNodeById.get(node.id);
+        if (!latest) return node;
+        return {
+          ...node,
+          data: latest.data,
+          type: latest.type,
+          draggable: latest.draggable,
+          selectable: latest.selectable,
+        };
+      })
+    );
+    setEdges((prevEdges) =>
+      prevEdges.map((edge) => {
+        const latest = latestEdgeById.get(edge.id);
+        if (!latest) return edge;
+        return {
+          ...edge,
+          animated: latest.animated,
+          style: latest.style,
+          markerEnd: latest.markerEnd,
+          type: latest.type,
+          data: latest.data,
+        };
+      })
+    );
+  }, [initialNodes, initialEdges, missionId, setEdges, setNodes, structureSignature]);
 
   const onInit = useCallback((instance: ReactFlowInstance) => {
     instance.fitView({ padding: 0.2 });

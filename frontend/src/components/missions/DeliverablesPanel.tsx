@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -37,6 +37,7 @@ type PreviewKind =
   | 'error';
 
 type MarkdownViewMode = 'source' | 'preview';
+const DELIVERABLES_POLL_INTERVAL_MS = 10_000;
 
 interface FileEntry {
   path: string;
@@ -99,6 +100,27 @@ function getExtension(filename: string): string {
 
 function isMarkdownExtension(ext: string): boolean {
   return ext === 'md' || ext === 'markdown';
+}
+
+function buildDeliverablesSignature(items: MissionDeliverable[]): string {
+  return items
+    .map((item) => {
+      const normalizedPath = normalizePath(item.filename || item.path);
+      return `${normalizedPath}|${item.path}|${item.size}|${item.is_target ? 1 : 0}`;
+    })
+    .sort()
+    .join('\n');
+}
+
+function buildWorkspaceFilesSignature(items: WorkspaceFile[]): string {
+  return items
+    .filter((item) => !item.is_dir)
+    .map((item) => {
+      const normalizedPath = normalizePath(item.path || item.name);
+      return `${normalizedPath}|${item.size}|${item.is_dir ? 1 : 0}`;
+    })
+    .sort()
+    .join('\n');
 }
 
 function formatFileSize(bytes: number): string {
@@ -214,6 +236,9 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
   const [previewMime, setPreviewMime] = useState('');
   const [previewMessage, setPreviewMessage] = useState('');
   const [markdownViewMode, setMarkdownViewMode] = useState<MarkdownViewMode>('source');
+  const deliverablesSignatureRef = useRef('');
+  const workspaceFilesSignatureRef = useRef('');
+  const lastPreviewKeyRef = useRef('');
 
   useEffect(() => {
     return () => {
@@ -248,15 +273,29 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
       ]);
 
       if (deliverablesResult.status === 'fulfilled') {
-        setDeliverables(Array.isArray(deliverablesResult.value) ? deliverablesResult.value : []);
+        const nextDeliverables = Array.isArray(deliverablesResult.value)
+          ? deliverablesResult.value
+          : [];
+        const nextSignature = buildDeliverablesSignature(nextDeliverables);
+        if (nextSignature !== deliverablesSignatureRef.current) {
+          deliverablesSignatureRef.current = nextSignature;
+          setDeliverables(nextDeliverables);
+        }
       } else if (showLoading) {
+        deliverablesSignatureRef.current = '';
         setDeliverables([]);
       }
 
       if (workspaceResult.status === 'fulfilled') {
         const files = Array.isArray(workspaceResult.value) ? workspaceResult.value : [];
-        setWorkspaceFiles(files.filter((file) => !file.is_dir));
+        const filteredFiles = files.filter((file) => !file.is_dir);
+        const nextSignature = buildWorkspaceFilesSignature(filteredFiles);
+        if (nextSignature !== workspaceFilesSignatureRef.current) {
+          workspaceFilesSignatureRef.current = nextSignature;
+          setWorkspaceFiles(filteredFiles);
+        }
       } else if (showLoading) {
+        workspaceFilesSignatureRef.current = '';
         setWorkspaceFiles([]);
       }
 
@@ -280,6 +319,9 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
     if (!isOpen) return;
 
     queueMicrotask(() => {
+      deliverablesSignatureRef.current = '';
+      workspaceFilesSignatureRef.current = '';
+      lastPreviewKeyRef.current = '';
       setExpandedFolders(new Set());
       setSelectedPath(null);
       resetPreview();
@@ -289,8 +331,9 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
       void loadPanelFiles(true);
     }, 0);
     const interval = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
       void loadPanelFiles(false);
-    }, 4000);
+    }, DELIVERABLES_POLL_INTERVAL_MS);
 
     return () => {
       window.clearTimeout(initialLoadTimer);
@@ -453,6 +496,12 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
 
   useEffect(() => {
     if (!selectedNode || selectedNode.type !== 'file') return;
+    const previewKey = `${selectedNode.path}|${selectedNode.source}|${selectedNode.size || 0}|${
+      selectedNode.deliverable?.path || ''
+    }`;
+    if (previewKey === lastPreviewKeyRef.current) return;
+    lastPreviewKeyRef.current = previewKey;
+
     queueMicrotask(() => {
       void loadPreview(selectedNode);
     });
