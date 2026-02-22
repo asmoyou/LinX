@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 
 interface LayoutModalProps {
   isOpen: boolean;
@@ -25,25 +26,8 @@ export const LayoutModal: React.FC<LayoutModalProps> = ({
   zIndexClassName = 'z-[70]',
   respectLayoutBounds = true,
 }) => {
-  const [isRendered, setIsRendered] = useState(isOpen);
-  const [isVisible, setIsVisible] = useState(false);
-
-  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    if (isOpen) {
-      setIsRendered(true);
-      const raf = window.requestAnimationFrame(() => setIsVisible(true));
-      return () => window.cancelAnimationFrame(raf);
-    }
-
-    setIsVisible(false);
-    const timeout = window.setTimeout(() => setIsRendered(false), 200);
-    return () => window.clearTimeout(timeout);
-  }, [isOpen]);
-  /* eslint-enable react-hooks/set-state-in-effect */
-
-  useEffect(() => {
-    if (!isRendered || !closeOnEscape || !onClose) return;
+    if (!isOpen || !closeOnEscape || !onClose) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -53,49 +37,61 @@ export const LayoutModal: React.FC<LayoutModalProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isRendered, closeOnEscape, onClose]);
-
-  if (!isRendered) return null;
+  }, [isOpen, closeOnEscape, onClose]);
 
   return (
-    <div
-      className={`fixed ${zIndexClassName}`}
-      style={
-        respectLayoutBounds
-          ? {
-              top: 'var(--app-header-height, 4rem)',
-              left: 'var(--sidebar-width, 0px)',
-              right: 0,
-              bottom: 0,
-            }
-          : {
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-            }
-      }
-      role="presentation"
-    >
-      <button
-        type="button"
-        aria-label="Close modal"
-        className={`absolute inset-0 transition-opacity duration-200 ease-out ${isVisible ? 'opacity-100' : 'opacity-0'} ${backdropClassName}`}
-        onClick={closeOnBackdropClick ? onClose : undefined}
-      />
-      <div
-        className="relative h-full w-full overflow-y-auto"
-      >
-        <div
-          className={`pointer-events-none min-h-full w-full flex items-center justify-center p-4 sm:p-6 ${containerClassName}`}
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          className={`fixed ${zIndexClassName}`}
+          style={
+            respectLayoutBounds
+              ? {
+                  top: 'var(--app-header-height, 4rem)',
+                  left: 'var(--sidebar-width, 0px)',
+                  right: 0,
+                  bottom: 0,
+                }
+              : {
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                }
+          }
+          role="presentation"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
         >
-          <div
-            className={`pointer-events-auto w-full flex justify-center transition-all duration-200 ease-out ${isVisible ? 'opacity-100 scale-100 translate-y-0' : 'opacity-0 scale-95 translate-y-2'} ${contentClassName}`}
-          >
-            {children}
+          <motion.button
+            type="button"
+            aria-label="Close modal"
+            className={`absolute inset-0 ${backdropClassName}`}
+            onClick={closeOnBackdropClick ? onClose : undefined}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+          />
+          <div className="relative h-full w-full overflow-y-auto">
+            <div
+              className={`pointer-events-none min-h-full w-full flex items-center justify-center p-4 sm:p-6 ${containerClassName}`}
+            >
+              <motion.div
+                className={`pointer-events-auto w-full flex justify-center ${contentClassName}`}
+                initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 12 }}
+                transition={{ type: 'spring', stiffness: 360, damping: 30, mass: 0.8 }}
+              >
+                {children}
+              </motion.div>
+            </div>
           </div>
-        </div>
-      </div>
-    </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 };
