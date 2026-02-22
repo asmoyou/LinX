@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Search, Loader2 } from 'lucide-react';
+import { LayoutModal } from '@/components/LayoutModal';
 import { ModalPanel } from '@/components/ModalPanel';
 import { knowledgeApi } from '@/api/knowledge';
 import type {
@@ -190,11 +191,13 @@ export const RetrievalTestPanel: React.FC<RetrievalTestPanelProps> = ({
     : 1;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
-      style={{ marginLeft: 'var(--sidebar-width, 0px)' }}
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={true}
+      closeOnEscape={true}
     >
-      <ModalPanel className="w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+      <ModalPanel className="w-full max-w-3xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-gray-800 dark:text-white">
             {t('retrievalTest.title')}
@@ -401,6 +404,6 @@ export const RetrievalTestPanel: React.FC<RetrievalTestPanelProps> = ({
           </div>
         )}
       </ModalPanel>
-    </div>
+    </LayoutModal>
   );
 };

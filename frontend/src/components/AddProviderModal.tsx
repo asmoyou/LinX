@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import toast from 'react-hot-toast';
 import { llmApi } from '../api';
+import { LayoutModal } from './LayoutModal';
 
 const providerSchema = z.object({
   name: z
@@ -272,8 +273,13 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md overflow-auto" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <div className="w-full max-w-2xl my-auto modal-panel rounded-[24px] shadow-2xl max-h-[90vh] overflow-y-auto">
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
+    >
+      <div className="w-full max-w-2xl my-auto modal-panel rounded-[24px] shadow-2xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-zinc-200 dark:border-zinc-800">
           <h2 className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">
@@ -611,6 +617,6 @@ export const AddProviderModal: React.FC<AddProviderModalProps> = ({
           </div>
         </form>
       </div>
-    </div>
+    </LayoutModal>
   );
 };

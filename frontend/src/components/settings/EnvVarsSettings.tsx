@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Key, Plus, Trash2, Eye, EyeOff, AlertCircle } from 'lucide-react';
 import { skillsApi } from '../../api/skills';
+import { LayoutModal } from '../LayoutModal';
 import { useNotificationStore } from '../../stores/notificationStore';
 
 interface EnvVar {
@@ -181,7 +182,17 @@ export const EnvVarsSettings: React.FC = () => {
 
       {/* Add Modal */}
       {showAddModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <LayoutModal
+          isOpen={showAddModal}
+          onClose={() => {
+            setShowAddModal(false);
+            setNewKey('');
+            setNewValue('');
+          }}
+          closeOnBackdropClick={false}
+          closeOnEscape={true}
+          backdropClassName="bg-black/50"
+        >
           <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-xl max-w-md w-full p-6">
             <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100 mb-4">
               {t('settings.envVars.addNew', 'Add Environment Variable')}
@@ -245,7 +256,7 @@ export const EnvVarsSettings: React.FC = () => {
               </button>
             </div>
           </div>
-        </div>
+        </LayoutModal>
       )}
     </div>
   );

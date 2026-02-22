@@ -22,6 +22,7 @@ import { usePermissions } from '@/hooks/usePermissions';
 import { adminUsersApi } from '@/api/adminUsers';
 import type { AdminUser, CreateUserRequest, UpdateUserRequest } from '@/api/adminUsers';
 import { DepartmentSelect } from '@/components/departments/DepartmentSelect';
+import { LayoutModal } from '@/components/LayoutModal';
 import { useAuthStore } from '@/stores';
 
 // ─── Role Badge ──────────────────────────────────────────────────────────────
@@ -131,7 +132,13 @@ const ResetPasswordDialog: React.FC<ResetPasswordDialogProps> = ({ user, onClose
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <LayoutModal
+      isOpen={true}
+      onClose={onClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
+      backdropClassName="bg-black/50"
+    >
       <div className="bg-white dark:bg-zinc-800 rounded-2xl shadow-2xl w-full max-w-md mx-4">
         <div className="flex items-center justify-between p-6 border-b border-zinc-200 dark:border-zinc-700">
           <div>
@@ -207,7 +214,7 @@ const ResetPasswordDialog: React.FC<ResetPasswordDialogProps> = ({ user, onClose
           </div>
         </form>
       </div>
-    </div>
+    </LayoutModal>
   );
 };
 
@@ -264,7 +271,13 @@ const UserFormDialog: React.FC<UserFormDialogProps> = ({ user, onClose, onSaved 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <LayoutModal
+      isOpen={true}
+      onClose={onClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
+      backdropClassName="bg-black/50"
+    >
       <div className="bg-white dark:bg-zinc-800 rounded-2xl shadow-2xl w-full max-w-md mx-4">
         <div className="flex items-center justify-between p-6 border-b border-zinc-200 dark:border-zinc-700">
           <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">
@@ -364,7 +377,7 @@ const UserFormDialog: React.FC<UserFormDialogProps> = ({ user, onClose, onSaved 
           </div>
         </form>
       </div>
-    </div>
+    </LayoutModal>
   );
 };
 

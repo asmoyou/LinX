@@ -18,6 +18,7 @@ import { MemoryDetailView } from "@/components/memory/MemoryDetailView";
 import { MemorySharingModal } from "@/components/memory/MemorySharingModal";
 import { MemoryConfigPanel } from "@/components/memory/MemoryConfigPanel";
 import { MemoryRetrievalTestPanel } from "@/components/memory/MemoryRetrievalTestPanel";
+import { LayoutModal } from "@/components/LayoutModal";
 import { memoriesApi } from "@/api/memories";
 import { agentsApi } from "@/api/agents";
 import { useMemoryStore } from "@/stores/memoryStore";
@@ -105,11 +106,13 @@ const CreateMemoryModal: React.FC<{
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
-      style={{ marginLeft: "var(--sidebar-width, 0px)" }}
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
     >
-      <ModalPanel className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+      <ModalPanel className="w-full max-w-2xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-gray-800 dark:text-white">
             {t("memory.create.title")}
@@ -229,7 +232,7 @@ const CreateMemoryModal: React.FC<{
           </button>
         </div>
       </ModalPanel>
-    </div>
+    </LayoutModal>
   );
 };
 

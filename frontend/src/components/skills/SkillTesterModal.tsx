@@ -1,6 +1,7 @@
 import { X } from 'lucide-react';
 import SkillTester from './SkillTester';
 import { useTranslation } from 'react-i18next';
+import { LayoutModal } from '@/components/LayoutModal';
 
 interface SkillTesterModalProps {
   isOpen: boolean;
@@ -28,8 +29,14 @@ export default function SkillTesterModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-200" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <div className="w-full max-w-4xl max-h-[90vh] overflow-hidden modal-panel rounded-[24px] shadow-2xl p-6 flex flex-col animate-in zoom-in-95 duration-200">
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
+      containerClassName="animate-in zoom-in-95 duration-200"
+    >
+      <div className="w-full max-w-4xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-hidden modal-panel rounded-[24px] shadow-2xl p-6 flex flex-col animate-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="flex items-center justify-between mb-6 flex-shrink-0">
           <h2 className="text-2xl font-bold text-zinc-800 dark:text-white">
@@ -53,6 +60,6 @@ export default function SkillTesterModal({
           />
         </div>
       </div>
-    </div>
+    </LayoutModal>
   );
 }

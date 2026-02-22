@@ -19,6 +19,7 @@ import {
   Pencil,
   Save,
 } from "lucide-react";
+import { LayoutModal } from "@/components/LayoutModal";
 import { ModalPanel } from "@/components/ModalPanel";
 import type { Memory, MemoryFact, MemoryIndexInfo } from "@/types/memory";
 
@@ -340,11 +341,13 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
   })();
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
-      style={{ marginLeft: "var(--sidebar-width, 0px)" }}
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
     >
-      <ModalPanel className="w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+      <ModalPanel className="w-full max-w-3xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
@@ -893,6 +896,6 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
           )}
         </div>
       </ModalPanel>
-    </div>
+    </LayoutModal>
   );
 };

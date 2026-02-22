@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, Search, X } from "lucide-react";
+import { LayoutModal } from "@/components/LayoutModal";
 import { ModalPanel } from "@/components/ModalPanel";
 import { memoriesApi } from "@/api/memories";
 import type { Memory, MemoryType } from "@/types/memory";
@@ -94,11 +95,13 @@ export const MemoryRetrievalTestPanel: React.FC<MemoryRetrievalTestPanelProps> =
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
-      style={{ marginLeft: "var(--sidebar-width, 0px)" }}
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
     >
-      <ModalPanel className="w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+      <ModalPanel className="w-full max-w-4xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-gray-800 dark:text-white">
             {t("memory.retrievalTest.title")}
@@ -247,6 +250,6 @@ export const MemoryRetrievalTestPanel: React.FC<MemoryRetrievalTestPanelProps> =
           </div>
         )}
       </ModalPanel>
-    </div>
+    </LayoutModal>
   );
 };

@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
+import { LayoutModal } from '@/components/LayoutModal';
 
 interface RobotExample {
   id: string;
@@ -474,20 +475,28 @@ export const Robots: React.FC = () => {
       {/* Telemetry Modal */}
       <AnimatePresence>
         {showTelemetry && selectedRobot && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowTelemetry(false)}
-              className="absolute inset-0 bg-black/60 backdrop-blur-md"
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="relative w-full max-w-2xl bg-white dark:bg-zinc-900 rounded-[32px] shadow-2xl overflow-hidden border border-zinc-500/10"
-            >
+          <LayoutModal
+            isOpen={true}
+            onClose={() => setShowTelemetry(false)}
+            closeOnBackdropClick={false}
+            closeOnEscape={true}
+            zIndexClassName="z-[100]"
+            backdropClassName="bg-transparent"
+          >
+            <div className="relative w-full h-full flex items-center justify-center p-4 sm:p-6">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setShowTelemetry(false)}
+                className="absolute inset-0 bg-black/60 backdrop-blur-md"
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                className="relative w-full max-w-2xl bg-white dark:bg-zinc-900 rounded-[32px] shadow-2xl overflow-hidden border border-zinc-500/10"
+              >
               {/* Modal Header */}
               <div className="p-6 border-b border-zinc-500/10 flex items-center justify-between">
                 <div className="flex items-center gap-4">
@@ -579,8 +588,9 @@ export const Robots: React.FC = () => {
                   关闭
                 </button>
               </div>
-            </motion.div>
-          </div>
+              </motion.div>
+            </div>
+          </LayoutModal>
         )}
       </AnimatePresence>
 

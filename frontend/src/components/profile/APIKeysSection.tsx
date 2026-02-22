@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Key, Plus, Copy, Trash2, Eye, EyeOff } from 'lucide-react';
 import { GlassPanel } from '../GlassPanel';
+import { LayoutModal } from '../LayoutModal';
 import { ModalPanel } from '../ModalPanel';
 import { useNotificationStore } from '../../stores/notificationStore';
 
@@ -195,7 +196,15 @@ export const APIKeysSection = () => {
 
         {/* Create Key Modal */}
         {showNewKeyModal && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
+          <LayoutModal
+            isOpen={showNewKeyModal}
+            onClose={() => {
+              setShowNewKeyModal(false);
+              setNewKeyName('');
+            }}
+            closeOnBackdropClick={false}
+            closeOnEscape={true}
+          >
             <ModalPanel className="border border-white/10 max-w-md w-full mx-4">
               <h3 className="text-xl font-semibold text-white mb-4">Create API Key</h3>
               <div className="space-y-4">
@@ -230,7 +239,7 @@ export const APIKeysSection = () => {
                 </div>
               </div>
             </ModalPanel>
-          </div>
+          </LayoutModal>
         )}
       </div>
     </GlassPanel>

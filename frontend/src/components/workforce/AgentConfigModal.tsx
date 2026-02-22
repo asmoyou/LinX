@@ -10,6 +10,7 @@ import type { Collection } from '@/types/document';
 import { ModelMetadataCard } from '@/components/settings/ModelMetadataCard';
 import { ImageCropModal } from '@/components/common/ImageCropModal';
 import { DepartmentSelect } from '@/components/departments/DepartmentSelect';
+import { LayoutModal } from '@/components/LayoutModal';
 
 type MemoryScope = 'agent' | 'company' | 'user_context';
 const MEMORY_SCOPE_ALIAS_MAP: Record<string, MemoryScope> = {
@@ -425,8 +426,13 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md overflow-auto" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <div className="w-full max-w-4xl my-auto max-h-[90vh] overflow-hidden flex flex-col modal-panel rounded-[24px] shadow-2xl p-6">
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
+    >
+      <div className="w-full max-w-4xl my-auto max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-hidden flex flex-col modal-panel rounded-[24px] shadow-2xl p-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-6 pb-4 border-b border-zinc-200 dark:border-zinc-700">
           <div>
@@ -1180,6 +1186,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         aspectRatio={1}
         title={t('agent.cropAvatar')}
       />
-    </div>
+    </LayoutModal>
   );
 };

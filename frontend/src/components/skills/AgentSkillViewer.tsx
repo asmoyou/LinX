@@ -9,6 +9,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, File, Folder, FolderOpen, ChevronRight, ChevronDown, Loader2, Edit2, Save, Upload } from 'lucide-react';
 import { skillsApi, type FileTreeItem } from '@/api/skills';
+import { LayoutModal } from '@/components/LayoutModal';
 import { ModalPanel } from '@/components/ModalPanel';
 import { FileCodePreview } from '@/components/common/FileCodePreview';
 import toast from 'react-hot-toast';
@@ -271,8 +272,14 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <ModalPanel className="w-full max-w-[95vw] h-[90vh] flex flex-col overflow-hidden">
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
+      backdropClassName="bg-black/50 backdrop-blur-sm"
+    >
+      <ModalPanel className="w-full max-w-[95vw] h-[calc(100vh-var(--app-header-height,4rem)-3rem)] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between mb-4 pb-4 border-b border-border">
           <div>
@@ -490,7 +497,7 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
           </div>
         )}
       </ModalPanel>
-    </div>
+    </LayoutModal>
   );
 };
 

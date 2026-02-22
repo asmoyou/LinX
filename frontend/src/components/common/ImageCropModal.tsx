@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback } from 'react';
 import { X, Upload, RotateCw, ZoomIn, ZoomOut, Check, Image as ImageIcon } from 'lucide-react';
 import ReactCrop from 'react-image-crop';
 import type { Crop, PixelCrop } from 'react-image-crop';
+import { LayoutModal } from '@/components/LayoutModal';
 import 'react-image-crop/dist/ReactCrop.css';
 
 interface ImageCropModalProps {
@@ -168,7 +169,12 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={handleClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
+    >
       <div className="w-full max-w-3xl modal-panel rounded-[24px] shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200 dark:border-zinc-700 bg-gradient-to-r from-emerald-500/5 to-cyan-500/5">
@@ -332,6 +338,6 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
           </div>
         )}
       </div>
-    </div>
+    </LayoutModal>
   );
 };

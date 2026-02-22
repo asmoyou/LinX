@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Download, Trash2, AlertTriangle } from 'lucide-react';
 import { GlassPanel } from '../GlassPanel';
+import { LayoutModal } from '../LayoutModal';
 import { ModalPanel } from '../ModalPanel';
 import { useNotificationStore } from '../../stores/notificationStore';
 import { useAuthStore } from '../../stores';
@@ -154,7 +155,15 @@ export const PrivacySection = () => {
 
       {/* Delete Confirmation Modal */}
       {showDeleteModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
+        <LayoutModal
+          isOpen={showDeleteModal}
+          onClose={() => {
+            setShowDeleteModal(false);
+            setDeleteConfirmation('');
+          }}
+          closeOnBackdropClick={false}
+          closeOnEscape={true}
+        >
           <ModalPanel className="border border-red-500/30 max-w-md w-full mx-4">
             <div className="flex items-center gap-3 mb-4">
               <AlertTriangle className="w-6 h-6 text-red-400" />
@@ -197,7 +206,7 @@ export const PrivacySection = () => {
               </button>
             </div>
           </ModalPanel>
-        </div>
+        </LayoutModal>
       )}
     </div>
   );

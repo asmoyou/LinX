@@ -5,6 +5,7 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 import { useMissionStore } from '@/stores/missionStore';
 import { llmApi } from '@/api/llm';
+import { LayoutModal } from '@/components/LayoutModal';
 import { ModalPanel } from '@/components/ModalPanel';
 import type { MissionRoleConfig, MissionExecutionConfig, MissionSettings } from '@/types/mission';
 
@@ -196,11 +197,8 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
   const allowTemporaryWorkers = executionConfig.allow_temporary_workers;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-200"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <ModalPanel className="max-w-3xl w-full max-h-[85vh] overflow-hidden flex flex-col p-0">
+    <LayoutModal isOpen={isOpen} onClose={onClose} closeOnBackdropClick={true} closeOnEscape={true}>
+      <ModalPanel className="max-w-3xl w-full max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-hidden flex flex-col p-0">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200 dark:border-zinc-700">
           <div className="flex items-center gap-2.5">
@@ -654,6 +652,6 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
           </div>
         </div>
       </ModalPanel>
-    </div>
+    </LayoutModal>
   );
 };

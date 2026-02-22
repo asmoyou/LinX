@@ -11,6 +11,7 @@ import {
   Shield,
   X,
 } from "lucide-react";
+import { LayoutModal } from "@/components/LayoutModal";
 import { ModalPanel } from "@/components/ModalPanel";
 import { adminUsersApi, type AdminUser } from "@/api/adminUsers";
 import type { Memory } from "@/types/memory";
@@ -361,11 +362,13 @@ export const MemorySharingModal: React.FC<MemorySharingModalProps> = ({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
-      style={{ marginLeft: "var(--sidebar-width, 0px)" }}
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
     >
-      <ModalPanel className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+      <ModalPanel className="w-full max-w-2xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <Share2 className="w-6 h-6 text-indigo-500" />
@@ -604,6 +607,6 @@ export const MemorySharingModal: React.FC<MemorySharingModalProps> = ({
           </button>
         </div>
       </ModalPanel>
-    </div>
+    </LayoutModal>
   );
 };

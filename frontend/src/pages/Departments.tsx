@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '@/stores';
 import { departmentsApi } from '@/api/departments';
+import { LayoutModal } from '@/components/LayoutModal';
 import toast from 'react-hot-toast';
 import type {
   Department,
@@ -102,7 +103,13 @@ const DepartmentForm: React.FC<DepartmentFormProps> = ({ department, onClose, on
   const parentOptions = buildParentOptions(allDepartments, department?.id);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <LayoutModal
+      isOpen={true}
+      onClose={onClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
+      backdropClassName="bg-black/50"
+    >
       <div className="bg-white dark:bg-zinc-800 rounded-2xl shadow-2xl w-full max-w-md mx-4">
         <div className="flex items-center justify-between p-6 border-b border-zinc-200 dark:border-zinc-700">
           <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">
@@ -214,7 +221,7 @@ const DepartmentForm: React.FC<DepartmentFormProps> = ({ department, onClose, on
           </div>
         </form>
       </div>
-    </div>
+    </LayoutModal>
   );
 };
 

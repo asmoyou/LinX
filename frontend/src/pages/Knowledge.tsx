@@ -20,6 +20,7 @@ import { RetrievalTestPanel } from "@/components/knowledge/RetrievalTestPanel";
 import { CollectionCard } from "@/components/knowledge/CollectionCard";
 import { CollectionBreadcrumb } from "@/components/knowledge/CollectionBreadcrumb";
 import { DepartmentSelect } from "@/components/departments/DepartmentSelect";
+import { LayoutModal } from "@/components/LayoutModal";
 import { ModalPanel } from "@/components/ModalPanel";
 import { useKnowledgeStore } from "@/stores/knowledgeStore";
 import { knowledgeApi } from "@/api/knowledge";
@@ -546,14 +547,13 @@ export const Knowledge: React.FC = () => {
 
       {/* Upload Form Modal */}
       {showUploadForm && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
-          style={{ marginLeft: "var(--sidebar-width, 0px)" }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowUploadForm(false);
-          }}
+        <LayoutModal
+          isOpen={showUploadForm}
+          onClose={() => setShowUploadForm(false)}
+          closeOnBackdropClick={true}
+          closeOnEscape={true}
         >
-          <ModalPanel className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+          <ModalPanel className="w-full max-w-2xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-2xl font-bold text-gray-800 dark:text-white">
                 {t("document.uploadDocument")}
@@ -571,20 +571,19 @@ export const Knowledge: React.FC = () => {
               collectionId={activeCollectionId || undefined}
             />
           </ModalPanel>
-        </div>
+        </LayoutModal>
       )}
 
       {/* Create Collection Modal */}
       {showCreateCollection && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
-          style={{ marginLeft: "var(--sidebar-width, 0px)" }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) {
-              setShowCreateCollection(false);
-              setNewCollectionName("");
-            }
+        <LayoutModal
+          isOpen={showCreateCollection}
+          onClose={() => {
+            setShowCreateCollection(false);
+            setNewCollectionName("");
           }}
+          closeOnBackdropClick={true}
+          closeOnEscape={true}
         >
           <ModalPanel className="w-full max-w-md">
             <div className="flex items-center justify-between mb-4">
@@ -631,17 +630,16 @@ export const Knowledge: React.FC = () => {
               </button>
             </div>
           </ModalPanel>
-        </div>
+        </LayoutModal>
       )}
 
       {/* Edit Collection Modal */}
       {editingCollection && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
-          style={{ marginLeft: "var(--sidebar-width, 0px)" }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setEditingCollection(null);
-          }}
+        <LayoutModal
+          isOpen={Boolean(editingCollection)}
+          onClose={() => setEditingCollection(null)}
+          closeOnBackdropClick={true}
+          closeOnEscape={true}
         >
           <ModalPanel className="w-full max-w-lg">
             <div className="flex items-center justify-between mb-6">
@@ -731,19 +729,18 @@ export const Knowledge: React.FC = () => {
               </button>
             </div>
           </ModalPanel>
-        </div>
+        </LayoutModal>
       )}
 
       {/* Edit Document Modal */}
       {editingDocument && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
-          style={{ marginLeft: "var(--sidebar-width, 0px)" }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setEditingDocument(null);
-          }}
+        <LayoutModal
+          isOpen={Boolean(editingDocument)}
+          onClose={() => setEditingDocument(null)}
+          closeOnBackdropClick={true}
+          closeOnEscape={true}
         >
-          <ModalPanel className="w-full max-w-lg max-h-[90vh] overflow-y-auto">
+          <ModalPanel className="w-full max-w-lg max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-bold text-gray-800 dark:text-white">
                 {t("document.edit")}
@@ -843,7 +840,7 @@ export const Knowledge: React.FC = () => {
               </button>
             </div>
           </ModalPanel>
-        </div>
+        </LayoutModal>
       )}
 
       {/* Search and Filters */}

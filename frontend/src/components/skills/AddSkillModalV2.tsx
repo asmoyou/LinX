@@ -6,6 +6,7 @@ import TemplateSelector from './TemplateSelector';
 import { skillsApi } from '@/api/skills';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
+import { LayoutModal } from '@/components/LayoutModal';
 
 interface AddSkillModalV2Props {
   isOpen: boolean;
@@ -129,8 +130,14 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-200" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <div className="w-full max-w-4xl max-h-[90vh] overflow-y-auto modal-panel rounded-[24px] shadow-2xl p-6 animate-in zoom-in-95 duration-200">
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={handleClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
+      containerClassName="animate-in zoom-in-95 duration-200"
+    >
+      <div className="w-full max-w-4xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto modal-panel rounded-[24px] shadow-2xl p-6 animate-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-zinc-800 dark:text-white">{t('skills.createNewSkill')}</h2>
@@ -490,6 +497,6 @@ def my_tool(param: str) -> str:
           )}
         </form>
       </div>
-    </div>
+    </LayoutModal>
   );
 }

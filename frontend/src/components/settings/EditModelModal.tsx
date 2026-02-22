@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Save, ChevronDown, ChevronUp, RotateCcw, Eye, Brain, Code, Zap, MessageSquare } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ModelMetadata } from '@/api/llm';
+import { LayoutModal } from '@/components/LayoutModal';
 
 interface EditModelModalProps {
   isOpen: boolean;
@@ -115,8 +116,13 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md overflow-auto" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <div className="w-full max-w-2xl my-auto modal-panel rounded-[24px] shadow-2xl max-h-[90vh] overflow-y-auto">
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
+    >
+      <div className="w-full max-w-2xl my-auto modal-panel rounded-[24px] shadow-2xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto">
         {/* Header */}
         <div className="px-4 sm:px-6 py-4 border-b border-zinc-200 dark:border-zinc-700 flex items-center justify-between flex-shrink-0">
           <div className="min-w-0 flex-1">
@@ -515,7 +521,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
           </button>
         </div>
       </div>
-    </div>
+    </LayoutModal>
   );
 };
 

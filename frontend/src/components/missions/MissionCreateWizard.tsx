@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { X, Upload, ChevronRight, ChevronLeft, Rocket, FileText, Settings, Eye, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useMissionStore } from '@/stores/missionStore';
+import { LayoutModal } from '@/components/LayoutModal';
 import { ModalPanel } from '@/components/ModalPanel';
 import type { MissionConfig } from '@/types/mission';
 
@@ -171,8 +172,16 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-in fade-in duration-200">
-      <ModalPanel className="w-full max-w-2xl flex flex-col max-h-[85vh]">
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={() => {
+        onClose();
+        resetForm();
+      }}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
+    >
+      <ModalPanel className="w-full max-w-2xl flex flex-col max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)]">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200 dark:border-zinc-700">
           <div className="flex items-center gap-2">
@@ -523,6 +532,6 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
           )}
         </div>
       </ModalPanel>
-    </div>
+    </LayoutModal>
   );
 };

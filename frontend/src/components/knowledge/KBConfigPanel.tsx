@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Save, Loader2, Sparkles, SlidersHorizontal } from "lucide-react";
 import toast from "react-hot-toast";
+import { LayoutModal } from "@/components/LayoutModal";
 import { ModalPanel } from "@/components/ModalPanel";
 import { knowledgeApi } from "@/api/knowledge";
 import { llmApi } from "@/api/llm";
@@ -544,11 +545,13 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({
   );
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
-      style={{ marginLeft: "var(--sidebar-width, 0px)" }}
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={true}
+      closeOnEscape={true}
     >
-      <ModalPanel className="w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+      <ModalPanel className="w-full max-w-4xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <SlidersHorizontal className="w-6 h-6 text-indigo-500" />
@@ -1452,6 +1455,6 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({
           </div>
         )}
       </ModalPanel>
-    </div>
+    </LayoutModal>
   );
 };

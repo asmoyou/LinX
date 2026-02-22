@@ -1,6 +1,7 @@
 import React from 'react';
 import { X, Activity, Clock, CheckCircle, MessageSquare } from 'lucide-react';
 import type { Agent } from '@/types/agent';
+import { LayoutModal } from '@/components/LayoutModal';
 
 const normalizeMemoryScopes = (scopes?: string[]): string[] => {
   if (!scopes || scopes.length === 0) {
@@ -53,8 +54,13 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({ agent, isO
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md overflow-auto" style={{ marginLeft: 'var(--sidebar-width, 0px)' }}>
-      <div className="w-full max-w-4xl my-auto max-h-[90vh] overflow-y-auto modal-panel rounded-[24px] shadow-2xl p-6">
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={false}
+      closeOnEscape={true}
+    >
+      <div className="w-full max-w-4xl my-auto max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto modal-panel rounded-[24px] shadow-2xl p-6">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-gray-800 dark:text-white">{agent.name}</h2>
           <div className="flex items-center gap-2">
@@ -172,6 +178,6 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({ agent, isO
           </div>
         </div>
       </div>
-    </div>
+    </LayoutModal>
   );
 };
