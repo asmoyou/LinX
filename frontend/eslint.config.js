@@ -19,5 +19,10 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // Legacy codebase contains a large amount of explicit `any`.
+      // Keep visibility while unblocking incremental cleanup.
+      '@typescript-eslint/no-explicit-any': 'warn',
+    },
   },
 ])

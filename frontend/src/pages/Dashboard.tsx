@@ -26,7 +26,7 @@ export const Dashboard: React.FC = () => {
     { name: 'Sun', tasks: 5 },
   ]);
 
-  const [events, setEvents] = useState([
+  const [events] = useState([
     {
       id: '1',
       type: 'success' as const,

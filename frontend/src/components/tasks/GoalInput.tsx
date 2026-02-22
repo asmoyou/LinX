@@ -20,7 +20,7 @@ export const GoalInput: React.FC<GoalInputProps> = ({ onSubmit, isLoading }) => 
   const {
     register,
     handleSubmit,
-    formState: { errors, touchedFields },
+    formState: { errors },
     reset,
     watch,
   } = useForm<SubmitGoalFormData>({

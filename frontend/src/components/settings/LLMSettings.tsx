@@ -399,7 +399,7 @@ export const LLMSettings: React.FC = () => {
                         try {
                           const providerDetail = await llmApi.getProviderDetail(name);
                           setEditingProvider(providerDetail);
-                        } catch (error) {
+                        } catch {
                           toast.error(t('settings.errors.fetchProviderFailed'));
                         }
                       }}

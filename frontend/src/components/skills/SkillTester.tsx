@@ -48,7 +48,7 @@ const SkillTester: React.FC<SkillTesterProps> = ({
 }) => {
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [naturalLanguageInput, setNaturalLanguageInput] = useState('');
-  const [dryRun, setDryRun] = useState(true);
+  const [dryRun] = useState(true);
   const [useAgent, setUseAgent] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string>('');
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -127,7 +127,7 @@ const SkillTester: React.FC<SkillTesterProps> = ({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-medium text-foreground">测试技能</h3>
+        <h3 className="text-lg font-medium text-foreground">测试技能: {skillName}</h3>
       </div>
 
       {/* Input Fields - Different for agent_skill vs langchain_tool */}

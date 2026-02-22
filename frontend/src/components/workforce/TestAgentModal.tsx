@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { X, Send, Loader2, AlertCircle, Bot, ChevronDown, ChevronUp, Brain, Paperclip, Image as ImageIcon, FileText, X as XIcon, Sparkles } from 'lucide-react';
+import { X, Send, AlertCircle, Bot, Paperclip, Image as ImageIcon, FileText, X as XIcon, Sparkles } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Agent } from '@/types/agent';
@@ -12,8 +12,6 @@ import type {
   AttachedFile
 } from '@/types/streaming';
 import { ConversationRoundComponent } from './ConversationRound';
-import { RetryIndicator } from './RetryIndicator';
-import { ErrorFeedbackDisplay } from './ErrorFeedbackDisplay';
 import { createMarkdownComponents } from './CodeBlock';
 import { LayoutModal } from '@/components/LayoutModal';
 
@@ -98,7 +96,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const lastStatusTimeRef = useRef<number>(Date.now());
+  const lastStatusTimeRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   
   // Use refs to track streaming data for onComplete callback
@@ -143,6 +141,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
   }, [messages, currentRounds]);
 
   // Focus input when modal opens
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (isOpen) {
       inputRef.current?.focus();
@@ -206,6 +205,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
       setIsStreaming(false);
     }
   }, [isOpen]);  // Only depend on isOpen - use refs for other values
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   if (!isOpen || !agent) return null;
 

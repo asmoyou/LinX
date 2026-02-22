@@ -23,7 +23,7 @@ interface SidebarProps {
   onToggle: () => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
   const { t } = useTranslation();
   const { user } = useAuthStore();
   const { profile } = useUserStore();

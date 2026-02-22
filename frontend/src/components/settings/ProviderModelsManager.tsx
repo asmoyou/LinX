@@ -67,21 +67,17 @@ export const ProviderModelsManager: React.FC<ProviderModelsManagerProps> = ({ pr
   };
 
   const handleUpdateMetadata = async (modelName: string, metadata: ModelMetadata) => {
-    try {
-      await llmApi.updateModelMetadata(providerName, modelName, metadata);
-      
-      // Update local state
-      if (providerData) {
-        setProviderData({
-          ...providerData,
-          models: {
-            ...providerData.models,
-            [modelName]: metadata,
-          },
-        });
-      }
-    } catch (err) {
-      throw err; // Let the card component handle the error
+    await llmApi.updateModelMetadata(providerName, modelName, metadata);
+
+    // Update local state
+    if (providerData) {
+      setProviderData({
+        ...providerData,
+        models: {
+          ...providerData.models,
+          [modelName]: metadata,
+        },
+      });
     }
   };
 

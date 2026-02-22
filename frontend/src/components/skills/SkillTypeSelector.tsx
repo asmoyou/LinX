@@ -1,5 +1,5 @@
 import React from 'react';
-import { Code2, Zap, BookOpen } from 'lucide-react';
+import { Code2, BookOpen } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 export type SkillType = 'langchain_tool' | 'agent_skill';

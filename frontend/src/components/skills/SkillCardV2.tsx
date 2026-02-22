@@ -1,4 +1,4 @@
-import { Code2, Zap, Package, Layers, Trash2, Edit, Eye, Play, Power, PowerOff, BookOpen, AlertCircle } from 'lucide-react';
+import { Code2, Package, Layers, Trash2, Edit, Eye, Play, Power, PowerOff, BookOpen, AlertCircle } from 'lucide-react';
 import type { Skill } from '@/api/skills';
 import { useTranslation } from 'react-i18next';
 

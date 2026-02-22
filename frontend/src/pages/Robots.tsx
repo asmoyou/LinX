@@ -16,16 +16,12 @@ import {
   X, 
   TrendingUp, 
   Thermometer, 
-  HardDrive, 
-  Timer,
-  Navigation,
-  Box,
   Eye,
   Lock,
-  ZapOff,
   Crosshair,
   Layers
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
 import { LayoutModal } from '@/components/LayoutModal';
@@ -48,7 +44,7 @@ interface RobotExample {
 interface TelemetryMetric {
   label: string;
   value: string;
-  icon: any;
+  icon: LucideIcon;
   color: string;
 }
 
@@ -58,6 +54,19 @@ interface TelemetryDetail {
   subValue?: string;
   status?: 'normal' | 'warning' | 'critical';
 }
+
+const TASK_POOL: Record<RobotExample['type'], string[]> = {
+  humanoid: ['区域导引', '视觉采样', '协作搬运', '设备点检', '访客接待'],
+  quadruped: ['电力巡检', '自主导航测试', '环境建模', '周界防范', '物资配送'],
+  arm: ['高精度装配', '零件抓取', '表面质量检测', '自动涂胶', '3D扫描'],
+  computer: ['公文自动盖章', '数据合规审计', '边缘流量监控', '硬件安全扫描'],
+};
+
+const ROBOT_TYPE_BY_ID: Record<string, RobotExample['type']> = {
+  'h2-01': 'humanoid',
+  'a2-01': 'quadruped',
+  'arm-01': 'arm',
+};
 
 export const Robots: React.FC = () => {
   const { t } = useTranslation();
@@ -72,24 +81,16 @@ export const Robots: React.FC = () => {
     'arm-01': '精密抓取'
   });
 
-  const taskPool: Record<string, string[]> = {
-    'humanoid': ['区域导引', '视觉采样', '协作搬运', '设备点检', '访客接待'],
-    'quadruped': ['电力巡检', '自主导航测试', '环境建模', '周界防范', '物资配送'],
-    'arm': ['高精度装配', '零件抓取', '表面质量检测', '自动涂胶', '3D扫描'],
-    'computer': ['公文自动盖章', '数据合规审计', '边缘流量监控', '硬件安全扫描']
-  };
-
   useEffect(() => {
     const interval = setInterval(() => {
       setRobotTasks(prev => {
         const next = { ...prev };
         ['a2-01', 'arm-01', 'h2-01'].forEach(id => {
+          const robotType = ROBOT_TYPE_BY_ID[id];
+          if (!robotType) return;
           if (Math.random() > 0.8) {
-            const robot = robots.find(r => r.id === id);
-            if (robot) {
-              const pool = taskPool[robot.type];
-              next[id] = pool[Math.floor(Math.random() * pool.length)];
-            }
+            const pool = TASK_POOL[robotType];
+            next[id] = pool[Math.floor(Math.random() * pool.length)];
           }
         });
         return next;
@@ -191,10 +192,12 @@ export const Robots: React.FC = () => {
   // Get specific telemetry based on robot type
   const getTelemetryConfig = (robot: RobotExample) => {
     const isWorking = robot.status === 'working';
+    const cpuLoad = isWorking ? '68.4%' : robot.status === 'charging' ? '18.2%' : '11.6%';
+    const systemTemp = isWorking ? '46.8°C' : robot.status === 'charging' ? '34.9°C' : '38.2°C';
     
     const baseMetrics: TelemetryMetric[] = [
-      { label: 'CPU 负载', value: `${(isWorking ? 45 + Math.random() * 30 : 5 + Math.random() * 10).toFixed(1)}%`, icon: TrendingUp, color: 'text-blue-500' },
-      { label: '系统温度', value: `${(35 + Math.random() * 15).toFixed(1)}°C`, icon: Thermometer, color: 'text-orange-500' },
+      { label: 'CPU 负载', value: cpuLoad, icon: TrendingUp, color: 'text-blue-500' },
+      { label: '系统温度', value: systemTemp, icon: Thermometer, color: 'text-orange-500' },
     ];
 
     let typeMetrics: TelemetryMetric[] = [];
@@ -244,7 +247,7 @@ export const Robots: React.FC = () => {
         ];
         technicalDetails = [
           { label: 'HSM 状态', value: '已就绪', subValue: '密钥周期内' },
-          { label: 'I/O 带宽', value: '42.5Gbps', icon: Activity, subValue: '峰值利用 12%' },
+          { label: 'I/O 带宽', value: '42.5Gbps', subValue: '峰值利用 12%' },
           { label: '物理防拆检测', value: '正常', subValue: '未触发' },
           { label: '安全审计日志', value: '已加密', subValue: '同步至 Cloud' }
         ];
@@ -375,7 +378,7 @@ export const Robots: React.FC = () => {
       {/* Robot Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6">
         <AnimatePresence mode="popLayout">
-          {filteredRobots.map((robot, index) => (
+          {filteredRobots.map((robot) => (
             <motion.div
               layout
               key={robot.id}

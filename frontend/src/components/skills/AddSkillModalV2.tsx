@@ -14,8 +14,6 @@ interface AddSkillModalV2Props {
   onSubmit: (data: any) => Promise<void>;
 }
 
-type AgentSkillMode = 'package';
-
 export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillModalV2Props) {
   const { t } = useTranslation();
   const [step, setStep] = useState<'type' | 'template' | 'code'>('type');

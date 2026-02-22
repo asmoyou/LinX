@@ -1,5 +1,4 @@
 import apiClient from './client';
-import { useAuthStore } from '../stores/authStore';
 import type { Agent } from '../types/agent';
 
 export interface CreateAgentRequest {

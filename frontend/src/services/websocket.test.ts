@@ -33,6 +33,7 @@ class MockWebSocket {
   }
 
   send(data: string) {
+    void data;
     if (this.readyState !== MockWebSocket.OPEN) {
       throw new Error('WebSocket is not open');
     }
@@ -154,6 +155,7 @@ describe('WebSocketManager', () => {
         type: 'task_status_update',
         data: { task_id: '123', status: 'completed' },
       };
+      expect(mockMessage.type).toBe('task_status_update');
 
       // Access the internal WebSocket and simulate message
       // This would need a way to access the internal ws instance

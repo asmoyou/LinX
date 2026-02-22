@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Key, Plus, Trash2, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { Key, Plus, Trash2, AlertCircle } from 'lucide-react';
 import { skillsApi } from '../../api/skills';
 import { LayoutModal } from '../LayoutModal';
 import { useNotificationStore } from '../../stores/notificationStore';

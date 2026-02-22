@@ -4,6 +4,7 @@
  * Renders code blocks with syntax highlighting using react-syntax-highlighter.
  * Supports multiple languages, line numbers, and copy-to-clipboard.
  */
+/* eslint-disable react-refresh/only-export-components */
 
 import React, { useState } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -115,7 +116,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
  * Creates components object for ReactMarkdown to use CodeBlock
  */
 export const createMarkdownComponents = () => ({
-  code({ node, inline, className, children, ...props }: any) {
+  code({ inline, className, children, ...props }: any) {
     const match = /language-(\w+)/.exec(className || '');
     const codeString = String(children).replace(/\n$/, '');
 

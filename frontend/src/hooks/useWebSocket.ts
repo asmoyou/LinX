@@ -208,7 +208,7 @@ export function useWebSocketEvent(
       wsManagerRef.current = getWebSocketManager();
       const unsubscribe = wsManagerRef.current.on(type, handler);
       return unsubscribe;
-    } catch (error) {
+    } catch {
       console.error('[useWebSocketEvent] WebSocket manager not initialized');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

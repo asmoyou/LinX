@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { LayoutGrid, List } from 'lucide-react';
 import { GoalInput } from '@/components/tasks/GoalInput';
@@ -9,57 +9,53 @@ import { TaskDetailsPanel } from '@/components/tasks/TaskDetailsPanel';
 import { ClarificationModal } from '@/components/tasks/ClarificationModal';
 import type { Goal, Task } from '@/types/task';
 
+const createMockGoals = (): Goal[] => [
+  {
+    id: '1',
+    title: 'Q4 Market Strategy Report',
+    description: 'Generate comprehensive sales report for Q4 2025',
+    status: 'executing',
+    createdAt: new Date().toISOString(),
+    tasks: [
+      {
+        id: 't1',
+        title: 'Analyze competitor performance',
+        status: 'completed',
+        progress: 100,
+        assignedAgent: 'Analyst-Prime',
+        startTime: new Date(Date.now() - 3600000).toISOString(),
+        endTime: new Date(Date.now() - 3000000).toISOString(),
+        result: 'Competitors show a 15% increase in cloud adoption',
+      },
+      {
+        id: 't2',
+        title: 'Draft executive summary',
+        status: 'in_progress',
+        progress: 45,
+        assignedAgent: 'Scribe-7',
+        dependencies: ['t1'],
+        startTime: new Date(Date.now() - 2400000).toISOString(),
+      },
+      {
+        id: 't3',
+        title: 'Generate statistical analysis',
+        status: 'pending',
+        progress: 0,
+        dependencies: ['t2'],
+      },
+    ],
+  },
+];
+
 export const Tasks: React.FC = () => {
   const { t } = useTranslation();
-  const [goals, setGoals] = useState<Goal[]>([]);
+  const [goals, setGoals] = useState<Goal[]>(createMockGoals);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [expandedGoalId, setExpandedGoalId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [isTaskDetailsPanelOpen, setIsTaskDetailsPanelOpen] = useState(false);
   const [clarificationGoal, setClarificationGoal] = useState<Goal | null>(null);
   const [viewMode, setViewMode] = useState<'timeline' | 'flow'>('timeline');
-
-  // Mock data for demonstration
-  useEffect(() => {
-    const mockGoals: Goal[] = [
-      {
-        id: '1',
-        title: 'Q4 Market Strategy Report',
-        description: 'Generate comprehensive sales report for Q4 2025',
-        status: 'executing',
-        createdAt: new Date().toISOString(),
-        tasks: [
-          {
-            id: 't1',
-            title: 'Analyze competitor performance',
-            status: 'completed',
-            progress: 100,
-            assignedAgent: 'Analyst-Prime',
-            startTime: new Date(Date.now() - 3600000).toISOString(),
-            endTime: new Date(Date.now() - 3000000).toISOString(),
-            result: 'Competitors show a 15% increase in cloud adoption',
-          },
-          {
-            id: 't2',
-            title: 'Draft executive summary',
-            status: 'in_progress',
-            progress: 45,
-            assignedAgent: 'Scribe-7',
-            dependencies: ['t1'],
-            startTime: new Date(Date.now() - 2400000).toISOString(),
-          },
-          {
-            id: 't3',
-            title: 'Generate statistical analysis',
-            status: 'pending',
-            progress: 0,
-            dependencies: ['t2'],
-          },
-        ],
-      },
-    ];
-    setGoals(mockGoals);
-  }, []);
 
   const handleGoalSubmit = async (title: string, description: string) => {
     setIsSubmitting(true);
@@ -101,6 +97,9 @@ export const Tasks: React.FC = () => {
 
   const handleClarificationSubmit = (answers: string[]) => {
     if (!clarificationGoal) return;
+    if (answers.length > 0) {
+      // Placeholder for follow-up handling once backend clarification API is connected.
+    }
     setClarificationGoal(null);
   };
 

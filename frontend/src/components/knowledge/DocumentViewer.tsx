@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
   X,
   Download,
@@ -39,12 +39,19 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
 }) => {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<ViewerTab>("preview");
-
-  useEffect(() => {
-    setActiveTab("preview");
-  }, [document?.id]);
+  const [activeTabDocumentId, setActiveTabDocumentId] = useState<string | null>(
+    null,
+  );
 
   if (!isOpen || !document) return null;
+
+  const currentTab: ViewerTab =
+    activeTabDocumentId === document.id ? activeTab : "preview";
+
+  const handleTabChange = (tab: ViewerTab) => {
+    setActiveTab(tab);
+    setActiveTabDocumentId(document.id);
+  };
 
   const hasChunks =
     document.status === "completed" &&
@@ -180,9 +187,9 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
         {hasChunks && (
           <div className="flex gap-1 mb-6 border-b border-gray-200 dark:border-gray-700">
             <button
-              onClick={() => setActiveTab("preview")}
+              onClick={() => handleTabChange("preview")}
               className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === "preview"
+                currentTab === "preview"
                   ? "border-indigo-500 text-indigo-600 dark:text-indigo-400"
                   : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
               }`}
@@ -190,9 +197,9 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
               {t("document.viewer.previewTab")}
             </button>
             <button
-              onClick={() => setActiveTab("chunks")}
+              onClick={() => handleTabChange("chunks")}
               className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === "chunks"
+                currentTab === "chunks"
                   ? "border-indigo-500 text-indigo-600 dark:text-indigo-400"
                   : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
               }`}
@@ -203,7 +210,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
         )}
 
         {/* Tab Content */}
-        {activeTab === "preview" ? (
+        {currentTab === "preview" ? (
           <>
             {/* Document Preview */}
             <div className="mb-6 bg-white/10 rounded-lg p-4">
