@@ -370,6 +370,225 @@ async def test_execute_task_with_retry_marks_unsuccessful_agent_response_as_fail
     assert status_updates[-1] == (assigned_agent_id, "failed")
 
 
+@pytest.mark.asyncio
+async def test_execute_task_with_retry_prefers_platform_agent_before_temporary(monkeypatch):
+    mission_id = uuid4()
+    owner_user_id = uuid4()
+    matched_agent_id = uuid4()
+    task_id = uuid4()
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: None)
+
+    mission = SimpleNamespace(
+        created_by_user_id=owner_user_id,
+        mission_config={
+            "execution_config": {
+                "prefer_existing_agents": True,
+                "allow_temporary_workers": True,
+            }
+        },
+    )
+    task_obj = SimpleNamespace(
+        task_id=task_id,
+        goal_text="Implement API endpoint",
+        acceptance_criteria="API endpoint works",
+        task_metadata={
+            "title": "Implement API",
+            "role_required_capabilities": ["python", "api"],
+        },
+        assigned_agent_id=None,
+    )
+    matched_platform_agent = SimpleNamespace(
+        agent_id=matched_agent_id,
+        name="backend-agent",
+        status="idle",
+        agent_type="platform",
+        capabilities=["python", "api"],
+        system_prompt="Backend API specialist",
+    )
+
+    class _FakeQuery:
+        def __init__(self, task):
+            self._task = task
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return self._task
+
+    class _FakeSession:
+        def __init__(self, task):
+            self._task = task
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._task)
+
+    class _FakeSessionContext:
+        def __init__(self, task):
+            self._task = task
+
+        def __enter__(self):
+            return _FakeSession(self._task)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    db_task = SimpleNamespace(
+        status="pending",
+        assigned_agent_id=None,
+        task_metadata={},
+        result=None,
+        completed_at=None,
+    )
+
+    async def _fake_create_registered(agent_id, owner_user_id):
+        if agent_id == matched_agent_id:
+            return SimpleNamespace(agent_id=agent_id, name="backend-agent")
+        return None
+
+    async def _fake_execute_agent_task(agent, prompt):
+        return {"output": "done"}
+
+    provision_calls = {"count": 0}
+
+    def _fake_provision(self, mission_id, mission, task_obj, llm_cfg):
+        provision_calls["count"] += 1
+        return uuid4()
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.create_registered_mission_agent",
+        _fake_create_registered,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_execute_agent_task",
+        staticmethod(_fake_execute_agent_task),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_provision_temporary_worker_agent",
+        _fake_provision,
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(db_task),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_agent_status",
+        lambda mission_id, agent_id, status: None,
+    )
+
+    success = await MissionOrchestrator._execute_task_with_retry(
+        orchestrator,
+        mission_id=mission_id,
+        mission=mission,
+        task_obj=task_obj,
+        max_retries=0,
+        available_platform_agents=[matched_platform_agent],
+    )
+
+    assert success is True
+    assert provision_calls["count"] == 0
+    assert db_task.assigned_agent_id == matched_agent_id
+    assert task_obj.assigned_agent_id == matched_agent_id
+    assert task_obj.task_metadata.get("assignment_source") == "platform_auto_match"
+
+
+@pytest.mark.asyncio
+async def test_execute_task_with_retry_fails_when_temp_worker_disabled_and_no_platform_match(
+    monkeypatch,
+):
+    mission_id = uuid4()
+    owner_user_id = uuid4()
+    task_id = uuid4()
+    emitted_events = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+
+    mission = SimpleNamespace(
+        created_by_user_id=owner_user_id,
+        mission_config={
+            "execution_config": {
+                "prefer_existing_agents": True,
+                "allow_temporary_workers": False,
+            }
+        },
+    )
+    task_obj = SimpleNamespace(
+        task_id=task_id,
+        goal_text="Implement API endpoint",
+        acceptance_criteria="API endpoint works",
+        task_metadata={"title": "Implement API"},
+        assigned_agent_id=None,
+    )
+
+    class _FakeQuery:
+        def __init__(self, task):
+            self._task = task
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return self._task
+
+    class _FakeSession:
+        def __init__(self, task):
+            self._task = task
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._task)
+
+    class _FakeSessionContext:
+        def __init__(self, task):
+            self._task = task
+
+        def __enter__(self):
+            return _FakeSession(self._task)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    db_task = SimpleNamespace(
+        status="pending",
+        assigned_agent_id=None,
+        task_metadata={},
+        result=None,
+        completed_at=None,
+    )
+
+    async def _fake_create_registered(agent_id, owner_user_id):
+        return None
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.create_registered_mission_agent",
+        _fake_create_registered,
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(db_task),
+    )
+
+    success = await MissionOrchestrator._execute_task_with_retry(
+        orchestrator,
+        mission_id=mission_id,
+        mission=mission,
+        task_obj=task_obj,
+        max_retries=0,
+        available_platform_agents=[],
+    )
+
+    assert success is False
+    assert db_task.status == "failed"
+    assert isinstance(db_task.result, dict)
+    assert "temporary workers are disabled" in (db_task.result.get("error") or "").lower()
+    emitted_types = [event["event_type"] for event in emitted_events]
+    assert "TASK_FAILED" in emitted_types
+
+
 def test_cleanup_deletes_temporary_agents(monkeypatch):
     mission_id = uuid4()
     temporary_agent_id = uuid4()
@@ -494,6 +713,7 @@ def test_resolve_temporary_worker_memory_scopes_defaults_and_normalization():
         "agent",
         "company",
         "user_context",
+        "task_context",
     ]
     normalized = MissionOrchestrator._resolve_temporary_worker_memory_scopes(
         {
@@ -504,7 +724,7 @@ def test_resolve_temporary_worker_memory_scopes_defaults_and_normalization():
             ]
         }
     )
-    assert normalized == ["company", "agent"]
+    assert normalized == ["company", "agent", "task_context"]
 
 
 def test_resolve_blueprint_role_assignments_prefers_capability_match():
@@ -601,6 +821,66 @@ def test_select_temporary_worker_skills_uses_task_overlap(monkeypatch):
     assert "ui_styling_pack" not in selected
 
 
+def test_select_platform_agent_for_task_prefers_capability_overlap():
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    task_obj = SimpleNamespace(
+        task_metadata={"title": "Build API", "role_required_capabilities": ["python", "api"]},
+        goal_text="Implement backend API service",
+        acceptance_criteria="Expose stable API endpoints",
+    )
+    matched_agent = SimpleNamespace(
+        agent_id=uuid4(),
+        name="Backend Specialist",
+        agent_type="platform",
+        status="idle",
+        capabilities=["python", "api", "fastapi"],
+        system_prompt="Backend implementation specialist",
+    )
+    unmatched_agent = SimpleNamespace(
+        agent_id=uuid4(),
+        name="UI Specialist",
+        agent_type="platform",
+        status="idle",
+        capabilities=["react", "css"],
+        system_prompt="Frontend specialist",
+    )
+
+    selected = MissionOrchestrator._select_platform_agent_for_task(
+        orchestrator,
+        task_obj=task_obj,
+        available_agents=[unmatched_agent, matched_agent],
+    )
+
+    assert selected is not None
+    assert selected["agent_id"] == str(matched_agent.agent_id)
+    assert selected["agent_name"] == "Backend Specialist"
+
+
+def test_select_platform_agent_for_task_returns_none_without_overlap():
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    task_obj = SimpleNamespace(
+        task_metadata={"title": "Build API", "role_required_capabilities": ["python"]},
+        goal_text="Implement backend API service",
+        acceptance_criteria="Expose stable API endpoints",
+    )
+    candidate = SimpleNamespace(
+        agent_id=uuid4(),
+        name="Design Specialist",
+        agent_type="platform",
+        status="idle",
+        capabilities=["figma", "illustration"],
+        system_prompt="Visual design specialist",
+    )
+
+    selected = MissionOrchestrator._select_platform_agent_for_task(
+        orchestrator,
+        task_obj=task_obj,
+        available_agents=[candidate],
+    )
+
+    assert selected is None
+
+
 @pytest.mark.asyncio
 async def test_phase_execution_resets_failed_tasks_to_pending(monkeypatch):
     mission_id = uuid4()
@@ -657,12 +937,17 @@ async def test_phase_execution_resets_failed_tasks_to_pending(monkeypatch):
         "mission_system.orchestrator.get_mission",
         lambda _mission_id: SimpleNamespace(
             total_tasks=2,
+            created_by_user_id=uuid4(),
             mission_config={"execution_config": {"max_concurrent_tasks": 2}},
         ),
     )
     monkeypatch.setattr(
         "database.connection.get_db_session",
         lambda: _FakeSessionContext(db_tasks),
+    )
+    monkeypatch.setattr(
+        "agent_framework.agent_registry.AgentRegistry",
+        lambda: SimpleNamespace(list_agents=lambda **kwargs: []),
     )
     monkeypatch.setattr(
         MissionOrchestrator,

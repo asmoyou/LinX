@@ -702,6 +702,10 @@ class BaseAgent:
                     context_info.append(
                         f"User context: {', '.join(context['user_context_memories'][:3])}"
                     )
+                if context.get("task_context_memories"):
+                    context_info.append(
+                        f"Task context: {', '.join(context['task_context_memories'][:3])}"
+                    )
                 if context.get("knowledge_snippets"):
                     context_info.append(
                         f"Knowledge snippets: {', '.join(context['knowledge_snippets'][:3])}"
@@ -1878,6 +1882,10 @@ class BaseAgent:
             if context.get("user_context_memories"):
                 context_info.append(
                     f"User context: {', '.join(context['user_context_memories'][:3])}"
+                )
+            if context.get("task_context_memories"):
+                context_info.append(
+                    f"Task context: {', '.join(context['task_context_memories'][:3])}"
                 )
             if context.get("knowledge_snippets"):
                 context_info.append(

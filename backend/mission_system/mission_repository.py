@@ -354,6 +354,9 @@ DEFAULT_EXECUTION_CONFIG = {
     "debug_mode": False,
     # Team orchestration
     "enable_team_blueprint": True,
+    # Agent assignment strategy
+    "prefer_existing_agents": True,
+    "allow_temporary_workers": True,
     # Temporary worker auto skill selection
     "auto_select_temp_skills": True,
     "temp_worker_skill_limit": 3,

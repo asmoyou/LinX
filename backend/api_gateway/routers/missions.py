@@ -60,6 +60,8 @@ class MissionExecutionConfigSchema(BaseModel):
     max_concurrent_tasks: int = 3
     debug_mode: bool = False
     enable_team_blueprint: bool = True
+    prefer_existing_agents: bool = True
+    allow_temporary_workers: bool = True
     auto_select_temp_skills: bool = True
     temp_worker_skill_limit: int = 3
     temp_worker_memory_scopes: List[str] = Field(

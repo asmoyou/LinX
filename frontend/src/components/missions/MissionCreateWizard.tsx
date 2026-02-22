@@ -40,6 +40,8 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
     network_access: false,
     debug_mode: false,
     enable_team_blueprint: true,
+    prefer_existing_agents: true,
+    allow_temporary_workers: true,
     auto_select_temp_skills: true,
     temp_worker_skill_limit: 3,
     temp_worker_memory_scopes: ['agent', 'company', 'user_context'],
@@ -66,6 +68,10 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
         debug_mode: missionSettings.execution_config.debug_mode ?? prev.debug_mode,
         enable_team_blueprint:
           missionSettings.execution_config.enable_team_blueprint ?? prev.enable_team_blueprint,
+        prefer_existing_agents:
+          missionSettings.execution_config.prefer_existing_agents ?? prev.prefer_existing_agents,
+        allow_temporary_workers:
+          missionSettings.execution_config.allow_temporary_workers ?? prev.allow_temporary_workers,
         auto_select_temp_skills:
           missionSettings.execution_config.auto_select_temp_skills ?? prev.auto_select_temp_skills,
         temp_worker_skill_limit:
@@ -150,6 +156,8 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
       network_access: false,
       debug_mode: false,
       enable_team_blueprint: true,
+      prefer_existing_agents: true,
+      allow_temporary_workers: true,
       auto_select_temp_skills: true,
       temp_worker_skill_limit: 3,
       temp_worker_memory_scopes: ['agent', 'company', 'user_context'],

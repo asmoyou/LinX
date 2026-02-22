@@ -271,6 +271,7 @@ class AgentExecutor:
         agent_memories = []
         company_memories = []
         user_context_memories = []
+        task_context_memories = []
         memory_scopes = resolve_memory_scopes(
             access_level=access_level,
             allowed_memory=allowed_memory,
@@ -308,6 +309,23 @@ class AgentExecutor:
             "user_context": {
                 "enabled": "user_context" in memory_scopes,
                 "filter": f"user_id={context.user_id}, memory_type=user_context",
+                "min_similarity": memory_min_similarity,
+                "pre_filter_hit_count": 0,
+                "hit_count": 0,
+                "filtered_out_count": 0,
+                "hits": [],
+                "fallback_used": False,
+                "fallback_hit_count": 0,
+                "fallback_error": None,
+                "error": None,
+            },
+            "task_context": {
+                "enabled": "task_context" in memory_scopes and bool(context.task_id),
+                "filter": (
+                    f"user_id={context.user_id}, memory_type=task_context, task_id={context.task_id}"
+                    if context.task_id
+                    else "task_id=<missing>"
+                ),
                 "min_similarity": memory_min_similarity,
                 "pre_filter_hit_count": 0,
                 "hit_count": 0,
@@ -368,6 +386,26 @@ class AgentExecutor:
                 memory_debug["user_context"]["error"] = str(mem_error)
                 logger.warning(
                     f"Failed to retrieve user-context memories (continuing without): {mem_error}"
+                )
+
+        if "task_context" in memory_scopes and context.task_id:
+            try:
+                task_context_query = SearchQuery(
+                    query_text=context.task_description,
+                    memory_type=MemoryType.TASK_CONTEXT,
+                    user_id=str(context.user_id),
+                    task_id=str(context.task_id),
+                    top_k=top_k,
+                    min_similarity=memory_min_similarity,
+                )
+                task_context_memories = self.memory_interface.memory_system.retrieve_memories(
+                    task_context_query
+                )
+                logger.debug(f"Retrieved {len(task_context_memories)} task-context memories")
+            except Exception as mem_error:
+                memory_debug["task_context"]["error"] = str(mem_error)
+                logger.warning(
+                    f"Failed to retrieve task-context memories (continuing without): {mem_error}"
                 )
 
         knowledge_snippets: list[str] = []
@@ -531,6 +569,7 @@ class AgentExecutor:
             "agent_memories": [],
             "company_memories": [],
             "user_context_memories": [],
+            "task_context_memories": [],
             "knowledge_snippets": knowledge_snippets,
             "knowledge_hits": knowledge_hits,
         }
@@ -538,6 +577,7 @@ class AgentExecutor:
         memory_debug["agent"]["pre_filter_hit_count"] = len(agent_memories)
         memory_debug["company"]["pre_filter_hit_count"] = len(company_memories)
         memory_debug["user_context"]["pre_filter_hit_count"] = len(user_context_memories)
+        memory_debug["task_context"]["pre_filter_hit_count"] = len(task_context_memories)
 
         agent_memories, agent_filtered = self._filter_context_memories(
             agent_memories, context.task_description
@@ -548,10 +588,14 @@ class AgentExecutor:
         user_context_memories, user_context_filtered = self._filter_context_memories(
             user_context_memories, context.task_description
         )
+        task_context_memories, task_context_filtered = self._filter_context_memories(
+            task_context_memories, context.task_description
+        )
 
         memory_debug["agent"]["filtered_out_count"] = agent_filtered
         memory_debug["company"]["filtered_out_count"] = company_filtered
         memory_debug["user_context"]["filtered_out_count"] = user_context_filtered
+        memory_debug["task_context"]["filtered_out_count"] = task_context_filtered
 
         for memory in agent_memories:
             content = self._extract_content(memory)
@@ -565,10 +609,15 @@ class AgentExecutor:
             content = self._extract_content(memory)
             if content:
                 exec_context["user_context_memories"].append(content)
+        for memory in task_context_memories:
+            content = self._extract_content(memory)
+            if content:
+                exec_context["task_context_memories"].append(content)
 
         memory_debug["agent"]["hit_count"] = len(exec_context["agent_memories"])
         memory_debug["company"]["hit_count"] = len(exec_context["company_memories"])
         memory_debug["user_context"]["hit_count"] = len(exec_context["user_context_memories"])
+        memory_debug["task_context"]["hit_count"] = len(exec_context["task_context_memories"])
         memory_debug["agent"]["hits"] = [
             self._trim_text(content) for content in exec_context["agent_memories"][:3]
         ]
@@ -577,6 +626,9 @@ class AgentExecutor:
         ]
         memory_debug["user_context"]["hits"] = [
             self._trim_text(content) for content in exec_context["user_context_memories"][:3]
+        ]
+        memory_debug["task_context"]["hits"] = [
+            self._trim_text(content) for content in exec_context["task_context_memories"][:3]
         ]
 
         return exec_context, {"memory": memory_debug, "knowledge": knowledge_debug}

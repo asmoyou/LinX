@@ -21,6 +21,8 @@ export interface MissionConfig {
   network_access?: boolean;
   debug_mode?: boolean;
   enable_team_blueprint?: boolean;
+  prefer_existing_agents?: boolean;
+  allow_temporary_workers?: boolean;
   auto_select_temp_skills?: boolean;
   temp_worker_skill_limit?: number;
   temp_worker_memory_scopes?: string[];
@@ -122,6 +124,8 @@ export interface MissionExecutionConfig {
   max_concurrent_tasks: number;
   debug_mode: boolean;
   enable_team_blueprint: boolean;
+  prefer_existing_agents: boolean;
+  allow_temporary_workers: boolean;
   auto_select_temp_skills: boolean;
   temp_worker_skill_limit: number;
   temp_worker_memory_scopes: string[];

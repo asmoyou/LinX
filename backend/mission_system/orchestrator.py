@@ -247,6 +247,8 @@ class MissionOrchestrator:
             "max_qa_cycles",
             "debug_mode",
             "enable_team_blueprint",
+            "prefer_existing_agents",
+            "allow_temporary_workers",
             "auto_select_temp_skills",
             "temp_worker_skill_limit",
             "temp_worker_memory_scopes",
@@ -466,7 +468,11 @@ class MissionOrchestrator:
 
     @staticmethod
     def _resolve_temporary_worker_memory_scopes(exec_cfg: Dict[str, Any]) -> List[str]:
-        """Resolve temporary worker memory scopes with sane defaults."""
+        """Resolve temporary worker memory scopes with sane defaults.
+
+        `task_context` is always enabled for temporary workers because
+        mission tasks rely on task-scoped context continuity.
+        """
         raw_scopes = exec_cfg.get("temp_worker_memory_scopes")
         normalized: List[str] = []
         if isinstance(raw_scopes, list):
@@ -475,9 +481,11 @@ class MissionOrchestrator:
                 if candidate in {"agent", "company", "user_context", "task_context"}:
                     if candidate not in normalized:
                         normalized.append(candidate)
-        if normalized:
-            return normalized
-        return ["agent", "company", "user_context"]
+        if not normalized:
+            normalized = ["agent", "company", "user_context"]
+        if "task_context" not in normalized:
+            normalized.append("task_context")
+        return normalized
 
     def _select_temporary_worker_skills(
         self,
@@ -716,6 +724,82 @@ class MissionOrchestrator:
             }
 
         return role_map
+
+    def _select_platform_agent_for_task(
+        self,
+        task_obj: Any,
+        available_agents: List[Any],
+    ) -> Optional[Dict[str, str]]:
+        """Pick the best existing platform agent for a task, if relevance exists.
+
+        This matcher intentionally requires at least one direct relevance signal
+        (capability overlap or lexical overlap). Otherwise it returns None so the
+        orchestrator can create a temporary specialist as fallback.
+        """
+        if not available_agents:
+            return None
+
+        task_metadata = task_obj.task_metadata if isinstance(task_obj.task_metadata, dict) else {}
+        role_required_caps = {
+            capability.strip().lower()
+            for capability in self._coerce_string_list(task_metadata.get("role_required_capabilities"))
+            if capability.strip()
+        }
+        task_text = "\n".join(
+            [
+                str(task_metadata.get("title", "") or ""),
+                str(getattr(task_obj, "goal_text", "") or ""),
+                str(getattr(task_obj, "acceptance_criteria", "") or ""),
+                " ".join(sorted(role_required_caps)),
+            ]
+        )
+        task_tokens = self._tokenize_for_match(task_text)
+
+        best_agent: Optional[Any] = None
+        best_score = float("-inf")
+
+        for candidate in available_agents:
+            if getattr(candidate, "agent_type", "") == "mission_temp_worker":
+                # Ignore temporary workers from prior runs; prefer manually curated agents.
+                continue
+
+            candidate_capabilities = {
+                str(capability).strip().lower()
+                for capability in (getattr(candidate, "capabilities", None) or [])
+                if str(capability).strip()
+            }
+            candidate_tokens = self._tokenize_for_match(
+                getattr(candidate, "name", ""),
+                " ".join(sorted(candidate_capabilities)),
+                getattr(candidate, "system_prompt", ""),
+            )
+
+            capability_overlap = len(role_required_caps.intersection(candidate_capabilities))
+            lexical_overlap = len(task_tokens.intersection(candidate_tokens))
+
+            # Hard guard: no overlap means "no reliable match", do not auto-bind.
+            if capability_overlap <= 0 and lexical_overlap <= 0:
+                continue
+
+            score = float(capability_overlap * 4 + lexical_overlap * 1.2)
+
+            candidate_status = str(getattr(candidate, "status", "") or "").lower()
+            if candidate_status == "idle":
+                score += 0.6
+            elif candidate_status == "active":
+                score += 0.2
+
+            if score > best_score:
+                best_score = score
+                best_agent = candidate
+
+        if best_agent is None:
+            return None
+
+        return {
+            "agent_id": str(best_agent.agent_id),
+            "agent_name": str(getattr(best_agent, "name", "worker") or "worker"),
+        }
 
     def _provision_temporary_worker_agent(
         self,
@@ -1036,6 +1120,14 @@ class MissionOrchestrator:
             exec_cfg.get("enable_team_blueprint", True),
             default=True,
         )
+        prefer_existing_agents = self._coerce_bool(
+            exec_cfg.get("prefer_existing_agents", True),
+            default=True,
+        )
+        allow_temporary_workers = self._coerce_bool(
+            exec_cfg.get("allow_temporary_workers", True),
+            default=True,
+        )
 
         from database.connection import get_db_session
         from database.models import KnowledgeCollection, Task
@@ -1057,13 +1149,35 @@ class MissionOrchestrator:
             or "No owner knowledge collections available."
         )
 
-        assignment_instruction = (
-            "Use `assigned_agent_id` for direct agent assignment when confident. "
-            "If no suitable platform agent exists, leave `assigned_agent_id` empty "
-            "to allow temporary worker creation."
-            if available_agents
-            else "No platform agents are available; keep `assigned_agent_id` empty."
-        )
+        if available_agents:
+            if prefer_existing_agents and allow_temporary_workers:
+                assignment_instruction = (
+                    "Prefer assigning existing platform agents via `assigned_agent_id`. "
+                    "Leave `assigned_agent_id` empty only when no suitable existing agent exists, "
+                    "so execution can fallback to temporary workers."
+                )
+            elif prefer_existing_agents and not allow_temporary_workers:
+                assignment_instruction = (
+                    "You must assign existing platform agents via `assigned_agent_id`. "
+                    "Do not leave `assigned_agent_id` empty because temporary workers are disabled."
+                )
+            elif not prefer_existing_agents and allow_temporary_workers:
+                assignment_instruction = (
+                    "You may leave `assigned_agent_id` empty to prefer temporary workers. "
+                    "Use `assigned_agent_id` only when an existing platform agent is clearly better."
+                )
+            else:
+                assignment_instruction = (
+                    "Assign existing platform agents via `assigned_agent_id`. "
+                    "Temporary workers are disabled."
+                )
+        else:
+            assignment_instruction = (
+                "No platform agents are available. Keep `assigned_agent_id` empty."
+                if allow_temporary_workers
+                else "No platform agents are available and temporary workers are disabled. "
+                "Planning should still return tasks, but execution will fail until agents are created."
+            )
         if enable_team_blueprint:
             task_prompt = (
                 "Design an execution team and task plan from the mission requirements.\n\n"
@@ -1319,6 +1433,15 @@ class MissionOrchestrator:
         if mission is None:
             raise MissionError(mission_id, "Mission not found")
 
+        from agent_framework.agent_registry import AgentRegistry
+
+        registry = AgentRegistry()
+        available_platform_agents = [
+            agent
+            for agent in registry.list_agents(owner_user_id=mission.created_by_user_id, limit=500)
+            if str(getattr(agent, "status", "")).lower() in {"active", "idle", "initializing"}
+        ]
+
         # Fetch pending/failed tasks for this mission.
         # Failed tasks are reset to pending at the start of each execution phase so
         # dependency checks don't use stale failed states from the previous review loop.
@@ -1429,6 +1552,7 @@ class MissionOrchestrator:
                     mission,
                     task_obj,
                     max_retries=max(0, self._coerce_int(exec_cfg.get("max_retries", 2), 2)),
+                    available_platform_agents=available_platform_agents,
                 )
 
         await asyncio.gather(
@@ -1467,6 +1591,7 @@ class MissionOrchestrator:
         mission: Any,
         task_obj: Any,
         max_retries: int = 2,
+        available_platform_agents: Optional[List[Any]] = None,
     ) -> bool:
         """Execute a single task with exponential backoff retry.
 
@@ -1475,6 +1600,14 @@ class MissionOrchestrator:
         llm_cfg = self._get_llm_config(mission, "temporary_worker")
         exec_cfg = self._get_execution_config(mission)
         debug_mode = self._coerce_bool(exec_cfg.get("debug_mode", False), default=False)
+        prefer_existing_agents = self._coerce_bool(
+            exec_cfg.get("prefer_existing_agents", True),
+            default=True,
+        )
+        allow_temporary_workers = self._coerce_bool(
+            exec_cfg.get("allow_temporary_workers", True),
+            default=True,
+        )
         task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
         task_metadata = (
             task_obj.task_metadata if isinstance(task_obj.task_metadata, dict) else {}
@@ -1503,22 +1636,105 @@ class MissionOrchestrator:
                 )
                 resolved_agent_id = None
 
-        if resolved_agent_id is None:
-            resolved_agent_id = self._provision_temporary_worker_agent(
-                mission_id=mission_id,
-                mission=mission,
+        if resolved_agent_id is None and prefer_existing_agents:
+            selected_platform = self._select_platform_agent_for_task(
                 task_obj=task_obj,
-                llm_cfg=llm_cfg,
+                available_agents=available_platform_agents or [],
             )
-            agent = await create_registered_mission_agent(
-                agent_id=resolved_agent_id,
-                owner_user_id=mission.created_by_user_id,
-            )
-            if agent is None:
-                raise MissionError(
-                    mission_id,
-                    f"Failed to initialize temporary worker agent for task {task_obj.task_id}",
+
+            if selected_platform:
+                candidate_agent_id = UUID(selected_platform["agent_id"])
+                candidate = await create_registered_mission_agent(
+                    agent_id=candidate_agent_id,
+                    owner_user_id=mission.created_by_user_id,
                 )
+                if candidate is not None:
+                    resolved_agent_id = candidate_agent_id
+                    agent = candidate
+
+                    from database.connection import get_db_session
+                    from database.models import Task
+
+                    with get_db_session() as session:
+                        t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+                        if t:
+                            t.assigned_agent_id = resolved_agent_id
+                            meta = dict(t.task_metadata or {})
+                            meta["assigned_agent_name"] = selected_platform["agent_name"]
+                            meta["assigned_agent_temporary"] = False
+                            meta["assignment_source"] = "platform_auto_match"
+                            t.task_metadata = meta
+
+                    local_meta = dict(task_obj.task_metadata or {})
+                    local_meta["assigned_agent_name"] = selected_platform["agent_name"]
+                    local_meta["assigned_agent_temporary"] = False
+                    local_meta["assignment_source"] = "platform_auto_match"
+                    task_obj.task_metadata = local_meta
+                    task_obj.assigned_agent_id = resolved_agent_id
+
+                    self._emitter.emit(
+                        mission_id=mission_id,
+                        event_type="TASK_AGENT_ASSIGNED",
+                        task_id=task_obj.task_id,
+                        agent_id=resolved_agent_id,
+                        data={
+                            "title": task_title,
+                            "agent_id": str(resolved_agent_id),
+                            "agent_name": selected_platform["agent_name"],
+                            "is_temporary": False,
+                            "source": "platform_auto_match",
+                        },
+                        message=f"Platform agent assigned: {selected_platform['agent_name']}",
+                    )
+
+            if resolved_agent_id is None and allow_temporary_workers:
+                resolved_agent_id = self._provision_temporary_worker_agent(
+                    mission_id=mission_id,
+                    mission=mission,
+                    task_obj=task_obj,
+                    llm_cfg=llm_cfg,
+                )
+                agent = await create_registered_mission_agent(
+                    agent_id=resolved_agent_id,
+                    owner_user_id=mission.created_by_user_id,
+                )
+                if agent is None:
+                    raise MissionError(
+                        mission_id,
+                        f"Failed to initialize temporary worker agent for task {task_obj.task_id}",
+                    )
+
+        if resolved_agent_id is None or agent is None:
+            no_agent_error = (
+                "No suitable existing platform agent was found and temporary workers are disabled."
+                if not allow_temporary_workers
+                else "Failed to resolve an executable worker agent for this task."
+            )
+            from database.connection import get_db_session
+            from database.models import Task
+
+            with get_db_session() as session:
+                t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+                if t:
+                    t.status = "failed"
+                    t.result = {
+                        "error": no_agent_error,
+                        "last_error": no_agent_error,
+                        "attempts": [],
+                    }
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="TASK_FAILED",
+                task_id=task_obj.task_id,
+                data={
+                    "title": task_title,
+                    "error": no_agent_error,
+                    "prefer_existing_agents": prefer_existing_agents,
+                    "allow_temporary_workers": allow_temporary_workers,
+                },
+                message=f"Task failed: {task_title}",
+            )
+            return False
 
         for attempt in range(max_retries + 1):
             try:
@@ -1561,9 +1777,31 @@ class MissionOrchestrator:
                         f"{review_feedback}\n\n"
                     )
 
+                mission_context_snippet = self._truncate_prompt_text(
+                    getattr(mission, "instructions", ""),
+                    limit=1800,
+                )
+                role_context = (
+                    str(task_metadata.get("owner_role_name") or task_metadata.get("owner_role") or "")
+                    .strip()
+                )
+                role_required_capabilities = self._coerce_string_list(
+                    task_metadata.get("role_required_capabilities")
+                )
+                role_sop_hint = str(task_metadata.get("role_sop_hint") or "").strip()
+
                 task_prompt = (
-                    f"Execute the following task:\n\n"
+                    "Execute the following mission task. Keep your own SOP and specialization, "
+                    "while strictly satisfying the task constraints.\n\n"
+                    f"## Mission\n{getattr(mission, 'title', 'Untitled Mission')}\n\n"
+                    "## Original User Prompt\n"
+                    f"{mission_context_snippet or 'N/A'}\n\n"
                     f"## Task: {task_title}\n"
+                    f"## Task Role\n{role_context or 'N/A'}\n\n"
+                    "## Role Required Capabilities\n"
+                    f"{', '.join(role_required_capabilities) if role_required_capabilities else 'N/A'}\n\n"
+                    "## Role SOP Hint\n"
+                    f"{role_sop_hint or 'N/A'}\n\n"
                     f"## Instructions\n{task_obj.goal_text}\n\n"
                     f"## Acceptance Criteria\n{task_obj.acceptance_criteria or 'None specified'}\n\n"
                     f"{review_feedback_section}"

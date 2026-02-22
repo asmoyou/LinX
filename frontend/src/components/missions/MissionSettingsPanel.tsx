@@ -29,6 +29,8 @@ const DEFAULT_EXECUTION_CONFIG: MissionExecutionConfig = {
   max_concurrent_tasks: 3,
   debug_mode: false,
   enable_team_blueprint: true,
+  prefer_existing_agents: true,
+  allow_temporary_workers: true,
   auto_select_temp_skills: true,
   temp_worker_skill_limit: 3,
   temp_worker_memory_scopes: ['agent', 'company', 'user_context'],
@@ -47,6 +49,12 @@ const ROLES: { key: RoleKey; labelKey: string }[] = [
   { key: 'supervisor_config', labelKey: 'missions.supervisor' },
   { key: 'qa_config', labelKey: 'missions.qaAuditor' },
   { key: 'temporary_worker_config', labelKey: 'missions.temporaryWorker' },
+];
+
+const TEMP_MEMORY_SCOPE_OPTIONS: { value: string; labelKey: string }[] = [
+  { value: 'agent', labelKey: 'missions.tempMemoryScopeAgent' },
+  { value: 'company', labelKey: 'missions.tempMemoryScopeCompany' },
+  { value: 'user_context', labelKey: 'missions.tempMemoryScopeUserContext' },
 ];
 
 export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOpen, onClose }) => {
@@ -111,6 +119,26 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
     setExpandedSections((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
+  const toggleTempMemoryScope = (scope: string, enabled: boolean) => {
+    setExecutionConfig((prev) => {
+      const existing = new Set(prev.temp_worker_memory_scopes || []);
+      if (enabled) {
+        existing.add(scope);
+      } else {
+        existing.delete(scope);
+      }
+
+      const orderedScopes = TEMP_MEMORY_SCOPE_OPTIONS
+        .map((option) => option.value)
+        .filter((value) => existing.has(value));
+
+      return {
+        ...prev,
+        temp_worker_memory_scopes: orderedScopes.length > 0 ? orderedScopes : ['agent'],
+      };
+    });
+  };
+
   const handleSave = async () => {
     setIsSaving(true);
     setSaveSuccess(false);
@@ -165,6 +193,7 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
       ].filter((provider): provider is string => Boolean(provider))
     )
   );
+  const allowTemporaryWorkers = executionConfig.allow_temporary_workers;
 
   return (
     <div
@@ -447,14 +476,53 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
                     <label className="relative inline-flex items-center cursor-pointer">
                       <input
                         type="checkbox"
+                        checked={executionConfig.prefer_existing_agents}
+                        onChange={(e) =>
+                          setExecutionConfig((prev) => ({
+                            ...prev,
+                            prefer_existing_agents: e.target.checked,
+                          }))
+                        }
+                        className="sr-only peer"
+                      />
+                      <div className="w-9 h-5 bg-zinc-200 dark:bg-zinc-700 peer-focus:ring-2 peer-focus:ring-emerald-500/30 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500" />
+                    </label>
+                    <span className="text-xs font-medium text-zinc-500">
+                      {t('missions.preferExistingAgents')}
+                    </span>
+                  </div>
+                  <div className="col-span-2 flex items-center gap-3">
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={executionConfig.allow_temporary_workers}
+                        onChange={(e) =>
+                          setExecutionConfig((prev) => ({
+                            ...prev,
+                            allow_temporary_workers: e.target.checked,
+                          }))
+                        }
+                        className="sr-only peer"
+                      />
+                      <div className="w-9 h-5 bg-zinc-200 dark:bg-zinc-700 peer-focus:ring-2 peer-focus:ring-emerald-500/30 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500" />
+                    </label>
+                    <span className="text-xs font-medium text-zinc-500">
+                      {t('missions.allowTemporaryWorkers')}
+                    </span>
+                  </div>
+                  <div className="col-span-2 flex items-center gap-3">
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
                         checked={executionConfig.auto_select_temp_skills}
+                        disabled={!allowTemporaryWorkers}
                         onChange={(e) =>
                           setExecutionConfig((prev) => ({
                             ...prev,
                             auto_select_temp_skills: e.target.checked,
                           }))
                         }
-                        className="sr-only peer"
+                        className="sr-only peer disabled:cursor-not-allowed"
                       />
                       <div className="w-9 h-5 bg-zinc-200 dark:bg-zinc-700 peer-focus:ring-2 peer-focus:ring-emerald-500/30 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500" />
                     </label>
@@ -471,13 +539,14 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
                       min={0}
                       max={8}
                       value={executionConfig.temp_worker_skill_limit}
+                      disabled={!allowTemporaryWorkers}
                       onChange={(e) =>
                         setExecutionConfig((prev) => ({
                           ...prev,
                           temp_worker_skill_limit: parseInt(e.target.value) || 0,
                         }))
                       }
-                      className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 outline-none dark:text-zinc-200"
+                      className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 outline-none dark:text-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed"
                     />
                   </div>
                   <div>
@@ -489,34 +558,44 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
                       min={0}
                       max={20}
                       value={executionConfig.temp_worker_knowledge_limit}
+                      disabled={!allowTemporaryWorkers}
                       onChange={(e) =>
                         setExecutionConfig((prev) => ({
                           ...prev,
                           temp_worker_knowledge_limit: parseInt(e.target.value) || 0,
                         }))
                       }
-                      className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 outline-none dark:text-zinc-200"
+                      className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 outline-none dark:text-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed"
                     />
                   </div>
                   <div className="col-span-2">
                     <label className="block text-xs font-medium text-zinc-500 mb-1.5">
                       {t('missions.tempWorkerMemoryScopes')}
                     </label>
-                    <input
-                      type="text"
-                      value={(executionConfig.temp_worker_memory_scopes || []).join(',')}
-                      onChange={(e) =>
-                        setExecutionConfig((prev) => ({
-                          ...prev,
-                          temp_worker_memory_scopes: e.target.value
-                            .split(',')
-                            .map((item) => item.trim())
-                            .filter(Boolean),
-                        }))
-                      }
-                      placeholder="agent,company,user_context"
-                      className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 outline-none dark:text-zinc-200"
-                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      {TEMP_MEMORY_SCOPE_OPTIONS.map((option) => {
+                        const checked = (executionConfig.temp_worker_memory_scopes || []).includes(
+                          option.value
+                        );
+                        return (
+                          <label
+                            key={option.value}
+                            className="flex items-center gap-2 px-3 py-2 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-xs text-zinc-600 dark:text-zinc-300 cursor-pointer"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={!allowTemporaryWorkers}
+                              onChange={(e) =>
+                                toggleTempMemoryScope(option.value, e.target.checked)
+                              }
+                              className="h-3.5 w-3.5 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
+                            <span>{t(option.labelKey)}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
                   </div>
                   <div className="col-span-2">
                     <label className="block text-xs font-medium text-zinc-500 mb-1.5">
@@ -524,13 +603,14 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
                     </label>
                     <select
                       value={executionConfig.temp_worker_knowledge_strategy}
+                      disabled={!allowTemporaryWorkers}
                       onChange={(e) =>
                         setExecutionConfig((prev) => ({
                           ...prev,
                           temp_worker_knowledge_strategy: e.target.value,
                         }))
                       }
-                      className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 outline-none dark:text-zinc-200"
+                      className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 outline-none dark:text-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <option value="owner_accessible">
                         {t('missions.tempKnowledgeStrategyOwnerAccessible')}
