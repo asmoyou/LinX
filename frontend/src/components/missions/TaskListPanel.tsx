@@ -95,10 +95,40 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
         ) : (
           <div className="space-y-2">
             {tasks.map((task) => {
+              const taskMetadata =
+                task.task_metadata && typeof task.task_metadata === 'object'
+                  ? (task.task_metadata as Record<string, unknown>)
+                  : {};
               const owner =
                 task.assigned_agent_name ||
                 (task.assigned_agent_id ? agentNameById.get(task.assigned_agent_id) : undefined) ||
                 t('missions.unassigned', 'Unassigned');
+              const taskResult =
+                task.result && typeof task.result === 'object'
+                  ? (task.result as Record<string, unknown>)
+                  : {};
+              const reviewFeedback =
+                typeof taskMetadata.review_feedback === 'string'
+                  ? taskMetadata.review_feedback
+                  : undefined;
+              const reviewCycle =
+                typeof taskMetadata.review_cycle_count === 'number'
+                  ? taskMetadata.review_cycle_count
+                  : undefined;
+              const attempts = Array.isArray(taskResult.attempts)
+                ? (taskResult.attempts as Array<Record<string, unknown>>)
+                : [];
+              const lastAttempt = attempts.length > 0 ? attempts[attempts.length - 1] : undefined;
+              const taskError =
+                typeof taskResult.error === 'string' ? taskResult.error : undefined;
+              const lastError =
+                typeof taskResult.last_error === 'string' ? taskResult.last_error : undefined;
+              const traceText =
+                typeof lastAttempt?.traceback === 'string' ? lastAttempt.traceback : undefined;
+              const lastAttemptText =
+                typeof lastAttempt?.attempt === 'number'
+                  ? `${lastAttempt.attempt}/${lastAttempt.max_attempts ?? '?'}`
+                  : undefined;
 
               return (
                 <div
@@ -131,6 +161,44 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
                       {Array.isArray(task.dependencies) ? task.dependencies.length : 0}
                     </span>
                   </div>
+                  {(lastError || attempts.length > 0) && (
+                    <div className="mt-2 rounded-md border border-red-200/70 dark:border-red-500/30 bg-red-50/70 dark:bg-red-500/5 px-2.5 py-2">
+                      <div className="text-[11px] text-red-700 dark:text-red-300">
+                        {t('missions.debugLastError', 'Last error')}: {lastError || taskError || '-'}
+                      </div>
+                      <div className="text-[10px] text-red-600/90 dark:text-red-300/90 mt-0.5">
+                        {t('missions.debugAttempts', 'Attempts')}: {attempts.length}
+                        {lastAttemptText ? `, ${t('missions.debugLatestAttempt', 'Latest')} ${lastAttemptText}` : ''}
+                      </div>
+                      {traceText && (
+                        <details className="mt-1">
+                          <summary className="cursor-pointer text-[10px] text-red-600 dark:text-red-300">
+                            {t('missions.debugTraceback', 'Traceback')}
+                          </summary>
+                          <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-red-700 dark:text-red-200 bg-red-100/60 dark:bg-red-900/40 rounded p-2">
+                            {traceText}
+                          </pre>
+                        </details>
+                      )}
+                    </div>
+                  )}
+                  {(reviewFeedback || reviewCycle !== undefined) && (
+                    <div className="mt-2 rounded-md border border-amber-200/70 dark:border-amber-500/30 bg-amber-50/70 dark:bg-amber-500/5 px-2.5 py-2">
+                      <div className="text-[11px] text-amber-700 dark:text-amber-300">
+                        {t('missions.reviewCycle', 'Review Cycle')}: {reviewCycle ?? '-'}
+                      </div>
+                      {reviewFeedback && (
+                        <details className="mt-1">
+                          <summary className="cursor-pointer text-[10px] text-amber-700 dark:text-amber-300">
+                            {t('missions.reviewFeedback', 'Review Feedback')}
+                          </summary>
+                          <pre className="mt-1 max-h-44 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-amber-800 dark:text-amber-100 bg-amber-100/70 dark:bg-amber-900/30 rounded p-2">
+                            {reviewFeedback}
+                          </pre>
+                        </details>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}

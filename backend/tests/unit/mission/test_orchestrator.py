@@ -1,5 +1,6 @@
 """Unit tests for mission orchestrator safety guards."""
 
+from datetime import datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -22,14 +23,23 @@ def test_extract_binary_verdict_defaults_to_fail_when_ambiguous():
 def test_get_execution_config_supports_legacy_top_level_keys():
     mission = SimpleNamespace(
         mission_config={
-            "execution_config": {"max_retries": 1, "max_concurrent_tasks": 2},
+            "execution_config": {
+                "max_retries": 1,
+                "max_concurrent_tasks": 2,
+                "max_qa_cycles": 1,
+                "debug_mode": False,
+            },
             "max_retries": 5,
             "max_concurrent_tasks": 7,
+            "max_qa_cycles": 3,
+            "debug_mode": True,
         }
     )
     cfg = MissionOrchestrator._get_execution_config(mission)
     assert cfg["max_retries"] == 5
     assert cfg["max_concurrent_tasks"] == 7
+    assert cfg["max_qa_cycles"] == 3
+    assert cfg["debug_mode"] is True
 
 
 def test_get_execution_config_maps_network_enabled_to_network_access():
@@ -244,6 +254,122 @@ async def test_execute_task_with_retry_falls_back_to_temporary_agent(monkeypatch
     ]
 
 
+@pytest.mark.asyncio
+async def test_execute_task_with_retry_marks_unsuccessful_agent_response_as_failed(monkeypatch):
+    mission_id = uuid4()
+    owner_user_id = uuid4()
+    assigned_agent_id = uuid4()
+    task_id = uuid4()
+
+    emitted_events = []
+    status_updates = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+
+    mission = SimpleNamespace(
+        created_by_user_id=owner_user_id,
+        mission_config={
+            "leader_config": {
+                "llm_provider": "ollama",
+                "llm_model": "qwen2.5:14b",
+                "temperature": 0.2,
+                "max_tokens": 1024,
+            },
+            "execution_config": {"debug_mode": True},
+        },
+    )
+    task_obj = SimpleNamespace(
+        task_id=task_id,
+        goal_text="Generate Word deliverable",
+        acceptance_criteria="Create report.docx in workspace",
+        task_metadata={"title": "Generate report.docx"},
+        assigned_agent_id=assigned_agent_id,
+    )
+
+    class _FakeQuery:
+        def __init__(self, task):
+            self._task = task
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return self._task
+
+    class _FakeSession:
+        def __init__(self, task):
+            self._task = task
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._task)
+
+    class _FakeSessionContext:
+        def __init__(self, task):
+            self._task = task
+
+        def __enter__(self):
+            return _FakeSession(self._task)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    db_task = SimpleNamespace(
+        status="pending",
+        assigned_agent_id=assigned_agent_id,
+        result=None,
+        completed_at=None,
+    )
+
+    async def _fake_create_registered(agent_id, owner_user_id):
+        return SimpleNamespace(agent_id=agent_id, name="worker-agent")
+
+    async def _fake_execute_agent_task(agent, prompt):
+        return {
+            "success": False,
+            "error": "python-docx import failed",
+            "output": None,
+        }
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.create_registered_mission_agent",
+        _fake_create_registered,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_execute_agent_task",
+        staticmethod(_fake_execute_agent_task),
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(db_task),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_agent_status",
+        lambda mission_id, agent_id, status: status_updates.append((agent_id, status)),
+    )
+
+    success = await MissionOrchestrator._execute_task_with_retry(
+        orchestrator,
+        mission_id=mission_id,
+        mission=mission,
+        task_obj=task_obj,
+        max_retries=0,
+    )
+
+    assert success is False
+    assert db_task.status == "failed"
+    assert isinstance(db_task.result, dict)
+    assert db_task.result.get("last_error")
+    assert db_task.result.get("attempts")
+    assert db_task.result["attempts"][0]["attempt"] == 1
+    emitted_types = [event["event_type"] for event in emitted_events]
+    assert "TASK_STARTED" in emitted_types
+    assert "TASK_ATTEMPT_FAILED" in emitted_types
+    assert "TASK_FAILED" in emitted_types
+    assert status_updates[-1] == (assigned_agent_id, "failed")
+
+
 def test_cleanup_deletes_temporary_agents(monkeypatch):
     mission_id = uuid4()
     temporary_agent_id = uuid4()
@@ -299,10 +425,12 @@ def test_provision_temporary_worker_agent_registers_without_default_skills(monke
     )
 
     captured_capabilities = {}
+    captured_system_prompt = {}
 
     class _FakeRegistry:
         def register_agent(self, **kwargs):
             captured_capabilities["value"] = kwargs.get("capabilities")
+            captured_system_prompt["value"] = kwargs.get("system_prompt")
             return SimpleNamespace(agent_id=temp_agent_id, name="temp-worker")
 
     monkeypatch.setattr("agent_framework.agent_registry.AgentRegistry", _FakeRegistry)
@@ -344,5 +472,206 @@ def test_provision_temporary_worker_agent_registers_without_default_skills(monke
 
     assert result_id == temp_agent_id
     assert captured_capabilities["value"] == []
+    assert "Task-Specific SOP" in (captured_system_prompt["value"] or "")
+    assert "Task Title: Implement API" in (captured_system_prompt["value"] or "")
     assert task_obj.assigned_agent_id == temp_agent_id
     assert task_obj.task_metadata["assigned_agent_temporary"] is True
+
+
+@pytest.mark.asyncio
+async def test_phase_execution_resets_failed_tasks_to_pending(monkeypatch):
+    mission_id = uuid4()
+    failed_task = SimpleNamespace(
+        task_id=uuid4(),
+        status="failed",
+        completed_at=datetime.utcnow(),
+        dependencies=[],
+        task_metadata={"title": "Rework task"},
+    )
+    pending_task = SimpleNamespace(
+        task_id=uuid4(),
+        status="pending",
+        completed_at=None,
+        dependencies=[],
+        task_metadata={"title": "Pending task"},
+    )
+    db_tasks = [failed_task, pending_task]
+
+    class _FakeQuery:
+        def __init__(self, tasks):
+            self._tasks = tasks
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return self._tasks
+
+    class _FakeSession:
+        def __init__(self, tasks):
+            self._tasks = tasks
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._tasks)
+
+        def expunge(self, _obj):
+            return None
+
+    class _FakeSessionContext:
+        def __init__(self, tasks):
+            self._tasks = tasks
+
+        def __enter__(self):
+            return _FakeSession(self._tasks)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: None)
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.get_mission",
+        lambda _mission_id: SimpleNamespace(
+            total_tasks=2,
+            mission_config={"execution_config": {"max_concurrent_tasks": 2}},
+        ),
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(db_tasks),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_topological_sort",
+        staticmethod(lambda tasks: []),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_get_task_status_counts",
+        staticmethod(lambda _mission_id: {"pending": 2}),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_transition",
+        lambda self, _mission_id, _status: None,
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_fields",
+        lambda *args, **kwargs: None,
+    )
+
+    await MissionOrchestrator._phase_execution(orchestrator, mission_id)
+
+    assert failed_task.status == "pending"
+    assert failed_task.completed_at is None
+    assert pending_task.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_execute_task_with_retry_includes_review_feedback_in_prompt(monkeypatch):
+    mission_id = uuid4()
+    owner_user_id = uuid4()
+    assigned_agent_id = uuid4()
+    task_id = uuid4()
+    captured_prompt = {}
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: None)
+
+    mission = SimpleNamespace(
+        created_by_user_id=owner_user_id,
+        mission_config={
+            "leader_config": {
+                "llm_provider": "ollama",
+                "llm_model": "qwen2.5:14b",
+                "temperature": 0.2,
+                "max_tokens": 1024,
+            }
+        },
+    )
+    task_obj = SimpleNamespace(
+        task_id=task_id,
+        goal_text="Refine output",
+        acceptance_criteria="Meet all formatting constraints",
+        task_metadata={
+            "title": "Refine output",
+            "review_cycle_count": 2,
+            "review_feedback": "Remove full-width spaces and keep exact newline formatting.",
+        },
+        assigned_agent_id=assigned_agent_id,
+    )
+
+    class _FakeQuery:
+        def __init__(self, task):
+            self._task = task
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return self._task
+
+    class _FakeSession:
+        def __init__(self, task):
+            self._task = task
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._task)
+
+    class _FakeSessionContext:
+        def __init__(self, task):
+            self._task = task
+
+        def __enter__(self):
+            return _FakeSession(self._task)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    db_task = SimpleNamespace(
+        status="pending",
+        assigned_agent_id=assigned_agent_id,
+        result=None,
+        completed_at=None,
+    )
+
+    async def _fake_create_registered(agent_id, owner_user_id):
+        return SimpleNamespace(agent_id=agent_id, name="worker-agent")
+
+    async def _fake_execute_agent_task(agent, prompt):
+        captured_prompt["value"] = prompt
+        return {"output": "done"}
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.create_registered_mission_agent",
+        _fake_create_registered,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_execute_agent_task",
+        staticmethod(_fake_execute_agent_task),
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(db_task),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_agent_status",
+        lambda mission_id, agent_id, status: None,
+    )
+
+    success = await MissionOrchestrator._execute_task_with_retry(
+        orchestrator,
+        mission_id=mission_id,
+        mission=mission,
+        task_obj=task_obj,
+        max_retries=0,
+    )
+
+    assert success is True
+    prompt = captured_prompt.get("value", "")
+    assert "Rework Context" in prompt
+    assert "Previous Review Feedback" in prompt
+    assert "Remove full-width spaces" in prompt
+    assert "rework cycle 2" in prompt

@@ -96,9 +96,7 @@ async def create_mission_agent(
             if db_provider.protocol == "openai_compatible":
                 api_key = None
                 if db_provider.api_key_encrypted:
-                    api_key = db_manager._decrypt_api_key(
-                        db_provider.api_key_encrypted
-                    )
+                    api_key = db_manager._decrypt_api_key(db_provider.api_key_encrypted)
                 llm = CustomOpenAIChat(
                     base_url=db_provider.base_url,
                     model=llm_model,
@@ -116,6 +114,8 @@ async def create_mission_agent(
                     temperature=temperature,
                     max_tokens=max_tokens,
                     api_key=None,
+                    timeout=db_provider.timeout,
+                    max_retries=db_provider.max_retries,
                     streaming=True,
                 )
 
@@ -125,9 +125,7 @@ async def create_mission_agent(
                 llm_model,
             )
         else:
-            raise ValueError(
-                f"Provider '{llm_provider}' not found or disabled in database"
-            )
+            raise ValueError(f"Provider '{llm_provider}' not found or disabled in database")
 
     if llm is None:
         raise ValueError(f"Could not create LLM for provider: {llm_provider}")

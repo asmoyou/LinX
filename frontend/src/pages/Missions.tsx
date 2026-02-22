@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Plus,
@@ -57,6 +57,8 @@ export const Missions: React.FC = () => {
     missionTasks,
     missionAgents,
     fetchMissionEvents,
+    fetchMissionTasks,
+    fetchMissionAgents,
     setSearchQuery,
     setStatusFilter,
     getFilteredMissions,
@@ -81,7 +83,9 @@ export const Missions: React.FC = () => {
   useEffect(() => {
     if (!selectedMissionId) return;
     fetchMissionEvents(selectedMissionId);
-  }, [selectedMissionId, fetchMissionEvents]);
+    fetchMissionTasks(selectedMissionId);
+    fetchMissionAgents(selectedMissionId);
+  }, [selectedMissionId, fetchMissionEvents, fetchMissionTasks, fetchMissionAgents]);
 
   useEffect(() => {
     if (!selectedMissionId) return;
@@ -138,6 +142,120 @@ export const Missions: React.FC = () => {
       )
   );
 
+  const failureEventsForSelected = selectedMission
+    ? missionEvents
+        .filter(
+          (event) =>
+            event.mission_id === selectedMission.mission_id &&
+            (event.event_type === 'MISSION_FAILED' || event.event_type === 'PHASE_FAILED')
+        )
+        .slice(-3)
+    : [];
+  const failureTaskDiagnostics = useMemo(() => {
+    if (!selectedMission) return [];
+
+    const taskTitleById = new Map(
+      missionTasks.map((task) => {
+        const metadata =
+          task.task_metadata && typeof task.task_metadata === 'object'
+            ? (task.task_metadata as Record<string, unknown>)
+            : {};
+        const title =
+          typeof metadata.title === 'string' && metadata.title.trim().length > 0
+            ? metadata.title
+            : task.goal_text;
+        return [task.task_id, title];
+      })
+    );
+    const agentNameById = new Map(
+      missionAgents
+        .filter((agent) => Boolean(agent.agent_id))
+        .map((agent) => [agent.agent_id, agent.agent_name || agent.role || 'Agent'])
+    );
+
+    return missionTasks
+      .filter((task) => task.status === 'failed')
+      .map((task) => {
+        const metadata =
+          task.task_metadata && typeof task.task_metadata === 'object'
+            ? (task.task_metadata as Record<string, unknown>)
+            : {};
+        const result =
+          task.result && typeof task.result === 'object'
+            ? (task.result as Record<string, unknown>)
+            : {};
+        const reviewFeedback =
+          typeof metadata.review_feedback === 'string' ? metadata.review_feedback : undefined;
+        const reviewCycle =
+          typeof metadata.review_cycle_count === 'number' ? metadata.review_cycle_count : undefined;
+        const attempts = Array.isArray(result.attempts) ? result.attempts.length : 0;
+        const lastError =
+          (typeof result.last_error === 'string' && result.last_error) ||
+          (typeof result.error === 'string' && result.error) ||
+          undefined;
+        const blockedDependencies =
+          typeof result.error === 'string' &&
+          result.error.startsWith('Blocked by failed dependencies:')
+            ? result.error
+                .split(':')
+                .slice(1)
+                .join(':')
+                .split(',')
+                .map((item) => item.trim())
+                .filter(Boolean)
+            : [];
+        const blockedDependencyTitles = blockedDependencies.map(
+          (taskId) => taskTitleById.get(taskId) || taskId
+        );
+        const owner =
+          task.assigned_agent_name ||
+          (task.assigned_agent_id ? agentNameById.get(task.assigned_agent_id) : undefined) ||
+          t('missions.unassigned', 'Unassigned');
+        return {
+          taskId: task.task_id,
+          title: taskTitleById.get(task.task_id) || task.goal_text,
+          owner,
+          reviewFeedback,
+          reviewCycle,
+          attempts,
+          lastError,
+          blockedDependencyTitles,
+        };
+      });
+  }, [selectedMission, missionTasks, missionAgents, t]);
+  const reviewRetryEventsForSelected = useMemo(() => {
+    if (!selectedMission) return [];
+    return missionEvents
+      .filter(
+        (event) =>
+          event.mission_id === selectedMission.mission_id &&
+          event.event_type === 'REVIEW_CYCLE_RETRY'
+      )
+      .sort((a, b) => {
+        const aTs = new Date(a.created_at).getTime();
+        const bTs = new Date(b.created_at).getTime();
+        return aTs - bTs;
+      });
+  }, [selectedMission, missionEvents]);
+  const executionErrorEventsForSelected = useMemo(() => {
+    if (!selectedMission) return [];
+    return missionEvents
+      .filter(
+        (event) =>
+          event.mission_id === selectedMission.mission_id &&
+          (event.event_type === 'TASK_ATTEMPT_FAILED' ||
+            event.event_type === 'TASK_FAILED' ||
+            event.event_type === 'PHASE_FAILED' ||
+            event.event_type === 'MISSION_FAILED')
+      )
+      .sort((a, b) => {
+        const aTs = new Date(a.created_at).getTime();
+        const bTs = new Date(b.created_at).getTime();
+        return bTs - aTs;
+      })
+      .slice(0, 8);
+  }, [selectedMission, missionEvents]);
+
   // Detail view
   if (selectedMission) {
     return (
@@ -182,6 +300,162 @@ export const Missions: React.FC = () => {
           >
             {t('missions.clarificationNeeded')}
           </button>
+        )}
+
+        {selectedMission.status === 'failed' && (
+          <div className="rounded-xl border border-red-200 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10 px-4 py-3 space-y-2">
+            <div className="text-sm font-semibold text-red-700 dark:text-red-300">
+              {t('missions.failureReason', 'Failure Reason')}
+            </div>
+            <div className="text-sm text-red-700/90 dark:text-red-200">
+              {selectedMission.error_message || t('missions.unknownFailure', 'Unknown failure')}
+            </div>
+            {failureEventsForSelected.length > 0 && (
+              <div className="space-y-2">
+                {failureEventsForSelected.map((event) => {
+                  const phase =
+                    typeof event.event_data?.phase === 'string' ? event.event_data.phase : undefined;
+                  const errorType =
+                    typeof event.event_data?.error_type === 'string'
+                      ? event.event_data.error_type
+                      : undefined;
+                  const trace =
+                    typeof event.event_data?.traceback === 'string'
+                      ? event.event_data.traceback
+                      : undefined;
+                  return (
+                    <div
+                      key={event.event_id}
+                      className="rounded-lg border border-red-200/80 dark:border-red-500/30 bg-red-100/50 dark:bg-red-900/20 px-3 py-2"
+                    >
+                      <div className="text-xs text-red-700 dark:text-red-300">
+                        {phase && `${t('missions.failedPhase', 'Phase')}: ${phase}`}
+                        {phase && errorType ? ' • ' : ''}
+                        {errorType && `${t('missions.errorType', 'Error Type')}: ${errorType}`}
+                      </div>
+                      {trace && (
+                        <details className="mt-1">
+                          <summary className="cursor-pointer text-xs text-red-700 dark:text-red-300">
+                            {t('missions.debugTraceback', 'Traceback')}
+                          </summary>
+                          <pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-red-800 dark:text-red-100 bg-red-100 dark:bg-red-900/40 rounded p-2">
+                            {trace}
+                          </pre>
+                        </details>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {failureTaskDiagnostics.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-red-700 dark:text-red-300">
+                  {t('missions.failedTasks', 'Failed Tasks')}
+                </div>
+                {failureTaskDiagnostics.map((diagnostic) => (
+                  <div
+                    key={diagnostic.taskId}
+                    className="rounded-lg border border-red-200/80 dark:border-red-500/30 bg-red-100/50 dark:bg-red-900/20 px-3 py-2"
+                  >
+                    <div className="text-xs font-semibold text-red-800 dark:text-red-100">
+                      {diagnostic.title}
+                    </div>
+                    <div className="text-xs text-red-700 dark:text-red-200 mt-1">
+                      {t('missions.owner', 'Owner')}: {diagnostic.owner}
+                      {typeof diagnostic.reviewCycle === 'number'
+                        ? ` • ${t('missions.reviewCycle', 'Review Cycle')}: ${diagnostic.reviewCycle}`
+                        : ''}
+                      {diagnostic.attempts > 0
+                        ? ` • ${t('missions.debugAttempts', 'Attempts')}: ${diagnostic.attempts}`
+                        : ''}
+                    </div>
+                    {diagnostic.lastError && (
+                      <div className="text-xs text-red-700 dark:text-red-200 mt-1">
+                        {t('missions.failedTaskReason', 'Reason')}: {diagnostic.lastError}
+                      </div>
+                    )}
+                    {diagnostic.blockedDependencyTitles.length > 0 && (
+                      <div className="text-xs text-red-700 dark:text-red-200 mt-1">
+                        {t('missions.blockedDependencies', 'Blocked by dependencies')}:{' '}
+                        {diagnostic.blockedDependencyTitles.join(', ')}
+                      </div>
+                    )}
+                    {diagnostic.reviewFeedback && (
+                      <details className="mt-1">
+                        <summary className="cursor-pointer text-xs text-red-700 dark:text-red-300">
+                          {t('missions.reviewFeedback', 'Review Feedback')}
+                        </summary>
+                        <pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-red-800 dark:text-red-100 bg-red-100 dark:bg-red-900/40 rounded p-2">
+                          {diagnostic.reviewFeedback}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            {reviewRetryEventsForSelected.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="text-xs font-semibold text-red-700 dark:text-red-300">
+                  {t('missions.reviewLoopTimeline', 'Review Loop Timeline')}
+                </div>
+                {reviewRetryEventsForSelected.map((event) => {
+                  const cycle =
+                    typeof event.event_data?.cycle === 'number' ? event.event_data.cycle : undefined;
+                  const failedCount =
+                    typeof event.event_data?.failed_count === 'number'
+                      ? event.event_data.failed_count
+                      : undefined;
+                  const maxReworkCycles =
+                    typeof event.event_data?.max_rework_cycles === 'number'
+                      ? event.event_data.max_rework_cycles
+                      : undefined;
+                  return (
+                    <div
+                      key={event.event_id}
+                      className="text-xs text-red-700 dark:text-red-200 bg-red-100/40 dark:bg-red-900/20 rounded px-2.5 py-1.5"
+                    >
+                      {t('missions.reviewCycle', 'Review Cycle')}: {cycle ?? '-'}
+                      {typeof failedCount === 'number' ? ` • ${t('missions.failed', 'Failed')}: ${failedCount}` : ''}
+                      {typeof maxReworkCycles === 'number'
+                        ? ` • ${t('missions.maxReworkCycles', 'Max Rework Cycles')}: ${maxReworkCycles}`
+                        : ''}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {executionErrorEventsForSelected.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="text-xs font-semibold text-red-700 dark:text-red-300">
+                  {t('missions.executionErrors', 'Execution Errors')}
+                </div>
+                {executionErrorEventsForSelected.map((event) => {
+                  const eventError =
+                    typeof event.event_data?.error === 'string'
+                      ? event.event_data.error
+                      : event.message || '';
+                  const errorType =
+                    typeof event.event_data?.error_type === 'string'
+                      ? event.event_data.error_type
+                      : undefined;
+                  return (
+                    <div
+                      key={event.event_id}
+                      className="text-xs text-red-700 dark:text-red-200 bg-red-100/40 dark:bg-red-900/20 rounded px-2.5 py-1.5"
+                    >
+                      <div className="font-semibold">
+                        {event.event_type}
+                        {errorType ? ` • ${errorType}` : ''}
+                      </div>
+                      {eventError && <div className="mt-0.5">{eventError}</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         )}
 
         {/* Controls toolbar */}
@@ -349,6 +623,11 @@ const MissionCard: React.FC<{
           <p className="text-sm text-zinc-500 line-clamp-2 mb-3">
             {mission.instructions}
           </p>
+          {mission.status === 'failed' && mission.error_message && (
+            <p className="text-xs text-red-600 dark:text-red-300 line-clamp-2 mb-3">
+              {mission.error_message}
+            </p>
+          )}
 
           <div className="flex items-center gap-3">
             <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusColors[mission.status]}`}>

@@ -17,7 +17,9 @@ export interface MissionConfig {
   max_retries?: number;
   task_timeout_s?: number;
   max_rework_cycles?: number;
+  max_qa_cycles?: number;
   network_access?: boolean;
+  debug_mode?: boolean;
   base_image?: string;
 }
 
@@ -109,8 +111,10 @@ export interface MissionExecutionConfig {
   max_retries: number;
   task_timeout_s: number;
   max_rework_cycles: number;
+  max_qa_cycles: number;
   network_access: boolean;
   max_concurrent_tasks: number;
+  debug_mode: boolean;
 }
 
 export interface MissionSettings {

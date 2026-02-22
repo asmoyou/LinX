@@ -36,7 +36,9 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
     max_retries: 3,
     task_timeout_s: 600,
     max_rework_cycles: 2,
+    max_qa_cycles: 1,
     network_access: false,
+    debug_mode: false,
   });
 
   // Load saved settings as defaults
@@ -53,7 +55,9 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
         max_retries: missionSettings.execution_config.max_retries ?? prev.max_retries,
         task_timeout_s: missionSettings.execution_config.task_timeout_s ?? prev.task_timeout_s,
         max_rework_cycles: missionSettings.execution_config.max_rework_cycles ?? prev.max_rework_cycles,
+        max_qa_cycles: missionSettings.execution_config.max_qa_cycles ?? prev.max_qa_cycles,
         network_access: missionSettings.execution_config.network_access ?? prev.network_access,
+        debug_mode: missionSettings.execution_config.debug_mode ?? prev.debug_mode,
       }));
     }
   }, [missionSettings]);
@@ -117,7 +121,14 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
     setTitle('');
     setInstructions('');
     setFiles([]);
-    setConfig({ max_retries: 3, task_timeout_s: 600, max_rework_cycles: 2, network_access: false });
+    setConfig({
+      max_retries: 3,
+      task_timeout_s: 600,
+      max_rework_cycles: 2,
+      max_qa_cycles: 1,
+      network_access: false,
+      debug_mode: false,
+    });
     setCurrentStep(0);
     setShowAdvanced(false);
   };
@@ -299,6 +310,19 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
                     className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-3 py-2 text-sm text-zinc-800 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
                   />
                 </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-500 mb-1">
+                    {t('missions.maxQaCycles')}
+                  </label>
+                  <input
+                    type="number"
+                    value={config.max_qa_cycles ?? 1}
+                    onChange={(e) => setConfig({ ...config, max_qa_cycles: parseInt(e.target.value) || 0 })}
+                    min={0}
+                    max={5}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-3 py-2 text-sm text-zinc-800 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+                  />
+                </div>
                 <div className="flex items-center gap-3 pt-5">
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
@@ -310,6 +334,18 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
                     <div className="w-9 h-5 bg-zinc-200 dark:bg-zinc-700 peer-focus:ring-2 peer-focus:ring-emerald-500/30 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500" />
                   </label>
                   <span className="text-xs font-medium text-zinc-500">{t('missions.networkAccess')}</span>
+                </div>
+                <div className="flex items-center gap-3 pt-5">
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={config.debug_mode ?? false}
+                      onChange={(e) => setConfig({ ...config, debug_mode: e.target.checked })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-zinc-200 dark:bg-zinc-700 peer-focus:ring-2 peer-focus:ring-emerald-500/30 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500" />
+                  </label>
+                  <span className="text-xs font-medium text-zinc-500">{t('missions.debugMode')}</span>
                 </div>
               </div>
 
@@ -393,9 +429,15 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
                   <span className="text-zinc-800 dark:text-zinc-200">{config.task_timeout_s}s</span>
                   <span className="text-zinc-500">{t('missions.reworkCyclesShort')}:</span>
                   <span className="text-zinc-800 dark:text-zinc-200">{config.max_rework_cycles}</span>
+                  <span className="text-zinc-500">{t('missions.qaCyclesShort')}:</span>
+                  <span className="text-zinc-800 dark:text-zinc-200">{config.max_qa_cycles}</span>
                   <span className="text-zinc-500">{t('missions.networkShort')}:</span>
                   <span className="text-zinc-800 dark:text-zinc-200">
                     {config.network_access ? t('missions.yes') : t('missions.no')}
+                  </span>
+                  <span className="text-zinc-500">{t('missions.debugShort')}:</span>
+                  <span className="text-zinc-800 dark:text-zinc-200">
+                    {config.debug_mode ? t('missions.yes') : t('missions.no')}
                   </span>
                 </div>
               </div>

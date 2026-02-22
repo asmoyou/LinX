@@ -1500,6 +1500,7 @@
     "title": "Mission Control",
     "create": "New Mission",
     "start": "Start Mission",
+    "retry": "Retry Mission",
     "cancel": "Cancel Mission",
     "delete": "Delete Mission",
     "status": {
@@ -1598,7 +1599,22 @@
     "priorityShort": "P",
     "dependenciesShort": "Deps",
     "markdownSource": "Source",
-    "markdownPreview": "Preview"
+    "markdownPreview": "Preview",
+    "failureReason": "Failure Reason",
+    "unknownFailure": "Unknown failure",
+    "failedPhase": "Failed Phase",
+    "errorType": "Error Type",
+    "failedTasks": "Failed Tasks",
+    "failedTaskReason": "Failure Reason",
+    "reviewFeedback": "Review Feedback",
+    "reviewCycle": "Review Cycle",
+    "blockedDependencies": "Blocked by dependencies",
+    "reviewLoopTimeline": "Review Loop Timeline",
+    "executionErrors": "Execution Errors",
+    "debugLastError": "Last error",
+    "debugAttempts": "Attempts",
+    "debugLatestAttempt": "Latest",
+    "debugTraceback": "Traceback"
   },
   "robots": {
     "title": "Robotic Workers",

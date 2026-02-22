@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import traceback
 from collections import Counter, defaultdict, deque
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -55,6 +56,7 @@ _TRANSITIONS: Dict[str, set] = {
 MAX_REVIEW_CYCLES = 2
 MAX_QA_CYCLES = 1
 MAX_ALLOWED_REWORK_CYCLES = 5
+MAX_ALLOWED_QA_CYCLES = 5
 
 
 class MissionOrchestrator:
@@ -164,12 +166,31 @@ class MissionOrchestrator:
             self._snapshot_deliverables(mission_id)
             update_mission_status(mission_id, "cancelled")
         except Exception as exc:
+            trace = traceback.format_exc()
+            mission_snapshot = get_mission(mission_id)
+            failed_phase = mission_snapshot.status if mission_snapshot else "unknown"
+            exec_cfg = self._get_execution_config(mission_snapshot) if mission_snapshot else {}
+            debug_mode = self._coerce_bool(exec_cfg.get("debug_mode", False), default=False)
+            failure_data: Dict[str, Any] = {
+                "error": str(exc),
+                "error_type": exc.__class__.__name__,
+                "phase": failed_phase,
+            }
+            if debug_mode:
+                failure_data["traceback"] = trace
             logger.exception("Mission %s failed: %s", mission_id, exc)
             self._snapshot_deliverables(mission_id)
             update_mission_status(mission_id, "failed", error_message=str(exc))
             self._emitter.emit(
                 mission_id=mission_id,
+                event_type="PHASE_FAILED",
+                data=failure_data,
+                message=f"Mission phase failed: {failed_phase}",
+            )
+            self._emitter.emit(
+                mission_id=mission_id,
                 event_type="MISSION_FAILED",
+                data=failure_data,
                 message=str(exc),
             )
         finally:
@@ -218,14 +239,81 @@ class MissionOrchestrator:
             exec_cfg = {}
 
         merged = dict(exec_cfg)
-        for key in ("max_retries", "task_timeout_s", "max_rework_cycles", "max_concurrent_tasks"):
+        for key in (
+            "max_retries",
+            "task_timeout_s",
+            "max_rework_cycles",
+            "max_concurrent_tasks",
+            "max_qa_cycles",
+            "debug_mode",
+        ):
             if key in cfg:
                 merged[key] = cfg[key]
         if "network_access" in cfg:
             merged["network_access"] = cfg["network_access"]
         elif "network_access" not in merged and "network_enabled" in cfg:
             merged["network_access"] = bool(cfg["network_enabled"])
+        merged["debug_mode"] = MissionOrchestrator._coerce_bool(
+            merged.get("debug_mode", False), default=False
+        )
         return merged
+
+    @staticmethod
+    def _coerce_bool(value: Any, default: bool = False) -> bool:
+        """Best-effort bool coercion for mixed config payloads."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on", "enabled"}:
+                return True
+            if lowered in {"0", "false", "no", "off", "disabled"}:
+                return False
+        return default
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int) -> int:
+        """Best-effort int coercion for mission config values."""
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _normalize_agent_result(result: Any) -> Dict[str, Any]:
+        """Normalize different agent return formats to a dict payload."""
+        if isinstance(result, dict):
+            return result
+        return {
+            "success": True,
+            "output": "" if result is None else str(result),
+        }
+
+    @staticmethod
+    def _extract_agent_output(result: Any, context: str) -> str:
+        """Extract output from agent response and raise on explicit failures."""
+        payload = MissionOrchestrator._normalize_agent_result(result)
+        if payload.get("success") is False:
+            error_message = payload.get("error") or "Unknown agent execution error"
+            raise RuntimeError(f"{context}: {error_message}")
+        output = payload.get("output")
+        return "" if output is None else str(output)
+
+    @staticmethod
+    def _append_attempt_to_result(
+        existing_result: Any,
+        attempt_record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Append attempt metadata to task result while preserving existing fields."""
+        result = dict(existing_result) if isinstance(existing_result, dict) else {}
+        attempts = result.get("attempts")
+        if not isinstance(attempts, list):
+            attempts = []
+        attempts.append(attempt_record)
+        result["attempts"] = attempts[-50:]
+        return result
 
     @staticmethod
     def _detect_instruction_language(text: str) -> str:
@@ -248,6 +336,82 @@ class MissionOrchestrator:
             slug = "task"
         return f"temp-worker-{slug[:24]}-{str(task_id)[:8]}"
 
+    @staticmethod
+    def _truncate_prompt_text(text: Any, limit: int = 600) -> str:
+        """Normalize and truncate free-form text before injecting into system prompts."""
+        if text is None:
+            return ""
+        normalized = str(text).strip()
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[:limit] + "..."
+
+    def _build_temporary_worker_system_prompt(self, mission: Any, task_obj: Any) -> str:
+        """Build a task-specific SOP prompt for temporary workers.
+
+        Temporary workers are intentionally created without pre-bound skills/capabilities,
+        but they should still have role-specific behavior. This prompt injects task context
+        so each temporary worker follows a differentiated SOP.
+        """
+        task_metadata = task_obj.task_metadata if isinstance(task_obj.task_metadata, dict) else {}
+        task_title = task_metadata.get("title", "Untitled")
+        mission_title = getattr(mission, "title", "Untitled Mission")
+
+        mission_instruction_snippet = self._truncate_prompt_text(
+            getattr(mission, "instructions", ""),
+            limit=700,
+        )
+        task_instruction_snippet = self._truncate_prompt_text(
+            getattr(task_obj, "goal_text", ""),
+            limit=900,
+        )
+        acceptance_criteria_snippet = self._truncate_prompt_text(
+            getattr(task_obj, "acceptance_criteria", ""),
+            limit=900,
+        )
+        dependency_titles = task_metadata.get("dependencies", [])
+        if isinstance(dependency_titles, list):
+            dependency_text = ", ".join(str(item) for item in dependency_titles[:10]) or "None"
+        else:
+            dependency_text = "None"
+
+        preferred_language = self._detect_instruction_language(
+            "\n".join(
+                [
+                    str(getattr(mission, "instructions", "") or ""),
+                    str(task_title or ""),
+                    str(getattr(task_obj, "goal_text", "") or ""),
+                ]
+            )
+        )
+
+        return (
+            "You are a temporary specialist worker created for exactly one mission task.\n"
+            "Your behavior must be task-specific, evidence-driven, and output-oriented.\n\n"
+            "## Mission Context\n"
+            f"- Mission: {mission_title}\n"
+            f"- Task ID: {task_obj.task_id}\n"
+            f"- Task Title: {task_title}\n"
+            f"- Preferred response language: {preferred_language}\n"
+            f"- Declared dependencies: {dependency_text}\n\n"
+            "## Mission Instructions Snapshot\n"
+            f"{mission_instruction_snippet or 'N/A'}\n\n"
+            "## Task Instructions Snapshot\n"
+            f"{task_instruction_snippet or 'N/A'}\n\n"
+            "## Acceptance Criteria Snapshot\n"
+            f"{acceptance_criteria_snippet or 'N/A'}\n\n"
+            "## Task-Specific SOP\n"
+            "1. Restate the concrete deliverable and constraints before execution.\n"
+            "2. Respect dependencies. If blocked, explicitly report the blocker.\n"
+            "3. Produce real artifacts in workspace files, not just explanations.\n"
+            "4. Self-check each acceptance criterion and fix gaps before finalizing.\n"
+            "5. Return a concise completion report containing:\n"
+            "   - files changed/created,\n"
+            "   - acceptance checklist,\n"
+            "   - remaining risks/assumptions.\n\n"
+            "Do not output tool placeholders as final answer. Deliver completed work."
+        )
+
     def _provision_temporary_worker_agent(
         self,
         mission_id: UUID,
@@ -261,6 +425,7 @@ class MissionOrchestrator:
         from database.models import Task
 
         task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
+        worker_system_prompt = self._build_temporary_worker_system_prompt(mission, task_obj)
         registry = AgentRegistry()
         temp_agent = registry.register_agent(
             name=self._build_temporary_agent_name(task_title, task_obj.task_id),
@@ -272,10 +437,7 @@ class MissionOrchestrator:
             temperature=float(llm_cfg.get("temperature", 0.7)),
             max_tokens=int(llm_cfg.get("max_tokens", 4096)),
             access_level="private",
-            system_prompt=(
-                "You are a temporary specialist worker spawned for a mission task. "
-                "Focus on completing the assigned task and producing concrete artifacts."
-            ),
+            system_prompt=worker_system_prompt,
         )
 
         try:
@@ -298,12 +460,14 @@ class MissionOrchestrator:
                 metadata = dict(task.task_metadata or {})
                 metadata["assigned_agent_name"] = temp_agent.name
                 metadata["assigned_agent_temporary"] = True
+                metadata["temporary_agent_prompt_mode"] = "task_specific_sop"
                 task.task_metadata = metadata
 
         task_obj.assigned_agent_id = temp_agent.agent_id
         task_metadata = dict(task_obj.task_metadata or {})
         task_metadata["assigned_agent_name"] = temp_agent.name
         task_metadata["assigned_agent_temporary"] = True
+        task_metadata["temporary_agent_prompt_mode"] = "task_specific_sop"
         task_obj.task_metadata = task_metadata
 
         self._emitter.emit(
@@ -316,6 +480,7 @@ class MissionOrchestrator:
                 "agent_id": str(temp_agent.agent_id),
                 "agent_name": temp_agent.name,
                 "is_temporary": True,
+                "prompt_mode": "task_specific_sop",
             },
             message=f"Temporary worker assigned: {temp_agent.name}",
         )
@@ -325,6 +490,53 @@ class MissionOrchestrator:
     async def _execute_agent_task(agent: Any, prompt: str) -> Dict[str, Any]:
         """Run blocking agent calls in a worker thread so the event loop stays responsive."""
         return await asyncio.to_thread(agent.execute_task, prompt)
+
+    async def _execute_phase_prompt_with_retry(
+        self,
+        mission_id: UUID,
+        mission: Any,
+        phase: str,
+        step: str,
+        agent: Any,
+        prompt: str,
+        error_context: str,
+    ) -> str:
+        """Execute a non-task phase prompt with retry and structured failure telemetry."""
+        exec_cfg = self._get_execution_config(mission)
+        max_retries = max(0, self._coerce_int(exec_cfg.get("max_retries", 2), 2))
+        debug_mode = self._coerce_bool(exec_cfg.get("debug_mode", False), default=False)
+        total_attempts = max_retries + 1
+
+        for attempt in range(total_attempts):
+            try:
+                result = await self._execute_agent_task(agent, prompt)
+                return self._extract_agent_output(result, error_context)
+            except Exception as exc:
+                backoff = 2**attempt if attempt < max_retries else None
+                trace = traceback.format_exc() if debug_mode else None
+                self._emitter.emit(
+                    mission_id=mission_id,
+                    event_type="PHASE_ATTEMPT_FAILED",
+                    data={
+                        "phase": phase,
+                        "step": step,
+                        "attempt": attempt + 1,
+                        "max_attempts": total_attempts,
+                        "error": str(exc),
+                        "error_type": exc.__class__.__name__,
+                        "will_retry": attempt < max_retries,
+                        "backoff_s": backoff,
+                        "traceback": trace,
+                    },
+                    message=(
+                        f"{phase} step failed (attempt {attempt + 1}/{total_attempts}): {step}"
+                    ),
+                )
+                if attempt < max_retries:
+                    assert backoff is not None
+                    await asyncio.sleep(backoff)
+                    continue
+                raise
 
     async def _phase_requirements(self, mission_id: UUID) -> None:
         """Leader analyses instructions and gathers requirements."""
@@ -393,8 +605,15 @@ class MissionOrchestrator:
             f"Otherwise produce the full requirements in {response_language}."
         )
 
-        result = await self._execute_agent_task(leader, task_prompt)
-        output = result.get("output", "")
+        output = await self._execute_phase_prompt_with_retry(
+            mission_id=mission_id,
+            mission=mission,
+            phase="requirements",
+            step="generate_requirements",
+            agent=leader,
+            prompt=task_prompt,
+            error_context="Requirements generation failed",
+        )
 
         # Handle clarification loop
         if "CLARIFICATION:" in output:
@@ -418,8 +637,15 @@ class MissionOrchestrator:
                 f"The user responded to your clarifications:\n\n{user_response}\n\n"
                 f"Now produce the complete requirements document in {response_language}."
             )
-            result = await self._execute_agent_task(leader, followup_prompt)
-            output = result.get("output", "")
+            output = await self._execute_phase_prompt_with_retry(
+                mission_id=mission_id,
+                mission=mission,
+                phase="requirements",
+                step="regenerate_after_clarification",
+                agent=leader,
+                prompt=followup_prompt,
+                error_context="Requirements regeneration failed",
+            )
 
         # Persist requirements
         requirements_doc = output
@@ -496,8 +722,15 @@ class MissionOrchestrator:
             f"## Requirements\n{requirements_doc}"
         )
 
-        result = await self._execute_agent_task(leader, task_prompt)
-        output = result.get("output", "")
+        output = await self._execute_phase_prompt_with_retry(
+            mission_id=mission_id,
+            mission=mission,
+            phase="planning",
+            step="decompose_tasks",
+            agent=leader,
+            prompt=task_prompt,
+            error_context="Task planning failed",
+        )
 
         # Parse JSON task list from agent output
         task_list = self._extract_json_array(output)
@@ -616,7 +849,9 @@ class MissionOrchestrator:
         if mission is None:
             raise MissionError(mission_id, "Mission not found")
 
-        # Fetch pending/failed tasks for this mission
+        # Fetch pending/failed tasks for this mission.
+        # Failed tasks are reset to pending at the start of each execution phase so
+        # dependency checks don't use stale failed states from the previous review loop.
         from database.connection import get_db_session
         from database.models import Task
 
@@ -629,6 +864,10 @@ class MissionOrchestrator:
                 )
                 .all()
             )
+            for task in tasks:
+                if task.status == "failed":
+                    task.status = "pending"
+                    task.completed_at = None
             # Detach for use outside session
             task_data = []
             for t in tasks:
@@ -650,7 +889,7 @@ class MissionOrchestrator:
 
         # Execute with concurrency limiter from execution config
         exec_cfg = self._get_execution_config(mission)
-        max_concurrent = int(exec_cfg.get("max_concurrent_tasks", 3))
+        max_concurrent = max(1, self._coerce_int(exec_cfg.get("max_concurrent_tasks", 3), 3))
         semaphore = asyncio.Semaphore(max_concurrent)
 
         async def _execute_single(task_obj: Any) -> None:
@@ -703,8 +942,7 @@ class MissionOrchestrator:
                             data={
                                 "title": (task_obj.task_metadata or {}).get("title", "Untitled"),
                                 "error": (
-                                    "Blocked by failed dependencies: "
-                                    f"{', '.join(failed_deps)}"
+                                    "Blocked by failed dependencies: " f"{', '.join(failed_deps)}"
                                 ),
                             },
                             message="Task failed due to failed dependencies",
@@ -720,7 +958,7 @@ class MissionOrchestrator:
                     mission_id,
                     mission,
                     task_obj,
-                    max_retries=int(exec_cfg.get("max_retries", 2)),
+                    max_retries=max(0, self._coerce_int(exec_cfg.get("max_retries", 2), 2)),
                 )
 
         await asyncio.gather(
@@ -765,9 +1003,22 @@ class MissionOrchestrator:
         Returns True on success, False on failure.
         """
         llm_cfg = self._get_llm_config(mission, "temporary_worker")
+        exec_cfg = self._get_execution_config(mission)
+        debug_mode = self._coerce_bool(exec_cfg.get("debug_mode", False), default=False)
         task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
+        task_metadata = (
+            task_obj.task_metadata if isinstance(task_obj.task_metadata, dict) else {}
+        )
+        review_feedback_raw = task_metadata.get("review_feedback")
+        review_feedback = (
+            review_feedback_raw.strip() if isinstance(review_feedback_raw, str) else ""
+        )
+        review_cycle = self._coerce_int(task_metadata.get("review_cycle_count", 0), 0)
+        if len(review_feedback) > 4000:
+            review_feedback = review_feedback[:4000] + "\n...[truncated]"
         resolved_agent_id: Optional[UUID] = getattr(task_obj, "assigned_agent_id", None)
         agent = None
+        total_attempts = max_retries + 1
 
         if resolved_agent_id:
             agent = await create_registered_mission_agent(
@@ -830,23 +1081,44 @@ class MissionOrchestrator:
                     message=f"Executing task: {task_title} (attempt {attempt + 1})",
                 )
 
+                review_feedback_section = ""
+                if review_feedback:
+                    review_feedback_section = (
+                        "## Rework Context\n"
+                        f"This task is in rework cycle {review_cycle}. "
+                        "You must address every review finding below before finishing.\n\n"
+                        "## Previous Review Feedback\n"
+                        f"{review_feedback}\n\n"
+                    )
+
                 task_prompt = (
                     f"Execute the following task:\n\n"
                     f"## Task: {task_title}\n"
                     f"## Instructions\n{task_obj.goal_text}\n\n"
                     f"## Acceptance Criteria\n{task_obj.acceptance_criteria or 'None specified'}\n\n"
+                    f"{review_feedback_section}"
                     "Produce the deliverable and confirm completion."
                 )
 
                 result = await self._execute_agent_task(agent, task_prompt)
-                output = result.get("output", "")
+                output = self._extract_agent_output(
+                    result,
+                    f"Task execution failed for '{task_title}'",
+                )
 
                 # Mark task completed
                 with get_db_session() as session:
                     t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
                     if t:
                         t.status = "completed"
-                        t.result = {"output": output}
+                        existing_result = dict(t.result) if isinstance(t.result, dict) else {}
+                        completion_payload: Dict[str, Any] = {"output": output}
+                        attempts = existing_result.get("attempts")
+                        if isinstance(attempts, list) and attempts:
+                            completion_payload["attempts"] = attempts
+                        if debug_mode:
+                            completion_payload["successful_attempt"] = attempt + 1
+                        t.result = completion_payload
                         t.completed_at = datetime.utcnow()
 
                 self._emitter.emit(
@@ -864,28 +1136,83 @@ class MissionOrchestrator:
                 return True
 
             except Exception as exc:
+                error_message = str(exc)
+                error_type = exc.__class__.__name__
+                trace = traceback.format_exc() if debug_mode else None
+                backoff = 2**attempt if attempt < max_retries else None
+
                 logger.warning(
                     "Task %s attempt %d failed: %s",
                     task_obj.task_id,
                     attempt + 1,
                     exc,
                 )
+
+                with get_db_session() as session:
+                    t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+                    if t:
+                        attempt_record: Dict[str, Any] = {
+                            "attempt": attempt + 1,
+                            "max_attempts": total_attempts,
+                            "error": error_message,
+                            "error_type": error_type,
+                            "timestamp": datetime.utcnow().isoformat() + "Z",
+                            "will_retry": attempt < max_retries,
+                        }
+                        if backoff is not None:
+                            attempt_record["backoff_s"] = backoff
+                        if trace:
+                            attempt_record["traceback"] = trace
+                        result_payload = self._append_attempt_to_result(
+                            existing_result=t.result,
+                            attempt_record=attempt_record,
+                        )
+                        result_payload["last_error"] = error_message
+                        result_payload["last_error_type"] = error_type
+                        if trace:
+                            result_payload["last_traceback"] = trace
+                        if attempt >= max_retries:
+                            t.status = "failed"
+                            t.completed_at = None
+                        t.result = result_payload
+
+                self._emitter.emit(
+                    mission_id=mission_id,
+                    event_type="TASK_ATTEMPT_FAILED",
+                    task_id=task_obj.task_id,
+                    data={
+                        "title": task_title,
+                        "attempt": attempt + 1,
+                        "max_attempts": total_attempts,
+                        "error": error_message,
+                        "error_type": error_type,
+                        "will_retry": attempt < max_retries,
+                        "backoff_s": backoff,
+                        "agent_id": str(resolved_agent_id),
+                        "agent_name": getattr(agent, "name", "worker"),
+                        "traceback": trace,
+                    },
+                    message=(f"Task attempt {attempt + 1}/{total_attempts} failed: {task_title}"),
+                )
+
                 if attempt < max_retries:
-                    backoff = 2**attempt
+                    assert backoff is not None
                     await asyncio.sleep(backoff)
                 else:
                     # Final failure
-                    with get_db_session() as session:
-                        t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
-                        if t:
-                            t.status = "failed"
-                            t.result = {"error": str(exc)}
-
                     self._emitter.emit(
                         mission_id=mission_id,
                         event_type="TASK_FAILED",
                         task_id=task_obj.task_id,
-                        data={"title": task_title, "error": str(exc)},
+                        data={
+                            "title": task_title,
+                            "error": error_message,
+                            "error_type": error_type,
+                            "attempt": attempt + 1,
+                            "max_attempts": total_attempts,
+                            "agent_id": str(resolved_agent_id),
+                            "agent_name": getattr(agent, "name", "worker"),
+                        },
                         message=f"Task failed: {task_title}",
                     )
                     update_mission_agent_status(
@@ -929,6 +1256,10 @@ class MissionOrchestrator:
             for t in tasks:
                 session.expunge(t)
                 task_data.append(t)
+        task_title_by_id = {
+            str(task.task_id): (task.task_metadata or {}).get("title", "Untitled")
+            for task in task_data
+        }
 
         failed_tasks: List[UUID] = []
         for task_obj in task_data:
@@ -939,8 +1270,8 @@ class MissionOrchestrator:
                     t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
                     if t:
                         t.status = "failed"
-                        meta = t.task_metadata or {}
-                        review_cycle = int(meta.get("review_cycle_count", 0)) + 1
+                        meta = dict(t.task_metadata or {})
+                        review_cycle = self._coerce_int(meta.get("review_cycle_count", 0), 0) + 1
                         meta["review_cycle_count"] = review_cycle
                         meta["review_feedback"] = (
                             f"Task status is '{task_obj.status}', expected 'completed' before review."
@@ -973,8 +1304,15 @@ class MissionOrchestrator:
                 "If FAIL, provide specific actionable feedback."
             )
 
-            result = await self._execute_agent_task(supervisor, review_prompt)
-            review_output = result.get("output", "")
+            review_output = await self._execute_phase_prompt_with_retry(
+                mission_id=mission_id,
+                mission=mission,
+                phase="reviewing",
+                step=f"review_task:{task_obj.task_id}",
+                agent=supervisor,
+                prompt=review_prompt,
+                error_context="Supervisor review failed",
+            )
 
             verdict = self._extract_binary_verdict(review_output)
 
@@ -992,16 +1330,17 @@ class MissionOrchestrator:
                     t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
                     if t:
                         t.status = "failed"
-                        meta = t.task_metadata or {}
-                        review_cycle = meta.get("review_cycle_count", 0) + 1
+                        meta = dict(t.task_metadata or {})
+                        review_cycle = self._coerce_int(meta.get("review_cycle_count", 0), 0) + 1
                         meta["review_cycle_count"] = review_cycle
                         meta["review_feedback"] = review_output
                         t.task_metadata = meta
                         t.completed_at = None
 
         exec_cfg = self._get_execution_config(mission)
-        configured_max_rework_cycles = int(
-            exec_cfg.get("max_rework_cycles", MAX_REVIEW_CYCLES)
+        configured_max_rework_cycles = self._coerce_int(
+            exec_cfg.get("max_rework_cycles", MAX_REVIEW_CYCLES),
+            MAX_REVIEW_CYCLES,
         )
         max_rework_cycles = max(
             0,
@@ -1029,14 +1368,26 @@ class MissionOrchestrator:
                 for tid in failed_tasks:
                     t = session.query(Task).filter(Task.task_id == tid).first()
                     if t:
-                        cycle = (t.task_metadata or {}).get("review_cycle_count", 0)
+                        cycle = self._coerce_int(
+                            (t.task_metadata or {}).get("review_cycle_count", 0),
+                            0,
+                        )
                         max_cycle = max(max_cycle, cycle)
 
             if max_cycle <= max_rework_cycles:
                 self._emitter.emit(
                     mission_id=mission_id,
                     event_type="REVIEW_CYCLE_RETRY",
-                    data={"failed_count": len(failed_tasks), "cycle": max_cycle},
+                    data={
+                        "failed_count": len(failed_tasks),
+                        "cycle": max_cycle,
+                        "max_rework_cycles": max_rework_cycles,
+                        "failed_task_ids": [str(task_id) for task_id in failed_tasks],
+                        "failed_task_titles": [
+                            task_title_by_id.get(str(task_id), "Untitled")
+                            for task_id in failed_tasks
+                        ],
+                    },
                     message=f"Review found {len(failed_tasks)} failures, retrying execution",
                 )
                 # Transition back to executing for retry is handled in _phase_execution.
@@ -1114,8 +1465,15 @@ class MissionOrchestrator:
             "Produce a structured audit report. End with a clear PASS or FAIL verdict."
         )
 
-        result = await self._execute_agent_task(qa_agent, audit_prompt)
-        qa_output = result.get("output", "")
+        qa_output = await self._execute_phase_prompt_with_retry(
+            mission_id=mission_id,
+            mission=mission,
+            phase="qa",
+            step="audit_deliverables",
+            agent=qa_agent,
+            prompt=audit_prompt,
+            error_context="QA audit failed",
+        )
 
         verdict = self._extract_binary_verdict(qa_output)
 
@@ -1130,18 +1488,37 @@ class MissionOrchestrator:
             # Check QA cycle count
             mission = get_mission(mission_id)
             cfg = mission.mission_config or {} if mission else {}
-            qa_cycle = int(cfg.get("qa_cycle_count", 0)) + 1
+            exec_cfg = self._get_execution_config(mission) if mission else {}
+            configured_max_qa_cycles = self._coerce_int(
+                exec_cfg.get("max_qa_cycles", MAX_QA_CYCLES),
+                MAX_QA_CYCLES,
+            )
+            max_qa_cycles = max(0, min(configured_max_qa_cycles, MAX_ALLOWED_QA_CYCLES))
+            qa_cycle = self._coerce_int(cfg.get("qa_cycle_count", 0), 0) + 1
 
             # Persist cycle count for observability and retry tracking
             update_mission_fields(
                 mission_id,
-                mission_config={**(mission.mission_config or {}), "qa_cycle_count": qa_cycle},
+                mission_config={**cfg, "qa_cycle_count": qa_cycle},
             )
-            if qa_cycle <= MAX_QA_CYCLES:
+            if configured_max_qa_cycles != max_qa_cycles:
+                self._emitter.emit(
+                    mission_id=mission_id,
+                    event_type="QA_CYCLE_LIMIT_ADJUSTED",
+                    data={
+                        "configured": configured_max_qa_cycles,
+                        "effective": max_qa_cycles,
+                    },
+                    message=(
+                        "QA cycle limit capped to avoid runaway retries: "
+                        f"{configured_max_qa_cycles} -> {max_qa_cycles}"
+                    ),
+                )
+            if qa_cycle <= max_qa_cycles:
                 self._emitter.emit(
                     mission_id=mission_id,
                     event_type="QA_CYCLE_RETRY",
-                    data={"cycle": qa_cycle},
+                    data={"cycle": qa_cycle, "max_qa_cycles": max_qa_cycles},
                     message="QA failed, routing back to review",
                 )
                 # Transition back to reviewing is handled in _phase_review.
@@ -1150,7 +1527,10 @@ class MissionOrchestrator:
                 return
             raise MissionError(
                 mission_id,
-                f"QA audit failed after {qa_cycle} cycle(s)",
+                (
+                    f"QA audit failed after {qa_cycle} cycle(s); configured max_qa_cycles="
+                    f"{max_qa_cycles}"
+                ),
             )
 
         # Save QA report to workspace

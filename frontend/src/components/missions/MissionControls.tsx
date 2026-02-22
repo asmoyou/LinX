@@ -1,6 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Play, XCircle, Package, Maximize, ListTodo } from 'lucide-react';
+import { Play, RotateCcw, XCircle, Package, Maximize, ListTodo } from 'lucide-react';
 import { useMissionStore } from '@/stores/missionStore';
 import type { MissionStatus } from '@/types/mission';
 
@@ -30,11 +30,12 @@ export const MissionControls: React.FC<MissionControlsProps> = ({
   onFitView,
 }) => {
   const { t } = useTranslation();
-  const { selectedMission, startMission, cancelMission } = useMissionStore();
+  const { selectedMission, startMission, retryMission, cancelMission } = useMissionStore();
 
   if (!selectedMission) return null;
 
   const canStart = selectedMission.status === 'draft';
+  const canRetry = selectedMission.status === 'failed';
   const canCancel = ['requirements', 'planning', 'executing', 'reviewing', 'qa'].includes(
     selectedMission.status
   );
@@ -47,6 +48,11 @@ export const MissionControls: React.FC<MissionControlsProps> = ({
   };
   const handleCancel = () => {
     void cancelMission(selectedMission.mission_id).catch(() => {
+      // Error toast is handled by API interceptor/store.
+    });
+  };
+  const handleRetry = () => {
+    void retryMission(selectedMission.mission_id).catch(() => {
       // Error toast is handled by API interceptor/store.
     });
   };
@@ -89,6 +95,16 @@ export const MissionControls: React.FC<MissionControlsProps> = ({
         >
           <Play className="w-3.5 h-3.5" />
           {t('missions.start')}
+        </button>
+      )}
+
+      {canRetry && (
+        <button
+          onClick={handleRetry}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+          {t('missions.retry')}
         </button>
       )}
 

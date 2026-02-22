@@ -1500,6 +1500,7 @@
     "title": "任务控制中心",
     "create": "新建任务",
     "start": "开始执行",
+    "retry": "重试任务",
     "cancel": "取消任务",
     "delete": "删除任务",
     "status": {
@@ -1598,7 +1599,22 @@
     "priorityShort": "优先级",
     "dependenciesShort": "依赖",
     "markdownSource": "源码",
-    "markdownPreview": "预览"
+    "markdownPreview": "预览",
+    "failureReason": "失败原因",
+    "unknownFailure": "未知失败",
+    "failedPhase": "失败阶段",
+    "errorType": "错误类型",
+    "failedTasks": "失败任务",
+    "failedTaskReason": "失败原因",
+    "reviewFeedback": "审查反馈",
+    "reviewCycle": "返工轮次",
+    "blockedDependencies": "被依赖阻塞",
+    "reviewLoopTimeline": "返工时间线",
+    "executionErrors": "执行错误",
+    "debugLastError": "最近错误",
+    "debugAttempts": "尝试次数",
+    "debugLatestAttempt": "最新",
+    "debugTraceback": "调用栈"
   },
   "robots": {
     "title": "机器人管理",

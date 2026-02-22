@@ -151,6 +151,50 @@ def delete_mission(mission_id: UUID) -> bool:
         return True
 
 
+def reset_failed_mission_for_retry(mission_id: UUID) -> Mission:
+    """Reset a failed mission so it can be started again.
+
+    This clears mission runtime state (tasks/counters/errors/results) while
+    preserving user-authored data such as title/instructions/attachments/config.
+    """
+    from database.models import Task
+
+    with get_db_session() as session:
+        mission = session.query(Mission).filter(Mission.mission_id == mission_id).first()
+        if mission is None:
+            raise ValueError(f"Mission {mission_id} not found")
+        if mission.status != "failed":
+            raise ValueError("Only failed missions can be retried")
+
+        # Clear prior execution artifacts to avoid duplicate plans/tasks.
+        session.query(Task).filter(Task.mission_id == mission_id).delete(synchronize_session=False)
+        session.query(MissionAgent).filter(MissionAgent.mission_id == mission_id).delete(
+            synchronize_session=False
+        )
+
+        mission.status = "draft"
+        mission.error_message = None
+        mission.result = None
+        mission.requirements_doc = None
+        mission.total_tasks = 0
+        mission.completed_tasks = 0
+        mission.failed_tasks = 0
+        mission.started_at = None
+        mission.completed_at = None
+        mission.container_id = None
+        mission.workspace_bucket = None
+
+        if isinstance(mission.mission_config, dict):
+            sanitized_config = dict(mission.mission_config)
+            sanitized_config.pop("qa_cycle_count", None)
+            mission.mission_config = sanitized_config
+
+        session.flush()
+        session.refresh(mission)
+        session.expunge(mission)
+        return mission
+
+
 # ------------------------------------------------------------------
 # Attachment helpers
 # ------------------------------------------------------------------
@@ -303,8 +347,10 @@ DEFAULT_EXECUTION_CONFIG = {
     "max_retries": 3,
     "task_timeout_s": 600,
     "max_rework_cycles": 2,
+    "max_qa_cycles": 1,
     "network_access": False,
     "max_concurrent_tasks": 3,
+    "debug_mode": False,
 }
 
 

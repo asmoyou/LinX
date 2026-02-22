@@ -60,6 +60,7 @@ interface MissionState {
     mission_config?: MissionConfig;
   }) => Promise<Mission>;
   startMission: (missionId: string) => Promise<void>;
+  retryMission: (missionId: string) => Promise<void>;
   cancelMission: (missionId: string) => Promise<void>;
   clarify: (missionId: string, message: string) => Promise<void>;
   deleteMission: (missionId: string) => Promise<void>;
@@ -199,6 +200,60 @@ export const useMissionStore = create<MissionState>((set, get) => ({
         // keep optimistic state if rollback fetch fails; error is surfaced below
       }
       set({ error: getErrorMessage(err, 'Failed to start mission') });
+      throw err;
+    }
+  },
+
+  retryMission: async (missionId) => {
+    // Optimistic transition mirrors manual retry action from failed -> requirements.
+    set((state) => ({
+      missions: state.missions.map((m) =>
+        m.mission_id === missionId && m.status === 'failed'
+          ? { ...m, status: 'requirements', error_message: undefined }
+          : m
+      ),
+      selectedMission:
+        state.selectedMission?.mission_id === missionId &&
+        state.selectedMission.status === 'failed'
+          ? { ...state.selectedMission, status: 'requirements', error_message: undefined }
+          : state.selectedMission,
+    }));
+
+    try {
+      const updated = normalizeMissionStatus(await missionsApi.retry(missionId));
+      if (updated?.mission_id) {
+        set((state) => ({
+          missions: state.missions.map((m) =>
+            m.mission_id === missionId ? updated : m
+          ),
+          selectedMission:
+            state.selectedMission?.mission_id === missionId ? updated : state.selectedMission,
+        }));
+      } else {
+        const mission = normalizeMissionStatus(await missionsApi.getById(missionId));
+        set((state) => ({
+          missions: state.missions.map((m) =>
+            m.mission_id === missionId ? mission : m
+          ),
+          selectedMission:
+            state.selectedMission?.mission_id === missionId ? mission : state.selectedMission,
+        }));
+      }
+    } catch (err: unknown) {
+      // Roll back to authoritative backend state when retry fails.
+      try {
+        const mission = normalizeMissionStatus(await missionsApi.getById(missionId));
+        set((state) => ({
+          missions: state.missions.map((m) =>
+            m.mission_id === missionId ? mission : m
+          ),
+          selectedMission:
+            state.selectedMission?.mission_id === missionId ? mission : state.selectedMission,
+        }));
+      } catch {
+        // keep optimistic state if rollback fetch fails; error is surfaced below
+      }
+      set({ error: getErrorMessage(err, 'Failed to retry mission') });
       throw err;
     }
   },

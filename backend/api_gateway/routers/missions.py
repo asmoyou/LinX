@@ -55,8 +55,10 @@ class MissionExecutionConfigSchema(BaseModel):
     max_retries: int = 3
     task_timeout_s: int = 600
     max_rework_cycles: int = 2
+    max_qa_cycles: int = 1
     network_access: bool = False
     max_concurrent_tasks: int = 3
+    debug_mode: bool = False
 
 
 class MissionSettingsRequest(BaseModel):
@@ -200,8 +202,10 @@ async def create_mission(
             "max_retries",
             "task_timeout_s",
             "max_rework_cycles",
+            "max_qa_cycles",
             "max_concurrent_tasks",
             "network_access",
+            "debug_mode",
         ):
             if key in request.mission_config:
                 legacy_exec[key] = request.mission_config[key]
@@ -510,6 +514,37 @@ async def start_mission(
     return _mission_to_response(updated)
 
 
+@router.post("/{mission_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+async def retry_mission(
+    mission_id: UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Manually retry a failed mission from a clean execution state."""
+    from mission_system.event_emitter import get_event_emitter
+    from mission_system.mission_repository import (
+        get_mission as repo_get,
+        reset_failed_mission_for_retry,
+    )
+    from mission_system.orchestrator import get_orchestrator
+
+    mission = _assert_mission_accessible(mission_id, current_user.user_id)
+    if mission.status != "failed":
+        raise HTTPException(status_code=400, detail="Only failed missions can be retried")
+
+    previous_error = mission.error_message
+    reset_failed_mission_for_retry(mission_id)
+    get_event_emitter().emit(
+        mission_id=mission_id,
+        event_type="MISSION_RETRY_REQUESTED",
+        data={"previous_error": previous_error},
+        message="Manual retry requested",
+    )
+
+    await get_orchestrator().start_mission(mission_id, UUID(current_user.user_id))
+    updated = repo_get(mission_id)
+    return _mission_to_response(updated)
+
+
 @router.post("/{mission_id}/cancel")
 async def cancel_mission(
     mission_id: UUID,
@@ -688,11 +723,7 @@ async def download_deliverable(
 
     deliverables = (mission.result or {}).get("deliverables", [])
     matched = next(
-        (
-            item
-            for item in deliverables
-            if isinstance(item, dict) and item.get("path") == path
-        ),
+        (item for item in deliverables if isinstance(item, dict) and item.get("path") == path),
         None,
     )
     if matched is None:
@@ -762,7 +793,7 @@ async def download_workspace_file(
 
     normalized = path.replace("\\", "/").lstrip("/")
     if normalized.startswith("workspace/"):
-        normalized = normalized[len("workspace/"):]
+        normalized = normalized[len("workspace/") :]
 
     if not normalized or ".." in normalized.split("/"):
         raise HTTPException(status_code=400, detail="Invalid workspace file path")
