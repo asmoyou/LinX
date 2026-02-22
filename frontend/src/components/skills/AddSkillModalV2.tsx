@@ -133,9 +133,8 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
       onClose={handleClose}
       closeOnBackdropClick={false}
       closeOnEscape={true}
-      containerClassName="animate-in zoom-in-95 duration-200"
     >
-      <div className="w-full max-w-4xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto modal-panel rounded-[24px] shadow-2xl p-6 animate-in zoom-in-95 duration-200">
+      <div className="w-full max-w-4xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto modal-panel rounded-[24px] shadow-2xl p-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-zinc-800 dark:text-white">{t('skills.createNewSkill')}</h2>

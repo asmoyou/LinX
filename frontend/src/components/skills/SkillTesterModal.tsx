@@ -34,9 +34,8 @@ export default function SkillTesterModal({
       onClose={onClose}
       closeOnBackdropClick={false}
       closeOnEscape={true}
-      containerClassName="animate-in zoom-in-95 duration-200"
     >
-      <div className="w-full max-w-4xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-hidden modal-panel rounded-[24px] shadow-2xl p-6 flex flex-col animate-in zoom-in-95 duration-200">
+      <div className="w-full max-w-4xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-hidden modal-panel rounded-[24px] shadow-2xl p-6 flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between mb-6 flex-shrink-0">
           <h2 className="text-2xl font-bold text-zinc-800 dark:text-white">

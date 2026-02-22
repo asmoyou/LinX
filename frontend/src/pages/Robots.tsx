@@ -481,25 +481,11 @@ export const Robots: React.FC = () => {
           <LayoutModal
             isOpen={true}
             onClose={() => setShowTelemetry(false)}
-            closeOnBackdropClick={false}
+            closeOnBackdropClick={true}
             closeOnEscape={true}
             zIndexClassName="z-[100]"
-            backdropClassName="bg-transparent"
           >
-            <div className="relative w-full h-full flex items-center justify-center p-4 sm:p-6">
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setShowTelemetry(false)}
-                className="absolute inset-0 bg-black/60 backdrop-blur-md"
-              />
-              <motion.div
-                initial={{ opacity: 0, scale: 0.9, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.9, y: 20 }}
-                className="relative w-full max-w-2xl bg-white dark:bg-zinc-900 rounded-[32px] shadow-2xl overflow-hidden border border-zinc-500/10"
-              >
+            <div className="relative w-full max-w-2xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] flex flex-col bg-white dark:bg-zinc-900 rounded-[32px] shadow-2xl overflow-hidden border border-zinc-500/10">
               {/* Modal Header */}
               <div className="p-6 border-b border-zinc-500/10 flex items-center justify-between">
                 <div className="flex items-center gap-4">
@@ -520,7 +506,7 @@ export const Robots: React.FC = () => {
               </div>
 
               {/* Modal Content */}
-              <div className="p-8 overflow-y-auto max-h-[70vh]">
+              <div className="p-8 overflow-y-auto flex-1 min-h-0">
                 {/* Metrics Grid */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
                   {telemetryConfig.metrics.map((stat, i) => (
@@ -591,7 +577,6 @@ export const Robots: React.FC = () => {
                   关闭
                 </button>
               </div>
-              </motion.div>
             </div>
           </LayoutModal>
         )}
