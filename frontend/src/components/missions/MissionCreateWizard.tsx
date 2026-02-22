@@ -39,6 +39,12 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
     max_qa_cycles: 1,
     network_access: false,
     debug_mode: false,
+    enable_team_blueprint: true,
+    auto_select_temp_skills: true,
+    temp_worker_skill_limit: 3,
+    temp_worker_memory_scopes: ['agent', 'company', 'user_context'],
+    temp_worker_knowledge_strategy: 'owner_accessible',
+    temp_worker_knowledge_limit: 6,
   });
 
   // Load saved settings as defaults
@@ -58,6 +64,21 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
         max_qa_cycles: missionSettings.execution_config.max_qa_cycles ?? prev.max_qa_cycles,
         network_access: missionSettings.execution_config.network_access ?? prev.network_access,
         debug_mode: missionSettings.execution_config.debug_mode ?? prev.debug_mode,
+        enable_team_blueprint:
+          missionSettings.execution_config.enable_team_blueprint ?? prev.enable_team_blueprint,
+        auto_select_temp_skills:
+          missionSettings.execution_config.auto_select_temp_skills ?? prev.auto_select_temp_skills,
+        temp_worker_skill_limit:
+          missionSettings.execution_config.temp_worker_skill_limit ?? prev.temp_worker_skill_limit,
+        temp_worker_memory_scopes:
+          missionSettings.execution_config.temp_worker_memory_scopes ??
+          prev.temp_worker_memory_scopes,
+        temp_worker_knowledge_strategy:
+          missionSettings.execution_config.temp_worker_knowledge_strategy ??
+          prev.temp_worker_knowledge_strategy,
+        temp_worker_knowledge_limit:
+          missionSettings.execution_config.temp_worker_knowledge_limit ??
+          prev.temp_worker_knowledge_limit,
       }));
     }
   }, [missionSettings]);
@@ -128,6 +149,12 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
       max_qa_cycles: 1,
       network_access: false,
       debug_mode: false,
+      enable_team_blueprint: true,
+      auto_select_temp_skills: true,
+      temp_worker_skill_limit: 3,
+      temp_worker_memory_scopes: ['agent', 'company', 'user_context'],
+      temp_worker_knowledge_strategy: 'owner_accessible',
+      temp_worker_knowledge_limit: 6,
     });
     setCurrentStep(0);
     setShowAdvanced(false);

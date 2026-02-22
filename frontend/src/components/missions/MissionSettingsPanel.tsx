@@ -28,6 +28,12 @@ const DEFAULT_EXECUTION_CONFIG: MissionExecutionConfig = {
   network_access: false,
   max_concurrent_tasks: 3,
   debug_mode: false,
+  enable_team_blueprint: true,
+  auto_select_temp_skills: true,
+  temp_worker_skill_limit: 3,
+  temp_worker_memory_scopes: ['agent', 'company', 'user_context'],
+  temp_worker_knowledge_strategy: 'owner_accessible',
+  temp_worker_knowledge_limit: 6,
 };
 
 type RoleKey =
@@ -417,6 +423,123 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
                     <span className="text-xs font-medium text-zinc-500">
                       {t('missions.debugMode')}
                     </span>
+                  </div>
+                  <div className="col-span-2 flex items-center gap-3">
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={executionConfig.enable_team_blueprint}
+                        onChange={(e) =>
+                          setExecutionConfig((prev) => ({
+                            ...prev,
+                            enable_team_blueprint: e.target.checked,
+                          }))
+                        }
+                        className="sr-only peer"
+                      />
+                      <div className="w-9 h-5 bg-zinc-200 dark:bg-zinc-700 peer-focus:ring-2 peer-focus:ring-emerald-500/30 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500" />
+                    </label>
+                    <span className="text-xs font-medium text-zinc-500">
+                      {t('missions.enableTeamBlueprint')}
+                    </span>
+                  </div>
+                  <div className="col-span-2 flex items-center gap-3">
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={executionConfig.auto_select_temp_skills}
+                        onChange={(e) =>
+                          setExecutionConfig((prev) => ({
+                            ...prev,
+                            auto_select_temp_skills: e.target.checked,
+                          }))
+                        }
+                        className="sr-only peer"
+                      />
+                      <div className="w-9 h-5 bg-zinc-200 dark:bg-zinc-700 peer-focus:ring-2 peer-focus:ring-emerald-500/30 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500" />
+                    </label>
+                    <span className="text-xs font-medium text-zinc-500">
+                      {t('missions.autoSelectTempSkills')}
+                    </span>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-500 mb-1.5">
+                      {t('missions.tempWorkerSkillLimit')}
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={8}
+                      value={executionConfig.temp_worker_skill_limit}
+                      onChange={(e) =>
+                        setExecutionConfig((prev) => ({
+                          ...prev,
+                          temp_worker_skill_limit: parseInt(e.target.value) || 0,
+                        }))
+                      }
+                      className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 outline-none dark:text-zinc-200"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-500 mb-1.5">
+                      {t('missions.tempWorkerKnowledgeLimit')}
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={20}
+                      value={executionConfig.temp_worker_knowledge_limit}
+                      onChange={(e) =>
+                        setExecutionConfig((prev) => ({
+                          ...prev,
+                          temp_worker_knowledge_limit: parseInt(e.target.value) || 0,
+                        }))
+                      }
+                      className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 outline-none dark:text-zinc-200"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="block text-xs font-medium text-zinc-500 mb-1.5">
+                      {t('missions.tempWorkerMemoryScopes')}
+                    </label>
+                    <input
+                      type="text"
+                      value={(executionConfig.temp_worker_memory_scopes || []).join(',')}
+                      onChange={(e) =>
+                        setExecutionConfig((prev) => ({
+                          ...prev,
+                          temp_worker_memory_scopes: e.target.value
+                            .split(',')
+                            .map((item) => item.trim())
+                            .filter(Boolean),
+                        }))
+                      }
+                      placeholder="agent,company,user_context"
+                      className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 outline-none dark:text-zinc-200"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="block text-xs font-medium text-zinc-500 mb-1.5">
+                      {t('missions.tempWorkerKnowledgeStrategy')}
+                    </label>
+                    <select
+                      value={executionConfig.temp_worker_knowledge_strategy}
+                      onChange={(e) =>
+                        setExecutionConfig((prev) => ({
+                          ...prev,
+                          temp_worker_knowledge_strategy: e.target.value,
+                        }))
+                      }
+                      className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 outline-none dark:text-zinc-200"
+                    >
+                      <option value="owner_accessible">
+                        {t('missions.tempKnowledgeStrategyOwnerAccessible')}
+                      </option>
+                      <option value="all_owner">{t('missions.tempKnowledgeStrategyAllOwner')}</option>
+                      <option value="manual_only">
+                        {t('missions.tempKnowledgeStrategyManualOnly')}
+                      </option>
+                    </select>
                   </div>
                 </div>
               </div>

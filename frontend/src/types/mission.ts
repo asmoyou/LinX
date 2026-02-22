@@ -20,6 +20,12 @@ export interface MissionConfig {
   max_qa_cycles?: number;
   network_access?: boolean;
   debug_mode?: boolean;
+  enable_team_blueprint?: boolean;
+  auto_select_temp_skills?: boolean;
+  temp_worker_skill_limit?: number;
+  temp_worker_memory_scopes?: string[];
+  temp_worker_knowledge_strategy?: string;
+  temp_worker_knowledge_limit?: number;
   base_image?: string;
 }
 
@@ -115,6 +121,12 @@ export interface MissionExecutionConfig {
   network_access: boolean;
   max_concurrent_tasks: number;
   debug_mode: boolean;
+  enable_team_blueprint: boolean;
+  auto_select_temp_skills: boolean;
+  temp_worker_skill_limit: number;
+  temp_worker_memory_scopes: string[];
+  temp_worker_knowledge_strategy: string;
+  temp_worker_knowledge_limit: number;
 }
 
 export interface MissionSettings {

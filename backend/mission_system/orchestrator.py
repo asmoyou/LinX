@@ -210,7 +210,7 @@ class MissionOrchestrator:
 
         Falls back to top-level defaults then hardcoded defaults.
         """
-        cfg = mission.mission_config or {}
+        cfg = getattr(mission, "mission_config", None) or {}
         # Try settings-merged format first (e.g. "leader_config"), then legacy (e.g. "leader")
         role_cfg = cfg.get(f"{role}_config", cfg.get(role, {}))
         inherited_cfg: Dict[str, Any] = {}
@@ -233,7 +233,7 @@ class MissionOrchestrator:
     @staticmethod
     def _get_execution_config(mission: Any) -> Dict[str, Any]:
         """Extract execution config, supporting nested and legacy top-level keys."""
-        cfg = mission.mission_config or {}
+        cfg = getattr(mission, "mission_config", None) or {}
         exec_cfg = cfg.get("execution_config", {})
         if not isinstance(exec_cfg, dict):
             exec_cfg = {}
@@ -246,6 +246,12 @@ class MissionOrchestrator:
             "max_concurrent_tasks",
             "max_qa_cycles",
             "debug_mode",
+            "enable_team_blueprint",
+            "auto_select_temp_skills",
+            "temp_worker_skill_limit",
+            "temp_worker_memory_scopes",
+            "temp_worker_knowledge_strategy",
+            "temp_worker_knowledge_limit",
         ):
             if key in cfg:
                 merged[key] = cfg[key]
@@ -374,6 +380,16 @@ class MissionOrchestrator:
             dependency_text = ", ".join(str(item) for item in dependency_titles[:10]) or "None"
         else:
             dependency_text = "None"
+        owner_role = str(
+            task_metadata.get("owner_role_name")
+            or task_metadata.get("owner_role")
+            or task_metadata.get("role_name")
+            or ""
+        ).strip()
+        role_required_capabilities = self._coerce_string_list(
+            task_metadata.get("role_required_capabilities")
+        )
+        role_sop_hint = str(task_metadata.get("role_sop_hint") or "").strip()
 
         preferred_language = self._detect_instruction_language(
             "\n".join(
@@ -400,6 +416,11 @@ class MissionOrchestrator:
             f"{task_instruction_snippet or 'N/A'}\n\n"
             "## Acceptance Criteria Snapshot\n"
             f"{acceptance_criteria_snippet or 'N/A'}\n\n"
+            "## Assigned Role Context\n"
+            f"- Role: {owner_role or 'N/A'}\n"
+            "- Role required capabilities: "
+            f"{', '.join(role_required_capabilities) if role_required_capabilities else 'N/A'}\n"
+            f"- Role SOP hint: {role_sop_hint or 'N/A'}\n\n"
             "## Task-Specific SOP\n"
             "1. Restate the concrete deliverable and constraints before execution.\n"
             "2. Respect dependencies. If blocked, explicitly report the blocker.\n"
@@ -411,6 +432,290 @@ class MissionOrchestrator:
             "   - remaining risks/assumptions.\n\n"
             "Do not output tool placeholders as final answer. Deliver completed work."
         )
+
+    @staticmethod
+    def _coerce_string_list(value: Any, max_items: int = 32) -> List[str]:
+        """Best-effort normalize list-like values to non-empty unique strings."""
+        if not isinstance(value, list):
+            return []
+        normalized: List[str] = []
+        for raw in value[:max_items]:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            if text not in normalized:
+                normalized.append(text)
+        return normalized
+
+    @staticmethod
+    def _normalize_role_key(value: Any) -> str:
+        """Normalize role identifiers to stable matching keys."""
+        raw = str(value or "").strip().lower()
+        if not raw:
+            return ""
+        key = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", raw).strip("_")
+        return key
+
+    @staticmethod
+    def _tokenize_for_match(*parts: Any) -> set[str]:
+        """Tokenize free text for lightweight lexical matching."""
+        text = " ".join(str(part or "") for part in parts).lower()
+        if not text.strip():
+            return set()
+        return set(re.findall(r"[a-z0-9\u4e00-\u9fff]{2,}", text))
+
+    @staticmethod
+    def _resolve_temporary_worker_memory_scopes(exec_cfg: Dict[str, Any]) -> List[str]:
+        """Resolve temporary worker memory scopes with sane defaults."""
+        raw_scopes = exec_cfg.get("temp_worker_memory_scopes")
+        normalized: List[str] = []
+        if isinstance(raw_scopes, list):
+            for scope in raw_scopes:
+                candidate = str(scope or "").strip().lower()
+                if candidate in {"agent", "company", "user_context", "task_context"}:
+                    if candidate not in normalized:
+                        normalized.append(candidate)
+        if normalized:
+            return normalized
+        return ["agent", "company", "user_context"]
+
+    def _select_temporary_worker_skills(
+        self,
+        mission: Any,
+        task_obj: Any,
+        exec_cfg: Dict[str, Any],
+    ) -> List[str]:
+        """Auto-select relevant skills for temporary workers based on task context."""
+        if not self._coerce_bool(exec_cfg.get("auto_select_temp_skills", True), default=True):
+            return []
+
+        limit = max(0, min(self._coerce_int(exec_cfg.get("temp_worker_skill_limit", 3), 3), 8))
+        if limit == 0:
+            return []
+
+        task_metadata = task_obj.task_metadata if isinstance(task_obj.task_metadata, dict) else {}
+        task_text = "\n".join(
+            [
+                str(task_metadata.get("title", "") or ""),
+                str(getattr(task_obj, "goal_text", "") or ""),
+                str(getattr(task_obj, "acceptance_criteria", "") or ""),
+                " ".join(self._coerce_string_list(task_metadata.get("role_required_capabilities"))),
+            ]
+        )
+        task_tokens = self._tokenize_for_match(task_text)
+        if not task_tokens:
+            return []
+
+        try:
+            from database.connection import get_db_session
+            from database.models import Skill
+
+            with get_db_session() as session:
+                candidates = (
+                    session.query(Skill)
+                    .filter(Skill.is_active.is_(True))
+                    .order_by(Skill.created_at.desc())
+                    .limit(500)
+                    .all()
+                )
+        except Exception:
+            logger.exception(
+                "Failed to load skill candidates for temporary worker",
+                extra={"mission_id": str(getattr(mission, "mission_id", ""))},
+            )
+            return []
+
+        scored: List[tuple[float, str]] = []
+        task_lower = task_text.lower()
+        for skill in candidates:
+            skill_name = str(getattr(skill, "name", "") or "").strip()
+            if not skill_name:
+                continue
+            skill_desc = str(getattr(skill, "description", "") or "").strip()
+            skill_tokens = self._tokenize_for_match(skill_name, skill_desc)
+            overlap = len(task_tokens.intersection(skill_tokens))
+
+            name_in_task = skill_name.lower() in task_lower
+            # Only keep skills with at least one direct relevance signal.
+            if overlap <= 0 and not name_in_task:
+                continue
+
+            score = float(overlap * 2)
+            if name_in_task:
+                score += 6.0
+            if getattr(skill, "skill_type", "") == "agent_skill":
+                score += 0.2
+
+            if score > 0:
+                scored.append((score, skill_name))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        selected: List[str] = []
+        for _, skill_name in scored:
+            if skill_name in selected:
+                continue
+            selected.append(skill_name)
+            if len(selected) >= limit:
+                break
+        return selected
+
+    def _select_temporary_worker_knowledge_collections(
+        self,
+        mission: Any,
+        task_obj: Any,
+        exec_cfg: Dict[str, Any],
+    ) -> List[str]:
+        """Select knowledge collections for temporary workers.
+
+        Strategies:
+        - manual_only: attach none (only manually configured agents can use KB).
+        - all_owner: attach latest owner collections up to limit.
+        - owner_accessible (default): choose owner collections lexically relevant to task.
+        """
+        strategy = str(exec_cfg.get("temp_worker_knowledge_strategy", "owner_accessible")).strip()
+        strategy = strategy.lower() or "owner_accessible"
+        limit = max(
+            0,
+            min(
+                self._coerce_int(exec_cfg.get("temp_worker_knowledge_limit", 6), 6),
+                20,
+            ),
+        )
+        if limit == 0:
+            return []
+        if strategy in {"manual_only", "manual", "none"}:
+            return []
+
+        try:
+            from database.connection import get_db_session
+            from database.models import KnowledgeCollection
+
+            with get_db_session() as session:
+                collections = (
+                    session.query(KnowledgeCollection)
+                    .filter(KnowledgeCollection.owner_user_id == mission.created_by_user_id)
+                    .order_by(KnowledgeCollection.updated_at.desc())
+                    .limit(200)
+                    .all()
+                )
+        except Exception:
+            logger.exception(
+                "Failed to load owner knowledge collections for temporary worker",
+                extra={"mission_id": str(getattr(mission, "mission_id", ""))},
+            )
+            return []
+
+        if not collections:
+            return []
+        if strategy in {"all_owner", "owner_all"}:
+            return [str(item.collection_id) for item in collections[:limit]]
+
+        # owner_accessible: rank with lexical overlap against task context.
+        task_metadata = task_obj.task_metadata if isinstance(task_obj.task_metadata, dict) else {}
+        task_tokens = self._tokenize_for_match(
+            task_metadata.get("title", ""),
+            getattr(task_obj, "goal_text", ""),
+            getattr(task_obj, "acceptance_criteria", ""),
+        )
+        if not task_tokens:
+            return [str(item.collection_id) for item in collections[:limit]]
+
+        scored: List[tuple[int, Any]] = []
+        for item in collections:
+            tokens = self._tokenize_for_match(item.name, item.description)
+            score = len(task_tokens.intersection(tokens))
+            scored.append((score, item))
+
+        scored.sort(key=lambda row: row[0], reverse=True)
+        positive = [item for score, item in scored if score > 0]
+        selected = positive[:limit] if positive else collections[:limit]
+        return [str(item.collection_id) for item in selected]
+
+    def _resolve_blueprint_role_assignments(
+        self,
+        team_blueprint: List[Dict[str, Any]],
+        available_agents: List[Any],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Resolve role-to-agent assignments from team blueprint and platform agents."""
+        if not team_blueprint:
+            return {}
+
+        agent_by_id = {str(agent.agent_id): agent for agent in available_agents}
+        used_agent_ids: set[str] = set()
+        role_map: Dict[str, Dict[str, Any]] = {}
+
+        for index, role in enumerate(team_blueprint):
+            if not isinstance(role, dict):
+                continue
+
+            role_name = str(
+                role.get("role_name") or role.get("name") or role.get("role") or f"role_{index+1}"
+            ).strip()
+            if not role_name:
+                role_name = f"role_{index+1}"
+            role_key = self._normalize_role_key(role.get("role_key") or role_name)
+            if not role_key:
+                role_key = f"role_{index+1}"
+
+            required_capabilities = self._coerce_string_list(
+                role.get("required_capabilities") or role.get("skills")
+            )
+            preferred_agent_id = str(role.get("preferred_agent_id") or "").strip()
+
+            assigned_agent_id = ""
+            assigned_agent_name = ""
+
+            if preferred_agent_id and preferred_agent_id in agent_by_id:
+                preferred = agent_by_id[preferred_agent_id]
+                assigned_agent_id = str(preferred.agent_id)
+                assigned_agent_name = preferred.name
+                used_agent_ids.add(assigned_agent_id)
+            else:
+                best_candidate: Optional[Any] = None
+                best_score = -1.0
+                for candidate in available_agents:
+                    candidate_id = str(candidate.agent_id)
+                    candidate_caps = {
+                        str(capability).strip().lower()
+                        for capability in (candidate.capabilities or [])
+                        if str(capability).strip()
+                    }
+                    required_caps = {
+                        str(capability).strip().lower()
+                        for capability in required_capabilities
+                        if str(capability).strip()
+                    }
+                    if required_caps:
+                        score = len(candidate_caps.intersection(required_caps)) / len(required_caps)
+                    else:
+                        score = 0.0
+                    if candidate_id in used_agent_ids:
+                        score -= 0.15
+                    if score > best_score:
+                        best_score = score
+                        best_candidate = candidate
+
+                if best_candidate is not None and best_score >= 0:
+                    assigned_agent_id = str(best_candidate.agent_id)
+                    assigned_agent_name = best_candidate.name
+                    used_agent_ids.add(assigned_agent_id)
+
+            role_map[role_key] = {
+                "role_key": role_key,
+                "role_name": role_name,
+                "responsibilities": self._coerce_string_list(role.get("responsibilities")),
+                "required_capabilities": required_capabilities,
+                "preferred_agent_id": preferred_agent_id or "",
+                "assigned_agent_id": assigned_agent_id,
+                "assigned_agent_name": assigned_agent_name,
+                "memory_scopes": self._coerce_string_list(role.get("memory_scopes")),
+                "knowledge_collection_ids": self._coerce_string_list(
+                    role.get("knowledge_collection_ids")
+                ),
+                "sop_hint": str(role.get("sop_hint") or "").strip(),
+            }
+
+        return role_map
 
     def _provision_temporary_worker_agent(
         self,
@@ -425,19 +730,33 @@ class MissionOrchestrator:
         from database.models import Task
 
         task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
+        exec_cfg = self._get_execution_config(mission)
+        selected_skills = self._select_temporary_worker_skills(
+            mission=mission,
+            task_obj=task_obj,
+            exec_cfg=exec_cfg,
+        )
+        selected_knowledge = self._select_temporary_worker_knowledge_collections(
+            mission=mission,
+            task_obj=task_obj,
+            exec_cfg=exec_cfg,
+        )
+        memory_scopes = self._resolve_temporary_worker_memory_scopes(exec_cfg)
         worker_system_prompt = self._build_temporary_worker_system_prompt(mission, task_obj)
         registry = AgentRegistry()
         temp_agent = registry.register_agent(
             name=self._build_temporary_agent_name(task_title, task_obj.task_id),
             agent_type="mission_temp_worker",
             owner_user_id=mission.created_by_user_id,
-            capabilities=[],
+            capabilities=selected_skills,
             llm_provider=llm_cfg.get("llm_provider"),
             llm_model=llm_cfg.get("llm_model"),
             temperature=float(llm_cfg.get("temperature", 0.7)),
             max_tokens=int(llm_cfg.get("max_tokens", 4096)),
             access_level="private",
             system_prompt=worker_system_prompt,
+            allowed_knowledge=selected_knowledge,
+            allowed_memory=memory_scopes,
         )
 
         try:
@@ -461,6 +780,9 @@ class MissionOrchestrator:
                 metadata["assigned_agent_name"] = temp_agent.name
                 metadata["assigned_agent_temporary"] = True
                 metadata["temporary_agent_prompt_mode"] = "task_specific_sop"
+                metadata["temporary_agent_skills"] = selected_skills
+                metadata["temporary_agent_memory_scopes"] = memory_scopes
+                metadata["temporary_agent_knowledge_collections"] = selected_knowledge
                 task.task_metadata = metadata
 
         task_obj.assigned_agent_id = temp_agent.agent_id
@@ -468,6 +790,9 @@ class MissionOrchestrator:
         task_metadata["assigned_agent_name"] = temp_agent.name
         task_metadata["assigned_agent_temporary"] = True
         task_metadata["temporary_agent_prompt_mode"] = "task_specific_sop"
+        task_metadata["temporary_agent_skills"] = selected_skills
+        task_metadata["temporary_agent_memory_scopes"] = memory_scopes
+        task_metadata["temporary_agent_knowledge_collections"] = selected_knowledge
         task_obj.task_metadata = task_metadata
 
         self._emitter.emit(
@@ -481,6 +806,9 @@ class MissionOrchestrator:
                 "agent_name": temp_agent.name,
                 "is_temporary": True,
                 "prompt_mode": "task_specific_sop",
+                "skills": selected_skills,
+                "memory_scopes": memory_scopes,
+                "knowledge_collections": selected_knowledge,
             },
             message=f"Temporary worker assigned: {temp_agent.name}",
         )
@@ -703,24 +1031,89 @@ class MissionOrchestrator:
         )
 
         requirements_doc = mission.requirements_doc or mission.instructions
+        exec_cfg = self._get_execution_config(mission)
+        enable_team_blueprint = self._coerce_bool(
+            exec_cfg.get("enable_team_blueprint", True),
+            default=True,
+        )
+
+        from database.connection import get_db_session
+        from database.models import KnowledgeCollection, Task
+
+        with get_db_session() as session:
+            knowledge_collections = (
+                session.query(KnowledgeCollection)
+                .filter(KnowledgeCollection.owner_user_id == mission.created_by_user_id)
+                .order_by(KnowledgeCollection.updated_at.desc())
+                .limit(80)
+                .all()
+            )
+        knowledge_catalog = (
+            "\n".join(
+                f"- id={collection.collection_id}, name={collection.name}, "
+                f"description={collection.description or ''}"
+                for collection in knowledge_collections
+            )
+            or "No owner knowledge collections available."
+        )
+
         assignment_instruction = (
-            "For each task, include `assigned_agent_id` using one of the provided agent IDs. "
-            "If no good match exists, set it to an empty string so the runtime can spawn a "
-            "temporary specialist worker."
+            "Use `assigned_agent_id` for direct agent assignment when confident. "
+            "If no suitable platform agent exists, leave `assigned_agent_id` empty "
+            "to allow temporary worker creation."
             if available_agents
-            else "Set `assigned_agent_id` to an empty string for each task."
+            else "No platform agents are available; keep `assigned_agent_id` empty."
         )
-        task_prompt = (
-            "Decompose the following requirements into an ordered list of tasks "
-            "with acceptance criteria. Return them as a JSON array where each "
-            "element has keys: title, instructions, acceptance_criteria, "
-            "dependencies (list of task titles), priority (integer 0-10), "
-            "assigned_agent_id (string UUID or empty string).\n\n"
-            f"{assignment_instruction}\n\n"
-            f"## Available Platform Agents\n{agent_catalog}\n\n"
-            "Return ONLY the JSON array inside a ```json code block.\n\n"
-            f"## Requirements\n{requirements_doc}"
-        )
+        if enable_team_blueprint:
+            task_prompt = (
+                "Design an execution team and task plan from the mission requirements.\n\n"
+                "Return ONLY JSON inside a ```json code block with this exact shape:\n"
+                "{\n"
+                '  "team_blueprint": [\n'
+                "    {\n"
+                '      "role_key": "frontend_lead",\n'
+                '      "role_name": "Frontend Lead",\n'
+                '      "responsibilities": ["..."],\n'
+                '      "required_capabilities": ["skill_a", "skill_b"],\n'
+                '      "preferred_agent_id": "",\n'
+                '      "memory_scopes": ["agent","company","user_context"],\n'
+                '      "knowledge_collection_ids": ["<collection_id>"],\n'
+                '      "sop_hint": "short SOP hint"\n'
+                "    }\n"
+                "  ],\n"
+                '  "tasks": [\n'
+                "    {\n"
+                '      "title": "Task title",\n'
+                '      "instructions": "Detailed instructions",\n'
+                '      "acceptance_criteria": "Testable criteria",\n'
+                '      "dependencies": ["Other task title"],\n'
+                '      "priority": 0,\n'
+                '      "owner_role": "frontend_lead",\n'
+                '      "assigned_agent_id": ""\n'
+                "    }\n"
+                "  ]\n"
+                "}\n\n"
+                f"{assignment_instruction}\n\n"
+                "Role guidance:\n"
+                "- Keep team roles minimal and explicit.\n"
+                "- required_capabilities should use existing platform skill names when possible.\n"
+                "- If a role should use existing knowledge collections, reference IDs from catalog.\n\n"
+                f"## Available Platform Agents\n{agent_catalog}\n\n"
+                f"## Available Owner Knowledge Collections\n{knowledge_catalog}\n\n"
+                f"## Requirements\n{requirements_doc}"
+            )
+        else:
+            task_prompt = (
+                "Decompose the following requirements into an ordered list of tasks "
+                "with acceptance criteria. Return them as a JSON array where each "
+                "element has keys: title, instructions, acceptance_criteria, "
+                "dependencies (list of task titles), priority (integer 0-10), "
+                "assigned_agent_id (string UUID or empty string).\n\n"
+                f"{assignment_instruction}\n\n"
+                f"## Available Platform Agents\n{agent_catalog}\n\n"
+                "Return ONLY the JSON array inside a ```json code block.\n\n"
+                f"## Requirements\n{requirements_doc}"
+            )
 
         output = await self._execute_phase_prompt_with_retry(
             mission_id=mission_id,
@@ -732,17 +1125,34 @@ class MissionOrchestrator:
             error_context="Task planning failed",
         )
 
-        # Parse JSON task list from agent output
-        task_list = self._extract_json_array(output)
+        # Parse JSON task list and optional team blueprint.
+        task_list: List[Dict[str, Any]] = []
+        raw_team_blueprint: List[Dict[str, Any]] = []
+        if enable_team_blueprint:
+            parsed_object = self._extract_json_object(output)
+            raw_tasks = parsed_object.get("tasks") if isinstance(parsed_object, dict) else None
+            raw_roles = (
+                parsed_object.get("team_blueprint")
+                if isinstance(parsed_object, dict)
+                else None
+            )
+            if isinstance(raw_tasks, list):
+                task_list = [item for item in raw_tasks if isinstance(item, dict)]
+            if isinstance(raw_roles, list):
+                raw_team_blueprint = [item for item in raw_roles if isinstance(item, dict)]
+        if not task_list:
+            task_list = self._extract_json_array(output)
+
         if not task_list:
             raise MissionError(
                 mission_id,
                 "Leader failed to produce a valid task plan",
             )
 
-        # Store tasks in DB
-        from database.connection import get_db_session
-        from database.models import Task
+        role_assignments = self._resolve_blueprint_role_assignments(
+            team_blueprint=raw_team_blueprint,
+            available_agents=available_agents,
+        )
 
         title_to_id: Dict[str, UUID] = {}
         used_agent_ids: set[UUID] = set()
@@ -751,16 +1161,38 @@ class MissionOrchestrator:
                 from uuid import uuid4
 
                 task_id = uuid4()
-                title = task_def.get("title", f"Task {idx + 1}")
+                title = str(task_def.get("title") or f"Task {idx + 1}")
                 title_to_id[title] = task_id
+
+                owner_role_key = self._normalize_role_key(
+                    task_def.get("owner_role")
+                    or task_def.get("role_key")
+                    or task_def.get("role")
+                    or ""
+                )
+                role_context = role_assignments.get(owner_role_key, {})
 
                 assigned_agent_id: Optional[UUID] = None
                 assigned_agent_raw = str(task_def.get("assigned_agent_id") or "").strip()
                 if assigned_agent_raw and assigned_agent_raw in agent_id_map:
                     assigned_agent_id = agent_id_map[assigned_agent_raw].agent_id
+                elif role_context.get("assigned_agent_id"):
+                    role_agent_id = str(role_context.get("assigned_agent_id"))
+                    if role_agent_id in agent_id_map:
+                        assigned_agent_id = agent_id_map[role_agent_id].agent_id
 
                 if assigned_agent_id:
                     used_agent_ids.add(assigned_agent_id)
+
+                role_required_capabilities = self._coerce_string_list(
+                    role_context.get("required_capabilities")
+                )
+                role_memory_scopes = self._coerce_string_list(role_context.get("memory_scopes"))
+                role_knowledge_collections = self._coerce_string_list(
+                    role_context.get("knowledge_collection_ids")
+                )
+                role_sop_hint = str(role_context.get("sop_hint") or "").strip()
+                dependency_titles = self._coerce_string_list(task_def.get("dependencies"))
 
                 task = Task(
                     task_id=task_id,
@@ -773,7 +1205,13 @@ class MissionOrchestrator:
                     acceptance_criteria=task_def.get("acceptance_criteria"),
                     task_metadata={
                         "title": title,
-                        "dependencies": task_def.get("dependencies", []),
+                        "dependencies": dependency_titles,
+                        "owner_role": owner_role_key or None,
+                        "owner_role_name": role_context.get("role_name"),
+                        "role_required_capabilities": role_required_capabilities,
+                        "role_memory_scopes": role_memory_scopes,
+                        "role_knowledge_collections": role_knowledge_collections,
+                        "role_sop_hint": role_sop_hint,
                         "assigned_agent_name": (
                             agent_id_map[str(assigned_agent_id)].name
                             if assigned_agent_id and str(assigned_agent_id) in agent_id_map
@@ -827,11 +1265,43 @@ class MissionOrchestrator:
         self._workspace.write_file(
             mission_id, "shared/task_plan.json", json.dumps(task_list, indent=2)
         )
+        if role_assignments:
+            self._workspace.write_file(
+                mission_id,
+                "shared/team_blueprint.json",
+                json.dumps(
+                    {
+                        "team_blueprint": list(role_assignments.values()),
+                        "tasks": task_list,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+            )
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="TEAM_BLUEPRINT_CREATED",
+                data={
+                    "role_count": len(role_assignments),
+                    "assigned_role_count": len(
+                        [
+                            role
+                            for role in role_assignments.values()
+                            if role.get("assigned_agent_id")
+                        ]
+                    ),
+                },
+                message=f"Team blueprint created with {len(role_assignments)} roles",
+            )
 
         self._emitter.emit(
             mission_id=mission_id,
             event_type="PHASE_COMPLETED",
-            data={"phase": "planning", "task_count": len(task_list)},
+            data={
+                "phase": "planning",
+                "task_count": len(task_list),
+                "role_count": len(role_assignments),
+            },
             message=f"Task planning completed: {len(task_list)} tasks created",
         )
 
@@ -1601,6 +2071,33 @@ class MissionOrchestrator:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_json_object(text: str) -> Dict[str, Any]:
+        """Extract a JSON object from LLM output, handling markdown code blocks."""
+        match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+        if match:
+            candidate = match.group(1).strip()
+        else:
+            candidate = text.strip()
+
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        brace_match = re.search(r"\{.*\}", text, re.DOTALL)
+        if brace_match:
+            try:
+                parsed = json.loads(brace_match.group(0))
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        return {}
 
     @staticmethod
     def _extract_json_array(text: str) -> List[Dict[str, Any]]:

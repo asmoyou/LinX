@@ -5,6 +5,7 @@ MissionAgent, MissionEvent) using the shared ``get_db_session()`` pattern.
 """
 
 import logging
+import copy
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
@@ -351,17 +352,26 @@ DEFAULT_EXECUTION_CONFIG = {
     "network_access": False,
     "max_concurrent_tasks": 3,
     "debug_mode": False,
+    # Team orchestration
+    "enable_team_blueprint": True,
+    # Temporary worker auto skill selection
+    "auto_select_temp_skills": True,
+    "temp_worker_skill_limit": 3,
+    # Temporary worker contextual access
+    "temp_worker_memory_scopes": ["agent", "company", "user_context"],
+    "temp_worker_knowledge_strategy": "owner_accessible",
+    "temp_worker_knowledge_limit": 6,
 }
 
 
 def _default_mission_settings() -> Dict[str, Any]:
     """Build a deep-copied default mission settings payload."""
     return {
-        "leader_config": DEFAULT_LEADER_CONFIG.copy(),
-        "supervisor_config": DEFAULT_SUPERVISOR_CONFIG.copy(),
-        "qa_config": DEFAULT_QA_CONFIG.copy(),
-        "temporary_worker_config": DEFAULT_TEMPORARY_WORKER_CONFIG.copy(),
-        "execution_config": DEFAULT_EXECUTION_CONFIG.copy(),
+        "leader_config": copy.deepcopy(DEFAULT_LEADER_CONFIG),
+        "supervisor_config": copy.deepcopy(DEFAULT_SUPERVISOR_CONFIG),
+        "qa_config": copy.deepcopy(DEFAULT_QA_CONFIG),
+        "temporary_worker_config": copy.deepcopy(DEFAULT_TEMPORARY_WORKER_CONFIG),
+        "execution_config": copy.deepcopy(DEFAULT_EXECUTION_CONFIG),
     }
 
 
@@ -374,11 +384,11 @@ def get_mission_settings(user_id: UUID) -> Dict[str, Any]:
             )
             if settings:
                 execution_config = {
-                    **DEFAULT_EXECUTION_CONFIG,
+                    **copy.deepcopy(DEFAULT_EXECUTION_CONFIG),
                     **(settings.execution_config or {}),
                 }
                 temporary_worker_config = {
-                    **DEFAULT_TEMPORARY_WORKER_CONFIG,
+                    **copy.deepcopy(DEFAULT_TEMPORARY_WORKER_CONFIG),
                     **(
                         execution_config.get("temporary_worker_config")
                         if isinstance(execution_config.get("temporary_worker_config"), dict)
@@ -388,15 +398,15 @@ def get_mission_settings(user_id: UUID) -> Dict[str, Any]:
                 execution_config.pop("temporary_worker_config", None)
                 result = {
                     "leader_config": {
-                        **DEFAULT_LEADER_CONFIG,
+                        **copy.deepcopy(DEFAULT_LEADER_CONFIG),
                         **(settings.leader_config or {}),
                     },
                     "supervisor_config": {
-                        **DEFAULT_SUPERVISOR_CONFIG,
+                        **copy.deepcopy(DEFAULT_SUPERVISOR_CONFIG),
                         **(settings.supervisor_config or {}),
                     },
                     "qa_config": {
-                        **DEFAULT_QA_CONFIG,
+                        **copy.deepcopy(DEFAULT_QA_CONFIG),
                         **(settings.qa_config or {}),
                     },
                     "temporary_worker_config": temporary_worker_config,

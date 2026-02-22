@@ -59,6 +59,14 @@ class MissionExecutionConfigSchema(BaseModel):
     network_access: bool = False
     max_concurrent_tasks: int = 3
     debug_mode: bool = False
+    enable_team_blueprint: bool = True
+    auto_select_temp_skills: bool = True
+    temp_worker_skill_limit: int = 3
+    temp_worker_memory_scopes: List[str] = Field(
+        default_factory=lambda: ["agent", "company", "user_context"]
+    )
+    temp_worker_knowledge_strategy: str = "owner_accessible"
+    temp_worker_knowledge_limit: int = 6
 
 
 class MissionSettingsRequest(BaseModel):
@@ -206,6 +214,12 @@ async def create_mission(
             "max_concurrent_tasks",
             "network_access",
             "debug_mode",
+            "enable_team_blueprint",
+            "auto_select_temp_skills",
+            "temp_worker_skill_limit",
+            "temp_worker_memory_scopes",
+            "temp_worker_knowledge_strategy",
+            "temp_worker_knowledge_limit",
         ):
             if key in request.mission_config:
                 legacy_exec[key] = request.mission_config[key]

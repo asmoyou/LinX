@@ -478,6 +478,129 @@ def test_provision_temporary_worker_agent_registers_without_default_skills(monke
     assert task_obj.task_metadata["assigned_agent_temporary"] is True
 
 
+def test_extract_json_object_parses_markdown_block():
+    payload = """
+```json
+{"team_blueprint":[{"role_key":"backend"}],"tasks":[{"title":"t1"}]}
+```
+"""
+    parsed = MissionOrchestrator._extract_json_object(payload)
+    assert parsed["team_blueprint"][0]["role_key"] == "backend"
+    assert parsed["tasks"][0]["title"] == "t1"
+
+
+def test_resolve_temporary_worker_memory_scopes_defaults_and_normalization():
+    assert MissionOrchestrator._resolve_temporary_worker_memory_scopes({}) == [
+        "agent",
+        "company",
+        "user_context",
+    ]
+    normalized = MissionOrchestrator._resolve_temporary_worker_memory_scopes(
+        {
+            "temp_worker_memory_scopes": [
+                "COMPANY",
+                "agent",
+                "invalid_scope",
+            ]
+        }
+    )
+    assert normalized == ["company", "agent"]
+
+
+def test_resolve_blueprint_role_assignments_prefers_capability_match():
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    agent_a = SimpleNamespace(
+        agent_id=uuid4(),
+        name="backend-agent",
+        capabilities=["python", "api"],
+    )
+    agent_b = SimpleNamespace(
+        agent_id=uuid4(),
+        name="ui-agent",
+        capabilities=["react", "css"],
+    )
+    role_map = MissionOrchestrator._resolve_blueprint_role_assignments(
+        orchestrator,
+        team_blueprint=[
+            {
+                "role_key": "backend_lead",
+                "role_name": "Backend Lead",
+                "required_capabilities": ["python"],
+            }
+        ],
+        available_agents=[agent_a, agent_b],
+    )
+    assert role_map["backend_lead"]["assigned_agent_id"] == str(agent_a.agent_id)
+    assert role_map["backend_lead"]["assigned_agent_name"] == "backend-agent"
+
+
+def test_select_temporary_worker_skills_uses_task_overlap(monkeypatch):
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    mission = SimpleNamespace(mission_id=uuid4())
+    task_obj = SimpleNamespace(
+        task_metadata={"title": "Build REST API"},
+        goal_text="Implement Python API endpoints",
+        acceptance_criteria="Expose HTTP API routes",
+    )
+
+    class _FakeSkill:
+        def __init__(self, name, description, skill_type="agent_skill"):
+            self.name = name
+            self.description = description
+            self.skill_type = skill_type
+
+    class _FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def order_by(self, *args, **kwargs):
+            return self
+
+        def limit(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return self._rows
+
+    class _FakeSession:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._rows)
+
+    class _FakeSessionContext:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def __enter__(self):
+            return _FakeSession(self._rows)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    rows = [
+        _FakeSkill("python_api_helper", "Build python API services"),
+        _FakeSkill("ui_styling_pack", "Improve CSS and visual style"),
+    ]
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(rows),
+    )
+
+    selected = MissionOrchestrator._select_temporary_worker_skills(
+        orchestrator,
+        mission=mission,
+        task_obj=task_obj,
+        exec_cfg={"auto_select_temp_skills": True, "temp_worker_skill_limit": 2},
+    )
+    assert "python_api_helper" in selected
+    assert "ui_styling_pack" not in selected
+
+
 @pytest.mark.asyncio
 async def test_phase_execution_resets_failed_tasks_to_pending(monkeypatch):
     mission_id = uuid4()
