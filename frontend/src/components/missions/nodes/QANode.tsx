@@ -1,11 +1,12 @@
 import React, { memo } from 'react';
 import { Handle, Position } from 'reactflow';
-import { ShieldCheck, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { ShieldCheck, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
 
 interface QANodeData {
   verdict?: string;
   issues_count?: number;
   summary?: string;
+  is_active?: boolean;
 }
 
 export const QANode: React.FC<{ data?: QANodeData }> = memo(({ data }) => {
@@ -29,14 +30,23 @@ export const QANode: React.FC<{ data?: QANodeData }> = memo(({ data }) => {
 
   const config = verdictConfig[normalizedVerdict] ?? verdictConfig.pending;
   const Icon = config.icon;
+  const HeaderIcon = safeData.is_active ? Loader2 : Icon;
+  const iconClass = safeData.is_active ? 'text-indigo-500 animate-spin' : config.text;
 
   return (
-    <div className={`px-4 py-3 rounded-xl border-2 ${config.color} bg-white dark:bg-zinc-900 shadow-md min-w-[200px] max-w-[260px]`}>
+    <div
+      className={`px-4 py-3 rounded-xl border-2 ${config.color} ${safeData.is_active ? 'ring-2 ring-indigo-300/70 shadow-indigo-200/30' : ''} bg-white dark:bg-zinc-900 shadow-md min-w-[200px] max-w-[260px]`}
+    >
       <Handle type="target" position={Position.Top} className="!bg-indigo-500 !w-2.5 !h-2.5" />
 
       <div className="flex items-center gap-2 mb-2">
-        <Icon className={`w-4 h-4 ${config.text}`} />
+        <HeaderIcon className={`w-4 h-4 ${iconClass}`} />
         <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">QA Audit</span>
+        {safeData.is_active && (
+          <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded-full text-indigo-700 bg-indigo-100 dark:text-indigo-200 dark:bg-indigo-500/20">
+            Running
+          </span>
+        )}
         <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full ${config.color} ${config.text}`}>
           {config.label}
         </span>

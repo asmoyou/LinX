@@ -388,6 +388,9 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     };
 
     if (!selectedMission) return { initialNodes: nodes, initialEdges: edges };
+    const isRequirementsPhase = selectedMission.status === 'requirements';
+    const isReviewPhase = selectedMission.status === 'reviewing';
+    const isQAPhase = selectedMission.status === 'qa';
 
     const taskIdSet = new Set(missionTasks.map((task) => task.task_id));
     const titleToTaskId = new Map<string, string>();
@@ -455,6 +458,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
           requirements_doc: selectedMission.requirements_doc,
           status: selectedMission.requirements_doc ? 'ready' : 'pending',
           mission_instructions: selectedMission.instructions,
+          is_active: isRequirementsPhase,
         },
       });
       addEdge({
@@ -462,7 +466,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
         source: 'mission',
         target: 'requirements',
         type: 'smoothstep',
-        animated: selectedMission.status === 'requirements',
+        animated: isRequirementsPhase,
       });
     }
 
@@ -509,6 +513,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
         source: 'mission',
         target: 'clarification',
         type: 'smoothstep',
+        animated: isRequirementsPhase,
         style: { strokeDasharray: '5 5' },
       });
     }
@@ -659,11 +664,12 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
       ...detachedReviewEvents.slice(-3),
     ];
 
-    reviewNodes.forEach((event) => {
+    reviewNodes.forEach((event, index) => {
       const nodeId = event.task_id
         ? `supervisor-${event.task_id}`
         : `supervisor-${event.event_id}`;
       const taskId = event.task_id ? `task-${event.task_id}` : null;
+      const isActiveReviewNode = isReviewPhase && index === reviewNodes.length - 1;
       nodes.push({
         id: nodeId,
         type: 'supervisorNode',
@@ -677,6 +683,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
           feedback: event.event_data?.review_feedback || event.event_data?.feedback,
           event_data: event.event_data,
           message: event.message,
+          is_active: isActiveReviewNode,
         },
       });
       if (taskId && nodes.some((n) => n.id === taskId)) {
@@ -685,40 +692,91 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
           source: taskId,
           target: nodeId,
           type: 'smoothstep',
+          animated: isActiveReviewNode,
           style: { stroke: '#a855f7' },
         });
       }
     });
 
+    if (isReviewPhase && reviewNodes.length === 0) {
+      nodes.push({
+        id: 'supervisor-active',
+        type: 'supervisorNode',
+        position: { x: 0, y: 0 },
+        data: {
+          task_id: '',
+          task_label: t('missions.reviewInProgress', 'Review in progress'),
+          verdict: 'pending',
+          feedback: t(
+            'missions.reviewInProgressHint',
+            'Supervisor is validating recent task outputs.'
+          ),
+          is_active: true,
+        },
+      });
+      addEdge({
+        id: 'e-mission-supervisor-active',
+        source: 'mission',
+        target: 'supervisor-active',
+        type: 'smoothstep',
+        animated: true,
+        style: { stroke: '#a855f7', strokeDasharray: '4 4' },
+      });
+    }
+
     // QA events
     const qaEvents = scopedMissionEvents.filter(
       (e) => e.event_type === 'QA_VERDICT' || e.event_type === 'qa_audit'
     );
-    qaEvents.forEach((event, i) => {
-      const nodeId = `qa-${i}`;
+    if (qaEvents.length === 0 && isQAPhase) {
       nodes.push({
-        id: nodeId,
+        id: 'qa-active',
         type: 'qaNode',
         position: { x: 0, y: 0 },
         data: {
-          event_id: event.event_id,
-          created_at: event.created_at,
-          verdict: event.event_data?.verdict || 'pending',
-          issues_count: event.event_data?.issues_count,
-          summary: event.event_data?.summary,
-          event_data: event.event_data,
-          message: event.message,
+          verdict: 'pending',
+          summary: t('missions.qaInProgress', 'QA audit in progress'),
+          is_active: true,
         },
       });
-      // Connect to mission
       addEdge({
-        id: `e-mission-${nodeId}`,
+        id: 'e-mission-qa-active',
         source: 'mission',
-        target: nodeId,
+        target: 'qa-active',
         type: 'smoothstep',
-        style: { stroke: '#6366f1' },
+        animated: true,
+        style: { stroke: '#6366f1', strokeDasharray: '4 4' },
       });
-    });
+    } else {
+      qaEvents.forEach((event, i) => {
+        const nodeId = `qa-${i}`;
+        const isActiveQANode = isQAPhase && i === qaEvents.length - 1;
+        nodes.push({
+          id: nodeId,
+          type: 'qaNode',
+          position: { x: 0, y: 0 },
+          data: {
+            event_id: event.event_id,
+            created_at: event.created_at,
+            verdict: event.event_data?.verdict || 'pending',
+            issues_count: event.event_data?.issues_count,
+            summary: event.event_data?.summary,
+            event_data: event.event_data,
+            message: event.message,
+            is_active: isActiveQANode,
+          },
+        });
+        // Connect to mission
+        addEdge({
+          id: `e-mission-${nodeId}`,
+          source: 'mission',
+          target: nodeId,
+          type: 'smoothstep',
+          animated: isActiveQANode,
+          style: { stroke: '#6366f1' },
+        });
+      });
+    }
 
     return { initialNodes: nodes, initialEdges: edges };
   }, [selectedMission, missionTasks, missionAgents, scopedMissionEvents, t]);

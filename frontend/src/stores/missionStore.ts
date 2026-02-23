@@ -389,46 +389,7 @@ export const useMissionStore = create<MissionState>((set, get) => ({
   fetchMissionTasks: async (missionId) => {
     try {
       const tasks = await missionsApi.getTasks(missionId);
-      set((state) => ({
-        ...(() => {
-          const missionStatus =
-            state.selectedMission?.mission_id === missionId
-              ? state.selectedMission.status
-              : state.missions.find((mission) => mission.mission_id === missionId)?.status;
-          const treatPendingReviewAsIncomplete = missionStatus === 'reviewing';
-          const statusCounter = tasks.reduce<Record<string, number>>((acc, task) => {
-            const reviewStatus =
-              typeof task.task_metadata?.review_status === 'string'
-                ? task.task_metadata.review_status
-                : '';
-            const normalizedStatus =
-              treatPendingReviewAsIncomplete &&
-              task.status === 'completed' &&
-              reviewStatus !== 'approved'
-                ? 'reviewing'
-                : task.status || 'unknown';
-            acc[normalizedStatus] = (acc[normalizedStatus] || 0) + 1;
-            return acc;
-          }, {});
-          const counterPatch = {
-            total_tasks: tasks.length,
-            completed_tasks: statusCounter.completed || 0,
-            failed_tasks: statusCounter.failed || 0,
-          };
-          return {
-            missionTasks: tasks,
-            missions: state.missions.map((mission) =>
-              mission.mission_id === missionId
-                ? normalizeMissionStatus({ ...mission, ...counterPatch })
-                : mission
-            ),
-            selectedMission:
-              state.selectedMission?.mission_id === missionId
-                ? normalizeMissionStatus({ ...state.selectedMission, ...counterPatch })
-                : state.selectedMission,
-          };
-        })(),
-      }));
+      set({ missionTasks: tasks });
     } catch (err: unknown) {
       set({ error: getErrorMessage(err, 'Failed to fetch tasks') });
     }

@@ -1,12 +1,13 @@
 import React, { memo } from 'react';
 import { Handle, Position } from 'reactflow';
-import { Eye, CheckCircle2, XCircle } from 'lucide-react';
+import { Eye, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 
 interface SupervisorNodeData {
   task_id: string;
   task_label: string;
   verdict?: string;
   feedback?: string;
+  is_active?: boolean;
 }
 
 export const SupervisorNode: React.FC<{ data?: SupervisorNodeData }> = memo(({ data }) => {
@@ -35,14 +36,23 @@ export const SupervisorNode: React.FC<{ data?: SupervisorNodeData }> = memo(({ d
 
   const config = verdictConfig[normalizedVerdict] ?? verdictConfig.pending;
   const Icon = config.icon;
+  const HeaderIcon = safeData.is_active ? Loader2 : Icon;
+  const iconClass = safeData.is_active ? 'text-purple-500 animate-spin' : config.text;
 
   return (
-    <div className={`px-4 py-3 rounded-xl border-2 ${config.color} bg-white dark:bg-zinc-900 shadow-md min-w-[200px] max-w-[260px]`}>
+    <div
+      className={`px-4 py-3 rounded-xl border-2 ${config.color} ${safeData.is_active ? 'ring-2 ring-purple-300/70 shadow-purple-200/30' : ''} bg-white dark:bg-zinc-900 shadow-md min-w-[200px] max-w-[260px]`}
+    >
       <Handle type="target" position={Position.Top} className="!bg-purple-500 !w-2.5 !h-2.5" />
 
       <div className="flex items-center gap-2 mb-2">
-        <Icon className={`w-4 h-4 ${config.text}`} />
+        <HeaderIcon className={`w-4 h-4 ${iconClass}`} />
         <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">Review</span>
+        {safeData.is_active && (
+          <span className="ml-auto text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded-full text-purple-700 bg-purple-100 dark:text-purple-200 dark:bg-purple-500/20">
+            Running
+          </span>
+        )}
       </div>
 
       <p className="text-[11px] text-zinc-600 dark:text-zinc-400 mb-1 truncate">
