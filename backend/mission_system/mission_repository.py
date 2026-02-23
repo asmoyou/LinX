@@ -197,6 +197,69 @@ def reset_failed_mission_for_retry(mission_id: UUID) -> Mission:
         return mission
 
 
+def prepare_partial_retry_for_failed_tasks(mission_id: UUID) -> Dict[str, Any]:
+    """Prepare a failed/cancelled mission for partial retry of unfinished tasks.
+
+    Unlike full retry, this keeps planned tasks and completed outputs. It only
+    resets unfinished tasks back to pending so execution can resume from failed
+    parts.
+    """
+    from database.models import Task
+
+    with get_db_session() as session:
+        mission = session.query(Mission).filter(Mission.mission_id == mission_id).first()
+        if mission is None:
+            raise ValueError(f"Mission {mission_id} not found")
+        if mission.status not in {"failed", "cancelled"}:
+            raise ValueError("Only failed or cancelled missions can retry failed parts")
+
+        tasks = session.query(Task).filter(Task.mission_id == mission_id).all()
+        if not tasks:
+            raise ValueError("Mission has no planned tasks for partial retry")
+
+        retried_task_count = 0
+        completed_task_count = 0
+        failed_task_count_before = 0
+
+        for task in tasks:
+            if task.status == "completed":
+                completed_task_count += 1
+                continue
+
+            if task.status == "failed":
+                failed_task_count_before += 1
+
+            task.status = "pending"
+            task.completed_at = None
+            retried_task_count += 1
+
+            metadata = dict(task.task_metadata or {})
+            if "review_cycle_count" in metadata:
+                metadata["review_cycle_count"] = 0
+            if metadata.get("review_status") != "rework_required":
+                metadata["review_status"] = "pending"
+            metadata.pop("blocked_by_failed_dependencies", None)
+            task.task_metadata = metadata
+
+        mission.error_message = None
+        mission.completed_at = None
+        mission.failed_tasks = 0
+        mission.completed_tasks = completed_task_count
+        mission.total_tasks = len(tasks)
+        if isinstance(mission.mission_config, dict):
+            sanitized_config = dict(mission.mission_config)
+            sanitized_config.pop("qa_cycle_count", None)
+            mission.mission_config = sanitized_config
+
+        session.flush()
+        return {
+            "total_tasks": len(tasks),
+            "completed_tasks": completed_task_count,
+            "retried_tasks": retried_task_count,
+            "failed_tasks_before": failed_task_count_before,
+        }
+
+
 # ------------------------------------------------------------------
 # Attachment helpers
 # ------------------------------------------------------------------

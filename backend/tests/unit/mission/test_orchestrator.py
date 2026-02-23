@@ -70,6 +70,68 @@ def test_extract_qa_audit_details_handles_issue_object_payload():
     assert details["summary"] != "```json"
 
 
+def test_extract_qa_audit_details_handles_nested_audit_report_payload():
+    text = """
+```json
+{
+  "audit_report": {
+    "verdict": "FAIL",
+    "findings": [
+      {"category": "Correctness", "issue": "Output filename does not match requirement."},
+      {"category": "Quality", "issue": "Poem meter has tone-pattern violations."}
+    ],
+    "recommendations": ["Rename the file to the required filename."]
+  }
+}
+```
+"""
+    details = MissionOrchestrator._extract_qa_audit_details(text, verdict="FAIL")
+    assert details["report_format"] == "audit_report_json"
+    assert details["issues_count"] == 2
+    assert any("filename" in issue for issue in details["issues"])
+    assert any("tone-pattern" in issue for issue in details["issues"])
+    assert details["summary"] != '"audit_report": {'
+    assert details["recommendations"] == ["Rename the file to the required filename."]
+
+
+def test_build_qa_verdict_event_data_has_stable_schema():
+    payload = MissionOrchestrator._build_qa_verdict_event_data(
+        verdict="fail",
+        qa_details={
+            "summary": "Deliverable does not satisfy naming requirement.",
+            "issues": ["Filename mismatch."],
+            "issues_count": 1,
+            "recommendations": ["Rename output file."],
+            "report_format": "audit_report_json",
+        },
+    )
+    assert payload["schema_version"] == "qa_verdict.v2"
+    assert payload["verdict"] == "FAIL"
+    assert payload["summary"] == "Deliverable does not satisfy naming requirement."
+    assert payload["issues_count"] == 1
+    assert payload["issues"] == ["Filename mismatch."]
+    assert payload["recommendations"] == ["Rename output file."]
+    assert payload["report_format"] == "audit_report_json"
+
+
+def test_build_qa_rework_feedback_contains_findings_and_recommendations():
+    feedback = MissionOrchestrator._build_qa_rework_feedback(
+        {
+            "summary": "QA found critical output mismatches.",
+            "issues": ["Filename mismatch.", "Poem meter violation."],
+            "recommendations": [
+                "Rename the output file.",
+                "Regenerate the poem with corrected tone.",
+            ],
+        }
+    )
+    assert "QA audit failed." in feedback
+    assert "Summary: QA found critical output mismatches." in feedback
+    assert "1. Filename mismatch." in feedback
+    assert "2. Poem meter violation." in feedback
+    assert "Recommended fixes:" in feedback
+
+
 def test_get_execution_config_supports_legacy_top_level_keys():
     mission = SimpleNamespace(
         mission_config={
@@ -278,6 +340,60 @@ def test_transition_allows_idempotent_target(monkeypatch):
 
     MissionOrchestrator._transition(orchestrator, mission_id, "executing")
     assert update_called["count"] == 0
+
+
+def test_transition_allows_failed_to_executing_for_partial_retry(monkeypatch):
+    mission_id = uuid4()
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.get_mission",
+        lambda _mission_id: SimpleNamespace(status="failed"),
+    )
+
+    updates = []
+
+    def _update_status(_mission_id, status, **kwargs):
+        updates.append((_mission_id, status))
+
+    monkeypatch.setattr("mission_system.orchestrator.update_mission_status", _update_status)
+
+    MissionOrchestrator._transition(orchestrator, mission_id, "executing")
+    assert updates == [(mission_id, "executing")]
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_parts_emits_event_and_tracks_active_task(monkeypatch):
+    mission_id = uuid4()
+    user_id = uuid4()
+    emitted_events = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._active_missions = {}
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.get_mission",
+        lambda _mission_id: SimpleNamespace(status="failed"),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.prepare_partial_retry_for_failed_tasks",
+        lambda _mission_id: {"retried_tasks": 2, "total_tasks": 4},
+    )
+
+    async def _fake_run_partial_retry(_mission_id, _user_id):
+        return None
+
+    monkeypatch.setattr(orchestrator, "_run_partial_retry", _fake_run_partial_retry)
+
+    await MissionOrchestrator.retry_failed_parts(orchestrator, mission_id, user_id)
+
+    assert mission_id in orchestrator._active_missions
+    await orchestrator._active_missions[mission_id]
+    assert any(
+        event.get("event_type") == "MISSION_PARTIAL_RETRY_REQUESTED"
+        for event in emitted_events
+    )
 
 
 @pytest.mark.asyncio
@@ -680,7 +796,9 @@ async def test_execute_task_with_retry_prefers_platform_agent_before_temporary(m
 
 
 @pytest.mark.asyncio
-async def test_execute_task_with_retry_keeps_temporary_plan_when_existing_match_is_weak(monkeypatch):
+async def test_execute_task_with_retry_keeps_temporary_plan_when_existing_match_is_weak(
+    monkeypatch,
+):
     mission_id = uuid4()
     owner_user_id = uuid4()
     matched_agent_id = uuid4()
@@ -1460,6 +1578,7 @@ async def test_phase_review_reuses_cached_pass_for_unchanged_output(monkeypatch)
             total_tasks=1,
         ),
     )
+
     async def _fake_create_mission_agent(*args, **kwargs):
         return SimpleNamespace(name="supervisor")
 
@@ -1501,8 +1620,7 @@ async def test_phase_review_reuses_cached_pass_for_unchanged_output(monkeypatch)
         (
             event
             for event in emitted_events
-            if event.get("event_type") == "TASK_REVIEWED"
-            and event.get("task_id") == task_id
+            if event.get("event_type") == "TASK_REVIEWED" and event.get("task_id") == task_id
         ),
         None,
     )

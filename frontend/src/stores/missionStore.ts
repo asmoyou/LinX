@@ -35,6 +35,17 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
   return fallback;
 };
 
+const RUN_BOUNDARY_EVENT_TYPES = new Set([
+  'MISSION_STARTED',
+  'MISSION_RETRY_REQUESTED',
+  'MISSION_PARTIAL_RETRY_REQUESTED',
+]);
+const CLARIFICATION_REQUEST_EVENT_TYPES = new Set([
+  'USER_CLARIFICATION_REQUESTED',
+  'clarification_request',
+]);
+const CLARIFICATION_RESPONSE_EVENT_TYPES = new Set(['clarification_response']);
+
 interface MissionState {
   missions: Mission[];
   selectedMission: Mission | null;
@@ -61,6 +72,7 @@ interface MissionState {
   }) => Promise<Mission>;
   startMission: (missionId: string) => Promise<void>;
   retryMission: (missionId: string) => Promise<void>;
+  retryFailedMissionParts: (missionId: string) => Promise<void>;
   cancelMission: (missionId: string) => Promise<void>;
   clarify: (missionId: string, message: string) => Promise<void>;
   deleteMission: (missionId: string) => Promise<void>;
@@ -259,6 +271,63 @@ export const useMissionStore = create<MissionState>((set, get) => ({
     }
   },
 
+  retryFailedMissionParts: async (missionId) => {
+    set((state) => ({
+      missions: state.missions.map((m) =>
+        m.mission_id === missionId && (m.status === 'failed' || m.status === 'cancelled')
+          ? {
+              ...m,
+              status: 'executing',
+              error_message: undefined,
+              failed_tasks: 0,
+            }
+          : m
+      ),
+      selectedMission:
+        state.selectedMission?.mission_id === missionId &&
+        (state.selectedMission.status === 'failed' ||
+          state.selectedMission.status === 'cancelled')
+          ? {
+              ...state.selectedMission,
+              status: 'executing',
+              error_message: undefined,
+              failed_tasks: 0,
+            }
+          : state.selectedMission,
+    }));
+
+    try {
+      const updated = normalizeMissionStatus(await missionsApi.retryFailed(missionId));
+      if (updated?.mission_id) {
+        set((state) => ({
+          missions: state.missions.map((m) => (m.mission_id === missionId ? updated : m)),
+          selectedMission:
+            state.selectedMission?.mission_id === missionId ? updated : state.selectedMission,
+        }));
+      } else {
+        const mission = normalizeMissionStatus(await missionsApi.getById(missionId));
+        set((state) => ({
+          missions: state.missions.map((m) => (m.mission_id === missionId ? mission : m)),
+          selectedMission:
+            state.selectedMission?.mission_id === missionId ? mission : state.selectedMission,
+        }));
+      }
+    } catch (err: unknown) {
+      try {
+        const mission = normalizeMissionStatus(await missionsApi.getById(missionId));
+        set((state) => ({
+          missions: state.missions.map((m) => (m.mission_id === missionId ? mission : m)),
+          selectedMission:
+            state.selectedMission?.mission_id === missionId ? mission : state.selectedMission,
+        }));
+      } catch {
+        // keep optimistic state if rollback fetch fails; error is surfaced below
+      }
+      set({ error: getErrorMessage(err, 'Failed to retry failed mission parts') });
+      throw err;
+    }
+  },
+
   cancelMission: async (missionId) => {
     try {
       const updated = normalizeMissionStatus(await missionsApi.cancel(missionId));
@@ -450,16 +519,59 @@ export const useMissionStore = create<MissionState>((set, get) => ({
       const eventTitle =
         typeof event.event_data?.title === 'string' ? event.event_data.title.trim() : '';
       const shouldUpdateTitle = event.event_type === 'MISSION_TITLE_UPDATED' && eventTitle.length > 0;
+      const isRunBoundary = RUN_BOUNDARY_EVENT_TYPES.has(event.event_type);
+      const isClarificationRequest = CLARIFICATION_REQUEST_EVENT_TYPES.has(event.event_type);
+      const isClarificationResponse = CLARIFICATION_RESPONSE_EVENT_TYPES.has(event.event_type);
+      const clarificationRequestText =
+        typeof event.event_data?.questions === 'string' && event.event_data.questions.trim().length > 0
+          ? event.event_data.questions.trim()
+          : event.message?.trim() || undefined;
+
+      const patchMission = (mission: Mission): Mission => {
+        if (mission.mission_id !== event.mission_id) return mission;
+
+        let patched: Mission = mission;
+        if (shouldUpdateTitle) {
+          patched = { ...patched, title: eventTitle };
+        }
+
+        if (isRunBoundary) {
+          patched = {
+            ...patched,
+            needs_clarification: false,
+            pending_clarification_count: 0,
+            latest_clarification_request: undefined,
+            latest_clarification_requested_at: undefined,
+          };
+        }
+
+        if (isClarificationRequest) {
+          const currentCount = Math.max(0, patched.pending_clarification_count ?? 0);
+          patched = {
+            ...patched,
+            needs_clarification: true,
+            pending_clarification_count: currentCount + 1,
+            latest_clarification_request: clarificationRequestText,
+            latest_clarification_requested_at: event.created_at,
+          };
+        } else if (isClarificationResponse) {
+          const currentCount = Math.max(0, patched.pending_clarification_count ?? 0);
+          const nextCount = Math.max(0, currentCount - 1);
+          patched = {
+            ...patched,
+            needs_clarification: nextCount > 0,
+            pending_clarification_count: nextCount,
+          };
+        }
+        return patched;
+      };
+
       return {
         missionEvents: nextEvents.slice(-500),
-        missions: shouldUpdateTitle
-          ? state.missions.map((mission) =>
-              mission.mission_id === event.mission_id ? { ...mission, title: eventTitle } : mission
-            )
-          : state.missions,
+        missions: state.missions.map((mission) => patchMission(mission)),
         selectedMission:
-          shouldUpdateTitle && state.selectedMission?.mission_id === event.mission_id
-            ? { ...state.selectedMission, title: eventTitle }
+          state.selectedMission?.mission_id === event.mission_id
+            ? patchMission(state.selectedMission)
             : state.selectedMission,
       };
     });

@@ -47,6 +47,10 @@ export interface Mission {
   total_tasks: number;
   completed_tasks: number;
   failed_tasks: number;
+  needs_clarification?: boolean;
+  pending_clarification_count?: number;
+  latest_clarification_request?: string;
+  latest_clarification_requested_at?: string;
   created_at: string;
   started_at?: string;
   completed_at?: string;

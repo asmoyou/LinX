@@ -1,7 +1,11 @@
 """Tests for mission deliverable helper behavior."""
 
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+
 from api_gateway.routers.missions import (
     _build_content_disposition,
+    _compute_clarification_state,
     _normalize_deliverable_item,
 )
 
@@ -47,3 +51,45 @@ def test_normalize_deliverable_item_keeps_real_output_as_final() -> None:
     assert normalized["is_target"] is True
     assert normalized["artifact_kind"] == "final"
     assert normalized["source_scope"] == "output"
+
+
+def test_compute_clarification_state_marks_pending_when_request_unanswered() -> None:
+    now = datetime.utcnow()
+    events = [
+        SimpleNamespace(
+            event_type="USER_CLARIFICATION_REQUESTED",
+            created_at=now,
+            event_data={"questions": "请确认目标人群"},
+            message="Leader requests clarification",
+        )
+    ]
+
+    state = _compute_clarification_state(events, boundary_ts=None)
+
+    assert state["needs_clarification"] is True
+    assert state["pending_clarification_count"] == 1
+    assert "目标人群" in (state["latest_clarification_request"] or "")
+
+
+def test_compute_clarification_state_ignores_events_before_boundary() -> None:
+    now = datetime.utcnow()
+    events = [
+        SimpleNamespace(
+            event_type="USER_CLARIFICATION_REQUESTED",
+            created_at=now - timedelta(minutes=10),
+            event_data={"questions": "old question"},
+            message="old question",
+        ),
+        SimpleNamespace(
+            event_type="USER_CLARIFICATION_REQUESTED",
+            created_at=now - timedelta(minutes=1),
+            event_data={"questions": "new question"},
+            message="new question",
+        ),
+    ]
+
+    state = _compute_clarification_state(events, boundary_ts=now - timedelta(minutes=5))
+
+    assert state["needs_clarification"] is True
+    assert state["pending_clarification_count"] == 1
+    assert state["latest_clarification_request"] == "new question"

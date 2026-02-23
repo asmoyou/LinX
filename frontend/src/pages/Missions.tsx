@@ -193,6 +193,21 @@ function buildDeliverableSummary(mission: Mission): DeliverableSummary {
   };
 }
 
+function computePendingClarificationCount(events: MissionEvent[]): number {
+  let pendingCount = 0;
+  for (const event of events) {
+    if (
+      event.event_type === 'USER_CLARIFICATION_REQUESTED' ||
+      event.event_type === 'clarification_request'
+    ) {
+      pendingCount += 1;
+    } else if (event.event_type === 'clarification_response' && pendingCount > 0) {
+      pendingCount -= 1;
+    }
+  }
+  return pendingCount;
+}
+
 function downloadBlob(blob: Blob, filename: string): void {
   const url = window.URL.createObjectURL(blob);
   const anchor = document.createElement('a');
@@ -237,7 +252,6 @@ export const Missions: React.FC = () => {
   const [deletingMissionId, setDeletingMissionId] = useState<string | null>(null);
   const autoOpenedClarificationRef = useRef<string>('');
   const selectedMissionId = selectedMission?.mission_id;
-  const selectedMissionStatus = selectedMission?.status;
   const selectedMissionEvents = useMemo(
     () =>
       selectedMissionId
@@ -246,6 +260,14 @@ export const Missions: React.FC = () => {
           )
         : [],
     [missionEvents, selectedMissionId]
+  );
+  const pendingClarificationCountFromEvents = useMemo(
+    () => computePendingClarificationCount(selectedMissionEvents),
+    [selectedMissionEvents]
+  );
+  const pendingClarificationCountForSelected = Math.max(
+    0,
+    selectedMission?.pending_clarification_count ?? pendingClarificationCountFromEvents
   );
 
   useEffect(() => {
@@ -261,19 +283,14 @@ export const Missions: React.FC = () => {
 
   useEffect(() => {
     if (!selectedMissionId) return;
-    const requestCount = selectedMissionEvents.filter(
-      (event) =>
-        event.event_type === 'USER_CLARIFICATION_REQUESTED' ||
-        event.event_type === 'clarification_request'
-    ).length;
-    if (selectedMissionStatus !== 'requirements' || requestCount === 0) return;
+    if (pendingClarificationCountForSelected === 0) return;
 
-    const autoOpenKey = `${selectedMissionId}:${requestCount}`;
+    const autoOpenKey = `${selectedMissionId}:${pendingClarificationCountForSelected}`;
     if (autoOpenedClarificationRef.current !== autoOpenKey) {
       setShowClarification(true);
       autoOpenedClarificationRef.current = autoOpenKey;
     }
-  }, [selectedMissionEvents, selectedMissionId, selectedMissionStatus]);
+  }, [pendingClarificationCountForSelected, selectedMissionId]);
 
   const filteredMissions = getFilteredMissions();
 
@@ -327,15 +344,8 @@ export const Missions: React.FC = () => {
     }
   };
 
-  const hasPendingClarification = Boolean(
-    selectedMissionId &&
-      selectedMissionStatus === 'requirements' &&
-      selectedMissionEvents.some(
-        (event) =>
-          (event.event_type === 'USER_CLARIFICATION_REQUESTED' ||
-            event.event_type === 'clarification_request')
-      )
-  );
+  const hasPendingClarification =
+    Boolean(selectedMissionId) && pendingClarificationCountForSelected > 0;
 
   const failureEventsForSelected = useMemo(() => {
     if (!selectedMission) return [];
@@ -543,7 +553,12 @@ export const Missions: React.FC = () => {
             onClick={() => setShowClarification(true)}
             className="w-full text-left px-4 py-3 rounded-xl border border-amber-200 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 text-amber-800 dark:text-amber-200 text-sm font-medium"
           >
-            {t('missions.clarificationNeeded')}
+            <div>{t('missions.clarificationNeeded')}</div>
+            <div className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+              {t('missions.clarificationPendingCount', {
+                count: pendingClarificationCountForSelected,
+              })}
+            </div>
           </button>
         )}
 
@@ -968,6 +983,12 @@ export const Missions: React.FC = () => {
               onClick={() => handleSelectMission(mission)}
               onOpenQuickDeliverables={() => handleOpenQuickDeliverables(mission.mission_id)}
               onDownloadTargetArchive={() => handleDownloadTargetArchive(mission)}
+              onRespondClarification={() => {
+                handleSelectMission(mission);
+                setShowDeliverables(false);
+                setShowTaskList(false);
+                setShowClarification(true);
+              }}
               isDownloadingArchive={downloadingArchiveMissionId === mission.mission_id}
               onDelete={() => handleDeleteMission(mission)}
               isDeleting={deletingMissionId === mission.mission_id}
@@ -992,6 +1013,7 @@ const MissionCard: React.FC<{
   onClick: () => void;
   onOpenQuickDeliverables: () => void;
   onDownloadTargetArchive: () => void;
+  onRespondClarification: () => void;
   isDownloadingArchive: boolean;
   onDelete: () => void;
   isDeleting: boolean;
@@ -1000,6 +1022,7 @@ const MissionCard: React.FC<{
   onClick,
   onOpenQuickDeliverables,
   onDownloadTargetArchive,
+  onRespondClarification,
   isDownloadingArchive,
   onDelete,
   isDeleting,
@@ -1015,9 +1038,22 @@ const MissionCard: React.FC<{
   const deliverableSummary = buildDeliverableSummary(mission);
   const remainingCount = Math.max(deliverableSummary.finalCount - deliverableSummary.sampleNames.length, 0);
   const missionDuration = formatMissionDuration(mission.started_at, mission.completed_at);
+  const needsClarification = Boolean(mission.needs_clarification);
+  const pendingClarificationCount = Math.max(0, mission.pending_clarification_count ?? 0);
+  const clarificationPreview =
+    typeof mission.latest_clarification_request === 'string' &&
+    mission.latest_clarification_request.trim().length > 0
+      ? mission.latest_clarification_request.trim()
+      : '';
 
   return (
-    <div className="w-full text-left p-5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 hover:border-emerald-300 dark:hover:border-emerald-500/30 hover:shadow-lg transition-all duration-200 group">
+    <div
+      className={`w-full text-left p-5 rounded-xl border bg-white dark:bg-zinc-900 hover:shadow-lg transition-all duration-200 group ${
+        needsClarification
+          ? 'border-amber-300 dark:border-amber-500/40 hover:border-amber-400 dark:hover:border-amber-400'
+          : 'border-zinc-200 dark:border-zinc-700 hover:border-emerald-300 dark:hover:border-emerald-500/30'
+      }`}
+    >
       <div className="flex items-start gap-4">
         <div className="flex-1 min-w-0">
           <button onClick={onClick} className="w-full text-left">
@@ -1040,6 +1076,11 @@ const MissionCard: React.FC<{
               <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusColors[mission.status]}`}>
                 {t(`missions.status.${mission.status}`)}
               </span>
+              {needsClarification && (
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
+                  {t('missions.clarificationPendingBadge', 'Clarification Needed')}
+                </span>
+              )}
 
               {mission.total_tasks > 0 && (
                 <div className="flex items-center gap-2">
@@ -1089,6 +1130,32 @@ const MissionCard: React.FC<{
               </div>
             </div>
           </button>
+
+          {needsClarification && (
+            <div className="mt-3 rounded-lg border border-amber-200 dark:border-amber-500/40 bg-amber-50/80 dark:bg-amber-500/10 px-3 py-2.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-amber-800 dark:text-amber-200">
+                    {t('missions.clarificationPendingCount', {
+                      count: pendingClarificationCount,
+                    })}
+                  </div>
+                  {clarificationPreview && (
+                    <div className="mt-1 text-[11px] text-amber-700 dark:text-amber-300 line-clamp-2">
+                      {clarificationPreview}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={onRespondClarification}
+                  className="shrink-0 inline-flex items-center rounded-md border border-amber-300 dark:border-amber-500/40 px-2.5 py-1 text-[11px] font-medium text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-500/20 transition-colors"
+                >
+                  {t('missions.respondNow', 'Respond Now')}
+                </button>
+              </div>
+            </div>
+          )}
 
           {isTerminalMission && (
             <div className="mt-3 pt-3 border-t border-zinc-200/80 dark:border-zinc-700/80">

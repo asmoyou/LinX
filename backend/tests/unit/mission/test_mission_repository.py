@@ -266,3 +266,137 @@ def test_reset_failed_mission_for_retry_accepts_cancelled(monkeypatch):
     reset = mission_repository.reset_failed_mission_for_retry(mission.mission_id)
     assert reset.status == "draft"
     assert reset.error_message is None
+    assert "qa_cycle_count" not in (reset.mission_config or {})
+
+
+def test_prepare_partial_retry_for_failed_tasks_rejects_non_retryable_status(monkeypatch):
+    mission = type("MissionStub", (), {"status": "completed"})()
+
+    class _MissionQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return mission
+
+    class _FakeSession:
+        def query(self, *args, **kwargs):
+            return _MissionQuery()
+
+    @contextmanager
+    def _fake_db_session():
+        yield _FakeSession()
+
+    monkeypatch.setattr(mission_repository, "get_db_session", _fake_db_session)
+
+    with pytest.raises(ValueError, match="Only failed or cancelled missions can retry failed parts"):
+        mission_repository.prepare_partial_retry_for_failed_tasks(uuid4())
+
+
+def test_prepare_partial_retry_for_failed_tasks_resets_unfinished_tasks(monkeypatch):
+    mission = type(
+        "MissionStub",
+        (),
+        {
+            "mission_id": uuid4(),
+            "status": "failed",
+            "error_message": "qa fail",
+            "completed_at": object(),
+            "failed_tasks": 2,
+            "completed_tasks": 1,
+            "total_tasks": 3,
+            "mission_config": {"qa_cycle_count": 2, "execution_config": {"max_retries": 2}},
+        },
+    )()
+    completed_task = type(
+        "TaskStub",
+        (),
+        {
+            "status": "completed",
+            "completed_at": object(),
+            "task_metadata": {"title": "done", "review_status": "approved"},
+        },
+    )()
+    failed_task = type(
+        "TaskStub",
+        (),
+        {
+            "status": "failed",
+            "completed_at": object(),
+            "task_metadata": {
+                "title": "failed",
+                "review_status": "rework_required",
+                "review_cycle_count": 3,
+            },
+        },
+    )()
+    in_progress_task = type(
+        "TaskStub",
+        (),
+        {
+            "status": "in_progress",
+            "completed_at": object(),
+            "task_metadata": {
+                "title": "running",
+                "review_status": "approved",
+            },
+        },
+    )()
+    tasks = [completed_task, failed_task, in_progress_task]
+
+    class _MissionQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return mission
+
+    class _TaskQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return tasks
+
+    class _FakeSession:
+        def query(self, model, *args, **kwargs):
+            model_name = getattr(model, "__name__", str(model))
+            if model_name == "Mission":
+                return _MissionQuery()
+            if model_name == "Task":
+                return _TaskQuery()
+            raise AssertionError(f"Unexpected model query: {model_name}")
+
+        def flush(self):
+            return None
+
+    @contextmanager
+    def _fake_db_session():
+        yield _FakeSession()
+
+    monkeypatch.setattr(mission_repository, "get_db_session", _fake_db_session)
+
+    summary = mission_repository.prepare_partial_retry_for_failed_tasks(mission.mission_id)
+
+    assert summary == {
+        "total_tasks": 3,
+        "completed_tasks": 1,
+        "retried_tasks": 2,
+        "failed_tasks_before": 1,
+    }
+    assert mission.error_message is None
+    assert mission.completed_at is None
+    assert mission.failed_tasks == 0
+    assert mission.completed_tasks == 1
+    assert mission.total_tasks == 3
+    assert "qa_cycle_count" not in (mission.mission_config or {})
+
+    assert completed_task.status == "completed"
+    assert failed_task.status == "pending"
+    assert failed_task.completed_at is None
+    assert failed_task.task_metadata["review_status"] == "rework_required"
+    assert failed_task.task_metadata["review_cycle_count"] == 0
+
+    assert in_progress_task.status == "pending"
+    assert in_progress_task.completed_at is None
+    assert in_progress_task.task_metadata["review_status"] == "pending"

@@ -92,6 +92,11 @@ export const missionsApi = {
     return response.data;
   },
 
+  retryFailed: async (missionId: string): Promise<Mission> => {
+    const response = await apiClient.post<Mission>(`/missions/${missionId}/retry-failed`);
+    return response.data;
+  },
+
   cancel: async (missionId: string): Promise<Mission> => {
     const response = await apiClient.post<Mission>(`/missions/${missionId}/cancel`);
     return response.data;

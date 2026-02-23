@@ -33,6 +33,7 @@ from mission_system.exceptions import (
 from mission_system.mission_repository import (
     assign_agent as assign_mission_agent,
     get_mission,
+    prepare_partial_retry_for_failed_tasks,
     update_agent_status as update_mission_agent_status,
     update_mission_fields,
     update_mission_status,
@@ -50,8 +51,8 @@ _TRANSITIONS: Dict[str, set] = {
     "reviewing": {"executing", "qa", "failed", "cancelled"},
     "qa": {"reviewing", "completed", "failed", "cancelled"},
     "completed": set(),
-    "failed": set(),
-    "cancelled": set(),
+    "failed": {"executing"},
+    "cancelled": {"executing"},
 }
 
 MAX_REVIEW_CYCLES = 2
@@ -102,6 +103,38 @@ class MissionOrchestrator:
             event_type="MISSION_STARTED",
             message=f"Mission started by user {user_id}",
         )
+
+    async def retry_failed_parts(self, mission_id: UUID, user_id: UUID) -> None:
+        """Retry only unfinished parts of a failed/cancelled mission."""
+        if mission_id in self._active_missions:
+            raise MissionError(mission_id, "Mission is already running")
+
+        mission = get_mission(mission_id)
+        if mission is None:
+            raise MissionError(mission_id, "Mission not found")
+
+        if mission.status not in {"failed", "cancelled"}:
+            raise MissionError(
+                mission_id,
+                "Only failed or cancelled missions can retry failed parts",
+            )
+
+        retry_summary = prepare_partial_retry_for_failed_tasks(mission_id)
+        self._emitter.emit(
+            mission_id=mission_id,
+            event_type="MISSION_PARTIAL_RETRY_REQUESTED",
+            data=retry_summary,
+            message=(
+                "Partial retry requested: "
+                f"{retry_summary.get('retried_tasks', 0)} task(s) reset to pending"
+            ),
+        )
+
+        task = asyncio.create_task(
+            self._run_partial_retry(mission_id, user_id),
+            name=f"mission-partial-retry-{mission_id}",
+        )
+        self._active_missions[mission_id] = task
 
     async def cancel_mission(self, mission_id: UUID) -> None:
         """Cancel a running mission and clean up resources."""
@@ -182,6 +215,71 @@ class MissionOrchestrator:
             if debug_mode:
                 failure_data["traceback"] = trace
             logger.exception("Mission %s failed: %s", mission_id, exc)
+            self._snapshot_deliverables(mission_id)
+            try:
+                self._sync_mission_task_counters(
+                    mission_id,
+                    fallback_total=mission_snapshot.total_tasks if mission_snapshot else 0,
+                )
+            except Exception:
+                logger.exception("Failed to sync mission counters for %s", mission_id)
+            update_mission_status(mission_id, "failed", error_message=str(exc))
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="PHASE_FAILED",
+                data=failure_data,
+                message=f"Mission phase failed: {failed_phase}",
+            )
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="MISSION_FAILED",
+                data=failure_data,
+                message=str(exc),
+            )
+        finally:
+            self._active_missions.pop(mission_id, None)
+            self._cleanup(mission_id)
+
+    async def _run_partial_retry(self, mission_id: UUID, user_id: UUID) -> None:
+        """Resume a mission from execution/review/qa without rebuilding plan."""
+        _ = user_id
+        try:
+            mission = get_mission(mission_id)
+            if mission is None:
+                raise MissionError(mission_id, "Mission not found")
+            self._prepare_workspace(mission_id, mission)
+
+            await self._phase_execution(mission_id)
+            await self._phase_review(mission_id)
+            await self._phase_qa(mission_id)
+            await self._phase_complete(mission_id)
+        except asyncio.CancelledError:
+            logger.info("Mission %s partial retry was cancelled", mission_id)
+            try:
+                self._snapshot_deliverables(mission_id)
+                update_mission_status(mission_id, "cancelled")
+            except Exception:
+                logger.exception("Failed to set cancelled status for mission %s", mission_id)
+            raise
+        except MissionCancelledException:
+            logger.info("Mission %s partial retry cancelled via exception", mission_id)
+            self._snapshot_deliverables(mission_id)
+            update_mission_status(mission_id, "cancelled")
+        except Exception as exc:
+            trace = traceback.format_exc()
+            mission_snapshot = get_mission(mission_id)
+            failed_phase = mission_snapshot.status if mission_snapshot else "unknown"
+            exec_cfg = self._get_execution_config(mission_snapshot) if mission_snapshot else {}
+            debug_mode = self._coerce_bool(exec_cfg.get("debug_mode", False), default=False)
+            failure_data: Dict[str, Any] = {
+                "error": str(exc),
+                "error_type": exc.__class__.__name__,
+                "phase": failed_phase,
+                "mode": "partial_retry",
+            }
+            if debug_mode:
+                failure_data["traceback"] = trace
+            logger.exception("Mission %s partial retry failed: %s", mission_id, exc)
             self._snapshot_deliverables(mission_id)
             try:
                 self._sync_mission_task_counters(
@@ -610,10 +708,7 @@ class MissionOrchestrator:
                 elif normalized_dep:
                     # Lightweight fuzzy fallback for minor wording drift.
                     for normalized_title, candidate_key in normalized_title_to_key.items():
-                        if (
-                            normalized_dep in normalized_title
-                            or normalized_title in normalized_dep
-                        ):
+                        if normalized_dep in normalized_title or normalized_title in normalized_dep:
                             matched_key = candidate_key
                             break
 
@@ -714,9 +809,7 @@ class MissionOrchestrator:
         wave_groups: Dict[int, List[str]] = {}
         for row in task_plan_rows:
             wave = max(0, int(row.get("dependency_level", 0)))
-            wave_groups.setdefault(wave, []).append(
-                f"[{row.get('task_key')}] {row.get('title')}"
-            )
+            wave_groups.setdefault(wave, []).append(f"[{row.get('task_key')}] {row.get('title')}")
         if wave_groups:
             lines.extend(["## Execution Waves", "Dependency-safe execution order:", ""])
             for wave in sorted(wave_groups):
@@ -742,15 +835,9 @@ class MissionOrchestrator:
                         f"{row.get('assigned_agent_name') or 'Temporary fallback'} "
                         f"({row.get('assignment_source')})"
                     ),
-                    (
-                        "   - Assignment reason: "
-                        f"{row.get('assignment_reason_code') or 'n/a'}"
-                    ),
+                    ("   - Assignment reason: " f"{row.get('assignment_reason_code') or 'n/a'}"),
                     f"   - Execution wave: {int(row.get('dependency_level', 0)) + 1}",
-                    (
-                        "   - Dependencies: "
-                        + (", ".join(dependencies) if dependencies else "None")
-                    ),
+                    ("   - Dependencies: " + (", ".join(dependencies) if dependencies else "None")),
                     (
                         "   - Requirement refs: "
                         + ("; ".join(requirement_refs) if requirement_refs else "N/A")
@@ -1048,7 +1135,9 @@ class MissionOrchestrator:
         task_metadata = task_obj.task_metadata if isinstance(task_obj.task_metadata, dict) else {}
         role_required_caps = {
             capability.strip().lower()
-            for capability in self._coerce_string_list(task_metadata.get("role_required_capabilities"))
+            for capability in self._coerce_string_list(
+                task_metadata.get("role_required_capabilities")
+            )
             if capability.strip()
         }
         task_text = "\n".join(
@@ -1299,6 +1388,34 @@ class MissionOrchestrator:
                     continue
                 raise
 
+    def _prepare_workspace(self, mission_id: UUID, mission: Any) -> None:
+        """Create mission workspace container and mount mission attachments."""
+        self._workspace.create_workspace(
+            mission_id,
+            config=mission.mission_config or {},
+        )
+
+        if not getattr(mission, "attachments", None):
+            return
+
+        attachment_dicts = [
+            {
+                "bucket_name": (
+                    att.file_reference.split("/")[0]
+                    if "/" in att.file_reference
+                    else "documents"
+                ),
+                "object_key": (
+                    att.file_reference.split("/", 1)[1]
+                    if "/" in att.file_reference
+                    else att.file_reference
+                ),
+                "filename": att.filename,
+            }
+            for att in mission.attachments
+        ]
+        self._workspace.setup_attachments(mission_id, attachment_dicts)
+
     async def _phase_requirements(self, mission_id: UUID) -> None:
         """Leader analyses instructions and gathers requirements."""
         self._transition(mission_id, "requirements")
@@ -1313,31 +1430,7 @@ class MissionOrchestrator:
         if mission is None:
             raise MissionError(mission_id, "Mission not found")
 
-        # Create workspace
-        self._workspace.create_workspace(
-            mission_id,
-            config=mission.mission_config or {},
-        )
-
-        # Set up attachments if any
-        if mission.attachments:
-            attachment_dicts = [
-                {
-                    "bucket_name": (
-                        att.file_reference.split("/")[0]
-                        if "/" in att.file_reference
-                        else "documents"
-                    ),
-                    "object_key": (
-                        att.file_reference.split("/", 1)[1]
-                        if "/" in att.file_reference
-                        else att.file_reference
-                    ),
-                    "filename": att.filename,
-                }
-                for att in mission.attachments
-            ]
-            self._workspace.setup_attachments(mission_id, attachment_dicts)
+        self._prepare_workspace(mission_id, mission)
 
         # Build leader agent
         llm_cfg = self._get_llm_config(mission, "leader")
@@ -1678,13 +1771,9 @@ class MissionOrchestrator:
             parsed_roles: List[Dict[str, Any]] = []
             if enable_team_blueprint:
                 parsed_object = self._extract_json_object(payload)
-                raw_tasks = (
-                    parsed_object.get("tasks") if isinstance(parsed_object, dict) else None
-                )
+                raw_tasks = parsed_object.get("tasks") if isinstance(parsed_object, dict) else None
                 raw_roles = (
-                    parsed_object.get("team_blueprint")
-                    if isinstance(parsed_object, dict)
-                    else None
+                    parsed_object.get("team_blueprint") if isinstance(parsed_object, dict) else None
                 )
                 if isinstance(raw_tasks, list):
                     parsed_tasks = [item for item in raw_tasks if isinstance(item, dict)]
@@ -1752,7 +1841,9 @@ class MissionOrchestrator:
             )
             task_list, raw_team_blueprint = _parse_plan_payload(output)
             if not task_list:
-                raise MissionError(mission_id, "Leader failed to produce a valid corrected task plan")
+                raise MissionError(
+                    mission_id, "Leader failed to produce a valid corrected task plan"
+                )
 
             relevance_report = self._evaluate_task_plan_relevance(task_list, relevance_anchor)
             off_topic_ratio = len(relevance_report["off_topic_indices"]) / max(1, len(task_list))
@@ -1862,11 +1953,7 @@ class MissionOrchestrator:
                         "falling back to policy-based assignment."
                     )
 
-                if (
-                    assigned_agent_id is None
-                    and prefer_existing_agents
-                    and available_agents
-                ):
+                if assigned_agent_id is None and prefer_existing_agents and available_agents:
                     selection_probe = SimpleNamespace(
                         task_metadata={
                             "title": title,
@@ -2086,10 +2173,7 @@ class MissionOrchestrator:
             mission_id,
             "shared/task_plan.json",
             json.dumps(
-                [
-                    {**row, "task_id": str(row.get("task_id"))}
-                    for row in task_plan_rows
-                ],
+                [{**row, "task_id": str(row.get("task_id"))} for row in task_plan_rows],
                 indent=2,
                 ensure_ascii=False,
             ),
@@ -2112,8 +2196,7 @@ class MissionOrchestrator:
                     {
                         "team_blueprint": list(role_assignments.values()),
                         "tasks": [
-                            {**row, "task_id": str(row.get("task_id"))}
-                            for row in task_plan_rows
+                            {**row, "task_id": str(row.get("task_id"))} for row in task_plan_rows
                         ],
                     },
                     indent=2,
@@ -2338,9 +2421,7 @@ class MissionOrchestrator:
             default=True,
         )
         task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
-        task_metadata = (
-            task_obj.task_metadata if isinstance(task_obj.task_metadata, dict) else {}
-        )
+        task_metadata = task_obj.task_metadata if isinstance(task_obj.task_metadata, dict) else {}
         review_feedback_raw = task_metadata.get("review_feedback")
         review_feedback = (
             review_feedback_raw.strip() if isinstance(review_feedback_raw, str) else ""
@@ -2578,10 +2659,9 @@ class MissionOrchestrator:
                     getattr(mission, "instructions", ""),
                     limit=1800,
                 )
-                role_context = (
-                    str(task_metadata.get("owner_role_name") or task_metadata.get("owner_role") or "")
-                    .strip()
-                )
+                role_context = str(
+                    task_metadata.get("owner_role_name") or task_metadata.get("owner_role") or ""
+                ).strip()
                 role_required_capabilities = self._coerce_string_list(
                     task_metadata.get("role_required_capabilities")
                 )
@@ -2869,23 +2949,19 @@ class MissionOrchestrator:
         for task_obj in tasks_in_review_order:
             task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
             dependency_ids = [
-                dep_id
-                for dep_id in (task_obj.dependencies or [])
-                if dep_id in task_title_by_id
+                dep_id for dep_id in (task_obj.dependencies or []) if dep_id in task_title_by_id
             ]
             failed_dependencies = [dep_id for dep_id in dependency_ids if dep_id in failed_task_ids]
 
             if failed_dependencies:
                 blocked_titles = [
-                    task_title_by_id.get(dep_id, dep_id)
-                    for dep_id in failed_dependencies
+                    task_title_by_id.get(dep_id, dep_id) for dep_id in failed_dependencies
                 ]
                 _mark_task_review_failed(
                     task_obj,
                     reason="dependency_review_failed",
                     feedback=(
-                        "Blocked by review-failed dependencies: "
-                        + ", ".join(blocked_titles)
+                        "Blocked by review-failed dependencies: " + ", ".join(blocked_titles)
                     ),
                     increment_cycle=False,
                     blocked_by=failed_dependencies,
@@ -2893,6 +2969,19 @@ class MissionOrchestrator:
                 continue
 
             if task_obj.status != "completed":
+                task_meta_current = (
+                    task_obj.task_metadata if isinstance(task_obj.task_metadata, dict) else {}
+                )
+                existing_feedback = str(task_meta_current.get("review_feedback") or "").strip()
+                existing_review_status = str(task_meta_current.get("review_status") or "").strip()
+                if existing_feedback and existing_review_status == "rework_required":
+                    _mark_task_review_failed(
+                        task_obj,
+                        reason="qa_rework_required",
+                        feedback=existing_feedback,
+                        increment_cycle=False,
+                    )
+                    continue
                 _mark_task_review_failed(
                     task_obj,
                     reason="task_not_completed",
@@ -3126,16 +3215,12 @@ class MissionOrchestrator:
         self._workspace.write_file(mission_id, "shared/qa_report.md", qa_output)
         verdict = self._extract_binary_verdict(qa_output)
         qa_details = self._extract_qa_audit_details(qa_output, verdict=verdict)
+        qa_event_data = self._build_qa_verdict_event_data(verdict=verdict, qa_details=qa_details)
 
         self._emitter.emit(
             mission_id=mission_id,
             event_type="QA_VERDICT",
-            data={
-                "verdict": verdict,
-                "summary": qa_details.get("summary"),
-                "issues_count": qa_details.get("issues_count"),
-                "issues": qa_details.get("issues"),
-            },
+            data=qa_event_data,
             message=f"QA audit verdict: {verdict}",
         )
 
@@ -3170,15 +3255,30 @@ class MissionOrchestrator:
                     ),
                 )
             if qa_cycle <= max_qa_cycles:
+                rework_seeded_tasks = self._seed_tasks_for_qa_rework(
+                    mission_id=mission_id,
+                    qa_details=qa_details,
+                )
+                self._emitter.emit(
+                    mission_id=mission_id,
+                    event_type="QA_REWORK_SEEDED",
+                    data={
+                        "cycle": qa_cycle,
+                        "rework_seeded_tasks": rework_seeded_tasks,
+                    },
+                    message=(
+                        "QA feedback seeded into task rework context: "
+                        f"{rework_seeded_tasks} task(s)"
+                    ),
+                )
                 self._emitter.emit(
                     mission_id=mission_id,
                     event_type="QA_CYCLE_RETRY",
                     data={
+                        **qa_event_data,
                         "cycle": qa_cycle,
                         "max_qa_cycles": max_qa_cycles,
-                        "summary": qa_details.get("summary"),
-                        "issues_count": qa_details.get("issues_count"),
-                        "issues": qa_details.get("issues"),
+                        "rework_seeded_tasks": rework_seeded_tasks,
                     },
                     message="QA failed, routing back to review",
                 )
@@ -3263,6 +3363,127 @@ class MissionOrchestrator:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_qa_verdict_event_data(verdict: str, qa_details: Dict[str, Any]) -> Dict[str, Any]:
+        """Build a stable payload schema for QA verdict events."""
+        normalized_verdict = str(verdict or qa_details.get("verdict") or "").strip().upper()
+        if normalized_verdict not in {"PASS", "FAIL"}:
+            normalized_verdict = "FAIL"
+
+        summary = str(qa_details.get("summary") or "").strip()
+
+        raw_issues = qa_details.get("issues")
+        issues: List[str] = []
+        if isinstance(raw_issues, list):
+            for item in raw_issues:
+                issue = str(item or "").strip()
+                if issue:
+                    issues.append(issue)
+
+        issues_count = qa_details.get("issues_count")
+        if not isinstance(issues_count, int):
+            issues_count = len(issues)
+        issues_count = max(issues_count, len(issues))
+
+        raw_recommendations = qa_details.get("recommendations")
+        recommendations: List[str] = []
+        if isinstance(raw_recommendations, list):
+            for item in raw_recommendations:
+                recommendation = str(item or "").strip()
+                if recommendation:
+                    recommendations.append(recommendation)
+
+        report_format = str(qa_details.get("report_format") or "plain_text").strip()
+        if not report_format:
+            report_format = "plain_text"
+
+        return {
+            "schema_version": "qa_verdict.v2",
+            "verdict": normalized_verdict,
+            "summary": summary,
+            "issues_count": issues_count,
+            "issues": issues[:8],
+            "recommendations": recommendations[:8],
+            "report_format": report_format,
+        }
+
+    @staticmethod
+    def _build_qa_rework_feedback(qa_details: Dict[str, Any]) -> str:
+        """Compose deterministic rework feedback from QA findings."""
+        summary = str(qa_details.get("summary") or "").strip()
+        issues = qa_details.get("issues")
+        recommendations = qa_details.get("recommendations")
+
+        normalized_issues: List[str] = []
+        if isinstance(issues, list):
+            for issue in issues:
+                value = str(issue or "").strip()
+                if value:
+                    normalized_issues.append(value)
+
+        normalized_recommendations: List[str] = []
+        if isinstance(recommendations, list):
+            for recommendation in recommendations:
+                value = str(recommendation or "").strip()
+                if value:
+                    normalized_recommendations.append(value)
+
+        lines: List[str] = [
+            "QA audit failed. Address every finding below before marking the task complete.",
+        ]
+        if summary:
+            lines.append(f"Summary: {summary}")
+        if normalized_issues:
+            lines.append("Key QA findings:")
+            lines.extend(f"{idx + 1}. {issue}" for idx, issue in enumerate(normalized_issues[:8]))
+        if normalized_recommendations:
+            lines.append("Recommended fixes:")
+            lines.extend(
+                f"{idx + 1}. {recommendation}"
+                for idx, recommendation in enumerate(normalized_recommendations[:8])
+            )
+
+        feedback = "\n".join(lines).strip()
+        if len(feedback) > 4000:
+            feedback = feedback[:4000] + "\n...[truncated]"
+        return feedback
+
+    def _seed_tasks_for_qa_rework(self, mission_id: UUID, qa_details: Dict[str, Any]) -> int:
+        """Seed task metadata so the next execution loop receives QA rework context."""
+        from database.connection import get_db_session
+        from database.models import Task
+
+        feedback = self._build_qa_rework_feedback(qa_details)
+        seeded = 0
+
+        with get_db_session() as session:
+            tasks = session.query(Task).filter(Task.mission_id == mission_id).all()
+            for task in tasks:
+                if str(task.status or "").lower() == "cancelled":
+                    continue
+
+                meta = dict(task.task_metadata or {})
+                existing_feedback = meta.get("review_feedback")
+                if isinstance(existing_feedback, str) and existing_feedback.strip():
+                    meta["last_review_feedback"] = existing_feedback.strip()
+
+                meta["review_cycle_count"] = (
+                    self._coerce_int(meta.get("review_cycle_count", 0), 0) + 1
+                )
+                meta["review_feedback"] = feedback
+                meta["review_status"] = "rework_required"
+                meta["qa_feedback_cycle"] = (
+                    self._coerce_int(meta.get("qa_feedback_cycle", 0), 0) + 1
+                )
+                meta.pop("review_output_signature", None)
+
+                task.task_metadata = meta
+                task.status = "failed"
+                task.completed_at = None
+                seeded += 1
+
+        return seeded
 
     @staticmethod
     def _extract_json_object(text: str) -> Dict[str, Any]:
@@ -3353,15 +3574,29 @@ class MissionOrchestrator:
     def _extract_qa_audit_details(text: str, verdict: str = "") -> Dict[str, Any]:
         """Extract compact QA summary/issues from free-form audit output."""
         if not text:
-            return {"summary": "", "issues_count": 0, "issues": []}
+            return {
+                "schema_version": "qa_verdict.v2",
+                "summary": "",
+                "issues_count": 0,
+                "issues": [],
+                "recommendations": [],
+                "report_format": "empty",
+            }
 
         normalized_verdict = str(verdict or "").strip().upper()
+
         def _normalize_summary_candidate(value: str) -> str:
             candidate = str(value or "").strip()
+            if not candidate:
+                return ""
             lowered = candidate.lower()
             if lowered in {"```", "```json", "```markdown", "```md"}:
                 return ""
+            if lowered in {"pass", "fail"}:
+                return ""
             if candidate in {"{", "}", "[", "]"}:
+                return ""
+            if re.match(r"""^["']?audit_report["']?\s*:\s*\{?\s*$""", candidate, re.IGNORECASE):
                 return ""
             return candidate
 
@@ -3374,47 +3609,101 @@ class MissionOrchestrator:
             if lowered in {"```", "```json", "```markdown", "```md"}:
                 continue
             lines.append(line)
+
         summary = ""
+        report_format = "plain_text"
+        recommendations: List[str] = []
+
+        def _coerce_issue_text(item: Any) -> str:
+            if isinstance(item, dict):
+                for key in ("issue", "description", "detail", "message", "title"):
+                    value = item.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                return ""
+            return str(item or "").strip()
+
+        def _coerce_recommendation_text(item: Any) -> str:
+            if isinstance(item, dict):
+                for key in ("recommendation", "action", "suggestion", "detail", "message", "title"):
+                    value = item.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                return ""
+            return str(item or "").strip()
+
+        def _clean_issue_text(value: str) -> str:
+            cleaned = re.sub(r'^"?issue"?\s*[:：]\s*', "", str(value or ""), flags=re.IGNORECASE)
+            cleaned = cleaned.strip().strip(",").strip().strip('"').strip("'").strip(",").strip()
+            return cleaned
 
         parsed_obj = MissionOrchestrator._extract_json_object(str(text))
         if isinstance(parsed_obj, dict) and parsed_obj:
-            for summary_key in ("summary", "overall", "conclusion", "details", "reason"):
-                raw_summary = parsed_obj.get(summary_key)
+            report_obj: Dict[str, Any] = parsed_obj
+            nested_report = parsed_obj.get("audit_report")
+            if isinstance(nested_report, dict) and nested_report:
+                report_obj = nested_report
+                report_format = "audit_report_json"
+            else:
+                report_format = "json"
+
+            for summary_key in (
+                "summary",
+                "overall",
+                "conclusion",
+                "details",
+                "reason",
+                "assessment",
+            ):
+                raw_summary = report_obj.get(summary_key)
                 if isinstance(raw_summary, str) and raw_summary.strip():
                     summary = _normalize_summary_candidate(raw_summary)
                     if not summary:
                         continue
                     break
 
-            def _coerce_issue_text(item: Any) -> str:
-                if isinstance(item, dict):
-                    for key in ("issue", "description", "detail", "message", "title"):
-                        value = item.get(key)
-                        if isinstance(value, str) and value.strip():
-                            return value.strip()
-                    return ""
-                return str(item or "").strip()
-
             issues: List[str] = []
-            for issues_key in ("issues", "findings", "risks"):
-                raw_issues = parsed_obj.get(issues_key)
+            for issues_key in ("issues", "findings", "risks", "problems", "defects"):
+                raw_issues = report_obj.get(issues_key)
                 if isinstance(raw_issues, list):
                     for item in raw_issues:
-                        issue = _coerce_issue_text(item)
-                        issue = re.sub(r'^"?issue"?\s*[:：]\s*', "", issue, flags=re.IGNORECASE)
-                        issue = issue.strip().strip('"').strip("'")
+                        issue = _clean_issue_text(_coerce_issue_text(item))
                         if issue and issue not in issues:
                             issues.append(issue[:260])
                     if issues:
                         break
 
+            for recommendation_key in ("recommendations", "actions", "next_steps", "suggestions"):
+                raw_recommendations = report_obj.get(recommendation_key)
+                if isinstance(raw_recommendations, list):
+                    for item in raw_recommendations:
+                        recommendation = _coerce_recommendation_text(item).strip()
+                        recommendation = recommendation.strip(",").strip('"').strip("'").strip()
+                        if recommendation and recommendation not in recommendations:
+                            recommendations.append(recommendation[:260])
+                    if recommendations:
+                        break
+
+            if not summary and issues:
+                summary = issues[0]
+
             if normalized_verdict == "PASS" and not issues:
-                return {"summary": summary[:260], "issues_count": 0, "issues": []}
+                return {
+                    "schema_version": "qa_verdict.v2",
+                    "summary": summary[:260],
+                    "issues_count": 0,
+                    "issues": [],
+                    "recommendations": recommendations[:8],
+                    "report_format": report_format,
+                }
             if summary or issues:
                 return {
+                    "schema_version": "qa_verdict.v2",
                     "summary": summary[:260] if summary else "",
                     "issues_count": len(issues),
                     "issues": issues[:8],
+                    "recommendations": recommendations[:8],
+                    "report_format": report_format,
                 }
 
         summary_patterns = [
@@ -3442,9 +3731,12 @@ class MissionOrchestrator:
 
         if normalized_verdict == "PASS":
             return {
+                "schema_version": "qa_verdict.v2",
                 "summary": summary[:260] if summary else "",
                 "issues_count": 0,
                 "issues": [],
+                "recommendations": recommendations[:8],
+                "report_format": report_format,
             }
 
         issue_keywords = re.compile(
@@ -3461,6 +3753,7 @@ class MissionOrchestrator:
                 continue
 
             cleaned = re.sub(r"^[\-\*\d\.\)\s]+", "", line).strip()
+            cleaned = _clean_issue_text(cleaned)
             if not cleaned:
                 continue
             if cleaned in issues:
@@ -3469,10 +3762,18 @@ class MissionOrchestrator:
             if len(issues) >= 8:
                 break
 
+        if not summary and issues:
+            summary = issues[0]
+        if not summary and normalized_verdict == "FAIL":
+            summary = "QA reported a failure without structured summary."
+
         return {
+            "schema_version": "qa_verdict.v2",
             "summary": summary[:260] if summary else "",
             "issues_count": len(issues),
             "issues": issues,
+            "recommendations": recommendations[:8],
+            "report_format": report_format,
         }
 
     @staticmethod

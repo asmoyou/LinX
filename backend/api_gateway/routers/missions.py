@@ -10,6 +10,7 @@ import re
 import tempfile
 import urllib.parse
 import zipfile
+from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -27,6 +28,16 @@ logger = get_logger(__name__)
 router = APIRouter()
 KNOWN_DELIVERABLE_SOURCE_SCOPES = {"output", "shared", "tasks", "logs", "input", "unknown"}
 ALLOWED_DELIVERABLE_SCOPES = {"all", "final", "intermediate"}
+RUN_BOUNDARY_EVENT_TYPES = {
+    "MISSION_STARTED",
+    "MISSION_RETRY_REQUESTED",
+    "MISSION_PARTIAL_RETRY_REQUESTED",
+}
+CLARIFICATION_REQUEST_EVENT_TYPES = {"USER_CLARIFICATION_REQUESTED", "clarification_request"}
+CLARIFICATION_RESPONSE_EVENT_TYPES = {"clarification_response"}
+CLARIFICATION_EVENT_TYPES = (
+    CLARIFICATION_REQUEST_EVENT_TYPES | CLARIFICATION_RESPONSE_EVENT_TYPES
+)
 RUNTIME_DELIVERABLE_PATTERNS = (
     re.compile(r"^code_[0-9a-f]{8}\.(?:py|sh|js|ts|tsx|jsx|bash|zsh|txt)$", re.IGNORECASE),
     re.compile(r"^requirements(?:\.[a-z0-9_-]+)?\.txt$", re.IGNORECASE),
@@ -114,6 +125,10 @@ class MissionResponse(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     updated_at: Optional[str] = None
+    needs_clarification: bool = False
+    pending_clarification_count: int = 0
+    latest_clarification_request: Optional[str] = None
+    latest_clarification_requested_at: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -164,8 +179,18 @@ class MissionEventResponse(BaseModel):
 # ------------------------------------------------------------------
 
 
-def _mission_to_response(m) -> dict:
+def _mission_to_response(m, clarification_state: Optional[Dict[str, Any]] = None) -> dict:
     """Convert a Mission ORM object to a serialisable dict."""
+    state = clarification_state or {}
+    pending_clarification_count = 0
+    try:
+        pending_clarification_count = max(
+            0,
+            int(state.get("pending_clarification_count", 0) or 0),
+        )
+    except (TypeError, ValueError):
+        pending_clarification_count = 0
+
     return {
         "mission_id": m.mission_id,
         "title": m.title,
@@ -186,6 +211,12 @@ def _mission_to_response(m) -> dict:
         "started_at": str(m.started_at) if m.started_at else None,
         "completed_at": str(m.completed_at) if m.completed_at else None,
         "updated_at": str(m.updated_at) if m.updated_at else None,
+        "needs_clarification": bool(
+            state.get("needs_clarification", pending_clarification_count > 0)
+        ),
+        "pending_clarification_count": pending_clarification_count,
+        "latest_clarification_request": state.get("latest_clarification_request"),
+        "latest_clarification_requested_at": state.get("latest_clarification_requested_at"),
     }
 
 
@@ -333,6 +364,100 @@ def _filter_deliverables_by_scope(
     return items
 
 
+def _extract_clarification_request_text(event: Any) -> Optional[str]:
+    event_data = getattr(event, "event_data", None)
+    if isinstance(event_data, dict):
+        questions = event_data.get("questions")
+        if isinstance(questions, str):
+            normalized = questions.strip()
+            if normalized:
+                return normalized
+
+    message = getattr(event, "message", None)
+    if isinstance(message, str):
+        normalized = message.strip()
+        if normalized:
+            return normalized
+    return None
+
+
+def _compute_clarification_state(
+    events: List[Any],
+    *,
+    boundary_ts: Optional[datetime],
+) -> Dict[str, Any]:
+    pending_count = 0
+    latest_request_text: Optional[str] = None
+    latest_request_ts: Optional[datetime] = None
+
+    for event in events:
+        created_at = getattr(event, "created_at", None)
+        if boundary_ts is not None and created_at is not None and created_at < boundary_ts:
+            continue
+
+        event_type = str(getattr(event, "event_type", "") or "")
+        if event_type in CLARIFICATION_REQUEST_EVENT_TYPES:
+            pending_count += 1
+            latest_request_text = _extract_clarification_request_text(event)
+            latest_request_ts = created_at
+        elif event_type in CLARIFICATION_RESPONSE_EVENT_TYPES and pending_count > 0:
+            pending_count -= 1
+
+    return {
+        "needs_clarification": pending_count > 0,
+        "pending_clarification_count": pending_count,
+        "latest_clarification_request": latest_request_text,
+        "latest_clarification_requested_at": (
+            str(latest_request_ts) if latest_request_ts is not None else None
+        ),
+    }
+
+
+def _build_mission_clarification_state_map(mission_ids: List[UUID]) -> Dict[UUID, Dict[str, Any]]:
+    if not mission_ids:
+        return {}
+
+    from database.connection import get_db_session
+    from database.mission_models import MissionEvent
+
+    with get_db_session() as session:
+        boundary_rows = (
+            session.query(MissionEvent.mission_id, MissionEvent.created_at)
+            .filter(
+                MissionEvent.mission_id.in_(mission_ids),
+                MissionEvent.event_type.in_(list(RUN_BOUNDARY_EVENT_TYPES)),
+            )
+            .order_by(MissionEvent.mission_id.asc(), MissionEvent.created_at.desc())
+            .all()
+        )
+        boundaries: Dict[UUID, datetime] = {}
+        for mission_id, created_at in boundary_rows:
+            if mission_id not in boundaries and created_at is not None:
+                boundaries[mission_id] = created_at
+
+        clarification_events = (
+            session.query(MissionEvent)
+            .filter(
+                MissionEvent.mission_id.in_(mission_ids),
+                MissionEvent.event_type.in_(list(CLARIFICATION_EVENT_TYPES)),
+            )
+            .order_by(MissionEvent.mission_id.asc(), MissionEvent.created_at.asc())
+            .all()
+        )
+
+    events_by_mission: Dict[UUID, List[Any]] = defaultdict(list)
+    for event in clarification_events:
+        events_by_mission[event.mission_id].append(event)
+
+    state_map: Dict[UUID, Dict[str, Any]] = {}
+    for mission_id in mission_ids:
+        state_map[mission_id] = _compute_clarification_state(
+            events_by_mission.get(mission_id, []),
+            boundary_ts=boundaries.get(mission_id),
+        )
+    return state_map
+
+
 def _get_latest_run_boundary_ts(mission_id: UUID) -> Optional[datetime]:
     """Return timestamp of latest mission run boundary event, if present."""
     from database.connection import get_db_session
@@ -343,7 +468,7 @@ def _get_latest_run_boundary_ts(mission_id: UUID) -> Optional[datetime]:
             session.query(MissionEvent.created_at)
             .filter(
                 MissionEvent.mission_id == mission_id,
-                MissionEvent.event_type.in_(["MISSION_STARTED", "MISSION_RETRY_REQUESTED"]),
+                MissionEvent.event_type.in_(list(RUN_BOUNDARY_EVENT_TYPES)),
             )
             .order_by(MissionEvent.created_at.desc())
             .first()
@@ -466,8 +591,17 @@ async def list_missions(
         offset=offset,
     )
     total = count_missions(user_id=user_id, status=effective_status)
+    clarification_state_map = _build_mission_clarification_state_map(
+        [mission.mission_id for mission in missions]
+    )
     return {
-        "items": [_mission_to_response(m) for m in missions],
+        "items": [
+            _mission_to_response(
+                mission,
+                clarification_state=clarification_state_map.get(mission.mission_id),
+            )
+            for mission in missions
+        ],
         "total": total,
     }
 
@@ -533,12 +667,9 @@ async def get_mission(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get mission details by ID."""
-    from mission_system.mission_repository import get_mission as repo_get
-
-    mission = repo_get(mission_id)
-    if mission is None:
-        raise HTTPException(status_code=404, detail="Mission not found")
-    return _mission_to_response(mission)
+    mission = _assert_mission_accessible(mission_id, current_user.user_id)
+    clarification_state = _build_mission_clarification_state_map([mission_id]).get(mission_id)
+    return _mission_to_response(mission, clarification_state=clarification_state)
 
 
 @router.put("/{mission_id}")
@@ -754,6 +885,35 @@ async def retry_mission(
     await get_orchestrator().start_mission(mission_id, UUID(current_user.user_id))
     updated = repo_get(mission_id)
     return _mission_to_response(updated)
+
+
+@router.post("/{mission_id}/retry-failed", status_code=status.HTTP_202_ACCEPTED)
+async def retry_failed_mission_parts(
+    mission_id: UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Retry only failed/unfinished task parts for a failed/cancelled mission."""
+    from mission_system.exceptions import MissionError
+    from mission_system.mission_repository import get_mission as repo_get
+    from mission_system.orchestrator import get_orchestrator
+
+    mission = _assert_mission_accessible(mission_id, current_user.user_id)
+    if mission.status not in {"failed", "cancelled"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Only failed or cancelled missions can retry failed parts",
+        )
+
+    try:
+        await get_orchestrator().retry_failed_parts(mission_id, UUID(current_user.user_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except MissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    updated = repo_get(mission_id)
+    clarification_state = _build_mission_clarification_state_map([mission_id]).get(mission_id)
+    return _mission_to_response(updated, clarification_state=clarification_state)
 
 
 @router.post("/{mission_id}/cancel")

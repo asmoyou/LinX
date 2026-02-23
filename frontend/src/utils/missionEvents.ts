@@ -6,7 +6,11 @@ function toTimestamp(value?: string): number {
   return Number.isFinite(ts) ? ts : 0;
 }
 
-const RUN_BOUNDARY_EVENT_TYPES = new Set(['MISSION_STARTED', 'MISSION_RETRY_REQUESTED']);
+const RUN_BOUNDARY_EVENT_TYPES = new Set([
+  'MISSION_STARTED',
+  'MISSION_RETRY_REQUESTED',
+  'MISSION_PARTIAL_RETRY_REQUESTED',
+]);
 
 export function selectLatestMissionRunEvents(events: MissionEvent[]): MissionEvent[] {
   if (events.length === 0) return [];
