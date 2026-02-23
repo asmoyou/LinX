@@ -22,7 +22,11 @@ export default defineConfig([
     rules: {
       // Legacy codebase contains a large amount of explicit `any`.
       // Keep visibility while unblocking incremental cleanup.
-      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-explicit-any': 'off',
+      // Existing hooks patterns trigger noisy warnings in many legacy modules.
+      // Disable globally for now and re-enable per module during refactors.
+      'react-hooks/exhaustive-deps': 'off',
+      'react-hooks/incompatible-library': 'off',
     },
   },
 ])

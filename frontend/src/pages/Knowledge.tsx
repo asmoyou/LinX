@@ -135,14 +135,14 @@ export const Knowledge: React.FC = () => {
   // Re-fetch documents when active collection changes
   useEffect(() => {
     fetchDocuments();
-  }, [activeCollectionId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeCollectionId]);
 
   // Poll processing status for any documents stuck in processing after page load
   useEffect(() => {
     if (!isLoading && documents.length > 0) {
       pollAllProcessing();
     }
-  }, [isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isLoading]);
 
   // Keep modal document in sync with list updates (status/chunkCount may change while polling).
   useEffect(() => {

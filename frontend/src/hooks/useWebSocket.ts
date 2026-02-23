@@ -211,6 +211,5 @@ export function useWebSocketEvent(
     } catch {
       console.error('[useWebSocketEvent] WebSocket manager not initialized');
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [type, ...deps]);
 }
