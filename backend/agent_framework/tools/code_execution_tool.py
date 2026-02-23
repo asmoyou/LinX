@@ -76,9 +76,10 @@ print(f"Square root of 16 is {result}")
     
     # Pydantic config to allow arbitrary types
     model_config = {"arbitrary_types_allowed": True}
-    
+
     # Private attribute for sandbox (not validated by Pydantic)
     _sandbox: Optional[Any] = None
+    network_access: bool = False
     
     def __init__(self, agent_id: UUID, user_id: UUID, **kwargs):
         """Initialize code execution tool.
@@ -103,6 +104,10 @@ print(f"Square root of 16 is {result}")
         if self._sandbox is None:
             object.__setattr__(self, '_sandbox', get_code_execution_sandbox())
         return self._sandbox
+
+    def set_network_access(self, enabled: bool) -> None:
+        """Set whether tool sandbox execution may use network."""
+        self.network_access = bool(enabled)
     
     def _run(
         self,
@@ -194,7 +199,8 @@ print(f"Square root of 16 is {result}")
                 context={
                     "agent_id": str(self.agent_id),
                     "user_id": str(self.user_id),
-                    "environment": user_env_vars  # Pass user env vars
+                    "environment": user_env_vars,  # Pass user env vars
+                    "network_access": bool(self.network_access),
                 }
             )
             

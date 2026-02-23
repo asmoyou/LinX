@@ -226,18 +226,27 @@ class MissionOrchestrator:
         inherited_cfg: Dict[str, Any] = {}
         if role == "temporary_worker":
             inherited_cfg = cfg.get("leader_config", cfg.get("leader", {})) or {}
-        merged_role_cfg = {**inherited_cfg, **(role_cfg or {})}
+            if not role_cfg:
+                execution_cfg = cfg.get("execution_config", {})
+                if isinstance(execution_cfg, dict):
+                    nested_tmp_cfg = execution_cfg.get("temporary_worker_config")
+                    if isinstance(nested_tmp_cfg, dict):
+                        role_cfg = nested_tmp_cfg
+
+        def _resolve_value(keys: tuple[str, ...], default: Any) -> Any:
+            for source in (role_cfg, inherited_cfg, cfg):
+                if not isinstance(source, dict):
+                    continue
+                for key in keys:
+                    if key in source and source[key] is not None:
+                        return source[key]
+            return default
+
         return {
-            "llm_provider": merged_role_cfg.get(
-                "llm_provider",
-                merged_role_cfg.get("provider", cfg.get("provider", "ollama")),
-            ),
-            "llm_model": merged_role_cfg.get(
-                "llm_model",
-                merged_role_cfg.get("model", cfg.get("model", "qwen2.5:14b")),
-            ),
-            "temperature": float(merged_role_cfg.get("temperature", cfg.get("temperature", 0.7))),
-            "max_tokens": int(merged_role_cfg.get("max_tokens", cfg.get("max_tokens", 4096))),
+            "llm_provider": _resolve_value(("llm_provider", "provider"), "ollama"),
+            "llm_model": _resolve_value(("llm_model", "model"), "qwen2.5:14b"),
+            "temperature": float(_resolve_value(("temperature",), 0.7)),
+            "max_tokens": int(_resolve_value(("max_tokens",), 4096)),
         }
 
     @staticmethod
@@ -1189,9 +1198,32 @@ class MissionOrchestrator:
         return temp_agent.agent_id
 
     @staticmethod
-    async def _execute_agent_task(agent: Any, prompt: str) -> Dict[str, Any]:
-        """Run blocking agent calls in a worker thread so the event loop stays responsive."""
-        return await asyncio.to_thread(agent.execute_task, prompt)
+    async def _execute_agent_task(
+        agent: Any,
+        prompt: str,
+        *,
+        container_id: Optional[str] = None,
+        code_execution_network_access: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Run blocking agent calls in a worker thread.
+
+        For task execution with a workspace container, pass a no-op stream callback so
+        code blocks/tool loops are enabled and executed against that container.
+        """
+
+        def _noop_stream_callback(_chunk: Any) -> None:
+            return None
+
+        if not container_id:
+            return await asyncio.to_thread(agent.execute_task, prompt)
+
+        return await asyncio.to_thread(
+            agent.execute_task,
+            task_description=prompt,
+            stream_callback=_noop_stream_callback,
+            container_id=container_id,
+            code_execution_network_access=code_execution_network_access,
+        )
 
     async def _execute_phase_prompt_with_retry(
         self,
@@ -2496,7 +2528,23 @@ class MissionOrchestrator:
                     "Produce the deliverable and confirm completion."
                 )
 
-                result = await self._execute_agent_task(agent, task_prompt)
+                workspace_container_id: Optional[str] = None
+                workspace_manager = getattr(self, "_workspace", None)
+                if workspace_manager is not None:
+                    try:
+                        workspace_container_id = workspace_manager.get_container_id(mission_id)
+                    except Exception:
+                        workspace_container_id = None
+                code_execution_network_access = self._coerce_bool(
+                    exec_cfg.get("network_access", False),
+                    default=False,
+                )
+                result = await self._execute_agent_task(
+                    agent,
+                    task_prompt,
+                    container_id=workspace_container_id,
+                    code_execution_network_access=code_execution_network_access,
+                )
                 output = self._extract_agent_output(
                     result,
                     f"Task execution failed for '{task_title}'",

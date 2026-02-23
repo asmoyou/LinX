@@ -8,6 +8,7 @@ import io
 import mimetypes
 import re
 import tempfile
+import urllib.parse
 import zipfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -26,6 +27,13 @@ logger = get_logger(__name__)
 router = APIRouter()
 KNOWN_DELIVERABLE_SOURCE_SCOPES = {"output", "shared", "tasks", "logs", "input", "unknown"}
 ALLOWED_DELIVERABLE_SCOPES = {"all", "final", "intermediate"}
+RUNTIME_DELIVERABLE_PATTERNS = (
+    re.compile(r"^code_[0-9a-f]{8}\.(?:py|sh|js|ts|tsx|jsx|bash|zsh|txt)$", re.IGNORECASE),
+    re.compile(r"^requirements(?:\.[a-z0-9_-]+)?\.txt$", re.IGNORECASE),
+)
+RUNTIME_DELIVERABLE_EXACT_NAMES = {
+    "runtime_requirements.txt",
+}
 
 
 # ------------------------------------------------------------------
@@ -189,6 +197,44 @@ def _infer_deliverable_source_scope(filename: str) -> str:
     return "unknown"
 
 
+def _is_runtime_process_artifact(filename: str) -> bool:
+    normalized = str(filename or "").replace("\\", "/").strip("/")
+    if not normalized:
+        return False
+
+    lowered = normalized.lower()
+    basename = lowered.rsplit("/", 1)[-1]
+    if basename in RUNTIME_DELIVERABLE_EXACT_NAMES:
+        return True
+    if basename.endswith((".pyc", ".pyo")):
+        return True
+    if "/__pycache__/" in f"/{lowered}/":
+        return True
+    return any(pattern.match(basename) for pattern in RUNTIME_DELIVERABLE_PATTERNS)
+
+
+def _build_content_disposition(filename: str, disposition: str = "attachment") -> str:
+    normalized_name = str(filename or "").replace("\\", "/").split("/")[-1].strip()
+    if not normalized_name:
+        normalized_name = "download"
+
+    ext_ascii = ""
+    if "." in normalized_name:
+        raw_ext = normalized_name.rsplit(".", 1)[-1]
+        cleaned_ext = re.sub(r"[^A-Za-z0-9]+", "", raw_ext)
+        if cleaned_ext:
+            ext_ascii = cleaned_ext.lower()
+
+    ascii_name = normalized_name.encode("ascii", "ignore").decode("ascii")
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", ascii_name).strip("._")
+    if not ascii_name or (ext_ascii and ascii_name.lower() == ext_ascii):
+        ascii_name = f"download.{ext_ascii}" if ext_ascii else "download"
+
+    encoded_name = urllib.parse.quote(normalized_name)
+    safe_disposition = "inline" if disposition == "inline" else "attachment"
+    return f'{safe_disposition}; filename="{ascii_name}"; ' f"filename*=UTF-8''{encoded_name}"
+
+
 def _normalize_deliverable_item(item: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(item, dict):
         return None
@@ -215,11 +261,21 @@ def _normalize_deliverable_item(item: Any) -> Optional[Dict[str, Any]]:
         if source_scope == "unknown" and inferred_is_target is not None:
             source_scope = "output" if inferred_is_target else "shared"
 
+    runtime_artifact = _is_runtime_process_artifact(filename)
     is_target = inferred_is_target if inferred_is_target is not None else source_scope == "output"
+    if runtime_artifact:
+        is_target = False
+        if source_scope == "output":
+            source_scope = "shared"
+
     raw_kind = str(normalized.get("artifact_kind") or "").strip().lower()
-    artifact_kind = raw_kind if raw_kind in {"final", "intermediate"} else (
-        "final" if is_target else "intermediate"
+    artifact_kind = (
+        raw_kind
+        if raw_kind in {"final", "intermediate"}
+        else ("final" if is_target else "intermediate")
     )
+    if runtime_artifact:
+        artifact_kind = "intermediate"
 
     normalized["filename"] = filename or storage_path.split("/", 1)[-1]
     normalized["path"] = storage_path
@@ -810,7 +866,9 @@ async def list_mission_events(
     if latest_run_only:
         boundary_ts = _get_latest_run_boundary_ts(mission_id)
         if boundary_ts is not None:
-            events = [event for event in events if event.created_at and event.created_at >= boundary_ts]
+            events = [
+                event for event in events if event.created_at and event.created_at >= boundary_ts
+            ]
     return [
         {
             "event_id": e.event_id,
@@ -887,7 +945,9 @@ async def download_deliverable(
 
     filename = str(matched.get("filename") or object_key.rsplit("/", 1)[-1])
     media_type = (metadata or {}).get("content_type") or "application/octet-stream"
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    headers = {
+        "Content-Disposition": _build_content_disposition(filename, disposition="attachment")
+    }
     return StreamingResponse(stream, media_type=media_type, headers=headers)
 
 
@@ -912,7 +972,9 @@ async def download_deliverables_archive(
     if mission.created_by_user_id != UUID(current_user.user_id):
         raise HTTPException(status_code=404, detail="Mission not found")
 
-    raw_deliverables = _normalize_mission_deliverables((mission.result or {}).get("deliverables", []))
+    raw_deliverables = _normalize_mission_deliverables(
+        (mission.result or {}).get("deliverables", [])
+    )
     deliverables = _filter_deliverables_by_scope(
         raw_deliverables,
         "final" if target_only else "all",
@@ -980,7 +1042,12 @@ async def download_deliverables_archive(
         safe_title = "mission"
     scope_suffix = "targets" if target_only else "all"
     archive_name = f"{safe_title}_{scope_suffix}_deliverables.zip"
-    headers = {"Content-Disposition": f'attachment; filename="{archive_name}"'}
+    headers = {
+        "Content-Disposition": _build_content_disposition(
+            archive_name,
+            disposition="attachment",
+        )
+    }
     return StreamingResponse(
         archive_file,
         media_type="application/zip",
@@ -1052,5 +1119,7 @@ async def download_workspace_file(
 
     filename = normalized.rsplit("/", 1)[-1]
     media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    headers = {
+        "Content-Disposition": _build_content_disposition(filename, disposition="attachment")
+    }
     return StreamingResponse(io.BytesIO(content), media_type=media_type, headers=headers)

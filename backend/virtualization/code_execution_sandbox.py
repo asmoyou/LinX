@@ -246,7 +246,11 @@ class CodeExecutionSandbox:
                         dependencies_installed = True
 
             # 3. Create isolated sandbox environment (and start it)
-            sandbox_id = await self._create_sandbox(execution_id)
+            network_enabled = bool(context.get("network_access", False))
+            sandbox_id = await self._create_sandbox(
+                execution_id,
+                network_enabled=network_enabled,
+            )
 
             # 4. Install dependencies if needed
             if dependencies_installed and self.dependency_manager and dependencies:
@@ -390,7 +394,12 @@ class CodeExecutionSandbox:
             if sandbox_id:
                 await self._destroy_sandbox(sandbox_id)
 
-    async def _create_sandbox(self, execution_id: str) -> str:
+    async def _create_sandbox(
+        self,
+        execution_id: str,
+        *,
+        network_enabled: bool = False,
+    ) -> str:
         """Create isolated sandbox environment.
 
         Args:
@@ -409,7 +418,7 @@ class CodeExecutionSandbox:
             name=f"code-exec-{execution_id[:8]}",
             sandbox_type=self.sandbox_type,
             resource_limits=self.resource_limits,
-            network_disabled=True,  # Disable network for code execution
+            network_disabled=not network_enabled,
         )
 
         container_id = self.container_manager.create_container(

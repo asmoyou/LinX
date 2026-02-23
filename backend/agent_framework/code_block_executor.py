@@ -13,6 +13,7 @@ References:
 """
 
 import asyncio
+import base64
 import logging
 import os
 import re
@@ -54,6 +55,15 @@ class CodeBlock:
             ext_map = {'python': '.py', 'bash': '.sh', 'javascript': '.js'}
             ext = ext_map.get(self.language, '.txt')
             self.filename = f"code_{uuid4().hex[:8]}{ext}"
+        else:
+            # Keep only basename and sanitize unsafe filename characters.
+            safe_name = Path(self.filename).name
+            safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", safe_name).strip("._")
+            if not safe_name:
+                ext_map = {'python': '.py', 'bash': '.sh', 'javascript': '.js'}
+                ext = ext_map.get(self.language, '.txt')
+                safe_name = f"code_{uuid4().hex[:8]}{ext}"
+            self.filename = safe_name
 
 
 @dataclass
@@ -669,15 +679,77 @@ class CodeBlockExecutor:
                     language=language
                 )
 
+        def _sync_host_file_to_container(
+            host_file: Path,
+            container_workdir: str,
+            container_filename: Optional[str] = None,
+        ) -> bool:
+            if not host_file.exists():
+                return False
+
+            target_name = container_filename or host_file.name
+            target_path = f"{container_workdir}/{target_name}"
+            try:
+                encoded = base64.b64encode(host_file.read_bytes()).decode("ascii")
+            except Exception as read_error:
+                self.logger.warning(
+                    "[CODE_BLOCK] Failed to read host file for sync: %s",
+                    read_error,
+                    extra={"container_id": container_id, "host_file": str(host_file)},
+                )
+                return False
+
+            sync_cmd = (
+                f"mkdir -p '{container_workdir}' && "
+                f"echo '{encoded}' | base64 -d > '{target_path}'"
+            )
+            try:
+                exit_code, _stdout, stderr = container_manager.exec_in_container(
+                    container_id,
+                    sync_cmd,
+                    workdir=container_workdir,
+                )
+            except Exception as sync_error:
+                self.logger.warning(
+                    "[CODE_BLOCK] Failed to sync file into container: %s",
+                    sync_error,
+                    extra={"container_id": container_id, "host_file": str(host_file)},
+                )
+                return False
+
+            if exit_code != 0:
+                self.logger.warning(
+                    "[CODE_BLOCK] Container sync command failed: %s",
+                    stderr,
+                    extra={
+                        "container_id": container_id,
+                        "host_file": str(host_file),
+                        "target_path": target_path,
+                    },
+                )
+                return False
+
+            return True
+
         try:
-            # Container workdir - uses /workspace which is volume-mounted from host workdir
-            # Files (skills, scripts) written to host workdir are immediately available here
+            # Use the mission workspace path in container.
             container_workdir = "/workspace"
             container_script_name = script_path.name
 
-            # No need to create workdir or copy files - volume mount makes
-            # host workdir available at /workspace automatically.
-            # Scripts and skill files written to host workdir are immediately visible.
+            # Mission workspaces use dedicated containers without host bind mounts.
+            # Sync script (and requirements when present) explicitly before execution.
+            _sync_host_file_to_container(
+                script_path,
+                container_workdir=container_workdir,
+                container_filename=container_script_name,
+            )
+            requirements_file = workdir / "requirements.txt"
+            if requirements_file.exists():
+                _sync_host_file_to_container(
+                    requirements_file,
+                    container_workdir=container_workdir,
+                    container_filename="requirements.txt",
+                )
 
             # Auto-install dependencies for Python scripts
             if language == 'python':

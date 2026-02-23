@@ -8,6 +8,7 @@ directory layout for inputs, outputs, tasks, shared files, and logs.
 import base64
 import io
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -26,6 +27,13 @@ logger = logging.getLogger(__name__)
 # Standard workspace directory layout inside the container
 WORKSPACE_ROOT = "/workspace"
 WORKSPACE_DIRS = ["input", "output", "tasks", "shared", "logs"]
+RUNTIME_ARTIFACT_NAME_PATTERNS = (
+    re.compile(r"^code_[0-9a-f]{8}\.(?:py|sh|js|ts|tsx|jsx|bash|zsh|txt)$", re.IGNORECASE),
+    re.compile(r"^requirements(?:\.[a-z0-9_-]+)?\.txt$", re.IGNORECASE),
+)
+RUNTIME_ARTIFACT_EXACT_NAMES = {
+    "runtime_requirements.txt",
+}
 
 
 @dataclass
@@ -78,6 +86,23 @@ class MissionWorkspaceManager:
     # Public API
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_runtime_process_artifact(relative_path: str) -> bool:
+        """Return True for runtime/generated artifacts that should not be final deliverables."""
+        normalized = str(relative_path or "").replace("\\", "/").strip("/")
+        if not normalized:
+            return True
+
+        lowered = normalized.lower()
+        basename = lowered.rsplit("/", 1)[-1]
+        if basename in RUNTIME_ARTIFACT_EXACT_NAMES:
+            return True
+        if basename.endswith((".pyc", ".pyo")):
+            return True
+        if "/__pycache__/" in f"/{lowered}/":
+            return True
+        return any(pattern.match(basename) for pattern in RUNTIME_ARTIFACT_NAME_PATTERNS)
+
     def create_workspace(
         self,
         mission_id: UUID,
@@ -102,22 +127,16 @@ class MissionWorkspaceManager:
 
         started = self._container_manager.start_container(container_id)
         if not started:
-            raise RuntimeError(
-                f"Failed to start workspace container for mission {mission_id}"
-            )
+            raise RuntimeError(f"Failed to start workspace container for mission {mission_id}")
 
         # Initialise workspace directories
-        mkdir_cmd = " ".join(
-            f"{WORKSPACE_ROOT}/{d}" for d in WORKSPACE_DIRS
-        )
+        mkdir_cmd = " ".join(f"{WORKSPACE_ROOT}/{d}" for d in WORKSPACE_DIRS)
         exit_code, _, stderr = self._container_manager.exec_in_container(
             container_id,
             f"mkdir -p {mkdir_cmd}",
         )
         if exit_code != 0:
-            raise RuntimeError(
-                f"Failed to create workspace dirs: {stderr}"
-            )
+            raise RuntimeError(f"Failed to create workspace dirs: {stderr}")
 
         workspace = WorkspaceInfo(
             mission_id=mission_id,
@@ -165,9 +184,7 @@ class MissionWorkspaceManager:
                 f"echo '{b64}' | base64 -d > '{dest}'",
             )
             if exit_code != 0:
-                logger.error(
-                    "Failed to copy attachment %s: %s", filename, stderr
-                )
+                logger.error("Failed to copy attachment %s: %s", filename, stderr)
 
         logger.info(
             "Attachments set up for mission %s (%d files)",
@@ -204,6 +221,13 @@ class MissionWorkspaceManager:
             workdir=workdir or WORKSPACE_ROOT,
             environment=environment,
         )
+
+    def get_container_id(self, mission_id: UUID) -> Optional[str]:
+        """Return workspace container ID for a mission, if available."""
+        workspace = self._workspaces.get(mission_id)
+        if workspace is None:
+            return None
+        return workspace.container_id
 
     def write_file(
         self,
@@ -314,7 +338,7 @@ class MissionWorkspaceManager:
         workspace = self._get_workspace(mission_id)
         safe_path = path.replace("\\", "/").lstrip("/")
         if safe_path.startswith("workspace/"):
-            safe_path = safe_path[len("workspace/"):]
+            safe_path = safe_path[len("workspace/") :]
 
         if not safe_path:
             raise RuntimeError("Invalid file path")
@@ -371,6 +395,8 @@ class MissionWorkspaceManager:
                 seen_filepaths.add(filepath)
 
                 relative_path = filepath.replace(f"{WORKSPACE_ROOT}/", "", 1)
+                runtime_artifact = self._is_runtime_process_artifact(relative_path)
+                effective_is_target = is_target and not runtime_artifact
 
                 # Read file content from container
                 rc, content, err = self._container_manager.exec_in_container(
@@ -396,9 +422,9 @@ class MissionWorkspaceManager:
                         filename=relative_path,
                         path=f"{bucket_name}/{object_key}",
                         size=int(size_str) if size_str.isdigit() else len(file_bytes),
-                        is_target=is_target,
+                        is_target=effective_is_target,
                         source_scope=source_scope,
-                        artifact_kind="final" if is_target else "intermediate",
+                        artifact_kind="final" if effective_is_target else "intermediate",
                     )
                 )
 
@@ -422,6 +448,7 @@ class MissionWorkspaceManager:
                 relative_path = filepath.replace(f"{WORKSPACE_ROOT}/", "", 1)
                 if not relative_path:
                     continue
+                runtime_artifact = self._is_runtime_process_artifact(relative_path)
 
                 rc, content, err = self._container_manager.exec_in_container(
                     workspace.container_id,
@@ -445,9 +472,9 @@ class MissionWorkspaceManager:
                         filename=relative_path,
                         path=f"{bucket_name}/{object_key}",
                         size=int(size_str) if size_str.isdigit() else len(file_bytes),
-                        is_target=True,
-                        source_scope="output",
-                        artifact_kind="final",
+                        is_target=not runtime_artifact,
+                        source_scope="shared" if runtime_artifact else "output",
+                        artifact_kind="intermediate" if runtime_artifact else "final",
                     )
                 )
 
@@ -470,13 +497,9 @@ class MissionWorkspaceManager:
 
         try:
             self._container_manager.terminate_container(workspace.container_id)
-            logger.info(
-                "Workspace cleaned up for mission %s", mission_id
-            )
+            logger.info("Workspace cleaned up for mission %s", mission_id)
         except Exception:
-            logger.exception(
-                "Error cleaning up workspace for mission %s", mission_id
-            )
+            logger.exception("Error cleaning up workspace for mission %s", mission_id)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -486,9 +509,7 @@ class MissionWorkspaceManager:
         """Retrieve workspace info or raise."""
         workspace = self._workspaces.get(mission_id)
         if workspace is None:
-            raise RuntimeError(
-                f"No workspace found for mission {mission_id}"
-            )
+            raise RuntimeError(f"No workspace found for mission {mission_id}")
         return workspace
 
     def _build_mission_container_config(

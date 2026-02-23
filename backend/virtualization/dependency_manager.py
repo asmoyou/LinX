@@ -58,6 +58,15 @@ class DependencyCache:
 
 class DependencyDetector:
     """Detects dependencies from code."""
+
+    PYTHON_IMPORT_PACKAGE_ALIASES = {
+        "docx": "python-docx",
+        "cv2": "opencv-python",
+        "yaml": "pyyaml",
+        "pil": "pillow",
+        "jwt": "pyjwt",
+        "dateutil": "python-dateutil",
+    }
     
     def __init__(self):
         """Initialize dependency detector."""
@@ -83,8 +92,9 @@ class DependencyDetector:
                     for alias in node.names:
                         module_name = alias.name.split('.')[0]
                         if not self._is_stdlib_module(module_name):
+                            dependency_name = self._normalize_python_dependency(module_name)
                             dependencies.add(DependencyInfo(
-                                name=module_name,
+                                name=dependency_name,
                                 language='python'
                             ))
                 
@@ -93,8 +103,9 @@ class DependencyDetector:
                     if node.module:
                         module_name = node.module.split('.')[0]
                         if not self._is_stdlib_module(module_name):
+                            dependency_name = self._normalize_python_dependency(module_name)
                             dependencies.add(DependencyInfo(
-                                name=module_name,
+                                name=dependency_name,
                                 language='python'
                             ))
         
@@ -102,6 +113,13 @@ class DependencyDetector:
             self.logger.warning(f"Failed to parse Python code: {e}")
         
         return dependencies
+
+    def _normalize_python_dependency(self, module_name: str) -> str:
+        """Map python import module names to pip package names when needed."""
+        normalized = str(module_name or "").strip()
+        if not normalized:
+            return normalized
+        return self.PYTHON_IMPORT_PACKAGE_ALIASES.get(normalized.lower(), normalized)
     
     def detect_javascript_dependencies(self, code: str) -> Set[DependencyInfo]:
         """Detect JavaScript/Node.js dependencies from code.

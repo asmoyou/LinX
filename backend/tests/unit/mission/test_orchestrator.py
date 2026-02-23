@@ -116,6 +116,52 @@ def test_build_text_signature_is_stable_for_equivalent_content():
     assert a != c
 
 
+@pytest.mark.asyncio
+async def test_execute_agent_task_without_container_uses_basic_call():
+    class _FakeAgent:
+        def __init__(self):
+            self.calls = []
+
+        def execute_task(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return {"success": True, "output": "ok"}
+
+    agent = _FakeAgent()
+    result = await MissionOrchestrator._execute_agent_task(agent, "ping")
+
+    assert result["success"] is True
+    assert len(agent.calls) == 1
+    args, kwargs = agent.calls[0]
+    assert args == ("ping",)
+    assert kwargs == {}
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_task_with_container_enables_streaming_mode():
+    class _FakeAgent:
+        def __init__(self):
+            self.calls = []
+
+        def execute_task(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return {"success": True, "output": "ok"}
+
+    agent = _FakeAgent()
+    result = await MissionOrchestrator._execute_agent_task(
+        agent,
+        "ping",
+        container_id="container-123",
+    )
+
+    assert result["success"] is True
+    assert len(agent.calls) == 1
+    args, kwargs = agent.calls[0]
+    assert args == ()
+    assert kwargs["task_description"] == "ping"
+    assert kwargs["container_id"] == "container-123"
+    assert callable(kwargs["stream_callback"])
+
+
 def test_get_llm_config_temporary_worker_inherits_leader_by_default():
     orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
     mission = SimpleNamespace(
@@ -133,6 +179,85 @@ def test_get_llm_config_temporary_worker_inherits_leader_by_default():
     assert cfg["llm_model"] == "gpt-4.1"
     assert cfg["temperature"] == 0.4
     assert cfg["max_tokens"] == 6000
+
+
+def test_get_llm_config_temporary_worker_prefers_explicit_role_model():
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    mission = SimpleNamespace(
+        mission_config={
+            "leader_config": {
+                "llm_provider": "llm-pool",
+                "llm_model": "leader-model",
+                "temperature": 0.4,
+                "max_tokens": 6000,
+            },
+            "temporary_worker_config": {
+                "llm_provider": "llm-pool",
+                "llm_model": "worker-model",
+                "temperature": 0.2,
+                "max_tokens": 4096,
+            },
+        }
+    )
+
+    cfg = MissionOrchestrator._get_llm_config(orchestrator, mission, "temporary_worker")
+
+    assert cfg["llm_provider"] == "llm-pool"
+    assert cfg["llm_model"] == "worker-model"
+    assert cfg["temperature"] == 0.2
+    assert cfg["max_tokens"] == 4096
+
+
+def test_get_llm_config_temporary_worker_legacy_model_key_overrides_leader():
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    mission = SimpleNamespace(
+        mission_config={
+            "leader_config": {
+                "llm_provider": "openai",
+                "llm_model": "gpt-4.1",
+                "temperature": 0.4,
+                "max_tokens": 6000,
+            },
+            "temporary_worker_config": {
+                "provider": "llm-pool",
+                "model": "legacy-worker-model",
+            },
+        }
+    )
+
+    cfg = MissionOrchestrator._get_llm_config(orchestrator, mission, "temporary_worker")
+    assert cfg["llm_provider"] == "llm-pool"
+    assert cfg["llm_model"] == "legacy-worker-model"
+    assert cfg["temperature"] == 0.4
+    assert cfg["max_tokens"] == 6000
+
+
+def test_get_llm_config_temporary_worker_falls_back_to_nested_execution_config():
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    mission = SimpleNamespace(
+        mission_config={
+            "leader_config": {
+                "llm_provider": "openai",
+                "llm_model": "gpt-4.1",
+                "temperature": 0.4,
+                "max_tokens": 6000,
+            },
+            "execution_config": {
+                "temporary_worker_config": {
+                    "llm_provider": "llm-pool",
+                    "llm_model": "nested-worker-model",
+                    "temperature": 0.3,
+                    "max_tokens": 4096,
+                }
+            },
+        }
+    )
+
+    cfg = MissionOrchestrator._get_llm_config(orchestrator, mission, "temporary_worker")
+    assert cfg["llm_provider"] == "llm-pool"
+    assert cfg["llm_model"] == "nested-worker-model"
+    assert cfg["temperature"] == 0.3
+    assert cfg["max_tokens"] == 4096
 
 
 def test_transition_allows_idempotent_target(monkeypatch):
@@ -261,7 +386,7 @@ async def test_execute_task_with_retry_falls_back_to_temporary_agent(monkeypatch
             return SimpleNamespace(agent_id=agent_id, name="temporary-worker")
         return None
 
-    async def _fake_execute_agent_task(agent, prompt):
+    async def _fake_execute_agent_task(agent, prompt, container_id=None, **kwargs):
         return {"output": "done"}
 
     provision_calls = {"count": 0}
@@ -382,7 +507,7 @@ async def test_execute_task_with_retry_marks_unsuccessful_agent_response_as_fail
     async def _fake_create_registered(agent_id, owner_user_id):
         return SimpleNamespace(agent_id=agent_id, name="worker-agent")
 
-    async def _fake_execute_agent_task(agent, prompt):
+    async def _fake_execute_agent_task(agent, prompt, container_id=None, **kwargs):
         return {
             "success": False,
             "error": "python-docx import failed",
@@ -506,7 +631,7 @@ async def test_execute_task_with_retry_prefers_platform_agent_before_temporary(m
             return SimpleNamespace(agent_id=agent_id, name="backend-agent")
         return None
 
-    async def _fake_execute_agent_task(agent, prompt):
+    async def _fake_execute_agent_task(agent, prompt, container_id=None, **kwargs):
         return {"output": "done"}
 
     provision_calls = {"count": 0}
@@ -640,7 +765,7 @@ async def test_execute_task_with_retry_keeps_temporary_plan_when_existing_match_
             return SimpleNamespace(agent_id=agent_id, name="weak-platform")
         return None
 
-    async def _fake_execute_agent_task(agent, prompt):
+    async def _fake_execute_agent_task(agent, prompt, container_id=None, **kwargs):
         return {"output": "done"}
 
     provision_calls = {"count": 0}
@@ -1216,7 +1341,7 @@ async def test_execute_task_with_retry_escalates_rework_to_temporary_for_non_tem
             return SimpleNamespace(agent_id=agent_id, name="temp-worker")
         return None
 
-    async def _fake_execute_agent_task(agent, prompt):
+    async def _fake_execute_agent_task(agent, prompt, container_id=None, **kwargs):
         return {"output": "done"}
 
     provision_calls = {"count": 0}
@@ -1552,7 +1677,7 @@ async def test_execute_task_with_retry_includes_review_feedback_in_prompt(monkey
     async def _fake_create_registered(agent_id, owner_user_id):
         return SimpleNamespace(agent_id=agent_id, name="worker-agent")
 
-    async def _fake_execute_agent_task(agent, prompt):
+    async def _fake_execute_agent_task(agent, prompt, container_id=None, **kwargs):
         captured_prompt["value"] = prompt
         return {"output": "done"}
 

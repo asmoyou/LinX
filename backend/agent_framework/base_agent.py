@@ -616,6 +616,7 @@ class BaseAgent:
         stream_callback: Optional[callable] = None,
         session_workdir: Optional["Path"] = None,
         container_id: Optional[str] = None,
+        code_execution_network_access: Optional[bool] = None,
         message_content: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Execute a task using the agent.
@@ -629,6 +630,7 @@ class BaseAgent:
                 across conversation rounds.
             container_id: Optional Docker container ID for sandbox execution.
                 If provided, code blocks will be executed inside the container.
+            code_execution_network_access: Optional network toggle for code_execution tool.
             message_content: Optional multimodal content (list of dicts) for vision models.
                 When provided, used as HumanMessage content instead of plain text.
 
@@ -644,6 +646,21 @@ class BaseAgent:
         try:
             self.status = AgentStatus.BUSY
             logger.info(f"Agent executing task: {self.config.name}")
+
+            # Propagate mission/network policy to code_execution tool when provided.
+            if code_execution_network_access is not None:
+                for tool in self.tools:
+                    if getattr(tool, "name", "") != "code_execution":
+                        continue
+                    try:
+                        if hasattr(tool, "set_network_access"):
+                            tool.set_network_access(bool(code_execution_network_access))
+                    except Exception as cfg_error:
+                        logger.warning(
+                            "Failed to set code_execution network policy: %s",
+                            cfg_error,
+                            extra={"agent_id": str(self.config.agent_id)},
+                        )
 
             # Set workspace root for file tools
             if session_workdir:
