@@ -208,13 +208,14 @@ export const useMissionStore = create<MissionState>((set, get) => ({
     // Optimistic transition mirrors manual retry action from failed -> requirements.
     set((state) => ({
       missions: state.missions.map((m) =>
-        m.mission_id === missionId && m.status === 'failed'
+        m.mission_id === missionId && (m.status === 'failed' || m.status === 'cancelled')
           ? { ...m, status: 'requirements', error_message: undefined }
           : m
       ),
       selectedMission:
         state.selectedMission?.mission_id === missionId &&
-        state.selectedMission.status === 'failed'
+        (state.selectedMission.status === 'failed' ||
+          state.selectedMission.status === 'cancelled')
           ? { ...state.selectedMission, status: 'requirements', error_message: undefined }
           : state.selectedMission,
     }));
@@ -319,7 +320,46 @@ export const useMissionStore = create<MissionState>((set, get) => ({
   fetchMissionTasks: async (missionId) => {
     try {
       const tasks = await missionsApi.getTasks(missionId);
-      set({ missionTasks: tasks });
+      set((state) => ({
+        ...(() => {
+          const missionStatus =
+            state.selectedMission?.mission_id === missionId
+              ? state.selectedMission.status
+              : state.missions.find((mission) => mission.mission_id === missionId)?.status;
+          const treatPendingReviewAsIncomplete = missionStatus === 'reviewing';
+          const statusCounter = tasks.reduce<Record<string, number>>((acc, task) => {
+            const reviewStatus =
+              typeof task.task_metadata?.review_status === 'string'
+                ? task.task_metadata.review_status
+                : '';
+            const normalizedStatus =
+              treatPendingReviewAsIncomplete &&
+              task.status === 'completed' &&
+              reviewStatus !== 'approved'
+                ? 'reviewing'
+                : task.status || 'unknown';
+            acc[normalizedStatus] = (acc[normalizedStatus] || 0) + 1;
+            return acc;
+          }, {});
+          const counterPatch = {
+            total_tasks: tasks.length,
+            completed_tasks: statusCounter.completed || 0,
+            failed_tasks: statusCounter.failed || 0,
+          };
+          return {
+            missionTasks: tasks,
+            missions: state.missions.map((mission) =>
+              mission.mission_id === missionId
+                ? normalizeMissionStatus({ ...mission, ...counterPatch })
+                : mission
+            ),
+            selectedMission:
+              state.selectedMission?.mission_id === missionId
+                ? normalizeMissionStatus({ ...state.selectedMission, ...counterPatch })
+                : state.selectedMission,
+          };
+        })(),
+      }));
     } catch (err: unknown) {
       set({ error: getErrorMessage(err, 'Failed to fetch tasks') });
     }
@@ -336,7 +376,10 @@ export const useMissionStore = create<MissionState>((set, get) => ({
 
   fetchMissionEvents: async (missionId) => {
     try {
-      const events = await missionsApi.getEvents(missionId);
+      const events = await missionsApi.getEvents(missionId, {
+        limit: 500,
+        latest_run_only: true,
+      });
       set({ missionEvents: events });
     } catch (err: unknown) {
       set({ error: getErrorMessage(err, 'Failed to fetch events') });

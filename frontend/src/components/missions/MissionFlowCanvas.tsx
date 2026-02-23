@@ -23,6 +23,7 @@ import { SupervisorNode } from './nodes/SupervisorNode';
 import { QANode } from './nodes/QANode';
 import { ClarificationNode } from './nodes/ClarificationNode';
 import { useMissionStore } from '@/stores/missionStore';
+import { selectLatestMissionRunEvents } from '@/utils/missionEvents';
 
 const nodeTypes = {
   missionNode: MissionNode,
@@ -69,26 +70,31 @@ function getNodeDimensions(node: Node): { width: number; height: number } {
 function getLayoutedElements(nodes: Node[], edges: Edge[]) {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: 'TB', nodesep: 80, ranksep: 110, marginx: 30, marginy: 30 });
+  g.setGraph({ rankdir: 'TB', nodesep: 120, ranksep: 150, marginx: 40, marginy: 40 });
 
   const agentNodes = nodes.filter((node) => node.type === 'agentNode');
-  const flowNodes = nodes.filter((node) => node.type !== 'agentNode');
-  const flowNodeIds = new Set(flowNodes.map((node) => node.id));
+  const supervisorNodes = nodes.filter((node) => node.type === 'supervisorNode');
+  const qaNodes = nodes.filter((node) => node.type === 'qaNode');
+  const dagreNodes = nodes.filter(
+    (node) =>
+      node.type !== 'agentNode' && node.type !== 'supervisorNode' && node.type !== 'qaNode'
+  );
+  const dagreNodeIds = new Set(dagreNodes.map((node) => node.id));
 
-  flowNodes.forEach((node) => {
+  dagreNodes.forEach((node) => {
     const { width, height } = getNodeDimensions(node);
     g.setNode(node.id, { width, height });
   });
 
   edges.forEach((edge) => {
-    if (flowNodeIds.has(edge.source) && flowNodeIds.has(edge.target)) {
+    if (dagreNodeIds.has(edge.source) && dagreNodeIds.has(edge.target)) {
       g.setEdge(edge.source, edge.target);
     }
   });
 
   dagre.layout(g);
 
-  const layoutedFlowNodes = flowNodes.map((node) => {
+  const layoutedDagreNodes = dagreNodes.map((node) => {
     const nodeWithPosition = g.node(node.id);
     const { width, height } = getNodeDimensions(node);
     return {
@@ -100,11 +106,71 @@ function getLayoutedElements(nodes: Node[], edges: Edge[]) {
     };
   });
 
-  const maxFlowX = layoutedFlowNodes.reduce((acc, node) => {
+  const taskNodeByTaskId = new Map<string, Node>();
+  layoutedDagreNodes.forEach((node) => {
+    if (node.type !== 'taskNode') return;
+    const taskId = (node.data as { task_id?: string } | undefined)?.task_id;
+    if (taskId) {
+      taskNodeByTaskId.set(taskId, node);
+    }
+  });
+
+  const maxDagreX = layoutedDagreNodes.reduce((acc, node) => {
     const { width } = getNodeDimensions(node);
     return Math.max(acc, node.position.x + width);
   }, 0);
-  const minFlowY = layoutedFlowNodes.reduce((acc, node) => Math.min(acc, node.position.y), 0);
+  const minDagreX = layoutedDagreNodes.reduce((acc, node) => Math.min(acc, node.position.x), 0);
+  const minDagreY = layoutedDagreNodes.reduce((acc, node) => Math.min(acc, node.position.y), 0);
+  const maxDagreY = layoutedDagreNodes.reduce((acc, node) => {
+    const { height } = getNodeDimensions(node);
+    return Math.max(acc, node.position.y + height);
+  }, 0);
+
+  const supervisorLaneX = maxDagreX + 180;
+  let detachedSupervisorIndex = 0;
+  const layoutedSupervisorNodes = supervisorNodes.map((node) => {
+    const taskId = (node.data as { task_id?: string } | undefined)?.task_id;
+    const taskNode = taskId ? taskNodeByTaskId.get(taskId) : undefined;
+    if (taskNode) {
+      const { width } = getNodeDimensions(taskNode);
+      return {
+        ...node,
+        position: {
+          x: taskNode.position.x + width + 120,
+          y: taskNode.position.y,
+        },
+      };
+    }
+
+    const positioned = {
+      ...node,
+      position: {
+        x: supervisorLaneX,
+        y: minDagreY + detachedSupervisorIndex * 200,
+      },
+    };
+    detachedSupervisorIndex += 1;
+    return positioned;
+  });
+
+  const qaBaseY = maxDagreY + 170;
+  const qaGapX = 300;
+  const qaCenterX = (minDagreX + maxDagreX) / 2;
+  const qaStartX = qaCenterX - ((Math.max(qaNodes.length, 1) - 1) * qaGapX) / 2;
+  const layoutedQANodes = qaNodes.map((node, index) => ({
+    ...node,
+    position: {
+      x: qaStartX + index * qaGapX,
+      y: qaBaseY,
+    },
+  }));
+
+  const nonAgentNodes = [...layoutedDagreNodes, ...layoutedSupervisorNodes, ...layoutedQANodes];
+  const maxFlowX = nonAgentNodes.reduce((acc, node) => {
+    const { width } = getNodeDimensions(node);
+    return Math.max(acc, node.position.x + width);
+  }, maxDagreX);
+  const minFlowY = nonAgentNodes.reduce((acc, node) => Math.min(acc, node.position.y), minDagreY);
 
   const roleOrder: Record<string, number> = {
     leader: 0,
@@ -123,12 +189,15 @@ function getLayoutedElements(nodes: Node[], edges: Edge[]) {
   const layoutedAgentNodes = sortedAgentNodes.map((node, index) => ({
     ...node,
     position: {
-      x: maxFlowX + 220,
-      y: minFlowY + index * 170,
+      x: maxFlowX + 260,
+      y: minFlowY + index * 180,
     },
   }));
 
-  return { nodes: [...layoutedFlowNodes, ...layoutedAgentNodes], edges };
+  return {
+    nodes: [...layoutedDagreNodes, ...layoutedSupervisorNodes, ...layoutedQANodes, ...layoutedAgentNodes],
+    edges,
+  };
 }
 
 interface MissionFlowCanvasProps {
@@ -152,6 +221,13 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
   const pollingInFlightRef = useRef(false);
   const previousStructureSignatureRef = useRef<string>('');
   const previousMissionIdRef = useRef<string | null>(null);
+  const scopedMissionEvents = useMemo(
+    () =>
+      selectLatestMissionRunEvents(
+        missionEvents.filter((event) => event.mission_id === missionId)
+      ),
+    [missionEvents, missionId]
+  );
 
   // Load data
   useEffect(() => {
@@ -345,7 +421,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     }
 
     // Clarification node for clarification events
-    const getClarificationText = (event: typeof missionEvents[number]): string => {
+    const getClarificationText = (event: (typeof scopedMissionEvents)[number]): string => {
       const maybeQuestions = event.event_data?.questions;
       if (
         (event.event_type === 'USER_CLARIFICATION_REQUESTED' ||
@@ -358,7 +434,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
       return event.message || '';
     };
 
-    const clarificationEvents = missionEvents.filter(
+    const clarificationEvents = scopedMissionEvents.filter(
       (e) =>
         e.event_type === 'USER_CLARIFICATION_REQUESTED' ||
         e.event_type === 'clarification_request' ||
@@ -393,6 +469,26 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     // Task nodes
     const parentEdgeSource = nodes.find((n) => n.id === 'requirements') ? 'requirements' : 'mission';
     missionTasks.forEach((task) => {
+      const reviewStatus =
+        typeof task.task_metadata?.review_status === 'string'
+          ? task.task_metadata.review_status
+          : '';
+      const assignmentSource =
+        typeof task.task_metadata?.assignment_source === 'string'
+          ? task.task_metadata.assignment_source
+          : '';
+      const dependencyLevel =
+        typeof task.task_metadata?.dependency_level === 'number'
+          ? task.task_metadata.dependency_level
+          : undefined;
+      const visualTaskStatus =
+        task.status === 'completed' &&
+        reviewStatus !== 'approved' &&
+        selectedMission.status !== 'completed' &&
+        selectedMission.status !== 'qa'
+          ? 'reviewing'
+          : task.status;
+
       nodes.push({
         id: `task-${task.task_id}`,
         type: 'taskNode',
@@ -400,13 +496,17 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
         data: {
           task_id: task.task_id,
           goal_text: task.goal_text,
-          status: task.status,
+          status: visualTaskStatus,
           priority: task.priority,
           assigned_agent_name:
             task.assigned_agent_name ||
             (task.assigned_agent_id
               ? agentNameById.get(task.assigned_agent_id)
-              : undefined),
+              : assignmentSource === 'temporary_fallback_pending'
+                ? t('missions.assignmentTempPending', 'Temporary fallback')
+                : undefined),
+          assignment_source: assignmentSource,
+          dependency_level: dependencyLevel,
           acceptance_criteria: task.acceptance_criteria,
         },
       });
@@ -489,14 +589,14 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     });
 
     // Review events as supervisor nodes
-    const reviewEvents = missionEvents
+    const reviewEvents = scopedMissionEvents
       .filter((e) => e.event_type === 'TASK_REVIEWED' || e.event_type === 'task_review')
       .slice()
       .sort(
         (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       );
-    const latestReviewByTask = new Map<string, (typeof missionEvents)[number]>();
-    const detachedReviewEvents: (typeof missionEvents)[number][] = [];
+    const latestReviewByTask = new Map<string, (typeof scopedMissionEvents)[number]>();
+    const detachedReviewEvents: (typeof scopedMissionEvents)[number][] = [];
     reviewEvents.forEach((event) => {
       if (event.task_id) {
         latestReviewByTask.set(String(event.task_id), event);
@@ -538,7 +638,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     });
 
     // QA events
-    const qaEvents = missionEvents.filter(
+    const qaEvents = scopedMissionEvents.filter(
       (e) => e.event_type === 'QA_VERDICT' || e.event_type === 'qa_audit'
     );
     qaEvents.forEach((event, i) => {
@@ -564,7 +664,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     });
 
     return { initialNodes: nodes, initialEdges: edges };
-  }, [selectedMission, missionTasks, missionAgents, missionEvents, t]);
+  }, [selectedMission, missionTasks, missionAgents, scopedMissionEvents, t]);
 
   // Apply layout
   const { nodes: layoutedNodes, edges: layoutedEdges } = useMemo(
@@ -573,7 +673,10 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
   );
   const structureSignature = useMemo(() => {
     const nodePart = initialNodes
-      .map((node) => `${node.id}:${node.type || 'default'}`)
+      .map((node) => {
+        const { width, height } = getNodeDimensions(node);
+        return `${node.id}:${node.type || 'default'}:${width}x${height}`;
+      })
       .sort()
       .join('|');
     const edgePart = initialEdges

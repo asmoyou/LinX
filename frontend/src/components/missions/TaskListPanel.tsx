@@ -33,6 +33,77 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
   agents,
 }) => {
   const { t } = useTranslation();
+  const getAssignmentLabel = (source: string): string => {
+    switch (source) {
+      case 'leader_assigned':
+        return t('missions.assignmentLeader', 'Leader assigned');
+      case 'team_blueprint_assigned':
+        return t('missions.assignmentBlueprint', 'Team blueprint');
+      case 'platform_auto_match_planning':
+      case 'platform_auto_match':
+        return t('missions.assignmentAutoMatch', 'Auto matched');
+      case 'temporary_fallback_pending':
+        return t('missions.assignmentTempPending', 'Temporary fallback');
+      default:
+        return t('missions.assignmentUnknown', 'Unknown');
+    }
+  };
+  const getAssignmentReasonLabel = (code: string, fallbackText: string): string => {
+    switch (code) {
+      case 'leader_assigned':
+        return t('missions.assignmentReasonLeaderAssigned', 'Planner selected an existing agent.');
+      case 'leader_assigned_agent_not_found':
+        return t(
+          'missions.assignmentReasonLeaderNotFound',
+          'Planner-selected agent unavailable, fallback policy applied.'
+        );
+      case 'team_blueprint_assigned':
+        return t(
+          'missions.assignmentReasonBlueprintAssigned',
+          'Team blueprint matched an existing platform agent.'
+        );
+      case 'team_blueprint_agent_not_found':
+        return t(
+          'missions.assignmentReasonBlueprintNotFound',
+          'Team blueprint preferred agent unavailable, fallback policy applied.'
+        );
+      case 'platform_auto_match_planning':
+      case 'platform_auto_match':
+        return t(
+          'missions.assignmentReasonAutoMatch',
+          'Auto matched by capability and context relevance.'
+        );
+      case 'no_suitable_existing_agent':
+        return t(
+          'missions.assignmentReasonNoExisting',
+          'No suitable existing agent found for this task.'
+        );
+      case 'no_available_platform_agents':
+        return t('missions.assignmentReasonNoAgents', 'No platform agents available right now.');
+      case 'prefer_temporary_workers_policy':
+        return t(
+          'missions.assignmentReasonTempPolicy',
+          'Policy allows temporary workers first for this task.'
+        );
+      case 'temporary_fallback_pending':
+        return t(
+          'missions.assignmentReasonTempPending',
+          'Temporary worker will be provisioned during execution.'
+        );
+      case 'temporary_worker_provisioned':
+        return t(
+          'missions.assignmentReasonTempProvisioned',
+          'Temporary worker was created and assigned for execution.'
+        );
+      case 'temporary_workers_disabled':
+        return t(
+          'missions.assignmentReasonTempDisabled',
+          'Temporary workers are disabled and no existing agent matched.'
+        );
+      default:
+        return fallbackText || code || t('missions.assignmentReasonUnknown', 'Policy fallback');
+    }
+  };
   const agentNameById = useMemo(
     () =>
       new Map(
@@ -99,10 +170,29 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
                 task.task_metadata && typeof task.task_metadata === 'object'
                   ? (task.task_metadata as Record<string, unknown>)
                   : {};
+              const assignmentSource =
+                typeof taskMetadata.assignment_source === 'string'
+                  ? taskMetadata.assignment_source
+                  : '';
               const owner =
                 task.assigned_agent_name ||
                 (task.assigned_agent_id ? agentNameById.get(task.assigned_agent_id) : undefined) ||
+                (assignmentSource === 'temporary_fallback_pending'
+                  ? t('missions.assignmentTempPending', 'Temporary fallback')
+                  : undefined) ||
                 t('missions.unassigned', 'Unassigned');
+              const assignmentReasonCode =
+                typeof taskMetadata.assignment_reason_code === 'string'
+                  ? taskMetadata.assignment_reason_code
+                  : '';
+              const assignmentReasonText =
+                typeof taskMetadata.assignment_reason === 'string'
+                  ? taskMetadata.assignment_reason
+                  : '';
+              const dependencyLevel =
+                typeof taskMetadata.dependency_level === 'number'
+                  ? taskMetadata.dependency_level
+                  : undefined;
               const taskResult =
                 task.result && typeof task.result === 'object'
                   ? (task.result as Record<string, unknown>)
@@ -153,6 +243,10 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
                     </span>
                     <span>•</span>
                     <span>
+                      {t('missions.assignmentSource', 'Assignment')}: {getAssignmentLabel(assignmentSource)}
+                    </span>
+                    <span>•</span>
+                    <span>
                       {t('missions.priorityShort', 'P')}: {task.priority ?? 0}
                     </span>
                     <span>•</span>
@@ -160,7 +254,21 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
                       {t('missions.dependenciesShort', 'Deps')}:{' '}
                       {Array.isArray(task.dependencies) ? task.dependencies.length : 0}
                     </span>
+                    {typeof dependencyLevel === 'number' && (
+                      <>
+                        <span>•</span>
+                        <span>
+                          {t('missions.executionWave', 'Wave')}: {dependencyLevel + 1}
+                        </span>
+                      </>
+                    )}
                   </div>
+                  {(assignmentReasonCode || assignmentReasonText) && (
+                    <div className="mt-1 text-[11px] text-zinc-500">
+                      {t('missions.assignmentReason', 'Reason')}:{' '}
+                      {getAssignmentReasonLabel(assignmentReasonCode, assignmentReasonText)}
+                    </div>
+                  )}
                   {(lastError || attempts.length > 0) && (
                     <div className="mt-2 rounded-md border border-red-200/70 dark:border-red-500/30 bg-red-50/70 dark:bg-red-500/5 px-2.5 py-2">
                       <div className="text-[11px] text-red-700 dark:text-red-300">

@@ -35,7 +35,7 @@ export const MissionControls: React.FC<MissionControlsProps> = ({
   if (!selectedMission) return null;
 
   const canStart = selectedMission.status === 'draft';
-  const canRetry = selectedMission.status === 'failed';
+  const canRetry = selectedMission.status === 'failed' || selectedMission.status === 'cancelled';
   const canCancel = ['requirements', 'planning', 'executing', 'reviewing', 'qa'].includes(
     selectedMission.status
   );

@@ -37,6 +37,7 @@ type PreviewKind =
   | 'error';
 
 type MarkdownViewMode = 'source' | 'preview';
+type DeliverablesSection = 'final' | 'workspace';
 const DELIVERABLES_POLL_INTERVAL_MS = 10_000;
 
 interface FileEntry {
@@ -45,6 +46,8 @@ interface FileEntry {
   size: number;
   source: 'deliverable' | 'workspace';
   isTarget: boolean;
+  sourceScope?: string;
+  artifactKind?: 'final' | 'intermediate';
   deliverable?: MissionDeliverable;
 }
 
@@ -55,6 +58,8 @@ interface FileTreeNode {
   source: 'deliverable' | 'workspace';
   size?: number;
   isTarget?: boolean;
+  sourceScope?: string;
+  artifactKind?: 'final' | 'intermediate';
   deliverable?: MissionDeliverable;
   children?: FileTreeNode[];
 }
@@ -182,6 +187,8 @@ function buildFileTree(entries: FileEntry[]): FileTreeNode[] {
           source: entry.source,
           size: entry.size,
           isTarget: entry.isTarget,
+          sourceScope: entry.sourceScope,
+          artifactKind: entry.artifactKind,
           deliverable: entry.deliverable,
         });
       } else {
@@ -228,6 +235,7 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [activeSection, setActiveSection] = useState<DeliverablesSection>('final');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [previewKind, setPreviewKind] = useState<PreviewKind>('empty');
@@ -322,6 +330,7 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
       deliverablesSignatureRef.current = '';
       workspaceFilesSignatureRef.current = '';
       lastPreviewKeyRef.current = '';
+      setActiveSection('final');
       setExpandedFolders(new Set());
       setSelectedPath(null);
       resetPreview();
@@ -341,7 +350,34 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
     };
   }, [isOpen, loadPanelFiles, resetPreview]);
 
-  const fileEntries = useMemo<FileEntry[]>(() => {
+  const finalDeliverables = useMemo(
+    () => deliverables.filter((item) => item.is_target === true),
+    [deliverables]
+  );
+  const intermediateDeliverables = useMemo(
+    () => deliverables.filter((item) => item.is_target !== true),
+    [deliverables]
+  );
+
+  const finalEntries = useMemo<FileEntry[]>(() => {
+    return finalDeliverables
+      .map((item) => {
+        const normalized = normalizePath(item.filename || item.path);
+        return {
+          path: normalized,
+          name: normalized.split('/').pop() || item.filename || item.path,
+          size: item.size,
+          source: 'deliverable' as const,
+          isTarget: true,
+          sourceScope: item.source_scope || 'output',
+          artifactKind: item.artifact_kind || 'final',
+          deliverable: item,
+        };
+      })
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }, [finalDeliverables]);
+
+  const workspaceEntries = useMemo<FileEntry[]>(() => {
     const entryByPath = new Map<string, FileEntry>();
 
     workspaceFiles.forEach((item) => {
@@ -352,33 +388,43 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
         size: item.size,
         source: 'workspace',
         isTarget: false,
+        sourceScope: 'workspace',
+        artifactKind: 'intermediate',
       });
     });
 
-    deliverables.forEach((item) => {
+    intermediateDeliverables.forEach((item) => {
       const normalized = normalizePath(item.filename || item.path);
       const existing = entryByPath.get(normalized);
       if (existing) {
         entryByPath.set(normalized, {
           ...existing,
-          isTarget: existing.isTarget || Boolean(item.is_target),
           deliverable: item,
+          sourceScope: item.source_scope || existing.sourceScope || 'workspace',
+          artifactKind: item.artifact_kind || 'intermediate',
         });
         return;
       }
 
       entryByPath.set(normalized, {
         path: normalized,
-        name: item.filename ? item.filename.split('/').pop() || item.filename : item.path,
+        name: normalized.split('/').pop() || item.filename || item.path,
         size: item.size,
         source: 'deliverable',
-        isTarget: Boolean(item.is_target),
+        isTarget: false,
+        sourceScope: item.source_scope || 'shared',
+        artifactKind: item.artifact_kind || 'intermediate',
         deliverable: item,
       });
     });
 
     return Array.from(entryByPath.values()).sort((a, b) => a.path.localeCompare(b.path));
-  }, [deliverables, workspaceFiles]);
+  }, [intermediateDeliverables, workspaceFiles]);
+
+  const fileEntries = useMemo(
+    () => (activeSection === 'final' ? finalEntries : workspaceEntries),
+    [activeSection, finalEntries, workspaceEntries]
+  );
 
   const fileTree = useMemo(() => buildFileTree(fileEntries), [fileEntries]);
   const selectedNode = useMemo(
@@ -425,23 +471,46 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
     });
   };
 
+  const handleSwitchSection = useCallback(
+    (nextSection: DeliverablesSection) => {
+      if (nextSection === activeSection) return;
+      setActiveSection(nextSection);
+      setExpandedFolders(new Set());
+      setSelectedPath(null);
+      lastPreviewKeyRef.current = '';
+      resetPreview();
+    },
+    [activeSection, resetPreview]
+  );
+
+  const resolveNodeBlob = useCallback(
+    async (node: FileTreeNode): Promise<Blob> => {
+      if (node.source === 'workspace') {
+        try {
+          return await missionsApi.downloadWorkspaceFile(missionId, node.path);
+        } catch (workspaceError) {
+          if (node.deliverable) {
+            return missionsApi.downloadDeliverable(missionId, node.deliverable.path);
+          }
+          throw workspaceError;
+        }
+      }
+
+      if (node.deliverable) {
+        return missionsApi.downloadDeliverable(missionId, node.deliverable.path);
+      }
+
+      throw new Error(t('missions.deliverableUnavailable', 'The file is temporarily unavailable.'));
+    },
+    [missionId, t]
+  );
+
   const loadPreview = useCallback(
     async (node: FileTreeNode) => {
       resetPreview();
       setPreviewKind('loading');
       try {
-        let blob: Blob;
-        if (node.source === 'workspace') {
-          blob = await missionsApi.downloadWorkspaceFile(missionId, node.path);
-        } else if (node.deliverable) {
-          blob = await missionsApi.downloadDeliverable(missionId, node.deliverable.path);
-        } else {
-          setPreviewKind('unsupported');
-          setPreviewMessage(
-            t('missions.deliverableUnavailable', 'The file is temporarily unavailable.')
-          );
-          return;
-        }
+        const blob = await resolveNodeBlob(node);
 
         const ext = getExtension(node.name);
         const mime = blob.type || 'application/octet-stream';
@@ -491,7 +560,7 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
         );
       }
     },
-    [missionId, resetPreview, t]
+    [resetPreview, resolveNodeBlob, t]
   );
 
   useEffect(() => {
@@ -515,13 +584,7 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
     if (node.type !== 'file') return;
 
     try {
-      const blob =
-        node.source === 'workspace'
-          ? await missionsApi.downloadWorkspaceFile(missionId, node.path)
-          : node.deliverable
-            ? await missionsApi.downloadDeliverable(missionId, node.deliverable.path)
-            : null;
-      if (!blob) return;
+      const blob = await resolveNodeBlob(node);
 
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -585,6 +648,13 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
           {node.isTarget && (
             <Star className="w-3 h-3 text-amber-500 flex-shrink-0" />
           )}
+          {activeSection === 'workspace' && (
+            <span className="text-[10px] text-zinc-400 flex-shrink-0 uppercase">
+              {node.source === 'workspace'
+                ? t('missions.liveWorkspaceTag', 'live')
+                : t('missions.persistedArtifactTag', 'artifact')}
+            </span>
+          )}
           <span className="text-[10px] text-zinc-400 flex-shrink-0">
             {formatFileSize(node.size || 0)}
           </span>
@@ -609,7 +679,7 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
           <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 truncate">
             {t('missions.deliverables')}
           </h3>
-          <span className="text-xs text-zinc-400">({fileEntries.length})</span>
+          <span className="text-xs text-zinc-400">({activeSection === 'final' ? finalEntries.length : workspaceEntries.length})</span>
         </div>
         <button
           type="button"
@@ -618,6 +688,38 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
         >
           <X className="w-4 h-4 text-zinc-500" />
         </button>
+      </div>
+
+      <div className="px-4 py-2 border-b border-zinc-200 dark:border-zinc-700 space-y-2">
+        <div className="inline-flex items-center rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-100/60 dark:bg-zinc-800/70 p-0.5">
+          <button
+            type="button"
+            onClick={() => handleSwitchSection('final')}
+            className={`px-3 py-1 text-xs rounded-md transition-colors ${
+              activeSection === 'final'
+                ? 'bg-emerald-600 text-white'
+                : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+            }`}
+          >
+            {t('missions.targetDeliverables')} ({finalEntries.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSwitchSection('workspace')}
+            className={`px-3 py-1 text-xs rounded-md transition-colors ${
+              activeSection === 'workspace'
+                ? 'bg-emerald-600 text-white'
+                : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+            }`}
+          >
+            {t('missions.workspaceProcessFiles')} ({workspaceEntries.length})
+          </button>
+        </div>
+        <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+          {activeSection === 'final'
+            ? t('missions.finalDeliverablesHint')
+            : t('missions.workspaceProcessHint')}
+        </p>
       </div>
 
       <div className="flex-1 min-h-0">
@@ -632,7 +734,9 @@ export const DeliverablesPanel: React.FC<DeliverablesPanelProps> = ({
           </div>
         ) : fileTree.length === 0 ? (
           <div className="flex items-center justify-center h-full text-zinc-400 text-sm px-4 text-center">
-            {t('missions.noDeliverablesYet')}
+            {activeSection === 'final'
+              ? t('missions.noFinalDeliverablesYet')
+              : t('missions.noWorkspaceFilesYet')}
           </div>
         ) : (
           <div className="h-full min-h-0 flex overflow-hidden">

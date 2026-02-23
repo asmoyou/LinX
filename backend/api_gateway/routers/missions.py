@@ -6,12 +6,17 @@ through their full lifecycle.
 
 import io
 import mimetypes
+import re
+import tempfile
+import zipfile
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from access_control.permissions import CurrentUser, get_current_user
 from shared.logging import get_logger
@@ -19,6 +24,8 @@ from shared.logging import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter()
+KNOWN_DELIVERABLE_SOURCE_SCOPES = {"output", "shared", "tasks", "logs", "input", "unknown"}
+ALLOWED_DELIVERABLE_SCOPES = {"all", "final", "intermediate"}
 
 
 # ------------------------------------------------------------------
@@ -174,6 +181,105 @@ def _mission_to_response(m) -> dict:
     }
 
 
+def _infer_deliverable_source_scope(filename: str) -> str:
+    normalized = str(filename or "").replace("\\", "/").lstrip("/")
+    head = normalized.split("/", 1)[0].strip().lower() if normalized else ""
+    if head in KNOWN_DELIVERABLE_SOURCE_SCOPES:
+        return head
+    return "unknown"
+
+
+def _normalize_deliverable_item(item: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(item, dict):
+        return None
+
+    storage_path = item.get("path")
+    if not isinstance(storage_path, str) or not storage_path.strip():
+        return None
+
+    normalized = dict(item)
+    filename = str(normalized.get("filename") or "").strip()
+    raw_scope = str(normalized.get("source_scope") or "").strip().lower()
+
+    raw_is_target = normalized.get("is_target")
+    inferred_is_target: Optional[bool] = None
+    if isinstance(raw_is_target, bool):
+        inferred_is_target = raw_is_target
+    elif raw_is_target is not None:
+        inferred_is_target = bool(raw_is_target)
+
+    if raw_scope in KNOWN_DELIVERABLE_SOURCE_SCOPES:
+        source_scope = raw_scope
+    else:
+        source_scope = _infer_deliverable_source_scope(filename)
+        if source_scope == "unknown" and inferred_is_target is not None:
+            source_scope = "output" if inferred_is_target else "shared"
+
+    is_target = inferred_is_target if inferred_is_target is not None else source_scope == "output"
+    raw_kind = str(normalized.get("artifact_kind") or "").strip().lower()
+    artifact_kind = raw_kind if raw_kind in {"final", "intermediate"} else (
+        "final" if is_target else "intermediate"
+    )
+
+    normalized["filename"] = filename or storage_path.split("/", 1)[-1]
+    normalized["path"] = storage_path
+    normalized["is_target"] = bool(is_target)
+    normalized["source_scope"] = source_scope
+    normalized["artifact_kind"] = artifact_kind
+    return normalized
+
+
+def _normalize_mission_deliverables(raw_items: Any) -> List[Dict[str, Any]]:
+    items = raw_items if isinstance(raw_items, list) else []
+    normalized: List[Dict[str, Any]] = []
+    for item in items:
+        parsed = _normalize_deliverable_item(item)
+        if parsed is not None:
+            normalized.append(parsed)
+    return normalized
+
+
+def _filter_deliverables_by_scope(
+    items: List[Dict[str, Any]],
+    scope: str = "all",
+) -> List[Dict[str, Any]]:
+    if scope == "all":
+        return items
+    if scope == "final":
+        return [
+            item
+            for item in items
+            if item.get("artifact_kind") == "final" or bool(item.get("is_target"))
+        ]
+    if scope == "intermediate":
+        return [
+            item
+            for item in items
+            if item.get("artifact_kind") == "intermediate" or not bool(item.get("is_target"))
+        ]
+    return items
+
+
+def _get_latest_run_boundary_ts(mission_id: UUID) -> Optional[datetime]:
+    """Return timestamp of latest mission run boundary event, if present."""
+    from database.connection import get_db_session
+    from database.mission_models import MissionEvent
+
+    with get_db_session() as session:
+        boundary = (
+            session.query(MissionEvent.created_at)
+            .filter(
+                MissionEvent.mission_id == mission_id,
+                MissionEvent.event_type.in_(["MISSION_STARTED", "MISSION_RETRY_REQUESTED"]),
+            )
+            .order_by(MissionEvent.created_at.desc())
+            .first()
+        )
+    if boundary is None:
+        return None
+    return boundary[0]
+
+
 def _assert_mission_accessible(mission_id: UUID, user_id: str):
     """Ensure the mission exists and belongs to the current user."""
     from mission_system.mission_repository import get_mission as repo_get
@@ -217,6 +323,8 @@ async def create_mission(
             "network_access",
             "debug_mode",
             "enable_team_blueprint",
+            "prefer_existing_agents",
+            "allow_temporary_workers",
             "auto_select_temp_skills",
             "temp_worker_skill_limit",
             "temp_worker_memory_scopes",
@@ -535,7 +643,7 @@ async def retry_mission(
     mission_id: UUID,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Manually retry a failed mission from a clean execution state."""
+    """Manually retry a failed/cancelled mission from a clean execution state."""
     from mission_system.event_emitter import get_event_emitter
     from mission_system.mission_repository import (
         get_mission as repo_get,
@@ -544,15 +652,19 @@ async def retry_mission(
     from mission_system.orchestrator import get_orchestrator
 
     mission = _assert_mission_accessible(mission_id, current_user.user_id)
-    if mission.status != "failed":
-        raise HTTPException(status_code=400, detail="Only failed missions can be retried")
+    if mission.status not in {"failed", "cancelled"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Only failed or cancelled missions can be retried",
+        )
 
     previous_error = mission.error_message
+    previous_status = mission.status
     reset_failed_mission_for_retry(mission_id)
     get_event_emitter().emit(
         mission_id=mission_id,
         event_type="MISSION_RETRY_REQUESTED",
-        data={"previous_error": previous_error},
+        data={"previous_error": previous_error, "previous_status": previous_status},
         message="Manual retry requested",
     )
 
@@ -686,6 +798,7 @@ async def list_mission_events(
     mission_id: UUID,
     event_type: Optional[str] = None,
     limit: int = 100,
+    latest_run_only: bool = False,
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """List events for a mission."""
@@ -694,6 +807,10 @@ async def list_mission_events(
     from mission_system.mission_repository import list_events
 
     events = list_events(mission_id, event_type=event_type, limit=limit)
+    if latest_run_only:
+        boundary_ts = _get_latest_run_boundary_ts(mission_id)
+        if boundary_ts is not None:
+            events = [event for event in events if event.created_at and event.created_at >= boundary_ts]
     return [
         {
             "event_id": e.event_id,
@@ -712,13 +829,27 @@ async def list_mission_events(
 @router.get("/{mission_id}/deliverables")
 async def list_deliverables(
     mission_id: UUID,
+    scope: str = "all",
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """List deliverables produced by a completed mission."""
+    """List mission artifacts.
+
+    scope:
+    - all: final deliverables + intermediate/process artifacts.
+    - final: target/final deliverables only.
+    - intermediate: non-target process artifacts only.
+    """
     mission = _assert_mission_accessible(mission_id, current_user.user_id)
+    normalized_scope = (scope or "all").strip().lower()
+    if normalized_scope not in ALLOWED_DELIVERABLE_SCOPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid scope: {scope}. Allowed values: all, final, intermediate",
+        )
 
     result = mission.result or {}
-    return result.get("deliverables", [])
+    items = _normalize_mission_deliverables(result.get("deliverables", []))
+    return _filter_deliverables_by_scope(items, normalized_scope)
 
 
 @router.get("/{mission_id}/deliverables/download")
@@ -737,7 +868,7 @@ async def download_deliverable(
     if mission.created_by_user_id != UUID(current_user.user_id):
         raise HTTPException(status_code=404, detail="Mission not found")
 
-    deliverables = (mission.result or {}).get("deliverables", [])
+    deliverables = _normalize_mission_deliverables((mission.result or {}).get("deliverables", []))
     matched = next(
         (item for item in deliverables if isinstance(item, dict) and item.get("path") == path),
         None,
@@ -758,6 +889,104 @@ async def download_deliverable(
     media_type = (metadata or {}).get("content_type") or "application/octet-stream"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return StreamingResponse(stream, media_type=media_type, headers=headers)
+
+
+@router.get("/{mission_id}/deliverables/archive")
+async def download_deliverables_archive(
+    mission_id: UUID,
+    target_only: bool = False,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Download mission deliverables as a zip archive.
+
+    Args:
+        mission_id: Mission identifier.
+        target_only: When true, include only deliverables marked as `is_target`.
+    """
+    from mission_system.mission_repository import get_mission as repo_get
+    from object_storage.minio_client import get_minio_client
+
+    mission = repo_get(mission_id)
+    if mission is None:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    if mission.created_by_user_id != UUID(current_user.user_id):
+        raise HTTPException(status_code=404, detail="Mission not found")
+
+    raw_deliverables = _normalize_mission_deliverables((mission.result or {}).get("deliverables", []))
+    deliverables = _filter_deliverables_by_scope(
+        raw_deliverables,
+        "final" if target_only else "all",
+    )
+
+    if not deliverables:
+        raise HTTPException(status_code=404, detail="No deliverables available for archive")
+
+    minio = get_minio_client()
+    archive_file = tempfile.SpooledTemporaryFile(max_size=20 * 1024 * 1024, mode="w+b")
+    used_arc_names: set[str] = set()
+
+    def _normalize_archive_path(value: str, index: int) -> str:
+        normalized = str(value or "").replace("\\", "/").strip("/")
+        safe_parts = [part for part in normalized.split("/") if part not in {"", ".", ".."}]
+        if not safe_parts:
+            return f"file-{index}"
+        candidate = "/".join(safe_parts)
+        if candidate not in used_arc_names:
+            return candidate
+
+        base, ext = (candidate.rsplit(".", 1) + [""])[:2] if "." in candidate else (candidate, "")
+        suffix = 2
+        while True:
+            next_name = f"{base}-{suffix}.{ext}" if ext else f"{base}-{suffix}"
+            if next_name not in used_arc_names:
+                return next_name
+            suffix += 1
+
+    with zipfile.ZipFile(archive_file, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for index, item in enumerate(deliverables, start=1):
+            storage_path = str(item.get("path") or "")
+            if "/" not in storage_path:
+                continue
+            bucket_name, object_key = storage_path.split("/", 1)
+            filename = str(item.get("filename") or object_key.rsplit("/", 1)[-1])
+            arcname = _normalize_archive_path(filename, index)
+
+            try:
+                stream, _metadata = minio.download_file(bucket_name, object_key)
+                content = stream.read()
+                if hasattr(stream, "close"):
+                    stream.close()
+            except Exception as exc:
+                logger.warning(
+                    "Skipping deliverable while building archive",
+                    extra={
+                        "mission_id": str(mission_id),
+                        "path": storage_path,
+                        "error": str(exc),
+                    },
+                )
+                continue
+
+            zf.writestr(arcname, content)
+            used_arc_names.add(arcname)
+
+    if not used_arc_names:
+        archive_file.close()
+        raise HTTPException(status_code=404, detail="No downloadable deliverables found")
+
+    archive_file.seek(0)
+    safe_title = re.sub(r"[^a-zA-Z0-9_-]+", "_", mission.title or "mission").strip("_")
+    if not safe_title:
+        safe_title = "mission"
+    scope_suffix = "targets" if target_only else "all"
+    archive_name = f"{safe_title}_{scope_suffix}_deliverables.zip"
+    headers = {"Content-Disposition": f'attachment; filename="{archive_name}"'}
+    return StreamingResponse(
+        archive_file,
+        media_type="application/zip",
+        headers=headers,
+        background=BackgroundTask(archive_file.close),
+    )
 
 
 @router.get("/{mission_id}/workspace/files")

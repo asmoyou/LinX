@@ -92,6 +92,8 @@ export interface MissionDeliverable {
   size: number;
   download_url: string;
   is_target: boolean;
+  source_scope?: 'output' | 'shared' | 'tasks' | 'logs' | 'input' | 'unknown';
+  artifact_kind?: 'final' | 'intermediate';
 }
 
 export interface MissionTask {

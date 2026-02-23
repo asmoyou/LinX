@@ -94,7 +94,7 @@ def test_delete_mission_deletes_existing_row(monkeypatch):
     assert deleted["count"] == 1
 
 
-def test_reset_failed_mission_for_retry_rejects_non_failed(monkeypatch):
+def test_reset_failed_mission_for_retry_rejects_non_retryable_status(monkeypatch):
     mission = type("MissionStub", (), {"status": "completed"})()
 
     class _MissionQuery:
@@ -114,7 +114,7 @@ def test_reset_failed_mission_for_retry_rejects_non_failed(monkeypatch):
 
     monkeypatch.setattr(mission_repository, "get_db_session", _fake_db_session)
 
-    with pytest.raises(ValueError, match="Only failed missions can be retried"):
+    with pytest.raises(ValueError, match="Only failed or cancelled missions can be retried"):
         mission_repository.reset_failed_mission_for_retry(uuid4())
 
 
@@ -201,3 +201,68 @@ def test_reset_failed_mission_for_retry_clears_runtime_state(monkeypatch):
     assert "qa_cycle_count" not in (reset.mission_config or {})
     assert delete_calls["tasks"] == 1
     assert delete_calls["agents"] == 1
+
+
+def test_reset_failed_mission_for_retry_accepts_cancelled(monkeypatch):
+    mission = type(
+        "MissionStub",
+        (),
+        {
+            "mission_id": uuid4(),
+            "status": "cancelled",
+            "error_message": "cancelled by user",
+            "result": {"deliverables": []},
+            "requirements_doc": "old requirements",
+            "total_tasks": 4,
+            "completed_tasks": 1,
+            "failed_tasks": 1,
+            "started_at": object(),
+            "completed_at": object(),
+            "container_id": "container-1",
+            "workspace_bucket": "bucket-1",
+            "mission_config": {"qa_cycle_count": 2},
+        },
+    )()
+
+    class _MissionQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return mission
+
+    class _DeleteQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def delete(self, synchronize_session=False):
+            assert synchronize_session is False
+            return 1
+
+    class _FakeSession:
+        def query(self, model, *args, **kwargs):
+            model_name = getattr(model, "__name__", str(model))
+            if model_name == "Mission":
+                return _MissionQuery()
+            if model_name in {"Task", "MissionAgent"}:
+                return _DeleteQuery()
+            raise AssertionError(f"Unexpected model query: {model_name}")
+
+        def flush(self):
+            return None
+
+        def refresh(self, _obj):
+            return None
+
+        def expunge(self, _obj):
+            return None
+
+    @contextmanager
+    def _fake_db_session():
+        yield _FakeSession()
+
+    monkeypatch.setattr(mission_repository, "get_db_session", _fake_db_session)
+
+    reset = mission_repository.reset_failed_mission_for_retry(mission.mission_id)
+    assert reset.status == "draft"
+    assert reset.error_message is None

@@ -489,6 +489,12 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
                       {t('missions.preferExistingAgents')}
                     </span>
                   </div>
+                  <p className="col-span-2 -mt-2 text-[11px] text-zinc-400">
+                    {t(
+                      'missions.preferExistingAgentsHint',
+                      'When enabled, planner/executor will try existing agents first, then fallback by policy.'
+                    )}
+                  </p>
                   <div className="col-span-2 flex items-center gap-3">
                     <label className="relative inline-flex items-center cursor-pointer">
                       <input
@@ -508,6 +514,12 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
                       {t('missions.allowTemporaryWorkers')}
                     </span>
                   </div>
+                  <p className="col-span-2 -mt-2 text-[11px] text-zinc-400">
+                    {t(
+                      'missions.allowTemporaryWorkersHint',
+                      'When enabled, tasks without suitable existing agents will create temporary specialists automatically.'
+                    )}
+                  </p>
                   <div className="col-span-2 flex items-center gap-3">
                     <label className="relative inline-flex items-center cursor-pointer">
                       <input

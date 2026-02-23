@@ -58,6 +58,8 @@ class DeliverableInfo:
     size: int
     download_url: Optional[str] = None
     is_target: bool = True
+    source_scope: str = "output"
+    artifact_kind: str = "final"
 
 
 class MissionWorkspaceManager:
@@ -343,15 +345,15 @@ class MissionWorkspaceManager:
         minio = get_minio_client()
         deliverables: List[DeliverableInfo] = []
         source_dirs = [
-            (f"{WORKSPACE_ROOT}/output", True),
-            (f"{WORKSPACE_ROOT}/shared", False),
-            (f"{WORKSPACE_ROOT}/tasks", False),
-            (f"{WORKSPACE_ROOT}/logs", False),
-            (f"{WORKSPACE_ROOT}/input", False),
+            (f"{WORKSPACE_ROOT}/output", True, "output"),
+            (f"{WORKSPACE_ROOT}/shared", False, "shared"),
+            (f"{WORKSPACE_ROOT}/tasks", False, "tasks"),
+            (f"{WORKSPACE_ROOT}/logs", False, "logs"),
+            (f"{WORKSPACE_ROOT}/input", False, "input"),
         ]
 
         seen_filepaths = set()
-        for source_dir, is_target in source_dirs:
+        for source_dir, is_target, source_scope in source_dirs:
             exit_code, stdout, _stderr = self._container_manager.exec_in_container(
                 workspace.container_id,
                 f"find '{source_dir}' -type f -printf '%s %p\\n'",
@@ -395,6 +397,57 @@ class MissionWorkspaceManager:
                         path=f"{bucket_name}/{object_key}",
                         size=int(size_str) if size_str.isdigit() else len(file_bytes),
                         is_target=is_target,
+                        source_scope=source_scope,
+                        artifact_kind="final" if is_target else "intermediate",
+                    )
+                )
+
+        # Compatibility fallback:
+        # Some agent outputs are written to /workspace root instead of /workspace/output.
+        # Persist these root files as final deliverables so users can still retrieve them.
+        exit_code, stdout, _stderr = self._container_manager.exec_in_container(
+            workspace.container_id,
+            f"find '{WORKSPACE_ROOT}' -maxdepth 1 -type f -printf '%s %p\\n'",
+        )
+        if exit_code == 0 and stdout.strip():
+            for line in stdout.strip().splitlines():
+                parts = line.split(None, 1)
+                if len(parts) != 2:
+                    continue
+                size_str, filepath = parts
+                if filepath in seen_filepaths:
+                    continue
+                seen_filepaths.add(filepath)
+
+                relative_path = filepath.replace(f"{WORKSPACE_ROOT}/", "", 1)
+                if not relative_path:
+                    continue
+
+                rc, content, err = self._container_manager.exec_in_container(
+                    workspace.container_id,
+                    f"base64 '{filepath}'",
+                )
+                if rc != 0:
+                    logger.warning("Failed to read root deliverable %s: %s", relative_path, err)
+                    continue
+
+                file_bytes = base64.b64decode(content.strip())
+                file_stream = io.BytesIO(file_bytes)
+                bucket_name, object_key = minio.upload_file(
+                    bucket_type="artifacts",
+                    file_data=file_stream,
+                    filename=relative_path,
+                    user_id=str(mission_id),
+                )
+
+                deliverables.append(
+                    DeliverableInfo(
+                        filename=relative_path,
+                        path=f"{bucket_name}/{object_key}",
+                        size=int(size_str) if size_str.isdigit() else len(file_bytes),
+                        is_target=True,
+                        source_scope="output",
+                        artifact_kind="final",
                     )
                 )
 

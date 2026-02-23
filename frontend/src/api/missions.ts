@@ -140,6 +140,7 @@ export const missionsApi = {
   getEvents: async (missionId: string, params?: {
     limit?: number;
     offset?: number;
+    latest_run_only?: boolean;
   }): Promise<MissionEvent[]> => {
     const response = await apiClient.get<MissionEvent[]>(
       `/missions/${missionId}/events`,
@@ -148,9 +149,13 @@ export const missionsApi = {
     return response.data;
   },
 
-  getDeliverables: async (missionId: string): Promise<MissionDeliverable[]> => {
+  getDeliverables: async (
+    missionId: string,
+    params?: { scope?: 'all' | 'final' | 'intermediate' }
+  ): Promise<MissionDeliverable[]> => {
     const response = await apiClient.get<MissionDeliverable[]>(
-      `/missions/${missionId}/deliverables`
+      `/missions/${missionId}/deliverables`,
+      { params }
     );
     return response.data;
   },
@@ -161,6 +166,38 @@ export const missionsApi = {
       { params: { path }, responseType: 'blob' }
     );
     return response.data;
+  },
+
+  downloadDeliverablesArchive: async (
+    missionId: string,
+    options?: { targetOnly?: boolean }
+  ): Promise<{ blob: Blob; filename?: string }> => {
+    const response = await apiClient.get(
+      `/missions/${missionId}/deliverables/archive`,
+      {
+        params: { target_only: options?.targetOnly ?? false },
+        responseType: 'blob',
+      }
+    );
+
+    const disposition = response.headers['content-disposition'] as string | undefined;
+    let filename: string | undefined;
+    if (disposition) {
+      const utf8Match = disposition.match(/filename\*=UTF-8''(.+)/i);
+      if (utf8Match) {
+        filename = decodeURIComponent(utf8Match[1]);
+      } else {
+        const basicMatch = disposition.match(/filename="?([^";\n]+)"?/i);
+        if (basicMatch) {
+          filename = basicMatch[1].trim();
+        }
+      }
+    }
+
+    return {
+      blob: response.data,
+      filename,
+    };
   },
 
   getWorkspaceFiles: async (

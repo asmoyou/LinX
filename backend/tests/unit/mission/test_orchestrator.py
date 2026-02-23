@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from types import SimpleNamespace
+from typing import List
 from uuid import uuid4
 
 import pytest
@@ -18,6 +19,55 @@ def test_extract_binary_verdict_prefers_explicit_fail():
 def test_extract_binary_verdict_defaults_to_fail_when_ambiguous():
     text = "No explicit verdict in this output."
     assert MissionOrchestrator._extract_binary_verdict(text) == "FAIL"
+
+
+def test_extract_qa_audit_details_parses_summary_and_issues():
+    text = """
+Summary: Deliverable has format mismatch.
+- Issue: Missing required heading.
+- 风险: 文档末尾缺少结论段。
+Final Verdict: FAIL
+"""
+    details = MissionOrchestrator._extract_qa_audit_details(text)
+    assert "format mismatch" in details["summary"]
+    assert details["issues_count"] >= 2
+    assert any("Missing required heading" in issue for issue in details["issues"])
+
+
+def test_extract_qa_audit_details_handles_pass_json_payload():
+    text = """
+```json
+{
+  "summary": "All deliverables meet requirements.",
+  "details": "No critical issues found.",
+  "verdict": "PASS"
+}
+```
+"""
+    details = MissionOrchestrator._extract_qa_audit_details(text, verdict="PASS")
+    assert details["summary"] == "All deliverables meet requirements."
+    assert details["issues_count"] == 0
+    assert details["issues"] == []
+
+
+def test_extract_qa_audit_details_handles_issue_object_payload():
+    text = """
+```json
+{
+  "summary": "```json",
+  "issues": [
+    {"issue": "Missing required output filename."},
+    {"description": "Body line spacing does not match 1.5x requirement."}
+  ],
+  "verdict": "FAIL"
+}
+```
+"""
+    details = MissionOrchestrator._extract_qa_audit_details(text, verdict="FAIL")
+    assert details["issues_count"] == 2
+    assert any("Missing required output filename" in issue for issue in details["issues"])
+    assert any("line spacing" in issue for issue in details["issues"])
+    assert details["summary"] != "```json"
 
 
 def test_get_execution_config_supports_legacy_top_level_keys():
@@ -56,6 +106,14 @@ def test_detect_instruction_language_prefers_chinese_for_cjk_text():
 def test_detect_instruction_language_defaults_to_english():
     language = MissionOrchestrator._detect_instruction_language("Build a mission planner API")
     assert language == "English"
+
+
+def test_build_text_signature_is_stable_for_equivalent_content():
+    a = MissionOrchestrator._build_text_signature("hello\nworld")
+    b = MissionOrchestrator._build_text_signature("hello\nworld")
+    c = MissionOrchestrator._build_text_signature("hello world")
+    assert a == b
+    assert a != c
 
 
 def test_get_llm_config_temporary_worker_inherits_leader_by_default():
@@ -497,6 +555,142 @@ async def test_execute_task_with_retry_prefers_platform_agent_before_temporary(m
 
 
 @pytest.mark.asyncio
+async def test_execute_task_with_retry_keeps_temporary_plan_when_existing_match_is_weak(monkeypatch):
+    mission_id = uuid4()
+    owner_user_id = uuid4()
+    matched_agent_id = uuid4()
+    temporary_agent_id = uuid4()
+    task_id = uuid4()
+    emitted_events = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+
+    mission = SimpleNamespace(
+        created_by_user_id=owner_user_id,
+        mission_config={
+            "execution_config": {
+                "prefer_existing_agents": True,
+                "allow_temporary_workers": True,
+            }
+        },
+    )
+    task_obj = SimpleNamespace(
+        task_id=task_id,
+        goal_text="Implement API endpoint",
+        acceptance_criteria="Endpoint returns valid response",
+        task_metadata={
+            "title": "Implement API endpoint",
+            "assignment_source": "temporary_fallback_pending",
+            "role_required_capabilities": [],
+        },
+        assigned_agent_id=None,
+    )
+    weak_platform_agent = SimpleNamespace(
+        agent_id=matched_agent_id,
+        name="Implement API endpoint specialist",
+        status="idle",
+        agent_type="platform",
+        capabilities=[],
+        system_prompt="General helper",
+    )
+
+    class _FakeQuery:
+        def __init__(self, task):
+            self._task = task
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return self._task
+
+    class _FakeSession:
+        def __init__(self, task):
+            self._task = task
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._task)
+
+    class _FakeSessionContext:
+        def __init__(self, task):
+            self._task = task
+
+        def __enter__(self):
+            return _FakeSession(self._task)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    db_task = SimpleNamespace(
+        status="pending",
+        assigned_agent_id=None,
+        task_metadata={},
+        result=None,
+        completed_at=None,
+    )
+
+    created_agent_ids: List[UUID] = []
+
+    async def _fake_create_registered(agent_id, owner_user_id):
+        created_agent_ids.append(agent_id)
+        if agent_id == temporary_agent_id:
+            return SimpleNamespace(agent_id=agent_id, name="temp-worker")
+        if agent_id == matched_agent_id:
+            return SimpleNamespace(agent_id=agent_id, name="weak-platform")
+        return None
+
+    async def _fake_execute_agent_task(agent, prompt):
+        return {"output": "done"}
+
+    provision_calls = {"count": 0}
+
+    def _fake_provision(self, mission_id, mission, task_obj, llm_cfg):
+        provision_calls["count"] += 1
+        task_obj.assigned_agent_id = temporary_agent_id
+        return temporary_agent_id
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.create_registered_mission_agent",
+        _fake_create_registered,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_execute_agent_task",
+        staticmethod(_fake_execute_agent_task),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_provision_temporary_worker_agent",
+        _fake_provision,
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(db_task),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_agent_status",
+        lambda mission_id, agent_id, status: None,
+    )
+
+    success = await MissionOrchestrator._execute_task_with_retry(
+        orchestrator,
+        mission_id=mission_id,
+        mission=mission,
+        task_obj=task_obj,
+        max_retries=0,
+        available_platform_agents=[weak_platform_agent],
+    )
+
+    assert success is True
+    assert provision_calls["count"] == 1
+    assert matched_agent_id not in created_agent_ids
+    assert temporary_agent_id in created_agent_ids
+    emitted_types = [event["event_type"] for event in emitted_events]
+    assert "TASK_AGENT_MATCH_REJECTED" in emitted_types
+
+
+@pytest.mark.asyncio
 async def test_execute_task_with_retry_fails_when_temp_worker_disabled_and_no_platform_match(
     monkeypatch,
 ):
@@ -708,6 +902,68 @@ def test_extract_json_object_parses_markdown_block():
     assert parsed["tasks"][0]["title"] == "t1"
 
 
+def test_evaluate_task_plan_relevance_flags_off_topic_tasks():
+    task_list = [
+        {
+            "title": "Implement checkout API",
+            "instructions": "Build order submission endpoint",
+            "acceptance_criteria": "Order can be created and validated",
+            "requirement_refs": ["checkout", "order submission"],
+        },
+        {
+            "title": "Design office party invitation",
+            "instructions": "Write celebration poster copy",
+            "acceptance_criteria": "Poster text drafted",
+            "requirement_refs": ["celebration"],
+        },
+    ]
+    report = MissionOrchestrator._evaluate_task_plan_relevance(
+        task_list,
+        anchor_text="Build ecommerce checkout and order payment flow",
+    )
+    assert len(report["scores"]) == 2
+    assert report["scores"][0] > report["scores"][1]
+    assert report["off_topic_indices"] == [1]
+
+
+def test_build_task_key_enforces_uniqueness():
+    existing = set()
+    first = MissionOrchestrator._build_task_key("Build API Contract", 0, existing)
+    second = MissionOrchestrator._build_task_key("Build API Contract", 1, existing)
+    third = MissionOrchestrator._build_task_key("", 2, existing)
+    assert first == "build_api_contract"
+    assert second == "build_api_contract_2"
+    assert third == "task_3"
+
+
+def test_resolve_task_dependency_keys_supports_mixed_references():
+    resolved = MissionOrchestrator._resolve_task_dependency_keys(
+        ["setup_db", "Implement API", "implement-api", "unknown"],
+        title_to_key={"Setup DB": "setup_db", "Implement API": "implement_api"},
+        normalized_title_to_key={
+            "setup_db": "setup_db",
+            "implement_api": "implement_api",
+        },
+        task_keys={"setup_db", "implement_api"},
+    )
+    assert resolved == ["setup_db", "implement_api"]
+
+
+def test_compute_dependency_levels_builds_execution_waves():
+    levels = MissionOrchestrator._compute_dependency_levels(
+        [
+            {"task_key": "a", "dependency_keys": []},
+            {"task_key": "b", "dependency_keys": ["a"]},
+            {"task_key": "c", "dependency_keys": ["a"]},
+            {"task_key": "d", "dependency_keys": ["b", "c"]},
+        ]
+    )
+    assert levels["a"] == 0
+    assert levels["b"] == 1
+    assert levels["c"] == 1
+    assert levels["d"] == 2
+
+
 def test_resolve_temporary_worker_memory_scopes_defaults_and_normalization():
     assert MissionOrchestrator._resolve_temporary_worker_memory_scopes({}) == [
         "agent",
@@ -879,6 +1135,255 @@ def test_select_platform_agent_for_task_returns_none_without_overlap():
     )
 
     assert selected is None
+
+
+@pytest.mark.asyncio
+async def test_execute_task_with_retry_escalates_rework_to_temporary_for_non_temp_assignment(
+    monkeypatch,
+):
+    mission_id = uuid4()
+    owner_user_id = uuid4()
+    assigned_agent_id = uuid4()
+    temporary_agent_id = uuid4()
+    task_id = uuid4()
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: None)
+
+    mission = SimpleNamespace(
+        created_by_user_id=owner_user_id,
+        mission_config={
+            "execution_config": {
+                "allow_temporary_workers": True,
+                "prefer_existing_agents": True,
+            }
+        },
+    )
+    task_obj = SimpleNamespace(
+        task_id=task_id,
+        goal_text="Refine deliverable",
+        acceptance_criteria="All review feedback addressed",
+        task_metadata={
+            "title": "Refine deliverable",
+            "review_cycle_count": 1,
+            "review_feedback": "Fix formatting issues.",
+            "assignment_source": "leader_assigned",
+            "assigned_agent_temporary": False,
+        },
+        assigned_agent_id=assigned_agent_id,
+    )
+
+    class _FakeQuery:
+        def __init__(self, task):
+            self._task = task
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return self._task
+
+    class _FakeSession:
+        def __init__(self, task):
+            self._task = task
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._task)
+
+    class _FakeSessionContext:
+        def __init__(self, task):
+            self._task = task
+
+        def __enter__(self):
+            return _FakeSession(self._task)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    db_task = SimpleNamespace(
+        status="pending",
+        assigned_agent_id=assigned_agent_id,
+        task_metadata={},
+        result=None,
+        completed_at=None,
+    )
+
+    create_calls = []
+
+    async def _fake_create_registered(agent_id, owner_user_id):
+        create_calls.append(agent_id)
+        if agent_id == temporary_agent_id:
+            return SimpleNamespace(agent_id=agent_id, name="temp-worker")
+        return None
+
+    async def _fake_execute_agent_task(agent, prompt):
+        return {"output": "done"}
+
+    provision_calls = {"count": 0}
+
+    def _fake_provision(self, mission_id, mission, task_obj, llm_cfg):
+        provision_calls["count"] += 1
+        task_obj.assigned_agent_id = temporary_agent_id
+        return temporary_agent_id
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.create_registered_mission_agent",
+        _fake_create_registered,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_execute_agent_task",
+        staticmethod(_fake_execute_agent_task),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_provision_temporary_worker_agent",
+        _fake_provision,
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(db_task),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_agent_status",
+        lambda mission_id, agent_id, status: None,
+    )
+
+    success = await MissionOrchestrator._execute_task_with_retry(
+        orchestrator,
+        mission_id=mission_id,
+        mission=mission,
+        task_obj=task_obj,
+        max_retries=0,
+    )
+
+    assert success is True
+    assert provision_calls["count"] == 1
+    assert create_calls == [temporary_agent_id]
+    assert task_obj.assigned_agent_id == temporary_agent_id
+
+
+@pytest.mark.asyncio
+async def test_phase_review_reuses_cached_pass_for_unchanged_output(monkeypatch):
+    mission_id = uuid4()
+    task_id = uuid4()
+    task_output = "stable deliverable output"
+    task_metadata = {
+        "title": "Stable Task",
+        "review_status": "approved",
+        "review_output_signature": MissionOrchestrator._build_text_signature(task_output),
+    }
+    db_task = SimpleNamespace(
+        task_id=task_id,
+        status="completed",
+        goal_text="Do work",
+        acceptance_criteria="All done",
+        result={"output": task_output},
+        task_metadata=task_metadata,
+        dependencies=[],
+        completed_at=datetime.utcnow(),
+    )
+
+    class _FakeQuery:
+        def __init__(self, task):
+            self._task = task
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [self._task]
+
+        def first(self):
+            return self._task
+
+    class _FakeSession:
+        def __init__(self, task):
+            self._task = task
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._task)
+
+        def expunge(self, _obj):
+            return None
+
+    class _FakeSessionContext:
+        def __init__(self, task):
+            self._task = task
+
+        def __enter__(self):
+            return _FakeSession(self._task)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    emitted_events = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_transition",
+        lambda self, _mission_id, _status: None,
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.get_mission",
+        lambda _mission_id: SimpleNamespace(
+            created_by_user_id=uuid4(),
+            mission_config={},
+            total_tasks=1,
+        ),
+    )
+    async def _fake_create_mission_agent(*args, **kwargs):
+        return SimpleNamespace(name="supervisor")
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.create_mission_agent",
+        _fake_create_mission_agent,
+    )
+
+    async def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("Model review should be skipped for unchanged approved output")
+
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_execute_phase_prompt_with_retry",
+        _should_not_be_called,
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(db_task),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_topological_sort",
+        staticmethod(lambda tasks: tasks),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_get_task_status_counts",
+        staticmethod(lambda _mission_id: {"completed": 1}),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_fields",
+        lambda *args, **kwargs: None,
+    )
+
+    await MissionOrchestrator._phase_review(orchestrator, mission_id)
+
+    cached_review_event = next(
+        (
+            event
+            for event in emitted_events
+            if event.get("event_type") == "TASK_REVIEWED"
+            and event.get("task_id") == task_id
+        ),
+        None,
+    )
+    assert cached_review_event is not None
+    assert cached_review_event.get("data", {}).get("reason") == "reuse_previous_pass"
+    assert cached_review_event.get("data", {}).get("verdict") == "PASS"
 
 
 @pytest.mark.asyncio

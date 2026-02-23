@@ -1,9 +1,16 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Send, MessageSquare } from 'lucide-react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 import { useMissionStore } from '@/stores/missionStore';
+import { selectLatestMissionRunEvents } from '@/utils/missionEvents';
+
+const CLARIFICATION_EVENT_TYPES = new Set([
+  'USER_CLARIFICATION_REQUESTED',
+  'clarification_request',
+  'clarification_response',
+]);
 
 interface ClarificationPanelProps {
   missionId: string;
@@ -22,17 +29,15 @@ export const ClarificationPanel: React.FC<ClarificationPanelProps> = ({
   const [isSending, setIsSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const clarificationEventTypes = new Set([
-    'USER_CLARIFICATION_REQUESTED',
-    'clarification_request',
-    'clarification_response',
-  ]);
-  const clarificationEvents = missionEvents
-    .filter((e) => e.mission_id === missionId && clarificationEventTypes.has(e.event_type))
-    .slice()
-    .sort(
-      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  const clarificationEvents = useMemo(() => {
+    const scopedEvents = selectLatestMissionRunEvents(
+      missionEvents.filter((event) => event.mission_id === missionId)
     );
+    return scopedEvents
+      .filter((event) => CLARIFICATION_EVENT_TYPES.has(event.event_type))
+      .slice()
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  }, [missionEvents, missionId]);
 
   const getEventText = (event: typeof clarificationEvents[number]) => {
     if (

@@ -9,6 +9,8 @@ import {
   MessageSquare,
   Settings,
   Trash2,
+  Download,
+  Eye,
 } from 'lucide-react';
 import { useMissionStore } from '@/stores/missionStore';
 import { MissionFlowCanvas } from '@/components/missions/MissionFlowCanvas';
@@ -18,6 +20,8 @@ import { ClarificationPanel } from '@/components/missions/ClarificationPanel';
 import { DeliverablesPanel } from '@/components/missions/DeliverablesPanel';
 import { TaskListPanel } from '@/components/missions/TaskListPanel';
 import { MissionSettingsPanel } from '@/components/missions/MissionSettingsPanel';
+import { selectLatestMissionRunEvents } from '@/utils/missionEvents';
+import { missionsApi } from '@/api/missions';
 import type { Mission, MissionStatus } from '@/types/mission';
 
 const statusColors: Record<MissionStatus, string> = {
@@ -43,6 +47,68 @@ const statusDots: Record<MissionStatus, string> = {
   failed: 'bg-red-500',
   cancelled: 'bg-zinc-400',
 };
+
+const quickDeliverableStatuses = new Set<MissionStatus>(['completed']);
+
+type DeliverableSummary = {
+  finalCount: number;
+  intermediateCount: number;
+  sampleNames: string[];
+};
+
+function buildDeliverableSummary(mission: Mission): DeliverableSummary {
+  const result = mission.result && typeof mission.result === 'object'
+    ? (mission.result as Record<string, unknown>)
+    : null;
+  const rawDeliverables = Array.isArray(result?.deliverables) ? result.deliverables : [];
+  const deliverables = rawDeliverables.filter(
+    (item): item is Record<string, unknown> =>
+      typeof item === 'object' && item !== null
+  );
+  const isFinalDeliverable = (item: Record<string, unknown>): boolean => {
+    if (item.is_target === true) return true;
+    if (typeof item.artifact_kind === 'string' && item.artifact_kind.toLowerCase() === 'final') {
+      return true;
+    }
+    if (typeof item.source_scope === 'string' && item.source_scope.toLowerCase() === 'output') {
+      return true;
+    }
+    return false;
+  };
+  const finalDeliverables = deliverables.filter((item) => isFinalDeliverable(item));
+  const intermediateDeliverables = deliverables.filter((item) => !isFinalDeliverable(item));
+  const sampleNames = finalDeliverables
+    .map((item) => {
+      if (typeof item.filename === 'string' && item.filename.trim().length > 0) {
+        return item.filename.trim();
+      }
+      if (typeof item.path === 'string' && item.path.trim().length > 0) {
+        const trimmed = item.path.trim();
+        const segments = trimmed.split('/');
+        return segments[segments.length - 1] || trimmed;
+      }
+      return '';
+    })
+    .filter((name) => name.length > 0)
+    .slice(0, 3);
+
+  return {
+    finalCount: finalDeliverables.length,
+    intermediateCount: intermediateDeliverables.length,
+    sampleNames,
+  };
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  window.URL.revokeObjectURL(url);
+}
 
 export const Missions: React.FC = () => {
   const { t } = useTranslation();
@@ -71,10 +137,21 @@ export const Missions: React.FC = () => {
   const [showDeliverables, setShowDeliverables] = useState(false);
   const [showTaskList, setShowTaskList] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [quickDeliverablesMissionId, setQuickDeliverablesMissionId] = useState<string | null>(null);
+  const [downloadingArchiveMissionId, setDownloadingArchiveMissionId] = useState<string | null>(null);
   const [deletingMissionId, setDeletingMissionId] = useState<string | null>(null);
   const autoOpenedClarificationRef = useRef<string>('');
   const selectedMissionId = selectedMission?.mission_id;
   const selectedMissionStatus = selectedMission?.status;
+  const selectedMissionEvents = useMemo(
+    () =>
+      selectedMissionId
+        ? selectLatestMissionRunEvents(
+            missionEvents.filter((event) => event.mission_id === selectedMissionId)
+          )
+        : [],
+    [missionEvents, selectedMissionId]
+  );
 
   useEffect(() => {
     fetchMissions();
@@ -89,11 +166,10 @@ export const Missions: React.FC = () => {
 
   useEffect(() => {
     if (!selectedMissionId) return;
-    const requestCount = missionEvents.filter(
+    const requestCount = selectedMissionEvents.filter(
       (event) =>
-        event.mission_id === selectedMissionId &&
-        (event.event_type === 'USER_CLARIFICATION_REQUESTED' ||
-          event.event_type === 'clarification_request')
+        event.event_type === 'USER_CLARIFICATION_REQUESTED' ||
+        event.event_type === 'clarification_request'
     ).length;
     if (selectedMissionStatus !== 'requirements' || requestCount === 0) return;
 
@@ -102,11 +178,12 @@ export const Missions: React.FC = () => {
       setShowClarification(true);
       autoOpenedClarificationRef.current = autoOpenKey;
     }
-  }, [selectedMissionId, selectedMissionStatus, missionEvents]);
+  }, [selectedMissionEvents, selectedMissionId, selectedMissionStatus]);
 
   const filteredMissions = getFilteredMissions();
 
   const handleSelectMission = (mission: Mission) => {
+    setQuickDeliverablesMissionId(null);
     selectMission(mission);
   };
 
@@ -131,22 +208,42 @@ export const Missions: React.FC = () => {
     }
   };
 
+  const handleOpenQuickDeliverables = (missionId: string) => {
+    setQuickDeliverablesMissionId(missionId);
+  };
+
+  const handleDownloadTargetArchive = async (mission: Mission) => {
+    setDownloadingArchiveMissionId(mission.mission_id);
+    try {
+      const { blob, filename } = await missionsApi.downloadDeliverablesArchive(
+        mission.mission_id,
+        { targetOnly: true }
+      );
+      const fallbackName = `${mission.title || 'mission'}_targets_deliverables.zip`;
+      downloadBlob(blob, filename || fallbackName);
+    } catch {
+      // API interceptor shows toast.
+    } finally {
+      setDownloadingArchiveMissionId((current) =>
+        current === mission.mission_id ? null : current
+      );
+    }
+  };
+
   const hasPendingClarification = Boolean(
     selectedMissionId &&
       selectedMissionStatus === 'requirements' &&
-      missionEvents.some(
+      selectedMissionEvents.some(
         (event) =>
-          event.mission_id === selectedMissionId &&
           (event.event_type === 'USER_CLARIFICATION_REQUESTED' ||
             event.event_type === 'clarification_request')
       )
   );
 
   const failureEventsForSelected = selectedMission
-    ? missionEvents
+    ? selectedMissionEvents
         .filter(
           (event) =>
-            event.mission_id === selectedMission.mission_id &&
             (event.event_type === 'MISSION_FAILED' || event.event_type === 'PHASE_FAILED')
         )
         .slice(-3)
@@ -225,10 +322,9 @@ export const Missions: React.FC = () => {
   }, [selectedMission, missionTasks, missionAgents, t]);
   const reviewRetryEventsForSelected = useMemo(() => {
     if (!selectedMission) return [];
-    return missionEvents
+    return selectedMissionEvents
       .filter(
         (event) =>
-          event.mission_id === selectedMission.mission_id &&
           event.event_type === 'REVIEW_CYCLE_RETRY'
       )
       .sort((a, b) => {
@@ -236,17 +332,18 @@ export const Missions: React.FC = () => {
         const bTs = new Date(b.created_at).getTime();
         return aTs - bTs;
       });
-  }, [selectedMission, missionEvents]);
+  }, [selectedMission, selectedMissionEvents]);
   const executionErrorEventsForSelected = useMemo(() => {
     if (!selectedMission) return [];
-    return missionEvents
+    return selectedMissionEvents
       .filter(
         (event) =>
-          event.mission_id === selectedMission.mission_id &&
           (event.event_type === 'TASK_ATTEMPT_FAILED' ||
             event.event_type === 'TASK_FAILED' ||
             event.event_type === 'PHASE_FAILED' ||
-            event.event_type === 'MISSION_FAILED')
+            event.event_type === 'MISSION_FAILED' ||
+            (event.event_type === 'QA_VERDICT' &&
+              String(event.event_data?.verdict || '').toUpperCase() === 'FAIL'))
       )
       .sort((a, b) => {
         const aTs = new Date(a.created_at).getTime();
@@ -254,7 +351,7 @@ export const Missions: React.FC = () => {
         return bTs - aTs;
       })
       .slice(0, 8);
-  }, [selectedMission, missionEvents]);
+  }, [selectedMission, selectedMissionEvents]);
 
   // Detail view
   if (selectedMission) {
@@ -435,7 +532,13 @@ export const Missions: React.FC = () => {
                   const eventError =
                     typeof event.event_data?.error === 'string'
                       ? event.event_data.error
-                      : event.message || '';
+                      : typeof event.event_data?.summary === 'string'
+                        ? event.event_data.summary
+                        : event.message || '';
+                  const issuesCount =
+                    typeof event.event_data?.issues_count === 'number'
+                      ? event.event_data.issues_count
+                      : undefined;
                   const errorType =
                     typeof event.event_data?.error_type === 'string'
                       ? event.event_data.error_type
@@ -448,6 +551,7 @@ export const Missions: React.FC = () => {
                       <div className="font-semibold">
                         {event.event_type}
                         {errorType ? ` • ${errorType}` : ''}
+                        {typeof issuesCount === 'number' ? ` • issues=${issuesCount}` : ''}
                       </div>
                       {eventError && <div className="mt-0.5">{eventError}</div>}
                     </div>
@@ -580,6 +684,9 @@ export const Missions: React.FC = () => {
               key={mission.mission_id}
               mission={mission}
               onClick={() => handleSelectMission(mission)}
+              onOpenQuickDeliverables={() => handleOpenQuickDeliverables(mission.mission_id)}
+              onDownloadTargetArchive={() => handleDownloadTargetArchive(mission)}
+              isDownloadingArchive={downloadingArchiveMissionId === mission.mission_id}
               onDelete={() => handleDeleteMission(mission)}
               isDeleting={deletingMissionId === mission.mission_id}
             />
@@ -589,6 +696,11 @@ export const Missions: React.FC = () => {
 
       <MissionCreateWizard isOpen={showWizard} onClose={() => setShowWizard(false)} />
       <MissionSettingsPanel isOpen={showSettings} onClose={() => setShowSettings(false)} />
+      <DeliverablesPanel
+        missionId={quickDeliverablesMissionId || ''}
+        isOpen={Boolean(quickDeliverablesMissionId)}
+        onClose={() => setQuickDeliverablesMissionId(null)}
+      />
     </div>
   );
 };
@@ -596,11 +708,17 @@ export const Missions: React.FC = () => {
 const MissionCard: React.FC<{
   mission: Mission;
   onClick: () => void;
+  onOpenQuickDeliverables: () => void;
+  onDownloadTargetArchive: () => void;
+  isDownloadingArchive: boolean;
   onDelete: () => void;
   isDeleting: boolean;
 }> = ({
   mission,
   onClick,
+  onOpenQuickDeliverables,
+  onDownloadTargetArchive,
+  isDownloadingArchive,
   onDelete,
   isDeleting,
 }) => {
@@ -609,50 +727,122 @@ const MissionCard: React.FC<{
     mission.total_tasks > 0
       ? Math.round((mission.completed_tasks / mission.total_tasks) * 100)
       : 0;
+  const isTerminalMission = quickDeliverableStatuses.has(mission.status);
+  const deliverableSummary = buildDeliverableSummary(mission);
+  const remainingCount = Math.max(deliverableSummary.finalCount - deliverableSummary.sampleNames.length, 0);
 
   return (
     <div className="w-full text-left p-5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 hover:border-emerald-300 dark:hover:border-emerald-500/30 hover:shadow-lg transition-all duration-200 group">
       <div className="flex items-start gap-4">
-        <button onClick={onClick} className="flex-1 min-w-0 text-left">
-          <div className="flex items-center gap-2 mb-2">
-            <div className={`w-2 h-2 rounded-full ${statusDots[mission.status]}`} />
-            <h3 className="text-base font-semibold text-zinc-800 dark:text-zinc-200 truncate group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">
-              {mission.title}
-            </h3>
-          </div>
-          <p className="text-sm text-zinc-500 line-clamp-2 mb-3">
-            {mission.instructions}
-          </p>
-          {mission.status === 'failed' && mission.error_message && (
-            <p className="text-xs text-red-600 dark:text-red-300 line-clamp-2 mb-3">
-              {mission.error_message}
+        <div className="flex-1 min-w-0">
+          <button onClick={onClick} className="w-full text-left">
+            <div className="flex items-center gap-2 mb-2">
+              <div className={`w-2 h-2 rounded-full ${statusDots[mission.status]}`} />
+              <h3 className="text-base font-semibold text-zinc-800 dark:text-zinc-200 truncate group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">
+                {mission.title}
+              </h3>
+            </div>
+            <p className="text-sm text-zinc-500 line-clamp-2 mb-3">
+              {mission.instructions}
             </p>
-          )}
-
-          <div className="flex items-center gap-3">
-            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusColors[mission.status]}`}>
-              {t(`missions.status.${mission.status}`)}
-            </span>
-
-            {mission.total_tasks > 0 && (
-              <div className="flex items-center gap-2">
-                <div className="w-16 bg-zinc-200 dark:bg-zinc-700 rounded-full h-1.5">
-                  <div
-                    className="bg-emerald-500 h-1.5 rounded-full transition-all"
-                    style={{ width: `${progress}%` }}
-                  />
-                </div>
-                <span className="text-[10px] text-zinc-400">
-                  {mission.completed_tasks}/{mission.total_tasks}
-                </span>
-              </div>
+            {mission.status === 'failed' && mission.error_message && (
+              <p className="text-xs text-red-600 dark:text-red-300 line-clamp-2 mb-3">
+                {mission.error_message}
+              </p>
             )}
 
-            <span className="text-[10px] text-zinc-400">
-              {new Date(mission.created_at).toLocaleDateString()}
-            </span>
-          </div>
-        </button>
+            <div className="flex items-center gap-3">
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusColors[mission.status]}`}>
+                {t(`missions.status.${mission.status}`)}
+              </span>
+
+              {mission.total_tasks > 0 && (
+                <div className="flex items-center gap-2">
+                  <div className="w-16 bg-zinc-200 dark:bg-zinc-700 rounded-full h-1.5">
+                    <div
+                      className="bg-emerald-500 h-1.5 rounded-full transition-all"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] text-zinc-400">
+                    {mission.completed_tasks}/{mission.total_tasks}
+                  </span>
+                </div>
+              )}
+
+              <span className="text-[10px] text-zinc-400">
+                {new Date(mission.created_at).toLocaleDateString()}
+              </span>
+            </div>
+          </button>
+
+          {isTerminalMission && (
+            <div className="mt-3 pt-3 border-t border-zinc-200/80 dark:border-zinc-700/80">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <span className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                  {t('missions.quickDeliverables')}
+                </span>
+                <span className="text-[11px] text-zinc-400">
+                  {t('missions.finalDeliverablesSummary', {
+                    count: deliverableSummary.finalCount,
+                  })}
+                  {deliverableSummary.intermediateCount > 0
+                    ? ` • ${t('missions.intermediateFilesSummary', {
+                        count: deliverableSummary.intermediateCount,
+                      })}`
+                    : ''}
+                </span>
+              </div>
+              {deliverableSummary.sampleNames.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {deliverableSummary.sampleNames.map((name, index) => (
+                    <span
+                      key={`${mission.mission_id}-${name}-${index}`}
+                      className="inline-flex items-center rounded-full border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-300"
+                    >
+                      {name}
+                    </span>
+                  ))}
+                  {remainingCount > 0 && (
+                    <span className="inline-flex items-center rounded-full border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">
+                      +{remainingCount}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[11px] text-zinc-400 mb-2">
+                  {t('missions.noFinalDeliverablesYet')}
+                </div>
+              )}
+              {deliverableSummary.intermediateCount > 0 && (
+                <div className="text-[10px] text-zinc-400 mb-2">
+                  {t('missions.intermediateFilesHint')}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onOpenQuickDeliverables}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 dark:border-zinc-700 px-2.5 py-1 text-[11px] font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  {t('missions.quickViewDeliverables')}
+                </button>
+                <button
+                  type="button"
+                  onClick={onDownloadTargetArchive}
+                  disabled={isDownloadingArchive || deliverableSummary.finalCount === 0}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 dark:border-emerald-500/30 px-2.5 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  {isDownloadingArchive
+                    ? t('missions.downloadingArchive')
+                    : t('missions.downloadTargetArchive')}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
 
         <div className="flex items-start gap-2">
           <button

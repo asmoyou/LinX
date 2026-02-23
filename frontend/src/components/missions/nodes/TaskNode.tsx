@@ -8,6 +8,7 @@ interface TaskNodeData {
   status: string;
   priority: number;
   assigned_agent_name?: string;
+  dependency_level?: number;
   acceptance_criteria?: string;
 }
 
@@ -48,6 +49,14 @@ export const TaskNode: React.FC<{ data: TaskNodeData }> = memo(({ data }) => {
         <div className="flex items-center gap-1">
           <span className="text-[10px] text-zinc-400">Priority:</span>
           <span className="text-[10px] font-medium text-zinc-600 dark:text-zinc-400">{data.priority}</span>
+        </div>
+      )}
+      {typeof data.dependency_level === 'number' && (
+        <div className="flex items-center gap-1 mt-0.5">
+          <span className="text-[10px] text-zinc-400">Wave:</span>
+          <span className="text-[10px] font-medium text-zinc-600 dark:text-zinc-400">
+            {data.dependency_level + 1}
+          </span>
         </div>
       )}
 

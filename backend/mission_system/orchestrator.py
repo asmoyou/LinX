@@ -8,6 +8,7 @@ Each running mission is tracked as an ``asyncio.Task``.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -57,6 +58,8 @@ MAX_REVIEW_CYCLES = 2
 MAX_QA_CYCLES = 1
 MAX_ALLOWED_REWORK_CYCLES = 5
 MAX_ALLOWED_QA_CYCLES = 5
+MIN_TASK_RELEVANCE_SCORE = 0.12
+MAX_OFF_TOPIC_TASK_RATIO = 0.5
 
 
 class MissionOrchestrator:
@@ -180,6 +183,13 @@ class MissionOrchestrator:
                 failure_data["traceback"] = trace
             logger.exception("Mission %s failed: %s", mission_id, exc)
             self._snapshot_deliverables(mission_id)
+            try:
+                self._sync_mission_task_counters(
+                    mission_id,
+                    fallback_total=mission_snapshot.total_tasks if mission_snapshot else 0,
+                )
+            except Exception:
+                logger.exception("Failed to sync mission counters for %s", mission_id)
             update_mission_status(mission_id, "failed", error_message=str(exc))
             self._emitter.emit(
                 mission_id=mission_id,
@@ -324,6 +334,12 @@ class MissionOrchestrator:
         return result
 
     @staticmethod
+    def _build_text_signature(content: Any) -> str:
+        """Build a stable signature for text-like content."""
+        text = "" if content is None else str(content)
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
     def _detect_instruction_language(text: str) -> str:
         """Detect a preferred response language from mission instructions."""
         if not text:
@@ -432,6 +448,10 @@ class MissionOrchestrator:
             "   - files changed/created,\n"
             "   - acceptance checklist,\n"
             "   - remaining risks/assumptions.\n\n"
+            "## Output Location Policy\n"
+            "- Put final user-facing deliverables under `/workspace/output`.\n"
+            "- Intermediate notes/logs/scripts can stay under `/workspace/shared` or `/workspace/tasks`.\n"
+            "- Avoid placing final deliverables in `/workspace` root.\n\n"
             "Do not output tool placeholders as final answer. Deliver completed work."
         )
 
@@ -465,6 +485,246 @@ class MissionOrchestrator:
         if not text.strip():
             return set()
         return set(re.findall(r"[a-z0-9\u4e00-\u9fff]{2,}", text))
+
+    @classmethod
+    def _evaluate_task_plan_relevance(
+        cls,
+        task_list: List[Dict[str, Any]],
+        anchor_text: str,
+    ) -> Dict[str, Any]:
+        """Evaluate whether generated tasks are semantically tied to mission anchors."""
+        anchor_tokens = cls._tokenize_for_match(anchor_text)
+        if not task_list:
+            return {"scores": [], "off_topic_indices": []}
+        if not anchor_tokens:
+            return {"scores": [1.0] * len(task_list), "off_topic_indices": []}
+
+        scores: List[float] = []
+        off_topic_indices: List[int] = []
+        for idx, task_def in enumerate(task_list):
+            requirement_refs = cls._coerce_string_list(task_def.get("requirement_refs"))
+            task_tokens = cls._tokenize_for_match(
+                task_def.get("title", ""),
+                task_def.get("instructions", ""),
+                task_def.get("acceptance_criteria", ""),
+                " ".join(requirement_refs),
+            )
+            if not task_tokens:
+                score = 0.0
+            else:
+                overlap = len(task_tokens & anchor_tokens)
+                score = overlap / max(1, min(24, len(task_tokens)))
+            scores.append(score)
+            if score < MIN_TASK_RELEVANCE_SCORE:
+                off_topic_indices.append(idx)
+
+        return {"scores": scores, "off_topic_indices": off_topic_indices}
+
+    @classmethod
+    def _build_task_key(
+        cls,
+        candidate: Any,
+        index: int,
+        existing_keys: set[str],
+    ) -> str:
+        """Build a unique stable task key for planning/execution references."""
+        raw = str(candidate or "").strip()
+        base = cls._normalize_role_key(raw)
+        if not base:
+            base = f"task_{index + 1}"
+        if base[0].isdigit():
+            base = f"task_{base}"
+
+        key = base
+        suffix = 2
+        while key in existing_keys:
+            key = f"{base}_{suffix}"
+            suffix += 1
+
+        existing_keys.add(key)
+        return key
+
+    @classmethod
+    def _resolve_task_dependency_keys(
+        cls,
+        dependency_tokens: List[str],
+        *,
+        title_to_key: Dict[str, str],
+        normalized_title_to_key: Dict[str, str],
+        task_keys: set[str],
+    ) -> List[str]:
+        """Resolve dependency references from mixed task titles/keys to task keys."""
+        resolved: List[str] = []
+        for token in dependency_tokens:
+            dep = str(token or "").strip()
+            if not dep:
+                continue
+
+            matched_key = ""
+            if dep in task_keys:
+                matched_key = dep
+            elif dep in title_to_key:
+                matched_key = title_to_key[dep]
+            else:
+                normalized_dep = cls._normalize_role_key(dep)
+                if normalized_dep and normalized_dep in task_keys:
+                    matched_key = normalized_dep
+                elif normalized_dep and normalized_dep in normalized_title_to_key:
+                    matched_key = normalized_title_to_key[normalized_dep]
+                elif normalized_dep:
+                    # Lightweight fuzzy fallback for minor wording drift.
+                    for normalized_title, candidate_key in normalized_title_to_key.items():
+                        if (
+                            normalized_dep in normalized_title
+                            or normalized_title in normalized_dep
+                        ):
+                            matched_key = candidate_key
+                            break
+
+            if matched_key and matched_key not in resolved:
+                resolved.append(matched_key)
+
+        return resolved
+
+    @staticmethod
+    def _compute_dependency_levels(task_defs: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Compute dependency wave/level per task_key (0-based)."""
+        dependency_map: Dict[str, List[str]] = {}
+        for task_def in task_defs:
+            task_key = str(task_def.get("task_key") or "").strip()
+            if not task_key:
+                continue
+            deps = [
+                dep
+                for dep in MissionOrchestrator._coerce_string_list(task_def.get("dependency_keys"))
+                if dep and dep != task_key
+            ]
+            dependency_map[task_key] = deps
+
+        levels: Dict[str, int] = {}
+        visiting: set[str] = set()
+
+        def dfs(task_key: str) -> int:
+            if task_key in levels:
+                return levels[task_key]
+            if task_key in visiting:
+                # Cycle guard; keep wave stable and let topological sorter raise later.
+                return 0
+
+            visiting.add(task_key)
+            max_dep_level = -1
+            for dep_key in dependency_map.get(task_key, []):
+                if dep_key not in dependency_map:
+                    continue
+                max_dep_level = max(max_dep_level, dfs(dep_key))
+            visiting.discard(task_key)
+
+            level = max_dep_level + 1
+            levels[task_key] = max(0, level)
+            return levels[task_key]
+
+        for key in dependency_map:
+            dfs(key)
+
+        return levels
+
+    @staticmethod
+    def _render_execution_plan_markdown(
+        mission: Any,
+        task_plan_rows: List[Dict[str, Any]],
+        role_assignments: Dict[str, Dict[str, Any]],
+        assignment_summary: Dict[str, int],
+    ) -> str:
+        """Render a human-readable execution plan similar to Plan mode output."""
+        lines: List[str] = [
+            "# Mission Execution Plan",
+            "",
+            "## Summary",
+            f"- Mission: {getattr(mission, 'title', 'Untitled Mission')}",
+            f"- Planned tasks: {len(task_plan_rows)}",
+            f"- Team roles: {len(role_assignments)}",
+            f"- Existing agent assigned tasks: {assignment_summary.get('assigned_existing', 0)}",
+            (
+                "- Temporary fallback tasks: "
+                f"{assignment_summary.get('temporary_fallback_pending', 0)}"
+            ),
+            f"- Explicitly unassigned tasks: {assignment_summary.get('unassigned', 0)}",
+            "",
+        ]
+
+        if role_assignments:
+            lines.extend(
+                [
+                    "## Team Blueprint",
+                    "| Role Key | Role Name | Required Capabilities | Assigned Agent |",
+                    "| --- | --- | --- | --- |",
+                ]
+            )
+            for role in role_assignments.values():
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        [
+                            str(role.get("role_key") or "-"),
+                            str(role.get("role_name") or "-"),
+                            ", ".join(role.get("required_capabilities") or []) or "-",
+                            str(role.get("assigned_agent_name") or "Temporary fallback"),
+                        ]
+                    )
+                    + " |"
+                )
+            lines.append("")
+
+        wave_groups: Dict[int, List[str]] = {}
+        for row in task_plan_rows:
+            wave = max(0, int(row.get("dependency_level", 0)))
+            wave_groups.setdefault(wave, []).append(
+                f"[{row.get('task_key')}] {row.get('title')}"
+            )
+        if wave_groups:
+            lines.extend(["## Execution Waves", "Dependency-safe execution order:", ""])
+            for wave in sorted(wave_groups):
+                lines.append(f"- Wave {wave + 1}: {', '.join(wave_groups[wave])}")
+            lines.append("")
+
+        lines.extend(
+            [
+                "## Task Breakdown",
+                "Dependencies reference task keys to preserve deterministic execution order.",
+                "",
+            ]
+        )
+        for index, row in enumerate(task_plan_rows, start=1):
+            dependencies = row.get("dependency_keys") or []
+            requirement_refs = row.get("requirement_refs") or []
+            lines.extend(
+                [
+                    f"{index}. [{row.get('task_key')}] {row.get('title')}",
+                    f"   - Owner role: {row.get('owner_role_name') or row.get('owner_role') or 'N/A'}",
+                    (
+                        "   - Assigned agent: "
+                        f"{row.get('assigned_agent_name') or 'Temporary fallback'} "
+                        f"({row.get('assignment_source')})"
+                    ),
+                    (
+                        "   - Assignment reason: "
+                        f"{row.get('assignment_reason_code') or 'n/a'}"
+                    ),
+                    f"   - Execution wave: {int(row.get('dependency_level', 0)) + 1}",
+                    (
+                        "   - Dependencies: "
+                        + (", ".join(dependencies) if dependencies else "None")
+                    ),
+                    (
+                        "   - Requirement refs: "
+                        + ("; ".join(requirement_refs) if requirement_refs else "N/A")
+                    ),
+                    f"   - Acceptance criteria: {row.get('acceptance_criteria') or 'N/A'}",
+                    "",
+                ]
+            )
+
+        return "\n".join(lines).strip() + "\n"
 
     @staticmethod
     def _resolve_temporary_worker_memory_scopes(exec_cfg: Dict[str, Any]) -> List[str]:
@@ -643,6 +903,7 @@ class MissionOrchestrator:
         self,
         team_blueprint: List[Dict[str, Any]],
         available_agents: List[Any],
+        allow_temporary_workers: bool = True,
     ) -> Dict[str, Dict[str, Any]]:
         """Resolve role-to-agent assignments from team blueprint and platform agents."""
         if not team_blueprint:
@@ -672,6 +933,11 @@ class MissionOrchestrator:
 
             assigned_agent_id = ""
             assigned_agent_name = ""
+            required_caps = {
+                str(capability).strip().lower()
+                for capability in required_capabilities
+                if str(capability).strip()
+            }
 
             if preferred_agent_id and preferred_agent_id in agent_by_id:
                 preferred = agent_by_id[preferred_agent_id]
@@ -688,11 +954,6 @@ class MissionOrchestrator:
                         for capability in (candidate.capabilities or [])
                         if str(capability).strip()
                     }
-                    required_caps = {
-                        str(capability).strip().lower()
-                        for capability in required_capabilities
-                        if str(capability).strip()
-                    }
                     if required_caps:
                         score = len(candidate_caps.intersection(required_caps)) / len(required_caps)
                     else:
@@ -703,7 +964,16 @@ class MissionOrchestrator:
                         best_score = score
                         best_candidate = candidate
 
-                if best_candidate is not None and best_score >= 0:
+                should_assign_existing = False
+                if best_candidate is not None:
+                    if not allow_temporary_workers:
+                        # Temporary workers disabled: keep execution possible even with weak matches.
+                        should_assign_existing = best_score >= 0
+                    elif required_caps:
+                        # Temporary workers enabled: require meaningful capability fit.
+                        should_assign_existing = best_score >= 0.35
+
+                if best_candidate is not None and should_assign_existing:
                     assigned_agent_id = str(best_candidate.agent_id)
                     assigned_agent_name = best_candidate.name
                     used_agent_ids.add(assigned_agent_id)
@@ -729,7 +999,7 @@ class MissionOrchestrator:
         self,
         task_obj: Any,
         available_agents: List[Any],
-    ) -> Optional[Dict[str, str]]:
+    ) -> Optional[Dict[str, Any]]:
         """Pick the best existing platform agent for a task, if relevance exists.
 
         This matcher intentionally requires at least one direct relevance signal
@@ -757,6 +1027,8 @@ class MissionOrchestrator:
 
         best_agent: Optional[Any] = None
         best_score = float("-inf")
+        best_capability_overlap = 0
+        best_lexical_overlap = 0
 
         for candidate in available_agents:
             if getattr(candidate, "agent_type", "") == "mission_temp_worker":
@@ -771,14 +1043,14 @@ class MissionOrchestrator:
             candidate_tokens = self._tokenize_for_match(
                 getattr(candidate, "name", ""),
                 " ".join(sorted(candidate_capabilities)),
-                getattr(candidate, "system_prompt", ""),
             )
 
             capability_overlap = len(role_required_caps.intersection(candidate_capabilities))
             lexical_overlap = len(task_tokens.intersection(candidate_tokens))
 
-            # Hard guard: no overlap means "no reliable match", do not auto-bind.
-            if capability_overlap <= 0 and lexical_overlap <= 0:
+            # Hard guard: weak lexical matches are too noisy for auto-assignment.
+            min_lexical_overlap = 3 if len(task_tokens) >= 6 else 2
+            if capability_overlap <= 0 and lexical_overlap < min_lexical_overlap:
                 continue
 
             score = float(capability_overlap * 4 + lexical_overlap * 1.2)
@@ -792,6 +1064,8 @@ class MissionOrchestrator:
             if score > best_score:
                 best_score = score
                 best_agent = candidate
+                best_capability_overlap = capability_overlap
+                best_lexical_overlap = lexical_overlap
 
         if best_agent is None:
             return None
@@ -799,6 +1073,14 @@ class MissionOrchestrator:
         return {
             "agent_id": str(best_agent.agent_id),
             "agent_name": str(getattr(best_agent, "name", "worker") or "worker"),
+            "match_score": best_score,
+            "capability_overlap": best_capability_overlap,
+            "lexical_overlap": best_lexical_overlap,
+            "match_summary": (
+                f"capability_overlap={best_capability_overlap}, "
+                f"lexical_overlap={best_lexical_overlap}, "
+                f"score={best_score:.2f}"
+            ),
         }
 
     def _provision_temporary_worker_agent(
@@ -863,6 +1145,10 @@ class MissionOrchestrator:
                 metadata = dict(task.task_metadata or {})
                 metadata["assigned_agent_name"] = temp_agent.name
                 metadata["assigned_agent_temporary"] = True
+                metadata["assignment_reason_code"] = "temporary_worker_provisioned"
+                metadata["assignment_reason"] = (
+                    "Temporary worker provisioned based on assignment policy."
+                )
                 metadata["temporary_agent_prompt_mode"] = "task_specific_sop"
                 metadata["temporary_agent_skills"] = selected_skills
                 metadata["temporary_agent_memory_scopes"] = memory_scopes
@@ -873,6 +1159,10 @@ class MissionOrchestrator:
         task_metadata = dict(task_obj.task_metadata or {})
         task_metadata["assigned_agent_name"] = temp_agent.name
         task_metadata["assigned_agent_temporary"] = True
+        task_metadata["assignment_reason_code"] = "temporary_worker_provisioned"
+        task_metadata["assignment_reason"] = (
+            "Temporary worker provisioned based on assignment policy."
+        )
         task_metadata["temporary_agent_prompt_mode"] = "task_specific_sop"
         task_metadata["temporary_agent_skills"] = selected_skills
         task_metadata["temporary_agent_memory_scopes"] = memory_scopes
@@ -1029,10 +1319,11 @@ class MissionOrchestrator:
 
         # Handle clarification loop
         if "CLARIFICATION:" in output:
+            clarification_questions = output
             self._emitter.emit(
                 mission_id=mission_id,
                 event_type="USER_CLARIFICATION_REQUESTED",
-                data={"questions": output},
+                data={"questions": clarification_questions},
                 message="Leader requests clarification from user",
             )
 
@@ -1046,8 +1337,15 @@ class MissionOrchestrator:
 
             # Re-invoke with user answers
             followup_prompt = (
-                f"The user responded to your clarifications:\n\n{user_response}\n\n"
-                f"Now produce the complete requirements document in {response_language}."
+                "Rebuild the requirements with the original mission context and the user's "
+                "clarification answers.\n\n"
+                f"## Original Mission Instructions\n{mission.instructions}\n\n"
+                f"## Attached Files\n{attachment_names}\n\n"
+                f"## Clarification Questions\n{clarification_questions}\n\n"
+                f"## User Answers\n{user_response}\n\n"
+                "Requirements must stay tightly aligned to the original mission objective. "
+                "Do not introduce unrelated goals.\n"
+                f"Produce the full requirements document in {response_language}."
             )
             output = await self._execute_phase_prompt_with_retry(
                 mission_id=mission_id,
@@ -1115,6 +1413,9 @@ class MissionOrchestrator:
         )
 
         requirements_doc = mission.requirements_doc or mission.instructions
+        response_language = self._detect_instruction_language(
+            f"{mission.instructions}\n{requirements_doc}"
+        )
         exec_cfg = self._get_execution_config(mission)
         enable_team_blueprint = self._coerce_bool(
             exec_cfg.get("enable_team_blueprint", True),
@@ -1197,10 +1498,12 @@ class MissionOrchestrator:
                 "  ],\n"
                 '  "tasks": [\n'
                 "    {\n"
+                '      "task_key": "build_api_contract",\n'
                 '      "title": "Task title",\n'
                 '      "instructions": "Detailed instructions",\n'
                 '      "acceptance_criteria": "Testable criteria",\n'
-                '      "dependencies": ["Other task title"],\n'
+                '      "requirement_refs": ["quote 1", "quote 2"],\n'
+                '      "dependencies": ["other_task_key"],\n'
                 '      "priority": 0,\n'
                 '      "owner_role": "frontend_lead",\n'
                 '      "assigned_agent_id": ""\n'
@@ -1211,7 +1514,15 @@ class MissionOrchestrator:
                 "Role guidance:\n"
                 "- Keep team roles minimal and explicit.\n"
                 "- required_capabilities should use existing platform skill names when possible.\n"
-                "- If a role should use existing knowledge collections, reference IDs from catalog.\n\n"
+                "- If a role should use existing knowledge collections, reference IDs from catalog.\n"
+                "- `task_key` must be unique and stable (snake_case).\n"
+                "- `dependencies` must reference `task_key` values (not free-form titles).\n"
+                "- Every task MUST be directly traceable to mission requirements.\n"
+                "- `requirement_refs` must quote exact requirement fragments from the requirements section.\n"
+                "- Do NOT add unrelated optimization, platform migration, or speculative tasks.\n\n"
+                f"Respond in {response_language}.\n\n"
+                "## Original Mission Instructions\n"
+                f"{mission.instructions}\n\n"
                 f"## Available Platform Agents\n{agent_catalog}\n\n"
                 f"## Available Owner Knowledge Collections\n{knowledge_catalog}\n\n"
                 f"## Requirements\n{requirements_doc}"
@@ -1220,10 +1531,20 @@ class MissionOrchestrator:
             task_prompt = (
                 "Decompose the following requirements into an ordered list of tasks "
                 "with acceptance criteria. Return them as a JSON array where each "
-                "element has keys: title, instructions, acceptance_criteria, "
-                "dependencies (list of task titles), priority (integer 0-10), "
+                "element has keys: task_key, title, instructions, acceptance_criteria, "
+                "requirement_refs (list of exact requirement snippets), "
+                "dependencies (list of task_key values), priority (integer 0-10), "
                 "assigned_agent_id (string UUID or empty string).\n\n"
+                "Rules:\n"
+                "- `task_key` must be unique and stable (snake_case).\n"
+                "- `dependencies` must use `task_key` values.\n"
+                "- Every task must map directly to requirement content.\n"
+                "- `requirement_refs` cannot be empty.\n"
+                "- Reject off-topic ideas and avoid speculative tasks.\n\n"
                 f"{assignment_instruction}\n\n"
+                f"Respond in {response_language}.\n\n"
+                "## Original Mission Instructions\n"
+                f"{mission.instructions}\n\n"
                 f"## Available Platform Agents\n{agent_catalog}\n\n"
                 "Return ONLY the JSON array inside a ```json code block.\n\n"
                 f"## Requirements\n{requirements_doc}"
@@ -1239,23 +1560,29 @@ class MissionOrchestrator:
             error_context="Task planning failed",
         )
 
+        def _parse_plan_payload(payload: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+            parsed_tasks: List[Dict[str, Any]] = []
+            parsed_roles: List[Dict[str, Any]] = []
+            if enable_team_blueprint:
+                parsed_object = self._extract_json_object(payload)
+                raw_tasks = (
+                    parsed_object.get("tasks") if isinstance(parsed_object, dict) else None
+                )
+                raw_roles = (
+                    parsed_object.get("team_blueprint")
+                    if isinstance(parsed_object, dict)
+                    else None
+                )
+                if isinstance(raw_tasks, list):
+                    parsed_tasks = [item for item in raw_tasks if isinstance(item, dict)]
+                if isinstance(raw_roles, list):
+                    parsed_roles = [item for item in raw_roles if isinstance(item, dict)]
+            if not parsed_tasks:
+                parsed_tasks = self._extract_json_array(payload)
+            return parsed_tasks, parsed_roles
+
         # Parse JSON task list and optional team blueprint.
-        task_list: List[Dict[str, Any]] = []
-        raw_team_blueprint: List[Dict[str, Any]] = []
-        if enable_team_blueprint:
-            parsed_object = self._extract_json_object(output)
-            raw_tasks = parsed_object.get("tasks") if isinstance(parsed_object, dict) else None
-            raw_roles = (
-                parsed_object.get("team_blueprint")
-                if isinstance(parsed_object, dict)
-                else None
-            )
-            if isinstance(raw_tasks, list):
-                task_list = [item for item in raw_tasks if isinstance(item, dict)]
-            if isinstance(raw_roles, list):
-                raw_team_blueprint = [item for item in raw_roles if isinstance(item, dict)]
-        if not task_list:
-            task_list = self._extract_json_array(output)
+        task_list, raw_team_blueprint = _parse_plan_payload(output)
 
         if not task_list:
             raise MissionError(
@@ -1263,20 +1590,124 @@ class MissionOrchestrator:
                 "Leader failed to produce a valid task plan",
             )
 
+        relevance_anchor = f"{mission.instructions}\n{requirements_doc}"
+        relevance_report = self._evaluate_task_plan_relevance(task_list, relevance_anchor)
+        off_topic_indices = relevance_report["off_topic_indices"]
+        off_topic_ratio = len(off_topic_indices) / max(1, len(task_list))
+
+        if off_topic_ratio > MAX_OFF_TOPIC_TASK_RATIO:
+            problematic_titles = [
+                str(task_list[idx].get("title") or f"Task {idx + 1}")
+                for idx in off_topic_indices[:8]
+            ]
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="TASK_PLAN_LOW_RELEVANCE",
+                data={
+                    "off_topic_count": len(off_topic_indices),
+                    "task_count": len(task_list),
+                    "off_topic_titles": problematic_titles,
+                },
+                message="Task plan weakly aligned with mission requirements, regenerating plan",
+            )
+
+            regenerate_prompt = (
+                "Your previous plan had too many off-topic tasks. Regenerate from scratch.\n"
+                "Strict constraints:\n"
+                "1. Every task must map directly to mission requirements.\n"
+                "2. `requirement_refs` must cite exact snippets from requirements.\n"
+                "3. `task_key` values must be unique and stable.\n"
+                "4. `dependencies` must reference `task_key` values.\n"
+                "5. Do not add unrelated tasks.\n\n"
+                f"Respond in {response_language}.\n\n"
+                "## Original Mission Instructions\n"
+                f"{mission.instructions}\n\n"
+                "## Requirements\n"
+                f"{requirements_doc}\n\n"
+                "## Previous Plan (for correction)\n"
+                f"{output}\n\n"
+                "Return only corrected JSON in the same schema."
+            )
+            output = await self._execute_phase_prompt_with_retry(
+                mission_id=mission_id,
+                mission=mission,
+                phase="planning",
+                step="decompose_tasks_rebuild",
+                agent=leader,
+                prompt=regenerate_prompt,
+                error_context="Task planning relevance correction failed",
+            )
+            task_list, raw_team_blueprint = _parse_plan_payload(output)
+            if not task_list:
+                raise MissionError(mission_id, "Leader failed to produce a valid corrected task plan")
+
+            relevance_report = self._evaluate_task_plan_relevance(task_list, relevance_anchor)
+            off_topic_ratio = len(relevance_report["off_topic_indices"]) / max(1, len(task_list))
+            if off_topic_ratio > MAX_OFF_TOPIC_TASK_RATIO:
+                raise MissionError(
+                    mission_id,
+                    "Task plan remains weakly aligned with mission objective after regeneration",
+                )
+
         role_assignments = self._resolve_blueprint_role_assignments(
             team_blueprint=raw_team_blueprint,
             available_agents=available_agents,
+            allow_temporary_workers=allow_temporary_workers,
         )
 
-        title_to_id: Dict[str, UUID] = {}
+        normalized_task_defs: List[Dict[str, Any]] = []
+        used_task_keys: set[str] = set()
+        title_to_task_key: Dict[str, str] = {}
+        normalized_title_to_task_key: Dict[str, str] = {}
+        for idx, raw_task_def in enumerate(task_list):
+            task_def = dict(raw_task_def or {})
+            title = str(task_def.get("title") or f"Task {idx + 1}").strip() or f"Task {idx + 1}"
+            task_key = self._build_task_key(
+                task_def.get("task_key") or task_def.get("id") or title,
+                idx,
+                used_task_keys,
+            )
+            task_def["title"] = title
+            task_def["task_key"] = task_key
+            normalized_task_defs.append(task_def)
+            title_to_task_key[title] = task_key
+            normalized_title_to_task_key[self._normalize_role_key(title)] = task_key
+
+        task_keys = set(used_task_keys)
+        for task_def in normalized_task_defs:
+            dependency_tokens = self._coerce_string_list(task_def.get("dependencies"))
+            dependency_keys = self._resolve_task_dependency_keys(
+                dependency_tokens,
+                title_to_key=title_to_task_key,
+                normalized_title_to_key=normalized_title_to_task_key,
+                task_keys=task_keys,
+            )
+            task_def["dependency_keys"] = [
+                key for key in dependency_keys if key != task_def.get("task_key")
+            ]
+
+        # Replace with normalized task payload (task_key/dependency_keys resolved).
+        task_list = normalized_task_defs
+        dependency_levels = self._compute_dependency_levels(task_list)
+
+        task_key_to_id: Dict[str, UUID] = {}
         used_agent_ids: set[UUID] = set()
+        assignment_summary: Dict[str, int] = {
+            "assigned_existing": 0,
+            "temporary_fallback_pending": 0,
+            "unassigned": 0,
+        }
+        task_plan_rows: List[Dict[str, Any]] = []
+        unassigned_without_temp_titles: List[str] = []
         with get_db_session() as session:
             for idx, task_def in enumerate(task_list):
                 from uuid import uuid4
+                from types import SimpleNamespace
 
                 task_id = uuid4()
                 title = str(task_def.get("title") or f"Task {idx + 1}")
-                title_to_id[title] = task_id
+                task_key = str(task_def.get("task_key") or f"task_{idx + 1}")
+                task_key_to_id[task_key] = task_id
 
                 owner_role_key = self._normalize_role_key(
                     task_def.get("owner_role")
@@ -1287,16 +1718,100 @@ class MissionOrchestrator:
                 role_context = role_assignments.get(owner_role_key, {})
 
                 assigned_agent_id: Optional[UUID] = None
+                assignment_source = "unassigned"
+                assignment_reason_code = "unassigned"
+                assignment_reason = ""
                 assigned_agent_raw = str(task_def.get("assigned_agent_id") or "").strip()
                 if assigned_agent_raw and assigned_agent_raw in agent_id_map:
                     assigned_agent_id = agent_id_map[assigned_agent_raw].agent_id
+                    assignment_source = "leader_assigned"
+                    assignment_reason_code = "leader_assigned"
+                    assignment_reason = "Planner explicitly assigned an existing platform agent."
                 elif role_context.get("assigned_agent_id"):
                     role_agent_id = str(role_context.get("assigned_agent_id"))
                     if role_agent_id in agent_id_map:
                         assigned_agent_id = agent_id_map[role_agent_id].agent_id
+                        assignment_source = "team_blueprint_assigned"
+                        assignment_reason_code = "team_blueprint_assigned"
+                        assignment_reason = (
+                            "Team blueprint role resolved to an existing platform agent."
+                        )
+                    else:
+                        assignment_reason_code = "team_blueprint_agent_not_found"
+                        assignment_reason = (
+                            "Team blueprint preferred agent is unavailable; "
+                            "falling back to policy-based assignment."
+                        )
+                elif assigned_agent_raw:
+                    assignment_reason_code = "leader_assigned_agent_not_found"
+                    assignment_reason = (
+                        "Planner-provided assigned_agent_id is unavailable; "
+                        "falling back to policy-based assignment."
+                    )
+
+                if (
+                    assigned_agent_id is None
+                    and prefer_existing_agents
+                    and available_agents
+                ):
+                    selection_probe = SimpleNamespace(
+                        task_metadata={
+                            "title": title,
+                            "role_required_capabilities": self._coerce_string_list(
+                                role_context.get("required_capabilities")
+                            ),
+                        },
+                        goal_text=task_def.get("instructions", title),
+                        acceptance_criteria=task_def.get("acceptance_criteria"),
+                    )
+                    selected_platform = self._select_platform_agent_for_task(
+                        task_obj=selection_probe,
+                        available_agents=available_agents,
+                    )
+                    if selected_platform:
+                        candidate_agent_id = str(selected_platform["agent_id"])
+                        if candidate_agent_id in agent_id_map:
+                            assigned_agent_id = agent_id_map[candidate_agent_id].agent_id
+                            assignment_source = "platform_auto_match_planning"
+                            assignment_reason_code = "platform_auto_match_planning"
+                            assignment_reason = str(
+                                selected_platform.get("match_summary")
+                                or "Matched by platform auto-assignment."
+                            )
+                    elif not assignment_reason:
+                        assignment_reason_code = "no_suitable_existing_agent"
+                        assignment_reason = (
+                            "No suitable existing platform agent matched task capabilities/context."
+                        )
 
                 if assigned_agent_id:
                     used_agent_ids.add(assigned_agent_id)
+                    assignment_summary["assigned_existing"] += 1
+                elif allow_temporary_workers:
+                    assignment_source = "temporary_fallback_pending"
+                    if not assignment_reason:
+                        if not available_agents:
+                            assignment_reason_code = "no_available_platform_agents"
+                            assignment_reason = "No platform agents are currently available."
+                        elif not prefer_existing_agents:
+                            assignment_reason_code = "prefer_temporary_workers_policy"
+                            assignment_reason = (
+                                "Execution policy allows temporary workers first for this task."
+                            )
+                        else:
+                            assignment_reason_code = "temporary_fallback_pending"
+                            assignment_reason = (
+                                "Existing platform match not confident; temporary worker "
+                                "will be provisioned at execution."
+                            )
+                    assignment_summary["temporary_fallback_pending"] += 1
+                else:
+                    assignment_reason_code = "temporary_workers_disabled"
+                    assignment_reason = (
+                        "Temporary workers are disabled and no existing agent was selected."
+                    )
+                    assignment_summary["unassigned"] += 1
+                    unassigned_without_temp_titles.append(title)
 
                 role_required_capabilities = self._coerce_string_list(
                     role_context.get("required_capabilities")
@@ -1306,7 +1821,16 @@ class MissionOrchestrator:
                     role_context.get("knowledge_collection_ids")
                 )
                 role_sop_hint = str(role_context.get("sop_hint") or "").strip()
-                dependency_titles = self._coerce_string_list(task_def.get("dependencies"))
+                dependency_keys = self._coerce_string_list(task_def.get("dependency_keys"))
+                requirement_refs = self._coerce_string_list(task_def.get("requirement_refs"))
+                assigned_agent_name: Optional[str] = (
+                    agent_id_map[str(assigned_agent_id)].name
+                    if assigned_agent_id and str(assigned_agent_id) in agent_id_map
+                    else None
+                )
+                dependency_level = dependency_levels.get(task_key, 0)
+                if assignment_source == "temporary_fallback_pending" and not assigned_agent_name:
+                    assigned_agent_name = "Temporary worker (pending)"
 
                 task = Task(
                     task_id=task_id,
@@ -1319,29 +1843,63 @@ class MissionOrchestrator:
                     acceptance_criteria=task_def.get("acceptance_criteria"),
                     task_metadata={
                         "title": title,
-                        "dependencies": dependency_titles,
+                        "task_key": task_key,
+                        "dependencies": dependency_keys,
+                        "dependency_keys": dependency_keys,
                         "owner_role": owner_role_key or None,
                         "owner_role_name": role_context.get("role_name"),
                         "role_required_capabilities": role_required_capabilities,
                         "role_memory_scopes": role_memory_scopes,
                         "role_knowledge_collections": role_knowledge_collections,
                         "role_sop_hint": role_sop_hint,
-                        "assigned_agent_name": (
-                            agent_id_map[str(assigned_agent_id)].name
-                            if assigned_agent_id and str(assigned_agent_id) in agent_id_map
-                            else None
-                        ),
+                        "requirement_refs": requirement_refs,
+                        "assigned_agent_name": assigned_agent_name,
+                        "assignment_source": assignment_source,
+                        "assignment_reason_code": assignment_reason_code,
+                        "assignment_reason": assignment_reason,
+                        "dependency_level": dependency_level,
                     },
                 )
                 session.add(task)
+                task_plan_rows.append(
+                    {
+                        "task_id": task_id,
+                        "task_key": task_key,
+                        "title": title,
+                        "instructions": task_def.get("instructions", title),
+                        "acceptance_criteria": task_def.get("acceptance_criteria"),
+                        "priority": int(task_def.get("priority", idx)),
+                        "owner_role": owner_role_key or None,
+                        "owner_role_name": role_context.get("role_name"),
+                        "dependency_keys": dependency_keys,
+                        "requirement_refs": requirement_refs,
+                        "assigned_agent_id": str(assigned_agent_id) if assigned_agent_id else "",
+                        "assigned_agent_name": assigned_agent_name or "",
+                        "assignment_source": assignment_source,
+                        "assignment_reason_code": assignment_reason_code,
+                        "assignment_reason": assignment_reason,
+                        "dependency_level": dependency_level,
+                    }
+                )
+
+            if unassigned_without_temp_titles:
+                raise MissionError(
+                    mission_id,
+                    "Tasks without assigned existing agents while temporary workers are disabled: "
+                    + ", ".join(unassigned_without_temp_titles[:10]),
+                )
 
             session.flush()
 
-            # Resolve dependency title references to task_id arrays
+            # Resolve dependency keys to task_id arrays.
             tasks_in_session = session.query(Task).filter(Task.mission_id == mission_id).all()
             for t in tasks_in_session:
-                dep_titles = (t.task_metadata or {}).get("dependencies", [])
-                dep_ids = [str(title_to_id[dt]) for dt in dep_titles if dt in title_to_id]
+                dep_keys = self._coerce_string_list((t.task_metadata or {}).get("dependency_keys"))
+                dep_ids = [
+                    str(task_key_to_id[dep_key])
+                    for dep_key in dep_keys
+                    if dep_key in task_key_to_id and str(task_key_to_id[dep_key]) != str(t.task_id)
+                ]
                 t.dependencies = dep_ids
 
         for worker_agent_id in used_agent_ids:
@@ -1366,18 +1924,72 @@ class MissionOrchestrator:
         update_mission_fields(mission_id, total_tasks=len(task_list))
 
         # Emit per-task events
-        for title, tid in title_to_id.items():
+        for row in task_plan_rows:
             self._emitter.emit(
                 mission_id=mission_id,
                 event_type="TASK_DECOMPOSED",
-                task_id=tid,
-                data={"title": title},
-                message=f"Task created: {title}",
+                task_id=row["task_id"],
+                data={"title": row["title"], "task_key": row["task_key"]},
+                message=f"Task created: {row['title']}",
             )
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="TASK_ASSIGNMENT_DECIDED",
+                task_id=row["task_id"],
+                data={
+                    "title": row["title"],
+                    "task_key": row["task_key"],
+                    "dependency_level": row.get("dependency_level"),
+                    "assignment_source": row["assignment_source"],
+                    "assignment_reason_code": row.get("assignment_reason_code"),
+                    "assignment_reason": row.get("assignment_reason"),
+                    "assigned_agent_id": row.get("assigned_agent_id"),
+                    "assigned_agent_name": row.get("assigned_agent_name"),
+                },
+                message=(
+                    f"Assignment decided: {row['title']} -> "
+                    f"{row.get('assigned_agent_name') or row['assignment_source']}"
+                ),
+            )
+
+        self._emitter.emit(
+            mission_id=mission_id,
+            event_type="TASK_ASSIGNMENT_PLANNED",
+            data={
+                **assignment_summary,
+                "task_count": len(task_list),
+                "prefer_existing_agents": prefer_existing_agents,
+                "allow_temporary_workers": allow_temporary_workers,
+            },
+            message=(
+                "Task assignment planned: "
+                f"{assignment_summary['assigned_existing']} existing, "
+                f"{assignment_summary['temporary_fallback_pending']} temporary fallback"
+            ),
+        )
 
         # Save plan to workspace
         self._workspace.write_file(
-            mission_id, "shared/task_plan.json", json.dumps(task_list, indent=2)
+            mission_id,
+            "shared/task_plan.json",
+            json.dumps(
+                [
+                    {**row, "task_id": str(row.get("task_id"))}
+                    for row in task_plan_rows
+                ],
+                indent=2,
+                ensure_ascii=False,
+            ),
+        )
+        self._workspace.write_file(
+            mission_id,
+            "shared/execution_plan.md",
+            self._render_execution_plan_markdown(
+                mission=mission,
+                task_plan_rows=task_plan_rows,
+                role_assignments=role_assignments,
+                assignment_summary=assignment_summary,
+            ),
         )
         if role_assignments:
             self._workspace.write_file(
@@ -1386,7 +1998,10 @@ class MissionOrchestrator:
                 json.dumps(
                     {
                         "team_blueprint": list(role_assignments.values()),
-                        "tasks": task_list,
+                        "tasks": [
+                            {**row, "task_id": str(row.get("task_id"))}
+                            for row in task_plan_rows
+                        ],
                     },
                     indent=2,
                     ensure_ascii=False,
@@ -1517,10 +2132,20 @@ class MissionOrchestrator:
                         )
                         return
 
+                    all_done = all(dep_statuses.get(dep_id) == "completed" for dep_id in dep_ids)
+                    if all_done:
+                        break
+
+                    terminal_statuses = {"completed", "failed", "cancelled"}
+                    all_terminal = all(
+                        dep_statuses.get(dep_id) in terminal_statuses for dep_id in dep_ids
+                    )
                     failed_deps = [
-                        dep_id for dep_id in dep_ids if dep_statuses.get(dep_id) == "failed"
+                        dep_id
+                        for dep_id in dep_ids
+                        if dep_statuses.get(dep_id) in {"failed", "cancelled"}
                     ]
-                    if failed_deps:
+                    if all_terminal and failed_deps:
                         with get_db_session() as session:
                             t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
                             if t:
@@ -1541,10 +2166,6 @@ class MissionOrchestrator:
                             message="Task failed due to failed dependencies",
                         )
                         return
-
-                    all_done = all(dep_statuses.get(dep_id) == "completed" for dep_id in dep_ids)
-                    if all_done:
-                        break
                     await asyncio.sleep(2)
 
                 await self._execute_task_with_retry(
@@ -1565,13 +2186,8 @@ class MissionOrchestrator:
         failed_count = counts.get("failed", 0)
         total_count = sum(counts.values())
 
-        # Update mission counters based on actual DB task statuses
-        update_mission_fields(
-            mission_id,
-            total_tasks=max(mission.total_tasks, total_count),
-            completed_tasks=completed_count,
-            failed_tasks=failed_count,
-        )
+        # Update mission counters based on actual DB task statuses.
+        self._sync_mission_task_counters(mission_id, fallback_total=mission.total_tasks)
 
         self._emitter.emit(
             mission_id=mission_id,
@@ -1617,9 +2233,40 @@ class MissionOrchestrator:
             review_feedback_raw.strip() if isinstance(review_feedback_raw, str) else ""
         )
         review_cycle = self._coerce_int(task_metadata.get("review_cycle_count", 0), 0)
+        assignment_source = str(task_metadata.get("assignment_source") or "").strip().lower()
+        planning_prefers_temporary = assignment_source == "temporary_fallback_pending"
         if len(review_feedback) > 4000:
             review_feedback = review_feedback[:4000] + "\n...[truncated]"
         resolved_agent_id: Optional[UUID] = getattr(task_obj, "assigned_agent_id", None)
+        skip_existing_selection = False
+        # Backward-compat guard:
+        # only enforce rework escalation when assignment source is explicit.
+        # Legacy rows (without assignment_source) should keep prior behavior.
+        force_temporary_for_rework = (
+            allow_temporary_workers
+            and bool(review_feedback)
+            and review_cycle > 0
+            and bool(assignment_source)
+            and not self._coerce_bool(task_metadata.get("assigned_agent_temporary", False))
+        )
+        if force_temporary_for_rework and resolved_agent_id is not None:
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="TASK_AGENT_ESCALATED",
+                task_id=task_obj.task_id,
+                agent_id=resolved_agent_id,
+                data={
+                    "title": task_title,
+                    "reason": "review_rework_requires_specialist",
+                    "review_cycle": review_cycle,
+                    "previous_agent_id": str(resolved_agent_id),
+                    "assignment_source": assignment_source or "unknown",
+                },
+                message=f"Escalating rework to temporary worker: {task_title}",
+            )
+            resolved_agent_id = None
+            # Avoid immediately selecting another broad platform match for rework tasks.
+            skip_existing_selection = True
         agent = None
         total_attempts = max_retries + 1
 
@@ -1636,11 +2283,37 @@ class MissionOrchestrator:
                 )
                 resolved_agent_id = None
 
-        if resolved_agent_id is None and prefer_existing_agents:
+        if resolved_agent_id is None and prefer_existing_agents and not skip_existing_selection:
             selected_platform = self._select_platform_agent_for_task(
                 task_obj=task_obj,
                 available_agents=available_platform_agents or [],
             )
+
+            if selected_platform and planning_prefers_temporary:
+                capability_overlap = self._coerce_int(
+                    selected_platform.get("capability_overlap"),
+                    0,
+                )
+                match_score = float(selected_platform.get("match_score") or 0.0)
+                if capability_overlap <= 0 or match_score < 4.5:
+                    self._emitter.emit(
+                        mission_id=mission_id,
+                        event_type="TASK_AGENT_MATCH_REJECTED",
+                        task_id=task_obj.task_id,
+                        data={
+                            "title": task_title,
+                            "reason": "planning_marked_temporary_fallback",
+                            "match_score": match_score,
+                            "capability_overlap": capability_overlap,
+                            "candidate_agent_id": selected_platform.get("agent_id"),
+                            "candidate_agent_name": selected_platform.get("agent_name"),
+                            "match_summary": selected_platform.get("match_summary"),
+                        },
+                        message=(
+                            f"Platform match rejected for temporary-planned task: {task_title}"
+                        ),
+                    )
+                    selected_platform = None
 
             if selected_platform:
                 candidate_agent_id = UUID(selected_platform["agent_id"])
@@ -1663,12 +2336,22 @@ class MissionOrchestrator:
                             meta["assigned_agent_name"] = selected_platform["agent_name"]
                             meta["assigned_agent_temporary"] = False
                             meta["assignment_source"] = "platform_auto_match"
+                            meta["assignment_reason_code"] = "platform_auto_match"
+                            meta["assignment_reason"] = str(
+                                selected_platform.get("match_summary")
+                                or "Matched by platform auto-assignment."
+                            )
                             t.task_metadata = meta
 
                     local_meta = dict(task_obj.task_metadata or {})
                     local_meta["assigned_agent_name"] = selected_platform["agent_name"]
                     local_meta["assigned_agent_temporary"] = False
                     local_meta["assignment_source"] = "platform_auto_match"
+                    local_meta["assignment_reason_code"] = "platform_auto_match"
+                    local_meta["assignment_reason"] = str(
+                        selected_platform.get("match_summary")
+                        or "Matched by platform auto-assignment."
+                    )
                     task_obj.task_metadata = local_meta
                     task_obj.assigned_agent_id = resolved_agent_id
 
@@ -1683,26 +2366,27 @@ class MissionOrchestrator:
                             "agent_name": selected_platform["agent_name"],
                             "is_temporary": False,
                             "source": "platform_auto_match",
+                            "match_summary": selected_platform.get("match_summary"),
                         },
                         message=f"Platform agent assigned: {selected_platform['agent_name']}",
                     )
 
-            if resolved_agent_id is None and allow_temporary_workers:
-                resolved_agent_id = self._provision_temporary_worker_agent(
-                    mission_id=mission_id,
-                    mission=mission,
-                    task_obj=task_obj,
-                    llm_cfg=llm_cfg,
+        if resolved_agent_id is None and allow_temporary_workers:
+            resolved_agent_id = self._provision_temporary_worker_agent(
+                mission_id=mission_id,
+                mission=mission,
+                task_obj=task_obj,
+                llm_cfg=llm_cfg,
+            )
+            agent = await create_registered_mission_agent(
+                agent_id=resolved_agent_id,
+                owner_user_id=mission.created_by_user_id,
+            )
+            if agent is None:
+                raise MissionError(
+                    mission_id,
+                    f"Failed to initialize temporary worker agent for task {task_obj.task_id}",
                 )
-                agent = await create_registered_mission_agent(
-                    agent_id=resolved_agent_id,
-                    owner_user_id=mission.created_by_user_id,
-                )
-                if agent is None:
-                    raise MissionError(
-                        mission_id,
-                        f"Failed to initialize temporary worker agent for task {task_obj.task_id}",
-                    )
 
         if resolved_agent_id is None or agent is None:
             no_agent_error = (
@@ -1804,6 +2488,10 @@ class MissionOrchestrator:
                     f"{role_sop_hint or 'N/A'}\n\n"
                     f"## Instructions\n{task_obj.goal_text}\n\n"
                     f"## Acceptance Criteria\n{task_obj.acceptance_criteria or 'None specified'}\n\n"
+                    "## Output Location Policy\n"
+                    "- Write final user-facing deliverable files to `/workspace/output`.\n"
+                    "- Put intermediate/debug artifacts under `/workspace/shared` or `/workspace/tasks`.\n"
+                    "- Do not leave final deliverables only in `/workspace` root.\n\n"
                     f"{review_feedback_section}"
                     "Produce the deliverable and confirm completion."
                 )
@@ -1827,7 +2515,21 @@ class MissionOrchestrator:
                         if debug_mode:
                             completion_payload["successful_attempt"] = attempt + 1
                         t.result = completion_payload
+                        task_meta = dict(getattr(t, "task_metadata", None) or {})
+                        if isinstance(task_meta.get("review_feedback"), str):
+                            task_meta["last_review_feedback"] = task_meta.get("review_feedback")
+                            task_meta.pop("review_feedback", None)
+                        task_meta["review_status"] = "pending"
+                        task_meta.pop("review_output_signature", None)
+                        t.task_metadata = task_meta
                         t.completed_at = datetime.utcnow()
+                        local_meta = dict(task_obj.task_metadata or {})
+                        if isinstance(local_meta.get("review_feedback"), str):
+                            local_meta["last_review_feedback"] = local_meta.get("review_feedback")
+                            local_meta.pop("review_feedback", None)
+                        local_meta["review_status"] = "pending"
+                        local_meta.pop("review_output_signature", None)
+                        task_obj.task_metadata = local_meta
 
                 self._emitter.emit(
                     mission_id=mission_id,
@@ -1970,37 +2672,127 @@ class MissionOrchestrator:
         }
 
         failed_tasks: List[UUID] = []
-        for task_obj in task_data:
-            task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
-            if task_obj.status != "completed":
-                failed_tasks.append(task_obj.task_id)
-                with get_db_session() as session:
-                    t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
-                    if t:
-                        t.status = "failed"
-                        meta = dict(t.task_metadata or {})
-                        review_cycle = self._coerce_int(meta.get("review_cycle_count", 0), 0) + 1
-                        meta["review_cycle_count"] = review_cycle
-                        meta["review_feedback"] = (
-                            f"Task status is '{task_obj.status}', expected 'completed' before review."
-                        )
-                        t.task_metadata = meta
-                        t.completed_at = None
+        failed_task_ids: set[str] = set()
+        tasks_in_review_order = self._topological_sort(task_data)
 
+        def _mark_task_review_failed(
+            task_obj: Any,
+            *,
+            reason: str,
+            feedback: str,
+            increment_cycle: bool,
+            blocked_by: Optional[List[str]] = None,
+        ) -> None:
+            task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
+            with get_db_session() as session:
+                t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+                if t:
+                    t.status = "failed"
+                    meta = dict(t.task_metadata or {})
+                    review_cycle = self._coerce_int(meta.get("review_cycle_count", 0), 0)
+                    if increment_cycle:
+                        review_cycle += 1
+                        meta["review_cycle_count"] = review_cycle
+                    meta["review_feedback"] = feedback
+                    meta["review_status"] = (
+                        "rework_required" if increment_cycle else "blocked_by_dependency"
+                    )
+                    if blocked_by:
+                        meta["blocked_by_failed_dependencies"] = blocked_by
+                    else:
+                        meta.pop("blocked_by_failed_dependencies", None)
+                    meta.pop("review_output_signature", None)
+                    t.task_metadata = meta
+                    t.completed_at = None
+
+            local_meta = dict(task_obj.task_metadata or {})
+            if increment_cycle:
+                local_meta["review_cycle_count"] = (
+                    self._coerce_int(local_meta.get("review_cycle_count", 0), 0) + 1
+                )
+            local_meta["review_feedback"] = feedback
+            local_meta["review_status"] = (
+                "rework_required" if increment_cycle else "blocked_by_dependency"
+            )
+            if blocked_by:
+                local_meta["blocked_by_failed_dependencies"] = blocked_by
+            else:
+                local_meta.pop("blocked_by_failed_dependencies", None)
+            local_meta.pop("review_output_signature", None)
+            task_obj.task_metadata = local_meta
+            task_obj.status = "failed"
+
+            failed_tasks.append(task_obj.task_id)
+            failed_task_ids.add(str(task_obj.task_id))
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="TASK_REVIEWED",
+                task_id=task_obj.task_id,
+                data={
+                    "title": task_title,
+                    "verdict": "FAIL",
+                    "reason": reason,
+                    "blocked_by": blocked_by or [],
+                },
+                message=f"Task review: {task_title} -> FAIL ({reason})",
+            )
+
+        for task_obj in tasks_in_review_order:
+            task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
+            dependency_ids = [
+                dep_id
+                for dep_id in (task_obj.dependencies or [])
+                if dep_id in task_title_by_id
+            ]
+            failed_dependencies = [dep_id for dep_id in dependency_ids if dep_id in failed_task_ids]
+
+            if failed_dependencies:
+                blocked_titles = [
+                    task_title_by_id.get(dep_id, dep_id)
+                    for dep_id in failed_dependencies
+                ]
+                _mark_task_review_failed(
+                    task_obj,
+                    reason="dependency_review_failed",
+                    feedback=(
+                        "Blocked by review-failed dependencies: "
+                        + ", ".join(blocked_titles)
+                    ),
+                    increment_cycle=False,
+                    blocked_by=failed_dependencies,
+                )
+                continue
+
+            if task_obj.status != "completed":
+                _mark_task_review_failed(
+                    task_obj,
+                    reason="task_not_completed",
+                    feedback=(
+                        f"Task status is '{task_obj.status}', expected 'completed' before review."
+                    ),
+                    increment_cycle=True,
+                )
+                continue
+
+            task_output = (task_obj.result or {}).get("output", "No output")
+            task_meta = dict(task_obj.task_metadata or {})
+            output_signature = self._build_text_signature(task_output)
+            if (
+                task_meta.get("review_status") == "approved"
+                and str(task_meta.get("review_output_signature") or "") == output_signature
+            ):
                 self._emitter.emit(
                     mission_id=mission_id,
                     event_type="TASK_REVIEWED",
                     task_id=task_obj.task_id,
                     data={
                         "title": task_title,
-                        "verdict": "FAIL",
-                        "reason": "task_not_completed",
+                        "verdict": "PASS",
+                        "reason": "reuse_previous_pass",
                     },
-                    message=f"Task review: {task_title} -> FAIL (task not completed)",
+                    message=f"Task review: {task_title} -> PASS (cached)",
                 )
                 continue
-
-            task_output = (task_obj.result or {}).get("output", "No output")
 
             review_prompt = (
                 "Review the following task output against its acceptance criteria.\n\n"
@@ -2023,7 +2815,6 @@ class MissionOrchestrator:
             )
 
             verdict = self._extract_binary_verdict(review_output)
-
             self._emitter.emit(
                 mission_id=mission_id,
                 event_type="TASK_REVIEWED",
@@ -2033,17 +2824,29 @@ class MissionOrchestrator:
             )
 
             if verdict == "FAIL":
-                failed_tasks.append(task_obj.task_id)
-                with get_db_session() as session:
-                    t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
-                    if t:
-                        t.status = "failed"
-                        meta = dict(t.task_metadata or {})
-                        review_cycle = self._coerce_int(meta.get("review_cycle_count", 0), 0) + 1
-                        meta["review_cycle_count"] = review_cycle
-                        meta["review_feedback"] = review_output
-                        t.task_metadata = meta
-                        t.completed_at = None
+                _mark_task_review_failed(
+                    task_obj,
+                    reason="review_rejected",
+                    feedback=review_output,
+                    increment_cycle=True,
+                )
+                continue
+
+            with get_db_session() as session:
+                t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+                if t:
+                    meta = dict(t.task_metadata or {})
+                    meta["review_status"] = "approved"
+                    meta["review_output_signature"] = output_signature
+                    meta.pop("review_feedback", None)
+                    meta.pop("blocked_by_failed_dependencies", None)
+                    t.task_metadata = meta
+            local_meta = dict(task_obj.task_metadata or {})
+            local_meta["review_status"] = "approved"
+            local_meta["review_output_signature"] = output_signature
+            local_meta.pop("review_feedback", None)
+            local_meta.pop("blocked_by_failed_dependencies", None)
+            task_obj.task_metadata = local_meta
 
         exec_cfg = self._get_execution_config(mission)
         configured_max_rework_cycles = self._coerce_int(
@@ -2103,6 +2906,13 @@ class MissionOrchestrator:
                 # Re-enter review after re-execution
                 await self._phase_review(mission_id)
                 return
+            counts = self._get_task_status_counts(mission_id)
+            update_mission_fields(
+                mission_id,
+                completed_tasks=counts.get("completed", 0),
+                failed_tasks=counts.get("failed", 0),
+                total_tasks=max(mission.total_tasks, sum(counts.values())),
+            )
             raise MissionError(
                 mission_id,
                 (
@@ -2183,12 +2993,20 @@ class MissionOrchestrator:
             error_context="QA audit failed",
         )
 
+        # Persist QA report regardless of verdict so failures remain debuggable.
+        self._workspace.write_file(mission_id, "shared/qa_report.md", qa_output)
         verdict = self._extract_binary_verdict(qa_output)
+        qa_details = self._extract_qa_audit_details(qa_output, verdict=verdict)
 
         self._emitter.emit(
             mission_id=mission_id,
             event_type="QA_VERDICT",
-            data={"verdict": verdict},
+            data={
+                "verdict": verdict,
+                "summary": qa_details.get("summary"),
+                "issues_count": qa_details.get("issues_count"),
+                "issues": qa_details.get("issues"),
+            },
             message=f"QA audit verdict: {verdict}",
         )
 
@@ -2226,23 +3044,30 @@ class MissionOrchestrator:
                 self._emitter.emit(
                     mission_id=mission_id,
                     event_type="QA_CYCLE_RETRY",
-                    data={"cycle": qa_cycle, "max_qa_cycles": max_qa_cycles},
+                    data={
+                        "cycle": qa_cycle,
+                        "max_qa_cycles": max_qa_cycles,
+                        "summary": qa_details.get("summary"),
+                        "issues_count": qa_details.get("issues_count"),
+                        "issues": qa_details.get("issues"),
+                    },
                     message="QA failed, routing back to review",
                 )
                 # Transition back to reviewing is handled in _phase_review.
                 await self._phase_review(mission_id)
                 await self._phase_qa(mission_id)
                 return
+            failure_summary = str(qa_details.get("summary") or "").strip()
+            if len(failure_summary) > 180:
+                failure_summary = failure_summary[:180] + "..."
+            reason_suffix = f"; summary={failure_summary}" if failure_summary else ""
             raise MissionError(
                 mission_id,
                 (
                     f"QA audit failed after {qa_cycle} cycle(s); configured max_qa_cycles="
-                    f"{max_qa_cycles}"
+                    f"{max_qa_cycles}{reason_suffix}"
                 ),
             )
-
-        # Save QA report to workspace
-        self._workspace.write_file(mission_id, "shared/qa_report.md", qa_output)
 
         self._emitter.emit(
             mission_id=mission_id,
@@ -2396,6 +3221,132 @@ class MissionOrchestrator:
         return "FAIL"
 
     @staticmethod
+    def _extract_qa_audit_details(text: str, verdict: str = "") -> Dict[str, Any]:
+        """Extract compact QA summary/issues from free-form audit output."""
+        if not text:
+            return {"summary": "", "issues_count": 0, "issues": []}
+
+        normalized_verdict = str(verdict or "").strip().upper()
+        def _normalize_summary_candidate(value: str) -> str:
+            candidate = str(value or "").strip()
+            lowered = candidate.lower()
+            if lowered in {"```", "```json", "```markdown", "```md"}:
+                return ""
+            if candidate in {"{", "}", "[", "]"}:
+                return ""
+            return candidate
+
+        lines = []
+        for raw_line in str(text).splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            lowered = line.lower()
+            if lowered in {"```", "```json", "```markdown", "```md"}:
+                continue
+            lines.append(line)
+        summary = ""
+
+        parsed_obj = MissionOrchestrator._extract_json_object(str(text))
+        if isinstance(parsed_obj, dict) and parsed_obj:
+            for summary_key in ("summary", "overall", "conclusion", "details", "reason"):
+                raw_summary = parsed_obj.get(summary_key)
+                if isinstance(raw_summary, str) and raw_summary.strip():
+                    summary = _normalize_summary_candidate(raw_summary)
+                    if not summary:
+                        continue
+                    break
+
+            def _coerce_issue_text(item: Any) -> str:
+                if isinstance(item, dict):
+                    for key in ("issue", "description", "detail", "message", "title"):
+                        value = item.get(key)
+                        if isinstance(value, str) and value.strip():
+                            return value.strip()
+                    return ""
+                return str(item or "").strip()
+
+            issues: List[str] = []
+            for issues_key in ("issues", "findings", "risks"):
+                raw_issues = parsed_obj.get(issues_key)
+                if isinstance(raw_issues, list):
+                    for item in raw_issues:
+                        issue = _coerce_issue_text(item)
+                        issue = re.sub(r'^"?issue"?\s*[:：]\s*', "", issue, flags=re.IGNORECASE)
+                        issue = issue.strip().strip('"').strip("'")
+                        if issue and issue not in issues:
+                            issues.append(issue[:260])
+                    if issues:
+                        break
+
+            if normalized_verdict == "PASS" and not issues:
+                return {"summary": summary[:260], "issues_count": 0, "issues": []}
+            if summary or issues:
+                return {
+                    "summary": summary[:260] if summary else "",
+                    "issues_count": len(issues),
+                    "issues": issues[:8],
+                }
+
+        summary_patterns = [
+            r"^(summary|overall|assessment|结论|总体结论|总体评估|摘要)\s*[:：]\s*(.+)$",
+            r"^(final verdict|verdict|最终结论|最终判定)\s*[:：]\s*(.+)$",
+        ]
+        for line in lines:
+            for pattern in summary_patterns:
+                match = re.match(pattern, line, re.IGNORECASE)
+                if match:
+                    summary = _normalize_summary_candidate(match.group(2))
+                    break
+            if summary:
+                break
+
+        if not summary:
+            for line in lines:
+                upper = line.upper()
+                if "PASS" in upper or "FAIL" in upper:
+                    continue
+                if line in {"{", "}", "[", "]"}:
+                    continue
+                summary = _normalize_summary_candidate(line)
+                break
+
+        if normalized_verdict == "PASS":
+            return {
+                "summary": summary[:260] if summary else "",
+                "issues_count": 0,
+                "issues": [],
+            }
+
+        issue_keywords = re.compile(
+            r"(issue|risk|defect|problem|gap|missing|error|warning|"
+            r"问题|风险|缺陷|不符合|未满足|错误|失败)",
+            re.IGNORECASE,
+        )
+        issues: List[str] = []
+        for raw_line in lines:
+            line = raw_line.strip()
+            if len(line) < 4:
+                continue
+            if not issue_keywords.search(line):
+                continue
+
+            cleaned = re.sub(r"^[\-\*\d\.\)\s]+", "", line).strip()
+            if not cleaned:
+                continue
+            if cleaned in issues:
+                continue
+            issues.append(cleaned[:260])
+            if len(issues) >= 8:
+                break
+
+        return {
+            "summary": summary[:260] if summary else "",
+            "issues_count": len(issues),
+            "issues": issues,
+        }
+
+    @staticmethod
     def _get_task_status_counts(mission_id: UUID) -> Dict[str, int]:
         """Get per-status task counts for a mission."""
         from database.connection import get_db_session
@@ -2405,6 +3356,17 @@ class MissionOrchestrator:
             statuses = session.query(Task.status).filter(Task.mission_id == mission_id).all()
         counter = Counter(status for (status,) in statuses)
         return dict(counter)
+
+    def _sync_mission_task_counters(self, mission_id: UUID, fallback_total: int = 0) -> None:
+        """Persist mission task counters from current DB task statuses."""
+        counts = self._get_task_status_counts(mission_id)
+        total_count = sum(counts.values())
+        update_mission_fields(
+            mission_id,
+            total_tasks=max(fallback_total, total_count),
+            completed_tasks=counts.get("completed", 0),
+            failed_tasks=counts.get("failed", 0),
+        )
 
     @staticmethod
     def _topological_sort(tasks: List[Any]) -> List[Any]:

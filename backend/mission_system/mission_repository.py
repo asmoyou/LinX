@@ -153,7 +153,7 @@ def delete_mission(mission_id: UUID) -> bool:
 
 
 def reset_failed_mission_for_retry(mission_id: UUID) -> Mission:
-    """Reset a failed mission so it can be started again.
+    """Reset a failed/cancelled mission so it can be started again.
 
     This clears mission runtime state (tasks/counters/errors/results) while
     preserving user-authored data such as title/instructions/attachments/config.
@@ -164,8 +164,8 @@ def reset_failed_mission_for_retry(mission_id: UUID) -> Mission:
         mission = session.query(Mission).filter(Mission.mission_id == mission_id).first()
         if mission is None:
             raise ValueError(f"Mission {mission_id} not found")
-        if mission.status != "failed":
-            raise ValueError("Only failed missions can be retried")
+        if mission.status not in {"failed", "cancelled"}:
+            raise ValueError("Only failed or cancelled missions can be retried")
 
         # Clear prior execution artifacts to avoid duplicate plans/tasks.
         session.query(Task).filter(Task.mission_id == mission_id).delete(synchronize_session=False)
