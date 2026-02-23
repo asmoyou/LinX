@@ -224,6 +224,23 @@ def _normalize_title_text(value: Optional[str]) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def _coerce_bool_flag(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+        return default
+    return default
+
+
 def _derive_initial_mission_title(instructions: str, max_length: int = 120) -> str:
     normalized = re.sub(r"\s+", " ", str(instructions or "")).strip()
     if not normalized:
@@ -549,14 +566,22 @@ async def create_mission(
             merged_config["execution_config"] = effective_exec
 
     normalized_title = _normalize_title_text(request.title)
-    auto_generate_title = len(normalized_title) == 0
+    requested_auto_generate_title = False
+    if isinstance(request.mission_config, dict):
+        requested_auto_generate_title = _coerce_bool_flag(
+            request.mission_config.get("auto_generate_title"),
+            default=False,
+        )
+    auto_generate_title = requested_auto_generate_title or len(normalized_title) == 0
     effective_title = normalized_title or _derive_initial_mission_title(request.instructions)
 
     if auto_generate_title:
         merged_config["auto_generate_title"] = True
-        merged_config["auto_title_seed"] = effective_title
+        seed_title = _normalize_title_text(str(merged_config.get("auto_title_seed") or ""))
+        merged_config["auto_title_seed"] = seed_title or effective_title
     else:
         merged_config.pop("auto_generate_title", None)
+        merged_config.pop("auto_title_seed", None)
 
     mission = repo_create(
         title=effective_title,

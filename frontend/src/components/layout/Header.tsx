@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import {
   Sun,
   Moon,
@@ -11,6 +12,7 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { useThemeStore } from '@/stores/themeStore';
+import { useNotificationStore } from '@/stores/notificationStore';
 import { usersApi } from '@/api/users';
 import { healthApi, type DependencyHealth, type SystemHealthResponse } from '@/api/health';
 
@@ -21,7 +23,16 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
   const { i18n, t } = useTranslation();
+  const navigate = useNavigate();
   const { theme, setTheme } = useThemeStore();
+  const {
+    notifications,
+    unreadCount,
+    markAsRead,
+    markAllAsRead,
+    clearAll,
+    removeNotification,
+  } = useNotificationStore();
   const [showNotifications, setShowNotifications] = React.useState(false);
   const [showSystemHealth, setShowSystemHealth] = React.useState(false);
   const [systemHealth, setSystemHealth] = React.useState<SystemHealthResponse | null>(null);
@@ -206,6 +217,18 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
+    });
+  };
+
+  const formatNotificationTimestamp = (value: string): string => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString(i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US', {
+      hour12: false,
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
     });
   };
 
@@ -395,7 +418,14 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
             aria-expanded={showNotifications}
           >
             <Bell className="w-5 h-5" />
-            <span className="absolute top-2.5 right-2.5 w-1.5 h-1.5 bg-red-500 rounded-full border-2 border-white dark:border-black"></span>
+            {unreadCount > 0 && (
+              <>
+                <span className="absolute top-2.5 right-2.5 w-1.5 h-1.5 bg-red-500 rounded-full border-2 border-white dark:border-black"></span>
+                <span className="absolute -top-0.5 -right-0.5 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-red-500 text-white text-[10px] leading-[1.1rem] font-semibold text-center">
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              </>
+            )}
           </button>
 
           {showNotifications && (
@@ -408,13 +438,92 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
                 className="absolute right-0 mt-2 w-80 glass-panel rounded-[24px] shadow-2xl p-6 animate-slide-in-right z-50"
                 role="menu"
               >
-                <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400 mb-4">
-                  Notifications
-                </h3>
-                <div className="space-y-3">
-                  <div className="text-sm text-zinc-600 dark:text-zinc-400 p-3 hover:bg-zinc-500/5 rounded-xl transition-colors">
-                    No new notifications
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">
+                    Notifications
+                  </h3>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={markAllAsRead}
+                      className="text-[10px] text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                    >
+                      Mark all read
+                    </button>
+                    <button
+                      onClick={clearAll}
+                      className="text-[10px] text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                    >
+                      Clear
+                    </button>
                   </div>
+                </div>
+                <div className="space-y-2 max-h-80 overflow-y-auto pr-1 custom-scrollbar">
+                  {notifications.length === 0 ? (
+                    <div className="text-sm text-zinc-600 dark:text-zinc-400 p-3 rounded-xl">
+                      No new notifications
+                    </div>
+                  ) : (
+                    notifications.map((notification) => (
+                      <div
+                        key={notification.id}
+                        className={`p-3 rounded-xl border transition-colors ${
+                          notification.read
+                            ? 'border-zinc-200/70 dark:border-zinc-700/70 bg-white/60 dark:bg-zinc-800/40'
+                            : 'border-emerald-200 dark:border-emerald-500/40 bg-emerald-50/70 dark:bg-emerald-500/10'
+                        }`}
+                      >
+                        <button
+                          className="w-full text-left"
+                          onClick={() => {
+                            if (!notification.read) {
+                              markAsRead(notification.id);
+                            }
+                            if (notification.actionUrl) {
+                              navigate(notification.actionUrl);
+                              setShowNotifications(false);
+                            }
+                          }}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-200 truncate">
+                                {notification.title}
+                              </div>
+                              <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-300 whitespace-pre-wrap break-words">
+                                {notification.message}
+                              </div>
+                              <div className="mt-1 text-[10px] text-zinc-400">
+                                {formatNotificationTimestamp(notification.timestamp)}
+                              </div>
+                            </div>
+                            {!notification.read && (
+                              <span className="mt-1 w-2 h-2 rounded-full bg-emerald-500" />
+                            )}
+                          </div>
+                        </button>
+                        <div className="mt-2 flex items-center justify-end gap-2">
+                          {notification.actionUrl && (
+                            <button
+                              onClick={() => {
+                                markAsRead(notification.id);
+                                navigate(notification.actionUrl as string);
+                                setShowNotifications(false);
+                              }}
+                              className="text-[10px] px-2 py-1 rounded-md border border-emerald-300 dark:border-emerald-500/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-500/10"
+                            >
+                              {notification.actionLabel || 'Open'}
+                            </button>
+                          )}
+                          <button
+                            onClick={() => removeNotification(notification.id)}
+                            className="text-[10px] px-2 py-1 rounded-md border border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             </>

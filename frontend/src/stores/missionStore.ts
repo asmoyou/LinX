@@ -53,6 +53,7 @@ interface MissionState {
   missionTasks: MissionTask[];
   missionAgents: MissionAgent[];
   missionAttachments: MissionAttachment[];
+  isGlobalMissionWsConnected: boolean;
   isLoading: boolean;
   error: string | null;
   missionSettings: MissionSettings | null;
@@ -107,6 +108,7 @@ interface MissionState {
   // Common
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
+  setGlobalMissionWsConnected: (connected: boolean) => void;
   reset: () => void;
 }
 
@@ -117,6 +119,7 @@ export const useMissionStore = create<MissionState>((set, get) => ({
   missionTasks: [],
   missionAgents: [],
   missionAttachments: [],
+  isGlobalMissionWsConnected: false,
   isLoading: false,
   error: null,
   missionSettings: null,
@@ -584,6 +587,7 @@ export const useMissionStore = create<MissionState>((set, get) => ({
 
   setLoading: (loading) => set({ isLoading: loading }),
   setError: (error) => set({ error }),
+  setGlobalMissionWsConnected: (connected) => set({ isGlobalMissionWsConnected: connected }),
 
   reset: () =>
     set({
@@ -593,6 +597,7 @@ export const useMissionStore = create<MissionState>((set, get) => ({
       missionTasks: [],
       missionAgents: [],
       missionAttachments: [],
+      isGlobalMissionWsConnected: false,
       isLoading: false,
       error: null,
       missionSettings: null,

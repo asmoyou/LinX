@@ -22,6 +22,18 @@ const stepIcons: Record<Step, React.ElementType> = {
   review: Eye,
 };
 
+const deriveInitialMissionTitle = (instructions: string, maxLength = 120): string => {
+  const normalized = String(instructions || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return 'Untitled Mission';
+
+  const firstSegment = normalized.split(/[。！？.!?;\n]/, 1)[0]?.trim() || '';
+  let candidate = firstSegment || normalized;
+  if (candidate.length > maxLength) {
+    candidate = candidate.slice(0, maxLength).replace(/[ ,;:：。.!?、]+$/g, '');
+  }
+  return candidate || 'Untitled Mission';
+};
+
 export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen, onClose }) => {
   const { t } = useTranslation();
   const { createMission, startMission, uploadAttachment, missionSettings, fetchMissionSettings } = useMissionStore();
@@ -49,6 +61,8 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
     temp_worker_knowledge_strategy: 'owner_accessible',
     temp_worker_knowledge_limit: 6,
   });
+  const autoDerivedTitle = deriveInitialMissionTitle(instructions);
+  const effectiveMissionTitle = title.trim() || autoDerivedTitle;
 
   // Load saved settings as defaults
   useEffect(() => {
@@ -116,11 +130,20 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
   const submitMission = async () => {
     setIsSubmitting(true);
     try {
-      const normalizedTitle = title.trim();
+      const normalizedUserTitle = title.trim();
+      const autoGenerateTitle = normalizedUserTitle.length === 0;
+      const missionConfig: MissionConfig = {
+        ...config,
+        auto_generate_title: autoGenerateTitle,
+      };
+      if (autoGenerateTitle) {
+        missionConfig.auto_title_seed = autoDerivedTitle;
+      }
+
       const mission = await createMission({
-        ...(normalizedTitle ? { title: normalizedTitle } : {}),
+        title: normalizedUserTitle || effectiveMissionTitle,
         instructions: instructions.trim(),
-        mission_config: config,
+        mission_config: missionConfig,
       });
 
       // Upload attachments
@@ -244,7 +267,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
                   className="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
                 />
                 <p className="mt-1 text-xs text-zinc-500">
-                  {t('missions.autoGenerateTitleHint', '留空后将由 Leader 根据任务要求自动生成标题')}
+                  {t('missions.autoGenerateTitleHint', '留空时会根据需求自动填充初始标题')}
                 </p>
               </div>
               <div>
@@ -448,7 +471,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
               <div className="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700">
                 <h4 className="text-xs font-semibold text-zinc-500 uppercase mb-2">{t('missions.fieldTitle')}</h4>
                 <p className="text-sm text-zinc-800 dark:text-zinc-200">
-                  {title.trim() || t('missions.autoGenerateTitlePending', '将由 Leader 自动生成')}
+                  {effectiveMissionTitle || t('missions.autoGenerateTitlePending', '将自动填充标题')}
                 </p>
               </div>
               <div className="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700">

@@ -55,6 +55,7 @@ const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
 };
 
 const FLOW_POLL_INTERVAL_MS = 10_000;
+const FLOW_POLL_INTERVAL_WS_CONNECTED_MS = 180_000;
 
 function formatDetailTimestamp(value?: string): string {
   if (!value) return '-';
@@ -259,6 +260,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
   const [clarificationReply, setClarificationReply] = useState('');
   const [isSendingClarification, setIsSendingClarification] = useState(false);
   const [isRetryingFailedParts, setIsRetryingFailedParts] = useState(false);
+  const [isMissionWsConnected, setIsMissionWsConnected] = useState(false);
   const scopedMissionEvents = useMemo(
     () =>
       selectLatestMissionRunEvents(
@@ -282,14 +284,25 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
 
   // WebSocket connection
   useEffect(() => {
-    const configuredApiBase = import.meta.env.VITE_API_URL || '/api/v1';
-    const absoluteApiBase = configuredApiBase.startsWith('http')
+    const configuredWsBase = (import.meta.env.VITE_WS_URL as string | undefined)?.trim() || '';
+    const configuredApiBase = (import.meta.env.VITE_API_URL as string | undefined)?.trim() || '/api/v1';
+    const normalizedApiBase = configuredApiBase.startsWith('/')
       ? configuredApiBase
-      : `${window.location.origin}${configuredApiBase.startsWith('/') ? '' : '/'}${configuredApiBase}`;
-    const apiBase = absoluteApiBase.replace(/\/$/, '');
-    const wsUrl = `${apiBase.replace(/^http/, 'ws')}/ws/missions/${missionId}`;
+      : `/${configuredApiBase}`;
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsBase = configuredWsBase
+      ? configuredWsBase.replace(/\/$/, '')
+      : configuredApiBase.startsWith('http')
+        ? `${configuredApiBase.replace(/^http/, 'ws').replace(/\/$/, '')}/ws`
+        : import.meta.env.DEV
+          ? `${wsProtocol}://${window.location.hostname}:8000${normalizedApiBase}/ws`
+          : `${window.location.origin.replace(/^http/, 'ws')}${normalizedApiBase}/ws`;
+    const wsUrl = `${wsBase}/missions/${missionId}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
+    ws.onopen = () => {
+      setIsMissionWsConnected(true);
+    };
 
     ws.onmessage = (event) => {
       try {
@@ -323,8 +336,15 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
         // ignore parse errors
       }
     };
+    ws.onclose = () => {
+      setIsMissionWsConnected(false);
+    };
+    ws.onerror = () => {
+      ws.close();
+    };
 
     return () => {
+      setIsMissionWsConnected(false);
       ws.close();
       wsRef.current = null;
     };
@@ -359,7 +379,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     }, 1500);
     const intervalId = window.setInterval(() => {
       void pollMissionState();
-    }, FLOW_POLL_INTERVAL_MS);
+    }, isMissionWsConnected ? FLOW_POLL_INTERVAL_WS_CONNECTED_MS : FLOW_POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
@@ -372,6 +392,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     fetchMissionTasks,
     fetchMissionAgents,
     fetchMissionEvents,
+    isMissionWsConnected,
   ]);
 
   // Build nodes and edges from mission data

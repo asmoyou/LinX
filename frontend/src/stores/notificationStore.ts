@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
 
 export type NotificationType = 'info' | 'success' | 'warning' | 'error';
 
@@ -32,66 +33,89 @@ interface NotificationState {
   getNotificationById: (id: string) => Notification | undefined;
 }
 
-export const useNotificationStore = create<NotificationState>((set, get) => ({
-  notifications: [],
-  unreadCount: 0,
-  isOpen: false,
-  
-  addNotification: (notification) => {
-    const newNotification: Notification = {
-      ...notification,
-      id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      timestamp: new Date().toISOString(),
-      read: false,
-    };
-    
-    set((state) => ({
-      notifications: [newNotification, ...state.notifications],
-      unreadCount: state.unreadCount + 1,
-    }));
-  },
-  
-  removeNotification: (id) => set((state) => {
-    const notification = state.notifications.find((n) => n.id === id);
-    const wasUnread = notification && !notification.read;
-    
-    return {
-      notifications: state.notifications.filter((n) => n.id !== id),
-      unreadCount: wasUnread ? state.unreadCount - 1 : state.unreadCount,
-    };
-  }),
-  
-  markAsRead: (id) => set((state) => {
-    const notification = state.notifications.find((n) => n.id === id);
-    const wasUnread = notification && !notification.read;
-    
-    return {
-      notifications: state.notifications.map((n) =>
-        n.id === id ? { ...n, read: true } : n
-      ),
-      unreadCount: wasUnread ? state.unreadCount - 1 : state.unreadCount,
-    };
-  }),
-  
-  markAllAsRead: () => set((state) => ({
-    notifications: state.notifications.map((n) => ({ ...n, read: true })),
-    unreadCount: 0,
-  })),
-  
-  clearAll: () => set({
-    notifications: [],
-    unreadCount: 0,
-  }),
-  
-  togglePanel: () => set((state) => ({ isOpen: !state.isOpen })),
-  
-  setOpen: (open) => set({ isOpen: open }),
-  
-  getUnreadNotifications: () => {
-    return get().notifications.filter((n) => !n.read);
-  },
-  
-  getNotificationById: (id) => {
-    return get().notifications.find((n) => n.id === id);
-  },
-}));
+const MAX_NOTIFICATIONS = 200;
+
+const computeUnreadCount = (notifications: Notification[]): number =>
+  notifications.reduce((count, notification) => count + (notification.read ? 0 : 1), 0);
+
+export const useNotificationStore = create<NotificationState>()(
+  persist(
+    (set, get) => ({
+      notifications: [],
+      unreadCount: 0,
+      isOpen: false,
+
+      addNotification: (notification) => {
+        const newNotification: Notification = {
+          ...notification,
+          id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
+          timestamp: new Date().toISOString(),
+          read: false,
+        };
+
+        set((state) => {
+          const nextNotifications = [newNotification, ...state.notifications].slice(
+            0,
+            MAX_NOTIFICATIONS
+          );
+          return {
+            notifications: nextNotifications,
+            unreadCount: computeUnreadCount(nextNotifications),
+          };
+        });
+      },
+
+      removeNotification: (id) =>
+        set((state) => {
+          const nextNotifications = state.notifications.filter((n) => n.id !== id);
+          return {
+            notifications: nextNotifications,
+            unreadCount: computeUnreadCount(nextNotifications),
+          };
+        }),
+
+      markAsRead: (id) =>
+        set((state) => {
+          const nextNotifications = state.notifications.map((n) =>
+            n.id === id ? { ...n, read: true } : n
+          );
+          return {
+            notifications: nextNotifications,
+            unreadCount: computeUnreadCount(nextNotifications),
+          };
+        }),
+
+      markAllAsRead: () =>
+        set((state) => ({
+          notifications: state.notifications.map((n) => ({ ...n, read: true })),
+          unreadCount: 0,
+        })),
+
+      clearAll: () =>
+        set({
+          notifications: [],
+          unreadCount: 0,
+        }),
+
+      togglePanel: () => set((state) => ({ isOpen: !state.isOpen })),
+
+      setOpen: (open) => set({ isOpen: open }),
+
+      getUnreadNotifications: () => {
+        return get().notifications.filter((n) => !n.read);
+      },
+
+      getNotificationById: (id) => {
+        return get().notifications.find((n) => n.id === id);
+      },
+    }),
+    {
+      name: 'linx-notification-store',
+      storage: createJSONStorage(() => localStorage),
+      partialize: (state) => ({
+        notifications: state.notifications,
+        unreadCount: state.unreadCount,
+      }),
+    }
+  )
+);

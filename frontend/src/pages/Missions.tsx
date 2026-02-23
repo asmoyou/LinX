@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useSearchParams } from 'react-router-dom';
 import {
   Plus,
   Rocket,
@@ -53,6 +54,20 @@ const statusDots: Record<MissionStatus, string> = {
 };
 
 const quickDeliverableStatuses = new Set<MissionStatus>(['completed']);
+const MISSION_LIST_REFRESH_EVENT_TYPES = new Set([
+  'MISSION_STARTED',
+  'MISSION_COMPLETED',
+  'MISSION_FAILED',
+  'MISSION_CANCELLED',
+  'MISSION_RETRY_REQUESTED',
+  'MISSION_PARTIAL_RETRY_REQUESTED',
+  'MISSION_TITLE_UPDATED',
+  'PHASE_STARTED',
+  'PHASE_COMPLETED',
+  'USER_CLARIFICATION_REQUESTED',
+  'clarification_request',
+  'clarification_response',
+]);
 
 type DeliverableSummary = {
   finalCount: number;
@@ -221,6 +236,7 @@ function downloadBlob(blob: Blob, filename: string): void {
 
 export const Missions: React.FC = () => {
   const { t } = useTranslation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const {
     missions,
     selectedMission,
@@ -239,6 +255,7 @@ export const Missions: React.FC = () => {
     getFilteredMissions,
     statusFilter,
     searchQuery,
+    isGlobalMissionWsConnected,
   } = useMissionStore();
 
   const [showWizard, setShowWizard] = useState(false);
@@ -251,6 +268,9 @@ export const Missions: React.FC = () => {
   const [downloadingArchiveMissionId, setDownloadingArchiveMissionId] = useState<string | null>(null);
   const [deletingMissionId, setDeletingMissionId] = useState<string | null>(null);
   const autoOpenedClarificationRef = useRef<string>('');
+  const refreshFromEventTimerRef = useRef<number | null>(null);
+  const urlMissionId = searchParams.get('missionId')?.trim() || '';
+  const urlFocus = (searchParams.get('focus') || '').trim().toLowerCase();
   const selectedMissionId = selectedMission?.mission_id;
   const selectedMissionEvents = useMemo(
     () =>
@@ -269,10 +289,27 @@ export const Missions: React.FC = () => {
     0,
     selectedMission?.pending_clarification_count ?? pendingClarificationCountFromEvents
   );
+  const latestMissionEvent = missionEvents.length > 0 ? missionEvents[missionEvents.length - 1] : null;
 
   useEffect(() => {
     fetchMissions();
   }, [fetchMissions]);
+
+  // Reconciliation polling:
+  // - WS connected: very low frequency reconciliation
+  // - WS disconnected: handled globally in Layout fallback polling
+  useEffect(() => {
+    if (!isGlobalMissionWsConnected) return;
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void fetchMissions();
+    }, 180_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [fetchMissions, isGlobalMissionWsConnected]);
 
   useEffect(() => {
     if (!selectedMissionId) return;
@@ -292,6 +329,23 @@ export const Missions: React.FC = () => {
     }
   }, [pendingClarificationCountForSelected, selectedMissionId]);
 
+  useEffect(() => {
+    if (!latestMissionEvent) return;
+    if (!MISSION_LIST_REFRESH_EVENT_TYPES.has(latestMissionEvent.event_type)) return;
+    if (refreshFromEventTimerRef.current) {
+      window.clearTimeout(refreshFromEventTimerRef.current);
+    }
+    refreshFromEventTimerRef.current = window.setTimeout(() => {
+      void fetchMissions();
+    }, 300);
+    return () => {
+      if (refreshFromEventTimerRef.current) {
+        window.clearTimeout(refreshFromEventTimerRef.current);
+        refreshFromEventTimerRef.current = null;
+      }
+    };
+  }, [fetchMissions, latestMissionEvent]);
+
   const filteredMissions = getFilteredMissions();
 
   const handleSelectMission = (mission: Mission) => {
@@ -299,6 +353,30 @@ export const Missions: React.FC = () => {
     setShowFailureDiagnosticsModal(false);
     selectMission(mission);
   };
+
+  useEffect(() => {
+    if (!urlMissionId || missions.length === 0) return;
+    const targetMission = missions.find((mission) => mission.mission_id === urlMissionId);
+    if (!targetMission) return;
+
+    handleSelectMission(targetMission);
+    if (urlFocus === 'clarification') {
+      setShowDeliverables(false);
+      setShowTaskList(false);
+      setShowClarification(true);
+    }
+
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete('missionId');
+    nextParams.delete('focus');
+    setSearchParams(nextParams, { replace: true });
+  }, [
+    missions,
+    searchParams,
+    setSearchParams,
+    urlFocus,
+    urlMissionId,
+  ]);
 
   const handleBack = () => {
     selectMission(null);

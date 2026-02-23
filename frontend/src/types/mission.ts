@@ -29,6 +29,9 @@ export interface MissionConfig {
   temp_worker_knowledge_strategy?: string;
   temp_worker_knowledge_limit?: number;
   base_image?: string;
+  auto_generate_title?: boolean;
+  auto_title_seed?: string;
+  auto_generated_title?: string;
 }
 
 export interface Mission {

@@ -64,11 +64,15 @@ class MissionEventEmitter:
                 mission_id=mission_id,
                 event={
                     "event_id": str(event_id),
+                    "mission_id": str(mission_id),
                     "event_type": event_type,
                     "agent_id": str(agent_id) if agent_id else None,
                     "task_id": str(task_id) if task_id else None,
                     "data": data,
                     "message": message,
+                    "created_at": (
+                        event.created_at.isoformat() if getattr(event, "created_at", None) else None
+                    ),
                 },
             )
         except ImportError:

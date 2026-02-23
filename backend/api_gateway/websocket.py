@@ -25,6 +25,9 @@ task_flow_subscriptions: Dict[UUID, Set[WebSocket]] = {}
 # Store mission subscriptions: mission_id -> set of websockets
 mission_subscriptions: Dict[UUID, Set[WebSocket]] = {}
 
+# Store global mission subscriptions (all mission events)
+mission_global_subscriptions: Set[WebSocket] = set()
+
 
 def _remove_active_connection(user_id: str, websocket: WebSocket) -> None:
     connections = active_connections.get(user_id)
@@ -235,6 +238,32 @@ def _remove_mission_subscription(mission_id: UUID, websocket: WebSocket) -> None
         mission_subscriptions.pop(mission_id, None)
 
 
+def _remove_global_mission_subscription(websocket: WebSocket) -> None:
+    mission_global_subscriptions.discard(websocket)
+
+
+@router.websocket("/missions")
+async def websocket_all_mission_updates(websocket: WebSocket):
+    """WebSocket endpoint for global mission event streaming."""
+    await websocket.accept()
+    mission_global_subscriptions.add(websocket)
+
+    logger.info("WebSocket connected to global missions stream", extra={"endpoint": "missions_all"})
+
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected from global missions stream")
+    except Exception as e:
+        logger.error(
+            "WebSocket global missions error",
+            extra={"endpoint": "missions_all", "error": str(e)},
+        )
+    finally:
+        _remove_global_mission_subscription(websocket)
+
+
 @router.websocket("/missions/{mission_id}")
 async def websocket_mission_updates(websocket: WebSocket, mission_id: str):
     """WebSocket endpoint for real-time mission event streaming."""
@@ -305,21 +334,34 @@ def broadcast_mission_event(mission_id: UUID, event: dict) -> None:
     """
     import asyncio
 
-    subs = mission_subscriptions.get(mission_id)
-    if not subs:
+    scoped_subs = mission_subscriptions.get(mission_id, set())
+    global_subs = mission_global_subscriptions
+    if not scoped_subs and not global_subs:
         return
 
-    message = {"type": "mission_event", "data": event}
+    payload = dict(event)
+    payload.setdefault("mission_id", str(mission_id))
+    message = {"type": "mission_event", "data": payload}
 
     async def _send():
-        stale = []
-        for ws in list(subs):
+        stale_scoped: Set[WebSocket] = set()
+        stale_global: Set[WebSocket] = set()
+        for ws in list(scoped_subs):
             try:
                 await ws.send_json(message)
             except Exception:
-                stale.append(ws)
-        for ws in stale:
+                stale_scoped.add(ws)
+
+        for ws in list(global_subs):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                stale_global.add(ws)
+
+        for ws in stale_scoped:
             _remove_mission_subscription(mission_id, ws)
+        for ws in stale_global:
+            _remove_global_mission_subscription(ws)
 
     try:
         loop = asyncio.get_running_loop()
