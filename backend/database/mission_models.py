@@ -262,3 +262,64 @@ class MissionSettings(Base):
 
     def __repr__(self):
         return f"<MissionSettings(id={self.id}, user_id={self.user_id})>"
+
+
+class UserNotification(Base):
+    """Persisted per-user notification center records.
+
+    This table backs a commercial-grade notification center with unread/read
+    state, offline catch-up, and action deep links.
+    """
+
+    __tablename__ = "user_notifications"
+
+    notification_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    mission_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("missions.mission_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    notification_type = Column(String(100), nullable=False, index=True)
+    severity = Column(String(20), nullable=False, default="info")
+    title = Column(String(500), nullable=False)
+    message = Column(Text, nullable=False)
+    action_url = Column(String(500), nullable=True)
+    action_label = Column(String(100), nullable=True)
+    notification_metadata = Column(JSONB, nullable=True)
+    dedupe_key = Column(String(255), nullable=True, index=True)
+    is_read = Column(Boolean, nullable=False, default=False, index=True)
+    read_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    # Relationships
+    user = relationship("User")
+    mission = relationship("Mission")
+
+    __table_args__ = (
+        Index("idx_user_notifications_user_created", "user_id", "created_at"),
+        Index("idx_user_notifications_user_unread_created", "user_id", "is_read", "created_at"),
+        Index(
+            "idx_user_notifications_user_type_created",
+            "user_id",
+            "notification_type",
+            "created_at",
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<UserNotification(notification_id={self.notification_id}, "
+            f"user_id={self.user_id}, type={self.notification_type}, is_read={self.is_read})>"
+        )

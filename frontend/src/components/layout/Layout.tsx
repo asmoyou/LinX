@@ -2,9 +2,18 @@ import React, { useEffect } from 'react';
 import { Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
+import { notificationsApi } from '@/api/notifications';
 import { useThemeStore } from '@/stores/themeStore';
 import { useMissionStore } from '@/stores/missionStore';
 import { useNotificationStore } from '@/stores/notificationStore';
+
+const NOTIFICATION_SYNC_EVENT_TYPES = new Set([
+  'USER_CLARIFICATION_REQUESTED',
+  'clarification_request',
+  'MISSION_FAILED',
+  'MISSION_COMPLETED',
+  'QA_VERDICT',
+]);
 
 export const Layout: React.FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
@@ -12,10 +21,21 @@ export const Layout: React.FC = () => {
   const setGlobalMissionWsConnected = useMissionStore((state) => state.setGlobalMissionWsConnected);
   const isGlobalMissionWsConnected = useMissionStore((state) => state.isGlobalMissionWsConnected);
   const fetchMissions = useMissionStore((state) => state.fetchMissions);
-  const missions = useMissionStore((state) => state.missions);
-  const addNotification = useNotificationStore((state) => state.addNotification);
-  const seenNotificationEventIdsRef = React.useRef<Set<string>>(new Set());
-  const clarificationNotificationKeyRef = React.useRef<Set<string>>(new Set());
+  const replaceServerNotifications = useNotificationStore(
+    (state) => state.replaceServerNotifications
+  );
+  const syncNotifications = React.useCallback(async () => {
+    try {
+      const response = await notificationsApi.getAll({
+        status: 'all',
+        limit: 100,
+        offset: 0,
+      });
+      replaceServerNotifications(response.items);
+    } catch {
+      // API interceptor handles user-visible error toast when needed.
+    }
+  }, [replaceServerNotifications]);
 
   // Apply theme on mount
   useEffect(() => {
@@ -60,11 +80,21 @@ export const Layout: React.FC = () => {
 
   // Global mission WS bridge:
   // - keep mission store in sync for mission card updates
-  // - push clarification requests into the notification center
+  // - trigger notification center sync for user-facing event types
   useEffect(() => {
     let websocket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
+    let notificationSyncTimer: number | null = null;
     let shouldReconnect = true;
+    const scheduleNotificationSync = (delayMs = 300) => {
+      if (notificationSyncTimer) {
+        window.clearTimeout(notificationSyncTimer);
+      }
+      notificationSyncTimer = window.setTimeout(() => {
+        void syncNotifications();
+        notificationSyncTimer = null;
+      }, delayMs);
+    };
 
     const connect = () => {
       const configuredWsBase =
@@ -89,6 +119,7 @@ export const Layout: React.FC = () => {
       websocket.onopen = () => {
         setGlobalMissionWsConnected(true);
         void fetchMissions();
+        scheduleNotificationSync(0);
       };
 
       websocket.onmessage = (event) => {
@@ -117,41 +148,8 @@ export const Layout: React.FC = () => {
           };
 
           useMissionStore.getState().handleMissionEvent(normalizedEvent);
-
-          if (
-            (normalizedEvent.event_type === 'USER_CLARIFICATION_REQUESTED' ||
-              normalizedEvent.event_type === 'clarification_request') &&
-            normalizedEvent.mission_id
-          ) {
-            if (seenNotificationEventIdsRef.current.has(normalizedEvent.event_id)) {
-              return;
-            }
-            seenNotificationEventIdsRef.current.add(normalizedEvent.event_id);
-            if (seenNotificationEventIdsRef.current.size > 2000) {
-              seenNotificationEventIdsRef.current.clear();
-              seenNotificationEventIdsRef.current.add(normalizedEvent.event_id);
-            }
-
-            const question =
-              typeof normalizedEvent.event_data?.questions === 'string'
-                ? normalizedEvent.event_data.questions.trim()
-                : normalizedEvent.message || '';
-            const preview = question.length > 120 ? `${question.slice(0, 120)}...` : question;
-            const shortId = normalizedEvent.mission_id.slice(0, 8);
-            const dedupeKey = `${normalizedEvent.mission_id}:${normalizedEvent.created_at || normalizedEvent.event_id}`;
-            clarificationNotificationKeyRef.current.add(dedupeKey);
-            if (clarificationNotificationKeyRef.current.size > 4000) {
-              clarificationNotificationKeyRef.current.clear();
-              clarificationNotificationKeyRef.current.add(dedupeKey);
-            }
-
-            addNotification({
-              type: 'warning',
-              title: `任务 ${shortId} 需要澄清`,
-              message: preview || '请补充任务澄清信息以继续执行。',
-              actionUrl: `/tasks?missionId=${normalizedEvent.mission_id}&focus=clarification`,
-              actionLabel: '去处理',
-            });
+          if (NOTIFICATION_SYNC_EVENT_TYPES.has(normalizedEvent.event_type)) {
+            scheduleNotificationSync();
           }
         } catch {
           // Ignore malformed WS payloads.
@@ -180,15 +178,19 @@ export const Layout: React.FC = () => {
       if (reconnectTimer) {
         window.clearTimeout(reconnectTimer);
       }
+      if (notificationSyncTimer) {
+        window.clearTimeout(notificationSyncTimer);
+      }
       websocket?.close();
       websocket = null;
     };
-  }, [addNotification, fetchMissions, setGlobalMissionWsConnected]);
+  }, [fetchMissions, setGlobalMissionWsConnected, syncNotifications]);
 
   // Initial mission snapshot for notification fallback and mission card hydration.
   useEffect(() => {
     void fetchMissions();
-  }, [fetchMissions]);
+    void syncNotifications();
+  }, [fetchMissions, syncNotifications]);
 
   // Fallback polling only when global mission WS is disconnected.
   useEffect(() => {
@@ -204,40 +206,19 @@ export const Layout: React.FC = () => {
     };
   }, [fetchMissions, isGlobalMissionWsConnected]);
 
-  // Notification fallback for pending clarification missions.
-  // This covers disconnections and page reloads where WS events were missed.
+  // Notification reconciliation:
+  // - WS connected: low-frequency consistency sync
+  // - WS disconnected: faster fallback sync
   useEffect(() => {
-    for (const mission of missions) {
-      const pendingCount = Math.max(0, mission.pending_clarification_count ?? 0);
-      if (!mission.needs_clarification || pendingCount <= 0) continue;
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void syncNotifications();
+    }, isGlobalMissionWsConnected ? 180_000 : 15_000);
 
-      const marker =
-        mission.latest_clarification_requested_at ||
-        String(mission.updated_at || '') ||
-        String(pendingCount);
-      const dedupeKey = `${mission.mission_id}:${marker}`;
-      if (clarificationNotificationKeyRef.current.has(dedupeKey)) continue;
-
-      clarificationNotificationKeyRef.current.add(dedupeKey);
-      if (clarificationNotificationKeyRef.current.size > 4000) {
-        clarificationNotificationKeyRef.current.clear();
-        clarificationNotificationKeyRef.current.add(dedupeKey);
-      }
-
-      const preview =
-        typeof mission.latest_clarification_request === 'string'
-          ? mission.latest_clarification_request.trim()
-          : '';
-      const message = preview.length > 0 ? preview : '请补充任务澄清信息以继续执行。';
-      addNotification({
-        type: 'warning',
-        title: `任务 ${mission.mission_id.slice(0, 8)} 需要澄清`,
-        message: message.length > 120 ? `${message.slice(0, 120)}...` : message,
-        actionUrl: `/tasks?missionId=${mission.mission_id}&focus=clarification`,
-        actionLabel: '去处理',
-      });
-    }
-  }, [addNotification, missions]);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isGlobalMissionWsConnected, syncNotifications]);
 
   return (
     <div 

@@ -80,6 +80,22 @@ class MissionEventEmitter:
         except Exception:
             logger.exception("Failed to broadcast mission event via WebSocket")
 
+        # Persist user-facing notifications for selected mission events.
+        try:
+            from mission_system.notification_service import (
+                create_notifications_for_mission_event,
+            )
+
+            create_notifications_for_mission_event(
+                event_id=event_id,
+                mission_id=mission_id,
+                event_type=event_type,
+                data=data,
+                message=message,
+            )
+        except Exception:
+            logger.exception("Failed to persist mission notification")
+
         logger.info(
             "Mission event emitted",
             extra={

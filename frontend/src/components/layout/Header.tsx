@@ -14,6 +14,7 @@ import {
 import { useThemeStore } from '@/stores/themeStore';
 import { useNotificationStore } from '@/stores/notificationStore';
 import { usersApi } from '@/api/users';
+import { notificationsApi } from '@/api/notifications';
 import { healthApi, type DependencyHealth, type SystemHealthResponse } from '@/api/health';
 
 interface HeaderProps {
@@ -32,12 +33,15 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
     markAllAsRead,
     clearAll,
     removeNotification,
+    markServerNotificationRead,
+    removeServerNotification,
   } = useNotificationStore();
   const [showNotifications, setShowNotifications] = React.useState(false);
   const [showSystemHealth, setShowSystemHealth] = React.useState(false);
   const [systemHealth, setSystemHealth] = React.useState<SystemHealthResponse | null>(null);
   const [healthLoading, setHealthLoading] = React.useState(true);
   const [healthError, setHealthError] = React.useState<string | null>(null);
+  const [notificationBusy, setNotificationBusy] = React.useState(false);
 
   const themeOptions = [
     { id: 'light' as const, icon: Sun },
@@ -233,6 +237,64 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
   };
 
   const badge = healthBadgeConfig[headerHealthState];
+
+  const handleMarkAllRead = async () => {
+    if (notificationBusy) return;
+    setNotificationBusy(true);
+    try {
+      await notificationsApi.markAllAsRead();
+      markAllAsRead();
+    } catch {
+      // Global API interceptor handles error toast.
+    } finally {
+      setNotificationBusy(false);
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (notificationBusy) return;
+    setNotificationBusy(true);
+    try {
+      await notificationsApi.clear('all');
+      clearAll();
+    } catch {
+      // Global API interceptor handles error toast.
+    } finally {
+      setNotificationBusy(false);
+    }
+  };
+
+  const handleOpenNotification = async (notification: (typeof notifications)[number]) => {
+    if (!notification.read) {
+      if (notification.serverNotificationId) {
+        try {
+          await notificationsApi.markAsRead(notification.serverNotificationId);
+          markServerNotificationRead(notification.serverNotificationId);
+        } catch {
+          // API interceptor handles error toast.
+        }
+      } else {
+        markAsRead(notification.id);
+      }
+    }
+    if (notification.actionUrl) {
+      navigate(notification.actionUrl);
+      setShowNotifications(false);
+    }
+  };
+
+  const handleRemoveNotification = async (notification: (typeof notifications)[number]) => {
+    if (notification.serverNotificationId) {
+      try {
+        await notificationsApi.deleteOne(notification.serverNotificationId);
+        removeServerNotification(notification.serverNotificationId);
+      } catch {
+        // API interceptor handles error toast.
+      }
+      return;
+    }
+    removeNotification(notification.id);
+  };
 
   return (
     <header
@@ -444,13 +506,19 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
                   </h3>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={markAllAsRead}
+                      onClick={() => {
+                        void handleMarkAllRead();
+                      }}
+                      disabled={notificationBusy}
                       className="text-[10px] text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
                     >
                       Mark all read
                     </button>
                     <button
-                      onClick={clearAll}
+                      onClick={() => {
+                        void handleClearAll();
+                      }}
+                      disabled={notificationBusy}
                       className="text-[10px] text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
                     >
                       Clear
@@ -475,13 +543,7 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
                         <button
                           className="w-full text-left"
                           onClick={() => {
-                            if (!notification.read) {
-                              markAsRead(notification.id);
-                            }
-                            if (notification.actionUrl) {
-                              navigate(notification.actionUrl);
-                              setShowNotifications(false);
-                            }
+                            void handleOpenNotification(notification);
                           }}
                         >
                           <div className="flex items-start justify-between gap-2">
@@ -505,9 +567,7 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
                           {notification.actionUrl && (
                             <button
                               onClick={() => {
-                                markAsRead(notification.id);
-                                navigate(notification.actionUrl as string);
-                                setShowNotifications(false);
+                                void handleOpenNotification(notification);
                               }}
                               className="text-[10px] px-2 py-1 rounded-md border border-emerald-300 dark:border-emerald-500/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-500/10"
                             >
@@ -515,7 +575,9 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
                             </button>
                           )}
                           <button
-                            onClick={() => removeNotification(notification.id)}
+                            onClick={() => {
+                              void handleRemoveNotification(notification);
+                            }}
                             className="text-[10px] px-2 py-1 rounded-md border border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
                           >
                             Dismiss

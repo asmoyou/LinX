@@ -16,6 +16,7 @@ from .mission_models import (
     MissionAgent,
     MissionAttachment,
     MissionEvent,
+    UserNotification,
 )
 from .models import (
     ABACPolicyModel,
@@ -51,6 +52,7 @@ __all__ = [
     "MissionAttachment",
     "MissionAgent",
     "MissionEvent",
+    "UserNotification",
     # Connection Pool
     "DatabaseConnectionPool",
     "get_connection_pool",

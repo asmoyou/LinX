@@ -20,3 +20,4 @@ export { knowledgeApi } from "./knowledge";
 export { llmApi } from "./llm";
 export { healthApi } from "./health";
 export { dashboardApi } from "./dashboard";
+export { notificationsApi } from "./notifications";

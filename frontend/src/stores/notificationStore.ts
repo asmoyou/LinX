@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
+import type { ServerNotification } from '@/types/notification';
 
 export type NotificationType = 'info' | 'success' | 'warning' | 'error';
 
@@ -12,6 +13,8 @@ export interface Notification {
   read: boolean;
   actionUrl?: string;
   actionLabel?: string;
+  source?: 'local' | 'server';
+  serverNotificationId?: string;
 }
 
 interface NotificationState {
@@ -21,6 +24,9 @@ interface NotificationState {
   
   // Actions
   addNotification: (notification: Omit<Notification, 'id' | 'timestamp' | 'read'>) => void;
+  replaceServerNotifications: (notifications: ServerNotification[]) => void;
+  markServerNotificationRead: (notificationId: string) => void;
+  removeServerNotification: (notificationId: string) => void;
   removeNotification: (id: string) => void;
   markAsRead: (id: string) => void;
   markAllAsRead: () => void;
@@ -38,6 +44,24 @@ const MAX_NOTIFICATIONS = 200;
 const computeUnreadCount = (notifications: Notification[]): number =>
   notifications.reduce((count, notification) => count + (notification.read ? 0 : 1), 0);
 
+const toServerNotification = (notification: ServerNotification): Notification => ({
+  id: `server-${notification.notification_id}`,
+  serverNotificationId: notification.notification_id,
+  source: 'server',
+  type: notification.severity,
+  title: notification.title,
+  message: notification.message,
+  timestamp: notification.created_at || new Date().toISOString(),
+  read: notification.is_read,
+  actionUrl: notification.action_url,
+  actionLabel: notification.action_label,
+});
+
+const sortByTimestampDesc = (notifications: Notification[]): Notification[] =>
+  notifications
+    .slice()
+    .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime());
+
 export const useNotificationStore = create<NotificationState>()(
   persist(
     (set, get) => ({
@@ -51,10 +75,11 @@ export const useNotificationStore = create<NotificationState>()(
           id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
           timestamp: new Date().toISOString(),
           read: false,
+          source: notification.source || 'local',
         };
 
         set((state) => {
-          const nextNotifications = [newNotification, ...state.notifications].slice(
+          const nextNotifications = sortByTimestampDesc([newNotification, ...state.notifications]).slice(
             0,
             MAX_NOTIFICATIONS
           );
@@ -64,6 +89,42 @@ export const useNotificationStore = create<NotificationState>()(
           };
         });
       },
+
+      replaceServerNotifications: (serverNotifications) =>
+        set((state) => {
+          const localNotifications = state.notifications.filter((n) => n.source !== 'server');
+          const nextServerNotifications = serverNotifications.map(toServerNotification);
+          const nextNotifications = sortByTimestampDesc([
+            ...nextServerNotifications,
+            ...localNotifications,
+          ]).slice(0, MAX_NOTIFICATIONS);
+          return {
+            notifications: nextNotifications,
+            unreadCount: computeUnreadCount(nextNotifications),
+          };
+        }),
+
+      markServerNotificationRead: (notificationId) =>
+        set((state) => {
+          const nextNotifications = state.notifications.map((n) =>
+            n.serverNotificationId === notificationId ? { ...n, read: true } : n
+          );
+          return {
+            notifications: nextNotifications,
+            unreadCount: computeUnreadCount(nextNotifications),
+          };
+        }),
+
+      removeServerNotification: (notificationId) =>
+        set((state) => {
+          const nextNotifications = state.notifications.filter(
+            (n) => n.serverNotificationId !== notificationId
+          );
+          return {
+            notifications: nextNotifications,
+            unreadCount: computeUnreadCount(nextNotifications),
+          };
+        }),
 
       removeNotification: (id) =>
         set((state) => {
