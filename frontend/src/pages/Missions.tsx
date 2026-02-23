@@ -121,6 +121,35 @@ function formatTimestamp(value?: string): string {
   return date.toLocaleString();
 }
 
+function formatMissionCardTime(value?: string): string {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function formatMissionDuration(startedAt?: string, endedAt?: string): string | null {
+  if (!startedAt || !endedAt) return null;
+  const started = new Date(startedAt).getTime();
+  const ended = new Date(endedAt).getTime();
+  if (!Number.isFinite(started) || !Number.isFinite(ended) || ended <= started) {
+    return null;
+  }
+  const totalSeconds = Math.floor((ended - started) / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
 function buildDeliverableSummary(mission: Mission): DeliverableSummary {
   const result = mission.result && typeof mission.result === 'object'
     ? (mission.result as Record<string, unknown>)
@@ -980,9 +1009,12 @@ const MissionCard: React.FC<{
     mission.total_tasks > 0
       ? Math.round((mission.completed_tasks / mission.total_tasks) * 100)
       : 0;
+  const isTerminalMissionStatus =
+    mission.status === 'completed' || mission.status === 'failed' || mission.status === 'cancelled';
   const isTerminalMission = quickDeliverableStatuses.has(mission.status);
   const deliverableSummary = buildDeliverableSummary(mission);
   const remainingCount = Math.max(deliverableSummary.finalCount - deliverableSummary.sampleNames.length, 0);
+  const missionDuration = formatMissionDuration(mission.started_at, mission.completed_at);
 
   return (
     <div className="w-full text-left p-5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 hover:border-emerald-300 dark:hover:border-emerald-500/30 hover:shadow-lg transition-all duration-200 group">
@@ -1023,9 +1055,38 @@ const MissionCard: React.FC<{
                 </div>
               )}
 
-              <span className="text-[10px] text-zinc-400">
-                {new Date(mission.created_at).toLocaleDateString()}
-              </span>
+              {missionDuration && (
+                <span className="text-[10px] text-zinc-400">
+                  {t('missions.durationLabel', 'Duration')}: {missionDuration}
+                </span>
+              )}
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+              <div className="rounded-md border border-zinc-200/80 dark:border-zinc-700/80 bg-zinc-50/70 dark:bg-zinc-800/40 px-2.5 py-1.5">
+                <div className="text-zinc-400">{t('missions.createdAtLabel', 'Created')}</div>
+                <div className="text-zinc-700 dark:text-zinc-200 mt-0.5">
+                  {formatMissionCardTime(mission.created_at)}
+                </div>
+              </div>
+              <div className="rounded-md border border-zinc-200/80 dark:border-zinc-700/80 bg-zinc-50/70 dark:bg-zinc-800/40 px-2.5 py-1.5">
+                <div className="text-zinc-400">{t('missions.startedAtLabel', 'Started')}</div>
+                <div className="text-zinc-700 dark:text-zinc-200 mt-0.5">
+                  {mission.started_at
+                    ? formatMissionCardTime(mission.started_at)
+                    : t('missions.notStarted', 'Not started')}
+                </div>
+              </div>
+              <div className="rounded-md border border-zinc-200/80 dark:border-zinc-700/80 bg-zinc-50/70 dark:bg-zinc-800/40 px-2.5 py-1.5">
+                <div className="text-zinc-400">{t('missions.finishedAtLabel', 'Finished')}</div>
+                <div className="text-zinc-700 dark:text-zinc-200 mt-0.5">
+                  {mission.completed_at
+                    ? formatMissionCardTime(mission.completed_at)
+                    : isTerminalMissionStatus
+                      ? t('missions.notFinished', 'Not finished')
+                      : t('missions.inProgress', 'In progress')}
+                </div>
+              </div>
             </div>
           </button>
 

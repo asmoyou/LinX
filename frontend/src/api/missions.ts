@@ -17,7 +17,7 @@ export interface MissionListResponse {
 }
 
 export interface CreateMissionRequest {
-  title: string;
+  title?: string;
   instructions: string;
   department_id?: string;
   mission_config?: MissionConfig;

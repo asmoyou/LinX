@@ -379,6 +379,33 @@ class MissionOrchestrator:
             return normalized
         return normalized[:limit] + "..."
 
+    @staticmethod
+    def _sanitize_generated_mission_title(raw_title: Any, fallback: str) -> str:
+        """Normalize model output into a single-line mission title."""
+        candidate = "" if raw_title is None else str(raw_title)
+        candidate = candidate.strip()
+        if candidate.startswith("```"):
+            candidate = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", candidate).strip()
+            candidate = re.sub(r"\n?```$", "", candidate).strip()
+
+        lines = [line.strip() for line in candidate.splitlines() if line.strip()]
+        if lines:
+            candidate = lines[0]
+
+        candidate = re.sub(
+            r"^(title|mission title|标题)\s*[:：\-]\s*",
+            "",
+            candidate,
+            flags=re.IGNORECASE,
+        ).strip()
+        candidate = candidate.strip("`\"' ")
+        candidate = re.sub(r"\s+", " ", candidate).strip()
+        if len(candidate) > 120:
+            candidate = candidate[:120].rstrip(" ,;:：。.!?、")
+        if candidate:
+            return candidate
+        return (fallback or "Untitled Mission").strip() or "Untitled Mission"
+
     def _build_temporary_worker_system_prompt(self, mission: Any, task_obj: Any) -> str:
         """Build a task-specific SOP prompt for temporary workers.
 
@@ -1393,6 +1420,60 @@ class MissionOrchestrator:
         requirements_doc = output
         update_mission_fields(mission_id, requirements_doc=requirements_doc)
         self._workspace.write_file(mission_id, "shared/requirements.md", requirements_doc)
+
+        mission_config = mission.mission_config if isinstance(mission.mission_config, dict) else {}
+        should_auto_generate_title = self._coerce_bool(
+            mission_config.get("auto_generate_title"),
+            default=False,
+        )
+        if should_auto_generate_title:
+            try:
+                title_prompt = (
+                    "Generate a concise mission title based on the mission instructions and "
+                    "requirements below.\n\n"
+                    "Rules:\n"
+                    "- Return ONLY title text.\n"
+                    "- No quotes, no markdown, no numbering.\n"
+                    "- Keep it specific and action-oriented.\n"
+                    "- Prefer <= 24 Chinese characters, or <= 70 English characters.\n\n"
+                    f"Respond in {response_language}.\n\n"
+                    "## Mission Instructions\n"
+                    f"{mission.instructions}\n\n"
+                    "## Requirements Summary\n"
+                    f"{self._truncate_prompt_text(requirements_doc, limit=2000)}"
+                )
+                generated_title_output = await self._execute_phase_prompt_with_retry(
+                    mission_id=mission_id,
+                    mission=mission,
+                    phase="requirements",
+                    step="generate_mission_title",
+                    agent=leader,
+                    prompt=title_prompt,
+                    error_context="Mission title generation failed",
+                )
+                generated_title = self._sanitize_generated_mission_title(
+                    generated_title_output,
+                    fallback=str(mission.title or "Untitled Mission"),
+                )
+                config_update = dict(mission_config)
+                config_update["auto_generate_title"] = False
+                config_update["auto_generated_title"] = generated_title
+                fields_to_update: Dict[str, Any] = {"mission_config": config_update}
+                if generated_title != str(mission.title or "").strip():
+                    fields_to_update["title"] = generated_title
+                    self._emitter.emit(
+                        mission_id=mission_id,
+                        event_type="MISSION_TITLE_UPDATED",
+                        data={"title": generated_title, "auto_generated": True},
+                        message=f"Mission title generated: {generated_title}",
+                    )
+                update_mission_fields(mission_id, **fields_to_update)
+            except Exception:
+                logger.warning(
+                    "Mission %s auto title generation failed, fallback title retained",
+                    mission_id,
+                    exc_info=True,
+                )
 
         self._emitter.emit(
             mission_id=mission_id,

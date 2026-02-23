@@ -54,7 +54,7 @@ interface MissionState {
   fetchMissions: (params?: { status?: string; department_id?: string }) => Promise<void>;
   fetchMission: (missionId: string) => Promise<void>;
   createMission: (data: {
-    title: string;
+    title?: string;
     instructions: string;
     department_id?: string;
     mission_config?: MissionConfig;
@@ -447,8 +447,20 @@ export const useMissionStore = create<MissionState>((set, get) => ({
         return state;
       }
       const nextEvents = [...state.missionEvents, event];
+      const eventTitle =
+        typeof event.event_data?.title === 'string' ? event.event_data.title.trim() : '';
+      const shouldUpdateTitle = event.event_type === 'MISSION_TITLE_UPDATED' && eventTitle.length > 0;
       return {
         missionEvents: nextEvents.slice(-500),
+        missions: shouldUpdateTitle
+          ? state.missions.map((mission) =>
+              mission.mission_id === event.mission_id ? { ...mission, title: eventTitle } : mission
+            )
+          : state.missions,
+        selectedMission:
+          shouldUpdateTitle && state.selectedMission?.mission_id === event.mission_id
+            ? { ...state.selectedMission, title: eventTitle }
+            : state.selectedMission,
       };
     });
   },

@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_mission(
-    title: str,
+    title: Optional[str],
     instructions: str,
     created_by_user_id: UUID,
     department_id: Optional[UUID] = None,
@@ -40,10 +40,11 @@ def create_mission(
     mission_config: Optional[Dict[str, Any]] = None,
 ) -> Mission:
     """Create a new mission in draft status."""
+    normalized_title = str(title or "").strip() or "Untitled Mission"
     with get_db_session() as session:
         mission = Mission(
             mission_id=uuid4(),
-            title=title,
+            title=normalized_title,
             instructions=instructions,
             created_by_user_id=created_by_user_id,
             department_id=department_id,

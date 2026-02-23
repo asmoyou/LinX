@@ -93,9 +93,9 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
   const step = STEPS[currentStep];
 
   const canProceed = useCallback(() => {
-    if (step === 'instructions') return title.trim().length > 0 && instructions.trim().length > 0;
+    if (step === 'instructions') return instructions.trim().length > 0;
     return true;
-  }, [step, title, instructions]);
+  }, [step, instructions]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -116,8 +116,9 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
   const submitMission = async () => {
     setIsSubmitting(true);
     try {
+      const normalizedTitle = title.trim();
       const mission = await createMission({
-        title: title.trim(),
+        ...(normalizedTitle ? { title: normalizedTitle } : {}),
         instructions: instructions.trim(),
         mission_config: config,
       });
@@ -232,9 +233,9 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
           {step === 'instructions' && (
             <div className="space-y-4">
               <div>
-                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
-                  {t('missions.fieldTitle')}
-                  </label>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
+                  {t('missions.fieldTitleOptional', '标题（可选）')}
+                </label>
                 <input
                   type="text"
                   value={title}
@@ -242,6 +243,9 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
                   placeholder={t('missions.titlePlaceholder')}
                   className="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
                 />
+                <p className="mt-1 text-xs text-zinc-500">
+                  {t('missions.autoGenerateTitleHint', '留空后将由 Leader 根据任务要求自动生成标题')}
+                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
@@ -443,7 +447,9 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
             <div className="space-y-4">
               <div className="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700">
                 <h4 className="text-xs font-semibold text-zinc-500 uppercase mb-2">{t('missions.fieldTitle')}</h4>
-                <p className="text-sm text-zinc-800 dark:text-zinc-200">{title}</p>
+                <p className="text-sm text-zinc-800 dark:text-zinc-200">
+                  {title.trim() || t('missions.autoGenerateTitlePending', '将由 Leader 自动生成')}
+                </p>
               </div>
               <div className="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700">
                 <h4 className="text-xs font-semibold text-zinc-500 uppercase mb-2">{t('missions.instructions')}</h4>

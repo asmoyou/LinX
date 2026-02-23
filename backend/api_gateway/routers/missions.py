@@ -42,7 +42,7 @@ RUNTIME_DELIVERABLE_EXACT_NAMES = {
 
 
 class CreateMissionRequest(BaseModel):
-    title: str = Field(..., max_length=500)
+    title: Optional[str] = Field(None, max_length=500)
     instructions: str
     department_id: Optional[UUID] = None
     mission_config: Optional[Dict[str, Any]] = None
@@ -187,6 +187,23 @@ def _mission_to_response(m) -> dict:
         "completed_at": str(m.completed_at) if m.completed_at else None,
         "updated_at": str(m.updated_at) if m.updated_at else None,
     }
+
+
+def _normalize_title_text(value: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _derive_initial_mission_title(instructions: str, max_length: int = 120) -> str:
+    normalized = re.sub(r"\s+", " ", str(instructions or "")).strip()
+    if not normalized:
+        return "Untitled Mission"
+
+    first_segment = re.split(r"[。！？.!?;\n]", normalized, maxsplit=1)[0].strip()
+    candidate = first_segment or normalized
+    if len(candidate) > max_length:
+        candidate = candidate[:max_length].rstrip(" ,;:：。.!?、")
+
+    return candidate or "Untitled Mission"
 
 
 def _infer_deliverable_source_scope(filename: str) -> str:
@@ -406,8 +423,18 @@ async def create_mission(
             effective_exec.update(legacy_exec)
             merged_config["execution_config"] = effective_exec
 
+    normalized_title = _normalize_title_text(request.title)
+    auto_generate_title = len(normalized_title) == 0
+    effective_title = normalized_title or _derive_initial_mission_title(request.instructions)
+
+    if auto_generate_title:
+        merged_config["auto_generate_title"] = True
+        merged_config["auto_title_seed"] = effective_title
+    else:
+        merged_config.pop("auto_generate_title", None)
+
     mission = repo_create(
-        title=request.title,
+        title=effective_title,
         instructions=request.instructions,
         created_by_user_id=UUID(current_user.user_id),
         department_id=request.department_id,
