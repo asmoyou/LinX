@@ -5,7 +5,10 @@ export type Agent = {
   avatar?: string;
   status: 'working' | 'idle' | 'offline';
   currentTask?: string;
+  tasksExecuted?: number;
   tasksCompleted: number;
+  tasksFailed?: number;
+  completionRate?: number;
   uptime: string;
   systemPrompt?: string;
   skills?: string[];

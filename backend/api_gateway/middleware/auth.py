@@ -86,7 +86,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 extra={"path": request.url.path, "method": request.method},
             )
             return create_auth_error_response(
-                message="Missing authentication credentials", error_code="missing_credentials"
+                message="Missing authentication credentials", error_code="unauthorized"
             )
 
         # Validate Bearer token format
@@ -160,5 +160,10 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         for prefix in public_prefixes:
             if path.startswith(prefix):
                 return True
+
+        # Only API routes require auth by default; non-API paths should
+        # fall through so FastAPI can return canonical 404/405 responses.
+        if not path.startswith("/api/"):
+            return True
 
         return False

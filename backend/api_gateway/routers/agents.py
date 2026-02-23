@@ -217,6 +217,68 @@ def _to_positive_int(value: Any) -> Optional[int]:
     return parsed if parsed > 0 else None
 
 
+_NON_TERMINAL_TASK_STATUSES = {"pending", "in_progress"}
+
+
+def _default_agent_task_stats() -> Dict[str, Any]:
+    """Default task metrics for agents with no execution records."""
+    return {
+        "tasksExecuted": 0,
+        "tasksCompleted": 0,
+        "tasksFailed": 0,
+        "completionRate": 0.0,
+    }
+
+
+def _collect_agent_task_stats(agent_ids: List[UUID]) -> Dict[UUID, Dict[str, Any]]:
+    """Aggregate task execution stats for a list of agents."""
+    if not agent_ids:
+        return {}
+
+    unique_agent_ids = list(dict.fromkeys(agent_ids))
+    stats_by_agent: Dict[UUID, Dict[str, Any]] = {
+        agent_id: _default_agent_task_stats() for agent_id in unique_agent_ids
+    }
+
+    try:
+        from database.connection import get_db_session
+        from database.models import Task
+        from sqlalchemy import func
+
+        with get_db_session() as session:
+            rows = (
+                session.query(Task.assigned_agent_id, Task.status, func.count(Task.task_id))
+                .filter(Task.assigned_agent_id.in_(unique_agent_ids))
+                .group_by(Task.assigned_agent_id, Task.status)
+                .all()
+            )
+
+        for assigned_agent_id, task_status, count in rows:
+            if assigned_agent_id not in stats_by_agent:
+                continue
+
+            normalized_status = str(task_status or "").strip().lower()
+            if normalized_status in _NON_TERMINAL_TASK_STATUSES:
+                continue
+
+            if normalized_status == "completed":
+                stats_by_agent[assigned_agent_id]["tasksCompleted"] += int(count)
+            else:
+                stats_by_agent[assigned_agent_id]["tasksFailed"] += int(count)
+
+        for stats in stats_by_agent.values():
+            tasks_executed = stats["tasksCompleted"] + stats["tasksFailed"]
+            stats["tasksExecuted"] = tasks_executed
+            stats["completionRate"] = (
+                round(stats["tasksCompleted"] / tasks_executed, 4) if tasks_executed > 0 else 0.0
+            )
+
+    except Exception as e:
+        logger.error(f"Failed to collect agent task stats: {e}")
+
+    return stats_by_agent
+
+
 def _resolve_model_context_window(
     provider: Any,
     provider_name: str,
@@ -784,7 +846,10 @@ class AgentResponse(BaseModel):
     avatar: Optional[str] = None
     status: str
     currentTask: Optional[str] = None
+    tasksExecuted: int = 0
     tasksCompleted: int = 0
+    tasksFailed: int = 0
+    completionRate: float = 0.0
     uptime: str = "0h 0m"
     systemPrompt: Optional[str] = None
     skills: List[str] = Field(default_factory=list)
@@ -913,7 +978,10 @@ async def create_agent(
             avatar=_resolve_agent_avatar(agent_info.avatar),
             status=agent_info.status,
             currentTask=None,
+            tasksExecuted=0,
             tasksCompleted=0,
+            tasksFailed=0,
+            completionRate=0.0,
             uptime="0h 0m",
             systemPrompt=agent_info.system_prompt,
             skills=_public_agent_skills(agent_info.agent_type, agent_info.capabilities),
@@ -947,35 +1015,43 @@ async def list_agents(current_user: CurrentUser = Depends(get_current_user)):
 
         # Get agents for current user
         agents = registry.list_agents(owner_user_id=UUID(current_user.user_id))
+        task_stats_by_agent = _collect_agent_task_stats([agent.agent_id for agent in agents])
 
-        return [
-            AgentResponse(
-                id=str(agent.agent_id),
-                name=agent.name,
-                type=agent.agent_type,
-                avatar=_resolve_agent_avatar(agent.avatar),
-                status=agent.status,
-                currentTask=None,  # TODO: Get from task manager
-                tasksCompleted=0,  # TODO: Count from tasks table
-                uptime="0h 0m",  # TODO: Calculate from created_at
-                systemPrompt=agent.system_prompt,
-                skills=_public_agent_skills(agent.agent_type, agent.capabilities),
-                model=agent.llm_model,
-                provider=agent.llm_provider,
-                temperature=agent.temperature,
-                maxTokens=agent.max_tokens,
-                topP=agent.top_p,
-                accessLevel=agent.access_level,
-                allowedKnowledge=agent.allowed_knowledge,
-                allowedMemory=agent.allowed_memory,
-                topK=agent.top_k,
-                similarityThreshold=agent.similarity_threshold,
-                departmentId=str(agent.department_id) if agent.department_id else None,
-                createdAt=agent.created_at,
-                updatedAt=agent.updated_at,
+        responses: List[AgentResponse] = []
+        for agent in agents:
+            task_stats = task_stats_by_agent.get(agent.agent_id, _default_agent_task_stats())
+            responses.append(
+                AgentResponse(
+                    id=str(agent.agent_id),
+                    name=agent.name,
+                    type=agent.agent_type,
+                    avatar=_resolve_agent_avatar(agent.avatar),
+                    status=agent.status,
+                    currentTask=None,  # TODO: Get from task manager
+                    tasksExecuted=task_stats["tasksExecuted"],
+                    tasksCompleted=task_stats["tasksCompleted"],
+                    tasksFailed=task_stats["tasksFailed"],
+                    completionRate=task_stats["completionRate"],
+                    uptime="0h 0m",  # Deprecated in UI but kept for compatibility
+                    systemPrompt=agent.system_prompt,
+                    skills=_public_agent_skills(agent.agent_type, agent.capabilities),
+                    model=agent.llm_model,
+                    provider=agent.llm_provider,
+                    temperature=agent.temperature,
+                    maxTokens=agent.max_tokens,
+                    topP=agent.top_p,
+                    accessLevel=agent.access_level,
+                    allowedKnowledge=agent.allowed_knowledge,
+                    allowedMemory=agent.allowed_memory,
+                    topK=agent.top_k,
+                    similarityThreshold=agent.similarity_threshold,
+                    departmentId=str(agent.department_id) if agent.department_id else None,
+                    createdAt=agent.created_at,
+                    updatedAt=agent.updated_at,
+                )
             )
-            for agent in agents
-        ]
+
+        return responses
 
     except Exception as e:
         logger.error(f"Failed to list agents: {e}")
@@ -1005,6 +1081,10 @@ async def get_agent(agent_id: str, current_user: CurrentUser = Depends(get_curre
                 detail="You don't have permission to access this agent",
             )
 
+        task_stats = _collect_agent_task_stats([agent.agent_id]).get(
+            agent.agent_id, _default_agent_task_stats()
+        )
+
         return AgentResponse(
             id=str(agent.agent_id),
             name=agent.name,
@@ -1012,7 +1092,10 @@ async def get_agent(agent_id: str, current_user: CurrentUser = Depends(get_curre
             avatar=_resolve_agent_avatar(agent.avatar),
             status=agent.status,
             currentTask=None,
-            tasksCompleted=0,
+            tasksExecuted=task_stats["tasksExecuted"],
+            tasksCompleted=task_stats["tasksCompleted"],
+            tasksFailed=task_stats["tasksFailed"],
+            completionRate=task_stats["completionRate"],
             uptime="0h 0m",
             systemPrompt=agent.system_prompt,
             skills=_public_agent_skills(agent.agent_type, agent.capabilities),
@@ -1105,6 +1188,10 @@ async def update_agent(
             extra={"agent_id": agent_id, "user_id": current_user.user_id},
         )
 
+        task_stats = _collect_agent_task_stats([updated_agent.agent_id]).get(
+            updated_agent.agent_id, _default_agent_task_stats()
+        )
+
         return AgentResponse(
             id=str(updated_agent.agent_id),
             name=updated_agent.name,
@@ -1112,7 +1199,10 @@ async def update_agent(
             avatar=_resolve_agent_avatar(updated_agent.avatar),
             status=updated_agent.status,
             currentTask=None,
-            tasksCompleted=0,
+            tasksExecuted=task_stats["tasksExecuted"],
+            tasksCompleted=task_stats["tasksCompleted"],
+            tasksFailed=task_stats["tasksFailed"],
+            completionRate=task_stats["completionRate"],
             uptime="0h 0m",
             systemPrompt=updated_agent.system_prompt,
             skills=_public_agent_skills(updated_agent.agent_type, updated_agent.capabilities),
@@ -3016,6 +3106,10 @@ async def update_agent_skills(
             },
         )
 
+        task_stats = _collect_agent_task_stats([updated_agent.agent_id]).get(
+            updated_agent.agent_id, _default_agent_task_stats()
+        )
+
         # Return updated agent info
         return AgentResponse(
             id=str(updated_agent.agent_id),
@@ -3026,7 +3120,10 @@ async def update_agent_skills(
             status=updated_agent.status,
             systemPrompt=updated_agent.system_prompt,
             currentTask=None,
-            tasksCompleted=0,
+            tasksExecuted=task_stats["tasksExecuted"],
+            tasksCompleted=task_stats["tasksCompleted"],
+            tasksFailed=task_stats["tasksFailed"],
+            completionRate=task_stats["completionRate"],
             uptime="0h 0m",
             model=updated_agent.llm_model,
             provider=updated_agent.llm_provider,

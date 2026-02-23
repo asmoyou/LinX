@@ -14,6 +14,22 @@ interface AgentCardProps {
 export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure, onDelete, onTest }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = React.useState(false);
+  const tasksExecuted = Math.max(
+    0,
+    agent.tasksExecuted ?? (agent.tasksCompleted ?? 0) + (agent.tasksFailed ?? 0)
+  );
+  const tasksCompleted = Math.max(0, agent.tasksCompleted ?? 0);
+  const tasksFailed = Math.max(0, agent.tasksFailed ?? tasksExecuted - tasksCompleted);
+  const rawCompletionRate =
+    typeof agent.completionRate === 'number'
+      ? agent.completionRate > 1
+        ? agent.completionRate / 100
+        : agent.completionRate
+      : tasksExecuted > 0
+      ? tasksCompleted / tasksExecuted
+      : 0;
+  const completionRate = Math.max(0, Math.min(1, rawCompletionRate));
+  const completionRateLabel = `${(completionRate * 100).toFixed(tasksExecuted > 0 ? 1 : 0)}%`;
 
   const getStatusColor = (status: Agent['status']) => {
     switch (status) {
@@ -140,11 +156,16 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure
         
         <div className="flex flex-wrap gap-1.5">
           <span className="px-2 py-1 bg-zinc-500/5 rounded-md text-[9px] font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
-            {agent.tasksCompleted} Tasks
+            {tasksExecuted} {t('agent.stats.tasksExecuted', 'Tasks')}
           </span>
           <span className="px-2 py-1 bg-zinc-500/5 rounded-md text-[9px] font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
-            {agent.uptime}
+            {t('agent.stats.completionRateShort', 'Completion')} {completionRateLabel}
           </span>
+          {tasksFailed > 0 && (
+            <span className="px-2 py-1 bg-red-500/10 rounded-md text-[9px] font-bold text-red-700 dark:text-red-400 uppercase tracking-tight border border-red-500/20">
+              {tasksFailed} {t('agent.stats.failed', 'Failed')}
+            </span>
+          )}
           {agent.model && (
             <span className="px-2 py-1 bg-emerald-500/10 rounded-md text-[9px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-tight border border-emerald-500/20">
               {agent.model}

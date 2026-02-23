@@ -36,6 +36,7 @@ def _resolve_user_avatar(attributes: dict) -> dict:
     if avatar_ref:
         try:
             from object_storage.minio_client import get_minio_client
+
             minio_client = get_minio_client()
             avatar_url = minio_client.resolve_avatar_url(avatar_ref)
             if avatar_url:
@@ -101,29 +102,42 @@ class ResourceQuota(BaseModel):
 @router.get("/me", response_model=UserProfile)
 async def get_current_user_profile(current_user: CurrentUser = Depends(get_current_user)):
     """Get current user's profile."""
-    from database.connection import get_db_session
-    from database.models import User
+    try:
+        from database.connection import get_db_session
+        from database.models import User
 
-    with get_db_session() as session:
-        user = session.query(User).filter(User.user_id == current_user.user_id).first()
-        if not user:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        with get_db_session() as session:
+            user = session.query(User).filter(User.user_id == current_user.user_id).first()
+            if not user:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-        # Safely get display_name from attributes
-        display_name = None
-        if user.attributes and isinstance(user.attributes, dict):
-            display_name = user.attributes.get("display_name")
+            # Safely get display_name from attributes
+            display_name = None
+            if user.attributes and isinstance(user.attributes, dict):
+                display_name = user.attributes.get("display_name")
 
-        # Resolve avatar reference to presigned URL
-        resolved_attributes = _resolve_user_avatar(user.attributes)
+            # Resolve avatar reference to presigned URL
+            resolved_attributes = _resolve_user_avatar(user.attributes)
 
-        return UserProfile(
-            user_id=str(user.user_id),
-            username=user.username,
-            email=user.email,
-            role=user.role,
-            attributes=resolved_attributes,
-            display_name=display_name,
+            return UserProfile(
+                user_id=str(user.user_id),
+                username=user.username,
+                email=user.email,
+                role=user.role,
+                attributes=resolved_attributes,
+                display_name=display_name,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Failed to fetch current user profile",
+            extra={"user_id": str(current_user.user_id), "error": str(e)},
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="User profile service unavailable",
         )
 
 
@@ -164,7 +178,7 @@ async def update_current_user_profile(
                 new_attributes = dict(user.attributes)
                 new_attributes["display_name"] = request.display_name
                 user.attributes = new_attributes
-            
+
             flag_modified(user, "attributes")
 
         session.commit()
@@ -313,7 +327,7 @@ async def get_user_preferences(current_user: CurrentUser = Depends(get_current_u
 
         # Get preferences from attributes JSONB field
         preferences = user.attributes.get("preferences", {}) if user.attributes else {}
-        
+
         # Return with defaults for missing fields
         return UserPreferences(
             language=preferences.get("language", "zh"),
@@ -349,18 +363,19 @@ async def update_user_preferences(
             new_attributes = dict(user.attributes)
             new_attributes["preferences"] = preferences.dict()
             user.attributes = new_attributes
-        
+
         # Mark the field as modified
         from sqlalchemy.orm.attributes import flag_modified
+
         flag_modified(user, "attributes")
-        
+
         session.commit()
-        
+
         logger.info(
             "User preferences updated",
             extra={"user_id": str(current_user.user_id), "preferences": preferences.dict()},
         )
-        
+
         return preferences
 
 
@@ -395,7 +410,7 @@ async def upload_user_avatar(
         # Upload to MinIO
         file_stream = io.BytesIO(file_data)
         minio_client = get_minio_client()
-        
+
         bucket_name, object_key = minio_client.upload_file(
             bucket_type="images",
             file_data=file_stream,
@@ -407,7 +422,7 @@ async def upload_user_avatar(
             metadata={
                 "user_id": current_user.user_id,
                 "type": "user_avatar",
-            }
+            },
         )
 
         # Store avatar reference (not presigned URL) for on-demand URL generation
@@ -415,9 +430,7 @@ async def upload_user_avatar(
 
         # Generate presigned URL for immediate response (valid for 7 days)
         avatar_url = minio_client.get_presigned_url(
-            bucket_name=bucket_name,
-            object_key=object_key,
-            expires=timedelta(days=7)
+            bucket_name=bucket_name, object_key=object_key, expires=timedelta(days=7)
         )
 
         # Update user avatar reference in database (store ref, not URL)
@@ -454,7 +467,7 @@ async def upload_user_avatar(
             "bucket": bucket_name,
             "key": object_key,
         }
-        
+
     except Exception as e:
         logger.error(f"Failed to upload avatar: {e}")
         raise HTTPException(

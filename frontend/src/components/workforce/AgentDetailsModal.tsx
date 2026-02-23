@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Activity, Clock, CheckCircle, MessageSquare } from 'lucide-react';
+import { X, Activity, CheckCircle, MessageSquare, BarChart3 } from 'lucide-react';
 import type { Agent } from '@/types/agent';
 import { LayoutModal } from '@/components/LayoutModal';
 
@@ -45,6 +45,20 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({ agent, isO
       : agent.accessLevel === 'team' || agent.accessLevel === 'public'
       ? ['agent', 'company', 'user_context']
       : ['agent', 'user_context'];
+  const tasksExecuted = Math.max(
+    0,
+    agent.tasksExecuted ?? (agent.tasksCompleted ?? 0) + (agent.tasksFailed ?? 0)
+  );
+  const tasksCompleted = Math.max(0, agent.tasksCompleted ?? 0);
+  const rawCompletionRate =
+    typeof agent.completionRate === 'number'
+      ? agent.completionRate > 1
+        ? agent.completionRate / 100
+        : agent.completionRate
+      : tasksExecuted > 0
+      ? tasksCompleted / tasksExecuted
+      : 0;
+  const completionRate = `${(Math.max(0, Math.min(1, rawCompletionRate)) * 100).toFixed(tasksExecuted > 0 ? 1 : 0)}%`;
 
   const mockLogs = [
     { timestamp: '2026-01-21 17:05:23', level: 'INFO', message: 'Task execution started' },
@@ -96,18 +110,18 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({ agent, isO
           <div className="p-4 bg-white/10 rounded-lg">
             <div className="flex items-center gap-2 mb-2">
               <CheckCircle className="w-5 h-5 text-green-500" />
-              <span className="text-sm text-gray-600 dark:text-gray-400">Tasks Completed</span>
+              <span className="text-sm text-gray-600 dark:text-gray-400">Tasks Executed</span>
             </div>
             <p className="text-lg font-semibold text-gray-800 dark:text-white">
-              {agent.tasksCompleted}
+              {tasksExecuted}
             </p>
           </div>
           <div className="p-4 bg-white/10 rounded-lg">
             <div className="flex items-center gap-2 mb-2">
-              <Clock className="w-5 h-5 text-blue-500" />
-              <span className="text-sm text-gray-600 dark:text-gray-400">Uptime</span>
+              <BarChart3 className="w-5 h-5 text-blue-500" />
+              <span className="text-sm text-gray-600 dark:text-gray-400">Completion Rate</span>
             </div>
-            <p className="text-lg font-semibold text-gray-800 dark:text-white">{agent.uptime}</p>
+            <p className="text-lg font-semibold text-gray-800 dark:text-white">{completionRate}</p>
           </div>
         </div>
 

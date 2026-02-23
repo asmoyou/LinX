@@ -339,6 +339,11 @@ def create_app() -> FastAPI:
     app.include_router(monitoring.router, tags=["Monitoring"])
     app.include_router(websocket_router, prefix="/api/v1/ws", tags=["WebSocket"])
 
+    @app.get("/health", tags=["Monitoring"])
+    async def health_root():
+        """Lightweight root health endpoint for compatibility checks."""
+        return JSONResponse(content={"status": "healthy", "service": "api-gateway"})
+
     # Root endpoint
     @app.get("/", tags=["Root"])
     async def root():

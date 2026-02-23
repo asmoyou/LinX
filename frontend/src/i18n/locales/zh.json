@@ -237,6 +237,13 @@
     "deleteConfirm": "确定要删除此代理吗？",
     "deleteSuccess": "代理删除成功",
     "updateSuccess": "代理更新成功",
+    "stats": {
+      "tasksExecuted": "任务",
+      "tasksCompleted": "已完成",
+      "failed": "失败",
+      "completionRate": "完成率",
+      "completionRateShort": "完成率"
+    },
     "templates": {
       "dataAnalyst": {
         "name": "数据分析师",
