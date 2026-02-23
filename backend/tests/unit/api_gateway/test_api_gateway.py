@@ -236,6 +236,24 @@ class TestTaskEndpoints:
         assert response.status_code == 401
 
 
+class TestDashboardEndpoints:
+    """Test dashboard endpoints."""
+
+    def test_dashboard_overview_requires_auth(self, client):
+        """Test dashboard overview endpoint requires authentication."""
+        response = client.get("/api/v1/dashboard/overview")
+
+        assert response.status_code == 401
+
+    def test_dashboard_overview_with_auth_is_registered(self, client, auth_token):
+        """Test dashboard overview endpoint is registered."""
+        response = client.get(
+            "/api/v1/dashboard/overview", headers={"Authorization": f"Bearer {auth_token}"}
+        )
+
+        assert response.status_code != 404
+
+
 class TestKnowledgeEndpoints:
     """Test knowledge base endpoints."""
 
