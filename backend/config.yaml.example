@@ -511,6 +511,7 @@ monitoring:
     level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
     format: "json"  # Options: json, text
     output: "stdout"  # Options: stdout, file, both
+    timezone: "Asia/Shanghai"  # IANA timezone, e.g. Asia/Shanghai, UTC
     
     # File Logging (if output includes "file")
     file:

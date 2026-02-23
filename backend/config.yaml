@@ -324,6 +324,7 @@ monitoring:
     level: INFO
     format: json
     output: stdout
+    timezone: Asia/Shanghai
     file:
       path: /var/log/linx-platform
       filename: platform.log

@@ -22,12 +22,17 @@ import sys
 
 # Global correlation ID storage (thread-local)
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import structlog
 from pythonjsonlogger import jsonlogger
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - Python < 3.9 fallback
+    ZoneInfo = None  # type: ignore[assignment]
 
 _correlation_context = threading.local()
 
@@ -93,6 +98,29 @@ class CustomJsonFormatter(jsonlogger.JsonFormatter):
     - user_id, agent_id, task_id (if available)
     """
 
+    def __init__(self, *args: Any, timezone_name: str = "Asia/Shanghai", **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.timezone_name = (timezone_name or "Asia/Shanghai").strip()
+        self._tzinfo = self._resolve_timezone(self.timezone_name)
+
+    @staticmethod
+    def _resolve_timezone(timezone_name: str):
+        normalized = (timezone_name or "").strip()
+        if not normalized or normalized.upper() == "UTC":
+            return timezone.utc
+        if ZoneInfo is None:
+            return timezone.utc
+        try:
+            return ZoneInfo(normalized)
+        except Exception:
+            return timezone.utc
+
+    def _build_timestamp(self) -> str:
+        now = datetime.now(self._tzinfo)
+        if self._tzinfo == timezone.utc:
+            return now.isoformat().replace("+00:00", "Z")
+        return now.isoformat()
+
     def add_fields(
         self, log_record: Dict[str, Any], record: logging.LogRecord, message_dict: Dict[str, Any]
     ) -> None:
@@ -107,7 +135,7 @@ class CustomJsonFormatter(jsonlogger.JsonFormatter):
         super().add_fields(log_record, record, message_dict)
 
         # Add timestamp in ISO format
-        log_record["timestamp"] = datetime.utcnow().isoformat() + "Z"
+        log_record["timestamp"] = self._build_timestamp()
 
         # Add log level
         log_record["level"] = record.levelname
@@ -161,6 +189,7 @@ def setup_logging(config: Optional[Any] = None) -> None:
         log_level = "INFO"
         log_format = "json"
         log_output = "stdout"
+        log_timezone = os.getenv("LOG_TIMEZONE", "Asia/Shanghai")
         log_file_path = "/var/log/workforce-platform"
         log_file_name = "platform.log"
         log_max_size_mb = 100
@@ -175,6 +204,9 @@ def setup_logging(config: Optional[Any] = None) -> None:
         log_level = config.get("monitoring.logging.level", "INFO")
         log_format = config.get("monitoring.logging.format", "json")
         log_output = config.get("monitoring.logging.output", "stdout")
+        log_timezone = config.get(
+            "monitoring.logging.timezone", os.getenv("LOG_TIMEZONE", "Asia/Shanghai")
+        )
         log_file_path = config.get("monitoring.logging.file.path", "/var/log/workforce-platform")
         log_file_name = config.get("monitoring.logging.file.filename", "platform.log")
         log_max_size_mb = config.get("monitoring.logging.file.max_size_mb", 100)
@@ -198,7 +230,10 @@ def setup_logging(config: Optional[Any] = None) -> None:
 
     # Create formatter
     if log_format == "json":
-        formatter = CustomJsonFormatter("%(timestamp)s %(level)s %(component)s %(message)s")
+        formatter = CustomJsonFormatter(
+            "%(timestamp)s %(level)s %(component)s %(message)s",
+            timezone_name=log_timezone,
+        )
     else:
         # Plain text format
         formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -253,7 +288,12 @@ def setup_logging(config: Optional[Any] = None) -> None:
     logger = logging.getLogger(__name__)
     logger.info(
         "Logging system initialized",
-        extra={"log_level": log_level, "log_format": log_format, "log_output": log_output},
+        extra={
+            "log_level": log_level,
+            "log_format": log_format,
+            "log_output": log_output,
+            "log_timezone": log_timezone,
+        },
     )
 
 
