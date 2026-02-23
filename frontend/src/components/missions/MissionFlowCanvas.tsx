@@ -737,6 +737,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
           verdict: 'pending',
           summary: t('missions.qaInProgress', 'QA audit in progress'),
           is_active: true,
+          cycle: 1,
         },
       });
       addEdge({
@@ -751,6 +752,8 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
       qaEvents.forEach((event, i) => {
         const nodeId = `qa-${i}`;
         const isActiveQANode = isQAPhase && i === qaEvents.length - 1;
+        const sourceNodeId = i === 0 ? 'mission' : `qa-${i - 1}`;
+        const edgeId = i === 0 ? `e-mission-${nodeId}` : `e-qa-${i - 1}-${i}`;
         nodes.push({
           id: nodeId,
           type: 'qaNode',
@@ -764,16 +767,17 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
             event_data: event.event_data,
             message: event.message,
             is_active: isActiveQANode,
+            cycle: i + 1,
           },
         });
-        // Connect to mission
+        // Connect QA rounds in sequence to show cycle progression.
         addEdge({
-          id: `e-mission-${nodeId}`,
-          source: 'mission',
+          id: edgeId,
+          source: sourceNodeId,
           target: nodeId,
           type: 'smoothstep',
           animated: isActiveQANode,
-          style: { stroke: '#6366f1' },
+          style: { stroke: '#6366f1', strokeDasharray: i > 0 ? '4 3' : undefined },
         });
       });
     }

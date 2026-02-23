@@ -7,6 +7,7 @@ interface QANodeData {
   issues_count?: number;
   summary?: string;
   is_active?: boolean;
+  cycle?: number;
 }
 
 export const QANode: React.FC<{ data?: QANodeData }> = memo(({ data }) => {
@@ -42,6 +43,11 @@ export const QANode: React.FC<{ data?: QANodeData }> = memo(({ data }) => {
       <div className="flex items-center gap-2 mb-2">
         <HeaderIcon className={`w-4 h-4 ${iconClass}`} />
         <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">QA Audit</span>
+        {typeof safeData.cycle === 'number' && safeData.cycle > 0 && (
+          <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full text-indigo-700 bg-indigo-100 dark:text-indigo-200 dark:bg-indigo-500/20">
+            Cycle {safeData.cycle}
+          </span>
+        )}
         {safeData.is_active && (
           <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded-full text-indigo-700 bg-indigo-100 dark:text-indigo-200 dark:bg-indigo-500/20">
             Running

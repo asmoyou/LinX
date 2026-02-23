@@ -61,6 +61,21 @@ class CustomOpenAIChat(BaseChatModel):
             else:
                 result.append({"role": "user", "content": str(msg.content)})
         return result
+
+    @staticmethod
+    def _apply_openai_compatible_token_limits(
+        payload: Dict[str, Any], max_tokens: Optional[int]
+    ) -> None:
+        """Apply token limit fields for OpenAI-compatible gateways.
+
+        Keep `max_tokens` for broad compatibility and add
+        `max_completion_tokens` for reasoning-style models behind
+        OpenAI-compatible proxies (e.g. One API).
+        """
+        if not max_tokens:
+            return
+        payload["max_tokens"] = max_tokens
+        payload["max_completion_tokens"] = max_tokens
     
     def _stream(
         self,
@@ -92,9 +107,7 @@ class CustomOpenAIChat(BaseChatModel):
             "stream": True,  # Enable streaming
             "stream_options": {"include_usage": True},  # Request usage statistics in stream
         }
-        
-        if self.max_tokens:
-            data["max_tokens"] = self.max_tokens
+        self._apply_openai_compatible_token_limits(data, self.max_tokens)
         
         if stop:
             data["stop"] = stop
@@ -227,9 +240,7 @@ class CustomOpenAIChat(BaseChatModel):
             "messages": self._convert_messages_to_dicts(messages),
             "temperature": self.temperature,
         }
-        
-        if self.max_tokens:
-            data["max_tokens"] = self.max_tokens
+        self._apply_openai_compatible_token_limits(data, self.max_tokens)
         
         if stop:
             data["stop"] = stop
@@ -325,9 +336,7 @@ class CustomOpenAIChat(BaseChatModel):
             "messages": self._convert_messages_to_dicts(messages),
             "temperature": self.temperature,
         }
-        
-        if self.max_tokens:
-            data["max_tokens"] = self.max_tokens
+        self._apply_openai_compatible_token_limits(data, self.max_tokens)
         
         if stop:
             data["stop"] = stop

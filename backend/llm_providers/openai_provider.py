@@ -113,6 +113,7 @@ class OpenAIProvider(BaseLLMProvider):
 
             if max_tokens:
                 payload["max_tokens"] = max_tokens
+                payload["max_completion_tokens"] = max_tokens
 
             payload.update(kwargs)
 
@@ -346,7 +347,8 @@ class OpenAIProvider(BaseLLMProvider):
                 test_payload = {
                     "model": test_model,
                     "messages": [{"role": "user", "content": "test"}],
-                    "max_tokens": 1
+                    "max_tokens": 1,
+                    "max_completion_tokens": 1,
                 }
                 
                 async with session.post(

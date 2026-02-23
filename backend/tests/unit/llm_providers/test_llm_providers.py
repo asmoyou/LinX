@@ -192,11 +192,20 @@ async def test_openai_generate_chat_model():
         return mock_session_obj
 
     with patch.object(provider, "_get_session", side_effect=mock_get_session):
-        response = await provider.generate(prompt="Test prompt", model="gpt-4", temperature=0.7)
+        response = await provider.generate(
+            prompt="Test prompt",
+            model="gpt-4",
+            temperature=0.7,
+            max_tokens=256,
+        )
 
         assert response.content == "OpenAI response"
         assert response.provider == "OpenAI"
         assert response.tokens_used == 100
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+        assert payload["max_tokens"] == 256
+        assert payload["max_completion_tokens"] == 256
 
 
 # Test Anthropic Provider
