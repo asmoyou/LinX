@@ -11,6 +11,8 @@ import {
   Trash2,
   Download,
   Eye,
+  AlertTriangle,
+  X,
 } from 'lucide-react';
 import { useMissionStore } from '@/stores/missionStore';
 import { MissionFlowCanvas } from '@/components/missions/MissionFlowCanvas';
@@ -20,9 +22,11 @@ import { ClarificationPanel } from '@/components/missions/ClarificationPanel';
 import { DeliverablesPanel } from '@/components/missions/DeliverablesPanel';
 import { TaskListPanel } from '@/components/missions/TaskListPanel';
 import { MissionSettingsPanel } from '@/components/missions/MissionSettingsPanel';
+import { LayoutModal } from '@/components/LayoutModal';
+import { ModalPanel } from '@/components/ModalPanel';
 import { selectLatestMissionRunEvents } from '@/utils/missionEvents';
 import { missionsApi } from '@/api/missions';
-import type { Mission, MissionStatus } from '@/types/mission';
+import type { Mission, MissionEvent, MissionStatus } from '@/types/mission';
 
 const statusColors: Record<MissionStatus, string> = {
   draft: 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400',
@@ -55,6 +59,67 @@ type DeliverableSummary = {
   intermediateCount: number;
   sampleNames: string[];
 };
+
+type TaskAttemptDiagnostic = {
+  attempt: number;
+  maxAttempts?: number;
+  error?: string;
+  errorType?: string;
+  willRetry?: boolean;
+  backoffSeconds?: number;
+  traceback?: string;
+  timestamp?: string;
+};
+
+type FailureTaskDiagnostic = {
+  taskId: string;
+  title: string;
+  owner: string;
+  reviewFeedback?: string;
+  reviewCycle?: number;
+  attempts: number;
+  lastError?: string;
+  blockedDependencyTitles: string[];
+  attemptDiagnostics: TaskAttemptDiagnostic[];
+};
+
+function getEventErrorMessage(event: MissionEvent): string {
+  if (typeof event.event_data?.error === 'string' && event.event_data.error.trim()) {
+    return event.event_data.error.trim();
+  }
+  if (typeof event.event_data?.summary === 'string' && event.event_data.summary.trim()) {
+    return event.event_data.summary.trim();
+  }
+  if (typeof event.message === 'string' && event.message.trim()) {
+    return event.message.trim();
+  }
+  return '';
+}
+
+function getEventDataString(event: MissionEvent, key: string): string | undefined {
+  const value = event.event_data?.[key];
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function getEventDataNumber(event: MissionEvent, key: string): number | undefined {
+  const value = event.event_data?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function formatEventType(eventType: string): string {
+  return eventType
+    .toLowerCase()
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function formatTimestamp(value?: string): string {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
 
 function buildDeliverableSummary(mission: Mission): DeliverableSummary {
   const result = mission.result && typeof mission.result === 'object'
@@ -137,6 +202,7 @@ export const Missions: React.FC = () => {
   const [showDeliverables, setShowDeliverables] = useState(false);
   const [showTaskList, setShowTaskList] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showFailureDiagnosticsModal, setShowFailureDiagnosticsModal] = useState(false);
   const [quickDeliverablesMissionId, setQuickDeliverablesMissionId] = useState<string | null>(null);
   const [downloadingArchiveMissionId, setDownloadingArchiveMissionId] = useState<string | null>(null);
   const [deletingMissionId, setDeletingMissionId] = useState<string | null>(null);
@@ -184,6 +250,7 @@ export const Missions: React.FC = () => {
 
   const handleSelectMission = (mission: Mission) => {
     setQuickDeliverablesMissionId(null);
+    setShowFailureDiagnosticsModal(false);
     selectMission(mission);
   };
 
@@ -192,6 +259,7 @@ export const Missions: React.FC = () => {
     setShowClarification(false);
     setShowDeliverables(false);
     setShowTaskList(false);
+    setShowFailureDiagnosticsModal(false);
   };
 
   const handleDeleteMission = async (mission: Mission) => {
@@ -240,15 +308,14 @@ export const Missions: React.FC = () => {
       )
   );
 
-  const failureEventsForSelected = selectedMission
-    ? selectedMissionEvents
-        .filter(
-          (event) =>
-            (event.event_type === 'MISSION_FAILED' || event.event_type === 'PHASE_FAILED')
-        )
-        .slice(-3)
-    : [];
-  const failureTaskDiagnostics = useMemo(() => {
+  const failureEventsForSelected = useMemo(() => {
+    if (!selectedMission) return [];
+    return selectedMissionEvents
+      .filter((event) => event.event_type === 'MISSION_FAILED' || event.event_type === 'PHASE_FAILED')
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 12);
+  }, [selectedMission, selectedMissionEvents]);
+  const failureTaskDiagnostics = useMemo<FailureTaskDiagnostic[]>(() => {
     if (!selectedMission) return [];
 
     const taskTitleById = new Map(
@@ -285,7 +352,41 @@ export const Missions: React.FC = () => {
           typeof metadata.review_feedback === 'string' ? metadata.review_feedback : undefined;
         const reviewCycle =
           typeof metadata.review_cycle_count === 'number' ? metadata.review_cycle_count : undefined;
-        const attempts = Array.isArray(result.attempts) ? result.attempts.length : 0;
+        const attemptEntries = Array.isArray(result.attempts)
+          ? (result.attempts as Array<Record<string, unknown>>)
+          : [];
+        const attemptDiagnostics: TaskAttemptDiagnostic[] = attemptEntries
+          .map((entry, index) => {
+            const attempt =
+              typeof entry.attempt === 'number' && Number.isFinite(entry.attempt)
+                ? entry.attempt
+                : index + 1;
+            const maxAttempts =
+              typeof entry.max_attempts === 'number' && Number.isFinite(entry.max_attempts)
+                ? entry.max_attempts
+                : undefined;
+            const error = typeof entry.error === 'string' ? entry.error : undefined;
+            const errorType = typeof entry.error_type === 'string' ? entry.error_type : undefined;
+            const willRetry = typeof entry.will_retry === 'boolean' ? entry.will_retry : undefined;
+            const backoffSeconds =
+              typeof entry.backoff_s === 'number' && Number.isFinite(entry.backoff_s)
+                ? entry.backoff_s
+                : undefined;
+            const traceback = typeof entry.traceback === 'string' ? entry.traceback : undefined;
+            const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : undefined;
+            return {
+              attempt,
+              maxAttempts,
+              error,
+              errorType,
+              willRetry,
+              backoffSeconds,
+              traceback,
+              timestamp,
+            };
+          })
+          .filter((entry) => Boolean(entry.error || entry.traceback || entry.errorType));
+        const attempts = attemptEntries.length;
         const lastError =
           (typeof result.last_error === 'string' && result.last_error) ||
           (typeof result.error === 'string' && result.error) ||
@@ -317,6 +418,7 @@ export const Missions: React.FC = () => {
           attempts,
           lastError,
           blockedDependencyTitles,
+          attemptDiagnostics,
         };
       });
   }, [selectedMission, missionTasks, missionAgents, t]);
@@ -339,6 +441,7 @@ export const Missions: React.FC = () => {
       .filter(
         (event) =>
           (event.event_type === 'TASK_ATTEMPT_FAILED' ||
+            event.event_type === 'PHASE_ATTEMPT_FAILED' ||
             event.event_type === 'TASK_FAILED' ||
             event.event_type === 'PHASE_FAILED' ||
             event.event_type === 'MISSION_FAILED' ||
@@ -350,8 +453,24 @@ export const Missions: React.FC = () => {
         const bTs = new Date(b.created_at).getTime();
         return bTs - aTs;
       })
-      .slice(0, 8);
+      .slice(0, 24);
   }, [selectedMission, selectedMissionEvents]);
+  const failureRootCause = useMemo(() => {
+    const missionLevel = selectedMission?.error_message?.trim();
+    if (missionLevel) return missionLevel;
+
+    for (const event of executionErrorEventsForSelected) {
+      const eventError = getEventErrorMessage(event);
+      if (eventError) return eventError;
+    }
+    return t('missions.unknownFailure', 'Unknown failure');
+  }, [executionErrorEventsForSelected, selectedMission?.error_message, t]);
+  const failureRootCausePreview =
+    failureRootCause.length > 240 ? `${failureRootCause.slice(0, 240)}...` : failureRootCause;
+  const failedAttemptCount = useMemo(
+    () => failureTaskDiagnostics.reduce((total, item) => total + item.attempts, 0),
+    [failureTaskDiagnostics]
+  );
 
   // Detail view
   if (selectedMission) {
@@ -400,165 +519,53 @@ export const Missions: React.FC = () => {
         )}
 
         {selectedMission.status === 'failed' && (
-          <div className="rounded-xl border border-red-200 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10 px-4 py-3 space-y-2">
-            <div className="text-sm font-semibold text-red-700 dark:text-red-300">
-              {t('missions.failureReason', 'Failure Reason')}
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => setShowFailureDiagnosticsModal(true)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                setShowFailureDiagnosticsModal(true);
+              }
+            }}
+            className="rounded-xl border border-red-200 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10 px-4 py-3 cursor-pointer hover:bg-red-100/80 dark:hover:bg-red-500/15 transition-colors"
+          >
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 w-8 h-8 rounded-lg bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-300 flex items-center justify-center">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-red-700 dark:text-red-300">
+                  {t('missions.failureReason', 'Failure Reason')}
+                </div>
+                <div className="mt-1 text-sm text-red-700/90 dark:text-red-200 break-words">
+                  {failureRootCausePreview}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-red-700 dark:text-red-300">
+                  <span className="px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-500/20 border border-red-200 dark:border-red-500/30">
+                    {t('missions.failedTasks', 'Failed Tasks')}: {failureTaskDiagnostics.length}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-500/20 border border-red-200 dark:border-red-500/30">
+                    {t('missions.debugAttempts', 'Attempts')}: {failedAttemptCount}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-500/20 border border-red-200 dark:border-red-500/30">
+                    {t('missions.executionErrors', 'Execution Errors')}: {executionErrorEventsForSelected.length}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setShowFailureDiagnosticsModal(true);
+                }}
+                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-red-300 dark:border-red-500/40 text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                {t('missions.viewFailureDetails', 'View Details')}
+              </button>
             </div>
-            <div className="text-sm text-red-700/90 dark:text-red-200">
-              {selectedMission.error_message || t('missions.unknownFailure', 'Unknown failure')}
-            </div>
-            {failureEventsForSelected.length > 0 && (
-              <div className="space-y-2">
-                {failureEventsForSelected.map((event) => {
-                  const phase =
-                    typeof event.event_data?.phase === 'string' ? event.event_data.phase : undefined;
-                  const errorType =
-                    typeof event.event_data?.error_type === 'string'
-                      ? event.event_data.error_type
-                      : undefined;
-                  const trace =
-                    typeof event.event_data?.traceback === 'string'
-                      ? event.event_data.traceback
-                      : undefined;
-                  return (
-                    <div
-                      key={event.event_id}
-                      className="rounded-lg border border-red-200/80 dark:border-red-500/30 bg-red-100/50 dark:bg-red-900/20 px-3 py-2"
-                    >
-                      <div className="text-xs text-red-700 dark:text-red-300">
-                        {phase && `${t('missions.failedPhase', 'Phase')}: ${phase}`}
-                        {phase && errorType ? ' • ' : ''}
-                        {errorType && `${t('missions.errorType', 'Error Type')}: ${errorType}`}
-                      </div>
-                      {trace && (
-                        <details className="mt-1">
-                          <summary className="cursor-pointer text-xs text-red-700 dark:text-red-300">
-                            {t('missions.debugTraceback', 'Traceback')}
-                          </summary>
-                          <pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-red-800 dark:text-red-100 bg-red-100 dark:bg-red-900/40 rounded p-2">
-                            {trace}
-                          </pre>
-                        </details>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            {failureTaskDiagnostics.length > 0 && (
-              <div className="space-y-2">
-                <div className="text-xs font-semibold text-red-700 dark:text-red-300">
-                  {t('missions.failedTasks', 'Failed Tasks')}
-                </div>
-                {failureTaskDiagnostics.map((diagnostic) => (
-                  <div
-                    key={diagnostic.taskId}
-                    className="rounded-lg border border-red-200/80 dark:border-red-500/30 bg-red-100/50 dark:bg-red-900/20 px-3 py-2"
-                  >
-                    <div className="text-xs font-semibold text-red-800 dark:text-red-100">
-                      {diagnostic.title}
-                    </div>
-                    <div className="text-xs text-red-700 dark:text-red-200 mt-1">
-                      {t('missions.owner', 'Owner')}: {diagnostic.owner}
-                      {typeof diagnostic.reviewCycle === 'number'
-                        ? ` • ${t('missions.reviewCycle', 'Review Cycle')}: ${diagnostic.reviewCycle}`
-                        : ''}
-                      {diagnostic.attempts > 0
-                        ? ` • ${t('missions.debugAttempts', 'Attempts')}: ${diagnostic.attempts}`
-                        : ''}
-                    </div>
-                    {diagnostic.lastError && (
-                      <div className="text-xs text-red-700 dark:text-red-200 mt-1">
-                        {t('missions.failedTaskReason', 'Reason')}: {diagnostic.lastError}
-                      </div>
-                    )}
-                    {diagnostic.blockedDependencyTitles.length > 0 && (
-                      <div className="text-xs text-red-700 dark:text-red-200 mt-1">
-                        {t('missions.blockedDependencies', 'Blocked by dependencies')}:{' '}
-                        {diagnostic.blockedDependencyTitles.join(', ')}
-                      </div>
-                    )}
-                    {diagnostic.reviewFeedback && (
-                      <details className="mt-1">
-                        <summary className="cursor-pointer text-xs text-red-700 dark:text-red-300">
-                          {t('missions.reviewFeedback', 'Review Feedback')}
-                        </summary>
-                        <pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-red-800 dark:text-red-100 bg-red-100 dark:bg-red-900/40 rounded p-2">
-                          {diagnostic.reviewFeedback}
-                        </pre>
-                      </details>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-            {reviewRetryEventsForSelected.length > 0 && (
-              <div className="space-y-1.5">
-                <div className="text-xs font-semibold text-red-700 dark:text-red-300">
-                  {t('missions.reviewLoopTimeline', 'Review Loop Timeline')}
-                </div>
-                {reviewRetryEventsForSelected.map((event) => {
-                  const cycle =
-                    typeof event.event_data?.cycle === 'number' ? event.event_data.cycle : undefined;
-                  const failedCount =
-                    typeof event.event_data?.failed_count === 'number'
-                      ? event.event_data.failed_count
-                      : undefined;
-                  const maxReworkCycles =
-                    typeof event.event_data?.max_rework_cycles === 'number'
-                      ? event.event_data.max_rework_cycles
-                      : undefined;
-                  return (
-                    <div
-                      key={event.event_id}
-                      className="text-xs text-red-700 dark:text-red-200 bg-red-100/40 dark:bg-red-900/20 rounded px-2.5 py-1.5"
-                    >
-                      {t('missions.reviewCycle', 'Review Cycle')}: {cycle ?? '-'}
-                      {typeof failedCount === 'number' ? ` • ${t('missions.failed', 'Failed')}: ${failedCount}` : ''}
-                      {typeof maxReworkCycles === 'number'
-                        ? ` • ${t('missions.maxReworkCycles', 'Max Rework Cycles')}: ${maxReworkCycles}`
-                        : ''}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            {executionErrorEventsForSelected.length > 0 && (
-              <div className="space-y-1.5">
-                <div className="text-xs font-semibold text-red-700 dark:text-red-300">
-                  {t('missions.executionErrors', 'Execution Errors')}
-                </div>
-                {executionErrorEventsForSelected.map((event) => {
-                  const eventError =
-                    typeof event.event_data?.error === 'string'
-                      ? event.event_data.error
-                      : typeof event.event_data?.summary === 'string'
-                        ? event.event_data.summary
-                        : event.message || '';
-                  const issuesCount =
-                    typeof event.event_data?.issues_count === 'number'
-                      ? event.event_data.issues_count
-                      : undefined;
-                  const errorType =
-                    typeof event.event_data?.error_type === 'string'
-                      ? event.event_data.error_type
-                      : undefined;
-                  return (
-                    <div
-                      key={event.event_id}
-                      className="text-xs text-red-700 dark:text-red-200 bg-red-100/40 dark:bg-red-900/20 rounded px-2.5 py-1.5"
-                    >
-                      <div className="font-semibold">
-                        {event.event_type}
-                        {errorType ? ` • ${errorType}` : ''}
-                        {typeof issuesCount === 'number' ? ` • issues=${issuesCount}` : ''}
-                      </div>
-                      {eventError && <div className="mt-0.5">{eventError}</div>}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
           </div>
         )}
 
@@ -598,6 +605,252 @@ export const Missions: React.FC = () => {
           tasks={missionTasks}
           agents={missionAgents}
         />
+
+        <LayoutModal
+          isOpen={showFailureDiagnosticsModal}
+          onClose={() => setShowFailureDiagnosticsModal(false)}
+          closeOnBackdropClick={true}
+          closeOnEscape={true}
+        >
+          <ModalPanel className="w-full max-w-5xl p-0 max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200 dark:border-zinc-700">
+              <div>
+                <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+                  {t('missions.failureDetailsTitle', 'Failure Details')}
+                </h2>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                  {t('missions.shortId', { id: selectedMission.mission_id.substring(0, 8) })}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowFailureDiagnosticsModal(false)}
+                className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500 transition-colors"
+                aria-label={t('common.close', 'Close')}
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto px-6 py-4 space-y-4">
+              <section className="rounded-xl border border-red-200 dark:border-red-500/40 bg-red-50/70 dark:bg-red-500/10 p-4">
+                <div className="text-sm font-semibold text-red-700 dark:text-red-300">
+                  {t('missions.failureRootCause', 'Root Cause')}
+                </div>
+                <div className="mt-1 text-sm text-red-700/90 dark:text-red-200 whitespace-pre-wrap break-words">
+                  {failureRootCause}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-red-700 dark:text-red-300">
+                  <span className="px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-500/20 border border-red-200 dark:border-red-500/30">
+                    {t('missions.failedTasks', 'Failed Tasks')}: {failureTaskDiagnostics.length}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-500/20 border border-red-200 dark:border-red-500/30">
+                    {t('missions.debugAttempts', 'Attempts')}: {failedAttemptCount}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-500/20 border border-red-200 dark:border-red-500/30">
+                    {t('missions.executionErrors', 'Execution Errors')}: {executionErrorEventsForSelected.length}
+                  </span>
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60 p-4">
+                <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 mb-3">
+                  {t('missions.attemptFailureDetails', 'Attempt Failure Details')}
+                </div>
+                {failureTaskDiagnostics.length === 0 ? (
+                  <div className="text-sm text-zinc-500">{t('missions.noFailureDetails', 'No failure details available.')}</div>
+                ) : (
+                  <div className="space-y-3">
+                    {failureTaskDiagnostics.map((taskDiagnostic) => (
+                      <div
+                        key={taskDiagnostic.taskId}
+                        className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50/70 dark:bg-zinc-900/50 p-3"
+                      >
+                        <div className="flex flex-wrap items-start gap-2">
+                          <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+                            {taskDiagnostic.title}
+                          </div>
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-zinc-200/80 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300">
+                            {t('missions.owner', 'Owner')}: {taskDiagnostic.owner}
+                          </span>
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-300">
+                            {t('missions.debugAttempts', 'Attempts')}: {taskDiagnostic.attempts}
+                          </span>
+                        </div>
+                        {taskDiagnostic.blockedDependencyTitles.length > 0 && (
+                          <div className="mt-2 text-xs text-zinc-600 dark:text-zinc-300">
+                            {t('missions.blockedDependencies', 'Blocked by dependencies')}:{' '}
+                            {taskDiagnostic.blockedDependencyTitles.join(', ')}
+                          </div>
+                        )}
+                        {taskDiagnostic.lastError && (
+                          <div className="mt-2 text-xs text-red-700 dark:text-red-300 whitespace-pre-wrap break-words">
+                            {t('missions.debugLastError', 'Last error')}: {taskDiagnostic.lastError}
+                          </div>
+                        )}
+                        {taskDiagnostic.attemptDiagnostics.length > 0 && (
+                          <div className="mt-2 space-y-2">
+                            {taskDiagnostic.attemptDiagnostics.map((attemptDiagnostic, attemptIndex) => (
+                              <div
+                                key={`${taskDiagnostic.taskId}-${attemptDiagnostic.attempt}-${attemptIndex}`}
+                                className="rounded-md border border-red-200/70 dark:border-red-500/30 bg-red-50/70 dark:bg-red-500/5 p-2"
+                              >
+                                <div className="text-[11px] text-red-700 dark:text-red-300">
+                                  {t('missions.attemptLabel', 'Attempt')} {attemptDiagnostic.attempt}
+                                  {attemptDiagnostic.maxAttempts
+                                    ? `/${attemptDiagnostic.maxAttempts}`
+                                    : ''}
+                                  {attemptDiagnostic.errorType ? ` • ${attemptDiagnostic.errorType}` : ''}
+                                  {attemptDiagnostic.willRetry !== undefined
+                                    ? ` • ${attemptDiagnostic.willRetry ? t('missions.retry', 'Retry') : t('missions.status.failed', 'Failed')}`
+                                    : ''}
+                                  {attemptDiagnostic.backoffSeconds !== undefined
+                                    ? ` • ${t('missions.backoffSeconds', 'Backoff {{seconds}}s', {
+                                        seconds: attemptDiagnostic.backoffSeconds,
+                                      })}`
+                                    : ''}
+                                  {attemptDiagnostic.timestamp
+                                    ? ` • ${formatTimestamp(attemptDiagnostic.timestamp)}`
+                                    : ''}
+                                </div>
+                                {attemptDiagnostic.error && (
+                                  <div className="mt-1 text-[11px] whitespace-pre-wrap break-words text-red-700/95 dark:text-red-200">
+                                    {attemptDiagnostic.error}
+                                  </div>
+                                )}
+                                {attemptDiagnostic.traceback && (
+                                  <details className="mt-1">
+                                    <summary className="cursor-pointer text-[11px] text-red-700 dark:text-red-300">
+                                      {t('missions.debugTraceback', 'Traceback')}
+                                    </summary>
+                                    <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-red-800 dark:text-red-100 bg-red-100 dark:bg-red-900/40 rounded p-2">
+                                      {attemptDiagnostic.traceback}
+                                    </pre>
+                                  </details>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              {failureEventsForSelected.length > 0 && (
+                <section className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60 p-4">
+                  <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 mb-3">
+                    {t('missions.phaseFailureDetails', 'Mission/Phase Failures')}
+                  </div>
+                  <div className="space-y-2">
+                    {failureEventsForSelected.map((event) => {
+                      const phase = getEventDataString(event, 'phase');
+                      const errorType = getEventDataString(event, 'error_type');
+                      const trace = getEventDataString(event, 'traceback');
+                      const errorMessage = getEventErrorMessage(event);
+                      return (
+                        <div
+                          key={event.event_id}
+                          className="rounded-md border border-red-200/70 dark:border-red-500/30 bg-red-50/70 dark:bg-red-500/5 p-2.5"
+                        >
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] text-red-700 dark:text-red-300">
+                            <span className="font-medium">{formatEventType(event.event_type)}</span>
+                            {phase && <span>{t('missions.failedPhase', 'Failed Phase')}: {phase}</span>}
+                            {errorType && <span>{t('missions.errorType', 'Error Type')}: {errorType}</span>}
+                            <span>{formatTimestamp(event.created_at)}</span>
+                          </div>
+                          {errorMessage && (
+                            <div className="mt-1 text-[11px] text-red-700/95 dark:text-red-200 whitespace-pre-wrap break-words">
+                              {errorMessage}
+                            </div>
+                          )}
+                          {trace && (
+                            <details className="mt-1">
+                              <summary className="cursor-pointer text-[11px] text-red-700 dark:text-red-300">
+                                {t('missions.debugTraceback', 'Traceback')}
+                              </summary>
+                              <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-red-800 dark:text-red-100 bg-red-100 dark:bg-red-900/40 rounded p-2">
+                                {trace}
+                              </pre>
+                            </details>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
+              {reviewRetryEventsForSelected.length > 0 && (
+                <section className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60 p-4">
+                  <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 mb-3">
+                    {t('missions.reviewLoopTimeline', 'Review Loop Timeline')}
+                  </div>
+                  <div className="space-y-2">
+                    {reviewRetryEventsForSelected.map((event) => (
+                      <div
+                        key={event.event_id}
+                        className="rounded-md border border-amber-200/70 dark:border-amber-500/30 bg-amber-50/70 dark:bg-amber-500/5 p-2.5 text-[11px] text-amber-700 dark:text-amber-300"
+                      >
+                        <div className="font-medium">{formatEventType(event.event_type)}</div>
+                        <div className="mt-0.5">
+                          {getEventErrorMessage(event) || event.message || '-'}
+                        </div>
+                        <div className="mt-0.5 text-amber-700/80 dark:text-amber-300/80">
+                          {formatTimestamp(event.created_at)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {executionErrorEventsForSelected.length > 0 && (
+                <section className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60 p-4">
+                  <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 mb-3">
+                    {t('missions.failureTimeline', 'Failure Timeline')}
+                  </div>
+                  <div className="space-y-2">
+                    {executionErrorEventsForSelected.map((event) => {
+                      const eventError = getEventErrorMessage(event);
+                      const attempt = getEventDataNumber(event, 'attempt');
+                      const maxAttempts = getEventDataNumber(event, 'max_attempts');
+                      const eventType = formatEventType(event.event_type);
+                      return (
+                        <div
+                          key={`timeline-${event.event_id}`}
+                          className="rounded-md border border-zinc-200 dark:border-zinc-700 bg-zinc-50/70 dark:bg-zinc-900/50 p-2.5"
+                        >
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-600 dark:text-zinc-300">
+                            <span className="font-medium text-zinc-700 dark:text-zinc-200">{eventType}</span>
+                            {event.task_id && (
+                              <span>
+                                {t('missions.taskId', 'Task')}: {event.task_id.slice(0, 8)}
+                              </span>
+                            )}
+                            {attempt !== undefined && (
+                              <span>
+                                {t('missions.debugAttempts', 'Attempts')}: {attempt}
+                                {maxAttempts !== undefined ? `/${maxAttempts}` : ''}
+                              </span>
+                            )}
+                            <span>{formatTimestamp(event.created_at)}</span>
+                          </div>
+                          {eventError && (
+                            <div className="mt-1 text-[11px] text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap break-words">
+                              {eventError}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+            </div>
+          </ModalPanel>
+        </LayoutModal>
       </div>
     );
   }

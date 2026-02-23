@@ -1668,7 +1668,17 @@
     "debugLastError": "最近错误",
     "debugAttempts": "尝试次数",
     "debugLatestAttempt": "最新",
-    "debugTraceback": "调用栈"
+    "debugTraceback": "调用栈",
+    "viewFailureDetails": "查看详情",
+    "failureDetailsTitle": "失败详情",
+    "failureRootCause": "根因",
+    "attemptFailureDetails": "尝试失败详情",
+    "attemptLabel": "尝试",
+    "backoffSeconds": "退避 {{seconds}} 秒",
+    "noFailureDetails": "暂无失败详情",
+    "phaseFailureDetails": "任务/阶段失败事件",
+    "failureTimeline": "失败时间线",
+    "taskId": "任务"
   },
   "robots": {
     "title": "机器人管理",

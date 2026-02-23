@@ -1668,7 +1668,17 @@
     "debugLastError": "Last error",
     "debugAttempts": "Attempts",
     "debugLatestAttempt": "Latest",
-    "debugTraceback": "Traceback"
+    "debugTraceback": "Traceback",
+    "viewFailureDetails": "View Details",
+    "failureDetailsTitle": "Failure Details",
+    "failureRootCause": "Root Cause",
+    "attemptFailureDetails": "Attempt Failure Details",
+    "attemptLabel": "Attempt",
+    "backoffSeconds": "Backoff {{seconds}}s",
+    "noFailureDetails": "No failure details available.",
+    "phaseFailureDetails": "Mission/Phase Failures",
+    "failureTimeline": "Failure Timeline",
+    "taskId": "Task"
   },
   "robots": {
     "title": "Robotic Workers",
