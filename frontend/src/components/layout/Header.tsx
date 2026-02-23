@@ -256,7 +256,7 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
                 className="fixed inset-0 z-40"
                 onClick={() => setShowSystemHealth(false)}
               />
-              <div className="absolute left-0 mt-2 w-[440px] glass-panel rounded-[24px] shadow-2xl p-5 z-50">
+              <div className="absolute left-0 mt-2 w-[440px] rounded-[24px] border border-zinc-200/80 bg-white/95 p-5 shadow-2xl backdrop-blur-xl dark:border-zinc-700/80 dark:bg-zinc-900/95 z-50">
                 <div className="flex items-start justify-between gap-3 mb-4">
                   <div>
                     <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-500 dark:text-zinc-300">
@@ -294,7 +294,7 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
                       {systemHealth.dependencies.map((dependency) => (
                         <div
                           key={dependency.id}
-                          className="p-3 rounded-xl border border-zinc-500/10 bg-zinc-500/5"
+                          className="p-3 rounded-xl border border-zinc-200/70 bg-white/80 dark:border-zinc-700/70 dark:bg-zinc-800/70"
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2 min-w-0">
