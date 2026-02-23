@@ -241,13 +241,33 @@ def _coerce_bool_flag(value: Any, default: bool = False) -> bool:
     return default
 
 
-def _derive_initial_mission_title(instructions: str, max_length: int = 120) -> str:
+_LEADING_TITLE_PREFIX_PATTERNS = (
+    r"^(请你|请帮我|请帮忙|帮我|帮忙|麻烦你|希望你|我需要你|我需要|需要你|需要)\s*",
+    r"^(任务是|需求是|目标是|请完成|完成一下)\s*",
+    r"^(需求|目标|任务)\s*[：:]\s*",
+)
+
+
+def _strip_leading_title_prefix(text: str) -> str:
+    candidate = text
+    for pattern in _LEADING_TITLE_PREFIX_PATTERNS:
+        candidate = re.sub(pattern, "", candidate).strip()
+    return candidate
+
+
+def _derive_initial_mission_title(instructions: str) -> str:
     normalized = re.sub(r"\s+", " ", str(instructions or "")).strip()
     if not normalized:
         return "Untitled Mission"
 
     first_segment = re.split(r"[。！？.!?;\n]", normalized, maxsplit=1)[0].strip()
-    candidate = first_segment or normalized
+    candidate = _strip_leading_title_prefix(first_segment or normalized)
+    if not candidate:
+        candidate = first_segment or normalized
+
+    # Keep create-time titles concise so cards look stable before mission starts.
+    contains_cjk = bool(re.search(r"[\u4e00-\u9fff]", candidate))
+    max_length = 24 if contains_cjk else 70
     if len(candidate) > max_length:
         candidate = candidate[:max_length].rstrip(" ,;:：。.!?、")
 

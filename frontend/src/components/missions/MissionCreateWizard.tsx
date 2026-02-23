@@ -22,12 +22,32 @@ const stepIcons: Record<Step, React.ElementType> = {
   review: Eye,
 };
 
-const deriveInitialMissionTitle = (instructions: string, maxLength = 120): string => {
+const LEADING_TITLE_PREFIX_PATTERNS = [
+  /^(请你|请帮我|请帮忙|帮我|帮忙|麻烦你|希望你|我需要你|我需要|需要你|需要)\s*/i,
+  /^(任务是|需求是|目标是|请完成|完成一下)\s*/i,
+  /^(需求|目标|任务)\s*[：:]\s*/i,
+];
+
+const stripLeadingTitlePrefix = (value: string): string => {
+  let next = value;
+  LEADING_TITLE_PREFIX_PATTERNS.forEach((pattern) => {
+    next = next.replace(pattern, '').trim();
+  });
+  return next;
+};
+
+const deriveInitialMissionTitle = (instructions: string): string => {
   const normalized = String(instructions || '').replace(/\s+/g, ' ').trim();
   if (!normalized) return 'Untitled Mission';
 
   const firstSegment = normalized.split(/[。！？.!?;\n]/, 1)[0]?.trim() || '';
-  let candidate = firstSegment || normalized;
+  let candidate = stripLeadingTitlePrefix(firstSegment || normalized);
+  if (!candidate) {
+    candidate = firstSegment || normalized;
+  }
+
+  const containsCjk = /[\u4e00-\u9fff]/.test(candidate);
+  const maxLength = containsCjk ? 24 : 70;
   if (candidate.length > maxLength) {
     candidate = candidate.slice(0, maxLength).replace(/[ ,;:：。.!?、]+$/g, '');
   }

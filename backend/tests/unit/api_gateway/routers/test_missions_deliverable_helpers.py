@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from api_gateway.routers.missions import (
     _build_content_disposition,
     _compute_clarification_state,
+    _derive_initial_mission_title,
     _normalize_deliverable_item,
 )
 
@@ -93,3 +94,21 @@ def test_compute_clarification_state_ignores_events_before_boundary() -> None:
     assert state["needs_clarification"] is True
     assert state["pending_clarification_count"] == 1
     assert state["latest_clarification_request"] == "new question"
+
+
+def test_derive_initial_mission_title_trims_leading_request_prefix_for_chinese() -> None:
+    title = _derive_initial_mission_title(
+        "请帮我设计一个覆盖采购、库存、发货链路的自动化运营看板，并输出执行方案。"
+    )
+
+    assert not title.startswith("请帮我")
+    assert len(title) <= 24
+
+
+def test_derive_initial_mission_title_caps_english_title_length() -> None:
+    title = _derive_initial_mission_title(
+        "Build a multi-tenant observability dashboard with per-team alert routing, "
+        "SLO burn-rate analysis, and audit-ready incident timelines."
+    )
+
+    assert len(title) <= 70
