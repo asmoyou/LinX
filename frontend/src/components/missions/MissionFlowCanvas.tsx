@@ -881,13 +881,19 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
       const reason = getEventDataString(event, 'reason').toLowerCase();
       return reason !== 'qa_rework_required' && reason !== 'dependency_waiting_rework';
     });
-    const passReviews = reviewEvents.filter(
+    const cachedReviewEvents = reviewEvents.filter(
+      (event) => getEventDataString(event, 'reason').toLowerCase() === 'reuse_previous_pass'
+    );
+    const liveReviewEvents = reviewEvents.filter(
+      (event) => getEventDataString(event, 'reason').toLowerCase() !== 'reuse_previous_pass'
+    );
+    const passReviews = liveReviewEvents.filter(
       (event) => getEventDataString(event, 'verdict').toUpperCase() === 'PASS'
     ).length;
-    const failReviews = reviewEvents.filter(
+    const failReviews = liveReviewEvents.filter(
       (event) => getEventDataString(event, 'verdict').toUpperCase() === 'FAIL'
     ).length;
-    const blockedReviews = reviewEvents.filter(
+    const blockedReviews = liveReviewEvents.filter(
       (event) => getEventDataString(event, 'verdict').toUpperCase() === 'BLOCKED'
     ).length;
     const reviewRetryEvents = scopedMissionEvents.filter((event) => {
@@ -908,7 +914,9 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
         : undefined;
 
     return {
-      reviewCount: reviewEvents.length,
+      reviewCount: liveReviewEvents.length,
+      reviewTotalCount: reviewEvents.length,
+      cachedReviewCount: cachedReviewEvents.length,
       passReviews,
       failReviews,
       blockedReviews,
@@ -950,6 +958,21 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
       if (verdict === 'FAIL') return t('missions.verdictFail', 'FAIL');
       if (verdict === 'BLOCKED') return t('missions.verdictBlocked', 'BLOCKED');
       return verdict || '-';
+    },
+    [t]
+  );
+
+  const getReviewReasonLabel = useCallback(
+    (rawReason: string): string => {
+      const reason = String(rawReason || '').trim().toLowerCase();
+      if (!reason) return '';
+      if (reason === 'reuse_previous_pass') {
+        return t('missions.reviewReasonReusePreviousPass', 'cached reuse');
+      }
+      if (reason === 'dependency_gate') {
+        return t('missions.reviewReasonDependencyGate', 'dependency gate');
+      }
+      return rawReason;
     },
     [t]
   );
@@ -1370,9 +1393,14 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
                   </div>
                 </div>
                 {activeTaskReviewMetrics && (
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] text-zinc-700 dark:text-zinc-200">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px] text-zinc-700 dark:text-zinc-200">
                     <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
-                      {t('missions.reviewChecks', 'Review checks')}: {activeTaskReviewMetrics.reviewCount}
+                      {t('missions.reviewRealChecks', 'Live review checks')}:{' '}
+                      {activeTaskReviewMetrics.reviewCount}
+                    </div>
+                    <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
+                      {t('missions.reviewCachedChecks', 'Cached review checks')}:{' '}
+                      {activeTaskReviewMetrics.cachedReviewCount}
                     </div>
                     <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
                       {t('missions.reworkRetries', 'Rework retries')}: {activeTaskReviewMetrics.reviewRetryCount}
@@ -1465,9 +1493,14 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
                 </div>
                 {activeTaskReviewMetrics ? (
                   <>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] text-zinc-700 dark:text-zinc-200">
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px] text-zinc-700 dark:text-zinc-200">
                       <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
-                        {t('missions.reviewChecks', 'Review checks')}: {activeTaskReviewMetrics.reviewCount}
+                        {t('missions.reviewRealChecks', 'Live review checks')}:{' '}
+                        {activeTaskReviewMetrics.reviewCount}
+                      </div>
+                      <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
+                        {t('missions.reviewCachedChecks', 'Cached review checks')}:{' '}
+                        {activeTaskReviewMetrics.cachedReviewCount}
                       </div>
                       <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
                         {t('missions.reworkRetries', 'Rework retries')}: {activeTaskReviewMetrics.reviewRetryCount}
@@ -1480,6 +1513,10 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
                         {t('missions.dependencyReviewRejects', 'Dependency review rejects')}:{' '}
                         {activeTaskReviewMetrics.dependencyReviewRejects}
                       </div>
+                    </div>
+                    <div className="text-[11px] text-zinc-600 dark:text-zinc-300">
+                      {t('missions.reviewChecksTotal', 'Total review records')}:{' '}
+                      {activeTaskReviewMetrics.reviewTotalCount}
                     </div>
                     <div className="text-[11px] text-zinc-600 dark:text-zinc-300">
                       {t('missions.verdictPass', 'PASS')}: {activeTaskReviewMetrics.passReviews} •{' '}
@@ -1504,7 +1541,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
                       {activeTaskReviewTimeline.length > 0 ? (
                         activeTaskReviewTimeline.map((event, index) => {
                           const verdict = getVerdictLabel(getEventDataString(event, 'verdict'));
-                          const reason = getEventDataString(event, 'reason');
+                          const reason = getReviewReasonLabel(getEventDataString(event, 'reason'));
                           return (
                             <div
                               key={`review-attempt-${event.event_id}`}
