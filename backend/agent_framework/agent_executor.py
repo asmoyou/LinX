@@ -7,6 +7,7 @@ References:
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
@@ -250,6 +251,7 @@ class AgentExecutor:
         knowledge_min_relevance_score: Optional[float],
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
         """Internal context builder returning both context and debug data."""
+        context_started = time.perf_counter()
         if top_k <= 0:
             top_k = 3
 
@@ -337,8 +339,10 @@ class AgentExecutor:
                 "error": None,
             },
         }
+        memory_retrieval_ms = 0.0
 
         if "agent" in memory_scopes:
+            scope_started = time.perf_counter()
             try:
                 agent_memories = self.memory_interface.retrieve_agent_memory(
                     agent_id=context.agent_id,
@@ -353,8 +357,13 @@ class AgentExecutor:
                 logger.warning(
                     f"Failed to retrieve agent memories (continuing without): {mem_error}"
                 )
+            finally:
+                elapsed_ms = round((time.perf_counter() - scope_started) * 1000.0, 2)
+                memory_debug["agent"]["latency_ms"] = elapsed_ms
+                memory_retrieval_ms += elapsed_ms
 
         if "company" in memory_scopes:
+            scope_started = time.perf_counter()
             try:
                 company_memories = self.memory_interface.retrieve_company_memory(
                     user_id=context.user_id,
@@ -368,8 +377,13 @@ class AgentExecutor:
                 logger.warning(
                     f"Failed to retrieve company memories (continuing without): {mem_error}"
                 )
+            finally:
+                elapsed_ms = round((time.perf_counter() - scope_started) * 1000.0, 2)
+                memory_debug["company"]["latency_ms"] = elapsed_ms
+                memory_retrieval_ms += elapsed_ms
 
         if "user_context" in memory_scopes:
+            scope_started = time.perf_counter()
             try:
                 user_context_query = SearchQuery(
                     query_text=context.task_description,
@@ -387,8 +401,13 @@ class AgentExecutor:
                 logger.warning(
                     f"Failed to retrieve user-context memories (continuing without): {mem_error}"
                 )
+            finally:
+                elapsed_ms = round((time.perf_counter() - scope_started) * 1000.0, 2)
+                memory_debug["user_context"]["latency_ms"] = elapsed_ms
+                memory_retrieval_ms += elapsed_ms
 
         if "task_context" in memory_scopes and context.task_id:
+            scope_started = time.perf_counter()
             try:
                 task_context_query = SearchQuery(
                     query_text=context.task_description,
@@ -407,7 +426,14 @@ class AgentExecutor:
                 logger.warning(
                     f"Failed to retrieve task-context memories (continuing without): {mem_error}"
                 )
+            finally:
+                elapsed_ms = round((time.perf_counter() - scope_started) * 1000.0, 2)
+                memory_debug["task_context"]["latency_ms"] = elapsed_ms
+                memory_retrieval_ms += elapsed_ms
 
+        knowledge_started = time.perf_counter()
+        knowledge_candidate_resolution_ms = 0.0
+        knowledge_search_ms = 0.0
         knowledge_snippets: list[str] = []
         knowledge_hits: list[Dict[str, Any]] = []
         knowledge_debug: Dict[str, Any] = {
@@ -422,6 +448,7 @@ class AgentExecutor:
         }
         try:
             candidate_document_ids = None
+            candidate_started = time.perf_counter()
             if allowed_knowledge:
                 from access_control.knowledge_filter import filter_knowledge_query
                 from access_control.permissions import CurrentUser
@@ -451,6 +478,10 @@ class AgentExecutor:
                         candidate_document_ids = [str(row[0]) for row in query.all()]
                 else:
                     candidate_document_ids = []
+            knowledge_candidate_resolution_ms = round(
+                (time.perf_counter() - candidate_started) * 1000.0,
+                2,
+            )
 
             if isinstance(candidate_document_ids, list):
                 knowledge_debug["candidate_document_count"] = len(candidate_document_ids)
@@ -467,10 +498,12 @@ class AgentExecutor:
                     top_k=top_k,
                     min_relevance_score=knowledge_min_relevance_score,
                 )
+                search_started = time.perf_counter()
                 knowledge_results = search_service.search(
                     query=context.task_description,
                     search_filter=search_filter,
                 )
+                knowledge_search_ms = round((time.perf_counter() - search_started) * 1000.0, 2)
                 for result in knowledge_results[:top_k]:
                     snippet = self._extract_content(result)
                     if snippet:
@@ -561,6 +594,12 @@ class AgentExecutor:
                 "Failed to retrieve knowledge snippets (continuing without): %s",
                 knowledge_error,
             )
+        finally:
+            knowledge_debug["timing_ms"] = {
+                "candidate_resolution": knowledge_candidate_resolution_ms,
+                "search": knowledge_search_ms,
+                "total": round((time.perf_counter() - knowledge_started) * 1000.0, 2),
+            }
 
         knowledge_debug["hit_count"] = len(knowledge_hits)
         knowledge_debug["hits"] = knowledge_hits
@@ -579,6 +618,7 @@ class AgentExecutor:
         memory_debug["user_context"]["pre_filter_hit_count"] = len(user_context_memories)
         memory_debug["task_context"]["pre_filter_hit_count"] = len(task_context_memories)
 
+        memory_postprocess_started = time.perf_counter()
         agent_memories, agent_filtered = self._filter_context_memories(
             agent_memories, context.task_description
         )
@@ -631,7 +671,19 @@ class AgentExecutor:
             self._trim_text(content) for content in exec_context["task_context_memories"][:3]
         ]
 
-        return exec_context, {"memory": memory_debug, "knowledge": knowledge_debug}
+        memory_postprocess_ms = round((time.perf_counter() - memory_postprocess_started) * 1000.0, 2)
+        memory_debug["timing_ms"] = {
+            "retrieval": round(memory_retrieval_ms, 2),
+            "postprocess": memory_postprocess_ms,
+            "total": round(memory_retrieval_ms + memory_postprocess_ms, 2),
+        }
+
+        context_debug = {
+            "memory": memory_debug,
+            "knowledge": knowledge_debug,
+            "timing_ms": {"total": round((time.perf_counter() - context_started) * 1000.0, 2)},
+        }
+        return exec_context, context_debug
 
     def build_execution_context(
         self,

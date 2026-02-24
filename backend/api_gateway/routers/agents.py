@@ -383,6 +383,10 @@ def _sanitize_history_messages(raw_history: Any) -> List[Dict[str, str]]:
 def _build_retrieval_process_messages(context_debug: Dict[str, Any]) -> List[str]:
     """Build user-facing retrieval debug messages for SSE process stream."""
     messages: List[str] = []
+    timing_debug = context_debug.get("timing_ms") or {}
+    context_total_ms = timing_debug.get("total")
+    if isinstance(context_total_ms, (int, float)):
+        messages.append(f"[上下文构建] 总耗时: {float(context_total_ms):.2f}ms")
 
     memory_debug = context_debug.get("memory") or {}
     memory_query = _trim_process_text(memory_debug.get("query"), 180)
@@ -392,6 +396,11 @@ def _build_retrieval_process_messages(context_debug: Dict[str, Any]) -> List[str
     top_k = memory_debug.get("top_k")
     if isinstance(top_k, int):
         messages.append(f"[记忆检索] top_k: {top_k}")
+
+    memory_timing = memory_debug.get("timing_ms") or {}
+    memory_total_ms = memory_timing.get("total")
+    if isinstance(memory_total_ms, (int, float)):
+        messages.append(f"[记忆检索] 总耗时: {float(memory_total_ms):.2f}ms")
 
     scopes = memory_debug.get("scopes") or []
     if scopes:
@@ -422,6 +431,9 @@ def _build_retrieval_process_messages(context_debug: Dict[str, Any]) -> List[str
             messages.append(
                 f"[记忆检索][{scope_label}] 最小相似度阈值: {float(min_similarity):.2f}"
             )
+        scope_latency_ms = scope_info.get("latency_ms")
+        if isinstance(scope_latency_ms, (int, float)):
+            messages.append(f"[记忆检索][{scope_label}] 耗时: {float(scope_latency_ms):.2f}ms")
 
         pre_filter_hit_count = int(scope_info.get("pre_filter_hit_count") or 0)
         hit_count = int(scope_info.get("hit_count") or 0)
@@ -458,6 +470,17 @@ def _build_retrieval_process_messages(context_debug: Dict[str, Any]) -> List[str
         knowledge_top_k = knowledge_debug.get("top_k")
         if isinstance(knowledge_top_k, int):
             messages.append(f"[知识库检索] top_k: {knowledge_top_k}")
+
+        knowledge_timing = knowledge_debug.get("timing_ms") or {}
+        knowledge_total_ms = knowledge_timing.get("total")
+        if isinstance(knowledge_total_ms, (int, float)):
+            messages.append(f"[知识库检索] 总耗时: {float(knowledge_total_ms):.2f}ms")
+        candidate_resolution_ms = knowledge_timing.get("candidate_resolution")
+        if isinstance(candidate_resolution_ms, (int, float)):
+            messages.append(f"[知识库检索] 候选解析耗时: {float(candidate_resolution_ms):.2f}ms")
+        search_ms = knowledge_timing.get("search")
+        if isinstance(search_ms, (int, float)):
+            messages.append(f"[知识库检索] 检索耗时: {float(search_ms):.2f}ms")
 
         candidate_count = knowledge_debug.get("candidate_document_count")
         if candidate_count is None:
@@ -634,6 +657,22 @@ class AgentCacheEntry:
 
 # Global cache for initialized agents (cache_key -> CacheEntry)
 _agent_cache: Dict[str, AgentCacheEntry] = {}
+_AGENT_CACHE_KEY_VERSION = "v2"
+
+
+def _build_agent_cache_key(
+    agent_id: str,
+    provider: Optional[str],
+    model: Optional[str],
+    capabilities: Optional[List[str]],
+) -> str:
+    """Build a stable cache key for initialized agent instances."""
+    capabilities_hash = hash(tuple(sorted(capabilities or [])))
+    provider_key = provider or ""
+    model_key = model or ""
+    return (
+        f"{_AGENT_CACHE_KEY_VERSION}_{agent_id}_{provider_key}_{model_key}_{capabilities_hash}"
+    )
 
 
 def get_dynamic_cache_limit() -> int:
@@ -782,8 +821,11 @@ def invalidate_agent_cache(agent_id: str):
     This removes all cached versions of an agent (different provider/model/capabilities combinations).
     """
     global _agent_cache
-    # Match all cache keys that start with agent_id (handles old and new format)
-    cache_keys_to_remove = [key for key in _agent_cache.keys() if key.startswith(f"{agent_id}_")]
+    cache_keys_to_remove = [
+        key
+        for key in _agent_cache.keys()
+        if key.startswith(f"{agent_id}_") or key.startswith(f"{_AGENT_CACHE_KEY_VERSION}_{agent_id}_")
+    ]
 
     for key in cache_keys_to_remove:
         entry = _agent_cache[key]
@@ -2085,9 +2127,12 @@ async def test_agent(
 
                 # Check if agent is already cached
                 # Include capabilities in cache key to invalidate when skills change
-                # Use v2 prefix to invalidate all old caches
-                capabilities_hash = hash(tuple(sorted(agent_info.capabilities or [])))
-                cache_key = f"v2_{agent_id}_{agent_info.llm_provider}_{agent_info.llm_model}_{capabilities_hash}"
+                cache_key = _build_agent_cache_key(
+                    agent_id=agent_id,
+                    provider=agent_info.llm_provider,
+                    model=agent_info.llm_model,
+                    capabilities=agent_info.capabilities,
+                )
                 agent, llm = get_cached_agent(cache_key)
 
                 if agent is not None and llm is not None:
@@ -2204,10 +2249,7 @@ async def test_agent(
                     # Initialize agent (now async)
                     await agent.initialize()
 
-                    # Cache the initialized agent with 30 minute TTL
-                    # Use same cache key format (includes capabilities hash)
-                    capabilities_hash = hash(tuple(sorted(agent_info.capabilities or [])))
-                    cache_key = f"{agent_id}_{agent_info.llm_provider}_{agent_info.llm_model}_{capabilities_hash}"
+                    # Cache the initialized agent with 30 minute TTL.
                     cache_agent(cache_key, agent, llm, ttl_minutes=30)
 
                 model_info = f"{agent_info.llm_model or 'llama3.2:latest'} via {agent_info.llm_provider or 'ollama'}"
