@@ -11,6 +11,7 @@ References:
 import json
 import logging
 import re
+import threading
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -57,6 +58,10 @@ class SearchResult:
 
 class KnowledgeSearch:
     """Hybrid search combining vector similarity and BM25 full-text search."""
+
+    _cross_language_state_lock = threading.Lock()
+    _cross_language_fail_until_by_key: Dict[str, float] = {}
+    _cross_language_failures_by_key: Dict[str, int] = {}
 
     def __init__(self):
         """Initialize knowledge search."""
@@ -120,6 +125,10 @@ class KnowledgeSearch:
         )
         self.cross_language_max_expansions = int(search_cfg.get("cross_language_max_expansions", 2))
         self.cross_language_max_queries = int(search_cfg.get("cross_language_max_queries", 3))
+        languages_key = ",".join(self.cross_language_languages) or "-"
+        self._cross_language_state_key = (
+            f"{self.cross_language_provider}|{self.cross_language_model or '<auto>'}|{languages_key}"
+        )
 
         # Failure backoff timestamps to avoid repeated slow timeouts when upstream is unhealthy.
         self._embedding_fail_until = 0.0
@@ -309,11 +318,16 @@ class KnowledgeSearch:
             return []
 
         now = time.monotonic()
-        if now < self._cross_language_fail_until:
+        with self._cross_language_state_lock:
+            shared_fail_until = self._cross_language_fail_until_by_key.get(
+                self._cross_language_state_key, 0.0
+            )
+        effective_fail_until = max(self._cross_language_fail_until, shared_fail_until)
+        if now < effective_fail_until:
             logger.debug(
                 "Cross-language expansion in backoff window",
                 extra={
-                    "backoff_remaining_seconds": round(self._cross_language_fail_until - now, 2),
+                    "backoff_remaining_seconds": round(effective_fail_until - now, 2),
                     "provider": self.cross_language_provider,
                 },
             )
@@ -374,6 +388,9 @@ class KnowledgeSearch:
                     break
 
             self._cross_language_fail_until = 0.0
+            with self._cross_language_state_lock:
+                self._cross_language_fail_until_by_key[self._cross_language_state_key] = 0.0
+                self._cross_language_failures_by_key[self._cross_language_state_key] = 0
             self._cross_language_cache[cache_key] = expansions
             # Keep cache bounded.
             if len(self._cross_language_cache) > 256:
@@ -382,16 +399,36 @@ class KnowledgeSearch:
 
             return expansions
         except Exception as e:
-            self._cross_language_fail_until = now + max(
-                float(self.cross_language_failure_backoff_seconds), 1.0
-            )
+            base_backoff_seconds = max(float(self.cross_language_failure_backoff_seconds), 1.0)
+            error_text = str(e).lower()
+            timeout_like = "timed out" in error_text or "timeout" in error_text
+            with self._cross_language_state_lock:
+                failure_count = self._cross_language_failures_by_key.get(
+                    self._cross_language_state_key, 0
+                ) + 1
+                self._cross_language_failures_by_key[self._cross_language_state_key] = failure_count
+
+            if timeout_like:
+                # Repeated timeout means the cross-language model is unhealthy or too slow.
+                # Apply a longer shared backoff to avoid blocking each fresh session.
+                timeout_multiplier = min(2 ** (failure_count - 1), 8)
+                effective_backoff_seconds = max(base_backoff_seconds * timeout_multiplier, 300.0)
+            else:
+                effective_backoff_seconds = base_backoff_seconds
+
+            fail_until = now + effective_backoff_seconds
+            self._cross_language_fail_until = fail_until
+            with self._cross_language_state_lock:
+                self._cross_language_fail_until_by_key[self._cross_language_state_key] = fail_until
             logger.warning(
                 "Cross-language query expansion failed; fallback to original query",
                 extra={
                     "error": str(e),
                     "provider": self.cross_language_provider,
                     "model": self.cross_language_model,
-                    "backoff_seconds": self.cross_language_failure_backoff_seconds,
+                    "backoff_seconds": effective_backoff_seconds,
+                    "failure_count": failure_count,
+                    "timeout_like": timeout_like,
                 },
             )
             return []

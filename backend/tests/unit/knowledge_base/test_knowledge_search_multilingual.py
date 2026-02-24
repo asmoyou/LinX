@@ -1,6 +1,21 @@
 """Tests for multilingual-aware retrieval heuristics and query expansion."""
 
+import time
+
+import pytest
+
 from knowledge_base.knowledge_search import KnowledgeSearch, SearchFilter, SearchResult
+
+
+@pytest.fixture(autouse=True)
+def _reset_cross_language_shared_state():
+    with KnowledgeSearch._cross_language_state_lock:
+        KnowledgeSearch._cross_language_fail_until_by_key.clear()
+        KnowledgeSearch._cross_language_failures_by_key.clear()
+    yield
+    with KnowledgeSearch._cross_language_state_lock:
+        KnowledgeSearch._cross_language_fail_until_by_key.clear()
+        KnowledgeSearch._cross_language_failures_by_key.clear()
 
 
 def _build_search() -> KnowledgeSearch:
@@ -18,6 +33,7 @@ def _build_search() -> KnowledgeSearch:
     search.cross_language_failure_backoff_seconds = 10
     search._cross_language_fail_until = 0.0
     search._cross_language_cache = {}
+    search._cross_language_state_key = "test-provider|<auto>|en,zh-CN"
     search.keyword_max_terms = 16
     return search
 
@@ -136,3 +152,42 @@ def test_bm25_search_merges_multi_query_results(monkeypatch):
 
     assert [item.chunk_id for item in results[:2]] == ["c1", "c2"]
     assert results[0].similarity_score == 0.8
+
+
+def test_cross_language_timeout_enters_shared_backoff(monkeypatch):
+    """Timeout should trigger a long shared backoff that suppresses repeated calls."""
+    search1 = _build_search()
+    search2 = _build_search()
+
+    monkeypatch.setattr(
+        "knowledge_base.knowledge_search.resolve_provider",
+        lambda _provider: {
+            "protocol": "openai_compatible",
+            "base_url": "http://example.com",
+            "models": ["chat-model"],
+        },
+    )
+    monkeypatch.setattr(
+        search1,
+        "_call_cross_language_model",
+        lambda **_kwargs: (_ for _ in ()).throw(TimeoutError("Read timed out")),
+    )
+
+    first = search1._expand_query_cross_language("测试问题")
+    remaining = search1._cross_language_fail_until - time.monotonic()
+
+    assert first == []
+    assert remaining >= 299
+
+    called = {"count": 0}
+
+    def _unexpected_call(**_kwargs):
+        called["count"] += 1
+        return '{"queries": ["test query"]}'
+
+    monkeypatch.setattr(search2, "_call_cross_language_model", _unexpected_call)
+
+    second = search2._expand_query_cross_language("另一个问题")
+
+    assert second == []
+    assert called["count"] == 0
