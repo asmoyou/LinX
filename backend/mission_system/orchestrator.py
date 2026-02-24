@@ -70,6 +70,7 @@ class MissionOrchestrator:
         self._active_missions: Dict[UUID, asyncio.Task] = {}
         self._clarification_events: Dict[UUID, asyncio.Event] = {}
         self._clarification_responses: Dict[UUID, str] = {}
+        self._mission_error_stats: Dict[UUID, Dict[str, int]] = {}
         self._emitter = get_event_emitter()
         self._workspace = get_workspace_manager()
         logger.info("MissionOrchestrator initialized")
@@ -368,7 +369,7 @@ class MissionOrchestrator:
             await self._phase_execution(mission_id)
             await self._phase_review(mission_id)
             await self._phase_qa(mission_id)
-            await self._phase_complete(mission_id)
+            await self._phase_complete(mission_id, preserve_existing_deliverables=True)
         except asyncio.CancelledError:
             logger.info("Mission %s partial retry was cancelled", mission_id)
             try:
@@ -607,6 +608,105 @@ class MissionOrchestrator:
         return normalized or "unknown"
 
     @staticmethod
+    def _classify_execution_error(exc: Exception) -> Dict[str, Any]:
+        """Classify execution errors for retry strategy and observability."""
+        error_message = str(exc or "").strip()
+        lowered = error_message.lower()
+
+        if isinstance(exc, asyncio.TimeoutError) or "timed out" in lowered or "timeout" in lowered:
+            return {
+                "error_code": "timeout",
+                "error_category": "timeout",
+                "is_transient_provider_error": True,
+            }
+        if "no generations found in stream" in lowered or "no generation chunks were returned" in lowered:
+            return {
+                "error_code": "provider_empty_stream",
+                "error_category": "provider_stream",
+                "is_transient_provider_error": True,
+            }
+        if "rate limit" in lowered or "too many requests" in lowered or " 429" in f" {lowered}":
+            return {
+                "error_code": "provider_rate_limited",
+                "error_category": "provider_rate_limit",
+                "is_transient_provider_error": True,
+            }
+        if (
+            "service unavailable" in lowered
+            or "temporarily unavailable" in lowered
+            or "connection reset" in lowered
+            or "connection refused" in lowered
+            or "connection aborted" in lowered
+        ):
+            return {
+                "error_code": "provider_unavailable",
+                "error_category": "provider_connectivity",
+                "is_transient_provider_error": True,
+            }
+        if "agent not active" in lowered:
+            return {
+                "error_code": "agent_inactive",
+                "error_category": "agent_state",
+                "is_transient_provider_error": False,
+            }
+        if "unknown agent execution error" in lowered:
+            return {
+                "error_code": "agent_unstructured_error",
+                "error_category": "agent_result",
+                "is_transient_provider_error": False,
+            }
+        return {
+            "error_code": "execution_error",
+            "error_category": "runtime",
+            "is_transient_provider_error": False,
+        }
+
+    @staticmethod
+    def _infer_llm_role_for_phase(phase: str) -> str:
+        """Map mission phase to role config used by LLM selection."""
+        normalized = str(phase or "").strip().lower()
+        if normalized == "reviewing":
+            return "supervisor"
+        if normalized == "qa":
+            return "qa"
+        return "leader"
+
+    def _record_mission_error_stats(
+        self,
+        mission_id: UUID,
+        *,
+        phase: str,
+        role: str,
+        llm_provider: str,
+        llm_model: str,
+        error_code: str,
+        is_transient_provider_error: bool,
+    ) -> Dict[str, Any]:
+        """Track mission-scoped execution error stats and return lightweight snapshot."""
+        stats_store = getattr(self, "_mission_error_stats", None)
+        if not isinstance(stats_store, dict):
+            stats_store = {}
+            self._mission_error_stats = stats_store
+
+        stats = stats_store.setdefault(mission_id, {})
+        stats["total_errors"] = stats.get("total_errors", 0) + 1
+        if is_transient_provider_error:
+            stats["transient_provider_errors"] = stats.get("transient_provider_errors", 0) + 1
+
+        bucket_key = (
+            f"bucket::{phase}::{role}::{llm_provider or 'unknown'}::"
+            f"{llm_model or 'unknown'}::{error_code}"
+        )
+        stats[bucket_key] = stats.get(bucket_key, 0) + 1
+
+        return {
+            "total_errors": stats.get("total_errors", 0),
+            "transient_provider_errors": stats.get("transient_provider_errors", 0),
+            "bucket_key": bucket_key,
+            "bucket_count": stats[bucket_key],
+        }
+
+    @staticmethod
     def _append_attempt_to_result(
         existing_result: Any,
         attempt_record: Dict[str, Any],
@@ -734,7 +834,10 @@ class MissionOrchestrator:
         )
 
         return (
-            "You are a temporary specialist worker created for exactly one mission task.\n"
+            f"You are the temporary specialist worker for task '{task_title}' "
+            f"(Task ID: {task_obj.task_id}).\n"
+            "This persona is exclusive to this single task and must not be reused for "
+            "other mission tasks.\n"
             "Your behavior must be task-specific, evidence-driven, and output-oriented.\n\n"
             "## Mission Context\n"
             f"- Mission: {mission_title}\n"
@@ -1414,6 +1517,7 @@ class MissionOrchestrator:
         )
         memory_scopes = self._resolve_temporary_worker_memory_scopes(exec_cfg)
         worker_system_prompt = self._build_temporary_worker_system_prompt(mission, task_obj)
+        worker_prompt_signature = self._build_text_signature(worker_system_prompt)
         registry = AgentRegistry()
         temp_agent = registry.register_agent(
             name=self._build_temporary_agent_name(task_title, task_obj.task_id),
@@ -1428,6 +1532,15 @@ class MissionOrchestrator:
             system_prompt=worker_system_prompt,
             allowed_knowledge=selected_knowledge,
             allowed_memory=memory_scopes,
+        )
+        logger.info(
+            "Provisioned temporary worker prompt",
+            extra={
+                "mission_id": str(mission_id),
+                "task_id": str(task_obj.task_id),
+                "agent_id": str(temp_agent.agent_id),
+                "prompt_signature": worker_prompt_signature,
+            },
         )
 
         try:
@@ -1455,6 +1568,8 @@ class MissionOrchestrator:
                     "Temporary worker provisioned based on assignment policy."
                 )
                 metadata["temporary_agent_prompt_mode"] = "task_specific_sop"
+                metadata["temporary_agent_task_id"] = str(task_obj.task_id)
+                metadata["temporary_agent_prompt_signature"] = worker_prompt_signature
                 metadata["temporary_agent_skills"] = selected_skills
                 metadata["temporary_agent_memory_scopes"] = memory_scopes
                 metadata["temporary_agent_knowledge_collections"] = selected_knowledge
@@ -1469,6 +1584,8 @@ class MissionOrchestrator:
             "Temporary worker provisioned based on assignment policy."
         )
         task_metadata["temporary_agent_prompt_mode"] = "task_specific_sop"
+        task_metadata["temporary_agent_task_id"] = str(task_obj.task_id)
+        task_metadata["temporary_agent_prompt_signature"] = worker_prompt_signature
         task_metadata["temporary_agent_skills"] = selected_skills
         task_metadata["temporary_agent_memory_scopes"] = memory_scopes
         task_metadata["temporary_agent_knowledge_collections"] = selected_knowledge
@@ -1485,6 +1602,7 @@ class MissionOrchestrator:
                 "agent_name": temp_agent.name,
                 "is_temporary": True,
                 "prompt_mode": "task_specific_sop",
+                "prompt_signature": worker_prompt_signature,
                 "skills": selected_skills,
                 "memory_scopes": memory_scopes,
                 "knowledge_collections": selected_knowledge,
@@ -1558,16 +1676,35 @@ class MissionOrchestrator:
                 result = await self._execute_agent_task(current_agent, prompt)
                 return self._extract_agent_output(result, error_context)
             except Exception as exc:
+                error_meta = self._classify_execution_error(exc)
                 backoff = 2**attempt if attempt < max_retries else None
+                if error_meta.get("is_transient_provider_error") and backoff is not None:
+                    backoff = max(2, backoff)
                 trace = traceback.format_exc() if debug_mode else None
                 agent_status_before_retry = self._get_agent_status_value(current_agent)
                 agent_recreated = False
                 recreated_agent_status = None
                 lower_error = str(exc).strip().lower()
                 can_retry = attempt < max_retries
+                role = self._infer_llm_role_for_phase(phase)
+                role_llm_cfg = self._get_llm_config(mission, role)
+                llm_provider = str(role_llm_cfg.get("llm_provider") or "unknown")
+                llm_model = str(role_llm_cfg.get("llm_model") or "unknown")
+                stats_snapshot = self._record_mission_error_stats(
+                    mission_id=mission_id,
+                    phase=phase,
+                    role=role,
+                    llm_provider=llm_provider,
+                    llm_model=llm_model,
+                    error_code=str(error_meta.get("error_code") or "execution_error"),
+                    is_transient_provider_error=bool(
+                        error_meta.get("is_transient_provider_error", False)
+                    ),
+                )
                 should_recreate_agent = can_retry and agent_factory is not None and (
                     agent_status_before_retry in {"error", "terminated"}
                     or "agent not active" in lower_error
+                    or bool(error_meta.get("is_transient_provider_error", False))
                 )
 
                 if should_recreate_agent:
@@ -1599,11 +1736,21 @@ class MissionOrchestrator:
                         "max_attempts": total_attempts,
                         "error": str(exc),
                         "error_type": exc.__class__.__name__,
+                        "error_code": error_meta.get("error_code"),
+                        "error_category": error_meta.get("error_category"),
+                        "is_transient_provider_error": error_meta.get(
+                            "is_transient_provider_error",
+                            False,
+                        ),
+                        "llm_provider": llm_provider,
+                        "llm_model": llm_model,
+                        "llm_role": role,
                         "will_retry": attempt < max_retries,
                         "backoff_s": backoff,
                         "agent_status": agent_status_before_retry,
                         "agent_recreated": agent_recreated,
                         "agent_status_after_recreate": recreated_agent_status,
+                        "mission_error_stats": stats_snapshot,
                         "traceback": trace,
                     },
                     message=(
@@ -2862,6 +3009,71 @@ class MissionOrchestrator:
             skip_existing_selection = True
         agent = None
         total_attempts = max_retries + 1
+        resolved_llm_provider = str(llm_cfg.get("llm_provider") or "unknown")
+        resolved_llm_model = str(llm_cfg.get("llm_model") or "unknown")
+        execution_role = "temporary_worker"
+
+        if resolved_agent_id and self._coerce_bool(task_metadata.get("assigned_agent_temporary", False)):
+            bound_task_id = str(task_metadata.get("temporary_agent_task_id") or "").strip()
+            current_task_id = str(task_obj.task_id)
+            if bound_task_id and bound_task_id != current_task_id:
+                self._emitter.emit(
+                    mission_id=mission_id,
+                    event_type="TASK_AGENT_ESCALATED",
+                    task_id=task_obj.task_id,
+                    agent_id=resolved_agent_id,
+                    data={
+                        "title": task_title,
+                        "reason": "temporary_agent_task_mismatch",
+                        "previous_agent_id": str(resolved_agent_id),
+                        "expected_task_id": current_task_id,
+                        "bound_task_id": bound_task_id,
+                    },
+                    message=f"Temporary worker bound to another task, reprovisioning: {task_title}",
+                )
+                resolved_agent_id = None
+            else:
+                expected_prompt = self._build_temporary_worker_system_prompt(mission, task_obj)
+                expected_prompt_signature = self._build_text_signature(expected_prompt)
+                try:
+                    from agent_framework.agent_registry import AgentRegistry
+
+                    agent_info = AgentRegistry().update_agent(
+                        agent_id=resolved_agent_id,
+                        system_prompt=expected_prompt,
+                    )
+                    if agent_info is not None:
+                        if agent_info.llm_provider:
+                            resolved_llm_provider = str(agent_info.llm_provider)
+                        if agent_info.llm_model:
+                            resolved_llm_model = str(agent_info.llm_model)
+                except Exception:
+                    logger.exception(
+                        "Failed to refresh temporary worker prompt for task %s", task_obj.task_id
+                    )
+
+                try:
+                    from database.connection import get_db_session
+                    from database.models import Task
+
+                    with get_db_session() as session:
+                        t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+                        if t:
+                            meta = dict(t.task_metadata or {})
+                            meta["temporary_agent_task_id"] = current_task_id
+                            meta["temporary_agent_prompt_signature"] = expected_prompt_signature
+                            t.task_metadata = meta
+                except Exception:
+                    logger.debug(
+                        "Failed to persist temporary prompt signature for task %s",
+                        task_obj.task_id,
+                        exc_info=True,
+                    )
+
+                local_meta = dict(task_obj.task_metadata or {})
+                local_meta["temporary_agent_task_id"] = current_task_id
+                local_meta["temporary_agent_prompt_signature"] = expected_prompt_signature
+                task_obj.task_metadata = local_meta
 
         if resolved_agent_id:
             agent = await create_registered_mission_agent(
@@ -2875,6 +3087,24 @@ class MissionOrchestrator:
                     task_obj.task_id,
                 )
                 resolved_agent_id = None
+            else:
+                try:
+                    from agent_framework.agent_registry import AgentRegistry
+
+                    agent_info = AgentRegistry().get_agent(resolved_agent_id)
+                    if agent_info is not None:
+                        if agent_info.llm_provider:
+                            resolved_llm_provider = str(agent_info.llm_provider)
+                        if agent_info.llm_model:
+                            resolved_llm_model = str(agent_info.llm_model)
+                        if str(agent_info.agent_type or "").strip().lower() != "mission_temp_worker":
+                            execution_role = "worker"
+                except Exception:
+                    logger.debug(
+                        "Failed to resolve assigned agent LLM metadata for task %s",
+                        task_obj.task_id,
+                        exc_info=True,
+                    )
 
         if resolved_agent_id is None and prefer_existing_agents and not skip_existing_selection:
             selected_platform = self._select_platform_agent_for_task(
@@ -2917,6 +3147,22 @@ class MissionOrchestrator:
                 if candidate is not None:
                     resolved_agent_id = candidate_agent_id
                     agent = candidate
+                    execution_role = "worker"
+                    try:
+                        from agent_framework.agent_registry import AgentRegistry
+
+                        agent_info = AgentRegistry().get_agent(resolved_agent_id)
+                        if agent_info is not None:
+                            if agent_info.llm_provider:
+                                resolved_llm_provider = str(agent_info.llm_provider)
+                            if agent_info.llm_model:
+                                resolved_llm_model = str(agent_info.llm_model)
+                    except Exception:
+                        logger.debug(
+                            "Failed to resolve platform agent LLM metadata for task %s",
+                            task_obj.task_id,
+                            exc_info=True,
+                        )
 
                     from database.connection import get_db_session
                     from database.models import Task
@@ -2971,6 +3217,7 @@ class MissionOrchestrator:
                 task_obj=task_obj,
                 llm_cfg=llm_cfg,
             )
+            execution_role = "temporary_worker"
             agent = await create_registered_mission_agent(
                 agent_id=resolved_agent_id,
                 owner_user_id=mission.created_by_user_id,
@@ -3205,6 +3452,7 @@ class MissionOrchestrator:
                 return True
 
             except Exception as exc:
+                error_meta = self._classify_execution_error(exc)
                 is_timeout = isinstance(exc, asyncio.TimeoutError)
                 if is_timeout:
                     error_message = (
@@ -3217,6 +3465,19 @@ class MissionOrchestrator:
                     error_type = exc.__class__.__name__
                 trace = traceback.format_exc() if debug_mode else None
                 backoff = 2**attempt if attempt < max_retries else None
+                if error_meta.get("is_transient_provider_error") and backoff is not None:
+                    backoff = max(2, backoff)
+                stats_snapshot = self._record_mission_error_stats(
+                    mission_id=mission_id,
+                    phase="executing",
+                    role=execution_role,
+                    llm_provider=resolved_llm_provider,
+                    llm_model=resolved_llm_model,
+                    error_code=str(error_meta.get("error_code") or "execution_error"),
+                    is_transient_provider_error=bool(
+                        error_meta.get("is_transient_provider_error", False)
+                    ),
+                )
 
                 logger.warning(
                     "Task %s attempt %d failed: %s",
@@ -3233,6 +3494,15 @@ class MissionOrchestrator:
                             "max_attempts": total_attempts,
                             "error": error_message,
                             "error_type": error_type,
+                            "error_code": error_meta.get("error_code"),
+                            "error_category": error_meta.get("error_category"),
+                            "is_transient_provider_error": error_meta.get(
+                                "is_transient_provider_error",
+                                False,
+                            ),
+                            "llm_provider": resolved_llm_provider,
+                            "llm_model": resolved_llm_model,
+                            "execution_role": execution_role,
                             "timestamp": datetime.utcnow().isoformat() + "Z",
                             "will_retry": attempt < max_retries,
                         }
@@ -3265,11 +3535,21 @@ class MissionOrchestrator:
                         "max_attempts": total_attempts,
                         "error": error_message,
                         "error_type": error_type,
+                        "error_code": error_meta.get("error_code"),
+                        "error_category": error_meta.get("error_category"),
+                        "is_transient_provider_error": error_meta.get(
+                            "is_transient_provider_error",
+                            False,
+                        ),
+                        "llm_provider": resolved_llm_provider,
+                        "llm_model": resolved_llm_model,
+                        "execution_role": execution_role,
                         "will_retry": attempt < max_retries,
                         "backoff_s": backoff,
                         "agent_id": str(resolved_agent_id),
                         "agent_name": getattr(agent, "name", "worker"),
                         "timeout_s": task_timeout_s if is_timeout and task_timeout_s > 0 else None,
+                        "mission_error_stats": stats_snapshot,
                         "traceback": trace,
                     },
                     message=(f"Task attempt {attempt + 1}/{total_attempts} failed: {task_title}"),
@@ -3292,6 +3572,15 @@ class MissionOrchestrator:
                             "title": task_title,
                             "error": error_message,
                             "error_type": error_type,
+                            "error_code": error_meta.get("error_code"),
+                            "error_category": error_meta.get("error_category"),
+                            "is_transient_provider_error": error_meta.get(
+                                "is_transient_provider_error",
+                                False,
+                            ),
+                            "llm_provider": resolved_llm_provider,
+                            "llm_model": resolved_llm_model,
+                            "execution_role": execution_role,
                             "attempt": attempt + 1,
                             "max_attempts": total_attempts,
                             "agent_id": str(resolved_agent_id),
@@ -3299,6 +3588,7 @@ class MissionOrchestrator:
                             "timeout_s": (
                                 task_timeout_s if is_timeout and task_timeout_s > 0 else None
                             ),
+                            "mission_error_stats": stats_snapshot,
                             **counter_snapshot,
                         },
                         message=f"Task failed: {task_title}",
@@ -3927,7 +4217,39 @@ class MissionOrchestrator:
             message="QA audit completed",
         )
 
-    async def _phase_complete(self, mission_id: UUID) -> None:
+    @staticmethod
+    def _coerce_deliverable_records(raw_deliverables: Any) -> List[Dict[str, Any]]:
+        """Normalize persisted deliverables payload into dict records."""
+        if not isinstance(raw_deliverables, list):
+            return []
+        normalized: List[Dict[str, Any]] = []
+        for item in raw_deliverables:
+            if isinstance(item, dict):
+                normalized.append(dict(item))
+        return normalized
+
+    @staticmethod
+    def _merge_deliverable_records(
+        existing: List[Dict[str, Any]],
+        current: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Merge deliverables while keeping stable ordering and deduplicating by path/filename."""
+        merged: List[Dict[str, Any]] = []
+        seen_keys = set()
+        for record in [*existing, *current]:
+            key = str(record.get("path") or record.get("filename") or "").strip()
+            if key and key in seen_keys:
+                continue
+            if key:
+                seen_keys.add(key)
+            merged.append(record)
+        return merged
+
+    async def _phase_complete(
+        self,
+        mission_id: UUID,
+        preserve_existing_deliverables: bool = False,
+    ) -> None:
         """Collect deliverables and finalise."""
         mission = get_mission(mission_id)
         if mission is None:
@@ -3948,10 +4270,39 @@ class MissionOrchestrator:
                 ),
             )
 
+        existing_result = dict(mission.result or {}) if isinstance(mission.result, dict) else {}
+        existing_deliverables = self._coerce_deliverable_records(existing_result.get("deliverables"))
+        existing_target_count = sum(1 for item in existing_deliverables if item.get("is_target"))
+
         deliverables = self._workspace.collect_deliverables(mission_id)
+        current_deliverables = [d.__dict__ for d in deliverables]
+        current_target_count = sum(1 for item in current_deliverables if item.get("is_target"))
+
+        final_deliverables = current_deliverables
+        if preserve_existing_deliverables and current_target_count == 0 and existing_target_count > 0:
+            final_deliverables = self._merge_deliverable_records(
+                existing_deliverables,
+                current_deliverables,
+            )
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="MISSION_DELIVERABLES_REUSED",
+                data={
+                    "existing_deliverable_count": len(existing_deliverables),
+                    "existing_target_count": existing_target_count,
+                    "current_deliverable_count": len(current_deliverables),
+                    "current_target_count": current_target_count,
+                    "final_deliverable_count": len(final_deliverables),
+                },
+                message=(
+                    "Reused previously snapshotted final deliverables because "
+                    "current workspace had no target outputs"
+                ),
+            )
+
         update_mission_fields(
             mission_id,
-            result={"deliverables": [d.__dict__ for d in deliverables]},
+            result={"deliverables": final_deliverables},
             total_tasks=max(mission.total_tasks, total_tasks),
             completed_tasks=completed_count,
             failed_tasks=failed_count,
@@ -3960,7 +4311,12 @@ class MissionOrchestrator:
         self._emitter.emit(
             mission_id=mission_id,
             event_type="MISSION_COMPLETED",
-            data={"deliverable_count": len(deliverables)},
+            data={
+                "deliverable_count": len(final_deliverables),
+                "target_deliverable_count": sum(
+                    1 for item in final_deliverables if item.get("is_target")
+                ),
+            },
             message="Mission completed successfully",
         )
 
@@ -4516,6 +4872,9 @@ class MissionOrchestrator:
         """Clean up workspace and internal tracking."""
         self._clarification_events.pop(mission_id, None)
         self._clarification_responses.pop(mission_id, None)
+        stats_store = getattr(self, "_mission_error_stats", None)
+        if isinstance(stats_store, dict):
+            stats_store.pop(mission_id, None)
         self._cleanup_temporary_agents(mission_id)
         try:
             self._workspace.cleanup_workspace(mission_id)

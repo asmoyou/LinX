@@ -429,6 +429,43 @@ def test_get_llm_config_temporary_worker_falls_back_to_nested_execution_config()
     assert cfg["max_tokens"] == 4096
 
 
+def test_build_temporary_worker_system_prompt_is_task_specific():
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    mission = SimpleNamespace(
+        title="Fuzhou Travel Guide",
+        instructions="Create a practical five-day travel plan for first-time visitors.",
+    )
+    task_a = SimpleNamespace(
+        task_id=uuid4(),
+        goal_text="Draft itinerary structure.",
+        acceptance_criteria="Outline each day with morning/afternoon/evening.",
+        task_metadata={"title": "Draft itinerary structure"},
+    )
+    task_b = SimpleNamespace(
+        task_id=uuid4(),
+        goal_text="Write local food section.",
+        acceptance_criteria="Include at least 8 dishes with context.",
+        task_metadata={"title": "Write local food section"},
+    )
+
+    prompt_a = MissionOrchestrator._build_temporary_worker_system_prompt(
+        orchestrator,
+        mission,
+        task_a,
+    )
+    prompt_b = MissionOrchestrator._build_temporary_worker_system_prompt(
+        orchestrator,
+        mission,
+        task_b,
+    )
+
+    assert str(task_a.task_id) in prompt_a
+    assert "Task Title: Draft itinerary structure" in prompt_a
+    assert str(task_b.task_id) in prompt_b
+    assert "Task Title: Write local food section" in prompt_b
+    assert prompt_a != prompt_b
+
+
 def test_transition_allows_idempotent_target(monkeypatch):
     mission_id = uuid4()
     orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
@@ -447,6 +484,105 @@ def test_transition_allows_idempotent_target(monkeypatch):
 
     MissionOrchestrator._transition(orchestrator, mission_id, "executing")
     assert update_called["count"] == 0
+
+
+def test_merge_deliverable_records_deduplicates_by_path():
+    existing = [
+        {
+            "filename": "output/final.md",
+            "path": "artifacts/m1/final.md",
+            "size": 128,
+            "is_target": True,
+        }
+    ]
+    current = [
+        {
+            "filename": "shared/qa_report.md",
+            "path": "artifacts/m1/qa_report.md",
+            "size": 64,
+            "is_target": False,
+        },
+        {
+            "filename": "output/final.md",
+            "path": "artifacts/m1/final.md",
+            "size": 128,
+            "is_target": True,
+        },
+    ]
+
+    merged = MissionOrchestrator._merge_deliverable_records(existing, current)
+
+    assert len(merged) == 2
+    assert merged[0]["path"] == "artifacts/m1/final.md"
+    assert merged[1]["path"] == "artifacts/m1/qa_report.md"
+
+
+@pytest.mark.asyncio
+async def test_phase_complete_partial_retry_reuses_existing_target_deliverables(monkeypatch):
+    mission_id = uuid4()
+    existing_final = {
+        "filename": "output/fuzhou_guide.md",
+        "path": "artifacts/f705132c/fuzhou_guide.md",
+        "size": 4096,
+        "download_url": None,
+        "is_target": True,
+        "source_scope": "output",
+        "artifact_kind": "final",
+    }
+    mission = SimpleNamespace(
+        mission_id=mission_id,
+        total_tasks=9,
+        result={"deliverables": [existing_final]},
+    )
+
+    emitted_events = []
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+    orchestrator._workspace = SimpleNamespace(
+        collect_deliverables=lambda _mission_id: [
+            SimpleNamespace(
+                filename="shared/qa_report.md",
+                path="artifacts/f705132c/qa_report.md",
+                size=512,
+                download_url=None,
+                is_target=False,
+                source_scope="shared",
+                artifact_kind="intermediate",
+            )
+        ]
+    )
+    orchestrator._get_task_status_counts = lambda _mission_id: {"completed": 9}
+
+    mission_updates = {}
+    mission_statuses = []
+
+    monkeypatch.setattr("mission_system.orchestrator.get_mission", lambda _mission_id: mission)
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_fields",
+        lambda _mission_id, **kwargs: mission_updates.update(kwargs),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_status",
+        lambda _mission_id, status, **kwargs: mission_statuses.append(status),
+    )
+
+    await MissionOrchestrator._phase_complete(
+        orchestrator,
+        mission_id,
+        preserve_existing_deliverables=True,
+    )
+
+    merged_deliverables = mission_updates["result"]["deliverables"]
+    merged_paths = [item.get("path") for item in merged_deliverables]
+    assert "artifacts/f705132c/fuzhou_guide.md" in merged_paths
+    assert "artifacts/f705132c/qa_report.md" in merged_paths
+    assert mission_statuses == ["completed"]
+    assert any(event.get("event_type") == "MISSION_DELIVERABLES_REUSED" for event in emitted_events)
+    assert any(
+        event.get("event_type") == "MISSION_COMPLETED"
+        and event.get("data", {}).get("target_deliverable_count") == 1
+        for event in emitted_events
+    )
 
 
 def test_transition_allows_failed_to_executing_for_partial_retry(monkeypatch):
