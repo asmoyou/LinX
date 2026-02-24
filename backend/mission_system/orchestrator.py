@@ -18,6 +18,10 @@ from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from uuid import UUID
 
+from agent_framework.runtime_policy import (
+    ExecutionProfile,
+    is_mission_task_unified_runtime_enabled,
+)
 from mission_system.agent_factory import create_mission_agent
 from mission_system.agent_factory import create_registered_mission_agent
 from mission_system.agent_roles import (
@@ -1617,41 +1621,35 @@ class MissionOrchestrator:
         prompt: str,
         *,
         execution_context: Optional[Dict[str, Any]] = None,
+        execution_profile: ExecutionProfile | str = ExecutionProfile.MISSION_CONTROL,
         container_id: Optional[str] = None,
         code_execution_network_access: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Run blocking agent calls in a worker thread.
 
-        For task execution with a workspace container, pass a no-op stream callback so
-        code blocks/tool loops are enabled and executed against that container.
+        Runtime strategy is profile-driven when unified runtime is enabled.
         """
-
-        def _noop_stream_callback(_chunk: Any) -> None:
-            return None
-
-        if not container_id and execution_context is None:
-            return await asyncio.to_thread(agent.execute_task, prompt)
-
-        if not container_id:
-            return await asyncio.to_thread(
-                agent.execute_task,
-                task_description=prompt,
-                context=execution_context,
-            )
-
-        execute_kwargs: Dict[str, Any] = {
-            "task_description": prompt,
-            "stream_callback": _noop_stream_callback,
-            "container_id": container_id,
-            "code_execution_network_access": code_execution_network_access,
-        }
-        if execution_context is not None:
-            execute_kwargs["context"] = execution_context
-
-        return await asyncio.to_thread(
-            agent.execute_task,
-            **execute_kwargs,
+        from agent_framework.runtime_service import (
+            RuntimeAdapterRequest,
+            get_unified_agent_runtime_service,
         )
+
+        use_unified_runtime = is_mission_task_unified_runtime_enabled()
+        request = RuntimeAdapterRequest(
+            agent=agent,
+            task_description=prompt,
+            context=execution_context,
+            execution_profile=execution_profile if use_unified_runtime else None,
+            container_id=container_id,
+            code_execution_network_access=code_execution_network_access,
+        )
+
+        # Legacy fallback path keeps callback-driven behavior for container tool loops.
+        if (not use_unified_runtime) and container_id:
+            request.stream_callback = lambda _chunk: None
+
+        runtime_service = get_unified_agent_runtime_service()
+        return await asyncio.to_thread(runtime_service.execute, request)
 
     async def _execute_phase_prompt_with_retry(
         self,
@@ -1673,7 +1671,11 @@ class MissionOrchestrator:
         current_agent = agent
         for attempt in range(total_attempts):
             try:
-                result = await self._execute_agent_task(current_agent, prompt)
+                result = await self._execute_agent_task(
+                    current_agent,
+                    prompt,
+                    execution_profile=ExecutionProfile.MISSION_CONTROL,
+                )
                 return self._extract_agent_output(result, error_context)
             except Exception as exc:
                 error_meta = self._classify_execution_error(exc)
@@ -3379,6 +3381,7 @@ class MissionOrchestrator:
                     default=False,
                 )
                 execute_kwargs: Dict[str, Any] = {
+                    "execution_profile": ExecutionProfile.MISSION_TASK,
                     "container_id": workspace_container_id,
                     "code_execution_network_access": code_execution_network_access,
                 }

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 
+from agent_framework.runtime_policy import ExecutionProfile
 from mission_system.exceptions import MissionError
 from mission_system.orchestrator import MissionOrchestrator
 
@@ -215,8 +216,9 @@ async def test_execute_agent_task_without_container_uses_basic_call():
     assert result["success"] is True
     assert len(agent.calls) == 1
     args, kwargs = agent.calls[0]
-    assert args == ("ping",)
-    assert kwargs == {}
+    assert args == ()
+    assert kwargs["task_description"] == "ping"
+    assert kwargs["execution_profile"] == ExecutionProfile.MISSION_CONTROL
 
 
 @pytest.mark.asyncio
@@ -242,7 +244,8 @@ async def test_execute_agent_task_with_container_enables_streaming_mode():
     assert args == ()
     assert kwargs["task_description"] == "ping"
     assert kwargs["container_id"] == "container-123"
-    assert callable(kwargs["stream_callback"])
+    assert kwargs["execution_profile"] == ExecutionProfile.MISSION_CONTROL
+    assert "stream_callback" not in kwargs
 
 
 @pytest.mark.asyncio
@@ -269,6 +272,35 @@ async def test_execute_agent_task_without_container_passes_execution_context():
     assert args == ()
     assert kwargs["task_description"] == "ping"
     assert kwargs["context"] == exec_context
+    assert kwargs["execution_profile"] == ExecutionProfile.MISSION_CONTROL
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_task_legacy_fallback_uses_stream_callback(monkeypatch):
+    class _FakeAgent:
+        def __init__(self):
+            self.calls = []
+
+        def execute_task(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return {"success": True, "output": "ok"}
+
+    monkeypatch.setenv("MISSION_TASK_UNIFIED_RUNTIME_ENABLED", "false")
+
+    agent = _FakeAgent()
+    result = await MissionOrchestrator._execute_agent_task(
+        agent,
+        "ping",
+        container_id="container-legacy",
+    )
+
+    assert result["success"] is True
+    assert len(agent.calls) == 1
+    args, kwargs = agent.calls[0]
+    assert args == ()
+    assert kwargs["task_description"] == "ping"
+    assert kwargs["container_id"] == "container-legacy"
+    assert callable(kwargs["stream_callback"])
 
 
 @pytest.mark.asyncio
@@ -290,8 +322,9 @@ async def test_execute_phase_prompt_with_retry_recreates_errored_agent():
     replacement_agent = _FakeAgent("replacement-supervisor")
     execute_calls = {"count": 0}
 
-    async def _fake_execute_agent_task(agent, _prompt):
+    async def _fake_execute_agent_task(agent, _prompt, **kwargs):
         execute_calls["count"] += 1
+        assert kwargs.get("execution_profile") == ExecutionProfile.MISSION_CONTROL
         if execute_calls["count"] == 1:
             agent.status = _FakeStatus("error")
             raise RuntimeError("No generations found in stream.")

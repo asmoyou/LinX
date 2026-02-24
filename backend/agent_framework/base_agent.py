@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from langchain_core.language_models import BaseChatModel
@@ -22,6 +22,13 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langgraph.graph import MessagesState, StateGraph, START, END
 
 from agent_framework.code_block_executor import CodeBlockExecutor, get_code_block_executor
+from agent_framework.runtime_policy import (
+    ExecutionProfile,
+    LoopMode,
+    RuntimePolicy,
+    get_runtime_policy_registry,
+    parse_execution_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -685,11 +692,55 @@ class BaseAgent:
         messages.append(HumanMessage(content=human_content))
         return messages
 
+    def _resolve_runtime_policy(
+        self,
+        execution_profile: Optional[ExecutionProfile | str],
+        runtime_policy: Optional[RuntimePolicy],
+        stream_callback: Optional[Callable[..., Any]],
+    ) -> RuntimePolicy:
+        """Resolve runtime policy with legacy-compatible fallback."""
+        if runtime_policy is not None:
+            return runtime_policy
+
+        # Explicit profile always uses registry policy.
+        if execution_profile is not None:
+            profile = parse_execution_profile(execution_profile)
+            return get_runtime_policy_registry().resolve(profile)
+
+        # Backward-compatible fallback for old callers not passing profile.
+        if stream_callback:
+            if self.config.enable_error_recovery:
+                loop_mode = LoopMode.RECOVERY_MULTI_TURN
+            else:
+                loop_mode = LoopMode.AUTO_MULTI_TURN
+        else:
+            loop_mode = LoopMode.SINGLE_TURN
+
+        return RuntimePolicy(
+            profile=ExecutionProfile.LEGACY,
+            loop_mode=loop_mode,
+            max_rounds=int(self.config.max_iterations or 20),
+            enable_error_recovery=bool(self.config.enable_error_recovery),
+            stream_output=bool(stream_callback),
+        )
+
+    @staticmethod
+    def _emit_stream_chunk(
+        stream_callback: Optional[Callable[..., Any]],
+        content: str,
+        content_type: str = "content",
+    ) -> None:
+        """Emit stream content when callback exists."""
+        if stream_callback:
+            stream_callback((content, content_type))
+
     def execute_task(
         self,
         task_description: str,
         context: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
+        execution_profile: Optional[ExecutionProfile | str] = None,
+        runtime_policy: Optional[RuntimePolicy] = None,
         stream_callback: Optional[callable] = None,
         session_workdir: Optional["Path"] = None,
         container_id: Optional[str] = None,
@@ -703,6 +754,8 @@ class BaseAgent:
             context: Optional context information (e.g., memories)
             conversation_history: Optional prior user/assistant turns to prepend
                 before the current user prompt.
+            execution_profile: Optional runtime profile controlling strategy selection.
+            runtime_policy: Optional explicit runtime policy override.
             stream_callback: Optional callback for streaming tokens (callable(str))
             session_workdir: Optional pre-existing workdir from a conversation session.
                 If provided, reuses the session workdir so files and state persist
@@ -748,8 +801,36 @@ class BaseAgent:
                 set_workspace_root(session_workdir)
                 logger.debug(f"Set workspace root to {session_workdir}")
 
-            # Route to new implementation if error recovery is enabled
-            if self.config.enable_error_recovery and stream_callback:
+            resolved_policy = self._resolve_runtime_policy(
+                execution_profile=execution_profile,
+                runtime_policy=runtime_policy,
+                stream_callback=stream_callback,
+            )
+            loop_mode = resolved_policy.loop_mode
+
+            # Respect policy intent but stay safe when agent-level recovery is disabled.
+            if (
+                loop_mode == LoopMode.RECOVERY_MULTI_TURN
+                and (
+                    not self.config.enable_error_recovery
+                    or not bool(resolved_policy.enable_error_recovery)
+                )
+            ):
+                loop_mode = LoopMode.AUTO_MULTI_TURN
+
+            logger.info(
+                "Resolved agent runtime policy",
+                extra={
+                    "agent_id": str(self.config.agent_id),
+                    "runtime_path": "base_agent_execute",
+                    "runtime_profile": resolved_policy.profile.value,
+                    "runtime_loop_mode": loop_mode.value,
+                    "runtime_stream_output": resolved_policy.stream_output,
+                    "runtime_has_stream_callback": bool(stream_callback),
+                },
+            )
+
+            if loop_mode == LoopMode.RECOVERY_MULTI_TURN:
                 import asyncio
 
                 # Run async method in sync context
@@ -771,6 +852,8 @@ class BaseAgent:
                             task_description=task_description,
                             context=context,
                             conversation_history=conversation_history,
+                            execution_profile=resolved_policy.profile,
+                            runtime_policy=resolved_policy,
                             stream_callback=stream_callback,
                             session_workdir=session_workdir,
                             container_id=container_id,
@@ -818,11 +901,8 @@ class BaseAgent:
                                 item["text"] += context_text
                                 break
 
-            # Invoke agent with streaming support
-            if stream_callback:
-                # Stream mode - use LLM's native streaming for token-by-token output
-                # Then check for tool calls and execute them
-                # Use multimodal content (with images) if provided, otherwise plain text
+            # Multi-round mode (policy-driven, callback optional for transport).
+            if loop_mode == LoopMode.AUTO_MULTI_TURN:
                 human_content = message_content if message_content is not None else user_message
                 messages = self._build_messages_with_history(
                     human_content=human_content,
@@ -831,8 +911,9 @@ class BaseAgent:
 
                 # Multi-round conversation loop for tool execution
                 tool_calls_made = []
-                max_iterations = 20  # 最多20轮
+                max_iterations = max(1, int(resolved_policy.max_rounds or 20))
                 iteration = 0
+                final_output = ""
 
                 logger.info(
                     f"[TOOL-LOOP] Starting multi-round conversation (max {max_iterations} iterations)",
@@ -864,7 +945,11 @@ class BaseAgent:
                                     )
 
                                 # Send to frontend immediately for real-time streaming
-                                stream_callback((chunk.content, content_type))
+                                self._emit_stream_chunk(
+                                    stream_callback=stream_callback,
+                                    content=chunk.content,
+                                    content_type=content_type,
+                                )
 
                                 # Also accumulate for tool detection
                                 if content_type == "thinking":
@@ -930,11 +1015,10 @@ class BaseAgent:
                             tool = self.tools_by_name.get(tool_name)
                             if tool:
                                 # Send "calling tool" message BEFORE execution
-                                stream_callback(
-                                    (
-                                        f"\n\n🔧 **调用工具: {tool_name}**\n参数: {tool_args}\n",
-                                        "tool_call",
-                                    )
+                                self._emit_stream_chunk(
+                                    stream_callback=stream_callback,
+                                    content=f"\n\n🔧 **调用工具: {tool_name}**\n参数: {tool_args}\n",
+                                    content_type="tool_call",
                                 )
 
                                 logger.info(
@@ -965,7 +1049,11 @@ class BaseAgent:
                                     )
 
                                     # Send tool execution result to frontend
-                                    stream_callback((f"✅ **执行结果**: {result}\n", "tool_result"))
+                                    self._emit_stream_chunk(
+                                        stream_callback=stream_callback,
+                                        content=f"✅ **执行结果**: {result}\n",
+                                        content_type="tool_result",
+                                    )
 
                                     logger.info(
                                         f"Tool executed successfully: {tool_name} = {result}",
@@ -975,8 +1063,10 @@ class BaseAgent:
                                     logger.error(
                                         f"Tool execution failed: {tool_error}", exc_info=True
                                     )
-                                    stream_callback(
-                                        (f"❌ **执行失败**: {str(tool_error)}\n", "tool_error")
+                                    self._emit_stream_chunk(
+                                        stream_callback=stream_callback,
+                                        content=f"❌ **执行失败**: {str(tool_error)}\n",
+                                        content_type="tool_error",
                                     )
                                     tool_results.append(
                                         {
@@ -987,7 +1077,11 @@ class BaseAgent:
                                     )
                             else:
                                 logger.warning(f"Tool not found: {tool_name}")
-                                stream_callback((f"⚠️ 工具未找到: {tool_name}\n", "tool_error"))
+                                self._emit_stream_chunk(
+                                    stream_callback=stream_callback,
+                                    content=f"⚠️ 工具未找到: {tool_name}\n",
+                                    content_type="tool_error",
+                                )
 
                         # If tools were executed, continue to next round with tool results
                         if tool_results:
@@ -997,8 +1091,10 @@ class BaseAgent:
                             )
 
                             # Send separator before continuation
-                            stream_callback(
-                                (f"\n\n---\n\n💭 **根据工具结果生成最终回答...**\n\n", "info")
+                            self._emit_stream_chunk(
+                                stream_callback=stream_callback,
+                                content=f"\n\n---\n\n💭 **根据工具结果生成最终回答...**\n\n",
+                                content_type="info",
                             )
 
                             # Build a message with tool results
@@ -1032,8 +1128,8 @@ class BaseAgent:
                             extra={"agent_id": str(self.config.agent_id)},
                         )
 
-                        # Note: thinking and content already sent during streaming above
-                        # Exit loop - we have the final answer
+                        messages.append(AIMessage(content=round_output))
+                        final_output = round_output
                         break
 
                 logger.info(
@@ -1056,7 +1152,7 @@ class BaseAgent:
 
                 return {
                     "success": True,
-                    "output": "Conversation completed",  # Not used in streaming mode
+                    "output": final_output or "Conversation completed",
                     "messages": messages,
                     "tool_calls": tool_calls_made,
                 }
@@ -1938,6 +2034,8 @@ class BaseAgent:
         task_description: str,
         context: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
+        execution_profile: Optional[ExecutionProfile | str] = None,
+        runtime_policy: Optional[RuntimePolicy] = None,
         stream_callback: Optional[callable] = None,
         session_workdir: Optional["Path"] = None,
         container_id: Optional[str] = None,
@@ -1950,6 +2048,8 @@ class BaseAgent:
             context: Optional context information (e.g., memories)
             conversation_history: Optional prior user/assistant turns to prepend
                 before the current user prompt.
+            execution_profile: Optional runtime profile for telemetry.
+            runtime_policy: Optional resolved runtime policy for telemetry.
             stream_callback: Optional callback for streaming tokens
             session_workdir: Optional pre-existing workdir from a conversation session.
                 If provided, reuses the session workdir so files and state persist
@@ -2013,7 +2113,14 @@ class BaseAgent:
 
         logger.info(
             f"[RECOVERY] Starting conversation with error recovery",
-            extra={"agent_id": str(self.config.agent_id), "max_rounds": state.max_rounds},
+            extra={
+                "agent_id": str(self.config.agent_id),
+                "max_rounds": state.max_rounds,
+                "runtime_profile": parse_execution_profile(execution_profile).value,
+                "runtime_loop_mode": (
+                    runtime_policy.loop_mode.value if runtime_policy else LoopMode.RECOVERY_MULTI_TURN.value
+                ),
+            },
         )
 
         # Main conversation loop

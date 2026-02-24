@@ -1947,10 +1947,15 @@ async def test_agent(
 
     from agent_framework.agent_executor import ExecutionContext, get_agent_executor
     from agent_framework.base_agent import AgentConfig, BaseAgent
+    from agent_framework.runtime_policy import (
+        ExecutionProfile,
+        is_agent_test_chat_unified_runtime_enabled,
+    )
     from llm_providers.custom_openai_provider import CustomOpenAIChat
 
     try:
         _ensure_session_memory_callback_registered()
+        use_unified_runtime = is_agent_test_chat_unified_runtime_enabled()
 
         # Parse and sanitize history from JSON string.
         parsed_history: List[Dict[str, str]] = []
@@ -2267,6 +2272,13 @@ async def test_agent(
                 # streaming and non-streaming behavior consistent.
                 context = {}
                 context_debug: Dict[str, Any] = {}
+                request_exec_context = ExecutionContext(
+                    agent_id=UUID(agent_id),
+                    user_id=UUID(current_user.user_id),
+                    user_role=current_user.role,
+                    task_description=message,
+                )
+                executor = get_agent_executor()
                 try:
                     memory_scopes = resolve_memory_scopes(
                         access_level=agent_info.access_level,
@@ -2283,17 +2295,10 @@ async def test_agent(
                         + "\n\n"
                     )
 
-                    exec_context = ExecutionContext(
-                        agent_id=UUID(agent_id),
-                        user_id=UUID(current_user.user_id),
-                        user_role=current_user.role,
-                        task_description=message,
-                    )
-                    executor = get_agent_executor()
                     context, context_debug = await asyncio.to_thread(
                         executor.build_execution_context_with_debug,
                         agent,
-                        exec_context,
+                        request_exec_context,
                         agent_info.top_k or 5,
                         agent_info.similarity_threshold,
                     )
@@ -2474,19 +2479,35 @@ async def test_agent(
                 def execute_agent():
                     """Execute agent in a separate thread."""
                     try:
-                        # Use agent.execute_task with streaming callback instead of direct LLM streaming
-                        # This ensures tools are executed properly
-                        # Pass session workdir for persistent execution environment
-                        # Pass container_id for Docker sandbox execution (if session has one)
-                        result = agent.execute_task(
+                        run_exec_context = ExecutionContext(
+                            agent_id=UUID(agent_id),
+                            user_id=UUID(current_user.user_id),
+                            user_role=current_user.role,
                             task_description=user_message,
-                            context=context,
-                            conversation_history=parsed_history or None,
-                            stream_callback=stream_callback,
-                            session_workdir=conversation_session.workdir,
-                            container_id=conversation_session.sandbox_id,  # Docker container for sandbox execution
-                            message_content=multimodal_content,
                         )
+                        if use_unified_runtime:
+                            result = executor.execute(
+                                agent,
+                                run_exec_context,
+                                conversation_history=parsed_history or None,
+                                execution_profile=ExecutionProfile.DEBUG_CHAT,
+                                stream_callback=stream_callback,
+                                session_workdir=conversation_session.workdir,
+                                container_id=conversation_session.sandbox_id,
+                                message_content=multimodal_content,
+                                prebuilt_execution_context=context,
+                            )
+                        else:
+                            # Legacy fallback path.
+                            result = agent.execute_task(
+                                task_description=user_message,
+                                context=context,
+                                conversation_history=parsed_history or None,
+                                stream_callback=stream_callback,
+                                session_workdir=conversation_session.workdir,
+                                container_id=conversation_session.sandbox_id,
+                                message_content=multimodal_content,
+                            )
 
                         # Store final response
                         final_response[0] = result.get("output", "")
@@ -2824,11 +2845,16 @@ async def test_agent(
                 )
 
                 executor = get_agent_executor()
+                execute_kwargs: Dict[str, Any] = {
+                    "conversation_history": parsed_history or None,
+                }
+                if use_unified_runtime:
+                    execute_kwargs["execution_profile"] = ExecutionProfile.DEBUG_CHAT
                 result = await asyncio.to_thread(
                     executor.execute,
                     agent,
                     exec_context,
-                    parsed_history or None,
+                    **execute_kwargs,
                 )
 
                 return {

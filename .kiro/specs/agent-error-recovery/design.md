@@ -1,5 +1,9 @@
 # Agent Error Recovery and Self-Correction - Design
 
+## Related Specs
+
+- Runtime profile unification across adapters: `../agent-test-chat-runtime-strategy/`
+
 ## 1. Overview
 
 This document details the technical design for implementing robust error recovery and self-correction in the agent execution loop. The design enables agents to autonomously recover from tool call format errors and execution failures through multi-turn feedback loops.

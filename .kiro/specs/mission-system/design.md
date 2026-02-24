@@ -1,5 +1,9 @@
 # Mission Execution System - Design
 
+## Related Specs
+
+- Runtime unification and profile strategy: `../agent-test-chat-runtime-strategy/`
+
 ## Architecture Overview
 
 The Mission Execution System follows a layered architecture:

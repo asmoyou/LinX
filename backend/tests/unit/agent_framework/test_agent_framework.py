@@ -20,6 +20,7 @@ from agent_framework.agent_status import AgentStatusTracker, StatusUpdate
 from agent_framework.agent_tools import AgentToolkit, create_langchain_tools
 from agent_framework.base_agent import AgentConfig, AgentStatus, BaseAgent
 from agent_framework.capability_matcher import CapabilityMatch, CapabilityMatcher
+from agent_framework.runtime_policy import ExecutionProfile, LoopMode
 from memory_system.memory_interface import MemoryItem, MemoryType
 from memory_system.memory_repository import MemoryRecordData
 
@@ -149,6 +150,69 @@ class TestBaseAgent:
         assert sent_messages[1].content == "Translate 'hello' to Chinese."
         assert sent_messages[2].content == "It is 你好."
         assert sent_messages[3].content == "What did I ask before this?"
+
+    def test_execute_task_profile_driven_recovery_without_stream_callback(self):
+        """Mission profile should enter recovery loop without requiring stream callback."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.llm = Mock()
+        agent.tools = []
+        agent.tools_by_name = {}
+
+        captured = {}
+
+        async def _fake_recovery(*_args, **kwargs):
+            captured["kwargs"] = kwargs
+            return {"success": True, "output": "Recovered", "messages": []}
+
+        agent.execute_task_with_recovery = _fake_recovery  # type: ignore[method-assign]
+
+        result = agent.execute_task(
+            task_description="Handle this mission task",
+            execution_profile=ExecutionProfile.MISSION_TASK,
+        )
+
+        assert result["success"] is True
+        runtime_policy = captured["kwargs"]["runtime_policy"]
+        assert captured["kwargs"]["execution_profile"] == ExecutionProfile.MISSION_TASK
+        assert runtime_policy.loop_mode == LoopMode.RECOVERY_MULTI_TURN
+        assert captured["kwargs"]["stream_callback"] is None
+
+    def test_normalize_conversation_history_filters_invalid_entries(self):
+        """History normalization should keep only valid user/assistant text messages."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        normalized = agent._normalize_conversation_history(
+            [
+                {"role": "user", "content": "first"},
+                {"role": "system", "content": "ignore"},
+                {"role": "assistant", "content": [{"text": "second"}]},
+                {"role": "user", "content": ""},
+                {"role": "assistant", "content": None},
+                "invalid-entry",
+            ]
+        )
+
+        assert normalized == [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "second"},
+        ]
 
 
 class TestAgentRegistry:
@@ -536,11 +600,13 @@ class TestAgentExecutor:
             mock_agent,
             context,
             conversation_history=history,
+            execution_profile=ExecutionProfile.DEBUG_CHAT,
         )
 
         assert result["success"] is True
         execute_kwargs = mock_agent.execute_task.call_args.kwargs
         assert execute_kwargs["conversation_history"] == history
+        assert execute_kwargs["execution_profile"] == ExecutionProfile.DEBUG_CHAT
 
     @patch("agent_framework.agent_executor.get_agent_memory_interface")
     def test_executor_filters_irrelevant_context_memories_and_applies_min_similarity(

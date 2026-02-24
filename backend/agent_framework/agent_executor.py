@@ -19,6 +19,8 @@ from agent_framework.agent_memory_interface import (
     get_agent_memory_interface,
 )
 from agent_framework.base_agent import BaseAgent
+from agent_framework.runtime_policy import ExecutionProfile, RuntimePolicy
+from agent_framework.runtime_service import RuntimeAdapterRequest, get_unified_agent_runtime_service
 from memory_system.memory_interface import MemoryType, SearchQuery
 
 logger = logging.getLogger(__name__)
@@ -715,6 +717,14 @@ class AgentExecutor:
         agent: BaseAgent,
         context: ExecutionContext,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        execution_profile: Optional[ExecutionProfile | str] = None,
+        runtime_policy: Optional[RuntimePolicy] = None,
+        stream_callback: Optional[callable] = None,
+        session_workdir: Optional[Any] = None,
+        container_id: Optional[str] = None,
+        code_execution_network_access: Optional[bool] = None,
+        message_content: Optional[Any] = None,
+        prebuilt_execution_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute agent with given context.
 
@@ -722,6 +732,14 @@ class AgentExecutor:
             agent: BaseAgent instance
             context: ExecutionContext with task details
             conversation_history: Optional prior user/assistant turns to prepend.
+            execution_profile: Optional runtime profile controlling loop strategy.
+            runtime_policy: Optional explicit runtime policy override.
+            stream_callback: Optional callback for streaming output transport.
+            session_workdir: Optional execution workspace root.
+            container_id: Optional sandbox container id for code execution.
+            code_execution_network_access: Optional network policy for code execution.
+            message_content: Optional multimodal content payload.
+            prebuilt_execution_context: Optional execution context; skips retrieval if provided.
 
         Returns:
             Dict with execution results
@@ -732,20 +750,30 @@ class AgentExecutor:
         )
 
         try:
-            exec_context = self.build_execution_context(agent=agent, context=context)
+            if prebuilt_execution_context is not None:
+                exec_context = dict(prebuilt_execution_context)
+            else:
+                exec_context = self.build_execution_context(agent=agent, context=context)
 
             if context.additional_context:
                 exec_context.update(context.additional_context)
 
-            # Execute task
-            execute_kwargs: Dict[str, Any] = {
-                "task_description": context.task_description,
-                "context": exec_context,
-            }
-            if conversation_history:
-                execute_kwargs["conversation_history"] = conversation_history
-
-            result = agent.execute_task(**execute_kwargs)
+            runtime_service = get_unified_agent_runtime_service()
+            result = runtime_service.execute(
+                RuntimeAdapterRequest(
+                    agent=agent,
+                    task_description=context.task_description,
+                    context=exec_context,
+                    conversation_history=conversation_history,
+                    execution_profile=execution_profile,
+                    runtime_policy=runtime_policy,
+                    stream_callback=stream_callback,
+                    session_workdir=session_workdir,
+                    container_id=container_id,
+                    code_execution_network_access=code_execution_network_access,
+                    message_content=message_content,
+                )
+            )
 
             # Persist one task-level memory record per task completion (success or failure).
             try:
