@@ -184,7 +184,7 @@ class AgentMemoryInterface:
         return min(max(safe_rank / (safe_rank + 4.0), 0.0), 1.0)
 
     def _retrieve_memories_with_db_alignment(self, search_query: SearchQuery) -> List[MemoryItem]:
-        """Retrieve memories aligned with API semantics (DB mapping only)."""
+        """Retrieve memories with DB mapping and strict keyword fallback when semantic misses."""
         repo = get_memory_repository()
         semantic_items = self.memory_system.retrieve_memories(search_query)
 
