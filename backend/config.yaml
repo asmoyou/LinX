@@ -618,8 +618,8 @@ knowledge_base:
     cross_language_languages:
     - en
     - zh-CN
-    cross_language_provider: ollama
-    cross_language_model: qwen3-vl:30b
+    cross_language_provider: vllm
+    cross_language_model: Qwen3-Next-80B-A3B-Instruct-AWQ-4bit
     cross_language_timeout_seconds: 4
     cross_language_failure_backoff_seconds: 60
     cross_language_max_expansions: 2
