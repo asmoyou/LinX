@@ -6,6 +6,8 @@ References:
 """
 
 import logging
+import re
+import unicodedata
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -14,6 +16,42 @@ from memory_system.memory_repository import get_memory_repository
 from memory_system.memory_system import MemorySystem, get_memory_system
 
 logger = logging.getLogger(__name__)
+
+
+_MEMORY_QUERY_STOP_TERMS = {
+    "如何",
+    "怎么",
+    "怎样",
+    "请问",
+    "一下",
+    "可以",
+    "是否",
+    "这个",
+    "那个",
+    "是谁",
+    "什么",
+    "what",
+    "how",
+    "who",
+    "where",
+    "when",
+    "is",
+    "are",
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "this",
+    "that",
+    "to",
+    "of",
+    "in",
+    "on",
+}
+
+_MEMORY_CJK_QUESTION_TERMS = {"如何", "怎么", "怎样", "请问", "是谁", "什么"}
+_MEMORY_CJK_QUESTION_CHARS = {"如", "何", "怎", "样", "请", "问", "谁", "什", "么"}
 
 
 def _format_agent_memory_content(
@@ -88,8 +126,65 @@ class AgentMemoryInterface:
         self.memory_system = memory_system or get_memory_system()
         logger.info("AgentMemoryInterface initialized")
 
+    @staticmethod
+    def _extract_query_terms(query_text: str, *, max_terms: int = 16) -> List[str]:
+        normalized = unicodedata.normalize("NFKC", str(query_text or "")).strip().lower()
+        if len(normalized) < 2:
+            return []
+
+        terms = set()
+        for token in re.findall(r"[a-z0-9][a-z0-9._-]{1,}", normalized):
+            if token not in _MEMORY_QUERY_STOP_TERMS:
+                terms.add(token)
+
+        split_terms = re.split(
+            r"[\s,，。！？!?;；:：/\\|()\[\]{}【】\"'“”‘’]+",
+            normalized,
+        )
+        for token in split_terms:
+            token = token.strip()
+            if len(token) >= 2 and token not in _MEMORY_QUERY_STOP_TERMS:
+                terms.add(token)
+
+        cjk_fragments = re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]+", normalized)
+        for fragment in cjk_fragments:
+            if len(fragment) >= 2 and fragment not in _MEMORY_QUERY_STOP_TERMS:
+                terms.add(fragment)
+
+            for n in (2, 3):
+                if len(fragment) < n:
+                    continue
+                for idx in range(len(fragment) - n + 1):
+                    gram = fragment[idx: idx + n]
+                    if not gram or gram in _MEMORY_QUERY_STOP_TERMS:
+                        continue
+                    if any(question in gram for question in _MEMORY_CJK_QUESTION_TERMS):
+                        continue
+                    if gram[0] in _MEMORY_CJK_QUESTION_CHARS:
+                        continue
+                    terms.add(gram)
+
+        if normalized not in _MEMORY_QUERY_STOP_TERMS and len(normalized) >= 2:
+            terms.add(normalized)
+
+        return sorted(terms, key=lambda item: (-len(item), item))[: max(int(max_terms), 1)]
+
+    @staticmethod
+    def _keyword_min_term_hits(query_terms: List[str]) -> int:
+        term_count = len([term for term in query_terms if len(str(term).strip()) >= 2])
+        if term_count <= 2:
+            return 1
+        if term_count <= 6:
+            return 2
+        return 3
+
+    @staticmethod
+    def _keyword_rank_to_similarity(rank: float) -> float:
+        safe_rank = max(float(rank or 0.0), 0.0)
+        return min(max(safe_rank / (safe_rank + 4.0), 0.0), 1.0)
+
     def _retrieve_memories_with_db_alignment(self, search_query: SearchQuery) -> List[MemoryItem]:
-        """Retrieve memories aligned with API semantics (DB mapping + text fallback)."""
+        """Retrieve memories aligned with API semantics (DB mapping only)."""
         repo = get_memory_repository()
         semantic_items = self.memory_system.retrieve_memories(search_query)
 
@@ -135,15 +230,48 @@ class AgentMemoryInterface:
         if items:
             return items
 
-        fallback_rows = repo.search_text(
+        query_terms = self._extract_query_terms(search_query.query_text)
+        keyword_rows = repo.search_keywords(
             search_query.query_text,
+            query_terms=query_terms,
             memory_type=search_query.memory_type,
             agent_id=search_query.agent_id,
             user_id=search_query.user_id,
             task_id=search_query.task_id,
+            min_term_hits=self._keyword_min_term_hits(query_terms),
+            min_rank=1.8,
             limit=search_query.top_k or 10,
         )
-        return [row.to_memory_item() for row in fallback_rows]
+
+        effective_min_similarity = (
+            max(float(search_query.min_similarity), 0.0)
+            if search_query.min_similarity is not None
+            else max(float(getattr(self.memory_system, "_default_similarity_threshold", 0.0)), 0.0)
+        )
+        fallback_items: List[MemoryItem] = []
+        for row, rank, term_hits in keyword_rows:
+            score = self._keyword_rank_to_similarity(rank)
+            if score < effective_min_similarity:
+                continue
+
+            item = row.to_memory_item(similarity_score=score)
+            item.metadata = dict(item.metadata or {})
+            item.metadata["search_method"] = "keyword"
+            item.metadata["keyword_rank"] = round(float(rank), 4)
+            item.metadata["keyword_term_hits"] = int(term_hits)
+            fallback_items.append(item)
+
+        if fallback_items:
+            logger.info(
+                "Agent memory keyword fallback matched results",
+                extra={
+                    "query_preview": (search_query.query_text or "")[:120],
+                    "hit_count": len(fallback_items),
+                    "min_similarity": effective_min_similarity,
+                },
+            )
+
+        return fallback_items
 
     def store_agent_memory(
         self,

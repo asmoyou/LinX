@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import desc, func
+from sqlalchemy import case, desc, func, literal, or_
 
 from database.connection import get_db_session
 from database.models import MemoryACL, MemoryRecord
@@ -198,6 +198,10 @@ class MemoryRepository:
             return int(raw)
         except (TypeError, ValueError):
             return int(default)
+
+    @staticmethod
+    def _escape_like(term: str) -> str:
+        return str(term or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     @classmethod
     def _metadata_utility_score(cls, row: MemoryRecord) -> float:
@@ -400,6 +404,90 @@ class MemoryRepository:
                 .all()
             )
             return [self._to_data(row) for row in rows]
+
+    def search_keywords(
+        self,
+        query_text: str,
+        *,
+        query_terms: List[str],
+        memory_type: Optional[MemoryType] = None,
+        agent_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        min_term_hits: int = 1,
+        min_rank: float = 1.0,
+        limit: int = 10,
+    ) -> List[Tuple[MemoryRecordData, float, int]]:
+        """Keyword search with lightweight ranking for memory recall fallback."""
+        normalized_terms: List[str] = []
+        seen = set()
+        for raw_term in query_terms or []:
+            term = str(raw_term or "").strip()
+            if len(term) < 2:
+                continue
+            canonical = term.casefold()
+            if canonical in seen:
+                continue
+            seen.add(canonical)
+            normalized_terms.append(term)
+
+        full_query = str(query_text or "").strip()
+        full_query_key = full_query.casefold()
+        if len(full_query) >= 2 and full_query_key not in seen:
+            normalized_terms.insert(0, full_query)
+
+        if not normalized_terms:
+            return []
+
+        required_term_hits = max(int(min_term_hits or 1), 1)
+        required_rank = max(float(min_rank or 0.0), 0.0)
+        top_k = max(int(limit or 10), 1)
+
+        with get_db_session() as session:
+            query = session.query(MemoryRecord)
+            query = self._build_filters(
+                query,
+                memory_type=memory_type,
+                agent_id=agent_id,
+                user_id=user_id,
+                task_id=task_id,
+            )
+
+            match_clauses = []
+            score_expr = literal(0.0)
+            term_hit_expr = literal(0)
+            for term in normalized_terms:
+                pattern = f"%{self._escape_like(term)}%"
+                clause = MemoryRecord.content.ilike(pattern, escape="\\")
+                match_clauses.append(clause)
+
+                is_full_query = term.casefold() == full_query_key
+                term_weight = 4.0 if is_full_query else (2.8 if len(term) >= 4 else 1.8)
+
+                score_expr = score_expr + case((clause, term_weight), else_=0.0)
+                term_hit_expr = term_hit_expr + case((clause, 1), else_=0)
+
+            keyword_rank = score_expr.label("keyword_rank")
+            keyword_term_hits = term_hit_expr.label("keyword_term_hits")
+            rows = (
+                query.filter(or_(*match_clauses))
+                .add_columns(keyword_rank, keyword_term_hits)
+                .order_by(keyword_rank.desc(), desc(MemoryRecord.timestamp))
+                .limit(max(top_k * 5, top_k))
+                .all()
+            )
+
+            ranked: List[Tuple[MemoryRecordData, float, int]] = []
+            for row, raw_rank, raw_term_hits in rows:
+                rank = float(raw_rank or 0.0)
+                term_hits = int(raw_term_hits or 0)
+                if rank < required_rank or term_hits < required_term_hits:
+                    continue
+                ranked.append((self._to_data(row), rank, term_hits))
+                if len(ranked) >= top_k:
+                    break
+
+            return ranked
 
     def update_record(
         self,

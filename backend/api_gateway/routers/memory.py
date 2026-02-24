@@ -12,7 +12,9 @@ References:
 
 import asyncio
 import logging
+import re
 import time
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID
@@ -766,6 +768,105 @@ def _dedupe_preserve_order(values: List[str]) -> List[str]:
         seen.add(key)
         result.append(key)
     return result
+
+
+_MEMORY_QUERY_STOP_TERMS = {
+    "如何",
+    "怎么",
+    "怎样",
+    "请问",
+    "一下",
+    "一下子",
+    "可以",
+    "是否",
+    "这个",
+    "那个",
+    "是谁",
+    "什么",
+    "为什么",
+    "where",
+    "when",
+    "who",
+    "what",
+    "how",
+    "is",
+    "are",
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "this",
+    "that",
+    "to",
+    "of",
+    "in",
+    "on",
+}
+
+_MEMORY_CJK_QUESTION_TERMS = {"如何", "怎么", "怎样", "请问", "是谁", "什么"}
+_MEMORY_CJK_QUESTION_CHARS = {"如", "何", "怎", "样", "请", "问", "谁", "什", "么"}
+
+
+def _extract_memory_query_terms(query_text: str, *, max_terms: int = 16) -> List[str]:
+    """Extract normalized query terms for keyword fallback retrieval."""
+    normalized = unicodedata.normalize("NFKC", str(query_text or "")).strip().lower()
+    if len(normalized) < 2:
+        return []
+
+    terms = set()
+
+    for token in re.findall(r"[a-z0-9][a-z0-9._-]{1,}", normalized):
+        if token not in _MEMORY_QUERY_STOP_TERMS:
+            terms.add(token)
+
+    split_terms = re.split(
+        r"[\s,，。！？!?;；:：/\\|()\[\]{}【】\"'“”‘’]+",
+        normalized,
+    )
+    for token in split_terms:
+        token = token.strip()
+        if len(token) >= 2 and token not in _MEMORY_QUERY_STOP_TERMS:
+            terms.add(token)
+
+    cjk_fragments = re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]+", normalized)
+    for fragment in cjk_fragments:
+        if len(fragment) >= 2 and fragment not in _MEMORY_QUERY_STOP_TERMS:
+            terms.add(fragment)
+
+        for n in (2, 3):
+            if len(fragment) < n:
+                continue
+            for idx in range(len(fragment) - n + 1):
+                gram = fragment[idx: idx + n]
+                if not gram or gram in _MEMORY_QUERY_STOP_TERMS:
+                    continue
+                if any(question in gram for question in _MEMORY_CJK_QUESTION_TERMS):
+                    continue
+                if gram[0] in _MEMORY_CJK_QUESTION_CHARS:
+                    continue
+                terms.add(gram)
+
+    if normalized not in _MEMORY_QUERY_STOP_TERMS and len(normalized) >= 2:
+        terms.add(normalized)
+
+    return sorted(terms, key=lambda item: (-len(item), item))[: max(int(max_terms), 1)]
+
+
+def _keyword_min_term_hits(query_terms: List[str]) -> int:
+    """Require more lexical agreement for longer queries to reduce noisy matches."""
+    term_count = len([term for term in query_terms if len(str(term).strip()) >= 2])
+    if term_count <= 2:
+        return 1
+    if term_count <= 6:
+        return 2
+    return 3
+
+
+def _keyword_rank_to_similarity(rank: float) -> float:
+    """Normalize keyword rank to [0, 1] for API relevance display and threshold filtering."""
+    safe_rank = max(float(rank or 0.0), 0.0)
+    return min(max(safe_rank / (safe_rank + 4.0), 0.0), 1.0)
 
 
 def _resolve_share_targets(agent_ids: List[str], user_ids: List[str]) -> Dict[str, List[str]]:
@@ -1650,7 +1751,7 @@ def _apply_response_filters(
 
 
 def _retrieve_memories_sync(query):
-    """Retrieve memories synchronously (DB-first with semantic/vector fallback)."""
+    """Retrieve memories synchronously (semantic first, then strict keyword fallback)."""
     from memory_system.memory_system import get_memory_system
 
     if query.query_text == "*":
@@ -1698,20 +1799,51 @@ def _retrieve_memories_sync(query):
                     continue
                 items.append(semantic_item)
     except Exception as exc:
-        logger.warning("Semantic memory search failed, falling back to text search: %s", exc)
+        logger.warning("Semantic memory search failed, attempting keyword fallback: %s", exc)
 
     if items:
         return _items_to_responses(items)
 
-    fallback_rows = repo.search_text(
+    try:
+        effective_min_similarity = max(float(query.min_similarity or 0.0), 0.0)
+    except (TypeError, ValueError):
+        effective_min_similarity = 0.0
+
+    query_terms = _extract_memory_query_terms(query.query_text)
+    fallback_rows = repo.search_keywords(
         query.query_text,
+        query_terms=query_terms,
         memory_type=query.memory_type,
         agent_id=query.agent_id,
         user_id=query.user_id,
         task_id=query.task_id,
+        min_term_hits=_keyword_min_term_hits(query_terms),
+        min_rank=1.8,
         limit=query.top_k or 10,
     )
-    fallback_items = [row.to_memory_item() for row in fallback_rows]
+    fallback_items = []
+    for row, keyword_rank, term_hits in fallback_rows:
+        score = _keyword_rank_to_similarity(keyword_rank)
+        if score < effective_min_similarity:
+            continue
+        item = row.to_memory_item(similarity_score=score)
+        item.metadata = dict(item.metadata or {})
+        item.metadata["search_method"] = "keyword"
+        item.metadata["keyword_rank"] = round(float(keyword_rank), 4)
+        item.metadata["keyword_term_hits"] = int(term_hits)
+        fallback_items.append(item)
+
+    if fallback_items:
+        logger.info(
+            "Memory keyword fallback matched results",
+            extra={
+                "query": query.query_text,
+                "result_count": len(fallback_items),
+                "term_count": len(query_terms),
+                "min_similarity": effective_min_similarity,
+            },
+        )
+
     return _items_to_responses(fallback_items)
 
 

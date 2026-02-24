@@ -21,6 +21,7 @@ from agent_framework.agent_tools import AgentToolkit, create_langchain_tools
 from agent_framework.base_agent import AgentConfig, AgentStatus, BaseAgent
 from agent_framework.capability_matcher import CapabilityMatch, CapabilityMatcher
 from memory_system.memory_interface import MemoryItem, MemoryType
+from memory_system.memory_repository import MemoryRecordData
 
 
 class TestBaseAgent:
@@ -306,10 +307,11 @@ class TestAgentMemoryInterface:
 
         mock_memory_system = Mock()
         mock_memory_system.retrieve_memories.return_value = []
+        mock_memory_system._default_similarity_threshold = 0.3
 
         mock_repo = Mock()
         mock_repo.get_by_milvus_ids.return_value = {}
-        mock_repo.search_text.return_value = []
+        mock_repo.search_keywords.return_value = []
         mock_get_repository.return_value = mock_repo
 
         interface = AgentMemoryInterface(memory_system=mock_memory_system)
@@ -325,14 +327,7 @@ class TestAgentMemoryInterface:
         assert called_query.user_id == str(user_id)
         assert called_query.min_similarity == 0.66
 
-        mock_repo.search_text.assert_called_once_with(
-            "memory query",
-            memory_type=MemoryType.AGENT,
-            agent_id=str(agent_id),
-            user_id=str(user_id),
-            task_id=None,
-            limit=3,
-        )
+        mock_repo.search_keywords.assert_called_once()
 
     @patch("agent_framework.agent_memory_interface.get_memory_repository")
     def test_retrieve_company_memory_drops_unmapped_legacy_vectors(self, mock_get_repository):
@@ -350,10 +345,11 @@ class TestAgentMemoryInterface:
                 similarity_score=0.62,
             )
         ]
+        mock_memory_system._default_similarity_threshold = 0.3
 
         mock_repo = Mock()
         mock_repo.get_by_milvus_ids.return_value = {}
-        mock_repo.search_text.return_value = []
+        mock_repo.search_keywords.return_value = []
         mock_get_repository.return_value = mock_repo
 
         interface = AgentMemoryInterface(memory_system=mock_memory_system)
@@ -364,14 +360,55 @@ class TestAgentMemoryInterface:
         )
 
         assert results == []
-        mock_repo.search_text.assert_called_once_with(
-            query_text,
+        mock_repo.search_keywords.assert_called_once()
+
+    @patch("agent_framework.agent_memory_interface.get_memory_repository")
+    def test_retrieve_company_memory_keyword_fallback_returns_scored_item(
+        self, mock_get_repository
+    ):
+        """Strict keyword fallback should return scored DB-backed memory when semantic misses."""
+        user_id = uuid4()
+
+        mock_memory_system = Mock()
+        mock_memory_system.retrieve_memories.return_value = []
+        mock_memory_system._default_similarity_threshold = 0.3
+
+        row = MemoryRecordData(
+            id=9,
+            milvus_id=9001,
             memory_type=MemoryType.COMPANY,
-            agent_id=None,
+            content="LinX是小白客开发的",
             user_id=str(user_id),
+            agent_id=None,
             task_id=None,
-            limit=5,
+            owner_user_id=str(user_id),
+            owner_agent_id=None,
+            department_id=None,
+            visibility="department_tree",
+            sensitivity="internal",
+            source_memory_id=None,
+            expires_at=None,
+            metadata={},
         )
+
+        mock_repo = Mock()
+        mock_repo.get_by_milvus_ids.return_value = {}
+        mock_repo.search_keywords.return_value = [(row, 4.6, 2)]
+        mock_get_repository.return_value = mock_repo
+
+        interface = AgentMemoryInterface(memory_system=mock_memory_system)
+        results = interface.retrieve_company_memory(
+            user_id=user_id,
+            query="LinX是谁开发的",
+            top_k=5,
+        )
+
+        assert len(results) == 1
+        assert results[0].content == "LinX是小白客开发的"
+        assert results[0].similarity_score is not None
+        assert results[0].similarity_score >= 0.3
+        assert results[0].metadata["search_method"] == "keyword"
+        mock_repo.search_keywords.assert_called_once()
 
     @patch("agent_framework.agent_memory_interface.get_memory_repository")
     def test_retrieve_company_memory_prefers_db_mapped_record(self, mock_get_repository):
@@ -399,6 +436,7 @@ class TestAgentMemoryInterface:
 
         mock_memory_system = Mock()
         mock_memory_system.retrieve_memories.return_value = [semantic_item]
+        mock_memory_system._default_similarity_threshold = 0.3
 
         mock_repo = Mock()
         mock_repo.get_by_milvus_ids.return_value = {202: mapped_row}
@@ -416,7 +454,7 @@ class TestAgentMemoryInterface:
         assert results[0].metadata["source"] == "db"
         assert results[0].metadata["_rerank_score"] == 0.91
         assert "plain" not in results[0].metadata
-        mock_repo.search_text.assert_not_called()
+        mock_repo.search_keywords.assert_not_called()
 
 
 class TestAgentExecutor:
@@ -545,7 +583,7 @@ class TestAgentExecutor:
         assert exec_context["company_memories"] == []
 
         agent_kwargs = mock_memory.return_value.retrieve_agent_memory.call_args.kwargs
-        assert agent_kwargs["min_similarity"] == 0.7
+        assert agent_kwargs["min_similarity"] is None
         assert debug["memory"]["agent"]["filtered_out_count"] >= 1
         assert debug["memory"]["company"]["filtered_out_count"] >= 1
 

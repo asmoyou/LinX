@@ -255,15 +255,9 @@ class AgentExecutor:
         if top_k <= 0:
             top_k = 3
 
+        # Do not couple memory recall threshold with knowledge-base similarity threshold.
+        # Memory retrieval should rely on memory-system defaults and semantic rerank.
         memory_min_similarity: Optional[float] = None
-        if knowledge_min_relevance_score is not None:
-            try:
-                memory_min_similarity = max(
-                    0.0,
-                    min(float(knowledge_min_relevance_score), 1.0),
-                )
-            except (TypeError, ValueError):
-                memory_min_similarity = None
 
         config = getattr(agent, "config", None)
         access_level = self._normalize_access_level(getattr(config, "access_level", None))

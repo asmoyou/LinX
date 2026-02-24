@@ -28,7 +28,8 @@ from fastapi.testclient import TestClient
 from access_control.permissions import CurrentUser
 from access_control.rbac import Role
 from api_gateway.main import app
-from memory_system.memory_interface import MemoryItem, MemoryType
+from memory_system.memory_interface import MemoryItem, MemoryType, SearchQuery
+from memory_system.memory_repository import MemoryRecordData
 
 
 @pytest.fixture
@@ -230,6 +231,115 @@ class TestSearchMemories:
 
         with pytest.raises(ValidationError):
             MemorySearchRequest(query="test", min_score=1.2)
+
+    def test_extract_memory_query_terms_keeps_mixed_language_keywords(self):
+        from api_gateway.routers.memory import _extract_memory_query_terms
+
+        terms = _extract_memory_query_terms("LinX是谁开发的")
+
+        assert "linx" in terms
+        assert any("开发" in term for term in terms)
+
+    def test_retrieve_memories_keyword_fallback_returns_scored_result(self):
+        from api_gateway.routers import memory as memory_router
+
+        query = SearchQuery(
+            query_text="LinX是谁开发的",
+            memory_type=MemoryType.COMPANY,
+            top_k=10,
+            min_similarity=0.3,
+        )
+        mock_memory_system = MagicMock()
+        mock_memory_system.retrieve_memories.return_value = []
+
+        memory_row = MemoryRecordData(
+            id=7,
+            milvus_id=701,
+            memory_type=MemoryType.COMPANY,
+            content="LinX是小白客开发的，LinX平台的中文名是灵枢",
+            user_id="test-user-id",
+            agent_id=None,
+            task_id=None,
+            owner_user_id="test-user-id",
+            owner_agent_id=None,
+            department_id=None,
+            visibility="department_tree",
+            sensitivity="internal",
+            source_memory_id=None,
+            expires_at=None,
+            metadata={},
+            timestamp=datetime(2026, 1, 15, 12, 0, 0),
+            vector_status="synced",
+            vector_error=None,
+            vector_updated_at=None,
+        )
+        mock_repo = MagicMock()
+        mock_repo.get_by_milvus_ids.return_value = {}
+        mock_repo.search_keywords.return_value = [(memory_row, 4.6, 2)]
+
+        with patch("memory_system.memory_system.get_memory_system", return_value=mock_memory_system):
+            with patch("api_gateway.routers.memory._get_memory_repository", return_value=mock_repo):
+                with patch(
+                    "api_gateway.routers.memory._items_to_responses",
+                    side_effect=lambda items: [
+                        memory_router._memory_item_to_response(item) for item in items
+                    ],
+                ):
+                    results = memory_router._retrieve_memories_sync(query)
+
+        assert len(results) == 1
+        assert results[0]["id"] == "7"
+        assert results[0]["relevanceScore"] is not None
+        assert float(results[0]["relevanceScore"]) >= 0.3
+        assert results[0]["metadata"]["search_method"] == "keyword"
+
+        call_kwargs = mock_repo.search_keywords.call_args.kwargs
+        assert "linx" in call_kwargs.get("query_terms", [])
+
+    def test_retrieve_memories_keyword_fallback_respects_min_similarity(self):
+        from api_gateway.routers import memory as memory_router
+
+        query = SearchQuery(
+            query_text="LinX是谁开发的",
+            memory_type=MemoryType.COMPANY,
+            top_k=10,
+            min_similarity=0.5,
+        )
+        mock_memory_system = MagicMock()
+        mock_memory_system.retrieve_memories.return_value = []
+
+        memory_row = MemoryRecordData(
+            id=8,
+            milvus_id=702,
+            memory_type=MemoryType.COMPANY,
+            content="LinX是小白客开发的",
+            user_id="test-user-id",
+            agent_id=None,
+            task_id=None,
+            owner_user_id="test-user-id",
+            owner_agent_id=None,
+            department_id=None,
+            visibility="department_tree",
+            sensitivity="internal",
+            source_memory_id=None,
+            expires_at=None,
+            metadata={},
+            timestamp=datetime(2026, 1, 15, 12, 0, 0),
+            vector_status="synced",
+            vector_error=None,
+            vector_updated_at=None,
+        )
+        mock_repo = MagicMock()
+        mock_repo.get_by_milvus_ids.return_value = {}
+        # rank=1.8 -> similarity=1.8/(1.8+4)=0.31
+        mock_repo.search_keywords.return_value = [(memory_row, 1.8, 1)]
+
+        with patch("memory_system.memory_system.get_memory_system", return_value=mock_memory_system):
+            with patch("api_gateway.routers.memory._get_memory_repository", return_value=mock_repo):
+                with patch("api_gateway.routers.memory._items_to_responses", return_value=[]):
+                    results = memory_router._retrieve_memories_sync(query)
+
+        assert results == []
 
 
 class TestShareMemory:
