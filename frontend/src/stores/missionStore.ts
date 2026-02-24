@@ -45,6 +45,256 @@ const CLARIFICATION_REQUEST_EVENT_TYPES = new Set([
   'clarification_request',
 ]);
 const CLARIFICATION_RESPONSE_EVENT_TYPES = new Set(['clarification_response']);
+const TASK_EVENT_TYPES = new Set([
+  'TASK_STARTED',
+  'TASK_COMPLETED',
+  'TASK_FAILED',
+  'TASK_BLOCKED',
+  'TASK_REVIEWED',
+  'TASK_REVIEW',
+  'TASK_AGENT_ASSIGNED',
+  'TASK_AGENT_ESCALATED',
+  'TASK_ATTEMPT_FAILED',
+]);
+
+const normalizeEventType = (eventType: string): string => eventType.trim().toUpperCase();
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const getEventString = (
+  eventData: Record<string, unknown>,
+  key: string
+): string | undefined => {
+  const value = eventData[key];
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const getEventNumber = (
+  eventData: Record<string, unknown>,
+  key: string
+): number | undefined => {
+  const value = eventData[key];
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return value;
+};
+
+const getEventBoolean = (
+  eventData: Record<string, unknown>,
+  key: string
+): boolean | undefined => {
+  const value = eventData[key];
+  if (typeof value !== 'boolean') return undefined;
+  return value;
+};
+
+const getEventStringList = (
+  eventData: Record<string, unknown>,
+  key: string
+): string[] => {
+  const value = eventData[key];
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+};
+
+const applyTaskEventUpdate = (task: MissionTask, event: MissionEvent): MissionTask => {
+  const eventType = normalizeEventType(event.event_type);
+  const eventData = isRecord(event.event_data) ? event.event_data : {};
+  const eventMessage = typeof event.message === 'string' ? event.message.trim() : '';
+
+  let nextTask = task;
+  let nextTaskMetadata = isRecord(task.task_metadata) ? { ...task.task_metadata } : {};
+  let nextTaskResult = isRecord(task.result) ? { ...task.result } : {};
+  let taskMetadataChanged = false;
+  let taskResultChanged = false;
+
+  const setStatus = (status: string) => {
+    if (nextTask.status === status) return;
+    nextTask = { ...nextTask, status };
+  };
+
+  const setAssignedAgent = (agentId?: string, agentName?: string) => {
+    if (
+      !agentId &&
+      !agentName
+    ) {
+      return;
+    }
+    const nextAssignedAgentId = agentId ?? nextTask.assigned_agent_id;
+    const nextAssignedAgentName = agentName ?? nextTask.assigned_agent_name;
+    if (
+      nextAssignedAgentId === nextTask.assigned_agent_id &&
+      nextAssignedAgentName === nextTask.assigned_agent_name
+    ) {
+      return;
+    }
+    nextTask = {
+      ...nextTask,
+      assigned_agent_id: nextAssignedAgentId,
+      assigned_agent_name: nextAssignedAgentName,
+    };
+  };
+
+  const setTaskMetadata = (key: string, value: unknown) => {
+    if (nextTaskMetadata[key] === value) return;
+    nextTaskMetadata[key] = value;
+    taskMetadataChanged = true;
+  };
+
+  const deleteTaskMetadata = (key: string) => {
+    if (!(key in nextTaskMetadata)) return;
+    delete nextTaskMetadata[key];
+    taskMetadataChanged = true;
+  };
+
+  const setTaskResult = (key: string, value: unknown) => {
+    if (nextTaskResult[key] === value) return;
+    nextTaskResult[key] = value;
+    taskResultChanged = true;
+  };
+
+  const deleteTaskResult = (key: string) => {
+    if (!(key in nextTaskResult)) return;
+    delete nextTaskResult[key];
+    taskResultChanged = true;
+  };
+
+  const mergeFailureMessage = () => {
+    const failureMessage = getEventString(eventData, 'error') || eventMessage || undefined;
+    if (!failureMessage) return;
+    setTaskResult('error', failureMessage);
+    setTaskResult('last_error', failureMessage);
+  };
+
+  switch (eventType) {
+    case 'TASK_STARTED': {
+      setStatus('in_progress');
+      setAssignedAgent(getEventString(eventData, 'agent_id'), getEventString(eventData, 'agent_name'));
+      deleteTaskMetadata('blocked_by_failed_dependencies');
+      if (String(nextTaskMetadata.review_status || '').toLowerCase() === 'blocked_by_dependency') {
+        deleteTaskMetadata('review_status');
+      }
+      deleteTaskResult('error');
+      break;
+    }
+    case 'TASK_COMPLETED': {
+      setStatus('completed');
+      setTaskMetadata('review_status', 'pending');
+      deleteTaskMetadata('blocked_by_failed_dependencies');
+      deleteTaskMetadata('review_feedback');
+      deleteTaskResult('error');
+      break;
+    }
+    case 'TASK_FAILED': {
+      setStatus('failed');
+      mergeFailureMessage();
+      break;
+    }
+    case 'TASK_BLOCKED': {
+      setStatus('pending');
+      setTaskMetadata('review_status', 'blocked_by_dependency');
+      const blockedBy = getEventStringList(eventData, 'blocked_by');
+      if (blockedBy.length > 0) {
+        setTaskMetadata('blocked_by_failed_dependencies', blockedBy);
+      }
+      mergeFailureMessage();
+      break;
+    }
+    case 'TASK_REVIEWED':
+    case 'TASK_REVIEW': {
+      const verdict = (getEventString(eventData, 'verdict') || '').toUpperCase();
+      if (verdict === 'PASS') {
+        setTaskMetadata('review_status', 'approved');
+        deleteTaskMetadata('review_feedback');
+        deleteTaskMetadata('blocked_by_failed_dependencies');
+      } else if (verdict === 'FAIL') {
+        setStatus('failed');
+        setTaskMetadata('review_status', 'rework_required');
+        const reviewFeedback =
+          getEventString(eventData, 'review_feedback') ||
+          getEventString(eventData, 'feedback') ||
+          getEventString(eventData, 'reason') ||
+          eventMessage ||
+          undefined;
+        if (reviewFeedback) {
+          setTaskMetadata('review_feedback', reviewFeedback);
+        }
+      } else if (verdict === 'BLOCKED') {
+        setStatus('pending');
+        setTaskMetadata('review_status', 'blocked_by_dependency');
+        const blockedBy = getEventStringList(eventData, 'blocked_by');
+        if (blockedBy.length > 0) {
+          setTaskMetadata('blocked_by_failed_dependencies', blockedBy);
+        }
+      }
+      break;
+    }
+    case 'TASK_AGENT_ASSIGNED':
+    case 'TASK_AGENT_ESCALATED': {
+      const agentId =
+        getEventString(eventData, 'agent_id') ||
+        getEventString(eventData, 'new_agent_id') ||
+        getEventString(eventData, 'next_agent_id');
+      const agentName =
+        getEventString(eventData, 'agent_name') ||
+        getEventString(eventData, 'new_agent_name') ||
+        getEventString(eventData, 'next_agent_name');
+      setAssignedAgent(agentId, agentName);
+      const source =
+        getEventString(eventData, 'source') || getEventString(eventData, 'assignment_source');
+      if (source) {
+        setTaskMetadata('assignment_source', source);
+      }
+      break;
+    }
+    case 'TASK_ATTEMPT_FAILED': {
+      const attemptRecord: Record<string, unknown> = {
+        timestamp: getEventString(eventData, 'timestamp') || new Date().toISOString(),
+      };
+      const attempt = getEventNumber(eventData, 'attempt');
+      if (attempt !== undefined) attemptRecord.attempt = attempt;
+      const maxAttempts = getEventNumber(eventData, 'max_attempts');
+      if (maxAttempts !== undefined) attemptRecord.max_attempts = maxAttempts;
+      const error = getEventString(eventData, 'error');
+      if (error) attemptRecord.error = error;
+      const errorType = getEventString(eventData, 'error_type');
+      if (errorType) attemptRecord.error_type = errorType;
+      const willRetry = getEventBoolean(eventData, 'will_retry');
+      if (willRetry !== undefined) attemptRecord.will_retry = willRetry;
+      const backoff = getEventNumber(eventData, 'backoff_s');
+      if (backoff !== undefined) attemptRecord.backoff_s = backoff;
+      const timeout = getEventNumber(eventData, 'timeout_s');
+      if (timeout !== undefined) attemptRecord.timeout_s = timeout;
+      const traceback = getEventString(eventData, 'traceback');
+      if (traceback) attemptRecord.traceback = traceback;
+
+      const existingAttempts = Array.isArray(nextTaskResult.attempts) ? nextTaskResult.attempts : [];
+      setTaskResult('attempts', [...existingAttempts, attemptRecord]);
+      mergeFailureMessage();
+      if (willRetry === false) {
+        setStatus('failed');
+      } else if (nextTask.status !== 'completed') {
+        setStatus('in_progress');
+      }
+      break;
+    }
+    default:
+      break;
+  }
+
+  if (taskMetadataChanged) {
+    nextTask = { ...nextTask, task_metadata: nextTaskMetadata };
+  }
+  if (taskResultChanged) {
+    nextTask = { ...nextTask, result: nextTaskResult };
+  }
+  return nextTask;
+};
 
 interface MissionState {
   missions: Mission[];
@@ -484,9 +734,10 @@ export const useMissionStore = create<MissionState>((set, get) => ({
         event.event_data && typeof event.event_data === 'object'
           ? (event.event_data as Record<string, unknown>)
           : {};
+      const normalizedEventType = normalizeEventType(event.event_type);
       const eventTitle =
         typeof eventData.title === 'string' ? eventData.title.trim() : '';
-      const shouldUpdateTitle = event.event_type === 'MISSION_TITLE_UPDATED' && eventTitle.length > 0;
+      const shouldUpdateTitle = normalizedEventType === 'MISSION_TITLE_UPDATED' && eventTitle.length > 0;
       const isRunBoundary = RUN_BOUNDARY_EVENT_TYPES.has(event.event_type);
       const isClarificationRequest = CLARIFICATION_REQUEST_EVENT_TYPES.has(event.event_type);
       const isClarificationResponse = CLARIFICATION_RESPONSE_EVENT_TYPES.has(event.event_type);
@@ -518,18 +769,18 @@ export const useMissionStore = create<MissionState>((set, get) => ({
         qa: 'qa',
       };
       const inferredStatus: MissionStatus | null = (() => {
-        if (event.event_type === 'MISSION_COMPLETED') return 'completed';
-        if (event.event_type === 'MISSION_FAILED') return 'failed';
-        if (event.event_type === 'MISSION_CANCELLED') return 'cancelled';
-        if (event.event_type === 'MISSION_STARTED') return 'requirements';
-        if (event.event_type === 'TASK_STARTED') return 'executing';
-        if (event.event_type === 'PHASE_STARTED') {
+        if (normalizedEventType === 'MISSION_COMPLETED') return 'completed';
+        if (normalizedEventType === 'MISSION_FAILED') return 'failed';
+        if (normalizedEventType === 'MISSION_CANCELLED') return 'cancelled';
+        if (normalizedEventType === 'MISSION_STARTED') return 'requirements';
+        if (normalizedEventType === 'TASK_STARTED') return 'executing';
+        if (normalizedEventType === 'PHASE_STARTED') {
           return phaseStatusMap[phaseFromEvent] ?? null;
         }
         return null;
       })();
       const missionFailureMessage =
-        event.event_type === 'MISSION_FAILED'
+        normalizedEventType === 'MISSION_FAILED'
           ? (typeof eventData.error === 'string' && eventData.error.trim().length > 0
               ? eventData.error.trim()
               : event.message?.trim() || undefined)
@@ -594,6 +845,12 @@ export const useMissionStore = create<MissionState>((set, get) => ({
         return normalizeMissionStatus(patched);
       };
 
+      const shouldPatchMissionTasks =
+        state.selectedMission?.mission_id === event.mission_id &&
+        typeof event.task_id === 'string' &&
+        event.task_id.length > 0 &&
+        TASK_EVENT_TYPES.has(normalizedEventType);
+
       return {
         missionEvents: nextEvents.slice(-500),
         missions: state.missions.map((mission) => patchMission(mission)),
@@ -601,6 +858,11 @@ export const useMissionStore = create<MissionState>((set, get) => ({
           state.selectedMission?.mission_id === event.mission_id
             ? patchMission(state.selectedMission)
             : state.selectedMission,
+        missionTasks: shouldPatchMissionTasks
+          ? state.missionTasks.map((task) =>
+              task.task_id === event.task_id ? applyTaskEventUpdate(task, event) : task
+            )
+          : state.missionTasks,
       };
     });
   },
