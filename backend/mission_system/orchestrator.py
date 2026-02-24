@@ -187,6 +187,100 @@ class MissionOrchestrator:
 
         return {"active": len(active_ids), "cancelled": cancelled, "failed": failed}
 
+    async def recover_stale_missions_after_restart(self) -> Dict[str, int]:
+        """Recover stale non-terminal missions left behind by a previous process.
+
+        A mission can remain in executing/reviewing/qa when the service exits
+        abruptly (e.g. hot reload). Those missions are no longer attached to an
+        in-memory asyncio task after restart, so they must be reconciled.
+        """
+        from database.connection import get_db_session
+        from database.mission_models import Mission
+        from database.models import Task
+
+        stale_statuses = {"executing", "reviewing", "qa"}
+        candidates: List[Dict[str, Any]] = []
+        with get_db_session() as session:
+            rows = session.query(Mission).filter(Mission.status.in_(stale_statuses)).all()
+            for row in rows:
+                candidates.append(
+                    {
+                        "mission_id": row.mission_id,
+                        "status": str(row.status or "").strip().lower(),
+                        "total_tasks": self._coerce_int(getattr(row, "total_tasks", 0), 0),
+                    }
+                )
+
+        if not candidates:
+            return {"candidates": 0, "recovered": 0, "failed": 0}
+
+        recovered = 0
+        failed = 0
+        for candidate in candidates:
+            mission_id = candidate["mission_id"]
+            previous_status = candidate["status"]
+            fallback_total_tasks = candidate["total_tasks"]
+            if mission_id in self._active_missions:
+                continue
+
+            interrupted_tasks = 0
+            try:
+                with get_db_session() as session:
+                    in_progress_tasks = (
+                        session.query(Task)
+                        .filter(
+                            Task.mission_id == mission_id,
+                            Task.status == "in_progress",
+                        )
+                        .all()
+                    )
+                    for task in in_progress_tasks:
+                        interrupted_tasks += 1
+                        task.status = "failed"
+                        task.completed_at = None
+                        payload = dict(task.result) if isinstance(task.result, dict) else {}
+                        payload["last_error"] = (
+                            "Task interrupted by service restart before completion."
+                        )
+                        payload["last_error_type"] = "ServiceRestartRecovery"
+                        payload.setdefault("error", payload["last_error"])
+                        task.result = payload
+
+                counter_snapshot = self._safe_sync_mission_task_counters(
+                    mission_id=mission_id,
+                    fallback_total=fallback_total_tasks,
+                )
+                error_message = (
+                    "Mission recovered from stale runtime state after service restart: "
+                    f"previous_status={previous_status}, "
+                    f"interrupted_in_progress_tasks={interrupted_tasks}. "
+                    "Please retry failed parts."
+                )
+                update_mission_status(
+                    mission_id=mission_id,
+                    status="failed",
+                    error_message=error_message,
+                )
+                self._emitter.emit(
+                    mission_id=mission_id,
+                    event_type="MISSION_RECOVERED_FROM_STALE_STATE",
+                    data={
+                        "previous_status": previous_status,
+                        "interrupted_in_progress_tasks": interrupted_tasks,
+                        **counter_snapshot,
+                    },
+                    message=error_message,
+                )
+                recovered += 1
+            except Exception:
+                failed += 1
+                logger.exception(
+                    "Failed to recover stale mission after restart",
+                    extra={"mission_id": str(mission_id), "previous_status": previous_status},
+                )
+
+        return {"candidates": len(candidates), "recovered": recovered, "failed": failed}
+
     def provide_clarification(self, mission_id: UUID, response: str) -> None:
         """Supply a user clarification response for a blocked requirements phase."""
         self._clarification_responses[mission_id] = response

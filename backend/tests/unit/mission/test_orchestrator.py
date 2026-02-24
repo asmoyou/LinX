@@ -2030,3 +2030,89 @@ async def test_review_task_for_dependency_gate_marks_failed_task(monkeypatch):
     assert "review_feedback" in dependency_task.task_metadata
     assert any(event.get("event_type") == "TASK_REVIEWED" for event in emitted_events)
     assert any(event.get("event_type") == "TASK_FAILED" for event in emitted_events)
+
+
+@pytest.mark.asyncio
+async def test_recover_stale_missions_after_restart_marks_orphaned_tasks(monkeypatch):
+    mission_id = uuid4()
+    emitted_events = []
+    status_updates = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._active_missions = {}
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+
+    mission_row = SimpleNamespace(mission_id=mission_id, status="executing", total_tasks=2)
+    task_row = SimpleNamespace(
+        mission_id=mission_id,
+        status="in_progress",
+        completed_at=datetime.utcnow(),
+        result={},
+    )
+
+    class _FakeQuery:
+        def __init__(self, model, missions, tasks):
+            self._model = model
+            self._missions = missions
+            self._tasks = tasks
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            if getattr(self._model, "__name__", "") == "Mission":
+                return self._missions
+            return self._tasks
+
+    class _FakeSession:
+        def __init__(self, missions, tasks):
+            self._missions = missions
+            self._tasks = tasks
+
+        def query(self, model):
+            return _FakeQuery(model, self._missions, self._tasks)
+
+    class _FakeSessionContext:
+        def __init__(self, missions, tasks):
+            self._missions = missions
+            self._tasks = tasks
+
+        def __enter__(self):
+            return _FakeSession(self._missions, self._tasks)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext([mission_row], [task_row]),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_safe_sync_mission_task_counters",
+        lambda self, mission_id, fallback_total=0: {
+            "total_tasks": max(2, fallback_total),
+            "completed_tasks": 0,
+            "failed_tasks": 1,
+        },
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_status",
+        lambda mission_id, status, error_message=None: status_updates.append(
+            (mission_id, status, error_message)
+        ),
+    )
+
+    summary = await MissionOrchestrator.recover_stale_missions_after_restart(orchestrator)
+
+    assert summary["candidates"] == 1
+    assert summary["recovered"] == 1
+    assert summary["failed"] == 0
+    assert task_row.status == "failed"
+    assert task_row.result["last_error_type"] == "ServiceRestartRecovery"
+    assert status_updates and status_updates[0][1] == "failed"
+    assert any(
+        event.get("event_type") == "MISSION_RECOVERED_FROM_STALE_STATE"
+        and event.get("mission_id") == mission_id
+        for event in emitted_events
+    )

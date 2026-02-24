@@ -188,6 +188,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.warning(f"Failed to start document processor worker: {e}")
 
+    # Recover stale non-terminal missions left by previous process exits.
+    try:
+        from mission_system.orchestrator import get_orchestrator
+
+        recovery_summary = await get_orchestrator().recover_stale_missions_after_restart()
+        if recovery_summary.get("recovered", 0) > 0:
+            logger.warning("Recovered stale missions after startup", extra=recovery_summary)
+    except Exception as e:
+        logger.error(f"Failed to recover stale missions after startup: {e}")
+
     yield
 
     # Shutdown
