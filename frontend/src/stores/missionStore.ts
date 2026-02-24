@@ -480,23 +480,87 @@ export const useMissionStore = create<MissionState>((set, get) => ({
         return state;
       }
       const nextEvents = [...state.missionEvents, event];
+      const eventData =
+        event.event_data && typeof event.event_data === 'object'
+          ? (event.event_data as Record<string, unknown>)
+          : {};
       const eventTitle =
-        typeof event.event_data?.title === 'string' ? event.event_data.title.trim() : '';
+        typeof eventData.title === 'string' ? eventData.title.trim() : '';
       const shouldUpdateTitle = event.event_type === 'MISSION_TITLE_UPDATED' && eventTitle.length > 0;
       const isRunBoundary = RUN_BOUNDARY_EVENT_TYPES.has(event.event_type);
       const isClarificationRequest = CLARIFICATION_REQUEST_EVENT_TYPES.has(event.event_type);
       const isClarificationResponse = CLARIFICATION_RESPONSE_EVENT_TYPES.has(event.event_type);
       const clarificationRequestText =
-        typeof event.event_data?.questions === 'string' && event.event_data.questions.trim().length > 0
-          ? event.event_data.questions.trim()
+        typeof eventData.questions === 'string' && eventData.questions.trim().length > 0
+          ? eventData.questions.trim()
           : event.message?.trim() || undefined;
+      const readCounter = (key: 'total_tasks' | 'completed_tasks' | 'failed_tasks'): number | undefined => {
+        const value = eventData[key];
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          return undefined;
+        }
+        return Math.max(0, Math.floor(value));
+      };
+      const totalTasksFromEvent = readCounter('total_tasks');
+      const completedTasksFromEvent = readCounter('completed_tasks');
+      const failedTasksFromEvent = readCounter('failed_tasks');
+      const hasCounterSnapshot =
+        totalTasksFromEvent !== undefined ||
+        completedTasksFromEvent !== undefined ||
+        failedTasksFromEvent !== undefined;
+      const phaseFromEvent =
+        typeof eventData.phase === 'string' ? eventData.phase.trim().toLowerCase() : '';
+      const phaseStatusMap: Record<string, MissionStatus> = {
+        requirements: 'requirements',
+        planning: 'planning',
+        executing: 'executing',
+        reviewing: 'reviewing',
+        qa: 'qa',
+      };
+      const inferredStatus: MissionStatus | null = (() => {
+        if (event.event_type === 'MISSION_COMPLETED') return 'completed';
+        if (event.event_type === 'MISSION_FAILED') return 'failed';
+        if (event.event_type === 'MISSION_CANCELLED') return 'cancelled';
+        if (event.event_type === 'MISSION_STARTED') return 'requirements';
+        if (event.event_type === 'TASK_STARTED') return 'executing';
+        if (event.event_type === 'PHASE_STARTED') {
+          return phaseStatusMap[phaseFromEvent] ?? null;
+        }
+        return null;
+      })();
+      const missionFailureMessage =
+        event.event_type === 'MISSION_FAILED'
+          ? (typeof eventData.error === 'string' && eventData.error.trim().length > 0
+              ? eventData.error.trim()
+              : event.message?.trim() || undefined)
+          : undefined;
 
       const patchMission = (mission: Mission): Mission => {
         if (mission.mission_id !== event.mission_id) return mission;
 
         let patched: Mission = mission;
+
+        if (inferredStatus) {
+          patched = { ...patched, status: inferredStatus };
+        }
+        if (missionFailureMessage) {
+          patched = { ...patched, error_message: missionFailureMessage };
+        }
         if (shouldUpdateTitle) {
           patched = { ...patched, title: eventTitle };
+        }
+
+        if (hasCounterSnapshot) {
+          const nextTotalRaw = totalTasksFromEvent ?? patched.total_tasks;
+          const nextCompletedRaw = completedTasksFromEvent ?? patched.completed_tasks;
+          const nextFailedRaw = failedTasksFromEvent ?? patched.failed_tasks;
+          const normalizedTotal = Math.max(0, nextTotalRaw, nextCompletedRaw + nextFailedRaw);
+          patched = {
+            ...patched,
+            total_tasks: normalizedTotal,
+            completed_tasks: Math.min(nextCompletedRaw, normalizedTotal),
+            failed_tasks: Math.min(nextFailedRaw, normalizedTotal),
+          };
         }
 
         if (isRunBoundary) {
@@ -527,7 +591,7 @@ export const useMissionStore = create<MissionState>((set, get) => ({
             pending_clarification_count: nextCount,
           };
         }
-        return patched;
+        return normalizeMissionStatus(patched);
       };
 
       return {

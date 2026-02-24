@@ -158,6 +158,14 @@ export const TaskListPanel: React.FC<TaskListPanelProps> = ({
             ))}
           </div>
         )}
+        {tasks.length > 0 && (
+          <div className="rounded-md border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-900/60 px-3 py-2 text-[11px] text-zinc-500">
+            {t(
+              'missions.executionWaveHint',
+              'Dep Wave indicates dependency layer only; it is not a review round.'
+            )}
+          </div>
+        )}
 
         {tasks.length === 0 ? (
           <div className="text-sm text-zinc-500 py-3">

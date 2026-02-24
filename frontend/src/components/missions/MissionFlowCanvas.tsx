@@ -555,12 +555,14 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
         typeof task.task_metadata?.dependency_level === 'number'
           ? task.task_metadata.dependency_level
           : undefined;
-      const visualTaskStatus =
+      const isAwaitingReview =
         task.status === 'completed' &&
         reviewStatus !== 'approved' &&
         selectedMission.status !== 'completed' &&
-        selectedMission.status !== 'qa'
-          ? 'reviewing'
+        selectedMission.status !== 'qa';
+      const visualTaskStatus =
+        isAwaitingReview
+          ? (isReviewPhase ? 'reviewing' : 'awaiting_review')
           : task.status;
 
       nodes.push({
@@ -1061,7 +1063,13 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#e4e4e7" />
       </ReactFlow>
       <div className="absolute right-6 top-4 z-[5] px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white/90 dark:bg-zinc-900/90 text-[11px] text-zinc-500">
-        {t('missions.flowHint', 'Double-click a node to inspect full details')}
+        <div>{t('missions.flowHint', 'Double-click a node to inspect full details')}</div>
+        <div className="mt-0.5 text-[10px] text-zinc-400">
+          {t(
+            'missions.flowLegendHint',
+            'Dep Wave is dependency layer; purple spinner means review/QA is currently running.'
+          )}
+        </div>
       </div>
 
       <LayoutModal

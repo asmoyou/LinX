@@ -1,6 +1,6 @@
 import React, { memo } from 'react';
 import { Handle, Position } from 'reactflow';
-import { CheckCircle2, Circle, Loader2, XCircle, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, Circle, Loader2, XCircle, AlertTriangle, Clock3 } from 'lucide-react';
 
 interface TaskNodeData {
   task_id: string;
@@ -19,6 +19,7 @@ const statusConfig: Record<string, { icon: React.ElementType; color: string; bor
   failed: { icon: XCircle, color: 'text-red-500', borderColor: 'border-red-400' },
   blocked: { icon: AlertTriangle, color: 'text-amber-500', borderColor: 'border-amber-400' },
   reviewing: { icon: Loader2, color: 'text-purple-500', borderColor: 'border-purple-400' },
+  awaiting_review: { icon: Clock3, color: 'text-purple-500', borderColor: 'border-purple-300' },
 };
 
 export const TaskNode: React.FC<{ data: TaskNodeData }> = memo(({ data }) => {
@@ -53,10 +54,15 @@ export const TaskNode: React.FC<{ data: TaskNodeData }> = memo(({ data }) => {
       )}
       {typeof data.dependency_level === 'number' && (
         <div className="flex items-center gap-1 mt-0.5">
-          <span className="text-[10px] text-zinc-400">Wave:</span>
+          <span className="text-[10px] text-zinc-400">Dep Wave:</span>
           <span className="text-[10px] font-medium text-zinc-600 dark:text-zinc-400">
             {data.dependency_level + 1}
           </span>
+        </div>
+      )}
+      {data.status === 'awaiting_review' && (
+        <div className="text-[10px] text-purple-500 mt-0.5">
+          Awaiting review
         </div>
       )}
 
