@@ -411,6 +411,7 @@ DEFAULT_TEMPORARY_WORKER_CONFIG = {
 DEFAULT_EXECUTION_CONFIG = {
     "max_retries": 3,
     "task_timeout_s": 600,
+    "require_dependency_review_pass": True,
     "max_rework_cycles": 2,
     "max_qa_cycles": 1,
     "network_access": False,

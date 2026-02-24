@@ -80,6 +80,7 @@ class MissionRoleConfigSchema(BaseModel):
 class MissionExecutionConfigSchema(BaseModel):
     max_retries: int = 3
     task_timeout_s: int = 600
+    require_dependency_review_pass: bool = True
     max_rework_cycles: int = 2
     max_qa_cycles: int = 1
     network_access: bool = False
@@ -552,6 +553,7 @@ async def create_mission(
         for key in (
             "max_retries",
             "task_timeout_s",
+            "require_dependency_review_pass",
             "max_rework_cycles",
             "max_qa_cycles",
             "max_concurrent_tasks",

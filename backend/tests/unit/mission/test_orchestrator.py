@@ -1,5 +1,6 @@
 """Unit tests for mission orchestrator safety guards."""
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from typing import List
@@ -1831,3 +1832,201 @@ async def test_execute_task_with_retry_includes_review_feedback_in_prompt(monkey
     assert "Previous Review Feedback" in prompt
     assert "Remove full-width spaces" in prompt
     assert "rework cycle 2" in prompt
+
+
+@pytest.mark.asyncio
+async def test_execute_task_with_retry_respects_task_timeout(monkeypatch):
+    mission_id = uuid4()
+    owner_user_id = uuid4()
+    assigned_agent_id = uuid4()
+    task_id = uuid4()
+    emitted_events = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+
+    mission = SimpleNamespace(
+        created_by_user_id=owner_user_id,
+        mission_config={
+            "execution_config": {"task_timeout_s": 1, "max_retries": 0},
+            "leader_config": {
+                "llm_provider": "ollama",
+                "llm_model": "qwen2.5:14b",
+                "temperature": 0.2,
+                "max_tokens": 1024,
+            },
+        },
+    )
+    task_obj = SimpleNamespace(
+        task_id=task_id,
+        goal_text="Generate output",
+        acceptance_criteria="Must finish quickly",
+        task_metadata={"title": "Timeout candidate"},
+        assigned_agent_id=assigned_agent_id,
+    )
+
+    class _FakeQuery:
+        def __init__(self, task):
+            self._task = task
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return self._task
+
+    class _FakeSession:
+        def __init__(self, task):
+            self._task = task
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._task)
+
+    class _FakeSessionContext:
+        def __init__(self, task):
+            self._task = task
+
+        def __enter__(self):
+            return _FakeSession(self._task)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    db_task = SimpleNamespace(
+        status="pending",
+        assigned_agent_id=assigned_agent_id,
+        result=None,
+        completed_at=None,
+    )
+
+    async def _fake_create_registered(agent_id, owner_user_id):
+        return SimpleNamespace(agent_id=agent_id, name="worker-agent")
+
+    async def _fake_execute_agent_task(*args, **kwargs):
+        return {"output": "should-not-complete"}
+
+    async def _fake_wait_for(coro, timeout):
+        coro.close()
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.create_registered_mission_agent",
+        _fake_create_registered,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_execute_agent_task",
+        staticmethod(_fake_execute_agent_task),
+    )
+    monkeypatch.setattr("mission_system.orchestrator.asyncio.wait_for", _fake_wait_for)
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(db_task),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_agent_status",
+        lambda mission_id, agent_id, status: None,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_safe_sync_mission_task_counters",
+        lambda self, mission_id, fallback_total=0: {},
+    )
+
+    success = await MissionOrchestrator._execute_task_with_retry(
+        orchestrator,
+        mission_id=mission_id,
+        mission=mission,
+        task_obj=task_obj,
+        max_retries=0,
+    )
+
+    assert success is False
+    assert db_task.status == "failed"
+    assert "timeout" in str((db_task.result or {}).get("last_error", "")).lower()
+    assert any(
+        event.get("event_type") == "TASK_FAILED"
+        and event.get("data", {}).get("error_type") == "TaskTimeoutError"
+        for event in emitted_events
+    )
+
+
+@pytest.mark.asyncio
+async def test_review_task_for_dependency_gate_marks_failed_task(monkeypatch):
+    mission_id = uuid4()
+    dependency_task_id = uuid4()
+    emitted_events = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+
+    dependency_task = SimpleNamespace(
+        task_id=dependency_task_id,
+        status="completed",
+        goal_text="Collect source facts",
+        acceptance_criteria="Facts must be accurate",
+        result={"output": "raw output"},
+        task_metadata={"title": "Collect facts", "review_status": "pending"},
+        completed_at=datetime.utcnow(),
+    )
+
+    class _FakeQuery:
+        def __init__(self, task):
+            self._task = task
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return self._task
+
+    class _FakeSession:
+        def __init__(self, task):
+            self._task = task
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._task)
+
+    class _FakeSessionContext:
+        def __init__(self, task):
+            self._task = task
+
+        def __enter__(self):
+            return _FakeSession(self._task)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    async def _fake_review(*args, **kwargs):
+        return "FAIL: Missing reliable citations."
+
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(dependency_task),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_execute_phase_prompt_with_retry",
+        _fake_review,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_safe_sync_mission_task_counters",
+        lambda self, mission_id, fallback_total=0: {"failed_tasks": 1},
+    )
+
+    verdict = await MissionOrchestrator._review_task_for_dependency_gate(
+        orchestrator,
+        mission_id=mission_id,
+        mission=SimpleNamespace(created_by_user_id=uuid4()),
+        dependency_task_id=dependency_task_id,
+        supervisor=SimpleNamespace(name="supervisor"),
+        fallback_total_tasks=1,
+    )
+
+    assert verdict is False
+    assert dependency_task.status == "failed"
+    assert dependency_task.task_metadata["review_status"] == "rework_required"
+    assert "review_feedback" in dependency_task.task_metadata
+    assert any(event.get("event_type") == "TASK_REVIEWED" for event in emitted_events)
+    assert any(event.get("event_type") == "TASK_FAILED" for event in emitted_events)

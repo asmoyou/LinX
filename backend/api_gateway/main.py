@@ -193,6 +193,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # Shutdown
     logger.info("Shutting down API Gateway")
 
+    # Cancel active missions first so runtime state is persisted before
+    # SessionManager/DB teardown during hot reload or shutdown.
+    try:
+        from mission_system.orchestrator import get_orchestrator
+
+        summary = await get_orchestrator().cancel_all_active_missions()
+        if summary.get("active", 0) > 0:
+            logger.info("Active missions cancelled during shutdown", extra=summary)
+    except Exception as e:
+        logger.error(f"Failed to cancel active missions during shutdown: {e}")
+
     # Stop document processor worker
     try:
         from knowledge_base.document_processor_worker import stop_worker

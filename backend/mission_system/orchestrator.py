@@ -165,6 +165,28 @@ class MissionOrchestrator:
             message="Mission cancelled by user",
         )
 
+    async def cancel_all_active_missions(self) -> Dict[str, int]:
+        """Best-effort cancel all active missions.
+
+        Used during API shutdown/reload so mission status does not stay in
+        executing/reviewing/qa when the process is restarted.
+        """
+        active_ids = list(self._active_missions.keys())
+        if not active_ids:
+            return {"active": 0, "cancelled": 0, "failed": 0}
+
+        cancelled = 0
+        failed = 0
+        for mission_id in active_ids:
+            try:
+                await self.cancel_mission(mission_id)
+                cancelled += 1
+            except Exception:
+                failed += 1
+                logger.exception("Failed to cancel mission %s during shutdown", mission_id)
+
+        return {"active": len(active_ids), "cancelled": cancelled, "failed": failed}
+
     def provide_clarification(self, mission_id: UUID, response: str) -> None:
         """Supply a user clarification response for a blocked requirements phase."""
         self._clarification_responses[mission_id] = response
@@ -363,6 +385,7 @@ class MissionOrchestrator:
             "max_concurrent_tasks",
             "max_qa_cycles",
             "debug_mode",
+            "require_dependency_review_pass",
             "enable_team_blueprint",
             "prefer_existing_agents",
             "allow_temporary_workers",
@@ -405,6 +428,13 @@ class MissionOrchestrator:
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _get_task_review_status(task_metadata: Any) -> str:
+        """Normalize review_status from task metadata."""
+        if not isinstance(task_metadata, dict):
+            return ""
+        return str(task_metadata.get("review_status") or "").strip().lower()
 
     @staticmethod
     def _normalize_agent_result(result: Any) -> Dict[str, Any]:
@@ -2243,6 +2273,7 @@ class MissionOrchestrator:
         mission = get_mission(mission_id)
         if mission is None:
             raise MissionError(mission_id, "Mission not found")
+        mission_total_tasks = self._coerce_int(getattr(mission, "total_tasks", 0), 0)
 
         from agent_framework.agent_registry import AgentRegistry
 
@@ -2294,7 +2325,33 @@ class MissionOrchestrator:
         # Execute with concurrency limiter from execution config
         exec_cfg = self._get_execution_config(mission)
         max_concurrent = max(1, self._coerce_int(exec_cfg.get("max_concurrent_tasks", 3), 3))
+        require_dependency_review_pass = self._coerce_bool(
+            exec_cfg.get("require_dependency_review_pass", True),
+            default=True,
+        )
         semaphore = asyncio.Semaphore(max_concurrent)
+        dependency_review_locks: Dict[str, asyncio.Lock] = {}
+        dependency_supervisor: Optional[Any] = None
+        dependency_supervisor_lock = asyncio.Lock()
+
+        async def _get_dependency_supervisor() -> Any:
+            nonlocal dependency_supervisor
+            if dependency_supervisor is not None:
+                return dependency_supervisor
+
+            async with dependency_supervisor_lock:
+                if dependency_supervisor is None:
+                    supervisor_llm_cfg = self._get_llm_config(mission, "supervisor")
+                    supervisor_config = get_supervisor_config(
+                        owner_user_id=mission.created_by_user_id,
+                        temperature=supervisor_llm_cfg["temperature"],
+                    )
+                    dependency_supervisor = await create_mission_agent(
+                        agent_config=supervisor_config,
+                        **supervisor_llm_cfg,
+                    )
+
+            return dependency_supervisor
 
         async def _execute_single(task_obj: Any) -> None:
             async with semaphore:
@@ -2302,9 +2359,11 @@ class MissionOrchestrator:
                 dep_ids = task_obj.dependencies or []
                 while dep_ids:
                     with get_db_session() as session:
-                        dep_statuses = {
-                            str(t.task_id): t.status
-                            for t in session.query(Task).filter(Task.task_id.in_(dep_ids)).all()
+                        dep_rows = session.query(Task).filter(Task.task_id.in_(dep_ids)).all()
+                        dep_statuses = {str(t.task_id): t.status for t in dep_rows}
+                        dep_review_statuses = {
+                            str(t.task_id): self._get_task_review_status(t.task_metadata)
+                            for t in dep_rows
                         }
 
                     missing_deps = [dep_id for dep_id in dep_ids if dep_id not in dep_statuses]
@@ -2316,6 +2375,10 @@ class MissionOrchestrator:
                                 t.result = {
                                     "error": f"Missing dependencies: {', '.join(missing_deps)}"
                                 }
+                        counter_snapshot = self._safe_sync_mission_task_counters(
+                            mission_id,
+                            fallback_total=mission_total_tasks,
+                        )
                         self._emitter.emit(
                             mission_id=mission_id,
                             event_type="TASK_FAILED",
@@ -2323,6 +2386,7 @@ class MissionOrchestrator:
                             data={
                                 "title": (task_obj.task_metadata or {}).get("title", "Untitled"),
                                 "error": f"Missing dependencies: {', '.join(missing_deps)}",
+                                **counter_snapshot,
                             },
                             message="Task failed due to missing dependencies",
                         )
@@ -2330,6 +2394,86 @@ class MissionOrchestrator:
 
                     all_done = all(dep_statuses.get(dep_id) == "completed" for dep_id in dep_ids)
                     if all_done:
+                        if require_dependency_review_pass:
+                            blocked_by_review_deps = [
+                                dep_id
+                                for dep_id in dep_ids
+                                if dep_review_statuses.get(dep_id)
+                                in {"rework_required", "blocked_by_dependency"}
+                            ]
+                            if blocked_by_review_deps:
+                                with get_db_session() as session:
+                                    t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+                                    if t:
+                                        t.status = "failed"
+                                        t.result = {
+                                            "error": (
+                                                "Blocked by review-failed dependencies: "
+                                                f"{', '.join(blocked_by_review_deps)}"
+                                            )
+                                        }
+                                counter_snapshot = self._safe_sync_mission_task_counters(
+                                    mission_id,
+                                    fallback_total=mission_total_tasks,
+                                )
+                                self._emitter.emit(
+                                    mission_id=mission_id,
+                                    event_type="TASK_FAILED",
+                                    task_id=task_obj.task_id,
+                                    data={
+                                        "title": (task_obj.task_metadata or {}).get("title", "Untitled"),
+                                        "error": (
+                                            "Blocked by review-failed dependencies: "
+                                            f"{', '.join(blocked_by_review_deps)}"
+                                        ),
+                                        **counter_snapshot,
+                                    },
+                                    message="Task failed due to review-failed dependencies",
+                                )
+                                return
+
+                            dependencies_pending_review = [
+                                dep_id
+                                for dep_id in dep_ids
+                                if dep_review_statuses.get(dep_id) != "approved"
+                            ]
+                            if dependencies_pending_review:
+                                for dep_id in dependencies_pending_review:
+                                    dep_lock = dependency_review_locks.setdefault(dep_id, asyncio.Lock())
+                                    async with dep_lock:
+                                        try:
+                                            dep_uuid = UUID(dep_id)
+                                        except (TypeError, ValueError):
+                                            continue
+
+                                        with get_db_session() as session:
+                                            dep_task = (
+                                                session.query(Task)
+                                                .filter(Task.task_id == dep_uuid)
+                                                .first()
+                                            )
+                                            if dep_task is None:
+                                                continue
+                                            dep_status = str(dep_task.status or "").strip().lower()
+                                            dep_review_status = self._get_task_review_status(
+                                                dep_task.task_metadata
+                                            )
+
+                                        if dep_status != "completed":
+                                            continue
+                                        if dep_review_status == "approved":
+                                            continue
+
+                                        supervisor = await _get_dependency_supervisor()
+                                        await self._review_task_for_dependency_gate(
+                                            mission_id=mission_id,
+                                            mission=mission,
+                                            dependency_task_id=dep_uuid,
+                                            supervisor=supervisor,
+                                            fallback_total_tasks=mission_total_tasks,
+                                        )
+                                # Re-evaluate dependency statuses after on-demand review.
+                                continue
                         break
 
                     terminal_statuses = {"completed", "failed", "cancelled"}
@@ -2349,6 +2493,10 @@ class MissionOrchestrator:
                                 t.result = {
                                     "error": f"Blocked by failed dependencies: {', '.join(failed_deps)}"
                                 }
+                        counter_snapshot = self._safe_sync_mission_task_counters(
+                            mission_id,
+                            fallback_total=mission_total_tasks,
+                        )
                         self._emitter.emit(
                             mission_id=mission_id,
                             event_type="TASK_FAILED",
@@ -2358,6 +2506,7 @@ class MissionOrchestrator:
                                 "error": (
                                     "Blocked by failed dependencies: " f"{', '.join(failed_deps)}"
                                 ),
+                                **counter_snapshot,
                             },
                             message="Task failed due to failed dependencies",
                         )
@@ -2383,7 +2532,7 @@ class MissionOrchestrator:
         total_count = sum(counts.values())
 
         # Update mission counters based on actual DB task statuses.
-        self._sync_mission_task_counters(mission_id, fallback_total=mission.total_tasks)
+        self._sync_mission_task_counters(mission_id, fallback_total=mission_total_tasks)
 
         self._emitter.emit(
             mission_id=mission_id,
@@ -2420,8 +2569,10 @@ class MissionOrchestrator:
             exec_cfg.get("allow_temporary_workers", True),
             default=True,
         )
+        task_timeout_s = max(0, self._coerce_int(exec_cfg.get("task_timeout_s", 600), 600))
         task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
         task_metadata = task_obj.task_metadata if isinstance(task_obj.task_metadata, dict) else {}
+        mission_total_tasks = self._coerce_int(getattr(mission, "total_tasks", 0), 0)
         review_feedback_raw = task_metadata.get("review_feedback")
         review_feedback = (
             review_feedback_raw.strip() if isinstance(review_feedback_raw, str) else ""
@@ -2600,6 +2751,10 @@ class MissionOrchestrator:
                         "last_error": no_agent_error,
                         "attempts": [],
                     }
+            counter_snapshot = self._safe_sync_mission_task_counters(
+                mission_id,
+                fallback_total=mission_total_tasks,
+            )
             self._emitter.emit(
                 mission_id=mission_id,
                 event_type="TASK_FAILED",
@@ -2609,6 +2764,7 @@ class MissionOrchestrator:
                     "error": no_agent_error,
                     "prefer_existing_agents": prefer_existing_agents,
                     "allow_temporary_workers": allow_temporary_workers,
+                    **counter_snapshot,
                 },
                 message=f"Task failed: {task_title}",
             )
@@ -2700,12 +2856,23 @@ class MissionOrchestrator:
                     exec_cfg.get("network_access", False),
                     default=False,
                 )
-                result = await self._execute_agent_task(
-                    agent,
-                    task_prompt,
-                    container_id=workspace_container_id,
-                    code_execution_network_access=code_execution_network_access,
-                )
+                if task_timeout_s > 0:
+                    result = await asyncio.wait_for(
+                        self._execute_agent_task(
+                            agent,
+                            task_prompt,
+                            container_id=workspace_container_id,
+                            code_execution_network_access=code_execution_network_access,
+                        ),
+                        timeout=task_timeout_s,
+                    )
+                else:
+                    result = await self._execute_agent_task(
+                        agent,
+                        task_prompt,
+                        container_id=workspace_container_id,
+                        code_execution_network_access=code_execution_network_access,
+                    )
                 output = self._extract_agent_output(
                     result,
                     f"Task execution failed for '{task_title}'",
@@ -2740,11 +2907,15 @@ class MissionOrchestrator:
                         local_meta.pop("review_output_signature", None)
                         task_obj.task_metadata = local_meta
 
+                counter_snapshot = self._safe_sync_mission_task_counters(
+                    mission_id,
+                    fallback_total=mission_total_tasks,
+                )
                 self._emitter.emit(
                     mission_id=mission_id,
                     event_type="TASK_COMPLETED",
                     task_id=task_obj.task_id,
-                    data={"title": task_title},
+                    data={"title": task_title, **counter_snapshot},
                     message=f"Task completed: {task_title}",
                 )
                 update_mission_agent_status(
@@ -2755,8 +2926,16 @@ class MissionOrchestrator:
                 return True
 
             except Exception as exc:
-                error_message = str(exc)
-                error_type = exc.__class__.__name__
+                is_timeout = isinstance(exc, asyncio.TimeoutError)
+                if is_timeout:
+                    error_message = (
+                        "Task execution exceeded configured timeout "
+                        f"({task_timeout_s}s) and was aborted"
+                    )
+                    error_type = "TaskTimeoutError"
+                else:
+                    error_message = str(exc)
+                    error_type = exc.__class__.__name__
                 trace = traceback.format_exc() if debug_mode else None
                 backoff = 2**attempt if attempt < max_retries else None
 
@@ -2780,6 +2959,8 @@ class MissionOrchestrator:
                         }
                         if backoff is not None:
                             attempt_record["backoff_s"] = backoff
+                        if is_timeout and task_timeout_s > 0:
+                            attempt_record["timeout_s"] = task_timeout_s
                         if trace:
                             attempt_record["traceback"] = trace
                         result_payload = self._append_attempt_to_result(
@@ -2809,6 +2990,7 @@ class MissionOrchestrator:
                         "backoff_s": backoff,
                         "agent_id": str(resolved_agent_id),
                         "agent_name": getattr(agent, "name", "worker"),
+                        "timeout_s": task_timeout_s if is_timeout and task_timeout_s > 0 else None,
                         "traceback": trace,
                     },
                     message=(f"Task attempt {attempt + 1}/{total_attempts} failed: {task_title}"),
@@ -2819,6 +3001,10 @@ class MissionOrchestrator:
                     await asyncio.sleep(backoff)
                 else:
                     # Final failure
+                    counter_snapshot = self._safe_sync_mission_task_counters(
+                        mission_id,
+                        fallback_total=mission_total_tasks,
+                    )
                     self._emitter.emit(
                         mission_id=mission_id,
                         event_type="TASK_FAILED",
@@ -2831,6 +3017,8 @@ class MissionOrchestrator:
                             "max_attempts": total_attempts,
                             "agent_id": str(resolved_agent_id),
                             "agent_name": getattr(agent, "name", "worker"),
+                            "timeout_s": task_timeout_s if is_timeout and task_timeout_s > 0 else None,
+                            **counter_snapshot,
                         },
                         message=f"Task failed: {task_title}",
                     )
@@ -2842,6 +3030,116 @@ class MissionOrchestrator:
                     return False
 
         return False
+
+    async def _review_task_for_dependency_gate(
+        self,
+        mission_id: UUID,
+        mission: Any,
+        dependency_task_id: UUID,
+        *,
+        supervisor: Any,
+        fallback_total_tasks: int = 0,
+    ) -> bool:
+        """Review a completed dependency task before unblocking downstream execution."""
+        from database.connection import get_db_session
+        from database.models import Task
+
+        with get_db_session() as session:
+            dep_task = session.query(Task).filter(Task.task_id == dependency_task_id).first()
+            if dep_task is None:
+                return False
+
+            if str(dep_task.status or "").strip().lower() != "completed":
+                return False
+
+            dep_meta = dict(dep_task.task_metadata or {})
+            dep_title = str(dep_meta.get("title") or "Untitled")
+            dep_output = (dep_task.result or {}).get("output", "No output")
+            dep_output_signature = self._build_text_signature(dep_output)
+            if (
+                self._get_task_review_status(dep_meta) == "approved"
+                and str(dep_meta.get("review_output_signature") or "") == dep_output_signature
+            ):
+                return True
+
+            dep_goal = dep_task.goal_text
+            dep_acceptance = dep_task.acceptance_criteria or "None specified"
+
+        review_prompt = (
+            "Review the following task output against its acceptance criteria.\n\n"
+            f"## Task: {dep_title}\n"
+            f"## Instructions\n{dep_goal}\n\n"
+            f"## Acceptance Criteria\n{dep_acceptance}\n\n"
+            f"## Task Output\n{dep_output}\n\n"
+            "Respond with PASS or FAIL followed by your reasoning. "
+            "If FAIL, provide specific actionable feedback."
+        )
+        review_output = await self._execute_phase_prompt_with_retry(
+            mission_id=mission_id,
+            mission=mission,
+            phase="reviewing",
+            step=f"dependency_gate_review:{dependency_task_id}",
+            agent=supervisor,
+            prompt=review_prompt,
+            error_context=f"Dependency review failed for task {dependency_task_id}",
+        )
+        verdict = self._extract_binary_verdict(review_output)
+        self._emitter.emit(
+            mission_id=mission_id,
+            event_type="TASK_REVIEWED",
+            task_id=dependency_task_id,
+            data={
+                "title": dep_title,
+                "verdict": verdict,
+                "reason": "dependency_gate",
+            },
+            message=f"Task review: {dep_title} -> {verdict} (dependency gate)",
+        )
+
+        if verdict == "FAIL":
+            with get_db_session() as session:
+                dep_task = session.query(Task).filter(Task.task_id == dependency_task_id).first()
+                if dep_task:
+                    dep_task.status = "failed"
+                    dep_meta = dict(dep_task.task_metadata or {})
+                    dep_meta["review_feedback"] = review_output
+                    dep_meta["review_status"] = "rework_required"
+                    dep_meta["review_cycle_count"] = (
+                        self._coerce_int(dep_meta.get("review_cycle_count", 0), 0) + 1
+                    )
+                    dep_meta.pop("review_output_signature", None)
+                    dep_task.task_metadata = dep_meta
+                    dep_task.completed_at = None
+
+            counter_snapshot = self._safe_sync_mission_task_counters(
+                mission_id,
+                fallback_total=fallback_total_tasks,
+            )
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="TASK_FAILED",
+                task_id=dependency_task_id,
+                data={
+                    "title": dep_title,
+                    "error": "Dependency review failed; task returned to rework.",
+                    "reason": "dependency_review_failed",
+                    **counter_snapshot,
+                },
+                message=f"Task failed due to dependency review rejection: {dep_title}",
+            )
+            return False
+
+        with get_db_session() as session:
+            dep_task = session.query(Task).filter(Task.task_id == dependency_task_id).first()
+            if dep_task:
+                dep_meta = dict(dep_task.task_metadata or {})
+                dep_meta["review_status"] = "approved"
+                dep_meta["review_output_signature"] = dep_output_signature
+                dep_meta.pop("review_feedback", None)
+                dep_meta.pop("blocked_by_failed_dependencies", None)
+                dep_task.task_metadata = dep_meta
+
+        return True
 
     async def _phase_review(self, mission_id: UUID) -> None:
         """Supervisor reviews outputs against acceptance criteria."""
@@ -3787,16 +4085,43 @@ class MissionOrchestrator:
         counter = Counter(status for (status,) in statuses)
         return dict(counter)
 
-    def _sync_mission_task_counters(self, mission_id: UUID, fallback_total: int = 0) -> None:
+    def _sync_mission_task_counters(
+        self,
+        mission_id: UUID,
+        fallback_total: int = 0,
+    ) -> Dict[str, int]:
         """Persist mission task counters from current DB task statuses."""
         counts = self._get_task_status_counts(mission_id)
         total_count = sum(counts.values())
+        snapshot = {
+            "total_tasks": max(fallback_total, total_count),
+            "completed_tasks": counts.get("completed", 0),
+            "failed_tasks": counts.get("failed", 0),
+        }
         update_mission_fields(
             mission_id,
-            total_tasks=max(fallback_total, total_count),
-            completed_tasks=counts.get("completed", 0),
-            failed_tasks=counts.get("failed", 0),
+            **snapshot,
         )
+        return snapshot
+
+    def _safe_sync_mission_task_counters(
+        self,
+        mission_id: UUID,
+        fallback_total: int = 0,
+    ) -> Dict[str, int]:
+        """Best-effort counter sync for non-critical UI snapshots."""
+        try:
+            return self._sync_mission_task_counters(
+                mission_id=mission_id,
+                fallback_total=fallback_total,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to sync mission counters for snapshot",
+                extra={"mission_id": str(mission_id)},
+                exc_info=True,
+            )
+            return {}
 
     @staticmethod
     def _topological_sort(tasks: List[Any]) -> List[Any]:
