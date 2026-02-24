@@ -560,8 +560,12 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
         reviewStatus !== 'approved' &&
         selectedMission.status !== 'completed' &&
         selectedMission.status !== 'qa';
+      const isBlockedByDependency =
+        task.status !== 'completed' && reviewStatus === 'blocked_by_dependency';
       const visualTaskStatus =
-        isAwaitingReview
+        isBlockedByDependency
+          ? 'blocked'
+          : isAwaitingReview
           ? (isReviewPhase ? 'reviewing' : 'awaiting_review')
           : task.status;
 

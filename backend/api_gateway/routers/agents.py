@@ -2419,6 +2419,7 @@ async def test_agent(
                 error_holder = [None]
                 final_response = [""]
                 response_metadata = [{}]
+                execution_messages = [[]]
 
                 def stream_callback(token_data):
                     """Callback for streaming tokens from agent."""
@@ -2447,10 +2448,11 @@ async def test_agent(
 
                         # Store final response
                         final_response[0] = result.get("output", "")
+                        execution_messages[0] = result.get("messages") or []
 
                         # Get metadata if available
-                        if result.get("messages"):
-                            for msg in reversed(result["messages"]):
+                        if execution_messages[0]:
+                            for msg in reversed(execution_messages[0]):
                                 if hasattr(msg, "response_metadata") and msg.response_metadata:
                                     response_metadata[0] = msg.response_metadata
                                     break
@@ -2561,7 +2563,8 @@ async def test_agent(
                     # 改进的估算：中文1字符≈1.5token，英文1字符≈0.25token
                     # 简化：平均1字符≈0.5token（考虑中英文混合）
                     input_chars = 0
-                    for msg in messages:
+                    messages_for_estimation = execution_messages[0]
+                    for msg in messages_for_estimation:
                         if hasattr(msg, "content"):
                             if isinstance(msg.content, str):
                                 input_chars += len(msg.content)
@@ -2578,7 +2581,10 @@ async def test_agent(
                     output_tokens = int(len(output_text) * 0.5)
 
                     logger.info(
-                        f"Token estimation (no metadata from streaming API): input={input_tokens} (chars={input_chars}), output={output_tokens} (chars={len(output_text)}), messages_count={len(messages)}"
+                        "Token estimation (no metadata from streaming API): "
+                        f"input={input_tokens} (chars={input_chars}), "
+                        f"output={output_tokens} (chars={len(output_text)}), "
+                        f"messages_count={len(messages_for_estimation)}"
                     )
                 else:
                     logger.info(
