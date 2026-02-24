@@ -2270,20 +2270,6 @@ async def test_agent(
                         exc_info=True,
                     )
 
-                # Build messages with conversation history
-                from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-
-                system_prompt = agent._create_system_prompt()
-                messages = [SystemMessage(content=system_prompt)]
-
-                # Add conversation history if provided
-                if parsed_history:
-                    for msg in parsed_history:
-                        if msg.get("role") == "user":
-                            messages.append(HumanMessage(content=msg.get("content", "")))
-                        elif msg.get("role") == "assistant":
-                            messages.append(AIMessage(content=msg.get("content", "")))
-
                 if file_refs:
                     yield (
                         "data: "
@@ -2324,7 +2310,6 @@ async def test_agent(
 
                 # Keep task text clean; BaseAgent will inject context consistently.
                 user_message = message_with_attachments
-                messages.append(HumanMessage(content=user_message))
 
                 # Check if model supports vision
                 model_supports_vision = False
@@ -2453,6 +2438,7 @@ async def test_agent(
                         result = agent.execute_task(
                             task_description=user_message,
                             context=context,
+                            conversation_history=parsed_history or None,
                             stream_callback=stream_callback,
                             session_workdir=conversation_session.workdir,
                             container_id=conversation_session.sandbox_id,  # Docker container for sandbox execution
@@ -2790,7 +2776,12 @@ async def test_agent(
                 )
 
                 executor = get_agent_executor()
-                result = await asyncio.to_thread(executor.execute, agent, exec_context)
+                result = await asyncio.to_thread(
+                    executor.execute,
+                    agent,
+                    exec_context,
+                    parsed_history or None,
+                )
 
                 return {
                     "success": result.get("success"),

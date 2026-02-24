@@ -668,12 +668,14 @@ class AgentExecutor:
         self,
         agent: BaseAgent,
         context: ExecutionContext,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         """Execute agent with given context.
 
         Args:
             agent: BaseAgent instance
             context: ExecutionContext with task details
+            conversation_history: Optional prior user/assistant turns to prepend.
 
         Returns:
             Dict with execution results
@@ -690,10 +692,14 @@ class AgentExecutor:
                 exec_context.update(context.additional_context)
 
             # Execute task
-            result = agent.execute_task(
-                task_description=context.task_description,
-                context=exec_context,
-            )
+            execute_kwargs: Dict[str, Any] = {
+                "task_description": context.task_description,
+                "context": exec_context,
+            }
+            if conversation_history:
+                execute_kwargs["conversation_history"] = conversation_history
+
+            result = agent.execute_task(**execute_kwargs)
 
             # Persist one task-level memory record per task completion (success or failure).
             try:

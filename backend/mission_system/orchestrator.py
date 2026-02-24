@@ -15,7 +15,7 @@ import re
 import traceback
 from collections import Counter, defaultdict, deque
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from uuid import UUID
 
 from mission_system.agent_factory import create_mission_agent
@@ -545,10 +545,66 @@ class MissionOrchestrator:
         """Extract output from agent response and raise on explicit failures."""
         payload = MissionOrchestrator._normalize_agent_result(result)
         if payload.get("success") is False:
-            error_message = payload.get("error") or "Unknown agent execution error"
+            error_message = MissionOrchestrator._extract_agent_error_message(payload)
             raise RuntimeError(f"{context}: {error_message}")
         output = payload.get("output")
         return "" if output is None else str(output)
+
+    @staticmethod
+    def _extract_agent_error_message(payload: Dict[str, Any]) -> str:
+        """Build a useful failure message from heterogeneous agent payloads."""
+        if not isinstance(payload, dict):
+            return "Unknown agent execution error"
+
+        def _first_text(value: Any) -> str:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            return ""
+
+        for key in ("error", "message", "reason", "detail", "last_error"):
+            text = _first_text(payload.get(key))
+            if text:
+                return text
+
+        output_text = _first_text(payload.get("output"))
+        if output_text:
+            return output_text[:300]
+
+        errors_value = payload.get("errors")
+        if isinstance(errors_value, list):
+            extracted_errors: List[str] = []
+            for item in errors_value[:3]:
+                if isinstance(item, dict):
+                    candidate = (
+                        _first_text(item.get("error"))
+                        or _first_text(item.get("message"))
+                        or _first_text(item.get("detail"))
+                    )
+                else:
+                    candidate = _first_text(item)
+                if candidate:
+                    extracted_errors.append(candidate)
+            if extracted_errors:
+                return "; ".join(extracted_errors)
+        elif isinstance(errors_value, str) and errors_value.strip():
+            return errors_value.strip()
+
+        keys = sorted(str(key) for key in payload.keys())
+        if keys:
+            return "Unknown agent execution error (payload keys: " + ", ".join(keys[:8]) + ")"
+        return "Unknown agent execution error"
+
+    @staticmethod
+    def _get_agent_status_value(agent: Any) -> str:
+        """Best-effort normalized agent status string for diagnostics."""
+        if agent is None:
+            return "unknown"
+        status = getattr(agent, "status", None)
+        if status is None:
+            return "unknown"
+        raw_status = getattr(status, "value", status)
+        normalized = str(raw_status or "").strip().lower()
+        return normalized or "unknown"
 
     @staticmethod
     def _append_attempt_to_result(
@@ -1442,6 +1498,7 @@ class MissionOrchestrator:
         agent: Any,
         prompt: str,
         *,
+        execution_context: Optional[Dict[str, Any]] = None,
         container_id: Optional[str] = None,
         code_execution_network_access: Optional[bool] = None,
     ) -> Dict[str, Any]:
@@ -1454,15 +1511,28 @@ class MissionOrchestrator:
         def _noop_stream_callback(_chunk: Any) -> None:
             return None
 
-        if not container_id:
+        if not container_id and execution_context is None:
             return await asyncio.to_thread(agent.execute_task, prompt)
+
+        if not container_id:
+            return await asyncio.to_thread(
+                agent.execute_task,
+                task_description=prompt,
+                context=execution_context,
+            )
+
+        execute_kwargs: Dict[str, Any] = {
+            "task_description": prompt,
+            "stream_callback": _noop_stream_callback,
+            "container_id": container_id,
+            "code_execution_network_access": code_execution_network_access,
+        }
+        if execution_context is not None:
+            execute_kwargs["context"] = execution_context
 
         return await asyncio.to_thread(
             agent.execute_task,
-            task_description=prompt,
-            stream_callback=_noop_stream_callback,
-            container_id=container_id,
-            code_execution_network_access=code_execution_network_access,
+            **execute_kwargs,
         )
 
     async def _execute_phase_prompt_with_retry(
@@ -1474,6 +1544,7 @@ class MissionOrchestrator:
         agent: Any,
         prompt: str,
         error_context: str,
+        agent_factory: Optional[Callable[[], Awaitable[Any]]] = None,
     ) -> str:
         """Execute a non-task phase prompt with retry and structured failure telemetry."""
         exec_cfg = self._get_execution_config(mission)
@@ -1481,13 +1552,43 @@ class MissionOrchestrator:
         debug_mode = self._coerce_bool(exec_cfg.get("debug_mode", False), default=False)
         total_attempts = max_retries + 1
 
+        current_agent = agent
         for attempt in range(total_attempts):
             try:
-                result = await self._execute_agent_task(agent, prompt)
+                result = await self._execute_agent_task(current_agent, prompt)
                 return self._extract_agent_output(result, error_context)
             except Exception as exc:
                 backoff = 2**attempt if attempt < max_retries else None
                 trace = traceback.format_exc() if debug_mode else None
+                agent_status_before_retry = self._get_agent_status_value(current_agent)
+                agent_recreated = False
+                recreated_agent_status = None
+                lower_error = str(exc).strip().lower()
+                can_retry = attempt < max_retries
+                should_recreate_agent = can_retry and agent_factory is not None and (
+                    agent_status_before_retry in {"error", "terminated"}
+                    or "agent not active" in lower_error
+                )
+
+                if should_recreate_agent:
+                    try:
+                        current_agent = await agent_factory()
+                        agent_recreated = True
+                        recreated_agent_status = self._get_agent_status_value(current_agent)
+                        logger.warning(
+                            "Recreated phase agent after failed %s step %s (attempt %s/%s): %s",
+                            phase,
+                            step,
+                            attempt + 1,
+                            total_attempts,
+                            exc,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to recreate phase agent for %s step %s",
+                            phase,
+                            step,
+                        )
                 self._emitter.emit(
                     mission_id=mission_id,
                     event_type="PHASE_ATTEMPT_FAILED",
@@ -1500,6 +1601,9 @@ class MissionOrchestrator:
                         "error_type": exc.__class__.__name__,
                         "will_retry": attempt < max_retries,
                         "backoff_s": backoff,
+                        "agent_status": agent_status_before_retry,
+                        "agent_recreated": agent_recreated,
+                        "agent_status_after_recreate": recreated_agent_status,
                         "traceback": trace,
                     },
                     message=(
@@ -1525,9 +1629,7 @@ class MissionOrchestrator:
         attachment_dicts = [
             {
                 "bucket_name": (
-                    att.file_reference.split("/")[0]
-                    if "/" in att.file_reference
-                    else "documents"
+                    att.file_reference.split("/")[0] if "/" in att.file_reference else "documents"
                 ),
                 "object_key": (
                     att.file_reference.split("/", 1)[1]
@@ -2428,6 +2530,19 @@ class MissionOrchestrator:
         dependency_supervisor: Optional[Any] = None
         dependency_supervisor_lock = asyncio.Lock()
 
+        async def _create_dependency_supervisor() -> Any:
+            nonlocal dependency_supervisor
+            supervisor_llm_cfg = self._get_llm_config(mission, "supervisor")
+            supervisor_config = get_supervisor_config(
+                owner_user_id=mission.created_by_user_id,
+                temperature=supervisor_llm_cfg["temperature"],
+            )
+            dependency_supervisor = await create_mission_agent(
+                agent_config=supervisor_config,
+                **supervisor_llm_cfg,
+            )
+            return dependency_supervisor
+
         async def _get_dependency_supervisor() -> Any:
             nonlocal dependency_supervisor
             if dependency_supervisor is not None:
@@ -2435,15 +2550,7 @@ class MissionOrchestrator:
 
             async with dependency_supervisor_lock:
                 if dependency_supervisor is None:
-                    supervisor_llm_cfg = self._get_llm_config(mission, "supervisor")
-                    supervisor_config = get_supervisor_config(
-                        owner_user_id=mission.created_by_user_id,
-                        temperature=supervisor_llm_cfg["temperature"],
-                    )
-                    dependency_supervisor = await create_mission_agent(
-                        agent_config=supervisor_config,
-                        **supervisor_llm_cfg,
-                    )
+                    dependency_supervisor = await _create_dependency_supervisor()
 
             return dependency_supervisor
 
@@ -2497,32 +2604,58 @@ class MissionOrchestrator:
                             ]
                             if blocked_by_review_deps:
                                 with get_db_session() as session:
-                                    t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+                                    t = (
+                                        session.query(Task)
+                                        .filter(Task.task_id == task_obj.task_id)
+                                        .first()
+                                    )
                                     if t:
-                                        t.status = "failed"
-                                        t.result = {
-                                            "error": (
-                                                "Blocked by review-failed dependencies: "
-                                                f"{', '.join(blocked_by_review_deps)}"
-                                            )
-                                        }
+                                        t.status = "pending"
+                                        existing_result = (
+                                            dict(t.result) if isinstance(t.result, dict) else {}
+                                        )
+                                        existing_result["error"] = (
+                                            "Blocked by review-failed dependencies: "
+                                            f"{', '.join(blocked_by_review_deps)}"
+                                        )
+                                        t.result = existing_result
+                                        meta = dict(t.task_metadata or {})
+                                        meta["review_status"] = "blocked_by_dependency"
+                                        meta["blocked_by_failed_dependencies"] = (
+                                            blocked_by_review_deps
+                                        )
+                                        meta.pop("review_output_signature", None)
+                                        t.task_metadata = meta
+                                        t.completed_at = None
+                                local_meta = dict(task_obj.task_metadata or {})
+                                local_meta["review_status"] = "blocked_by_dependency"
+                                local_meta["blocked_by_failed_dependencies"] = (
+                                    blocked_by_review_deps
+                                )
+                                local_meta.pop("review_output_signature", None)
+                                task_obj.task_metadata = local_meta
+                                task_obj.status = "pending"
                                 counter_snapshot = self._safe_sync_mission_task_counters(
                                     mission_id,
                                     fallback_total=mission_total_tasks,
                                 )
                                 self._emitter.emit(
                                     mission_id=mission_id,
-                                    event_type="TASK_FAILED",
+                                    event_type="TASK_BLOCKED",
                                     task_id=task_obj.task_id,
                                     data={
-                                        "title": (task_obj.task_metadata or {}).get("title", "Untitled"),
+                                        "title": (task_obj.task_metadata or {}).get(
+                                            "title", "Untitled"
+                                        ),
                                         "error": (
                                             "Blocked by review-failed dependencies: "
                                             f"{', '.join(blocked_by_review_deps)}"
                                         ),
+                                        "reason": "dependency_review_not_approved",
+                                        "blocked_by": blocked_by_review_deps,
                                         **counter_snapshot,
                                     },
-                                    message="Task failed due to review-failed dependencies",
+                                    message="Task blocked by review-failed dependencies",
                                 )
                                 return
 
@@ -2533,7 +2666,9 @@ class MissionOrchestrator:
                             ]
                             if dependencies_pending_review:
                                 for dep_id in dependencies_pending_review:
-                                    dep_lock = dependency_review_locks.setdefault(dep_id, asyncio.Lock())
+                                    dep_lock = dependency_review_locks.setdefault(
+                                        dep_id, asyncio.Lock()
+                                    )
                                     async with dep_lock:
                                         try:
                                             dep_uuid = UUID(dep_id)
@@ -2564,6 +2699,7 @@ class MissionOrchestrator:
                                             mission=mission,
                                             dependency_task_id=dep_uuid,
                                             supervisor=supervisor,
+                                            supervisor_factory=_create_dependency_supervisor,
                                             fallback_total_tasks=mission_total_tasks,
                                         )
                                 # Re-evaluate dependency statuses after on-demand review.
@@ -2583,26 +2719,44 @@ class MissionOrchestrator:
                         with get_db_session() as session:
                             t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
                             if t:
-                                t.status = "failed"
-                                t.result = {
-                                    "error": f"Blocked by failed dependencies: {', '.join(failed_deps)}"
-                                }
+                                t.status = "pending"
+                                existing_result = (
+                                    dict(t.result) if isinstance(t.result, dict) else {}
+                                )
+                                existing_result["error"] = (
+                                    f"Blocked by failed dependencies: {', '.join(failed_deps)}"
+                                )
+                                t.result = existing_result
+                                meta = dict(t.task_metadata or {})
+                                meta["review_status"] = "blocked_by_dependency"
+                                meta["blocked_by_failed_dependencies"] = failed_deps
+                                meta.pop("review_output_signature", None)
+                                t.task_metadata = meta
+                                t.completed_at = None
+                        local_meta = dict(task_obj.task_metadata or {})
+                        local_meta["review_status"] = "blocked_by_dependency"
+                        local_meta["blocked_by_failed_dependencies"] = failed_deps
+                        local_meta.pop("review_output_signature", None)
+                        task_obj.task_metadata = local_meta
+                        task_obj.status = "pending"
                         counter_snapshot = self._safe_sync_mission_task_counters(
                             mission_id,
                             fallback_total=mission_total_tasks,
                         )
                         self._emitter.emit(
                             mission_id=mission_id,
-                            event_type="TASK_FAILED",
+                            event_type="TASK_BLOCKED",
                             task_id=task_obj.task_id,
                             data={
                                 "title": (task_obj.task_metadata or {}).get("title", "Untitled"),
                                 "error": (
                                     "Blocked by failed dependencies: " f"{', '.join(failed_deps)}"
                                 ),
+                                "reason": "dependency_failed",
+                                "blocked_by": failed_deps,
                                 **counter_snapshot,
                             },
-                            message="Task failed due to failed dependencies",
+                            message="Task blocked by failed dependencies",
                         )
                         return
                     await asyncio.sleep(2)
@@ -2939,6 +3093,33 @@ class MissionOrchestrator:
                     "Produce the deliverable and confirm completion."
                 )
 
+                execution_context_payload: Optional[Dict[str, Any]] = None
+                try:
+                    from agent_framework.agent_executor import ExecutionContext, get_agent_executor
+
+                    if resolved_agent_id is None:
+                        raise RuntimeError("Resolved agent ID missing during task execution")
+
+                    owner_user_id = UUID(str(mission.created_by_user_id))
+                    exec_context = ExecutionContext(
+                        agent_id=resolved_agent_id,
+                        user_id=owner_user_id,
+                        task_id=task_obj.task_id,
+                        task_description=str(task_obj.goal_text or task_prompt),
+                    )
+
+                    executor = get_agent_executor()
+                    execution_context_payload, _ = await asyncio.to_thread(
+                        executor.build_execution_context_with_debug,
+                        agent,
+                        exec_context,
+                    )
+                except Exception as context_error:
+                    logger.warning(
+                        "Failed to build execution context for mission task (continuing): %s",
+                        context_error,
+                    )
+
                 workspace_container_id: Optional[str] = None
                 workspace_manager = getattr(self, "_workspace", None)
                 if workspace_manager is not None:
@@ -2950,13 +3131,18 @@ class MissionOrchestrator:
                     exec_cfg.get("network_access", False),
                     default=False,
                 )
+                execute_kwargs: Dict[str, Any] = {
+                    "container_id": workspace_container_id,
+                    "code_execution_network_access": code_execution_network_access,
+                }
+                if execution_context_payload:
+                    execute_kwargs["execution_context"] = execution_context_payload
                 if task_timeout_s > 0:
                     result = await asyncio.wait_for(
                         self._execute_agent_task(
                             agent,
                             task_prompt,
-                            container_id=workspace_container_id,
-                            code_execution_network_access=code_execution_network_access,
+                            **execute_kwargs,
                         ),
                         timeout=task_timeout_s,
                     )
@@ -2964,8 +3150,7 @@ class MissionOrchestrator:
                     result = await self._execute_agent_task(
                         agent,
                         task_prompt,
-                        container_id=workspace_container_id,
-                        code_execution_network_access=code_execution_network_access,
+                        **execute_kwargs,
                     )
                 output = self._extract_agent_output(
                     result,
@@ -3111,7 +3296,9 @@ class MissionOrchestrator:
                             "max_attempts": total_attempts,
                             "agent_id": str(resolved_agent_id),
                             "agent_name": getattr(agent, "name", "worker"),
-                            "timeout_s": task_timeout_s if is_timeout and task_timeout_s > 0 else None,
+                            "timeout_s": (
+                                task_timeout_s if is_timeout and task_timeout_s > 0 else None
+                            ),
                             **counter_snapshot,
                         },
                         message=f"Task failed: {task_title}",
@@ -3132,6 +3319,7 @@ class MissionOrchestrator:
         dependency_task_id: UUID,
         *,
         supervisor: Any,
+        supervisor_factory: Optional[Callable[[], Awaitable[Any]]] = None,
         fallback_total_tasks: int = 0,
     ) -> bool:
         """Review a completed dependency task before unblocking downstream execution."""
@@ -3176,6 +3364,7 @@ class MissionOrchestrator:
             agent=supervisor,
             prompt=review_prompt,
             error_context=f"Dependency review failed for task {dependency_task_id}",
+            agent_factory=supervisor_factory,
         )
         verdict = self._extract_binary_verdict(review_output)
         self._emitter.emit(
@@ -3251,13 +3440,20 @@ class MissionOrchestrator:
 
         # Create supervisor agent
         llm_cfg = self._get_llm_config(mission, "supervisor")
-        supervisor_config = get_supervisor_config(
-            owner_user_id=mission.created_by_user_id,
-            temperature=llm_cfg["temperature"],
-        )
-        supervisor = await create_mission_agent(agent_config=supervisor_config, **llm_cfg)
+        supervisor: Any = None
 
-        # Fetch all mission tasks so incomplete tasks are also considered failures.
+        async def _create_supervisor() -> Any:
+            nonlocal supervisor
+            supervisor_config = get_supervisor_config(
+                owner_user_id=mission.created_by_user_id,
+                temperature=llm_cfg["temperature"],
+            )
+            supervisor = await create_mission_agent(agent_config=supervisor_config, **llm_cfg)
+            return supervisor
+
+        supervisor = await _create_supervisor()
+
+        # Fetch all mission tasks so review can account for dependency blocks.
         from database.connection import get_db_session
         from database.models import Task
 
@@ -3283,21 +3479,28 @@ class MissionOrchestrator:
             feedback: str,
             increment_cycle: bool,
             blocked_by: Optional[List[str]] = None,
+            persist_status: str = "failed",
+            review_status_override: Optional[str] = None,
+            verdict: str = "FAIL",
+            count_as_failure: bool = True,
         ) -> None:
             task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
+            review_status = (
+                review_status_override
+                if review_status_override is not None
+                else ("rework_required" if increment_cycle else "blocked_by_dependency")
+            )
             with get_db_session() as session:
                 t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
                 if t:
-                    t.status = "failed"
+                    t.status = persist_status
                     meta = dict(t.task_metadata or {})
                     review_cycle = self._coerce_int(meta.get("review_cycle_count", 0), 0)
                     if increment_cycle:
                         review_cycle += 1
                         meta["review_cycle_count"] = review_cycle
                     meta["review_feedback"] = feedback
-                    meta["review_status"] = (
-                        "rework_required" if increment_cycle else "blocked_by_dependency"
-                    )
+                    meta["review_status"] = review_status
                     if blocked_by:
                         meta["blocked_by_failed_dependencies"] = blocked_by
                     else:
@@ -3312,30 +3515,29 @@ class MissionOrchestrator:
                     self._coerce_int(local_meta.get("review_cycle_count", 0), 0) + 1
                 )
             local_meta["review_feedback"] = feedback
-            local_meta["review_status"] = (
-                "rework_required" if increment_cycle else "blocked_by_dependency"
-            )
+            local_meta["review_status"] = review_status
             if blocked_by:
                 local_meta["blocked_by_failed_dependencies"] = blocked_by
             else:
                 local_meta.pop("blocked_by_failed_dependencies", None)
             local_meta.pop("review_output_signature", None)
             task_obj.task_metadata = local_meta
-            task_obj.status = "failed"
+            task_obj.status = persist_status
 
-            failed_tasks.append(task_obj.task_id)
-            failed_task_ids.add(str(task_obj.task_id))
+            if count_as_failure:
+                failed_tasks.append(task_obj.task_id)
+                failed_task_ids.add(str(task_obj.task_id))
             self._emitter.emit(
                 mission_id=mission_id,
                 event_type="TASK_REVIEWED",
                 task_id=task_obj.task_id,
                 data={
                     "title": task_title,
-                    "verdict": "FAIL",
+                    "verdict": verdict,
                     "reason": reason,
                     "blocked_by": blocked_by or [],
                 },
-                message=f"Task review: {task_title} -> FAIL ({reason})",
+                message=f"Task review: {task_title} -> {verdict} ({reason})",
             )
 
         for task_obj in tasks_in_review_order:
@@ -3351,12 +3553,16 @@ class MissionOrchestrator:
                 ]
                 _mark_task_review_failed(
                     task_obj,
-                    reason="dependency_review_failed",
+                    reason="dependency_waiting_rework",
                     feedback=(
                         "Blocked by review-failed dependencies: " + ", ".join(blocked_titles)
                     ),
                     increment_cycle=False,
                     blocked_by=failed_dependencies,
+                    persist_status="pending",
+                    review_status_override="blocked_by_dependency",
+                    verdict="BLOCKED",
+                    count_as_failure=False,
                 )
                 continue
 
@@ -3365,21 +3571,44 @@ class MissionOrchestrator:
                     task_obj.task_metadata if isinstance(task_obj.task_metadata, dict) else {}
                 )
                 existing_feedback = str(task_meta_current.get("review_feedback") or "").strip()
-                existing_review_status = str(task_meta_current.get("review_status") or "").strip()
+                existing_review_status = (
+                    str(task_meta_current.get("review_status") or "").strip().lower()
+                )
+                if existing_review_status == "blocked_by_dependency":
+                    self._emitter.emit(
+                        mission_id=mission_id,
+                        event_type="TASK_REVIEWED",
+                        task_id=task_obj.task_id,
+                        data={
+                            "title": task_title,
+                            "verdict": "BLOCKED",
+                            "reason": "dependency_waiting_rework",
+                            "blocked_by": task_meta_current.get(
+                                "blocked_by_failed_dependencies", []
+                            ),
+                        },
+                        message=f"Task review: {task_title} -> BLOCKED (dependency_waiting_rework)",
+                    )
+                    continue
                 if existing_feedback and existing_review_status == "rework_required":
                     _mark_task_review_failed(
                         task_obj,
                         reason="qa_rework_required",
                         feedback=existing_feedback,
                         increment_cycle=False,
+                        review_status_override="rework_required",
                     )
                     continue
+                task_result = task_obj.result if isinstance(task_obj.result, dict) else {}
+                execution_error = str(
+                    task_result.get("last_error")
+                    or task_result.get("error")
+                    or f"Task status is '{task_obj.status}', expected 'completed' before review."
+                ).strip()
                 _mark_task_review_failed(
                     task_obj,
                     reason="task_not_completed",
-                    feedback=(
-                        f"Task status is '{task_obj.status}', expected 'completed' before review."
-                    ),
+                    feedback=execution_error,
                     increment_cycle=True,
                 )
                 continue
@@ -3422,6 +3651,7 @@ class MissionOrchestrator:
                 agent=supervisor,
                 prompt=review_prompt,
                 error_context="Supervisor review failed",
+                agent_factory=_create_supervisor,
             )
 
             verdict = self._extract_binary_verdict(review_output)

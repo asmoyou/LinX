@@ -609,10 +609,87 @@ class BaseAgent:
             logger.error(f"Agent initialization failed: {e}", exc_info=True)
             raise
 
+    @staticmethod
+    def _normalize_history_content(content: Any) -> str:
+        """Normalize history content to plain text."""
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            text_parts: List[str] = []
+            for item in content:
+                if isinstance(item, str) and item.strip():
+                    text_parts.append(item.strip())
+                    continue
+                if isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+                    if isinstance(text, str) and text.strip():
+                        text_parts.append(text.strip())
+            return "\n".join(text_parts)
+
+        if content is None:
+            return ""
+
+        return str(content)
+
+    def _normalize_conversation_history(
+        self, conversation_history: Optional[List[Dict[str, Any]]]
+    ) -> List[Dict[str, str]]:
+        """Normalize optional conversation history into role/content pairs."""
+        if not isinstance(conversation_history, list):
+            return []
+
+        normalized: List[Dict[str, str]] = []
+        for entry in conversation_history:
+            role = ""
+            content_value: Any = None
+
+            if isinstance(entry, dict):
+                role = str(entry.get("role") or "").strip().lower()
+                content_value = entry.get("content")
+            elif isinstance(entry, HumanMessage):
+                role = "user"
+                content_value = entry.content
+            elif isinstance(entry, AIMessage):
+                role = "assistant"
+                content_value = entry.content
+            else:
+                continue
+
+            if role not in {"user", "assistant"}:
+                continue
+
+            content = self._normalize_history_content(content_value).strip()
+            if not content:
+                continue
+
+            normalized.append({"role": role, "content": content})
+
+        return normalized
+
+    def _build_messages_with_history(
+        self,
+        human_content: Any,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Any]:
+        """Build prompt messages with optional conversation history."""
+        system_prompt = self._create_system_prompt()
+        messages: List[Any] = [SystemMessage(content=system_prompt)]
+
+        for item in self._normalize_conversation_history(conversation_history):
+            if item["role"] == "assistant":
+                messages.append(AIMessage(content=item["content"]))
+            else:
+                messages.append(HumanMessage(content=item["content"]))
+
+        messages.append(HumanMessage(content=human_content))
+        return messages
+
     def execute_task(
         self,
         task_description: str,
         context: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
         stream_callback: Optional[callable] = None,
         session_workdir: Optional["Path"] = None,
         container_id: Optional[str] = None,
@@ -624,6 +701,8 @@ class BaseAgent:
         Args:
             task_description: Description of the task to execute
             context: Optional context information (e.g., memories)
+            conversation_history: Optional prior user/assistant turns to prepend
+                before the current user prompt.
             stream_callback: Optional callback for streaming tokens (callable(str))
             session_workdir: Optional pre-existing workdir from a conversation session.
                 If provided, reuses the session workdir so files and state persist
@@ -689,9 +768,10 @@ class BaseAgent:
                     # Create a new event loop for this thread
                     result = asyncio.run(
                         self.execute_task_with_recovery(
-                            task_description,
-                            context,
-                            stream_callback,
+                            task_description=task_description,
+                            context=context,
+                            conversation_history=conversation_history,
+                            stream_callback=stream_callback,
                             session_workdir=session_workdir,
                             container_id=container_id,
                             message_content=message_content,
@@ -742,13 +822,12 @@ class BaseAgent:
             if stream_callback:
                 # Stream mode - use LLM's native streaming for token-by-token output
                 # Then check for tool calls and execute them
-                system_prompt = self._create_system_prompt()
                 # Use multimodal content (with images) if provided, otherwise plain text
                 human_content = message_content if message_content is not None else user_message
-                messages = [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=human_content),
-                ]
+                messages = self._build_messages_with_history(
+                    human_content=human_content,
+                    conversation_history=conversation_history,
+                )
 
                 # Multi-round conversation loop for tool execution
                 tool_calls_made = []
@@ -983,7 +1062,11 @@ class BaseAgent:
                 }
             else:
                 # Non-streaming mode - invoke normally
-                result = self.agent.invoke({"messages": [HumanMessage(content=user_message)]})
+                messages = self._build_messages_with_history(
+                    human_content=user_message,
+                    conversation_history=conversation_history,
+                )
+                result = self.agent.invoke({"messages": messages})
 
                 # Extract output from result
                 messages = result.get("messages", [])
@@ -1854,6 +1937,7 @@ class BaseAgent:
         self,
         task_description: str,
         context: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
         stream_callback: Optional[callable] = None,
         session_workdir: Optional["Path"] = None,
         container_id: Optional[str] = None,
@@ -1864,6 +1948,8 @@ class BaseAgent:
         Args:
             task_description: Description of the task to execute
             context: Optional context information (e.g., memories)
+            conversation_history: Optional prior user/assistant turns to prepend
+                before the current user prompt.
             stream_callback: Optional callback for streaming tokens
             session_workdir: Optional pre-existing workdir from a conversation session.
                 If provided, reuses the session workdir so files and state persist
@@ -1882,7 +1968,6 @@ class BaseAgent:
         state = ConversationState(max_rounds=self.config.max_iterations)
 
         # Prepare system prompt and initial messages
-        system_prompt = self._create_system_prompt()
         user_message = task_description
 
         # Add context information if provided
@@ -1921,7 +2006,10 @@ class BaseAgent:
 
         # Use multimodal content (with images) if provided, otherwise plain text
         human_content = message_content if message_content is not None else user_message
-        messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_content)]
+        messages = self._build_messages_with_history(
+            human_content=human_content,
+            conversation_history=conversation_history,
+        )
 
         logger.info(
             f"[RECOVERY] Starting conversation with error recovery",

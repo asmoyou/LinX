@@ -179,6 +179,26 @@ def test_build_text_signature_is_stable_for_equivalent_content():
     assert a != c
 
 
+def test_extract_agent_output_prefers_reason_field_when_error_missing():
+    with pytest.raises(RuntimeError) as exc_info:
+        MissionOrchestrator._extract_agent_output(
+            {"success": False, "reason": "model declined request"},
+            "Task execution failed",
+        )
+
+    assert "model declined request" in str(exc_info.value)
+
+
+def test_extract_agent_output_reports_payload_keys_when_error_details_absent():
+    with pytest.raises(RuntimeError) as exc_info:
+        MissionOrchestrator._extract_agent_output(
+            {"success": False, "foo": "bar"},
+            "Task execution failed",
+        )
+
+    assert "payload keys" in str(exc_info.value)
+
+
 @pytest.mark.asyncio
 async def test_execute_agent_task_without_container_uses_basic_call():
     class _FakeAgent:
@@ -223,6 +243,92 @@ async def test_execute_agent_task_with_container_enables_streaming_mode():
     assert kwargs["task_description"] == "ping"
     assert kwargs["container_id"] == "container-123"
     assert callable(kwargs["stream_callback"])
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_task_without_container_passes_execution_context():
+    class _FakeAgent:
+        def __init__(self):
+            self.calls = []
+
+        def execute_task(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return {"success": True, "output": "ok"}
+
+    agent = _FakeAgent()
+    exec_context = {"agent_memories": ["prior context"]}
+    result = await MissionOrchestrator._execute_agent_task(
+        agent,
+        "ping",
+        execution_context=exec_context,
+    )
+
+    assert result["success"] is True
+    assert len(agent.calls) == 1
+    args, kwargs = agent.calls[0]
+    assert args == ()
+    assert kwargs["task_description"] == "ping"
+    assert kwargs["context"] == exec_context
+
+
+@pytest.mark.asyncio
+async def test_execute_phase_prompt_with_retry_recreates_errored_agent():
+    class _FakeStatus:
+        def __init__(self, value: str):
+            self.value = value
+
+    class _FakeAgent:
+        def __init__(self, name: str):
+            self.name = name
+            self.status = _FakeStatus("active")
+
+    emitted_events = []
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+
+    initial_agent = _FakeAgent("initial-supervisor")
+    replacement_agent = _FakeAgent("replacement-supervisor")
+    execute_calls = {"count": 0}
+
+    async def _fake_execute_agent_task(agent, _prompt):
+        execute_calls["count"] += 1
+        if execute_calls["count"] == 1:
+            agent.status = _FakeStatus("error")
+            raise RuntimeError("No generations found in stream.")
+        assert agent is replacement_agent
+        return {"success": True, "output": "PASS: review ok"}
+
+    orchestrator._execute_agent_task = _fake_execute_agent_task
+
+    factory_calls = {"count": 0}
+
+    async def _build_replacement_agent():
+        factory_calls["count"] += 1
+        replacement_agent.status = _FakeStatus("active")
+        return replacement_agent
+
+    mission = SimpleNamespace(mission_config={"execution_config": {"max_retries": 2}})
+    output = await MissionOrchestrator._execute_phase_prompt_with_retry(
+        orchestrator,
+        mission_id=uuid4(),
+        mission=mission,
+        phase="reviewing",
+        step="review_task:test",
+        agent=initial_agent,
+        prompt="review prompt",
+        error_context="Supervisor review failed",
+        agent_factory=_build_replacement_agent,
+    )
+
+    assert output == "PASS: review ok"
+    assert factory_calls["count"] == 1
+    assert execute_calls["count"] == 2
+    assert any(
+        event.get("event_type") == "PHASE_ATTEMPT_FAILED"
+        and event.get("data", {}).get("agent_recreated") is True
+        and event.get("data", {}).get("agent_status") == "error"
+        for event in emitted_events
+    )
 
 
 def test_get_llm_config_temporary_worker_inherits_leader_by_default():
@@ -392,8 +498,7 @@ async def test_retry_failed_parts_emits_event_and_tracks_active_task(monkeypatch
     assert mission_id in orchestrator._active_missions
     await orchestrator._active_missions[mission_id]
     assert any(
-        event.get("event_type") == "MISSION_PARTIAL_RETRY_REQUESTED"
-        for event in emitted_events
+        event.get("event_type") == "MISSION_PARTIAL_RETRY_REQUESTED" for event in emitted_events
     )
 
 
@@ -1628,6 +1733,137 @@ async def test_phase_review_reuses_cached_pass_for_unchanged_output(monkeypatch)
     assert cached_review_event is not None
     assert cached_review_event.get("data", {}).get("reason") == "reuse_previous_pass"
     assert cached_review_event.get("data", {}).get("verdict") == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_phase_review_keeps_dependency_blocked_tasks_pending(monkeypatch):
+    mission_id = uuid4()
+    root_task_id = uuid4()
+    child_task_id = uuid4()
+    emitted_events = []
+
+    root_task = SimpleNamespace(
+        task_id=root_task_id,
+        status="failed",
+        goal_text="Collect facts",
+        acceptance_criteria="Facts collected",
+        result={"last_error": "worker crashed"},
+        task_metadata={"title": "Root task"},
+        dependencies=[],
+        completed_at=None,
+    )
+    child_task = SimpleNamespace(
+        task_id=child_task_id,
+        status="pending",
+        goal_text="Write summary",
+        acceptance_criteria="Summary completed",
+        result={},
+        task_metadata={"title": "Child task"},
+        dependencies=[str(root_task_id)],
+        completed_at=None,
+    )
+    tasks_by_id = {
+        str(root_task_id): root_task,
+        str(child_task_id): child_task,
+    }
+    first_results = [root_task, child_task, root_task]
+
+    class _FakeQuery:
+        def __init__(self, tasks, first_values):
+            self._tasks = tasks
+            self._first_values = first_values
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return list(self._tasks.values())
+
+        def first(self):
+            if self._first_values:
+                return self._first_values.pop(0)
+            return next(iter(self._tasks.values()))
+
+    class _FakeSession:
+        def __init__(self, tasks, first_values):
+            self._tasks = tasks
+            self._first_values = first_values
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._tasks, self._first_values)
+
+        def expunge(self, _obj):
+            return None
+
+    class _FakeSessionContext:
+        def __init__(self, tasks, first_values):
+            self._tasks = tasks
+            self._first_values = first_values
+
+        def __enter__(self):
+            return _FakeSession(self._tasks, self._first_values)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_transition",
+        lambda self, _mission_id, _status: None,
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.get_mission",
+        lambda _mission_id: SimpleNamespace(
+            created_by_user_id=uuid4(),
+            mission_config={"execution_config": {"max_rework_cycles": 0}},
+            total_tasks=2,
+        ),
+    )
+
+    async def _fake_create_mission_agent(*args, **kwargs):
+        return SimpleNamespace(name="supervisor")
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.create_mission_agent",
+        _fake_create_mission_agent,
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(tasks_by_id, first_results),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_topological_sort",
+        staticmethod(lambda tasks: [root_task, child_task]),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_get_task_status_counts",
+        staticmethod(lambda _mission_id: {"failed": 1, "pending": 1}),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_fields",
+        lambda *args, **kwargs: None,
+    )
+
+    with pytest.raises(MissionError, match="Review failed after"):
+        await MissionOrchestrator._phase_review(orchestrator, mission_id)
+
+    assert root_task.status == "failed"
+    assert root_task.task_metadata["review_status"] == "rework_required"
+    assert root_task.task_metadata["review_feedback"] == "worker crashed"
+    assert child_task.status == "pending"
+    assert child_task.task_metadata["review_status"] == "blocked_by_dependency"
+    assert child_task.task_metadata["blocked_by_failed_dependencies"] == [str(root_task_id)]
+    assert any(
+        event.get("event_type") == "TASK_REVIEWED"
+        and event.get("task_id") == child_task_id
+        and event.get("data", {}).get("verdict") == "BLOCKED"
+        for event in emitted_events
+    )
 
 
 @pytest.mark.asyncio

@@ -5,10 +5,12 @@ References:
 - Design Section 4: Agent Framework Design
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 from uuid import uuid4
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from agent_framework.agent_executor import AgentExecutor, ExecutionContext
 from agent_framework.agent_lifecycle import AgentLifecycleManager, LifecyclePhase
@@ -55,6 +57,97 @@ class TestBaseAgent:
 
         assert len(capabilities) == 3
         assert "skill1" in capabilities
+
+    def test_execute_task_streaming_includes_conversation_history(self):
+        """Streaming execution should prepend provided conversation history."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()  # initialize guard
+
+        captured_messages = {}
+
+        def _fake_stream(messages):
+            captured_messages["messages"] = messages
+            yield SimpleNamespace(content="I remember your previous request.", additional_kwargs={})
+
+        agent.llm = Mock()
+        agent.llm.stream = _fake_stream
+        agent.tools = []
+        agent.tools_by_name = {}
+
+        history = [
+            {"role": "user", "content": "Please calculate 2 + 2."},
+            {"role": "assistant", "content": "The answer is 4."},
+        ]
+
+        result = agent.execute_task(
+            task_description="What did I ask just now?",
+            conversation_history=history,
+            stream_callback=lambda *_args, **_kwargs: None,
+        )
+
+        assert result["success"] is True
+        sent_messages = captured_messages["messages"]
+        assert isinstance(sent_messages[0], SystemMessage)
+        assert isinstance(sent_messages[1], HumanMessage)
+        assert isinstance(sent_messages[2], AIMessage)
+        assert isinstance(sent_messages[3], HumanMessage)
+        assert sent_messages[1].content == "Please calculate 2 + 2."
+        assert sent_messages[2].content == "The answer is 4."
+        assert sent_messages[3].content == "What did I ask just now?"
+
+    def test_execute_task_non_streaming_includes_conversation_history(self):
+        """Non-streaming execution should prepend provided conversation history."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.llm = Mock()
+        agent.tools = []
+        agent.tools_by_name = {}
+
+        captured_messages = {}
+
+        class _FakeGraph:
+            def invoke(self, payload):
+                captured_messages["messages"] = payload["messages"]
+                return {"messages": [AIMessage(content="I remember.")]}
+
+        agent.agent = _FakeGraph()
+
+        history = [
+            {"role": "user", "content": "Translate 'hello' to Chinese."},
+            {"role": "assistant", "content": "It is 你好."},
+        ]
+
+        result = agent.execute_task(
+            task_description="What did I ask before this?",
+            conversation_history=history,
+        )
+
+        assert result["success"] is True
+        sent_messages = captured_messages["messages"]
+        assert isinstance(sent_messages[0], SystemMessage)
+        assert isinstance(sent_messages[1], HumanMessage)
+        assert isinstance(sent_messages[2], AIMessage)
+        assert isinstance(sent_messages[3], HumanMessage)
+        assert sent_messages[1].content == "Translate 'hello' to Chinese."
+        assert sent_messages[2].content == "It is 你好."
+        assert sent_messages[3].content == "What did I ask before this?"
 
 
 class TestAgentRegistry:
@@ -136,6 +229,7 @@ class TestCapabilityMatcher:
             agent_id=uuid4(),
             name="Test Agent",
             agent_type="test",
+            avatar=None,
             owner_user_id=uuid4(),
             capabilities=["skill1", "skill2", "skill3"],
             status="active",
@@ -160,6 +254,7 @@ class TestCapabilityMatcher:
             agent_id=uuid4(),
             name="Test Agent",
             agent_type="test",
+            avatar=None,
             owner_user_id=uuid4(),
             capabilities=["skill1", "skill2"],
             status="active",
@@ -372,6 +467,42 @@ class TestAgentExecutor:
         assert execute_context["agent_memories"] == ["Test task agent note"]
         assert execute_context["company_memories"] == ["Test task company note"]
         assert execute_context["user_context_memories"] == ["Test task user preference"]
+
+    @patch("agent_framework.agent_executor.get_agent_memory_interface")
+    def test_execute_agent_passes_conversation_history(self, mock_memory):
+        """Executor should pass optional conversation history through to BaseAgent."""
+        mock_memory.return_value.retrieve_agent_memory.return_value = []
+        mock_memory.return_value.retrieve_company_memory.return_value = []
+        mock_memory.return_value.memory_system.retrieve_memories.return_value = []
+        mock_memory.return_value.store_agent_memory.return_value = "memory_id"
+
+        mock_agent = Mock()
+        mock_agent.config.name = "Test Agent"
+        mock_agent.config.access_level = "private"
+        mock_agent.config.allowed_memory = []
+        mock_agent.config.allowed_knowledge = []
+        mock_agent.execute_task.return_value = {
+            "success": True,
+            "output": "Task completed",
+        }
+
+        executor = AgentExecutor(mock_memory.return_value)
+        context = ExecutionContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            task_description="Test task",
+        )
+        history = [{"role": "user", "content": "Remember this."}]
+
+        result = executor.execute(
+            mock_agent,
+            context,
+            conversation_history=history,
+        )
+
+        assert result["success"] is True
+        execute_kwargs = mock_agent.execute_task.call_args.kwargs
+        assert execute_kwargs["conversation_history"] == history
 
     @patch("agent_framework.agent_executor.get_agent_memory_interface")
     def test_executor_filters_irrelevant_context_memories_and_applies_min_similarity(
