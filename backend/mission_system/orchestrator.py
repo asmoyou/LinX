@@ -3646,8 +3646,13 @@ class MissionOrchestrator:
             f"## Instructions\n{dep_goal}\n\n"
             f"## Acceptance Criteria\n{dep_acceptance}\n\n"
             f"## Task Output\n{dep_output}\n\n"
-            "Respond with PASS or FAIL followed by your reasoning. "
-            "If FAIL, provide specific actionable feedback."
+            "Output format (strict):\n"
+            "FINAL VERDICT: PASS or FAIL\n"
+            "SUMMARY: <one short sentence>\n"
+            "ACTIONABLE FEEDBACK:\n"
+            "- <item>\n"
+            "- <item>\n"
+            "If verdict is PASS, keep feedback concise."
         )
         review_output = await self._execute_phase_prompt_with_retry(
             mission_id=mission_id,
@@ -3659,7 +3664,7 @@ class MissionOrchestrator:
             error_context=f"Dependency review failed for task {dependency_task_id}",
             agent_factory=supervisor_factory,
         )
-        verdict = self._extract_binary_verdict(review_output)
+        verdict = self._extract_structured_binary_verdict(review_output)
         self._emitter.emit(
             mission_id=mission_id,
             event_type="TASK_REVIEWED",
@@ -3835,6 +3840,10 @@ class MissionOrchestrator:
 
         for task_obj in tasks_in_review_order:
             task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
+            # This task has already been marked as failed in the current review pass
+            # (e.g. dependency gate rejection). Skip to avoid duplicate FAIL records.
+            if str(task_obj.task_id) in failed_task_ids:
+                continue
             dependency_ids = [
                 dep_id for dep_id in (task_obj.dependencies or []) if dep_id in task_title_by_id
             ]
@@ -3932,8 +3941,13 @@ class MissionOrchestrator:
                 f"## Instructions\n{task_obj.goal_text}\n\n"
                 f"## Acceptance Criteria\n{task_obj.acceptance_criteria or 'None specified'}\n\n"
                 f"## Task Output\n{task_output}\n\n"
-                "Respond with PASS or FAIL followed by your reasoning. "
-                "If FAIL, provide specific actionable feedback."
+                "Output format (strict):\n"
+                "FINAL VERDICT: PASS or FAIL\n"
+                "SUMMARY: <one short sentence>\n"
+                "ACTIONABLE FEEDBACK:\n"
+                "- <item>\n"
+                "- <item>\n"
+                "If verdict is PASS, keep feedback concise."
             )
 
             review_output = await self._execute_phase_prompt_with_retry(
@@ -3947,7 +3961,7 @@ class MissionOrchestrator:
                 agent_factory=_create_supervisor,
             )
 
-            verdict = self._extract_binary_verdict(review_output)
+            verdict = self._extract_structured_binary_verdict(review_output)
             self._emitter.emit(
                 mission_id=mission_id,
                 event_type="TASK_REVIEWED",
@@ -4113,7 +4127,12 @@ class MissionOrchestrator:
             f"## Original Instructions\n{mission.instructions}\n\n"
             f"## Requirements\n{mission.requirements_doc or 'N/A'}\n\n"
             f"## Task Deliverables\n{'---'.join(task_summaries)}\n\n"
-            "Produce a structured audit report. End with a clear PASS or FAIL verdict."
+            "Output format (strict):\n"
+            "1) Return a JSON object in a ```json``` block with keys:\n"
+            '   "verdict" ("PASS" or "FAIL"), "summary", '
+            '"issues" (array), "recommendations" (array).\n'
+            "2) End with exactly one line: FINAL VERDICT: PASS or FINAL VERDICT: FAIL.\n"
+            "Keep issues/recommendations concise and actionable."
         )
 
         qa_output = await self._execute_phase_prompt_with_retry(
@@ -4128,7 +4147,7 @@ class MissionOrchestrator:
 
         # Persist QA report regardless of verdict so failures remain debuggable.
         self._workspace.write_file(mission_id, "shared/qa_report.md", qa_output)
-        verdict = self._extract_binary_verdict(qa_output)
+        verdict = self._extract_structured_binary_verdict(qa_output)
         qa_details = self._extract_qa_audit_details(qa_output, verdict=verdict)
         qa_event_data = self._build_qa_verdict_event_data(verdict=verdict, qa_details=qa_details)
 
@@ -4524,30 +4543,114 @@ class MissionOrchestrator:
         return []
 
     @staticmethod
+    def _normalize_binary_verdict_token(value: Any) -> str:
+        """Normalize verdict token variants to PASS/FAIL."""
+        token = str(value or "").strip().upper()
+        if not token:
+            return ""
+        compact = re.sub(r"[\s\-]+", "_", token)
+        mapping = {
+            "PASS": "PASS",
+            "APPROVED": "PASS",
+            "SUCCESS": "PASS",
+            "FAIL": "FAIL",
+            "FAILED": "FAIL",
+            "REJECTED": "FAIL",
+            "REWORK": "FAIL",
+            "REWORK_REQUIRED": "FAIL",
+        }
+        return mapping.get(compact, "")
+
+    @staticmethod
+    def _extract_structured_binary_verdict(text: str) -> str:
+        """Extract PASS/FAIL with structured payload priority and text fallback."""
+        if not text:
+            return "FAIL"
+
+        parsed_obj = MissionOrchestrator._extract_json_object(str(text))
+        if isinstance(parsed_obj, dict) and parsed_obj:
+            candidate_values: List[Any] = []
+            for key in ("verdict", "final_verdict", "overall_verdict", "result", "status"):
+                candidate_values.append(parsed_obj.get(key))
+
+            nested_report = parsed_obj.get("audit_report")
+            if isinstance(nested_report, dict):
+                for key in ("verdict", "final_verdict", "overall_verdict", "result", "status"):
+                    candidate_values.append(nested_report.get(key))
+
+            for candidate in candidate_values:
+                normalized = MissionOrchestrator._normalize_binary_verdict_token(candidate)
+                if normalized in {"PASS", "FAIL"}:
+                    return normalized
+
+        return MissionOrchestrator._extract_binary_verdict(text)
+
+    @staticmethod
     def _extract_binary_verdict(text: str) -> str:
         """Extract a PASS/FAIL verdict from model output.
 
-        Uses the trailing lines first and defaults to FAIL when ambiguous.
+        Prefer explicit verdict markers first, then lightweight line heuristics.
+        Defaults to FAIL when ambiguous.
         """
         if not text:
             return "FAIL"
 
-        lines = [line.strip().upper() for line in text.splitlines() if line.strip()]
-        recent = lines[-10:] if len(lines) > 10 else lines
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return "FAIL"
 
-        # Prefer explicit verdict lines near the end.
-        for line in reversed(recent):
-            if re.search(r"\bFAIL\b", line) and ("VERDICT" in line or "FINAL" in line):
-                return "FAIL"
-            if re.search(r"\bPASS\b", line) and ("VERDICT" in line or "FINAL" in line):
-                return "PASS"
+        upper_text = text.upper()
+        upper_lines = [line.upper() for line in lines]
 
-        # Fallback to the latest binary signal.
-        for line in reversed(recent):
-            if re.search(r"\bFAIL\b", line):
-                return "FAIL"
-            if re.search(r"\bPASS\b", line):
-                return "PASS"
+        # 1) Prefer explicit verdict markers anywhere in the text.
+        explicit_verdict_pattern = re.compile(
+            r"\b(?:FINAL\s+VERDICT|OVERALL\s+VERDICT|VERDICT|RESULT)\s*[:\-]?\s*(PASS|FAIL)\b"
+        )
+        explicit_matches = list(explicit_verdict_pattern.finditer(upper_text))
+        if explicit_matches:
+            return explicit_matches[-1].group(1)
+
+        # 2) Common model format: first line starts with PASS/FAIL.
+        leading_verdict_pattern = re.compile(r"^(?:[#>*`\-\d\.\)\(\[\]\s]*)?(PASS|FAIL)\b")
+        for line in upper_lines[:5]:
+            match = leading_verdict_pattern.match(line)
+            if match:
+                return match.group(1)
+
+        instruction_noise_pattern = re.compile(r"\bPASS\s+OR\s+FAIL\b|\bFAIL\s+OR\s+PASS\b")
+
+        def _line_verdict(line_upper: str) -> Optional[str]:
+            has_pass = bool(re.search(r"\bPASS\b", line_upper))
+            has_fail = bool(re.search(r"\bFAIL\b", line_upper))
+
+            if not has_pass and not has_fail:
+                return None
+
+            # Skip instruction-like lines such as "Respond with PASS or FAIL..."
+            if instruction_noise_pattern.search(line_upper):
+                return None
+            if re.search(r"\bRESPOND\s+WITH\b", line_upper):
+                return None
+            if re.search(r"^\s*IF\s+(?:PASS|FAIL)\b", line_upper):
+                return None
+
+            # Ambiguous line with both tokens but not an explicit verdict marker.
+            if has_pass and has_fail:
+                return None
+
+            return "PASS" if has_pass else "FAIL"
+
+        # 3) Prefer latest meaningful binary signal near the tail.
+        for line in reversed(upper_lines[-20:]):
+            verdict = _line_verdict(line)
+            if verdict:
+                return verdict
+
+        # 4) Fall back to searching whole content.
+        for line in reversed(upper_lines):
+            verdict = _line_verdict(line)
+            if verdict:
+                return verdict
 
         return "FAIL"
 

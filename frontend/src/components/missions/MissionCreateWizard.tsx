@@ -373,6 +373,12 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
                     max={10}
                     className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-3 py-2 text-sm text-zinc-800 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
                   />
+                  <p className="mt-1 text-[11px] text-zinc-400">
+                    {t(
+                      'missions.maxRetriesHint',
+                      'Execution retries per attempt chain (used for task run and phase prompt failures).'
+                    )}
+                  </p>
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-zinc-500 mb-1">
@@ -400,6 +406,12 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
                     max={5}
                     className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-3 py-2 text-sm text-zinc-800 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
                   />
+                  <p className="mt-1 text-[11px] text-zinc-400">
+                    {t(
+                      'missions.maxReworkCyclesHint',
+                      'Review rework loops after a FAIL verdict (execute -> review -> rework -> review).'
+                    )}
+                  </p>
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-zinc-500 mb-1">

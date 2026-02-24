@@ -83,6 +83,32 @@ function getEventDisplayMessage(event: MissionEvent): string {
   return '';
 }
 
+function normalizeEventType(eventType: string): string {
+  return eventType.trim().toUpperCase();
+}
+
+function getEventDataString(event: MissionEvent, key: string): string {
+  const value = event.event_data?.[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function getEventDataStringList(event: MissionEvent, key: string): string[] {
+  const value = event.event_data?.[key];
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function getEventDataNumber(event: MissionEvent, key: string): number | undefined {
+  const value = event.event_data?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+const SUPERVISOR_TASK_EVENT_TYPES = new Set(['TASK_REVIEWED', 'TASK_FAILED', 'TASK_BLOCKED']);
+const SUPERVISOR_GLOBAL_EVENT_TYPES = new Set(['REVIEW_CYCLE_RETRY']);
+
 function getNodeDimensions(node: Node): { width: number; height: number } {
   const fallback = NODE_DIMENSIONS[node.type || ''] || {
     width: DEFAULT_NODE_WIDTH,
@@ -846,6 +872,88 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     return missionTasks.find((task) => task.task_id === taskId) || null;
   }, [activeDetailData.task_id, missionTasks]);
 
+  const activeTaskReviewMetrics = useMemo(() => {
+    if (!activeDetailTask) return null;
+    const taskId = activeDetailTask.task_id;
+    const taskEvents = scopedMissionEvents.filter((event) => event.task_id === taskId);
+    const reviewEvents = taskEvents.filter((event) => {
+      if (normalizeEventType(event.event_type) !== 'TASK_REVIEWED') return false;
+      const reason = getEventDataString(event, 'reason').toLowerCase();
+      return reason !== 'qa_rework_required' && reason !== 'dependency_waiting_rework';
+    });
+    const passReviews = reviewEvents.filter(
+      (event) => getEventDataString(event, 'verdict').toUpperCase() === 'PASS'
+    ).length;
+    const failReviews = reviewEvents.filter(
+      (event) => getEventDataString(event, 'verdict').toUpperCase() === 'FAIL'
+    ).length;
+    const blockedReviews = reviewEvents.filter(
+      (event) => getEventDataString(event, 'verdict').toUpperCase() === 'BLOCKED'
+    ).length;
+    const reviewRetryEvents = scopedMissionEvents.filter((event) => {
+      if (normalizeEventType(event.event_type) !== 'REVIEW_CYCLE_RETRY') return false;
+      return getEventDataStringList(event, 'failed_task_ids').includes(taskId);
+    });
+    const dependencyReviewRejects = taskEvents.filter((event) => {
+      if (normalizeEventType(event.event_type) !== 'TASK_FAILED') return false;
+      return getEventDataString(event, 'reason').toLowerCase() === 'dependency_review_failed';
+    }).length;
+    const executionRuns = taskEvents.filter(
+      (event) => normalizeEventType(event.event_type) === 'TASK_STARTED'
+    ).length;
+    const reviewCycleRaw = activeDetailTask.task_metadata?.review_cycle_count;
+    const reviewCycleCount =
+      typeof reviewCycleRaw === 'number' && Number.isFinite(reviewCycleRaw)
+        ? reviewCycleRaw
+        : undefined;
+
+    return {
+      reviewCount: reviewEvents.length,
+      passReviews,
+      failReviews,
+      blockedReviews,
+      reviewRetryCount: reviewRetryEvents.length,
+      dependencyReviewRejects,
+      executionRuns,
+      reviewCycleCount,
+    };
+  }, [activeDetailTask, scopedMissionEvents]);
+
+  const activeTaskReviewTimeline = useMemo(() => {
+    if (!activeDetailTask) return [] as MissionEvent[];
+    const taskId = activeDetailTask.task_id;
+    return scopedMissionEvents
+      .filter((event) => event.task_id === taskId)
+      .filter((event) => normalizeEventType(event.event_type) === 'TASK_REVIEWED')
+      .filter((event) => {
+        const reason = getEventDataString(event, 'reason').toLowerCase();
+        return reason !== 'qa_rework_required' && reason !== 'dependency_waiting_rework';
+      })
+      .slice()
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  }, [activeDetailTask, scopedMissionEvents]);
+
+  const activeTaskReworkTimeline = useMemo(() => {
+    if (!activeDetailTask) return [] as MissionEvent[];
+    const taskId = activeDetailTask.task_id;
+    return scopedMissionEvents
+      .filter((event) => normalizeEventType(event.event_type) === 'REVIEW_CYCLE_RETRY')
+      .filter((event) => getEventDataStringList(event, 'failed_task_ids').includes(taskId))
+      .slice()
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  }, [activeDetailTask, scopedMissionEvents]);
+
+  const getVerdictLabel = useCallback(
+    (rawVerdict: string): string => {
+      const verdict = String(rawVerdict || '').trim().toUpperCase();
+      if (verdict === 'PASS') return t('missions.verdictPass', 'PASS');
+      if (verdict === 'FAIL') return t('missions.verdictFail', 'FAIL');
+      if (verdict === 'BLOCKED') return t('missions.verdictBlocked', 'BLOCKED');
+      return verdict || '-';
+    },
+    [t]
+  );
+
   const detailEvents = useMemo(() => {
     if (!activeDetailNode) return [] as MissionEvent[];
 
@@ -885,10 +993,39 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
       );
     }
 
-    if (activeDetailNode.type === 'taskNode' || activeDetailNode.type === 'supervisorNode') {
+    if (activeDetailNode.type === 'taskNode') {
       const taskId = typeof activeDetailData.task_id === 'string' ? activeDetailData.task_id : '';
       if (!taskId) return [] as MissionEvent[];
       return sortDesc(scopedMissionEvents.filter((event) => event.task_id === taskId)).slice(0, 80);
+    }
+
+    if (activeDetailNode.type === 'supervisorNode') {
+      const taskId = typeof activeDetailData.task_id === 'string' ? activeDetailData.task_id : '';
+      const reviewEvents = scopedMissionEvents.filter((event) => {
+        const eventType = normalizeEventType(event.event_type);
+        if (SUPERVISOR_GLOBAL_EVENT_TYPES.has(eventType)) {
+          if (eventType === 'REVIEW_CYCLE_RETRY') {
+            return taskId.length > 0 && getEventDataStringList(event, 'failed_task_ids').includes(taskId);
+          }
+          return true;
+        }
+        if (!taskId || event.task_id !== taskId) return false;
+        if (!SUPERVISOR_TASK_EVENT_TYPES.has(eventType)) return false;
+        if (eventType === 'TASK_REVIEWED') {
+          const reason = getEventDataString(event, 'reason').toLowerCase();
+          if (reason === 'qa_rework_required' || reason === 'dependency_waiting_rework') {
+            return false;
+          }
+        }
+        if (eventType === 'TASK_FAILED') {
+          const reason = getEventDataString(event, 'reason').toLowerCase();
+          if (reason && !reason.includes('review') && !reason.includes('dependency')) {
+            return false;
+          }
+        }
+        return true;
+      });
+      return sortDesc(reviewEvents).slice(0, 40);
     }
 
     if (activeDetailNode.type === 'qaNode') {
@@ -1232,6 +1369,23 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
                     {t('missions.statusLabel', 'Status')}: {activeDetailTask.status}
                   </div>
                 </div>
+                {activeTaskReviewMetrics && (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] text-zinc-700 dark:text-zinc-200">
+                    <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
+                      {t('missions.reviewChecks', 'Review checks')}: {activeTaskReviewMetrics.reviewCount}
+                    </div>
+                    <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
+                      {t('missions.reworkRetries', 'Rework retries')}: {activeTaskReviewMetrics.reviewRetryCount}
+                    </div>
+                    <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
+                      {t('missions.reviewCycle', 'Review cycle')}:{' '}
+                      {activeTaskReviewMetrics.reviewCycleCount ?? '-'}
+                    </div>
+                    <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
+                      {t('missions.executionRuns', 'Execution runs')}: {activeTaskReviewMetrics.executionRuns}
+                    </div>
+                  </div>
+                )}
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
@@ -1304,10 +1458,130 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
               </section>
             )}
 
-            {(activeDetailNode?.type === 'supervisorNode' || activeDetailNode?.type === 'qaNode') && (
+            {activeDetailNode?.type === 'supervisorNode' && (
               <section className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50/70 dark:bg-zinc-900/60 p-4 space-y-3">
                 <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
-                  {t('missions.reviewQaDetails', 'Review / QA Details')}
+                  {t('missions.reviewDetails', 'Review Details')}
+                </div>
+                {activeTaskReviewMetrics ? (
+                  <>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] text-zinc-700 dark:text-zinc-200">
+                      <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
+                        {t('missions.reviewChecks', 'Review checks')}: {activeTaskReviewMetrics.reviewCount}
+                      </div>
+                      <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
+                        {t('missions.reworkRetries', 'Rework retries')}: {activeTaskReviewMetrics.reviewRetryCount}
+                      </div>
+                      <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
+                        {t('missions.reviewCycle', 'Review cycle')}:{' '}
+                        {activeTaskReviewMetrics.reviewCycleCount ?? '-'}
+                      </div>
+                      <div className="px-2 py-1 rounded bg-zinc-100 dark:bg-zinc-800">
+                        {t('missions.dependencyReviewRejects', 'Dependency review rejects')}:{' '}
+                        {activeTaskReviewMetrics.dependencyReviewRejects}
+                      </div>
+                    </div>
+                    <div className="text-[11px] text-zinc-600 dark:text-zinc-300">
+                      {t('missions.verdictPass', 'PASS')}: {activeTaskReviewMetrics.passReviews} •{' '}
+                      {t('missions.verdictFail', 'FAIL')}: {activeTaskReviewMetrics.failReviews} •{' '}
+                      {t('missions.verdictBlocked', 'BLOCKED')}: {activeTaskReviewMetrics.blockedReviews}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                    {t(
+                      'missions.reviewSummaryUnavailable',
+                      'Task-level review metrics are unavailable for this node.'
+                    )}
+                  </div>
+                )}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 p-2">
+                    <div className="text-[11px] font-semibold text-zinc-700 dark:text-zinc-200 mb-2">
+                      {t('missions.reviewAttemptHistory', 'Review attempts')}
+                    </div>
+                    <div className="space-y-1">
+                      {activeTaskReviewTimeline.length > 0 ? (
+                        activeTaskReviewTimeline.map((event, index) => {
+                          const verdict = getVerdictLabel(getEventDataString(event, 'verdict'));
+                          const reason = getEventDataString(event, 'reason');
+                          return (
+                            <div
+                              key={`review-attempt-${event.event_id}`}
+                              className="text-[11px] text-zinc-600 dark:text-zinc-300"
+                            >
+                              #{index + 1} • {verdict}
+                              {reason ? ` (${reason})` : ''} • {formatDetailTimestamp(event.created_at)}
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                          {t('missions.noReviewAttempts', 'No review attempts recorded in this run.')}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 p-2">
+                    <div className="text-[11px] font-semibold text-zinc-700 dark:text-zinc-200 mb-2">
+                      {t('missions.reworkCycleHistory', 'Rework cycles')}
+                    </div>
+                    <div className="space-y-1">
+                      {activeTaskReworkTimeline.length > 0 ? (
+                        activeTaskReworkTimeline.map((event, index) => {
+                          const cycle = getEventDataNumber(event, 'cycle');
+                          const failedCount = getEventDataNumber(event, 'failed_count');
+                          return (
+                            <div
+                              key={`rework-cycle-${event.event_id}`}
+                              className="text-[11px] text-zinc-600 dark:text-zinc-300"
+                            >
+                              {t('missions.reviewCycle', 'Review cycle')} {cycle ?? index + 1}
+                              {typeof failedCount === 'number' ? ` • failed=${failedCount}` : ''} •{' '}
+                              {formatDetailTimestamp(event.created_at)}
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                          {t('missions.noReworkCycles', 'No rework cycle retried in this run.')}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleRetryThisTaskFromNode();
+                    }}
+                    disabled={!canRetryThisTask || isRetryingFailedParts}
+                    className="inline-flex items-center rounded-md border border-emerald-300 dark:border-emerald-500/40 px-3 py-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {isRetryingFailedParts
+                      ? t('missions.retryingThisTask', 'Retrying this task...')
+                      : t('missions.retryThisTask', 'Retry This Task')}
+                  </button>
+                  {!canRetryThisTask && (
+                    <span className="text-[11px] text-zinc-500">
+                      {t(
+                        'missions.retryThisTaskHint',
+                        'Available when mission status is failed or cancelled'
+                      )}
+                    </span>
+                  )}
+                </div>
+                <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-zinc-700 dark:text-zinc-200 bg-white dark:bg-zinc-900 rounded p-3 border border-zinc-200 dark:border-zinc-700">
+                  {stringifyForDetail(activeDetailData)}
+                </pre>
+              </section>
+            )}
+
+            {activeDetailNode?.type === 'qaNode' && (
+              <section className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50/70 dark:bg-zinc-900/60 p-4 space-y-3">
+                <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+                  {t('missions.qaDetails', 'QA Details')}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
@@ -1351,8 +1625,18 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
             {detailEvents.length > 0 && (
               <section className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60 p-4">
                 <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 mb-3">
-                  {t('missions.relatedEvents', 'Related Events')}
+                  {activeDetailNode?.type === 'supervisorNode'
+                    ? t('missions.reviewTimeline', 'Review Timeline')
+                    : t('missions.relatedEvents', 'Related Events')}
                 </div>
+                {activeDetailNode?.type === 'supervisorNode' && (
+                  <div className="mb-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+                    {t(
+                      'missions.reviewTimelineHint',
+                      'Filtered to review/rework events for this task in the latest run.'
+                    )}
+                  </div>
+                )}
                 <div className="space-y-2">
                   {detailEvents.map((event) => (
                     <div

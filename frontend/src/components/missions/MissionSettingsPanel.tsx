@@ -369,6 +369,12 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
                       onChange={(e) => setExecutionConfig((prev) => ({ ...prev, max_retries: parseInt(e.target.value) || 0 }))}
                       className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 outline-none dark:text-zinc-200"
                     />
+                    <p className="mt-1 text-[11px] text-zinc-400">
+                      {t(
+                        'missions.maxRetriesHint',
+                        'Execution retries per attempt chain (used for task run and phase prompt failures).'
+                      )}
+                    </p>
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-zinc-500 mb-1.5">
@@ -396,6 +402,12 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
                       onChange={(e) => setExecutionConfig((prev) => ({ ...prev, max_rework_cycles: parseInt(e.target.value) || 0 }))}
                       className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 outline-none dark:text-zinc-200"
                     />
+                    <p className="mt-1 text-[11px] text-zinc-400">
+                      {t(
+                        'missions.maxReworkCyclesHint',
+                        'Review rework loops after a FAIL verdict (execute -> review -> rework -> review).'
+                      )}
+                    </p>
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-zinc-500 mb-1.5">

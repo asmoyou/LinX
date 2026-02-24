@@ -23,6 +23,48 @@ def test_extract_binary_verdict_defaults_to_fail_when_ambiguous():
     assert MissionOrchestrator._extract_binary_verdict(text) == "FAIL"
 
 
+def test_extract_binary_verdict_handles_leading_pass_with_long_body():
+    body_lines = "\n".join([f"Detail line {i}" for i in range(1, 30)])
+    text = f"PASS\n\n{body_lines}"
+    assert MissionOrchestrator._extract_binary_verdict(text) == "PASS"
+
+
+def test_extract_binary_verdict_ignores_instruction_noise():
+    text = (
+        "Respond with PASS or FAIL followed by your reasoning.\n"
+        "If FAIL, provide specific actionable feedback.\n"
+        "No explicit verdict in this output."
+    )
+    assert MissionOrchestrator._extract_binary_verdict(text) == "FAIL"
+
+
+def test_extract_structured_binary_verdict_prefers_json_verdict():
+    text = """
+Respond with PASS or FAIL followed by your reasoning.
+```json
+{
+  "verdict": "PASS",
+  "summary": "All acceptance criteria are satisfied."
+}
+```
+"""
+    assert MissionOrchestrator._extract_structured_binary_verdict(text) == "PASS"
+
+
+def test_extract_structured_binary_verdict_supports_nested_audit_report():
+    text = """
+```json
+{
+  "audit_report": {
+    "verdict": "FAILED",
+    "summary": "Critical acceptance criteria are missing."
+  }
+}
+```
+"""
+    assert MissionOrchestrator._extract_structured_binary_verdict(text) == "FAIL"
+
+
 def test_extract_qa_audit_details_parses_summary_and_issues():
     text = """
 Summary: Deliverable has format mismatch.
