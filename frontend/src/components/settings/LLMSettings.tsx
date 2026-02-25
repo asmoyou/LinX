@@ -127,52 +127,6 @@ export const LLMSettings: React.FC = () => {
       : 'border-red-500/30 bg-red-500/5';
   };
 
-  const getModelFeatureBadges = (metadata?: ModelMetadata): Array<{ key: string; icon: string; label: string }> => {
-    if (!metadata) {
-      return [];
-    }
-
-    const badges: Array<{ key: string; icon: string; label: string }> = [];
-    const seen = new Set<string>();
-    const addBadge = (key: string, icon: string, label: string) => {
-      if (seen.has(key)) return;
-      seen.add(key);
-      badges.push({ key, icon, label });
-    };
-
-    const modelTypeBadges: Record<string, { key: string; icon: string; label: string }> = {
-      vision: { key: 'model_type_vision', icon: '👁️', label: t('settings.modelDetails.vision', 'Vision') },
-      reasoning: { key: 'model_type_reasoning', icon: '🧠', label: t('settings.modelDetails.reasoning', 'Reasoning') },
-      embedding: { key: 'model_type_embedding', icon: '🔢', label: 'Embedding' },
-      rerank: { key: 'model_type_rerank', icon: '🔄', label: 'Rerank' },
-      code: { key: 'model_type_code', icon: '💻', label: 'Code' },
-      image_generation: { key: 'model_type_image_generation', icon: '🎨', label: 'Image Gen' },
-    };
-
-    const modelTypeBadge = metadata.model_type ? modelTypeBadges[metadata.model_type] : undefined;
-    if (modelTypeBadge) {
-      addBadge(modelTypeBadge.key, modelTypeBadge.icon, modelTypeBadge.label);
-    }
-
-    if (metadata.supports_vision) {
-      addBadge('supports_vision', '👁️', t('settings.modelDetails.vision', 'Vision'));
-    }
-    if (metadata.supports_reasoning) {
-      addBadge('supports_reasoning', '🧠', t('settings.modelDetails.reasoning', 'Reasoning'));
-    }
-    if (metadata.supports_function_calling) {
-      addBadge('supports_function_calling', '🔧', t('settings.modelDetails.functions', 'Functions'));
-    }
-    if (metadata.supports_streaming) {
-      addBadge('supports_streaming', '⚡', t('settings.modelDetails.streaming', 'Streaming'));
-    }
-    if (metadata.supports_system_prompt) {
-      addBadge('supports_system_prompt', '📋', t('settings.modelDetails.systemPrompt', 'System Prompt'));
-    }
-
-    return badges;
-  };
-
   const fetchModelMetadata = async (providerName: string) => {
     try {
       const metadata = await llmApi.getProviderModelsMetadata(providerName);
@@ -517,8 +471,6 @@ export const LLMSettings: React.FC = () => {
                 {/* Model Tags */}
                 <div className="flex flex-wrap gap-2">
                   {provider.available_models.map((model) => {
-                    const metadata = modelsMetadata[name]?.models[model];
-                    const featureBadges = getModelFeatureBadges(metadata);
                     return (
                       <div
                         key={model}
@@ -531,18 +483,6 @@ export const LLMSettings: React.FC = () => {
                       >
                         <div className="flex items-center gap-1.5">
                           <span>{model}</span>
-                          {featureBadges.length > 0 && (
-                            <div className="flex items-center gap-0.5">
-                              {featureBadges.slice(0, 3).map((feature) => (
-                                <span key={feature.key} className="text-xs" title={feature.label}>
-                                  {feature.icon}
-                                </span>
-                              ))}
-                              {featureBadges.length > 3 && (
-                                <span className="text-xs text-zinc-500">+{featureBadges.length - 3}</span>
-                              )}
-                            </div>
-                          )}
                         </div>
                       </div>
                     );
