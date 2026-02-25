@@ -18,14 +18,15 @@ def test_query_requests_historical_context_detects_follow_up_cues():
     assert executor._query_requests_historical_context("写一份新疆旅游攻略，生成md文档。") is False
 
 
-def test_is_interaction_log_memory_detects_executor_task_source():
+def test_is_task_log_memory_detects_executor_task_source():
     executor = _build_executor()
     memory = {
         "content": "Task: 写一篇旅游攻略\nResult: 已完成",
         "metadata": {"source": "agent_executor_task"},
     }
 
-    assert executor._is_interaction_log_memory(memory) is True
+    assert executor._is_task_log_memory(memory) is True
+    assert executor._is_interaction_log_memory(memory) is False
 
 
 def test_prune_interaction_log_memories_respects_history_intent():
@@ -34,6 +35,10 @@ def test_prune_interaction_log_memories_respects_history_intent():
         {
             "content": "Task: 写一篇福州旅游攻略\nResult: 已完成",
             "metadata": {"source": "agent_executor_task"},
+        },
+        {
+            "content": "[Agent: 小新]\nSession conversation summary (1 turns)\nRound 1 User: 继续\nRound 1 Assistant: 好的",
+            "metadata": {"source": "agent_test_session"},
         },
         {
             "content": "User preference: 用户偏好 markdown 输出",
@@ -46,7 +51,7 @@ def test_prune_interaction_log_memories_respects_history_intent():
         allow_interaction_logs=False,
     )
     assert len(pruned_memories) == 1
-    assert pruned_count == 1
+    assert pruned_count == 2
 
     kept_memories, kept_pruned_count = executor._prune_interaction_log_memories(
         memories,
@@ -54,10 +59,10 @@ def test_prune_interaction_log_memories_respects_history_intent():
     )
 
     assert len(kept_memories) == 2
-    assert kept_pruned_count == 0
+    assert kept_pruned_count == 1
 
 
-def test_execute_skips_task_memory_persistence_for_debug_chat_profile():
+def test_execute_does_not_persist_task_memory_for_debug_chat_profile():
     memory_interface = MagicMock()
     executor = AgentExecutor(memory_interface=memory_interface)
     mock_runtime_service = MagicMock()
@@ -84,7 +89,7 @@ def test_execute_skips_task_memory_persistence_for_debug_chat_profile():
     memory_interface.store_agent_memory.assert_not_called()
 
 
-def test_execute_persists_task_memory_for_non_debug_profile():
+def test_execute_does_not_persist_task_memory_for_non_debug_profile():
     memory_interface = MagicMock()
     executor = AgentExecutor(memory_interface=memory_interface)
     mock_runtime_service = MagicMock()
@@ -108,4 +113,4 @@ def test_execute_persists_task_memory_for_non_debug_profile():
         )
 
     assert result["success"] is True
-    memory_interface.store_agent_memory.assert_called_once()
+    memory_interface.store_agent_memory.assert_not_called()

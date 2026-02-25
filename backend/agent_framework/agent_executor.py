@@ -15,7 +15,6 @@ from uuid import UUID
 from agent_framework.access_policy import resolve_memory_scopes
 from agent_framework.agent_memory_interface import (
     AgentMemoryInterface,
-    _format_agent_memory_content,
     get_agent_memory_interface,
 )
 from agent_framework.base_agent import BaseAgent
@@ -25,9 +24,12 @@ from memory_system.memory_interface import MemoryType, SearchQuery
 
 logger = logging.getLogger(__name__)
 
-_INTERACTION_LOG_SOURCES = {
-    "agent_executor_task",
+_SESSION_INTERACTION_LOG_SOURCES = {
     "session_turn_aggregate",
+    "agent_test_session",
+}
+_TASK_MEMORY_SOURCES = {
+    "agent_executor_task",
 }
 
 _HISTORY_QUERY_CUES = {
@@ -213,10 +215,10 @@ class AgentExecutor:
         return any(cue in query for cue in _HISTORY_QUERY_CUES)
 
     def _is_interaction_log_memory(self, memory: Any) -> bool:
-        """Identify task-log style memories that can leak previous deliverables."""
+        """Identify session-level interaction memories."""
         metadata = self._extract_metadata(memory)
         source = str(metadata.get("source") or "").strip().lower()
-        if source in _INTERACTION_LOG_SOURCES:
+        if source in _SESSION_INTERACTION_LOG_SOURCES:
             return True
 
         content = self._extract_content(memory)
@@ -224,21 +226,44 @@ class AgentExecutor:
             return False
 
         normalized = str(content).strip().lower()
-        return normalized.startswith("[agent:") and "\ntask:" in normalized and "\nresult:" in normalized
+        return (
+            normalized.startswith("[agent:")
+            and "session conversation summary" in normalized
+            and "round 1 user:" in normalized
+        )
+
+    def _is_task_log_memory(self, memory: Any) -> bool:
+        """Identify task-level execution memories that should never be re-injected."""
+        metadata = self._extract_metadata(memory)
+        source = str(metadata.get("source") or "").strip().lower()
+        if source in _TASK_MEMORY_SOURCES:
+            return True
+
+        content = self._extract_content(memory)
+        if not content:
+            return False
+
+        normalized = str(content).strip().lower()
+        has_task_line = normalized.startswith("task:") or "\ntask:" in normalized
+        has_result_line = "\nresult:" in normalized
+        return has_task_line and has_result_line
 
     def _prune_interaction_log_memories(
         self,
         memories: List[Any],
         allow_interaction_logs: bool,
     ) -> Tuple[List[Any], int]:
-        """Drop task-log memories unless query explicitly requests historical context."""
-        if allow_interaction_logs or not memories:
+        """Drop task-log memories unconditionally; gate session logs by intent."""
+        if not memories:
             return memories, 0
 
         kept: List[Any] = []
         pruned = 0
         for item in memories:
-            if self._is_interaction_log_memory(item):
+            if self._is_task_log_memory(item):
+                pruned += 1
+                continue
+            if (not allow_interaction_logs) and self._is_interaction_log_memory(item):
                 pruned += 1
                 continue
             kept.append(item)
@@ -871,49 +896,6 @@ class AgentExecutor:
                     message_content=message_content,
                 )
             )
-
-            # Persist one task-level memory record per task completion (success or failure).
-            # Skip DEBUG_CHAT to keep agent-test streaming completion responsive.
-            if execution_profile != ExecutionProfile.DEBUG_CHAT:
-                try:
-                    execution_success = bool(result.get("success"))
-                    execution_summary = result.get("output")
-                    if not execution_success:
-                        execution_summary = result.get("error") or "Task execution failed"
-
-                    content = _format_agent_memory_content(
-                        task=context.task_description,
-                        result=str(execution_summary or ""),
-                        agent_name=agent.config.name,
-                    )
-                    self.memory_interface.store_agent_memory(
-                        agent_id=context.agent_id,
-                        content=content,
-                        user_id=context.user_id,
-                        metadata={
-                            "task_id": str(context.task_id) if context.task_id else None,
-                            "execution_status": "success" if execution_success else "failed",
-                            "source": "agent_executor_task",
-                        },
-                    )
-                    logger.debug(
-                        "Stored task completion memory",
-                        extra={
-                            "agent_id": str(context.agent_id),
-                            "task_id": str(context.task_id) if context.task_id else None,
-                            "execution_status": "success" if execution_success else "failed",
-                        },
-                    )
-                except Exception as mem_error:
-                    logger.warning(f"Failed to store task completion memory (continuing): {mem_error}")
-            else:
-                logger.debug(
-                    "Skipped task completion memory persistence for debug_chat profile",
-                    extra={
-                        "agent_id": str(context.agent_id),
-                        "task_id": str(context.task_id) if context.task_id else None,
-                    },
-                )
 
             logger.info(f"Agent execution completed: {agent.config.name}")
             return result
