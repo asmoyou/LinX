@@ -127,6 +127,7 @@ export interface MissionRoleConfig {
 export interface MissionExecutionConfig {
   max_retries: number;
   task_timeout_s: number;
+  dependency_wait_timeout_s?: number;
   max_rework_cycles: number;
   max_qa_cycles: number;
   network_access: boolean;

@@ -10,6 +10,7 @@ interface TaskNodeData {
   assigned_agent_name?: string;
   dependency_level?: number;
   acceptance_criteria?: string;
+  blocked_summary?: string;
 }
 
 const statusConfig: Record<string, { icon: React.ElementType; color: string; borderColor: string }> = {
@@ -63,6 +64,11 @@ export const TaskNode: React.FC<{ data: TaskNodeData }> = memo(({ data }) => {
       {data.status === 'awaiting_review' && (
         <div className="text-[10px] text-purple-500 mt-0.5">
           Awaiting review
+        </div>
+      )}
+      {data.status === 'blocked' && (
+        <div className="text-[10px] text-amber-600 mt-0.5">
+          {data.blocked_summary || 'Blocked by upstream dependency'}
         </div>
       )}
 

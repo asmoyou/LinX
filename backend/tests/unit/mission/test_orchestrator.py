@@ -205,6 +205,136 @@ def test_get_execution_config_maps_network_enabled_to_network_access():
     assert cfg["network_access"] is False
 
 
+def test_extract_workspace_paths_from_text_deduplicates_and_strips_punctuation():
+    text = (
+        "Write /workspace/output/final.md, then inspect `/workspace/shared/report.txt`; "
+        "finally confirm /workspace/output/final.md."
+    )
+    paths = MissionOrchestrator._extract_workspace_paths_from_text(text)
+    assert paths == ["/workspace/output/final.md", "/workspace/shared/report.txt"]
+
+
+def test_collect_workspace_file_review_context_reads_referenced_files():
+    mission_id = uuid4()
+
+    class _FakeWorkspace:
+        def read_file_bytes(self, _mission_id, path):
+            assert _mission_id == mission_id
+            if path == "output/final.md":
+                return b"final deliverable body"
+            raise RuntimeError(f"unexpected path {path}")
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._workspace = _FakeWorkspace()
+
+    context = MissionOrchestrator._collect_workspace_file_review_context(
+        orchestrator,
+        mission_id,
+        "Please verify /workspace/output/final.md",
+    )
+    assert "## Workspace File Evidence" in context
+    assert "/workspace/output/final.md" in context
+    assert "final deliverable body" in context
+
+
+def test_build_task_delivery_handoff_extracts_workspace_paths_from_output_and_tool_trace():
+    payload = {
+        "output": "完成交付，文件在 /workspace/output/final.md",
+        "messages": [
+            SimpleNamespace(type="ai", content="See /workspace/shared/notes.md"),
+        ],
+        "tool_calls": [
+            {
+                "name": "write_file",
+                "args": {"path": "output/final.md"},
+                "result": "saved",
+            }
+        ],
+    }
+
+    handoff = MissionOrchestrator._build_task_delivery_handoff(payload, payload["output"])
+
+    assert "/workspace/output/final.md" in handoff["workspace_paths"]
+    assert "/workspace/output/final.md" in handoff["final_files"]
+    assert handoff["tool_calls_count"] == 1
+
+
+def test_build_task_delivery_handoff_context_renders_final_files():
+    context = MissionOrchestrator._build_task_delivery_handoff_context(
+        {
+            "output": "done",
+            "delivery_handoff": {
+                "summary": "final file ready",
+                "final_files": ["/workspace/output/final.md"],
+                "intermediate_files": ["/workspace/shared/debug.log"],
+                "tool_trace": [{"name": "write_file", "status": "ok"}],
+            },
+        }
+    )
+
+    assert "## Delivery Handoff" in context
+    assert "/workspace/output/final.md" in context
+    assert "write_file(ok)" in context
+
+
+def test_build_dependency_handoff_context_includes_upstream_delivery(monkeypatch):
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    dependency_task_id = uuid4()
+    task_obj = SimpleNamespace(task_id=uuid4(), dependencies=[str(dependency_task_id)])
+
+    dependency_task = SimpleNamespace(
+        task_id=dependency_task_id,
+        status="completed",
+        task_metadata={"title": "Prepare source package"},
+        result={
+            "output": "Prepared source package.",
+            "delivery_handoff": {
+                "summary": "source package ready",
+                "final_files": ["/workspace/output/source.md"],
+                "tool_trace": [{"name": "write_file", "status": "ok"}],
+            },
+        },
+    )
+
+    class _FakeQuery:
+        def __init__(self, task):
+            self._task = task
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [self._task]
+
+    class _FakeSession:
+        def __init__(self, task):
+            self._task = task
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._task)
+
+    class _FakeSessionContext:
+        def __init__(self, task):
+            self._task = task
+
+        def __enter__(self):
+            return _FakeSession(self._task)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(dependency_task),
+    )
+
+    context = MissionOrchestrator._build_dependency_handoff_context(orchestrator, task_obj)
+
+    assert "## Dependency Handoffs" in context
+    assert "Prepare source package" in context
+    assert "/workspace/output/source.md" in context
+
+
 def test_detect_instruction_language_prefers_chinese_for_cjk_text():
     language = MissionOrchestrator._detect_instruction_language("请帮我实现任务管理页面")
     assert language == "Simplified Chinese"
@@ -946,6 +1076,127 @@ async def test_execute_task_with_retry_falls_back_to_temporary_agent(monkeypatch
         (temporary_agent_id, "active"),
         (temporary_agent_id, "idle"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_execute_task_with_retry_persists_delivery_handoff(monkeypatch):
+    mission_id = uuid4()
+    owner_user_id = uuid4()
+    assigned_agent_id = uuid4()
+    task_id = uuid4()
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: None)
+
+    mission = SimpleNamespace(
+        created_by_user_id=owner_user_id,
+        mission_config={
+            "leader_config": {
+                "llm_provider": "ollama",
+                "llm_model": "qwen2.5:14b",
+                "temperature": 0.2,
+                "max_tokens": 1024,
+            }
+        },
+    )
+    task_obj = SimpleNamespace(
+        task_id=task_id,
+        goal_text="Produce deliverable",
+        acceptance_criteria="Write final report to /workspace/output/final.md",
+        task_metadata={"title": "Produce deliverable"},
+        assigned_agent_id=assigned_agent_id,
+    )
+
+    class _FakeQuery:
+        def __init__(self, task):
+            self._task = task
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return self._task
+
+    class _FakeSession:
+        def __init__(self, task):
+            self._task = task
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._task)
+
+    class _FakeSessionContext:
+        def __init__(self, task):
+            self._task = task
+
+        def __enter__(self):
+            return _FakeSession(self._task)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    db_task = SimpleNamespace(
+        status="pending",
+        assigned_agent_id=assigned_agent_id,
+        result=None,
+        completed_at=None,
+    )
+
+    async def _fake_create_registered(agent_id, owner_user_id):
+        return SimpleNamespace(agent_id=agent_id, name="worker-agent")
+
+    async def _fake_execute_agent_task(agent, prompt, container_id=None, **kwargs):
+        _ = agent, prompt, container_id, kwargs
+        return {
+            "success": True,
+            "output": "Final deliverable saved to /workspace/output/final.md",
+            "messages": [SimpleNamespace(type="ai", content="Saved /workspace/output/final.md")],
+            "tool_calls": [
+                {
+                    "name": "write_file",
+                    "args": {"path": "output/final.md"},
+                    "result": "ok",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.create_registered_mission_agent",
+        _fake_create_registered,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_execute_agent_task",
+        staticmethod(_fake_execute_agent_task),
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(db_task),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_agent_status",
+        lambda mission_id, agent_id, status: None,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_safe_sync_mission_task_counters",
+        lambda self, mission_id, fallback_total=0: {},
+    )
+
+    success = await MissionOrchestrator._execute_task_with_retry(
+        orchestrator,
+        mission_id=mission_id,
+        mission=mission,
+        task_obj=task_obj,
+        max_retries=0,
+    )
+
+    assert success is True
+    assert db_task.status == "completed"
+    assert isinstance(db_task.result, dict)
+    handoff = db_task.result.get("delivery_handoff")
+    assert isinstance(handoff, dict)
+    assert "/workspace/output/final.md" in handoff.get("final_files", [])
+    assert handoff.get("tool_calls_count") == 1
 
 
 @pytest.mark.asyncio
@@ -2567,6 +2818,175 @@ async def test_phase_execution_propagates_blocked_dependency_without_wait_loop(m
 
 
 @pytest.mark.asyncio
+async def test_phase_execution_fails_on_dependency_wait_timeout(monkeypatch):
+    mission_id = uuid4()
+    dependency_task_id = uuid4()
+    leaf_task_id = uuid4()
+
+    dependency_task = SimpleNamespace(
+        task_id=dependency_task_id,
+        status="pending",
+        completed_at=None,
+        dependencies=[],
+        task_metadata={"title": "Dependency task", "review_status": "pending"},
+        result={},
+    )
+    leaf_task = SimpleNamespace(
+        task_id=leaf_task_id,
+        status="pending",
+        completed_at=None,
+        dependencies=[str(dependency_task_id)],
+        task_metadata={"title": "Leaf task"},
+        result={},
+    )
+    tasks_by_id = {
+        str(dependency_task_id): dependency_task,
+        str(leaf_task_id): leaf_task,
+    }
+    emitted_events = []
+
+    class _FakeQuery:
+        def __init__(self, tasks):
+            self._tasks = tasks
+            self._single_id = None
+            self._selected_ids = None
+
+        def filter(self, *args, **kwargs):
+            _ = kwargs
+            for clause in args:
+                left = str(getattr(clause, "left", ""))
+                right = getattr(clause, "right", None)
+                if right is None:
+                    continue
+                value = getattr(right, "value", None)
+                operator_name = str(getattr(getattr(clause, "operator", None), "__name__", ""))
+                if "task_id" in left and operator_name == "in_op" and isinstance(value, list):
+                    self._selected_ids = [str(item) for item in value]
+                elif "task_id" in left and value is not None:
+                    self._single_id = str(value)
+            return self
+
+        def all(self):
+            if self._selected_ids is not None:
+                return [self._tasks[task_id] for task_id in self._selected_ids if task_id in self._tasks]
+            return list(self._tasks.values())
+
+        def first(self):
+            if self._single_id is not None:
+                return self._tasks.get(self._single_id)
+            values = self.all()
+            return values[0] if values else None
+
+    class _FakeSession:
+        def __init__(self, tasks):
+            self._tasks = tasks
+
+        def query(self, *args, **kwargs):
+            _ = args, kwargs
+            return _FakeQuery(self._tasks)
+
+        def expunge(self, _obj):
+            return None
+
+    class _FakeSessionContext:
+        def __init__(self, tasks):
+            self._tasks = tasks
+
+        def __enter__(self):
+            return _FakeSession(self._tasks)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.get_mission",
+        lambda _mission_id: SimpleNamespace(
+            total_tasks=2,
+            created_by_user_id=uuid4(),
+            mission_config={
+                "execution_config": {
+                    "max_concurrent_tasks": 1,
+                    "task_timeout_s": 10,
+                    "dependency_wait_timeout_s": 3,
+                }
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(tasks_by_id),
+    )
+    monkeypatch.setattr(
+        "agent_framework.agent_registry.AgentRegistry",
+        lambda: SimpleNamespace(list_agents=lambda **kwargs: []),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_topological_sort",
+        staticmethod(lambda tasks: [leaf_task]),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_get_task_status_counts",
+        staticmethod(lambda _mission_id: {"failed": 1, "pending": 1}),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_transition",
+        lambda self, _mission_id, _status: None,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_safe_sync_mission_task_counters",
+        lambda self, _mission_id, fallback_total=0: {"total_tasks": fallback_total},
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_fields",
+        lambda *args, **kwargs: None,
+    )
+
+    async def _should_not_execute(*args, **kwargs):
+        _ = args, kwargs
+        raise AssertionError("Leaf task should fail in dependency wait before execution")
+
+    async def _fast_sleep(_seconds):
+        return None
+
+    logical_clock = {"tick": 0}
+
+    def _fake_monotonic():
+        logical_clock["tick"] += 1
+        return float(logical_clock["tick"])
+
+    monkeypatch.setattr(MissionOrchestrator, "_execute_task_with_retry", _should_not_execute)
+    monkeypatch.setattr("mission_system.orchestrator.asyncio.sleep", _fast_sleep)
+    monkeypatch.setattr("mission_system.orchestrator.monotonic", _fake_monotonic)
+
+    await MissionOrchestrator._phase_execution(orchestrator, mission_id)
+
+    assert leaf_task.status == "failed"
+    assert leaf_task.result["last_error_type"] == "TaskDependencyTimeoutError"
+    assert leaf_task.result["dependency_wait_timeout_s"] == 3
+    assert leaf_task.result["waiting_on_dependencies"] == [str(dependency_task_id)]
+
+    failed_event = next(
+        (
+            event
+            for event in emitted_events
+            if event.get("event_type") == "TASK_FAILED" and event.get("task_id") == leaf_task_id
+        ),
+        None,
+    )
+    assert failed_event is not None
+    assert failed_event.get("data", {}).get("reason") == "dependency_wait_timeout"
+    assert failed_event.get("data", {}).get("error_code") == "dependency_wait_timeout"
+    assert failed_event.get("data", {}).get("timeout_s") == 3
+
+
+@pytest.mark.asyncio
 async def test_execute_task_with_retry_includes_review_feedback_in_prompt(monkeypatch):
     mission_id = uuid4()
     owner_user_id = uuid4()
@@ -2797,6 +3217,7 @@ async def test_review_task_for_dependency_gate_marks_failed_task(monkeypatch):
     mission_id = uuid4()
     dependency_task_id = uuid4()
     emitted_events = []
+    captured_prompt = {}
 
     orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
     orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
@@ -2806,7 +3227,14 @@ async def test_review_task_for_dependency_gate_marks_failed_task(monkeypatch):
         status="completed",
         goal_text="Collect source facts",
         acceptance_criteria="Facts must be accurate",
-        result={"output": "raw output"},
+        result={
+            "output": "raw output",
+            "delivery_handoff": {
+                "summary": "facts delivered",
+                "final_files": ["/workspace/output/facts.md"],
+                "tool_trace": [{"name": "write_file", "status": "ok"}],
+            },
+        },
         task_metadata={"title": "Collect facts", "review_status": "pending"},
         completed_at=datetime.utcnow(),
     )
@@ -2839,6 +3267,7 @@ async def test_review_task_for_dependency_gate_marks_failed_task(monkeypatch):
             return False
 
     async def _fake_review(*args, **kwargs):
+        captured_prompt["value"] = kwargs.get("prompt", "")
         return "FAIL: Missing reliable citations."
 
     monkeypatch.setattr(
@@ -2869,6 +3298,8 @@ async def test_review_task_for_dependency_gate_marks_failed_task(monkeypatch):
     assert dependency_task.status == "failed"
     assert dependency_task.task_metadata["review_status"] == "rework_required"
     assert "review_feedback" in dependency_task.task_metadata
+    assert "## Delivery Handoff" in captured_prompt.get("value", "")
+    assert "/workspace/output/facts.md" in captured_prompt.get("value", "")
     assert any(event.get("event_type") == "TASK_REVIEWED" for event in emitted_events)
     assert any(event.get("event_type") == "TASK_FAILED" for event in emitted_events)
 

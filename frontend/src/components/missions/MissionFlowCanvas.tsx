@@ -623,6 +623,14 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
 
     // Task nodes
     const parentEdgeSource = nodes.find((n) => n.id === 'requirements') ? 'requirements' : 'mission';
+    const taskTitleById = new Map(
+      missionTasks.map((task) => {
+        const metadataTitle =
+          typeof task.task_metadata?.title === 'string' ? task.task_metadata.title.trim() : '';
+        const displayTitle = metadataTitle || task.goal_text || task.task_id;
+        return [task.task_id, displayTitle];
+      })
+    );
     missionTasks.forEach((task) => {
       const dependencyIds = resolveDependencies(task);
       const reviewStatus =
@@ -644,6 +652,24 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
         selectedMission.status !== 'qa';
       const isBlockedByDependency =
         task.status !== 'completed' && reviewStatus === 'blocked_by_dependency';
+      const blockedByDependencyIds = Array.isArray(task.task_metadata?.blocked_by_failed_dependencies)
+        ? task.task_metadata.blocked_by_failed_dependencies.filter(
+            (value): value is string => typeof value === 'string' && value.trim().length > 0
+          )
+        : [];
+      const blockedByDependencyTitles = blockedByDependencyIds.map(
+        (dependencyId) => taskTitleById.get(dependencyId) || dependencyId
+      );
+      const blockedSummary =
+        isBlockedByDependency && blockedByDependencyTitles.length > 0
+          ? `Blocked by upstream: ${blockedByDependencyTitles.slice(0, 2).join(', ')}${
+              blockedByDependencyTitles.length > 2
+                ? ` +${blockedByDependencyTitles.length - 2}`
+                : ''
+            }`
+          : isBlockedByDependency
+            ? 'Blocked by upstream dependency'
+            : undefined;
       const visualTaskStatus =
         isBlockedByDependency
           ? 'blocked'
@@ -671,6 +697,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
           dependency_level: dependencyLevel,
           dependencies: dependencyIds,
           acceptance_criteria: task.acceptance_criteria,
+          blocked_summary: blockedSummary,
         },
       });
 

@@ -16,6 +16,7 @@ import traceback
 from collections import Counter, defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from uuid import UUID
 
@@ -68,6 +69,7 @@ MAX_ALLOWED_QA_CYCLES = 5
 MIN_TASK_RELEVANCE_SCORE = 0.12
 MAX_OFF_TOPIC_TASK_RATIO = 0.5
 MISSION_RUNTIME_CONTEXT_TAG = "mission_run"
+WORKSPACE_PATH_PATTERN = re.compile(r"/workspace(?:/[^\s'\"`]+)+")
 
 
 class MissionOrchestrator:
@@ -484,6 +486,7 @@ class MissionOrchestrator:
         for key in (
             "max_retries",
             "task_timeout_s",
+            "dependency_wait_timeout_s",
             "max_rework_cycles",
             "max_concurrent_tasks",
             "max_qa_cycles",
@@ -538,6 +541,520 @@ class MissionOrchestrator:
         if not isinstance(task_metadata, dict):
             return ""
         return str(task_metadata.get("review_status") or "").strip().lower()
+
+    @staticmethod
+    def _extract_workspace_paths_from_text(text: Any) -> List[str]:
+        """Extract referenced /workspace paths from free-form text."""
+        if not isinstance(text, str) or not text:
+            return []
+
+        matches = WORKSPACE_PATH_PATTERN.findall(text)
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for raw in matches:
+            candidate = raw.rstrip(".,;:!?)]}>\"'`")
+            if candidate and candidate not in seen:
+                deduped.append(candidate)
+                seen.add(candidate)
+        return deduped
+
+    @staticmethod
+    def _normalize_workspace_relative_path(path: str) -> Optional[str]:
+        """Normalize absolute /workspace path into a safe relative path."""
+        normalized = str(path or "").strip().replace("\\", "/")
+        if not normalized.startswith("/workspace/"):
+            return None
+
+        relative = normalized[len("/workspace/") :].lstrip("/")
+        if not relative:
+            return None
+
+        path_parts = [part for part in relative.split("/") if part]
+        if any(part == ".." for part in path_parts):
+            return None
+
+        return "/".join(path_parts)
+
+    def _collect_workspace_file_review_context(
+        self,
+        mission_id: UUID,
+        *text_sources: Any,
+    ) -> str:
+        """Read referenced workspace files and build compact review context."""
+        workspace = getattr(self, "_workspace", None)
+        if workspace is None:
+            return ""
+
+        referenced_paths: List[str] = []
+        seen_paths: set[str] = set()
+        for source in text_sources:
+            for candidate in self._extract_workspace_paths_from_text(source):
+                if candidate not in seen_paths:
+                    referenced_paths.append(candidate)
+                    seen_paths.add(candidate)
+
+        if not referenced_paths:
+            return ""
+
+        file_sections: List[str] = []
+        max_files = 4
+        max_chars_per_file = 1200
+        for absolute_path in referenced_paths[:max_files]:
+            relative_path = self._normalize_workspace_relative_path(absolute_path)
+            if not relative_path:
+                continue
+            try:
+                raw_bytes = workspace.read_file_bytes(mission_id, relative_path)
+            except Exception:
+                logger.debug(
+                    "Failed to read referenced workspace file for review context",
+                    extra={"mission_id": str(mission_id), "path": absolute_path},
+                    exc_info=True,
+                )
+                continue
+
+            try:
+                decoded = raw_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                decoded = raw_bytes.decode("utf-8", errors="replace")
+
+            trimmed = decoded.strip()
+            if len(trimmed) > max_chars_per_file:
+                snippet = trimmed[:max_chars_per_file] + "\n...[truncated]"
+            else:
+                snippet = trimmed or "<empty file>"
+
+            file_sections.append(
+                (
+                    f"- {absolute_path} ({len(raw_bytes)} bytes)\n"
+                    f"```text\n{snippet}\n```"
+                )
+            )
+
+        if not file_sections:
+            return ""
+
+        return (
+            "## Workspace File Evidence\n"
+            "Referenced workspace files were inspected below:\n"
+            f"{chr(10).join(file_sections)}\n\n"
+        )
+
+    @staticmethod
+    def _normalize_workspace_hint_path(path: Any) -> Optional[str]:
+        """Normalize path-like hints into canonical absolute /workspace paths."""
+        raw = str(path or "").strip().replace("\\", "/")
+        if not raw:
+            return None
+
+        if raw.startswith("/workspace/"):
+            normalized = MissionOrchestrator._normalize_workspace_relative_path(raw)
+            return f"/workspace/{normalized}" if normalized else None
+
+        if raw.startswith("workspace/"):
+            normalized = MissionOrchestrator._normalize_workspace_relative_path(f"/{raw}")
+            return f"/workspace/{normalized}" if normalized else None
+
+        if raw.startswith("./"):
+            raw = raw[2:]
+
+        for prefix in ("output/", "shared/", "tasks/", "logs/", "input/"):
+            if raw.startswith(prefix):
+                normalized = MissionOrchestrator._normalize_workspace_relative_path(
+                    f"/workspace/{raw}"
+                )
+                return f"/workspace/{normalized}" if normalized else None
+
+        return None
+
+    @classmethod
+    def _collect_workspace_paths_from_value(
+        cls,
+        value: Any,
+        collected: List[str],
+        seen: set[str],
+        *,
+        depth: int = 0,
+        max_items: int = 30,
+    ) -> None:
+        """Collect workspace paths from nested data structures."""
+        if depth > 4:
+            return
+
+        def _append(path: Optional[str]) -> None:
+            if not path:
+                return
+            if path in seen:
+                return
+            seen.add(path)
+            collected.append(path)
+
+        if isinstance(value, str):
+            for match in cls._extract_workspace_paths_from_text(value):
+                _append(match)
+            _append(cls._normalize_workspace_hint_path(value))
+            return
+
+        if isinstance(value, dict):
+            for idx, (key, item) in enumerate(value.items()):
+                if idx >= max_items:
+                    break
+                key_name = str(key or "").strip().lower()
+                if isinstance(item, str) and any(
+                    token in key_name for token in ("path", "file", "dir", "output", "target")
+                ):
+                    _append(cls._normalize_workspace_hint_path(item))
+                cls._collect_workspace_paths_from_value(
+                    item,
+                    collected,
+                    seen,
+                    depth=depth + 1,
+                    max_items=max_items,
+                )
+            return
+
+        if isinstance(value, (list, tuple)):
+            for item in list(value)[:max_items]:
+                cls._collect_workspace_paths_from_value(
+                    item,
+                    collected,
+                    seen,
+                    depth=depth + 1,
+                    max_items=max_items,
+                )
+
+    @staticmethod
+    def _infer_message_role(message: Any) -> str:
+        """Best-effort role extraction from message-like payloads."""
+        if isinstance(message, dict):
+            raw_role = message.get("role") or message.get("type")
+        else:
+            raw_role = getattr(message, "role", None) or getattr(message, "type", None)
+
+        if not raw_role:
+            raw_role = message.__class__.__name__
+
+        normalized = str(raw_role or "").strip().lower()
+        if normalized in {"ai", "assistant", "aimessage"}:
+            return "assistant"
+        if normalized in {"human", "user", "humanmessage"}:
+            return "user"
+        if normalized in {"system", "systemmessage"}:
+            return "system"
+        return normalized or "unknown"
+
+    @classmethod
+    def _sanitize_json_value(
+        cls,
+        value: Any,
+        *,
+        depth: int = 0,
+        max_items: int = 12,
+        max_string_chars: int = 600,
+    ) -> Any:
+        """Convert arbitrary values into JSON-serializable lightweight payloads."""
+        if depth > 4:
+            return cls._truncate_prompt_text(value, limit=max_string_chars)
+
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+
+        if isinstance(value, str):
+            return cls._truncate_prompt_text(value, limit=max_string_chars)
+
+        if isinstance(value, dict):
+            sanitized: Dict[str, Any] = {}
+            for idx, (key, item) in enumerate(value.items()):
+                if idx >= max_items:
+                    break
+                sanitized[str(key)] = cls._sanitize_json_value(
+                    item,
+                    depth=depth + 1,
+                    max_items=max_items,
+                    max_string_chars=max_string_chars,
+                )
+            return sanitized
+
+        if isinstance(value, (list, tuple)):
+            return [
+                cls._sanitize_json_value(
+                    item,
+                    depth=depth + 1,
+                    max_items=max_items,
+                    max_string_chars=max_string_chars,
+                )
+                for item in list(value)[:max_items]
+            ]
+
+        return cls._truncate_prompt_text(value, limit=max_string_chars)
+
+    @classmethod
+    def _extract_message_text(cls, message: Any, max_chars: int = 600) -> str:
+        """Extract readable text from message-like objects."""
+        if isinstance(message, dict):
+            content = message.get("content")
+        else:
+            content = getattr(message, "content", message)
+
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content[:24]:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+                        continue
+                    alt = item.get("content")
+                    if isinstance(alt, str) and alt.strip():
+                        parts.append(alt.strip())
+                        continue
+                    serialized = json.dumps(
+                        cls._sanitize_json_value(item),
+                        ensure_ascii=False,
+                    )
+                    if serialized:
+                        parts.append(serialized)
+                else:
+                    text = str(item).strip()
+                    if text:
+                        parts.append(text)
+            return cls._truncate_prompt_text("\n".join(parts), limit=max_chars)
+
+        return cls._truncate_prompt_text(content, limit=max_chars)
+
+    @classmethod
+    def _summarize_agent_messages(
+        cls,
+        raw_messages: Any,
+        *,
+        max_messages: int = 8,
+    ) -> List[Dict[str, str]]:
+        """Build compact message tail for debugging and review handoff."""
+        if not isinstance(raw_messages, list):
+            return []
+
+        summarized: List[Dict[str, str]] = []
+        for message in raw_messages[-max_messages:]:
+            content = cls._extract_message_text(message, max_chars=700).strip()
+            if not content:
+                continue
+            summarized.append(
+                {
+                    "role": cls._infer_message_role(message),
+                    "content": content,
+                }
+            )
+        return summarized
+
+    @classmethod
+    def _summarize_tool_calls(
+        cls,
+        raw_tool_calls: Any,
+        *,
+        max_calls: int = 12,
+    ) -> List[Dict[str, Any]]:
+        """Normalize raw tool-call traces into compact serializable records."""
+        if not isinstance(raw_tool_calls, list):
+            return []
+
+        records: List[Dict[str, Any]] = []
+        for item in raw_tool_calls[:max_calls]:
+            if not isinstance(item, dict):
+                records.append(
+                    {
+                        "name": "unknown",
+                        "status": "unknown",
+                        "result_excerpt": cls._truncate_prompt_text(item, limit=280),
+                    }
+                )
+                continue
+
+            name = str(item.get("name") or item.get("tool") or "unknown").strip() or "unknown"
+            error = item.get("error")
+            record: Dict[str, Any] = {
+                "name": name,
+                "status": "error" if error else "ok",
+            }
+            if "args" in item:
+                record["args"] = cls._sanitize_json_value(item.get("args"))
+            if error:
+                record["error"] = cls._truncate_prompt_text(error, limit=400)
+            elif "result" in item:
+                record["result_excerpt"] = cls._truncate_prompt_text(item.get("result"), limit=300)
+            records.append(record)
+
+        return records
+
+    @classmethod
+    def _build_task_delivery_handoff(
+        cls,
+        payload: Dict[str, Any],
+        output: str,
+    ) -> Dict[str, Any]:
+        """Create structured handoff metadata for review and downstream tasks."""
+        tool_trace = cls._summarize_tool_calls(payload.get("tool_calls"))
+        message_tail = cls._summarize_agent_messages(payload.get("messages"))
+
+        workspace_paths: List[str] = []
+        seen_paths: set[str] = set()
+        cls._collect_workspace_paths_from_value(output, workspace_paths, seen_paths)
+        cls._collect_workspace_paths_from_value(tool_trace, workspace_paths, seen_paths)
+        cls._collect_workspace_paths_from_value(message_tail, workspace_paths, seen_paths)
+
+        final_files = [p for p in workspace_paths if p.startswith("/workspace/output/")]
+        intermediate_files = [p for p in workspace_paths if p not in final_files]
+
+        summary_parts: List[str] = []
+        if final_files:
+            summary_parts.append(f"final files: {', '.join(final_files[:4])}")
+        elif workspace_paths:
+            summary_parts.append("workspace paths found but not under `/workspace/output`")
+        if tool_trace:
+            summary_parts.append(f"{len(tool_trace)} tool call(s)")
+        if message_tail:
+            summary_parts.append(f"{len(message_tail)} message(s) in tail")
+        summary = "; ".join(summary_parts) if summary_parts else "No structured delivery metadata."
+
+        return {
+            "summary": summary,
+            "output_excerpt": cls._truncate_prompt_text(output, limit=1200),
+            "workspace_paths": workspace_paths[:20],
+            "final_files": final_files[:10],
+            "intermediate_files": intermediate_files[:10],
+            "tool_calls_count": len(tool_trace),
+            "tool_trace": tool_trace[:8],
+            "message_tail": message_tail,
+        }
+
+    @classmethod
+    def _build_task_delivery_handoff_context(cls, task_result: Any) -> str:
+        """Render compact handoff context for supervisor review prompts."""
+        if not isinstance(task_result, dict):
+            return ""
+
+        handoff = task_result.get("delivery_handoff")
+        if not isinstance(handoff, dict):
+            return ""
+
+        lines: List[str] = []
+        summary = str(handoff.get("summary") or "").strip()
+        if summary:
+            lines.append(f"- Summary: {summary}")
+
+        final_files = cls._coerce_string_list(handoff.get("final_files"), max_items=8)
+        if final_files:
+            lines.append("- Final files:")
+            lines.extend(f"  - {path}" for path in final_files)
+
+        intermediate_files = cls._coerce_string_list(handoff.get("intermediate_files"), max_items=8)
+        if intermediate_files:
+            lines.append("- Intermediate files:")
+            lines.extend(f"  - {path}" for path in intermediate_files)
+
+        if not final_files and not intermediate_files:
+            workspace_paths = cls._coerce_string_list(handoff.get("workspace_paths"), max_items=10)
+            if workspace_paths:
+                lines.append("- Referenced workspace paths:")
+                lines.extend(f"  - {path}" for path in workspace_paths)
+
+        tool_trace = handoff.get("tool_trace")
+        if isinstance(tool_trace, list) and tool_trace:
+            trace_fragments: List[str] = []
+            for call in tool_trace[:5]:
+                if not isinstance(call, dict):
+                    continue
+                name = str(call.get("name") or "unknown").strip() or "unknown"
+                status = str(call.get("status") or "unknown").strip() or "unknown"
+                trace_fragments.append(f"{name}({status})")
+            if trace_fragments:
+                lines.append("- Tool trace: " + ", ".join(trace_fragments))
+
+        if not lines:
+            return ""
+
+        return "## Delivery Handoff\n" + "\n".join(lines) + "\n\n"
+
+    def _build_dependency_handoff_context(self, task_obj: Any) -> str:
+        """Build upstream dependency handoff snippets for downstream task prompts."""
+        raw_dependency_ids = getattr(task_obj, "dependencies", None)
+        if not isinstance(raw_dependency_ids, list) or not raw_dependency_ids:
+            return ""
+
+        ordered_dependency_ids: List[str] = []
+        for dep_id in raw_dependency_ids[:6]:
+            dep_text = str(dep_id or "").strip()
+            if dep_text and dep_text not in ordered_dependency_ids:
+                ordered_dependency_ids.append(dep_text)
+
+        if not ordered_dependency_ids:
+            return ""
+
+        dependency_uuids: List[UUID] = []
+        for dep_id in ordered_dependency_ids:
+            try:
+                dependency_uuids.append(UUID(dep_id))
+            except (TypeError, ValueError):
+                continue
+
+        if not dependency_uuids:
+            return ""
+
+        from database.connection import get_db_session
+        from database.models import Task
+
+        try:
+            with get_db_session() as session:
+                dependency_rows = (
+                    session.query(Task).filter(Task.task_id.in_(dependency_uuids)).all()
+                )
+        except Exception:
+            logger.debug(
+                "Failed to collect dependency handoff context for task %s",
+                getattr(task_obj, "task_id", "unknown"),
+                exc_info=True,
+            )
+            return ""
+
+        if not dependency_rows:
+            return ""
+
+        dependency_by_id = {str(row.task_id): row for row in dependency_rows}
+        sections: List[str] = []
+        for dep_id in ordered_dependency_ids:
+            dep_task = dependency_by_id.get(dep_id)
+            if dep_task is None:
+                continue
+
+            dep_meta = dict(dep_task.task_metadata or {})
+            dep_title = str(dep_meta.get("title") or "Untitled")
+            dep_result = dep_task.result if isinstance(dep_task.result, dict) else {}
+            dep_output = self._truncate_prompt_text(dep_result.get("output"), limit=500)
+            dep_handoff = self._build_task_delivery_handoff_context(dep_result).strip()
+            if dep_handoff.startswith("## Delivery Handoff"):
+                dep_handoff = dep_handoff[len("## Delivery Handoff") :].strip()
+
+            section_lines = [
+                f"### Dependency Task: {dep_title}",
+                f"- Task ID: {dep_task.task_id}",
+                f"- Status: {dep_task.status}",
+            ]
+            if dep_output:
+                section_lines.append(f"- Output Excerpt: {dep_output}")
+            if dep_handoff:
+                section_lines.append("- Delivery Handoff:")
+                section_lines.append(dep_handoff)
+
+            sections.append("\n".join(section_lines))
+
+        if not sections:
+            return ""
+
+        return (
+            "## Dependency Handoffs\n"
+            "Use approved upstream outputs below as input context for this task.\n\n"
+            + "\n\n".join(sections)
+            + "\n\n"
+        )
 
     @staticmethod
     def _normalize_agent_result(result: Any) -> Dict[str, Any]:
@@ -2738,6 +3255,14 @@ class MissionOrchestrator:
         # Execute with concurrency limiter from execution config
         exec_cfg = self._get_execution_config(mission)
         max_concurrent = max(1, self._coerce_int(exec_cfg.get("max_concurrent_tasks", 3), 3))
+        task_timeout_s = max(0, self._coerce_int(exec_cfg.get("task_timeout_s", 600), 600))
+        dependency_wait_timeout_s = max(
+            0,
+            self._coerce_int(
+                exec_cfg.get("dependency_wait_timeout_s", task_timeout_s),
+                task_timeout_s,
+            ),
+        )
         require_dependency_review_pass = self._coerce_bool(
             exec_cfg.get("require_dependency_review_pass", True),
             default=True,
@@ -2775,6 +3300,7 @@ class MissionOrchestrator:
             async with semaphore:
                 # Wait for dependencies to complete
                 dep_ids = task_obj.dependencies or []
+                dependency_wait_started_at = monotonic()
                 while dep_ids:
                     with get_db_session() as session:
                         dep_rows = session.query(Task).filter(Task.task_id.in_(dep_ids)).all()
@@ -2783,6 +3309,75 @@ class MissionOrchestrator:
                             str(t.task_id): self._get_task_review_status(t.task_metadata)
                             for t in dep_rows
                         }
+
+                    if dependency_wait_timeout_s > 0:
+                        wait_elapsed = monotonic() - dependency_wait_started_at
+                        if wait_elapsed >= dependency_wait_timeout_s:
+                            unresolved_dep_ids = [
+                                dep_id for dep_id in dep_ids if dep_statuses.get(dep_id) != "completed"
+                            ]
+                            task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
+                            timeout_error = (
+                                "Task dependency wait exceeded configured timeout "
+                                f"({dependency_wait_timeout_s}s) and was aborted"
+                            )
+                            if unresolved_dep_ids:
+                                timeout_error = (
+                                    f"{timeout_error}: {', '.join(unresolved_dep_ids)}"
+                                )
+
+                            with get_db_session() as session:
+                                t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+                                if t:
+                                    result_payload = (
+                                        dict(t.result) if isinstance(t.result, dict) else {}
+                                    )
+                                    result_payload["error"] = timeout_error
+                                    result_payload["last_error"] = timeout_error
+                                    result_payload["last_error_type"] = "TaskDependencyTimeoutError"
+                                    result_payload["dependency_wait_timeout_s"] = (
+                                        dependency_wait_timeout_s
+                                    )
+                                    result_payload["waiting_on_dependencies"] = unresolved_dep_ids
+                                    t.result = result_payload
+                                    t.status = "failed"
+                                    t.completed_at = None
+
+                            local_result = (
+                                dict(getattr(task_obj, "result", None))
+                                if isinstance(getattr(task_obj, "result", None), dict)
+                                else {}
+                            )
+                            local_result["error"] = timeout_error
+                            local_result["last_error"] = timeout_error
+                            local_result["last_error_type"] = "TaskDependencyTimeoutError"
+                            local_result["dependency_wait_timeout_s"] = dependency_wait_timeout_s
+                            local_result["waiting_on_dependencies"] = unresolved_dep_ids
+                            task_obj.result = local_result
+                            task_obj.status = "failed"
+
+                            counter_snapshot = self._safe_sync_mission_task_counters(
+                                mission_id,
+                                fallback_total=mission_total_tasks,
+                            )
+                            self._emitter.emit(
+                                mission_id=mission_id,
+                                event_type="TASK_FAILED",
+                                task_id=task_obj.task_id,
+                                data={
+                                    "title": task_title,
+                                    "error": timeout_error,
+                                    "error_type": "TaskDependencyTimeoutError",
+                                    "error_code": "dependency_wait_timeout",
+                                    "error_category": "timeout",
+                                    "reason": "dependency_wait_timeout",
+                                    "blocked_by": unresolved_dep_ids,
+                                    "timeout_s": dependency_wait_timeout_s,
+                                    **counter_snapshot,
+                                },
+                                message=f"Task failed: {task_title}",
+                            )
+                            return
 
                     missing_deps = [dep_id for dep_id in dep_ids if dep_id not in dep_statuses]
                     if missing_deps:
@@ -3384,6 +3979,7 @@ class MissionOrchestrator:
                         "## Previous Review Feedback\n"
                         f"{review_feedback}\n\n"
                     )
+                dependency_handoff_section = self._build_dependency_handoff_context(task_obj)
 
                 mission_context_snippet = self._truncate_prompt_text(
                     getattr(mission, "instructions", ""),
@@ -3411,10 +4007,17 @@ class MissionOrchestrator:
                     f"{role_sop_hint or 'N/A'}\n\n"
                     f"## Instructions\n{task_obj.goal_text}\n\n"
                     f"## Acceptance Criteria\n{task_obj.acceptance_criteria or 'None specified'}\n\n"
+                    f"{dependency_handoff_section}"
                     "## Output Location Policy\n"
                     "- Write final user-facing deliverable files to `/workspace/output`.\n"
                     "- Put intermediate/debug artifacts under `/workspace/shared` or `/workspace/tasks`.\n"
                     "- Do not leave final deliverables only in `/workspace` root.\n\n"
+                    "## Completion Report (required)\n"
+                    "After finishing execution, append a concise report with these headings:\n"
+                    "- FINAL_DELIVERABLE\n"
+                    "- FILES_WRITTEN (absolute /workspace paths + purpose)\n"
+                    "- REVIEW_HINT (what reviewer should verify)\n"
+                    "- DOWNSTREAM_HINT (what dependent tasks should reuse)\n\n"
                     f"{review_feedback_section}"
                     "Produce the deliverable and confirm completion."
                 )
@@ -3491,10 +4094,12 @@ class MissionOrchestrator:
                         task_prompt,
                         **execute_kwargs,
                     )
+                normalized_result = self._normalize_agent_result(result)
                 output = self._extract_agent_output(
-                    result,
+                    normalized_result,
                     f"Task execution failed for '{task_title}'",
                 )
+                delivery_handoff = self._build_task_delivery_handoff(normalized_result, output)
 
                 # Mark task completed
                 with get_db_session() as session:
@@ -3502,7 +4107,10 @@ class MissionOrchestrator:
                     if t:
                         t.status = "completed"
                         existing_result = dict(t.result) if isinstance(t.result, dict) else {}
-                        completion_payload: Dict[str, Any] = {"output": output}
+                        completion_payload: Dict[str, Any] = {
+                            "output": output,
+                            "delivery_handoff": delivery_handoff,
+                        }
                         attempts = existing_result.get("attempts")
                         if isinstance(attempts, list) and attempts:
                             completion_payload["attempts"] = attempts
@@ -3718,7 +4326,9 @@ class MissionOrchestrator:
 
             dep_meta = dict(dep_task.task_metadata or {})
             dep_title = str(dep_meta.get("title") or "Untitled")
-            dep_output = (dep_task.result or {}).get("output", "No output")
+            dep_result = dep_task.result if isinstance(dep_task.result, dict) else {}
+            dep_output = dep_result.get("output", "No output")
+            dep_handoff_context = self._build_task_delivery_handoff_context(dep_result)
             dep_output_signature = self._build_text_signature(dep_output)
             if (
                 self._get_task_review_status(dep_meta) == "approved"
@@ -3735,6 +4345,8 @@ class MissionOrchestrator:
             f"## Instructions\n{dep_goal}\n\n"
             f"## Acceptance Criteria\n{dep_acceptance}\n\n"
             f"## Task Output\n{dep_output}\n\n"
+            f"{dep_handoff_context}"
+            f"{self._collect_workspace_file_review_context(mission_id, dep_goal, dep_acceptance, dep_output, dep_handoff_context)}"
             "Output format (strict):\n"
             "FINAL VERDICT: PASS or FAIL\n"
             "SUMMARY: <one short sentence>\n"
@@ -4004,7 +4616,9 @@ class MissionOrchestrator:
                 )
                 continue
 
-            task_output = (task_obj.result or {}).get("output", "No output")
+            task_result = task_obj.result if isinstance(task_obj.result, dict) else {}
+            task_output = task_result.get("output", "No output")
+            task_handoff_context = self._build_task_delivery_handoff_context(task_result)
             task_meta = dict(task_obj.task_metadata or {})
             output_signature = self._build_text_signature(task_output)
             if (
@@ -4030,6 +4644,8 @@ class MissionOrchestrator:
                 f"## Instructions\n{task_obj.goal_text}\n\n"
                 f"## Acceptance Criteria\n{task_obj.acceptance_criteria or 'None specified'}\n\n"
                 f"## Task Output\n{task_output}\n\n"
+                f"{task_handoff_context}"
+                f"{self._collect_workspace_file_review_context(mission_id, task_obj.goal_text, task_obj.acceptance_criteria, task_output, task_handoff_context)}"
                 "Output format (strict):\n"
                 "FINAL VERDICT: PASS or FAIL\n"
                 "SUMMARY: <one short sentence>\n"
@@ -4203,11 +4819,14 @@ class MissionOrchestrator:
             task_summaries = []
             for t in tasks:
                 title = (t.task_metadata or {}).get("title", "Untitled")
-                output = (t.result or {}).get("output", "No output")
+                task_result = t.result if isinstance(t.result, dict) else {}
+                output = task_result.get("output", "No output")
+                handoff_context = self._build_task_delivery_handoff_context(task_result).strip()
                 task_summaries.append(
                     f"### {title} (status: {t.status})\n"
                     f"**Acceptance Criteria**: {t.acceptance_criteria or 'None'}\n"
                     f"**Output**: {output[:2000]}\n"
+                    f"{handoff_context}\n"
                 )
 
         audit_prompt = (
