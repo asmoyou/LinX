@@ -1393,6 +1393,8 @@ def test_task_flow_graph_operations():
 
 def test_task_flow_visualizer_initialization():
     """Test TaskFlowVisualizer initialization."""
+    from task_manager.task_flow_visualizer import TaskFlowVisualizer
+
     visualizer = TaskFlowVisualizer()
 
     assert visualizer is not None

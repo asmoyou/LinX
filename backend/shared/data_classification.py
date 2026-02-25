@@ -73,7 +73,7 @@ class ClassificationRule:
 
     name: str
     level: ClassificationLevel
-    patterns: List[str]
+    patterns: List[str] = field(default_factory=list)
     keywords: List[str] = field(default_factory=list)
     min_matches: int = 1
     case_sensitive: bool = False

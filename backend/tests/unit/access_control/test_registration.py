@@ -18,8 +18,8 @@ from sqlalchemy.exc import IntegrityError
 from database.models import ResourceQuota
 from database.models import User as DBUser
 
-from .models import verify_password
-from .registration import (
+from access_control.models import verify_password
+from access_control.registration import (
     DEFAULT_QUOTAS,
     DuplicateUserError,
     RegistrationError,

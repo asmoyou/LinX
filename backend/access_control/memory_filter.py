@@ -132,15 +132,18 @@ def can_access_company_memory(
                     extra={"user_id": current_user.user_id},
                 )
                 return True
-        else:
-            logger.debug(
-                f"User {current_user.user_id} denied access to user context",
-                extra={"user_id": current_user.user_id, "context_owner": user_id},
-            )
-            return False
+        logger.debug(
+            f"User {current_user.user_id} denied access to user context",
+            extra={"user_id": current_user.user_id, "context_owner": user_id},
+        )
+        return False
 
-    # General company memories: Check RBAC permitted scope
-    if check_permission(role, ResourceType.MEMORY, action, "permitted"):
+    # General shared company memories: Check RBAC permitted scope.
+    # Non-standard memory types should be evaluated by ABAC below.
+    shared_memory_types = {"task_context", "general"}
+    if memory_type in shared_memory_types and check_permission(
+        role, ResourceType.MEMORY, action, "permitted"
+    ):
         logger.debug(
             f"User {current_user.user_id} granted access to company memory via permitted scope",
             extra={"user_id": current_user.user_id, "memory_type": memory_type},

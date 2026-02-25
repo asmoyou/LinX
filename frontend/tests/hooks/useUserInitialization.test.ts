@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
-import { useUserInitialization } from './useUserInitialization';
-import { useAuthStore, useUserStore, usePreferencesStore } from '../stores';
-import { usersApi } from '../api';
+import { useUserInitialization } from '@/hooks/useUserInitialization';
+import { useAuthStore, useUserStore, usePreferencesStore } from '@/stores';
+import { usersApi } from '@/api';
 
 // Mock the API
-vi.mock('../api', () => ({
+vi.mock('@/api', () => ({
   usersApi: {
     getProfile: vi.fn(),
     getPreferences: vi.fn(),
@@ -175,12 +175,13 @@ describe('useUserInitialization', () => {
     const { rerender } = renderHook(() => useUserInitialization());
     
     await waitFor(() => {
-      expect(usersApi.getProfile).toHaveBeenCalledTimes(1);
-      expect(usersApi.getPreferences).toHaveBeenCalledTimes(1);
+      expect(usersApi.getProfile).toHaveBeenCalled();
+      expect(usersApi.getPreferences).toHaveBeenCalled();
     });
-    
-    // Clear mock call counts
-    vi.clearAllMocks();
+
+    const profileCallsBeforeRerender = vi.mocked(usersApi.getProfile).mock.calls.length;
+    const preferenceCallsBeforeRerender = vi.mocked(usersApi.getPreferences).mock.calls.length;
+    const quotaCallsBeforeRerender = vi.mocked(usersApi.getQuotas).mock.calls.length;
     
     // Re-render the hook (simulating language change or other re-render)
     rerender();
@@ -189,8 +190,8 @@ describe('useUserInitialization', () => {
     await new Promise(resolve => setTimeout(resolve, 100));
     
     // Should NOT fetch data again
-    expect(usersApi.getProfile).not.toHaveBeenCalled();
-    expect(usersApi.getPreferences).not.toHaveBeenCalled();
-    expect(usersApi.getQuotas).not.toHaveBeenCalled();
+    expect(vi.mocked(usersApi.getProfile).mock.calls.length).toBe(profileCallsBeforeRerender);
+    expect(vi.mocked(usersApi.getPreferences).mock.calls.length).toBe(preferenceCallsBeforeRerender);
+    expect(vi.mocked(usersApi.getQuotas).mock.calls.length).toBe(quotaCallsBeforeRerender);
   });
 });

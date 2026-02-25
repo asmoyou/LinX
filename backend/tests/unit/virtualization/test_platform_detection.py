@@ -7,7 +7,7 @@ import platform
 import unittest
 from unittest.mock import MagicMock, patch
 
-from sandbox_selector import (
+from virtualization.sandbox_selector import (
     PlatformType,
     SandboxSelector,
     SandboxType,
@@ -96,7 +96,7 @@ class TestSandboxSelection(unittest.TestCase):
         self.assertIn("features", config)
 
     @patch("platform.system")
-    @patch("backend.virtualization.sandbox_selector.SandboxSelector._is_gvisor_available")
+    @patch("virtualization.sandbox_selector.SandboxSelector._is_gvisor_available")
     def test_gvisor_selection_on_linux(self, mock_gvisor, mock_system):
         """Test gVisor selection on Linux when available."""
         mock_system.return_value = "Linux"
@@ -108,8 +108,8 @@ class TestSandboxSelection(unittest.TestCase):
         self.assertEqual(sandbox, SandboxType.GVISOR)
 
     @patch("platform.system")
-    @patch("backend.virtualization.sandbox_selector.SandboxSelector._is_gvisor_available")
-    @patch("backend.virtualization.sandbox_selector.SandboxSelector._is_firecracker_available")
+    @patch("virtualization.sandbox_selector.SandboxSelector._is_gvisor_available")
+    @patch("virtualization.sandbox_selector.SandboxSelector._is_firecracker_available")
     def test_firecracker_selection_on_linux(self, mock_firecracker, mock_gvisor, mock_system):
         """Test Firecracker selection on Linux when gVisor not available."""
         mock_system.return_value = "Linux"
@@ -122,8 +122,8 @@ class TestSandboxSelection(unittest.TestCase):
         self.assertEqual(sandbox, SandboxType.FIRECRACKER)
 
     @patch("platform.system")
-    @patch("backend.virtualization.sandbox_selector.SandboxSelector._is_gvisor_available")
-    @patch("backend.virtualization.sandbox_selector.SandboxSelector._is_firecracker_available")
+    @patch("virtualization.sandbox_selector.SandboxSelector._is_gvisor_available")
+    @patch("virtualization.sandbox_selector.SandboxSelector._is_firecracker_available")
     def test_docker_fallback_on_linux(self, mock_firecracker, mock_gvisor, mock_system):
         """Test Docker Enhanced fallback on Linux."""
         mock_system.return_value = "Linux"
@@ -169,7 +169,7 @@ class TestSandboxValidation(unittest.TestCase):
         self.assertTrue(result)
 
     @patch("platform.system")
-    @patch("backend.virtualization.sandbox_selector.SandboxSelector._is_gvisor_available")
+    @patch("virtualization.sandbox_selector.SandboxSelector._is_gvisor_available")
     def test_gvisor_validation_on_linux(self, mock_gvisor, mock_system):
         """Test gVisor validation on Linux."""
         mock_system.return_value = "Linux"

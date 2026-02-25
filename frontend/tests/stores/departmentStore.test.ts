@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { useDepartmentStore } from './departmentStore';
+import { useDepartmentStore } from '@/stores/departmentStore';
 
 // Mock the API
-vi.mock('../api/departments', () => ({
+vi.mock('@/api/departments', () => ({
   departmentsApi: {
     list: vi.fn(),
     create: vi.fn(),
@@ -11,7 +11,7 @@ vi.mock('../api/departments', () => ({
   },
 }));
 
-import { departmentsApi } from '../api/departments';
+import { departmentsApi } from '@/api/departments';
 
 const mockDepartment = {
   id: 'dept-1',

@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from llm_providers.base import BaseLLMProvider
-from llm_providers.router import LLMRouter
+from llm_providers.router import get_llm_provider
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class TaskDecomposer:
         Args:
             llm_provider: LLM provider for decomposition (uses default if None)
         """
-        self.llm_provider = llm_provider or LLMRouter()
+        self.llm_provider = llm_provider or get_llm_provider()
 
         logger.info("TaskDecomposer initialized")
 
@@ -262,10 +262,16 @@ Respond in JSON format:
         Returns:
             True if task is atomic
         """
-        # Simple heuristic: short tasks are likely atomic
+        # Simple heuristic: short single-action tasks are likely atomic.
         word_count = len(goal_text.split())
+        goal_lower = goal_text.lower()
 
-        # Tasks with very specific action verbs are likely atomic
+        # Multi-step connectors usually indicate decomposable tasks.
+        multi_step_connectors = [" and ", " then ", " after ", " before ", " followed by "]
+        if any(connector in goal_lower for connector in multi_step_connectors):
+            return False
+
+        # Tasks with very specific action verbs are likely atomic.
         atomic_verbs = [
             "fetch",
             "retrieve",
@@ -279,9 +285,12 @@ Respond in JSON format:
             "validate",
         ]
 
-        has_atomic_verb = any(verb in goal_text.lower() for verb in atomic_verbs)
+        has_atomic_verb = any(verb in goal_lower for verb in atomic_verbs)
 
-        return word_count < 10 or has_atomic_verb
+        if word_count <= 3:
+            return True
+
+        return word_count <= 8 and has_atomic_verb
 
     def _collect_all_tasks(self, root_task: DecomposedTask) -> List[DecomposedTask]:
         """Collect all tasks from tree into flat list.

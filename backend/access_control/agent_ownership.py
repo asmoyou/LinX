@@ -54,7 +54,7 @@ def verify_agent_ownership(
         return False
 
     # Admins and managers can access all agents
-    if check_permission(role, ResourceType.AGENT, action, None):
+    if check_permission(role, ResourceType.AGENTS, action, None):
         logger.debug(
             f"User {current_user.user_id} granted access to agent {agent_id} via unrestricted permission",
             extra={
@@ -77,7 +77,7 @@ def verify_agent_ownership(
 
     # Check if user owns the agent
     if str(agent.owner_user_id) == str(current_user.user_id):
-        if check_permission(role, ResourceType.AGENT, action, "own"):
+        if check_permission(role, ResourceType.AGENTS, action, "own"):
             logger.debug(
                 f"User {current_user.user_id} granted access to agent {agent_id} as owner",
                 extra={
@@ -134,13 +134,23 @@ def require_agent_ownership(
                 "action": action.value,
             },
         )
-        raise PermissionDeniedError(f"You do not have permission to {action.value} this agent")
+        raise PermissionDeniedError(
+            message=f"You do not have permission to {action.value} this agent",
+            user_id=str(current_user.user_id),
+            resource_type=ResourceType.AGENTS.value,
+            action=action.value,
+        )
 
     # Get and return agent
     agent = session.query(DBAgent).filter_by(agent_id=UUID(agent_id)).first()
 
     if not agent:
-        raise PermissionDeniedError(f"Agent {agent_id} not found")
+        raise PermissionDeniedError(
+            message=f"Agent {agent_id} not found",
+            user_id=str(current_user.user_id),
+            resource_type=ResourceType.AGENTS.value,
+            action=action.value,
+        )
 
     return agent
 
@@ -168,7 +178,7 @@ def get_user_agents(session: Session, current_user: CurrentUser) -> list:
         return []
 
     # Admins and managers can see all agents
-    if check_permission(role, ResourceType.AGENT, Action.READ, None):
+    if check_permission(role, ResourceType.AGENTS, Action.READ, None):
         agents = session.query(DBAgent).all()
         logger.debug(
             f"User {current_user.user_id} retrieved all agents (unrestricted access)",
@@ -177,7 +187,7 @@ def get_user_agents(session: Session, current_user: CurrentUser) -> list:
         return agents
 
     # Users can only see their own agents
-    if check_permission(role, ResourceType.AGENT, Action.READ, "own"):
+    if check_permission(role, ResourceType.AGENTS, Action.READ, "own"):
         agents = session.query(DBAgent).filter_by(owner_user_id=UUID(current_user.user_id)).all()
         logger.debug(
             f"User {current_user.user_id} retrieved own agents",
@@ -211,7 +221,7 @@ def can_create_agent(session: Session, current_user: CurrentUser) -> bool:
         return False
 
     # Check RBAC permission
-    if not check_permission(role, ResourceType.AGENT, Action.CREATE, None):
+    if not check_permission(role, ResourceType.AGENTS, Action.CREATE, None):
         logger.debug(
             f"User {current_user.user_id} denied agent creation (no permission)",
             extra={"user_id": current_user.user_id},

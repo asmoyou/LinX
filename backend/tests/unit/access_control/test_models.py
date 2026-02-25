@@ -27,19 +27,19 @@ from database.models import User as DBUser
 def db_session():
     """Create an in-memory SQLite database for testing."""
     # Use SQLite in-memory database for tests
-    # Note: SQLite doesn't support JSONB, so we need to use JSON type
-    from sqlalchemy import JSON
+    # Note: SQLite doesn't support PostgreSQL-specific JSONB/ARRAY types,
+    # so adapt those columns to JSON for unit tests.
+    from sqlalchemy import JSON, ARRAY
     from sqlalchemy.dialects.postgresql import JSONB
-
-    # Monkey-patch JSONB to use JSON for SQLite
-    original_jsonb = JSONB
 
     engine = create_engine("sqlite:///:memory:")
 
-    # Replace JSONB columns with JSON for SQLite compatibility
+    # Replace PostgreSQL-specific types with JSON for SQLite compatibility.
     for table in Base.metadata.tables.values():
         for column in table.columns:
             if isinstance(column.type, JSONB):
+                column.type = JSON()
+            elif isinstance(column.type, ARRAY):
                 column.type = JSON()
 
     Base.metadata.create_all(engine)

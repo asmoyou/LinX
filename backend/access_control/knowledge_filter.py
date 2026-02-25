@@ -131,6 +131,16 @@ def can_access_knowledge_item(
                     },
                 )
                 return True
+        elif user_dept_id and resource_dept_id and str(user_dept_id) != str(resource_dept_id):
+            logger.debug(
+                f"User {current_user.user_id} denied team knowledge due department_id mismatch",
+                extra={
+                    "user_id": current_user.user_id,
+                    "user_department_id": str(user_dept_id),
+                    "resource_department_id": str(resource_dept_id),
+                },
+            )
+            return False
 
         # Fallback: string-based department attribute match (backward compat)
         if user_attributes and resource_attributes:
@@ -148,13 +158,26 @@ def can_access_knowledge_item(
                         },
                     )
                     return True
-
-    elif access_level == KnowledgeAccessLevel.PRIVATE:
-        # Private knowledge only accessible to owner (already checked above)
-        pass
+            elif user_dept and resource_dept and user_dept != resource_dept:
+                logger.debug(
+                    f"User {current_user.user_id} denied team knowledge due department mismatch",
+                    extra={
+                        "user_id": current_user.user_id,
+                        "user_department": user_dept,
+                        "resource_department": resource_dept,
+                    },
+                )
+                return False
 
     # Apply ABAC policies if attributes provided
-    if user_attributes and resource_attributes:
+    # Ignore synthetic attributes that are always present from post-filtering
+    # to avoid accidental over-granting from broad ABAC policies.
+    abac_resource_attrs = resource_attributes or {}
+    has_explicit_resource_attributes = any(
+        key not in {"access_level", "owner_user_id"} for key in abac_resource_attrs
+    )
+
+    if user_attributes and resource_attributes and has_explicit_resource_attributes:
         abac_allowed = evaluate_abac_access(
             user_attributes=user_attributes,
             resource_type="knowledge",

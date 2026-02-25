@@ -69,29 +69,44 @@ class ResultCollector:
         if not results:
             return AggregationStrategy.CONCATENATION
 
+        # Check if results are text-heavy (good for summarization).
+        total_text_length = 0
+        has_text_fields = True
+        all_text_envelopes = True
+        text_field_keys = {"output", "result"}
+
+        for result in results:
+            if not isinstance(result.result, dict):
+                has_text_fields = False
+                all_text_envelopes = False
+                continue
+
+            keys = set(result.result.keys())
+            if "output" in result.result:
+                total_text_length += len(str(result.result["output"]))
+            elif "result" in result.result:
+                total_text_length += len(str(result.result["result"]))
+            else:
+                has_text_fields = False
+
+            if not keys.issubset(text_field_keys):
+                all_text_envelopes = False
+
+        # Prefer summarization for large free-text payloads, even when wrapped in dicts.
+        if has_text_fields and total_text_length > 1000 and len(results) > 2:
+            return AggregationStrategy.SUMMARIZATION
+
         # Check if results are structured (JSON-like)
         all_structured = all(isinstance(r.result, dict) and len(r.result) > 0 for r in results)
-
         if all_structured:
             # Check if results have similar structure
             if len(results) > 1:
                 first_keys = set(results[0].result.keys())
                 similar_structure = all(set(r.result.keys()) == first_keys for r in results[1:])
 
-                if similar_structure:
+                # Exclude plain text envelopes like {"output": "..."} from structured merge.
+                if similar_structure and not all_text_envelopes:
                     return AggregationStrategy.STRUCTURED_MERGE
-
-        # Check if results are text-heavy (good for summarization)
-        total_text_length = 0
-        for result in results:
-            if "output" in result.result:
-                total_text_length += len(str(result.result["output"]))
-            elif "result" in result.result:
-                total_text_length += len(str(result.result["result"]))
-
-        # If total text is long, use summarization
-        if total_text_length > 1000 and len(results) > 2:
-            return AggregationStrategy.SUMMARIZATION
 
         # Check if multiple similar results (good for voting)
         if len(results) >= 3:

@@ -12,12 +12,12 @@ from typing import List
 
 import pytest
 
-from .audit import MessageAuditor
-from .authorization import AgentPermissions, MessageAuthorizer
-from .message import Message, MessageType
-from .pubsub import PubSubManager
-from .redis_manager import RedisConnectionManager, get_redis_manager
-from .streams import StreamsManager
+from message_bus.audit import MessageAuditor
+from message_bus.authorization import AgentPermissions, MessageAuthorizer
+from message_bus.message import Message, MessageType
+from message_bus.pubsub import PubSubManager
+from message_bus.redis_manager import RedisConnectionManager, get_redis_manager
+from message_bus.streams import StreamsManager
 
 
 class TestRedisConnectionManager:

@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { WebSocketManager } from './websocket';
+import { WebSocketManager } from '@/services/websocket';
 
 // Mock WebSocket
 class MockWebSocket {
@@ -63,6 +63,9 @@ class MockWebSocket {
 
 // Replace global WebSocket with mock
 global.WebSocket = MockWebSocket as any;
+
+const getInternalSocket = (manager: WebSocketManager): MockWebSocket | null =>
+  (manager as unknown as { ws: MockWebSocket | null }).ws;
 
 describe('WebSocketManager', () => {
   let manager: WebSocketManager;
@@ -193,44 +196,82 @@ describe('WebSocketManager', () => {
       const statusHandler = vi.fn();
       manager.onStatusChange(statusHandler);
 
-      // Simulate connection loss
-      manager.disconnect();
-      manager['shouldReconnect'] = true; // Force reconnect flag
+      // Simulate server-side connection loss (not manual disconnect).
+      const socket = getInternalSocket(manager);
+      expect(socket).not.toBeNull();
+      socket!.close(1006, 'abnormal closure');
 
-      // Should schedule reconnect
-      await vi.advanceTimersByTimeAsync(1000);
       expect(statusHandler).toHaveBeenCalledWith('reconnecting');
+
+      // Reconnect timer (1000ms) + mock open delay (10ms).
+      await vi.advanceTimersByTimeAsync(1010);
+      expect(statusHandler).toHaveBeenCalledWith('connecting');
+      expect(statusHandler).toHaveBeenCalledWith('connected');
     });
 
     it('should use exponential backoff for reconnection', async () => {
+      const connectSpy = vi.spyOn(manager, 'connect');
       manager.connect();
       await vi.advanceTimersByTimeAsync(20);
 
-      // Simulate multiple connection failures
-      for (let i = 0; i < 3; i++) {
-        manager.disconnect();
-        manager['shouldReconnect'] = true;
-        await vi.advanceTimersByTimeAsync(1000 * Math.pow(1.5, i));
+      // Simulate repeated server-side closes; manager should schedule reconnect each time.
+      for (let i = 0; i < 2; i++) {
+        const socket = getInternalSocket(manager);
+        expect(socket).not.toBeNull();
+        socket!.close(1006, 'abnormal closure');
+
+        const delay = Math.floor(1000 * Math.pow(1.5, i));
+        await vi.advanceTimersByTimeAsync(delay + 20);
       }
 
-      expect(manager.getReconnectAttempts()).toBeGreaterThan(0);
+      // Initial connect + at least one reconnect call.
+      expect(connectSpy.mock.calls.length).toBeGreaterThan(1);
     });
 
     it('should stop reconnecting after max attempts', async () => {
-      manager.connect();
-      await vi.advanceTimersByTimeAsync(20);
-
-      const statusHandler = vi.fn();
-      manager.onStatusChange(statusHandler);
-
-      // Simulate max reconnection attempts
-      for (let i = 0; i < 4; i++) {
-        manager.disconnect();
-        manager['shouldReconnect'] = true;
-        await vi.advanceTimersByTimeAsync(10000);
+      const originalWebSocket = global.WebSocket;
+      class FailingWebSocket {
+        static CONNECTING = 0;
+        static OPEN = 1;
+        static CLOSING = 2;
+        static CLOSED = 3;
+        readyState = FailingWebSocket.CLOSED;
+        onopen: ((event: Event) => void) | null = null;
+        onmessage: ((event: MessageEvent) => void) | null = null;
+        onerror: ((event: Event) => void) | null = null;
+        onclose: ((event: CloseEvent) => void) | null = null;
+        constructor(...args: unknown[]) {
+          void args;
+          throw new Error('connection failed');
+        }
+        send(...args: unknown[]) {
+          void args;
+        }
+        close(...args: unknown[]) {
+          void args;
+        }
       }
+      global.WebSocket = FailingWebSocket as any;
 
-      expect(manager.getStatus()).toBe('error');
+      const reconnectingManager = new WebSocketManager({
+        url: 'ws://localhost:8000/ws/tasks',
+        token: 'test-token',
+        reconnect: true,
+        reconnectInterval: 100,
+        maxReconnectAttempts: 2,
+        debug: false,
+      });
+
+      try {
+        reconnectingManager.connect();
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(reconnectingManager.getStatus()).toBe('error');
+        expect(reconnectingManager.getReconnectAttempts()).toBe(2);
+      } finally {
+        reconnectingManager.destroy();
+        global.WebSocket = originalWebSocket;
+      }
     });
   });
 
@@ -252,17 +293,27 @@ describe('WebSocketManager', () => {
     });
 
     it('should close connection on heartbeat timeout', async () => {
-      manager.connect();
+      const heartbeatManager = new WebSocketManager({
+        url: 'ws://localhost:8000/ws/tasks',
+        token: 'test-token',
+        reconnect: false,
+        heartbeatInterval: 5000,
+        heartbeatTimeout: 5000,
+        debug: false,
+      });
+
+      heartbeatManager.connect();
       await vi.advanceTimersByTimeAsync(20);
 
       // Wait for heartbeat
       await vi.advanceTimersByTimeAsync(5000);
 
       // Don't respond to heartbeat, wait for timeout
-      await vi.advanceTimersByTimeAsync(6000);
+      await vi.advanceTimersByTimeAsync(5000);
 
-      // Connection should be closed
-      expect(manager.isConnected()).toBe(false);
+      expect(heartbeatManager.getStatus()).toBe('disconnected');
+      expect(heartbeatManager.isConnected()).toBe(false);
+      heartbeatManager.destroy();
     });
   });
 

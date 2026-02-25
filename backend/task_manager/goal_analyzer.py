@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from llm_providers.base import BaseLLMProvider
-from llm_providers.router import LLMRouter
+from llm_providers.router import get_llm_provider
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class GoalAnalyzer:
         Args:
             llm_provider: LLM provider for goal analysis (uses default if None)
         """
-        self.llm_provider = llm_provider or LLMRouter()
+        self.llm_provider = llm_provider or get_llm_provider()
 
         logger.info("GoalAnalyzer initialized")
 

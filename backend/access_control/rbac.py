@@ -206,6 +206,7 @@ USER_PERMISSIONS = {
     # Can access own memory
     Permission(ResourceType.MEMORY, Action.READ, "own", "View own agent memory"),
     Permission(ResourceType.MEMORY, Action.CREATE, "own", "Create memory entries"),
+    Permission(ResourceType.MEMORY, Action.DELETE, "own", "Delete own memory entries"),
     # Can manage own user profile
     Permission(ResourceType.USERS, Action.READ, "own", "View own user profile"),
     Permission(ResourceType.USERS, Action.UPDATE, "own", "Update own user profile"),

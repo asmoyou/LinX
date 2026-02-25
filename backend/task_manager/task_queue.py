@@ -173,8 +173,8 @@ class TaskQueue:
         if task_id in self._pending_tasks:
             del self._pending_tasks[task_id]
 
-        # Check if any pending tasks can now be queued
-        asyncio.create_task(self._check_pending_tasks())
+        # Queue newly unblocked tasks immediately; this works in both sync and async contexts.
+        self._check_pending_tasks_nowait()
 
         logger.info(
             "Task marked completed",
@@ -199,6 +199,10 @@ class TaskQueue:
 
     async def _check_pending_tasks(self) -> None:
         """Check pending tasks and queue those with met dependencies."""
+        self._check_pending_tasks_nowait()
+
+    def _check_pending_tasks_nowait(self) -> None:
+        """Check pending tasks and queue those with met dependencies without awaiting."""
         tasks_to_queue = []
 
         for task_id, task in list(self._pending_tasks.items()):
@@ -207,7 +211,7 @@ class TaskQueue:
 
         for task in tasks_to_queue:
             if not self._queue.full():
-                await self._queue.put((task.priority, task))
+                self._queue.put_nowait((task.priority, task))
 
                 logger.info(
                     "Pending task now ready",

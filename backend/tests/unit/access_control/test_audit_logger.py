@@ -61,12 +61,14 @@ def current_user():
 
 def test_log_access_control_event_basic(mock_session, current_user):
     """Test basic access control event logging."""
+    knowledge_id = str(uuid4())
+
     log_access_control_event(
         mock_session,
         AuditEventType.PERMISSION_GRANTED,
         user_id=current_user.user_id,
         resource_type="knowledge",
-        resource_id="k123",
+        resource_id=knowledge_id,
         action="read",
         result="success",
     )
@@ -184,12 +186,14 @@ def test_log_token_events(mock_session):
 
 def test_log_permission_granted(mock_session, current_user):
     """Test logging granted permission."""
+    knowledge_id = str(uuid4())
+
     log_permission_check(
         mock_session,
         current_user,
         ResourceType.KNOWLEDGE,
         Action.READ,
-        resource_id="k123",
+        resource_id=knowledge_id,
         granted=True,
         scope="own",
     )
@@ -199,12 +203,14 @@ def test_log_permission_granted(mock_session, current_user):
 
 def test_log_permission_denied(mock_session, current_user):
     """Test logging denied permission."""
+    agent_id = str(uuid4())
+
     log_permission_check(
         mock_session,
         current_user,
-        ResourceType.AGENT,
+        ResourceType.AGENTS,
         Action.DELETE,
-        resource_id="a123",
+        resource_id=agent_id,
         granted=False,
         reason="User does not own this agent",
         scope="own",
@@ -218,11 +224,13 @@ def test_log_permission_denied(mock_session, current_user):
 
 def test_log_resource_access_granted(mock_session, current_user):
     """Test logging granted resource access."""
+    knowledge_id = str(uuid4())
+
     log_resource_access(
         mock_session,
         current_user,
         "knowledge",
-        "k123",
+        knowledge_id,
         "read",
         granted=True,
         owner_id=current_user.user_id,
@@ -234,12 +242,13 @@ def test_log_resource_access_granted(mock_session, current_user):
 def test_log_resource_access_denied(mock_session, current_user):
     """Test logging denied resource access."""
     owner_id = str(uuid4())
+    knowledge_id = str(uuid4())
 
     log_resource_access(
         mock_session,
         current_user,
         "knowledge",
-        "k123",
+        knowledge_id,
         "delete",
         granted=False,
         reason="Not the owner",
@@ -316,10 +325,12 @@ def test_log_agent_access_denied(mock_session, current_user):
 
 def test_log_knowledge_access_read(mock_session, current_user):
     """Test logging knowledge read access."""
+    knowledge_id = str(uuid4())
+
     log_knowledge_access(
         mock_session,
         current_user,
-        "k123",
+        knowledge_id,
         "read",
         granted=True,
         access_level="public",
@@ -331,10 +342,12 @@ def test_log_knowledge_access_read(mock_session, current_user):
 
 def test_log_knowledge_creation(mock_session, current_user):
     """Test logging knowledge creation."""
+    knowledge_id = str(uuid4())
+
     log_knowledge_access(
         mock_session,
         current_user,
-        "k123",
+        knowledge_id,
         "create",
         granted=True,
         access_level="private",
@@ -346,10 +359,12 @@ def test_log_knowledge_creation(mock_session, current_user):
 
 def test_log_knowledge_access_denied(mock_session, current_user):
     """Test logging denied knowledge access."""
+    knowledge_id = str(uuid4())
+
     log_knowledge_access(
         mock_session,
         current_user,
-        "k123",
+        knowledge_id,
         "delete",
         granted=False,
         reason="Insufficient permissions",
@@ -366,9 +381,16 @@ def test_log_knowledge_access_denied(mock_session, current_user):
 def test_log_memory_access_agent_memory(mock_session, current_user):
     """Test logging agent memory access."""
     agent_id = str(uuid4())
+    memory_id = str(uuid4())
 
     log_memory_access(
-        mock_session, current_user, "m123", "agent_memory", "read", granted=True, agent_id=agent_id
+        mock_session,
+        current_user,
+        memory_id,
+        "agent_memory",
+        "read",
+        granted=True,
+        agent_id=agent_id,
     )
 
     mock_session.add.assert_called_once()
@@ -376,14 +398,23 @@ def test_log_memory_access_agent_memory(mock_session, current_user):
 
 def test_log_memory_access_company_memory(mock_session, current_user):
     """Test logging company memory access."""
-    log_memory_access(mock_session, current_user, "m123", "company_memory", "read", granted=True)
+    memory_id = str(uuid4())
+    log_memory_access(mock_session, current_user, memory_id, "company_memory", "read", granted=True)
 
     mock_session.add.assert_called_once()
 
 
 def test_log_memory_creation(mock_session, current_user):
     """Test logging memory creation."""
-    log_memory_access(mock_session, current_user, "m123", "company_memory", "create", granted=True)
+    memory_id = str(uuid4())
+    log_memory_access(
+        mock_session,
+        current_user,
+        memory_id,
+        "company_memory",
+        "create",
+        granted=True,
+    )
 
     mock_session.add.assert_called_once()
 
