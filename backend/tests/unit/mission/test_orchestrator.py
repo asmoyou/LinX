@@ -2411,6 +2411,162 @@ async def test_phase_execution_resets_failed_tasks_to_pending(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_phase_execution_propagates_blocked_dependency_without_wait_loop(monkeypatch):
+    mission_id = uuid4()
+    blocked_dependency_id = uuid4()
+    leaf_task_id = uuid4()
+
+    blocked_dependency = SimpleNamespace(
+        task_id=blocked_dependency_id,
+        status="pending",
+        completed_at=None,
+        dependencies=[str(uuid4())],
+        task_metadata={
+            "title": "Blocked dependency",
+            "review_status": "blocked_by_dependency",
+            "blocked_by_failed_dependencies": [str(uuid4())],
+        },
+        result={},
+    )
+    leaf_task = SimpleNamespace(
+        task_id=leaf_task_id,
+        status="pending",
+        completed_at=None,
+        dependencies=[str(blocked_dependency_id)],
+        task_metadata={"title": "Leaf task"},
+        result={},
+    )
+    tasks_by_id = {
+        str(blocked_dependency_id): blocked_dependency,
+        str(leaf_task_id): leaf_task,
+    }
+    emitted_events = []
+
+    class _FakeQuery:
+        def __init__(self, tasks):
+            self._tasks = tasks
+            self._single_id = None
+            self._selected_ids = None
+
+        def filter(self, *args, **kwargs):
+            _ = kwargs
+            for clause in args:
+                left = str(getattr(clause, "left", ""))
+                right = getattr(clause, "right", None)
+                if right is None:
+                    continue
+                value = getattr(right, "value", None)
+                operator_name = str(getattr(getattr(clause, "operator", None), "__name__", ""))
+                if "task_id" in left and operator_name == "in_op" and isinstance(value, list):
+                    self._selected_ids = [str(item) for item in value]
+                elif "task_id" in left and value is not None:
+                    self._single_id = str(value)
+            return self
+
+        def all(self):
+            if self._selected_ids is not None:
+                return [self._tasks[task_id] for task_id in self._selected_ids if task_id in self._tasks]
+            return list(self._tasks.values())
+
+        def first(self):
+            if self._single_id is not None:
+                return self._tasks.get(self._single_id)
+            values = self.all()
+            return values[0] if values else None
+
+    class _FakeSession:
+        def __init__(self, tasks):
+            self._tasks = tasks
+
+        def query(self, *args, **kwargs):
+            _ = args, kwargs
+            return _FakeQuery(self._tasks)
+
+        def expunge(self, _obj):
+            return None
+
+    class _FakeSessionContext:
+        def __init__(self, tasks):
+            self._tasks = tasks
+
+        def __enter__(self):
+            return _FakeSession(self._tasks)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.get_mission",
+        lambda _mission_id: SimpleNamespace(
+            total_tasks=2,
+            created_by_user_id=uuid4(),
+            mission_config={"execution_config": {"max_concurrent_tasks": 1}},
+        ),
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(tasks_by_id),
+    )
+    monkeypatch.setattr(
+        "agent_framework.agent_registry.AgentRegistry",
+        lambda: SimpleNamespace(list_agents=lambda **kwargs: []),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_topological_sort",
+        staticmethod(lambda tasks: [leaf_task]),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_get_task_status_counts",
+        staticmethod(lambda _mission_id: {"pending": 2}),
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_transition",
+        lambda self, _mission_id, _status: None,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_safe_sync_mission_task_counters",
+        lambda self, _mission_id, fallback_total=0: {"total_tasks": fallback_total},
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_fields",
+        lambda *args, **kwargs: None,
+    )
+
+    async def _should_not_execute(*args, **kwargs):
+        _ = args, kwargs
+        raise AssertionError("Leaf task should be blocked before execution")
+
+    async def _sleep_should_not_run(_seconds):
+        raise AssertionError("Dependency wait loop should not sleep for blocked dependencies")
+
+    monkeypatch.setattr(MissionOrchestrator, "_execute_task_with_retry", _should_not_execute)
+    monkeypatch.setattr("mission_system.orchestrator.asyncio.sleep", _sleep_should_not_run)
+
+    await MissionOrchestrator._phase_execution(orchestrator, mission_id)
+
+    assert leaf_task.status == "pending"
+    assert leaf_task.task_metadata["review_status"] == "blocked_by_dependency"
+    assert leaf_task.task_metadata["blocked_by_failed_dependencies"] == [str(blocked_dependency_id)]
+    blocked_event = next(
+        (
+            event
+            for event in emitted_events
+            if event.get("event_type") == "TASK_BLOCKED" and event.get("task_id") == leaf_task_id
+        ),
+        None,
+    )
+    assert blocked_event is not None
+    assert blocked_event.get("data", {}).get("reason") == "dependency_blocked"
+
+
+@pytest.mark.asyncio
 async def test_execute_task_with_retry_includes_review_feedback_in_prompt(monkeypatch):
     mission_id = uuid4()
     owner_user_id = uuid4()

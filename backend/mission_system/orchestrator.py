@@ -2923,16 +2923,29 @@ class MissionOrchestrator:
                                 continue
                         break
 
-                    terminal_statuses = {"completed", "failed", "cancelled"}
-                    all_terminal = all(
-                        dep_statuses.get(dep_id) in terminal_statuses for dep_id in dep_ids
-                    )
                     failed_deps = [
                         dep_id
                         for dep_id in dep_ids
                         if dep_statuses.get(dep_id) in {"failed", "cancelled"}
                     ]
-                    if all_terminal and failed_deps:
+                    blocked_dependency_deps = [
+                        dep_id
+                        for dep_id in dep_ids
+                        if dep_statuses.get(dep_id) == "pending"
+                        and dep_review_statuses.get(dep_id) == "blocked_by_dependency"
+                    ]
+                    blocking_deps = failed_deps + [
+                        dep_id for dep_id in blocked_dependency_deps if dep_id not in failed_deps
+                    ]
+                    if blocking_deps:
+                        blocked_reason = (
+                            "dependency_failed" if failed_deps else "dependency_blocked"
+                        )
+                        blocked_error = (
+                            "Blocked by failed dependencies: "
+                            if failed_deps
+                            else "Blocked by dependencies waiting for upstream rework: "
+                        ) + ", ".join(blocking_deps)
                         with get_db_session() as session:
                             t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
                             if t:
@@ -2940,19 +2953,17 @@ class MissionOrchestrator:
                                 existing_result = (
                                     dict(t.result) if isinstance(t.result, dict) else {}
                                 )
-                                existing_result["error"] = (
-                                    f"Blocked by failed dependencies: {', '.join(failed_deps)}"
-                                )
+                                existing_result["error"] = blocked_error
                                 t.result = existing_result
                                 meta = dict(t.task_metadata or {})
                                 meta["review_status"] = "blocked_by_dependency"
-                                meta["blocked_by_failed_dependencies"] = failed_deps
+                                meta["blocked_by_failed_dependencies"] = blocking_deps
                                 meta.pop("review_output_signature", None)
                                 t.task_metadata = meta
                                 t.completed_at = None
                         local_meta = dict(task_obj.task_metadata or {})
                         local_meta["review_status"] = "blocked_by_dependency"
-                        local_meta["blocked_by_failed_dependencies"] = failed_deps
+                        local_meta["blocked_by_failed_dependencies"] = blocking_deps
                         local_meta.pop("review_output_signature", None)
                         task_obj.task_metadata = local_meta
                         task_obj.status = "pending"
@@ -2966,14 +2977,12 @@ class MissionOrchestrator:
                             task_id=task_obj.task_id,
                             data={
                                 "title": (task_obj.task_metadata or {}).get("title", "Untitled"),
-                                "error": (
-                                    "Blocked by failed dependencies: " f"{', '.join(failed_deps)}"
-                                ),
-                                "reason": "dependency_failed",
-                                "blocked_by": failed_deps,
+                                "error": blocked_error,
+                                "reason": blocked_reason,
+                                "blocked_by": blocking_deps,
                                 **counter_snapshot,
                             },
-                            message="Task blocked by failed dependencies",
+                            message="Task blocked by unresolved dependencies",
                         )
                         return
                     await asyncio.sleep(2)
