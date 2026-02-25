@@ -9,7 +9,7 @@
  * - Documentation: docs/backend/agent-error-recovery.md
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Brain, ChevronDown, ChevronUp } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -33,6 +33,23 @@ export const ConversationRoundComponent: React.FC<ConversationRoundProps> = ({
 }) => {
   const [statusCollapsed, setStatusCollapsed] = useState(defaultCollapsed);
   const [thinkingCollapsed, setThinkingCollapsed] = useState(defaultCollapsed);
+  const [hasAutoCollapsed, setHasAutoCollapsed] = useState(false);
+
+  // Sync collapse state when parent intends to reset default collapsed behavior.
+  useEffect(() => {
+    setStatusCollapsed(defaultCollapsed);
+    setThinkingCollapsed(defaultCollapsed);
+    setHasAutoCollapsed(false);
+  }, [defaultCollapsed, round.roundNumber]);
+
+  // Auto-collapse process/thinking once streaming content starts to appear.
+  useEffect(() => {
+    if (isStreaming && !hasAutoCollapsed && round.content && round.content.trim().length > 0) {
+      setStatusCollapsed(true);
+      setThinkingCollapsed(true);
+      setHasAutoCollapsed(true);
+    }
+  }, [isStreaming, hasAutoCollapsed, round.content]);
 
   // Memoize markdown components to prevent re-creation on each render
   const markdownComponents = useMemo(() => createMarkdownComponents(), []);

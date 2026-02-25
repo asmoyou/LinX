@@ -132,6 +132,59 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
         round.errorFeedback.length > 0
     );
 
+  const extractTargetItemCount = (prompt: string): number | null => {
+    const matches = [
+      ...prompt.matchAll(
+        /(\d{3,5})\s*(?:道|题|个|条|questions?|question|items?|item|problems?|problem)\b/gi
+      ),
+    ];
+    if (!matches.length) {
+      return null;
+    }
+
+    let maxCandidate = 0;
+    for (const match of matches) {
+      const value = Number(match[1]);
+      if (Number.isFinite(value) && value > maxCandidate) {
+        maxCandidate = value;
+      }
+    }
+
+    if (maxCandidate < 200 || maxCandidate > 10000) {
+      return null;
+    }
+    return maxCandidate;
+  };
+
+  const buildSegmentedOutputOptions = (
+    prompt: string,
+    files: AttachedFile[]
+  ): {
+    enabled: boolean;
+    targetItems?: number;
+    segmentItemLimit?: number;
+    maxOutputSegments?: number;
+  } => {
+    const targetItems = extractTargetItemCount(prompt);
+    const hasQuestionIntent = /(题|题目|问题|question|questions|quiz|exercise|exercises)/i.test(
+      prompt
+    );
+    const hasDocumentAttachment = files.some((file) => file.type === 'document');
+
+    if (!targetItems || !hasQuestionIntent || !hasDocumentAttachment) {
+      return { enabled: false };
+    }
+
+    const segmentItemLimit = Math.min(120, targetItems);
+    const maxOutputSegments = Math.max(1, Math.ceil(targetItems / segmentItemLimit));
+    return {
+      enabled: true,
+      targetItems,
+      segmentItemLimit,
+      maxOutputSegments: Math.min(maxOutputSegments, 20),
+    };
+  };
+
   // Memoize markdown components to prevent re-creation on each render
   const markdownComponents = useMemo(() => createMarkdownComponents(), []);
 
@@ -342,6 +395,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
 
     try {
       const filesToUpload = attachedFiles.map(af => af.file);
+      const segmentedOutput = buildSegmentedOutputOptions(userMessage.content, attachedFiles);
       
       await agentsApi.testAgent(
         agent.id,
@@ -610,7 +664,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
         history,
         filesToUpload.length > 0 ? filesToUpload : undefined,
         abortControllerRef.current?.signal,
-        sessionId || undefined  // Pass existing session ID for subsequent requests
+        sessionId || undefined,  // Pass existing session ID for subsequent requests
+        segmentedOutput
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message');
@@ -744,10 +799,13 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                       <>
                         {message.rounds.map((round, roundIdx) => (
                           <ConversationRoundComponent
-                            key={roundIdx}
+                            key={`${message.timestamp.getTime()}-${round.roundNumber}-${roundIdx}`}
                             round={round}
                             isLatest={roundIdx === message.rounds!.length - 1}
-                            defaultCollapsed={roundIdx < message.rounds!.length - 1}
+                            defaultCollapsed={
+                              roundIdx < message.rounds!.length - 1 ||
+                              Boolean(round.content && round.content.trim().length > 0)
+                            }
                           />
                         ))}
                         
@@ -787,7 +845,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                 {/* Completed rounds */}
                 {currentRounds.map((round, idx) => (
                   <ConversationRoundComponent
-                    key={idx}
+                    key={`stream-round-${round.roundNumber}-${idx}`}
                     round={round}
                     isLatest={false}
                     defaultCollapsed={true}

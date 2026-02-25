@@ -4,7 +4,10 @@ from types import SimpleNamespace
 
 from api_gateway.routers.agents import (
     FileReference,
+    _build_output_segment_ranges,
     _build_attachment_prompt_context,
+    _build_segmented_user_prompt,
+    _extract_token_usage_from_metadata,
     _extract_attachment_text,
     _infer_attachment_bucket_type,
     _infer_attachment_type,
@@ -93,3 +96,33 @@ def test_build_attachment_prompt_context_limits_size_and_includes_fallback() -> 
     assert "Attached files context:" in context
     assert "[Document: c.bin] Attached, but text extraction unavailable" in context
     assert len(context) < 13000
+
+
+def test_build_output_segment_ranges_respects_limits() -> None:
+    """Segment planner should stop at max_output_segments."""
+    assert _build_output_segment_ranges(1000, 120, 3) == [(1, 120), (121, 240), (241, 360)]
+
+
+def test_build_segmented_user_prompt_contains_batch_window() -> None:
+    """Segment prompts should include index and item range constraints."""
+    prompt = _build_segmented_user_prompt(
+        "根据书本出题",
+        segment_index=2,
+        total_segments=10,
+        start_item=121,
+        end_item=240,
+        target_items=1000,
+    )
+    assert "第 2/10 段" in prompt
+    assert "121-240" in prompt
+    assert "不要重复之前段落" in prompt
+
+
+def test_extract_token_usage_from_metadata_supports_usage_and_token_usage() -> None:
+    """Token extraction should parse both usage schema variants."""
+    assert _extract_token_usage_from_metadata(
+        {"usage": {"prompt_tokens": 10, "completion_tokens": 20}}
+    ) == (10, 20)
+    assert _extract_token_usage_from_metadata(
+        {"token_usage": {"prompt_tokens": 30, "completion_tokens": 40}}
+    ) == (30, 40)

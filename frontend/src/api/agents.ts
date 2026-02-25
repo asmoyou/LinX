@@ -174,7 +174,13 @@ export const agentsApi = {
     history?: Array<{ role: string; content: string }>,
     files?: File[],
     signal?: AbortSignal,  // AbortSignal support
-    sessionId?: string     // Session ID for persistent execution environment
+    sessionId?: string,    // Session ID for persistent execution environment
+    segmentedOutput?: {
+      enabled: boolean;
+      targetItems?: number;
+      segmentItemLimit?: number;
+      maxOutputSegments?: number;
+    }
   ): Promise<void> => {
     try {
       // Get token from auth store (same way apiClient does)
@@ -197,10 +203,27 @@ export const agentsApi = {
         });
       }
 
-      // Build URL with session_id query parameter
+      // Build URL with query parameters
       let url = `${apiClient.defaults.baseURL}/agents/${agentId}/test`;
+      const params = new URLSearchParams();
       if (sessionId) {
-        url += `?session_id=${encodeURIComponent(sessionId)}`;
+        params.set('session_id', sessionId);
+      }
+      if (segmentedOutput?.enabled) {
+        params.set('segmented_output', 'true');
+        if (segmentedOutput.targetItems) {
+          params.set('segmented_target_items', String(segmentedOutput.targetItems));
+        }
+        if (segmentedOutput.segmentItemLimit) {
+          params.set('segment_item_limit', String(segmentedOutput.segmentItemLimit));
+        }
+        if (segmentedOutput.maxOutputSegments) {
+          params.set('max_output_segments', String(segmentedOutput.maxOutputSegments));
+        }
+      }
+      const query = params.toString();
+      if (query) {
+        url += `?${query}`;
       }
 
       // Use native fetch for SSE streaming (axios doesn't support SSE well in browser)
