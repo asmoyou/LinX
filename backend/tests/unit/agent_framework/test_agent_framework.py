@@ -18,7 +18,13 @@ from agent_framework.agent_memory_interface import AgentMemoryInterface
 from agent_framework.agent_registry import AgentInfo, AgentRegistry
 from agent_framework.agent_status import AgentStatusTracker, StatusUpdate
 from agent_framework.agent_tools import AgentToolkit, create_langchain_tools
-from agent_framework.base_agent import AgentConfig, AgentStatus, BaseAgent
+from agent_framework.base_agent import (
+    AgentConfig,
+    AgentStatus,
+    BaseAgent,
+    ConversationState,
+    ToolResult,
+)
 from agent_framework.capability_matcher import CapabilityMatch, CapabilityMatcher
 from agent_framework.runtime_policy import ExecutionProfile, LoopMode
 from memory_system.memory_interface import MemoryItem, MemoryType
@@ -231,6 +237,8 @@ class TestBaseAgent:
         assert "MUST use `write_file`" in prompt
         assert "**append_file**" in prompt
         assert "report the exact saved file path" in prompt
+        assert "Default behavior" in prompt
+        assert "Do NOT proactively call `write_file`/`append_file`" in prompt
 
     def test_requires_file_delivery_detects_explicit_file_intent(self):
         """File-delivery guard should only trigger when prompt explicitly asks for file output."""
@@ -288,6 +296,21 @@ class TestBaseAgent:
             }
         ]
         assert agent._has_successful_requested_format_call(pdf_records, {"pdf"}) is True
+
+    def test_allows_file_write_tools_only_on_explicit_file_intent(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        assert agent._allows_file_write_tools("写一份山西的旅游攻略") is False
+        assert agent._allows_file_write_tools("写一份山西的旅游攻略，整理成md文档给我") is True
+        assert agent._allows_file_write_tools("请保存到 /workspace/outputs/guide.md") is True
+        assert agent._allows_file_write_tools("创建一个 main.py 文件并写入 hello world") is True
 
     def test_extract_native_tool_calls_from_ai_message(self):
         config = AgentConfig(
@@ -379,6 +402,34 @@ class TestBaseAgent:
         assert (
             agent._extract_tool_runtime_error("Successfully wrote /workspace/outputs/a.md") is None
         )
+
+    def test_handle_execution_failures_returns_policy_feedback(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        state = ConversationState(round_number=1)
+        state.retry_counts["tool_write_file"] = 1
+
+        feedback = agent._handle_execution_failures(
+            [
+                ToolResult(
+                    tool_name="write_file",
+                    status="error",
+                    error="policy blocked",
+                    error_type="policy_violation",
+                    retry_count=1,
+                )
+            ],
+            state,
+        )
+
+        assert feedback is not None
+        assert feedback.error_type == "Policy Constraint"
 
     def test_recovery_file_delivery_guard_triggers_extra_write_round(self):
         """When file intent exists and no file write occurred, recovery loop should add one save round."""

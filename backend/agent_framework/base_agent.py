@@ -95,12 +95,21 @@ _REQUESTED_FORMAT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _WORKSPACE_PATH_PATTERN = re.compile(r"(/workspace/[^\s'\"`<>]+)")
+_EXPLICIT_FILENAME_PATTERN = re.compile(
+    r"(?<![a-z0-9_])[a-z0-9._-]+\.(?:md|markdown|txt|json|csv|yaml|yml|pdf|docx?|xlsx?|pptx?|py|js|ts|tsx|jsx|sh|sql|html|css)(?![a-z0-9_])",
+    re.IGNORECASE,
+)
+_FILE_WRITE_INTENT_PATTERN = re.compile(
+    r"(?:保存|写入|输出到|导出|存为|save(?:\s+(?:as|to))?|write(?:\s+(?:to|into))?|export(?:\s+(?:as|to))?)",
+    re.IGNORECASE,
+)
 _TEXT_FILE_FORMATS = {"md", "txt", "json", "csv", "yml"}
 _FORMAT_ALIASES = {
     "markdown": "md",
     "yaml": "yml",
 }
 _FILE_WRITE_TOOL_NAMES = {"write_file", "append_file", "edit_file"}
+_FILE_DELIVERY_TOOL_NAMES = {"write_file", "append_file"}
 
 
 def _get_env_int(key: str, default: int) -> int:
@@ -780,6 +789,29 @@ class BaseAgent:
 
         return bool(_FILE_DELIVERY_REQUEST_PATTERN.search(text))
 
+    def _allows_file_write_tools(self, task_description: str) -> bool:
+        """Determine whether write/append file tools are explicitly requested."""
+        text = str(task_description or "").strip()
+        if not text:
+            return False
+
+        if self._requires_file_delivery(text):
+            return True
+
+        lowered = text.lower()
+        if "/workspace/" in lowered:
+            return True
+
+        if _EXPLICIT_FILENAME_PATTERN.search(lowered):
+            return True
+
+        if _FILE_WRITE_INTENT_PATTERN.search(text):
+            has_file_target = any(keyword in lowered for keyword in _FILE_DELIVERY_TARGET_KEYWORDS)
+            if has_file_target:
+                return True
+
+        return False
+
     @staticmethod
     def _normalize_requested_file_format(format_name: str) -> str:
         """Normalize aliases for requested file formats."""
@@ -1270,6 +1302,7 @@ class BaseAgent:
                 iteration = 0
                 final_output = ""
                 file_delivery_guard_required = self._requires_file_delivery(task_description)
+                allow_file_write_tools = self._allows_file_write_tools(task_description)
                 requested_file_formats = self._extract_requested_file_formats(task_description)
                 file_delivery_guard_prompted = False
 
@@ -1386,6 +1419,31 @@ class BaseAgent:
                             tool_name = tc.tool_name
                             tool_args = tc.arguments
                             tool = self.tools_by_name.get(tool_name)
+                            if tool_name in _FILE_DELIVERY_TOOL_NAMES and not allow_file_write_tools:
+                                policy_error = (
+                                    "用户未明确要求保存/导出文件；请直接在对话中给出内容。"
+                                )
+                                tool_results.append(
+                                    {
+                                        "tool": tool_name,
+                                        "args": tool_args,
+                                        "error": policy_error,
+                                    }
+                                )
+                                self._emit_stream_chunk(
+                                    stream_callback=stream_callback,
+                                    content=f"❌ **策略限制**: {policy_error}\n",
+                                    content_type="tool_error",
+                                )
+                                logger.warning(
+                                    "[TOOL-LOOP] Blocked unsolicited file write tool call",
+                                    extra={
+                                        "agent_id": str(self.config.agent_id),
+                                        "tool_name": tool_name,
+                                    },
+                                )
+                                continue
+
                             if tool:
                                 # Send "calling tool" message BEFORE execution
                                 self._emit_stream_chunk(
@@ -2176,6 +2234,7 @@ class BaseAgent:
         tool_calls: List[ToolCall],
         state: ConversationState,
         stream_callback: Optional[callable] = None,
+        allow_file_write_tools: bool = True,
     ) -> List[ToolResult]:
         """Execute tools with error handling and recovery.
 
@@ -2198,6 +2257,47 @@ class BaseAgent:
             # Check retry count for this specific tool
             retry_key = f"tool_{tool_name}"
             retry_count = state.retry_counts.get(retry_key, 0)
+
+            if tool_name in _FILE_DELIVERY_TOOL_NAMES and not allow_file_write_tools:
+                error_msg = (
+                    "用户未明确要求保存/导出文件；请直接在对话中给出内容，"
+                    "仅当用户明确要求文件交付时才调用写文件工具。"
+                )
+
+                results.append(
+                    ToolResult(
+                        tool_name=tool_name,
+                        status="error",
+                        error=error_msg,
+                        error_type="policy_violation",
+                        retry_count=retry_count,
+                    )
+                )
+                state.retry_counts[retry_key] = retry_count + 1
+
+                if stream_callback:
+                    stream_callback((f"❌ **策略限制**: {error_msg}\n", "tool_error"))
+
+                state.tool_calls_made.append(
+                    ToolCallRecord(
+                        round_number=state.round_number,
+                        tool_name=tool_name,
+                        arguments=tool_call.arguments,
+                        status="execution_error",
+                        error=error_msg,
+                        retry_number=retry_count,
+                    )
+                )
+
+                logger.warning(
+                    "[RECOVERY] Blocked unsolicited file write tool call",
+                    extra={
+                        "agent_id": str(self.config.agent_id),
+                        "tool_name": tool_name,
+                        "task_requires_file_delivery": False,
+                    },
+                )
+                continue
 
             try:
                 # Send "calling tool" message
@@ -2573,6 +2673,7 @@ class BaseAgent:
         # Initialize conversation state
         state = ConversationState(max_rounds=self.config.max_iterations)
         file_delivery_guard_required = self._requires_file_delivery(task_description)
+        allow_file_write_tools = self._allows_file_write_tools(task_description)
         requested_file_formats = self._extract_requested_file_formats(task_description)
         file_delivery_guard_prompted = False
 
@@ -2996,7 +3097,10 @@ class BaseAgent:
 
             # 6. Execute tool calls with recovery
             tool_results = await self._execute_tools_with_recovery(
-                tool_calls, state, stream_callback
+                tool_calls,
+                state,
+                stream_callback,
+                allow_file_write_tools=allow_file_write_tools,
             )
 
             # 7. Check if all tools failed
@@ -3147,6 +3251,20 @@ class BaseAgent:
                     "Consider breaking it into smaller steps",
                     "Check if there's an infinite loop",
                     "Try a simpler approach",
+                ],
+            )
+        elif failed_result.error_type == "policy_violation":
+            return ErrorFeedback(
+                error_type="Policy Constraint",
+                error_message=failed_result.error or "Unrequested file write is not allowed",
+                malformed_input=None,
+                expected_format="",
+                retry_count=retry_count,
+                max_retries=self.config.max_execution_retries,
+                suggestions=[
+                    "User did not explicitly ask for file delivery",
+                    "Respond directly in chat with the requested content",
+                    "Only call write_file/append_file after explicit save/export request",
                 ],
             )
         else:
@@ -3340,6 +3458,10 @@ Files persist throughout the conversation session.
 - **write_file**: Create or overwrite a file. Creates parent directories automatically.
 - **append_file**: Append additional content to an existing file (or create it if missing).
 - **list_files**: List files in a directory. Supports `recursive=true`.
+
+**Default behavior**:
+- If the user did NOT explicitly ask for file delivery, respond directly in chat.
+- Do NOT proactively call `write_file`/`append_file` for ordinary Q&A or content generation.
 
 **When users ask for deliverables as files/documents** (for example "整理成md文档", "save as markdown"):
 1. You MUST use `write_file` to save the deliverable under `/workspace` (prefer `/workspace/outputs/...`).
