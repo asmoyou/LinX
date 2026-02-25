@@ -18,6 +18,14 @@
     "departments": "Departments",
     "userManagement": "User Management",
     "roleManagement": "Roles & Permissions",
+    "quickAccess": "Quick Access",
+    "groups": {
+      "operations": "Core Operations",
+      "assets": "Assets & Capabilities",
+      "organization": "Organization",
+      "governance": "Governance & Settings",
+      "extension": "Extensions"
+    },
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar"
   },
