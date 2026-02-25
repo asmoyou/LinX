@@ -6,6 +6,7 @@ References:
 """
 
 import base64
+import hashlib
 import io
 import mimetypes
 import re
@@ -835,6 +836,10 @@ _SESSION_MEMORY_MAX_TURNS = 24
 _SESSION_MEMORY_MAX_TURNS_FOR_FLUSH = 16
 _SESSION_MEMORY_ITEM_MAX_CHARS = 320
 _SESSION_MEMORY_MAX_PREFERENCE_FACTS = 6
+_SESSION_MEMORY_MAX_AGENT_CANDIDATES = 3
+_SESSION_MEMORY_USER_SIGNAL_TYPE = "user_preference"
+_SESSION_MEMORY_AGENT_SIGNAL_TYPE = "agent_memory_candidate"
+_SESSION_MEMORY_AGENT_REVIEW_PENDING = "pending"
 _PERSISTENT_PREFERENCE_CUES = (
     "以后",
     "下次",
@@ -850,6 +855,20 @@ _PERSISTENT_PREFERENCE_CUES = (
     "from now on",
     "default",
     "always",
+)
+_AGENT_SOP_HINT_CUES = (
+    "步骤",
+    "流程",
+    "sop",
+    "step",
+    "first",
+    "then",
+    "最后",
+    "最后一步",
+)
+_BULLET_LINE_PATTERN = re.compile(
+    r"^\s*(?:\d+[\.、\)]\s*|[-*•]\s*)(.+)$",
+    flags=re.MULTILINE,
 )
 
 
@@ -1018,6 +1037,192 @@ def _build_user_preference_memory_content(signal: Dict[str, Any]) -> str:
     return f"user.preference.{signal['key']}={signal['value']}"
 
 
+def _split_user_preference_content(content: str) -> Tuple[Optional[str], Optional[str]]:
+    normalized = str(content or "").strip()
+    if not normalized.lower().startswith("user.preference.") or "=" not in normalized:
+        return None, None
+
+    left, right = normalized.split("=", 1)
+    key = left.replace("user.preference.", "", 1).strip()
+    value = right.strip()
+    if not key or not value:
+        return None, None
+    return key, value
+
+
+def _extract_step_lines(response: str) -> List[str]:
+    matches = _BULLET_LINE_PATTERN.findall(str(response or ""))
+    cleaned: List[str] = []
+    for line in matches:
+        value = _normalize_session_memory_text(line, max_chars=96)
+        if value:
+            cleaned.append(value)
+    return cleaned
+
+
+def _build_agent_candidate_fingerprint(topic: str, steps: List[str]) -> str:
+    payload = f"{topic.strip().lower()}||{'|'.join(steps).strip().lower()}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:20]
+
+
+def _extract_agent_memory_candidates(
+    turns: List[Dict[str, str]],
+    agent_name: str,
+) -> List[Dict[str, Any]]:
+    selected_turns = turns[-_SESSION_MEMORY_MAX_TURNS_FOR_FLUSH:]
+    candidates: List[Dict[str, Any]] = []
+    seen_fingerprints = set()
+
+    for turn in reversed(selected_turns):
+        raw_response_text = str(turn.get("agent_response") or "")
+        response_text = _normalize_session_memory_text(raw_response_text, max_chars=2400)
+        if len(response_text) < 40:
+            continue
+
+        step_lines = _extract_step_lines(raw_response_text)
+        if len(step_lines) < 3:
+            continue
+
+        topic = _normalize_session_memory_text(turn.get("user_message", ""), max_chars=96)
+        if not topic:
+            continue
+
+        step_lines = step_lines[:5]
+        fingerprint = _build_agent_candidate_fingerprint(topic, step_lines)
+        if fingerprint in seen_fingerprints:
+            continue
+        seen_fingerprints.add(fingerprint)
+
+        lowered_response = raw_response_text.lower()
+        has_sop_hint = any(cue in lowered_response for cue in _AGENT_SOP_HINT_CUES)
+        confidence = 0.76 if has_sop_hint else 0.64
+        turn_ts = _parse_iso_datetime(turn.get("timestamp"))
+
+        candidates.append(
+            {
+                "candidate_type": "sop",
+                "topic": topic,
+                "steps": step_lines,
+                "confidence": confidence,
+                "fingerprint": fingerprint,
+                "agent_name": agent_name,
+                "latest_ts": turn_ts.isoformat() if isinstance(turn_ts, datetime) else None,
+            }
+        )
+
+        if len(candidates) >= _SESSION_MEMORY_MAX_AGENT_CANDIDATES:
+            break
+
+    return candidates
+
+
+def _build_agent_candidate_content(candidate: Dict[str, Any]) -> str:
+    steps = candidate.get("steps") or []
+    step_text = " | ".join(str(step).strip() for step in steps if str(step).strip())
+    lines: List[str] = [
+        f"interaction.sop.topic={candidate.get('topic')}",
+        f"interaction.sop.steps={step_text}",
+    ]
+    agent_name = str(candidate.get("agent_name") or "").strip()
+    if agent_name:
+        lines.append(f"agent.identity.name={agent_name}")
+    return "\n".join(lines)
+
+
+def _load_existing_user_preference_map(user_id: str) -> Dict[str, Dict[str, Any]]:
+    """Load latest user preference memory per key for dedupe/upsert."""
+    from memory_system.memory_interface import MemoryType
+    from memory_system.memory_repository import get_memory_repository
+
+    repo = get_memory_repository()
+    rows = repo.list_memories(
+        memory_type=MemoryType.USER_CONTEXT,
+        user_id=str(user_id),
+        limit=400,
+    )
+
+    latest_by_key: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        metadata = dict(row.metadata or {})
+        signal_type = str(metadata.get("signal_type") or "").strip().lower()
+        if signal_type != _SESSION_MEMORY_USER_SIGNAL_TYPE:
+            continue
+
+        key = str(metadata.get("preference_key") or "").strip()
+        value = str(metadata.get("preference_value") or "").strip()
+        if (not key or not value) and row.content:
+            parsed_key, parsed_value = _split_user_preference_content(str(row.content))
+            key = key or str(parsed_key or "")
+            value = value or str(parsed_value or "")
+        if not key or not value:
+            continue
+
+        row_latest_ts = _parse_iso_datetime(metadata.get("latest_turn_ts")) or _parse_iso_datetime(
+            row.timestamp
+        )
+        existing = latest_by_key.get(key)
+        if existing:
+            existing_ts = _parse_iso_datetime(existing.get("latest_turn_ts")) or _parse_iso_datetime(
+                existing.get("timestamp")
+            )
+            if existing_ts and row_latest_ts and existing_ts >= row_latest_ts:
+                continue
+
+        latest_by_key[key] = {
+            "memory_id": int(row.id),
+            "value": value,
+            "metadata": metadata,
+            "latest_turn_ts": row_latest_ts.isoformat() if row_latest_ts else None,
+            "timestamp": row.timestamp.isoformat() if row.timestamp else None,
+        }
+
+    return latest_by_key
+
+
+def _upsert_existing_user_preference_metadata(
+    memory_id: int,
+    metadata: Dict[str, Any],
+) -> None:
+    from memory_system.memory_repository import get_memory_repository
+
+    repo = get_memory_repository()
+    repo.update_record(
+        memory_id,
+        metadata=metadata,
+        mark_vector_pending=False,
+    )
+
+
+def _load_existing_agent_candidate_fingerprints(
+    *,
+    agent_id: str,
+    user_id: str,
+) -> set[str]:
+    """Load known agent candidate fingerprints to avoid duplicate drafts."""
+    from memory_system.memory_interface import MemoryType
+    from memory_system.memory_repository import get_memory_repository
+
+    repo = get_memory_repository()
+    rows = repo.list_memories(
+        memory_type=MemoryType.AGENT,
+        agent_id=str(agent_id),
+        user_id=str(user_id),
+        limit=400,
+    )
+
+    fingerprints: set[str] = set()
+    for row in rows:
+        metadata = dict(row.metadata or {})
+        signal_type = str(metadata.get("signal_type") or "").strip().lower()
+        if signal_type != _SESSION_MEMORY_AGENT_SIGNAL_TYPE:
+            continue
+        fingerprint = str(metadata.get("candidate_fingerprint") or "").strip()
+        if fingerprint:
+            fingerprints.add(fingerprint)
+
+    return fingerprints
+
+
 async def _flush_session_memories(
     session: "ConversationSession",
     reason: str,
@@ -1047,9 +1252,34 @@ async def _flush_session_memories(
     mem_interface = get_agent_memory_interface()
     turn_count = len(turns)
     extracted_signals = _extract_user_preference_signals(turns)
-    if not extracted_signals:
+    deduped_signals_by_key: Dict[str, Dict[str, Any]] = {}
+    for signal in extracted_signals:
+        signal_key = str(signal.get("key") or "").strip()
+        signal_value = str(signal.get("value") or "").strip()
+        if not signal_key or not signal_value:
+            continue
+        existing_signal = deduped_signals_by_key.get(signal_key)
+        if not existing_signal:
+            deduped_signals_by_key[signal_key] = signal
+            continue
+
+        current_score = (
+            int(bool(signal.get("persistent"))),
+            int(signal.get("evidence_count") or 0),
+            str(signal.get("latest_ts") or ""),
+        )
+        existing_score = (
+            int(bool(existing_signal.get("persistent"))),
+            int(existing_signal.get("evidence_count") or 0),
+            str(existing_signal.get("latest_ts") or ""),
+        )
+        if current_score >= existing_score:
+            deduped_signals_by_key[signal_key] = signal
+    extracted_signals = list(deduped_signals_by_key.values())
+    extracted_agent_candidates = _extract_agent_memory_candidates(turns, agent_name)
+    if not extracted_signals and not extracted_agent_candidates:
         logger.info(
-            "Skipped session memory persistence: no persistent user preference signals",
+            "Skipped session memory persistence: no valuable memory signals extracted",
             extra={"session_id": session.session_id, "turn_count": turn_count},
         )
         return
@@ -1065,24 +1295,99 @@ async def _flush_session_memories(
         "extracted_at": extracted_at,
     }
 
-    stored_count = 0
+    preference_metadata_base = {**metadata_base, "source": "agent_test_preference_extractor"}
+    agent_candidate_metadata_base = {
+        **metadata_base,
+        "source": "agent_test_agent_candidate_extractor",
+    }
+
+    try:
+        existing_preference_map = _load_existing_user_preference_map(str(session.user_id))
+    except Exception as e:
+        logger.warning(
+            "Failed to load existing user preference memories before upsert",
+            extra={"session_id": session.session_id, "error": str(e)},
+        )
+        existing_preference_map = {}
+
+    preference_created = 0
+    preference_updated = 0
+    preference_skipped = 0
     for signal in extracted_signals:
         try:
+            signal_key = str(signal.get("key") or "").strip()
+            signal_value = str(signal.get("value") or "").strip()
+            if not signal_key or not signal_value:
+                preference_skipped += 1
+                continue
+
+            existing = existing_preference_map.get(signal_key)
+            if existing and str(existing.get("value") or "").strip() == signal_value:
+                memory_id = existing.get("memory_id")
+                if memory_id:
+                    existing_meta = dict(existing.get("metadata") or {})
+                    existing_meta.update(
+                        {
+                            "evidence_count": max(
+                                int(existing_meta.get("evidence_count") or 0),
+                                int(signal.get("evidence_count") or 0),
+                            ),
+                            "confidence": max(
+                                float(existing_meta.get("confidence") or 0.0),
+                                float(signal.get("confidence") or 0.0),
+                            ),
+                            "latest_turn_ts": signal.get("latest_ts")
+                            or existing_meta.get("latest_turn_ts"),
+                            "updated_at_extracted": extracted_at,
+                            "is_active": True,
+                        }
+                    )
+                    _upsert_existing_user_preference_metadata(int(memory_id), existing_meta)
+                    preference_updated += 1
+                    continue
+                preference_skipped += 1
+                continue
+
+            if existing and str(existing.get("value") or "").strip() != signal_value:
+                memory_id = existing.get("memory_id")
+                if memory_id:
+                    old_meta = dict(existing.get("metadata") or {})
+                    old_meta.update(
+                        {
+                            "is_active": False,
+                            "superseded_at": extracted_at,
+                            "superseded_by_value": signal_value,
+                        }
+                    )
+                    _upsert_existing_user_preference_metadata(int(memory_id), old_meta)
+
             mem_interface.store_user_context(
                 user_id=session.user_id,
                 agent_id=session.agent_id,
                 content=_build_user_preference_memory_content(signal),
                 metadata={
-                    **metadata_base,
-                    "signal_type": "user_preference",
-                    "preference_key": signal["key"],
-                    "preference_value": signal["value"],
+                    **preference_metadata_base,
+                    "signal_type": _SESSION_MEMORY_USER_SIGNAL_TYPE,
+                    "preference_key": signal_key,
+                    "preference_value": signal_value,
                     "evidence_count": signal["evidence_count"],
                     "confidence": signal["confidence"],
                     "latest_turn_ts": signal.get("latest_ts"),
+                    "is_active": True,
                 },
             )
-            stored_count += 1
+            existing_preference_map[signal_key] = {
+                "memory_id": None,
+                "value": signal_value,
+                "metadata": {
+                    "signal_type": _SESSION_MEMORY_USER_SIGNAL_TYPE,
+                    "preference_key": signal_key,
+                    "preference_value": signal_value,
+                    "latest_turn_ts": signal.get("latest_ts"),
+                    "is_active": True,
+                },
+            }
+            preference_created += 1
         except Exception as e:
             logger.warning(
                 "Failed to store extracted user preference memory on session end",
@@ -1094,13 +1399,71 @@ async def _flush_session_memories(
                 },
             )
 
+    try:
+        existing_candidate_fingerprints = _load_existing_agent_candidate_fingerprints(
+            agent_id=str(session.agent_id),
+            user_id=str(session.user_id),
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to load existing agent candidate fingerprints",
+            extra={"session_id": session.session_id, "error": str(e)},
+        )
+        existing_candidate_fingerprints = set()
+    candidate_created = 0
+    candidate_skipped = 0
+    for candidate in extracted_agent_candidates:
+        fingerprint = str(candidate.get("fingerprint") or "").strip()
+        if not fingerprint:
+            candidate_skipped += 1
+            continue
+        if fingerprint in existing_candidate_fingerprints:
+            candidate_skipped += 1
+            continue
+
+        try:
+            mem_interface.store_agent_memory(
+                agent_id=session.agent_id,
+                user_id=session.user_id,
+                content=_build_agent_candidate_content(candidate),
+                metadata={
+                    **agent_candidate_metadata_base,
+                    "signal_type": _SESSION_MEMORY_AGENT_SIGNAL_TYPE,
+                    "candidate_type": candidate.get("candidate_type") or "sop",
+                    "candidate_fingerprint": fingerprint,
+                    "review_status": _SESSION_MEMORY_AGENT_REVIEW_PENDING,
+                    "review_required": True,
+                    "inject_policy": "only_published",
+                    "confidence": candidate.get("confidence"),
+                    "latest_turn_ts": candidate.get("latest_ts"),
+                    "is_active": True,
+                },
+            )
+            existing_candidate_fingerprints.add(fingerprint)
+            candidate_created += 1
+        except Exception as e:
+            logger.warning(
+                "Failed to store extracted agent memory candidate on session end",
+                extra={
+                    "session_id": session.session_id,
+                    "reason": reason,
+                    "error": str(e),
+                    "candidate_type": candidate.get("candidate_type"),
+                },
+            )
+
     logger.info(
-        "Stored extracted user preference memories on session end",
+        "Stored extracted session memories",
         extra={
             "session_id": session.session_id,
             "reason": reason,
-            "stored_count": stored_count,
-            "candidate_count": len(extracted_signals),
+            "preference_created": preference_created,
+            "preference_updated": preference_updated,
+            "preference_skipped": preference_skipped,
+            "preference_candidates": len(extracted_signals),
+            "agent_candidate_created": candidate_created,
+            "agent_candidate_skipped": candidate_skipped,
+            "agent_candidate_candidates": len(extracted_agent_candidates),
         },
     )
 

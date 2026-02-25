@@ -1190,3 +1190,140 @@ class TestAgentMemoryDiagnosticHints:
 
         assert result["primary"] == "no_agent_memory_in_db"
         assert "no_agent_memory_in_db" in result["hints"]
+
+
+class TestAgentMemoryCandidateReview:
+    """Test review workflow for auto-extracted agent memory candidates."""
+
+    def test_list_agent_candidate_memories_filters_review_status(self, mock_current_user):
+        from api_gateway.routers.memory import _list_agent_candidate_memories_sync
+
+        candidate_pending = {
+            "id": "11",
+            "type": "agent",
+            "agentId": "agent-123",
+            "createdAt": "2026-02-25T12:00:00+00:00",
+            "metadata": {
+                "signal_type": "agent_memory_candidate",
+                "review_status": "pending",
+            },
+        }
+        candidate_published = {
+            "id": "12",
+            "type": "agent",
+            "agentId": "agent-123",
+            "createdAt": "2026-02-25T12:01:00+00:00",
+            "metadata": {
+                "signal_type": "agent_memory_candidate",
+                "review_status": "published",
+            },
+        }
+        normal_agent_memory = {
+            "id": "13",
+            "type": "agent",
+            "agentId": "agent-123",
+            "createdAt": "2026-02-25T12:02:00+00:00",
+            "metadata": {"signal_type": "other"},
+        }
+
+        with patch(
+            "api_gateway.routers.memory._list_memories_without_embedding_sync",
+            return_value=[candidate_pending, candidate_published, normal_agent_memory],
+        ):
+            with patch(
+                "api_gateway.routers.memory._filter_agent_memory_access_sync",
+                side_effect=lambda responses, _user: responses,
+            ):
+                filtered = _list_agent_candidate_memories_sync(
+                    current_user=mock_current_user,
+                    agent_id="agent-123",
+                    review_status="pending",
+                    limit=10,
+                )
+
+        assert len(filtered) == 1
+        assert filtered[0]["id"] == "11"
+
+    def test_review_agent_candidate_sync_marks_published(self):
+        from api_gateway.routers.memory import (
+            AgentCandidateReviewRequest,
+            _review_agent_candidate_sync,
+        )
+
+        current_ts = datetime(2026, 2, 25, 10, 0, 0, tzinfo=timezone.utc)
+        record = MemoryRecordData(
+            id=77,
+            milvus_id=177,
+            memory_type=MemoryType.AGENT,
+            content="interaction.sop.topic=写旅游攻略\ninteraction.sop.steps=1|2|3",
+            user_id="test-user-id",
+            agent_id="agent-123",
+            task_id=None,
+            owner_user_id="test-user-id",
+            owner_agent_id="agent-123",
+            department_id=None,
+            visibility="private",
+            sensitivity="internal",
+            source_memory_id=None,
+            expires_at=None,
+            metadata={
+                "signal_type": "agent_memory_candidate",
+                "review_status": "pending",
+            },
+            timestamp=current_ts,
+            vector_status="synced",
+            vector_error=None,
+            vector_updated_at=current_ts,
+        )
+
+        updated = MemoryRecordData(
+            id=77,
+            milvus_id=177,
+            memory_type=MemoryType.AGENT,
+            content=record.content,
+            user_id=record.user_id,
+            agent_id=record.agent_id,
+            task_id=record.task_id,
+            owner_user_id=record.owner_user_id,
+            owner_agent_id=record.owner_agent_id,
+            department_id=record.department_id,
+            visibility=record.visibility,
+            sensitivity=record.sensitivity,
+            source_memory_id=record.source_memory_id,
+            expires_at=record.expires_at,
+            metadata={
+                **dict(record.metadata or {}),
+                "review_status": "published",
+                "reviewed_by": "reviewer-1",
+            },
+            timestamp=current_ts,
+            vector_status="synced",
+            vector_error=None,
+            vector_updated_at=current_ts,
+        )
+
+        mock_repo = MagicMock()
+        mock_repo.get.return_value = record
+        mock_repo.get_by_milvus_id.return_value = None
+        mock_repo.update_record.return_value = updated
+
+        mock_session = MagicMock()
+        mock_session_ctx = MagicMock()
+        mock_session_ctx.__enter__.return_value = mock_session
+        mock_session_ctx.__exit__.return_value = False
+
+        request = AgentCandidateReviewRequest(action="publish", note="looks good")
+        with patch("api_gateway.routers.memory._get_memory_repository", return_value=mock_repo):
+            with patch("database.connection.get_db_session", return_value=mock_session_ctx):
+                with patch("api_gateway.routers.memory._lookup_agent_name", return_value="Agent X"):
+                    with patch("api_gateway.routers.memory._lookup_user_name", return_value="User X"):
+                        result = _review_agent_candidate_sync(
+                            memory_id=77,
+                            request=request,
+                            reviewer_user_id="reviewer-1",
+                        )
+
+        assert result is not None
+        assert result["id"] == "77"
+        assert result["metadata"]["review_status"] == "published"
+        assert result["metadata"]["reviewed_by"] == "reviewer-1"

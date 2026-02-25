@@ -12,6 +12,7 @@ from api_gateway.routers.agents import (
     _build_attachment_prompt_context,
     _build_download_content_disposition,
     _build_segmented_user_prompt,
+    _extract_agent_memory_candidates,
     _extract_itemized_target_count,
     _extract_token_usage_from_metadata,
     _extract_user_preference_signals,
@@ -233,3 +234,35 @@ def test_extract_user_preference_signals_keeps_repeated_non_persistent_preferenc
 
     signals = _extract_user_preference_signals(turns)
     assert any(item["key"] == "output_format" and item["value"] == "pdf" for item in signals)
+
+
+def test_extract_agent_memory_candidates_requires_step_structure() -> None:
+    """Only step-structured assistant outputs should become agent candidates."""
+    turns = [
+        {
+            "user_message": "写一份福州5天旅游攻略",
+            "agent_response": "下面是建议：\n1. 明确旅行天数和节奏\n2. 先排核心景点与交通\n3. 最后按天输出可执行清单",
+            "agent_name": "小新2号",
+            "timestamp": "2026-02-25T10:05:00+00:00",
+        }
+    ]
+
+    candidates = _extract_agent_memory_candidates(turns, "小新2号")
+    assert len(candidates) == 1
+    assert candidates[0]["candidate_type"] == "sop"
+    assert len(candidates[0]["steps"]) >= 3
+
+
+def test_extract_agent_memory_candidates_skips_non_step_reply() -> None:
+    """Generic short replies should not produce agent memory candidates."""
+    turns = [
+        {
+            "user_message": "你好",
+            "agent_response": "好的，我知道了。",
+            "agent_name": "小新2号",
+            "timestamp": "2026-02-25T10:06:00+00:00",
+        }
+    ]
+
+    candidates = _extract_agent_memory_candidates(turns, "小新2号")
+    assert candidates == []

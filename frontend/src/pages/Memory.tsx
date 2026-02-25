@@ -433,16 +433,34 @@ export const Memory: React.FC = () => {
     },
   ) => {
     try {
+      const targetMemory =
+        (sharingMemory?.id === memoryId ? sharingMemory : null) ||
+        memories.find((item) => item.id === memoryId) ||
+        null;
+      const isAgentCandidate =
+        String(targetMemory?.metadata?.signal_type || "")
+          .trim()
+          .toLowerCase() === "agent_memory_candidate";
+
       const request = {
         user_ids: payload.userIds,
         scope: payload.scope,
         expires_at: payload.expiresAt,
         reason: payload.reason,
       };
-      const updated =
-        payload.mode === "publish"
-          ? await memoriesApi.publish(memoryId, request)
-          : await memoriesApi.share(memoryId, request);
+      const updated = payload.mode === "publish"
+        ? isAgentCandidate
+          ? await memoriesApi.reviewAgentCandidate(memoryId, {
+              action: "publish",
+              note: payload.reason,
+              metadata: {
+                publish_scope: payload.scope,
+                publish_user_ids: payload.userIds,
+                publish_expires_at: payload.expiresAt,
+              },
+            })
+          : await memoriesApi.publish(memoryId, request)
+        : await memoriesApi.share(memoryId, request);
       updateMemory(memoryId, updated);
       if (selectedMemory?.id === memoryId) {
         setSelectedMemory(updated);

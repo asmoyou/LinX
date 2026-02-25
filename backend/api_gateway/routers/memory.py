@@ -367,6 +367,16 @@ class MemoryShareRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class AgentCandidateReviewRequest(BaseModel):
+    """Review action for auto-extracted agent memory candidates."""
+
+    action: str = Field(..., pattern=r"^(publish|reject|revise)$")
+    content: Optional[str] = Field(None, min_length=1)
+    summary: Optional[str] = None
+    note: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
 class MemoryResponse(BaseModel):
     """Memory response model."""
 
@@ -1889,6 +1899,143 @@ def _retrieve_shared_sync(current_user: CurrentUser):
     return shared
 
 
+def _is_agent_candidate_response(item: dict) -> bool:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    signal_type = str(metadata.get("signal_type") or "").strip().lower()
+    return signal_type == "agent_memory_candidate"
+
+
+def _list_agent_candidate_memories_sync(
+    *,
+    current_user: CurrentUser,
+    agent_id: Optional[str],
+    review_status: str,
+    limit: int,
+) -> List[dict]:
+    """List auto-extracted agent memory candidates for review."""
+    from memory_system.memory_interface import MemoryType, SearchQuery
+
+    normalized_review_status = str(review_status or "pending").strip().lower()
+    effective_user_id = _resolve_effective_user_id(
+        MemoryType.AGENT,
+        current_user,
+        agent_id=agent_id,
+    )
+    query = SearchQuery(
+        query_text="*",
+        memory_type=MemoryType.AGENT,
+        agent_id=agent_id,
+        user_id=effective_user_id,
+        top_k=max(int(limit), 1),
+    )
+
+    responses = _list_memories_without_embedding_sync(query)
+    responses = _filter_agent_memory_access_sync(responses, current_user)
+
+    candidate_items: List[dict] = []
+    for item in responses:
+        if str(item.get("type") or "").strip().lower() != "agent":
+            continue
+        if not _is_agent_candidate_response(item):
+            continue
+
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        item_status = str(metadata.get("review_status") or "pending").strip().lower()
+        if normalized_review_status != "all" and item_status != normalized_review_status:
+            continue
+        candidate_items.append(item)
+
+    candidate_items.sort(
+        key=lambda item: str(item.get("createdAt") or ""),
+        reverse=True,
+    )
+    return candidate_items[:limit]
+
+
+def _review_agent_candidate_sync(
+    *,
+    memory_id: int,
+    request: AgentCandidateReviewRequest,
+    reviewer_user_id: str,
+) -> Optional[dict]:
+    """Apply review action to one agent memory candidate."""
+    from database.connection import get_db_session
+
+    repo = _get_memory_repository()
+    record = repo.get(memory_id)
+    if not record:
+        record = repo.get_by_milvus_id(memory_id)
+    if not record:
+        return None
+
+    memory_type = str(getattr(record.memory_type, "value", record.memory_type) or "").strip().lower()
+    if memory_type != "agent":
+        raise ValueError("Only agent memories support candidate review")
+
+    metadata = dict(record.metadata or {})
+    signal_type = str(metadata.get("signal_type") or "").strip().lower()
+    if signal_type != "agent_memory_candidate":
+        raise ValueError("Memory is not an agent candidate")
+
+    action = str(request.action or "").strip().lower()
+    if action not in {"publish", "reject", "revise"}:
+        raise ValueError("Unsupported review action")
+
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    review_status = {
+        "publish": "published",
+        "reject": "rejected",
+        "revise": "pending",
+    }[action]
+
+    metadata.update(
+        {
+            "review_status": review_status,
+            "reviewed_at": now_iso,
+            "reviewed_by": str(reviewer_user_id),
+            "is_active": action != "reject",
+        }
+    )
+    if request.note is not None:
+        metadata["review_note"] = request.note
+    if request.summary is not None:
+        metadata["summary"] = request.summary
+    if request.metadata and isinstance(request.metadata, dict):
+        metadata.update(request.metadata)
+
+    if action == "publish":
+        metadata["published_at"] = now_iso
+    elif action == "reject":
+        metadata["rejected_at"] = now_iso
+
+    new_content = str(request.content or "").strip() if request.content else None
+    content_changed = bool(new_content and new_content != str(record.content or ""))
+
+    updated = repo.update_record(
+        int(record.id),
+        content=new_content if content_changed else None,
+        metadata=metadata,
+        user_id=record.user_id,
+        agent_id=record.agent_id,
+        task_id=record.task_id,
+        mark_vector_pending=content_changed,
+    )
+    if not updated:
+        return None
+
+    final_record = updated
+    if content_changed:
+        synced = _sync_record_to_milvus_sync(int(updated.id))
+        final_record = synced or repo.get(int(updated.id)) or updated
+
+    item = final_record.to_memory_item()
+    with get_db_session() as session:
+        agent_name = _lookup_agent_name(session, item.agent_id)
+        user_name = _lookup_user_name(session, item.user_id)
+
+    return _memory_item_to_response(item, agent_name=agent_name, user_name=user_name)
+
+
 def _store_memory_sync(memory_item):
     """Store memory via MemorySystem to apply normalization/dedup/merge policies."""
     from memory_system.memory_interface import MemoryType
@@ -3012,6 +3159,80 @@ async def search_memories(
     results = await asyncio.to_thread(_filter_company_memory_access_sync, results, current_user)
 
     return [MemoryResponse(**r) for r in results]
+
+
+@router.get("/agent-candidates", response_model=List[MemoryResponse])
+async def list_agent_memory_candidates(
+    agent_id: Optional[str] = Query(None),
+    review_status: str = Query("pending", pattern=r"^(pending|published|rejected|all)$"),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """List auto-extracted agent memory candidates for manual review."""
+    try:
+        results = await asyncio.to_thread(
+            _list_agent_candidate_memories_sync,
+            current_user=current_user,
+            agent_id=agent_id,
+            review_status=review_status,
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.error("Failed to list agent memory candidates: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list agent memory candidates: {exc}",
+        ) from exc
+
+    return [MemoryResponse(**item) for item in results]
+
+
+@router.post("/agent-candidates/{memory_id}/review", response_model=MemoryResponse)
+async def review_agent_memory_candidate(
+    memory_id: int,
+    request: AgentCandidateReviewRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Review and publish/reject/revise an auto-extracted agent memory candidate."""
+    existing = await asyncio.to_thread(_get_memory_by_id_sync, memory_id, "agent")
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Memory not found",
+        )
+    await asyncio.to_thread(_require_memory_manage_access_sync, existing, current_user)
+    if not _is_agent_candidate_response(existing):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Memory is not an agent candidate",
+        )
+
+    try:
+        result = await asyncio.to_thread(
+            _review_agent_candidate_sync,
+            memory_id=memory_id,
+            request=request,
+            reviewer_user_id=current_user.user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        logger.error("Failed to review agent memory candidate: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to review agent memory candidate: {exc}",
+        ) from exc
+
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Memory not found",
+        )
+
+    return MemoryResponse(**result)
 
 
 @router.put("/{memory_id}", response_model=MemoryResponse)

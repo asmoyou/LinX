@@ -315,6 +315,15 @@ class AgentExecutor:
         has_result_line = "\nresult:" in normalized
         return has_task_line and has_result_line
 
+    def _is_unpublished_agent_candidate_memory(self, memory: Any) -> bool:
+        """Filter out agent-candidate memories until they are explicitly published."""
+        metadata = self._extract_metadata(memory)
+        signal_type = str(metadata.get("signal_type") or "").strip().lower()
+        if signal_type != "agent_memory_candidate":
+            return False
+        review_status = str(metadata.get("review_status") or "").strip().lower()
+        return review_status != "published"
+
     def _prune_interaction_log_memories(
         self,
         memories: List[Any],
@@ -327,6 +336,9 @@ class AgentExecutor:
         kept: List[Any] = []
         pruned = 0
         for item in memories:
+            if self._is_unpublished_agent_candidate_memory(item):
+                pruned += 1
+                continue
             if self._is_task_log_memory(item):
                 pruned += 1
                 continue
@@ -360,6 +372,11 @@ class AgentExecutor:
     def _is_structured_user_preference_memory(self, memory: Any) -> bool:
         """Detect compact user preference memories that should always be available."""
         metadata = self._extract_metadata(memory)
+        active_flag = metadata.get("is_active")
+        if isinstance(active_flag, bool) and not active_flag:
+            return False
+        if isinstance(active_flag, str) and active_flag.strip().lower() in {"false", "0", "no"}:
+            return False
         signal_type = str(metadata.get("signal_type") or "").strip().lower()
         if signal_type == "user_preference":
             return True

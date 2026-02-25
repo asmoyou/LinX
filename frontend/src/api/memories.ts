@@ -49,6 +49,14 @@ export interface UpdateMemoryConfigRequest {
   runtime?: Partial<MemoryConfigRuntime>;
 }
 
+export interface AgentCandidateReviewRequest {
+  action: "publish" | "reject" | "revise";
+  content?: string;
+  summary?: string;
+  note?: string;
+  metadata?: Record<string, unknown>;
+}
+
 /**
  * Memory System API
  */
@@ -151,6 +159,34 @@ export const memoriesApi = {
   ): Promise<Memory> => {
     const response = await apiClient.post<Memory>(
       `/memories/${memoryId}/publish`,
+      data,
+    );
+    return response.data;
+  },
+
+  /**
+   * List auto-extracted agent memory candidates.
+   */
+  listAgentCandidates: async (params?: {
+    agent_id?: string;
+    review_status?: "pending" | "published" | "rejected" | "all";
+    limit?: number;
+  }): Promise<Memory[]> => {
+    const response = await apiClient.get<Memory[]>("/memories/agent-candidates", {
+      params,
+    });
+    return response.data;
+  },
+
+  /**
+   * Review one auto-extracted agent memory candidate.
+   */
+  reviewAgentCandidate: async (
+    memoryId: string,
+    data: AgentCandidateReviewRequest,
+  ): Promise<Memory> => {
+    const response = await apiClient.post<Memory>(
+      `/memories/agent-candidates/${memoryId}/review`,
       data,
     );
     return response.data;

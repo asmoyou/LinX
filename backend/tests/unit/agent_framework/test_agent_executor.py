@@ -86,6 +86,45 @@ def test_structured_user_preference_memory_is_always_relevant():
     assert executor._is_context_memory_relevant(memory, "写一份山西旅游攻略") is True
 
 
+def test_inactive_user_preference_memory_is_not_forced_relevant():
+    executor = _build_executor()
+    memory = {
+        "content": "user.preference.output_format=markdown",
+        "metadata": {"signal_type": "user_preference", "is_active": False},
+    }
+
+    assert executor._is_structured_user_preference_memory(memory) is False
+
+
+def test_prune_interaction_log_memories_drops_unpublished_agent_candidates():
+    executor = _build_executor()
+    memories = [
+        {
+            "content": "interaction.sop.topic=写旅游攻略\ninteraction.sop.steps=1.收集资料|2.整理路线|3.输出文档",
+            "metadata": {
+                "signal_type": "agent_memory_candidate",
+                "review_status": "pending",
+            },
+        },
+        {
+            "content": "interaction.sop.topic=写旅游攻略\ninteraction.sop.steps=1.收集资料|2.整理路线|3.输出文档",
+            "metadata": {
+                "signal_type": "agent_memory_candidate",
+                "review_status": "published",
+            },
+        },
+    ]
+
+    kept, pruned = executor._prune_interaction_log_memories(
+        memories,
+        allow_interaction_logs=True,
+    )
+
+    assert pruned == 1
+    assert len(kept) == 1
+    assert kept[0]["metadata"]["review_status"] == "published"
+
+
 def test_execute_does_not_persist_task_memory_for_debug_chat_profile():
     memory_interface = MagicMock()
     executor = AgentExecutor(memory_interface=memory_interface)
