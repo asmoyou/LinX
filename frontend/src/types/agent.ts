@@ -23,4 +23,6 @@ export type Agent = {
   allowedMemory?: string[];
   topK?: number;
   similarityThreshold?: number;
+  createdAt?: string;
+  updatedAt?: string;
 };

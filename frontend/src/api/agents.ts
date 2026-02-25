@@ -60,6 +60,25 @@ export interface AgentSessionWorkspaceFile {
   previewable_inline?: boolean;
 }
 
+export interface AgentLogEntry {
+  timestamp: string;
+  level: 'INFO' | 'SUCCESS' | 'ERROR';
+  message: string;
+  source: 'task' | 'audit';
+}
+
+export interface AgentMetrics {
+  tasksExecuted: number;
+  tasksCompleted: number;
+  tasksFailed: number;
+  completionRate: number;
+  successRate: number;
+  failureRate: number;
+  pendingTasks: number;
+  inProgressTasks: number;
+  lastActivityAt?: string | null;
+}
+
 /**
  * Agents API
  */
@@ -106,8 +125,8 @@ export const agentsApi = {
   /**
    * Get agent logs
    */
-  getLogs: async (agentId: string, limit = 100): Promise<any[]> => {
-    const response = await apiClient.get(`/agents/${agentId}/logs`, {
+  getLogs: async (agentId: string, limit = 100): Promise<AgentLogEntry[]> => {
+    const response = await apiClient.get<AgentLogEntry[]>(`/agents/${agentId}/logs`, {
       params: { limit },
     });
     return response.data;
@@ -116,8 +135,8 @@ export const agentsApi = {
   /**
    * Get agent metrics
    */
-  getMetrics: async (agentId: string): Promise<any> => {
-    const response = await apiClient.get(`/agents/${agentId}/metrics`);
+  getMetrics: async (agentId: string): Promise<AgentMetrics> => {
+    const response = await apiClient.get<AgentMetrics>(`/agents/${agentId}/metrics`);
     return response.data;
   },
 

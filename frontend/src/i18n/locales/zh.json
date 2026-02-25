@@ -287,6 +287,53 @@
     "deleteConfirm": "确定要删除此代理吗？",
     "deleteSuccess": "代理删除成功",
     "updateSuccess": "代理更新成功",
+    "details": {
+      "refresh": "刷新",
+      "loadFailed": "加载最新详情失败，当前显示缓存数据。",
+      "status": "状态",
+      "tasksExecuted": "执行任务数",
+      "completionRate": "完成率",
+      "queue": "队列",
+      "queueValue": "{{pending}} 待处理 / {{running}} 进行中",
+      "lastActivity": "最后活动",
+      "currentTask": "当前任务",
+      "modelAndRetrieval": "模型与检索",
+      "providerAndModel": "提供商 / 模型",
+      "temperature": "温度",
+      "maxTokens": "最大令牌数",
+      "topP": "Top P",
+      "topK": "Top K",
+      "similarityThreshold": "相似度阈值",
+      "defaultValue": "默认",
+      "dataAccess": "数据访问",
+      "accessLevel": "访问级别",
+      "allowedKnowledge": "允许的知识库",
+      "knowledgeSelected": "已选择 {{count}} 个",
+      "noKnowledgeWhitelist": "未设置白名单（按权限默认范围）",
+      "allowedMemoryConfigured": "允许记忆（配置）",
+      "noExplicitMemoryScope": "未显式配置",
+      "allowedMemoryEffective": "允许记忆（生效）",
+      "recentLogs": "最近日志",
+      "loadingLogs": "日志加载中...",
+      "noRecentLogs": "该智能体暂无最近日志",
+      "logSourceTask": "任务",
+      "logSourceAudit": "审计",
+      "statusValue": {
+        "working": "工作中",
+        "idle": "空闲",
+        "offline": "离线"
+      },
+      "accessLevelValue": {
+        "private": "私有",
+        "team": "团队",
+        "public": "公开"
+      },
+      "memoryScope": {
+        "agent": "Agent",
+        "company": "Company",
+        "user_context": "用户上下文"
+      }
+    },
     "stats": {
       "tasksExecuted": "任务",
       "tasksCompleted": "已完成",

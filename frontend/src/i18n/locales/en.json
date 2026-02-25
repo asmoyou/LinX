@@ -287,6 +287,53 @@
     "deleteConfirm": "Are you sure you want to delete this agent?",
     "deleteSuccess": "Agent deleted successfully",
     "updateSuccess": "Agent updated successfully",
+    "details": {
+      "refresh": "Refresh",
+      "loadFailed": "Failed to load latest details. Showing cached data.",
+      "status": "Status",
+      "tasksExecuted": "Tasks Executed",
+      "completionRate": "Completion Rate",
+      "queue": "Queue",
+      "queueValue": "{{pending}} pending / {{running}} running",
+      "lastActivity": "Last Activity",
+      "currentTask": "Current Task",
+      "modelAndRetrieval": "Model & Retrieval",
+      "providerAndModel": "Provider / Model",
+      "temperature": "Temperature",
+      "maxTokens": "Max Tokens",
+      "topP": "Top P",
+      "topK": "Top K",
+      "similarityThreshold": "Similarity Threshold",
+      "defaultValue": "default",
+      "dataAccess": "Data Access",
+      "accessLevel": "Access Level",
+      "allowedKnowledge": "Allowed Knowledge",
+      "knowledgeSelected": "{{count}} selected",
+      "noKnowledgeWhitelist": "No whitelist (use permission defaults)",
+      "allowedMemoryConfigured": "Allowed Memory (Configured)",
+      "noExplicitMemoryScope": "No explicit scope",
+      "allowedMemoryEffective": "Allowed Memory (Effective)",
+      "recentLogs": "Recent Logs",
+      "loadingLogs": "Loading logs...",
+      "noRecentLogs": "No recent logs for this agent.",
+      "logSourceTask": "task",
+      "logSourceAudit": "audit",
+      "statusValue": {
+        "working": "Working",
+        "idle": "Idle",
+        "offline": "Offline"
+      },
+      "accessLevelValue": {
+        "private": "Private",
+        "team": "Team",
+        "public": "Public"
+      },
+      "memoryScope": {
+        "agent": "Agent",
+        "company": "Company",
+        "user_context": "User Context"
+      }
+    },
     "stats": {
       "tasksExecuted": "Tasks",
       "tasksCompleted": "Completed",
