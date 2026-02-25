@@ -5,6 +5,7 @@ References:
 - Design Section 4: Agent Framework Design
 """
 
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from uuid import uuid4
@@ -239,6 +240,40 @@ class TestBaseAgent:
         assert "report the exact saved file path" in prompt
         assert "Default behavior" in prompt
         assert "Do NOT proactively call `write_file`/`append_file`" in prompt
+
+    def test_build_system_time_context_contains_utc_and_local_timestamps(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        context = agent._build_system_time_context()
+        assert context["utc_now"].endswith("Z")
+        assert context["local_timezone"]
+        assert len(context["local_date"]) == 10
+        datetime.fromisoformat(context["utc_now"].replace("Z", "+00:00"))
+        datetime.fromisoformat(context["local_now"])
+
+    def test_build_messages_with_history_includes_system_time_context(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        messages = agent._build_messages_with_history(human_content="请告诉我今天是几号")
+
+        assert isinstance(messages[0], SystemMessage)
+        assert "## System Time Context" in messages[0].content
+        assert "UTC now:" in messages[0].content
+        assert "authoritative current time" in messages[0].content
 
     def test_requires_file_delivery_detects_explicit_file_intent(self):
         """File-delivery guard should only trigger when prompt explicitly asks for file output."""

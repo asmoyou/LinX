@@ -12,7 +12,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from uuid import UUID
@@ -601,9 +601,6 @@ class BaseAgent:
             else:
                 self.llm_with_tools = self.llm
 
-            # Create system prompt (includes Agent Skills documentation)
-            system_prompt = self._create_system_prompt()
-
             # Build agent graph using LangGraph 1.0 StateGraph API
             builder = StateGraph(MessagesState)
 
@@ -611,6 +608,7 @@ class BaseAgent:
             def call_llm(state: MessagesState) -> Dict[str, List]:
                 """LLM node that processes messages and decides on tool calls."""
                 messages = state["messages"]
+                system_prompt = self._build_time_aware_system_prompt()
 
                 # Prepend system message if not already present
                 if not messages or not isinstance(messages[0], SystemMessage):
@@ -753,13 +751,45 @@ class BaseAgent:
 
         return normalized
 
+    @staticmethod
+    def _build_system_time_context() -> Dict[str, str]:
+        """Build authoritative system time context for conversation grounding."""
+        now_utc = datetime.now(timezone.utc).replace(microsecond=0)
+        local_now = now_utc.astimezone().replace(microsecond=0)
+        local_timezone = local_now.tzname() or str(local_now.tzinfo or "local")
+        return {
+            "utc_now": now_utc.isoformat().replace("+00:00", "Z"),
+            "local_now": local_now.isoformat(),
+            "local_timezone": local_timezone,
+            "local_date": local_now.date().isoformat(),
+        }
+
+    @staticmethod
+    def _render_system_time_prompt_block(system_time_context: Dict[str, str]) -> str:
+        """Render system time block for agent chat prompts."""
+        return (
+            "## System Time Context\n"
+            f"- UTC now: {system_time_context.get('utc_now', '')}\n"
+            f"- Local now: {system_time_context.get('local_now', '')}\n"
+            f"- Local timezone: {system_time_context.get('local_timezone', '')}\n"
+            f"- Local date: {system_time_context.get('local_date', '')}\n"
+            "Treat this context as authoritative current time for all date/time reasoning."
+        )
+
+    def _build_time_aware_system_prompt(self) -> str:
+        """Attach live system time context to the base system prompt."""
+        base_prompt = self._create_system_prompt().rstrip()
+        time_context = self._build_system_time_context()
+        time_block = self._render_system_time_prompt_block(time_context)
+        return f"{base_prompt}\n\n{time_block}"
+
     def _build_messages_with_history(
         self,
         human_content: Any,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Any]:
         """Build prompt messages with optional conversation history."""
-        system_prompt = self._create_system_prompt()
+        system_prompt = self._build_time_aware_system_prompt()
         messages: List[Any] = [SystemMessage(content=system_prompt)]
 
         for item in self._normalize_conversation_history(conversation_history):

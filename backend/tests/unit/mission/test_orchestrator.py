@@ -214,6 +214,52 @@ def test_detect_instruction_language_defaults_to_english():
     assert language == "English"
 
 
+def test_build_system_time_context_contains_utc_and_local_timestamps():
+    context = MissionOrchestrator._build_system_time_context()
+    assert context["utc_now"].endswith("Z")
+    assert context["local_timezone"]
+    assert len(context["local_date"]) == 10
+    datetime.fromisoformat(context["utc_now"].replace("Z", "+00:00"))
+    datetime.fromisoformat(context["local_now"])
+
+
+def test_render_system_time_prompt_block_contains_authoritative_hint():
+    prompt_block = MissionOrchestrator._render_system_time_prompt_block(
+        {
+            "utc_now": "2026-02-25T12:34:56Z",
+            "local_now": "2026-02-25T20:34:56+08:00",
+            "local_timezone": "CST",
+            "local_date": "2026-02-25",
+        }
+    )
+    assert "## System Time Context" in prompt_block
+    assert "UTC now: 2026-02-25T12:34:56Z" in prompt_block
+    assert "Local timezone: CST" in prompt_block
+    assert "authoritative current time" in prompt_block
+
+
+def test_render_execution_plan_markdown_includes_planning_time_context():
+    markdown = MissionOrchestrator._render_execution_plan_markdown(
+        mission=SimpleNamespace(title="Demo Mission"),
+        task_plan_rows=[],
+        role_assignments={},
+        assignment_summary={
+            "assigned_existing": 0,
+            "temporary_fallback_pending": 0,
+            "unassigned": 0,
+        },
+        planning_time_context={
+            "utc_now": "2026-02-25T12:34:56Z",
+            "local_now": "2026-02-25T20:34:56+08:00",
+            "local_timezone": "CST",
+            "local_date": "2026-02-25",
+        },
+    )
+    assert "- Planner system time (UTC): 2026-02-25T12:34:56Z" in markdown
+    assert "- Planner system timezone: CST" in markdown
+    assert "- Planner local date: 2026-02-25" in markdown
+
+
 def test_build_text_signature_is_stable_for_equivalent_content():
     a = MissionOrchestrator._build_text_signature("hello\nworld")
     b = MissionOrchestrator._build_text_signature("hello\nworld")

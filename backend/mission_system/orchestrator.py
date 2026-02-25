@@ -14,7 +14,7 @@ import logging
 import re
 import traceback
 from collections import Counter, defaultdict, deque
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from uuid import UUID
 
@@ -1049,11 +1049,37 @@ class MissionOrchestrator:
         return levels
 
     @staticmethod
+    def _build_system_time_context() -> Dict[str, str]:
+        """Build authoritative system time context for prompt grounding."""
+        now_utc = datetime.now(timezone.utc).replace(microsecond=0)
+        local_now = now_utc.astimezone().replace(microsecond=0)
+        local_timezone = local_now.tzname() or str(local_now.tzinfo or "local")
+        return {
+            "utc_now": now_utc.isoformat().replace("+00:00", "Z"),
+            "local_now": local_now.isoformat(),
+            "local_timezone": local_timezone,
+            "local_date": local_now.date().isoformat(),
+        }
+
+    @staticmethod
+    def _render_system_time_prompt_block(system_time_context: Dict[str, str]) -> str:
+        """Render system time block for prompts to avoid date hallucination."""
+        return (
+            "## System Time Context\n"
+            f"- UTC now: {system_time_context.get('utc_now', '')}\n"
+            f"- Local now: {system_time_context.get('local_now', '')}\n"
+            f"- Local timezone: {system_time_context.get('local_timezone', '')}\n"
+            f"- Local date: {system_time_context.get('local_date', '')}\n"
+            "Treat this context as authoritative current time for all date/time reasoning."
+        )
+
+    @staticmethod
     def _render_execution_plan_markdown(
         mission: Any,
         task_plan_rows: List[Dict[str, Any]],
         role_assignments: Dict[str, Dict[str, Any]],
         assignment_summary: Dict[str, int],
+        planning_time_context: Optional[Dict[str, str]] = None,
     ) -> str:
         """Render a human-readable execution plan similar to Plan mode output."""
         lines: List[str] = [
@@ -1069,8 +1095,20 @@ class MissionOrchestrator:
                 f"{assignment_summary.get('temporary_fallback_pending', 0)}"
             ),
             f"- Explicitly unassigned tasks: {assignment_summary.get('unassigned', 0)}",
-            "",
         ]
+        if planning_time_context:
+            lines.extend(
+                [
+                    f"- Planner system time (UTC): {planning_time_context.get('utc_now', '')}",
+                    f"- Planner system time (local): {planning_time_context.get('local_now', '')}",
+                    (
+                        "- Planner system timezone: "
+                        f"{planning_time_context.get('local_timezone', '')}"
+                    ),
+                    f"- Planner local date: {planning_time_context.get('local_date', '')}",
+                ]
+            )
+        lines.append("")
 
         if role_assignments:
             lines.extend(
@@ -2070,6 +2108,8 @@ class MissionOrchestrator:
                 else "No platform agents are available and temporary workers are disabled. "
                 "Planning should still return tasks, but execution will fail until agents are created."
             )
+        system_time_context = self._build_system_time_context()
+        system_time_prompt_block = self._render_system_time_prompt_block(system_time_context)
         if enable_team_blueprint:
             task_prompt = (
                 "Design an execution team and task plan from the mission requirements.\n\n"
@@ -2110,8 +2150,10 @@ class MissionOrchestrator:
                 "- `dependencies` must reference `task_key` values (not free-form titles).\n"
                 "- Every task MUST be directly traceable to mission requirements.\n"
                 "- `requirement_refs` must quote exact requirement fragments from the requirements section.\n"
+                "- For any date/time reasoning, use the provided system time context as ground truth.\n"
                 "- Do NOT add unrelated optimization, platform migration, or speculative tasks.\n\n"
                 f"Respond in {response_language}.\n\n"
+                f"{system_time_prompt_block}\n\n"
                 "## Original Mission Instructions\n"
                 f"{mission.instructions}\n\n"
                 f"## Available Platform Agents\n{agent_catalog}\n\n"
@@ -2131,9 +2173,11 @@ class MissionOrchestrator:
                 "- `dependencies` must use `task_key` values.\n"
                 "- Every task must map directly to requirement content.\n"
                 "- `requirement_refs` cannot be empty.\n"
+                "- For any date/time reasoning, use the provided system time context as ground truth.\n"
                 "- Reject off-topic ideas and avoid speculative tasks.\n\n"
                 f"{assignment_instruction}\n\n"
                 f"Respond in {response_language}.\n\n"
+                f"{system_time_prompt_block}\n\n"
                 "## Original Mission Instructions\n"
                 f"{mission.instructions}\n\n"
                 f"## Available Platform Agents\n{agent_catalog}\n\n"
@@ -2207,6 +2251,7 @@ class MissionOrchestrator:
                 "4. `dependencies` must reference `task_key` values.\n"
                 "5. Do not add unrelated tasks.\n\n"
                 f"Respond in {response_language}.\n\n"
+                f"{system_time_prompt_block}\n\n"
                 "## Original Mission Instructions\n"
                 f"{mission.instructions}\n\n"
                 "## Requirements\n"
@@ -2545,6 +2590,9 @@ class MissionOrchestrator:
                 "task_count": len(task_list),
                 "prefer_existing_agents": prefer_existing_agents,
                 "allow_temporary_workers": allow_temporary_workers,
+                "planning_system_time_utc": system_time_context.get("utc_now"),
+                "planning_system_time_local": system_time_context.get("local_now"),
+                "planning_system_timezone": system_time_context.get("local_timezone"),
             },
             message=(
                 "Task assignment planned: "
@@ -2571,6 +2619,7 @@ class MissionOrchestrator:
                 task_plan_rows=task_plan_rows,
                 role_assignments=role_assignments,
                 assignment_summary=assignment_summary,
+                planning_time_context=system_time_context,
             ),
         )
         if role_assignments:
