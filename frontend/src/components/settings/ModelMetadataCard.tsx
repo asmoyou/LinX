@@ -60,27 +60,117 @@ export const ModelMetadataCard: React.FC<ModelMetadataCardProps> = ({
     setError(null);
   };
 
-  const getCapabilityIcon = (capability: string) => {
-    const cap = capability.toLowerCase();
-    if (cap.includes('vision')) return <Eye className="w-3.5 h-3.5" />;
-    if (cap.includes('chat')) return <MessageSquare className="w-3.5 h-3.5" />;
-    if (cap.includes('code')) return <Code className="w-3.5 h-3.5" />;
-    if (cap.includes('image')) return <ImageIcon className="w-3.5 h-3.5" />;
-    if (cap.includes('reasoning')) return <Brain className="w-3.5 h-3.5" />;
-    if (cap.includes('streaming')) return <Zap className="w-3.5 h-3.5" />;
-    return <CheckCircle2 className="w-3.5 h-3.5" />;
+  const getFeatureTags = (value: ModelMetadata) => {
+    const tags: Array<{
+      key: string;
+      label: string;
+      icon: React.ReactNode;
+      color: string;
+    }> = [];
+    const seen = new Set<string>();
+    const addTag = (tag: { key: string; label: string; icon: React.ReactNode; color: string }) => {
+      if (seen.has(tag.key)) return;
+      seen.add(tag.key);
+      tags.push(tag);
+    };
+
+    const modelTypeTags: Record<string, { key: string; label: string; icon: React.ReactNode; color: string }> = {
+      embedding: {
+        key: 'model_type_embedding',
+        label: 'Embedding',
+        icon: <CheckCircle2 className="w-3.5 h-3.5" />,
+        color: 'bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20',
+      },
+      rerank: {
+        key: 'model_type_rerank',
+        label: 'Rerank',
+        icon: <CheckCircle2 className="w-3.5 h-3.5" />,
+        color: 'bg-cyan-500/10 text-cyan-700 dark:text-cyan-400 border-cyan-500/20',
+      },
+      image_generation: {
+        key: 'model_type_image_generation',
+        label: 'Image Generation',
+        icon: <ImageIcon className="w-3.5 h-3.5" />,
+        color: 'bg-pink-500/10 text-pink-700 dark:text-pink-400 border-pink-500/20',
+      },
+      code: {
+        key: 'model_type_code',
+        label: 'Code',
+        icon: <Code className="w-3.5 h-3.5" />,
+        color: 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-400 border-indigo-500/20',
+      },
+      vision: {
+        key: 'model_type_vision',
+        label: 'Vision',
+        icon: <Eye className="w-3.5 h-3.5" />,
+        color: 'bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-500/20',
+      },
+      reasoning: {
+        key: 'model_type_reasoning',
+        label: 'Reasoning',
+        icon: <Brain className="w-3.5 h-3.5" />,
+        color: 'bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20',
+      },
+    };
+
+    if (value.model_type && modelTypeTags[value.model_type]) {
+      addTag(modelTypeTags[value.model_type]);
+    }
+
+    if (value.supports_vision) {
+      addTag({
+        key: 'supports_vision',
+        label: 'Vision',
+        icon: <Eye className="w-3.5 h-3.5" />,
+        color: 'bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-500/20',
+      });
+    }
+    if (value.supports_reasoning) {
+      addTag({
+        key: 'supports_reasoning',
+        label: 'Reasoning',
+        icon: <Brain className="w-3.5 h-3.5" />,
+        color: 'bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20',
+      });
+    }
+    if (value.supports_function_calling) {
+      addTag({
+        key: 'supports_function_calling',
+        label: 'Function Calling',
+        icon: <Code className="w-3.5 h-3.5" />,
+        color: 'bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20',
+      });
+    }
+    if (value.supports_streaming) {
+      addTag({
+        key: 'supports_streaming',
+        label: 'Streaming',
+        icon: <Zap className="w-3.5 h-3.5" />,
+        color: 'bg-cyan-500/10 text-cyan-700 dark:text-cyan-400 border-cyan-500/20',
+      });
+    }
+    if (value.supports_system_prompt) {
+      addTag({
+        key: 'supports_system_prompt',
+        label: 'System Prompt',
+        icon: <MessageSquare className="w-3.5 h-3.5" />,
+        color: 'bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20',
+      });
+    }
+
+    if (tags.length === 0) {
+      addTag({
+        key: 'model_type_chat',
+        label: 'Chat',
+        icon: <MessageSquare className="w-3.5 h-3.5" />,
+        color: 'bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20',
+      });
+    }
+
+    return tags;
   };
 
-  const getCapabilityColor = (capability: string) => {
-    const cap = capability.toLowerCase();
-    if (cap.includes('vision')) return 'bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-500/20';
-    if (cap.includes('chat')) return 'bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20';
-    if (cap.includes('code')) return 'bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20';
-    if (cap.includes('image')) return 'bg-pink-500/10 text-pink-700 dark:text-pink-400 border-pink-500/20';
-    if (cap.includes('reasoning')) return 'bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20';
-    if (cap.includes('streaming')) return 'bg-cyan-500/10 text-cyan-700 dark:text-cyan-400 border-cyan-500/20';
-    return 'bg-zinc-500/10 text-zinc-700 dark:text-zinc-400 border-zinc-500/20';
-  };
+  const featureTags = getFeatureTags(metadata);
 
   return (
     <div className="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl overflow-hidden">
@@ -146,19 +236,19 @@ export const ModelMetadataCard: React.FC<ModelMetadataCardProps> = ({
           </p>
         )}
 
-        {/* Model Type & Capabilities */}
+        {/* Model Type & Features */}
         <div>
           <h4 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-2">
             Capabilities
           </h4>
           <div className="flex flex-wrap gap-1.5">
-            {metadata.capabilities.map((cap) => (
+            {featureTags.map((tag) => (
               <span
-                key={cap}
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border ${getCapabilityColor(cap)}`}
+                key={tag.key}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border ${tag.color}`}
               >
-                {getCapabilityIcon(cap)}
-                {cap.replace(/_/g, ' ')}
+                {tag.icon}
+                {tag.label}
               </span>
             ))}
           </div>

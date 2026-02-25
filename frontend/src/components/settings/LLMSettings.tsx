@@ -127,49 +127,50 @@ export const LLMSettings: React.FC = () => {
       : 'border-red-500/30 bg-red-500/5';
   };
 
-  const getCapabilityIcon = (capability: string): string => {
-    const cap = capability.toLowerCase().replace(/_/g, '');
-    const icons: Record<string, string> = {
-      text: '📝',
-      chat: '💬',
-      code: '💻',
-      functioncalling: '🔧',
-      vision: '👁️',
-      audio: '🎵',
-      video: '🎬',
-      embedding: '🔢',
-      embeddings: '🔢',
-      reasoning: '🧠',
-      multimodal: '🎨',
-      streaming: '⚡',
-      systemprompt: '📋',
-      imagegeneration: '🎨',
-      rerank: '🔄',
-      codegeneration: '💻',
-    };
-    return icons[cap] || '✨';  // 使用星星代替问号
-  };
+  const getModelFeatureBadges = (metadata?: ModelMetadata): Array<{ key: string; icon: string; label: string }> => {
+    if (!metadata) {
+      return [];
+    }
 
-  const getCapabilityLabel = (capability: string): string => {
-    const labels: Record<string, string> = {
-      text: 'Text',
-      chat: 'Chat',
-      code: 'Code',
-      function_calling: 'Functions',
-      vision: 'Vision',
-      audio: 'Audio',
-      video: 'Video',
-      embedding: 'Embeddings',
-      embeddings: 'Embeddings',
-      reasoning: 'Reasoning',
-      multimodal: 'Multimodal',
-      streaming: 'Streaming',
-      system_prompt: 'System Prompt',
-      image_generation: 'Image Gen',
-      rerank: 'Rerank',
-      code_generation: 'Code Gen',
+    const badges: Array<{ key: string; icon: string; label: string }> = [];
+    const seen = new Set<string>();
+    const addBadge = (key: string, icon: string, label: string) => {
+      if (seen.has(key)) return;
+      seen.add(key);
+      badges.push({ key, icon, label });
     };
-    return labels[capability] || capability.replace(/_/g, ' ');
+
+    const modelTypeBadges: Record<string, { key: string; icon: string; label: string }> = {
+      vision: { key: 'model_type_vision', icon: '👁️', label: t('settings.modelDetails.vision', 'Vision') },
+      reasoning: { key: 'model_type_reasoning', icon: '🧠', label: t('settings.modelDetails.reasoning', 'Reasoning') },
+      embedding: { key: 'model_type_embedding', icon: '🔢', label: 'Embedding' },
+      rerank: { key: 'model_type_rerank', icon: '🔄', label: 'Rerank' },
+      code: { key: 'model_type_code', icon: '💻', label: 'Code' },
+      image_generation: { key: 'model_type_image_generation', icon: '🎨', label: 'Image Gen' },
+    };
+
+    const modelTypeBadge = metadata.model_type ? modelTypeBadges[metadata.model_type] : undefined;
+    if (modelTypeBadge) {
+      addBadge(modelTypeBadge.key, modelTypeBadge.icon, modelTypeBadge.label);
+    }
+
+    if (metadata.supports_vision) {
+      addBadge('supports_vision', '👁️', t('settings.modelDetails.vision', 'Vision'));
+    }
+    if (metadata.supports_reasoning) {
+      addBadge('supports_reasoning', '🧠', t('settings.modelDetails.reasoning', 'Reasoning'));
+    }
+    if (metadata.supports_function_calling) {
+      addBadge('supports_function_calling', '🔧', t('settings.modelDetails.functions', 'Functions'));
+    }
+    if (metadata.supports_streaming) {
+      addBadge('supports_streaming', '⚡', t('settings.modelDetails.streaming', 'Streaming'));
+    }
+    if (metadata.supports_system_prompt) {
+      addBadge('supports_system_prompt', '📋', t('settings.modelDetails.systemPrompt', 'System Prompt'));
+    }
+
+    return badges;
   };
 
   const fetchModelMetadata = async (providerName: string) => {
@@ -517,6 +518,7 @@ export const LLMSettings: React.FC = () => {
                 <div className="flex flex-wrap gap-2">
                   {provider.available_models.map((model) => {
                     const metadata = modelsMetadata[name]?.models[model];
+                    const featureBadges = getModelFeatureBadges(metadata);
                     return (
                       <div
                         key={model}
@@ -529,15 +531,15 @@ export const LLMSettings: React.FC = () => {
                       >
                         <div className="flex items-center gap-1.5">
                           <span>{model}</span>
-                          {metadata && metadata.capabilities.length > 0 && (
+                          {featureBadges.length > 0 && (
                             <div className="flex items-center gap-0.5">
-                              {metadata.capabilities.slice(0, 3).map((cap) => (
-                                <span key={cap} className="text-xs" title={getCapabilityLabel(cap)}>
-                                  {getCapabilityIcon(cap)}
+                              {featureBadges.slice(0, 3).map((feature) => (
+                                <span key={feature.key} className="text-xs" title={feature.label}>
+                                  {feature.icon}
                                 </span>
                               ))}
-                              {metadata.capabilities.length > 3 && (
-                                <span className="text-xs text-zinc-500">+{metadata.capabilities.length - 3}</span>
+                              {featureBadges.length > 3 && (
+                                <span className="text-xs text-zinc-500">+{featureBadges.length - 3}</span>
                               )}
                             </div>
                           )}

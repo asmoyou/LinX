@@ -93,6 +93,36 @@ export const ProviderModelsManager: React.FC<ProviderModelsManagerProps> = ({ pr
     });
   };
 
+  const getModelFeatures = (metadata: ModelMetadata): string[] => {
+    const features: string[] = [];
+    const seen = new Set<string>();
+    const addFeature = (feature: string) => {
+      if (seen.has(feature)) return;
+      seen.add(feature);
+      features.push(feature);
+    };
+
+    const modelTypeFeatures: Record<string, string> = {
+      embedding: 'Embedding',
+      rerank: 'Rerank',
+      image_generation: 'Image Generation',
+      code: 'Code',
+      vision: 'Vision',
+      reasoning: 'Reasoning',
+    };
+
+    if (metadata.model_type && modelTypeFeatures[metadata.model_type]) {
+      addFeature(modelTypeFeatures[metadata.model_type]);
+    }
+    if (metadata.supports_vision) addFeature('Vision');
+    if (metadata.supports_reasoning) addFeature('Reasoning');
+    if (metadata.supports_function_calling) addFeature('Function Calling');
+    if (metadata.supports_streaming) addFeature('Streaming');
+    if (metadata.supports_system_prompt) addFeature('System Prompt');
+
+    return features;
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -159,6 +189,7 @@ export const ProviderModelsManager: React.FC<ProviderModelsManagerProps> = ({ pr
       <div className="space-y-2">
         {Object.entries(providerData.models).map(([modelName, metadata]) => {
           const isExpanded = expandedModels.has(modelName);
+          const modelFeatures = getModelFeatures(metadata);
           
           return (
             <div
@@ -181,8 +212,10 @@ export const ProviderModelsManager: React.FC<ProviderModelsManagerProps> = ({ pr
                       {modelName}
                     </h4>
                     <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">
-                      {metadata.capabilities.slice(0, 3).join(', ')}
-                      {metadata.capabilities.length > 3 && ` +${metadata.capabilities.length - 3} more`}
+                      {modelFeatures.length > 0
+                        ? modelFeatures.slice(0, 3).join(', ')
+                        : metadata.model_type || 'chat'}
+                      {modelFeatures.length > 3 && ` +${modelFeatures.length - 3} more`}
                     </p>
                   </div>
                 </div>
@@ -196,6 +229,11 @@ export const ProviderModelsManager: React.FC<ProviderModelsManagerProps> = ({ pr
                   {metadata.supports_reasoning && (
                     <span className="px-2 py-0.5 bg-amber-500/10 text-amber-700 dark:text-amber-400 text-xs rounded border border-amber-500/20">
                       Reasoning
+                    </span>
+                  )}
+                  {metadata.supports_function_calling && (
+                    <span className="px-2 py-0.5 bg-green-500/10 text-green-700 dark:text-green-400 text-xs rounded border border-green-500/20">
+                      Functions
                     </span>
                   )}
                   {metadata.deprecated && (
