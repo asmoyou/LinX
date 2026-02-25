@@ -1259,19 +1259,23 @@ class BaseAgent:
                 context_info = []
                 if context.get("agent_memories"):
                     context_info.append(
-                        f"Relevant memories: {', '.join(context['agent_memories'][:3])}"
+                        "Memory references (non-binding, verify against current task): "
+                        + ", ".join(context["agent_memories"][:3])
                     )
                 if context.get("company_memories"):
                     context_info.append(
-                        f"Company knowledge: {', '.join(context['company_memories'][:3])}"
+                        "Company references (non-binding): "
+                        + ", ".join(context["company_memories"][:3])
                     )
                 if context.get("user_context_memories"):
                     context_info.append(
-                        f"User context: {', '.join(context['user_context_memories'][:3])}"
+                        "User preference references (non-binding): "
+                        + ", ".join(context["user_context_memories"][:3])
                     )
                 if context.get("task_context_memories"):
                     context_info.append(
-                        f"Task context: {', '.join(context['task_context_memories'][:3])}"
+                        "Task history references (non-binding): "
+                        + ", ".join(context["task_context_memories"][:3])
                     )
                 if context.get("knowledge_snippets"):
                     context_info.append(
@@ -2685,19 +2689,22 @@ class BaseAgent:
             context_info = []
             if context.get("agent_memories"):
                 context_info.append(
-                    f"Relevant memories: {', '.join(context['agent_memories'][:3])}"
+                    "Memory references (non-binding, verify against current task): "
+                    + ", ".join(context["agent_memories"][:3])
                 )
             if context.get("company_memories"):
                 context_info.append(
-                    f"Company knowledge: {', '.join(context['company_memories'][:3])}"
+                    "Company references (non-binding): " + ", ".join(context["company_memories"][:3])
                 )
             if context.get("user_context_memories"):
                 context_info.append(
-                    f"User context: {', '.join(context['user_context_memories'][:3])}"
+                    "User preference references (non-binding): "
+                    + ", ".join(context["user_context_memories"][:3])
                 )
             if context.get("task_context_memories"):
                 context_info.append(
-                    f"Task context: {', '.join(context['task_context_memories'][:3])}"
+                    "Task history references (non-binding): "
+                    + ", ".join(context["task_context_memories"][:3])
                 )
             if context.get("knowledge_snippets"):
                 context_info.append(

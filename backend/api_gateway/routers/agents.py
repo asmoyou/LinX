@@ -832,8 +832,25 @@ def _build_retrieval_process_messages(context_debug: Dict[str, Any]) -> List[str
 
 _SESSION_MEMORY_CALLBACK_REGISTERED = False
 _SESSION_MEMORY_MAX_TURNS = 24
-_SESSION_MEMORY_MAX_TURNS_FOR_FLUSH = 12
+_SESSION_MEMORY_MAX_TURNS_FOR_FLUSH = 16
 _SESSION_MEMORY_ITEM_MAX_CHARS = 320
+_SESSION_MEMORY_MAX_PREFERENCE_FACTS = 6
+_PERSISTENT_PREFERENCE_CUES = (
+    "以后",
+    "下次",
+    "默认",
+    "长期",
+    "一直",
+    "始终",
+    "每次",
+    "都按",
+    "固定",
+    "统一",
+    "习惯",
+    "from now on",
+    "default",
+    "always",
+)
 
 
 def _normalize_session_memory_text(
@@ -845,29 +862,160 @@ def _normalize_session_memory_text(
     return normalized[: max_chars - 3] + "..."
 
 
-def _build_agent_session_memory_content(turns: List[Dict[str, str]], agent_name: str) -> str:
-    selected_turns = turns[-_SESSION_MEMORY_MAX_TURNS_FOR_FLUSH:]
-    lines: List[str] = []
-    if agent_name:
-        lines.append(f"[Agent: {agent_name}]")
-    lines.append(f"Session conversation summary ({len(selected_turns)} turns)")
-    for idx, turn in enumerate(selected_turns, start=1):
-        user_message = _normalize_session_memory_text(turn.get("user_message", ""))
-        agent_response = _normalize_session_memory_text(turn.get("agent_response", ""))
-        lines.append(f"Round {idx} User: {user_message}")
-        lines.append(f"Round {idx} Assistant: {agent_response}")
-    return "\n".join(lines)
+def _contains_persistent_preference_cue(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    return any(cue in lowered for cue in _PERSISTENT_PREFERENCE_CUES)
 
 
-def _build_user_context_session_content(turns: List[Dict[str, str]], agent_name: str) -> str:
+def _detect_output_format_preference(text: str) -> Optional[str]:
+    lowered = str(text or "").lower()
+    if not lowered:
+        return None
+    if "markdown" in lowered or "md文档" in lowered or re.search(r"\bmd\b", lowered):
+        return "markdown"
+    if "pdf" in lowered:
+        return "pdf"
+    if "docx" in lowered or "word" in lowered or "word文档" in lowered:
+        return "word"
+    if "excel" in lowered or "xlsx" in lowered:
+        return "excel"
+    if "ppt" in lowered or "pptx" in lowered:
+        return "ppt"
+    if "json" in lowered:
+        return "json"
+    if "html" in lowered:
+        return "html"
+    if "表格" in lowered:
+        return "table"
+    return None
+
+
+def _detect_language_preference(text: str) -> Optional[str]:
+    lowered = str(text or "").lower()
+    if not lowered:
+        return None
+
+    zh = ("中文" in lowered) or ("简体" in lowered) or ("zh-cn" in lowered)
+    en = ("英文" in lowered) or ("english" in lowered) or ("en-us" in lowered)
+    if zh and en:
+        return "bilingual"
+    if zh:
+        return "zh-CN"
+    if en:
+        return "en-US"
+    return None
+
+
+def _detect_response_style_preference(text: str) -> Optional[str]:
+    lowered = str(text or "").lower()
+    if not lowered:
+        return None
+    if "简洁" in lowered or "简短" in lowered or "精简" in lowered:
+        return "concise"
+    if "详细" in lowered or "全面" in lowered:
+        return "detailed"
+    if "分步骤" in lowered or "step by step" in lowered:
+        return "step_by_step"
+    if "要点" in lowered:
+        return "bullet_points"
+    if "正式" in lowered:
+        return "formal"
+    return None
+
+
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _extract_user_preference_signals(turns: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """Extract persistent/repeated user preference signals from session turns."""
     selected_turns = turns[-_SESSION_MEMORY_MAX_TURNS_FOR_FLUSH:]
-    lines: List[str] = ["User session profile signals (aggregated)"]
-    if agent_name:
-        lines.append(f"Agent: {agent_name}")
-    for idx, turn in enumerate(selected_turns, start=1):
+    grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    for turn in selected_turns:
         user_message = _normalize_session_memory_text(turn.get("user_message", ""))
-        lines.append(f"User intent {idx}: {user_message}")
-    return "\n".join(lines)
+        if not user_message:
+            continue
+
+        persistent = _contains_persistent_preference_cue(user_message)
+        latest_ts = _parse_iso_datetime(turn.get("timestamp"))
+        detections: List[Tuple[str, str]] = []
+
+        output_format = _detect_output_format_preference(user_message)
+        if output_format:
+            detections.append(("output_format", output_format))
+
+        language = _detect_language_preference(user_message)
+        if language:
+            detections.append(("language", language))
+
+        style = _detect_response_style_preference(user_message)
+        if style:
+            detections.append(("response_style", style))
+
+        for preference_key, preference_value in detections:
+            bucket = grouped.setdefault(
+                (preference_key, preference_value),
+                {
+                    "count": 0,
+                    "persistent": False,
+                    "latest_ts": None,
+                },
+            )
+            bucket["count"] += 1
+            bucket["persistent"] = bool(bucket["persistent"] or persistent)
+            if latest_ts and (
+                bucket["latest_ts"] is None or latest_ts > bucket["latest_ts"]
+            ):
+                bucket["latest_ts"] = latest_ts
+
+    extracted: List[Dict[str, Any]] = []
+    for (preference_key, preference_value), bucket in grouped.items():
+        evidence_count = int(bucket["count"])
+        is_persistent = bool(bucket["persistent"])
+        if not is_persistent and evidence_count < 2:
+            continue
+
+        latest_ts = bucket.get("latest_ts")
+        extracted.append(
+            {
+                "key": preference_key,
+                "value": preference_value,
+                "evidence_count": evidence_count,
+                "persistent": is_persistent,
+                "confidence": 0.88 if is_persistent else 0.68,
+                "latest_ts": latest_ts.isoformat() if isinstance(latest_ts, datetime) else None,
+            }
+        )
+
+    extracted.sort(
+        key=lambda item: (
+            int(bool(item.get("persistent"))),
+            int(item.get("evidence_count") or 0),
+            str(item.get("latest_ts") or ""),
+        ),
+        reverse=True,
+    )
+    return extracted[:_SESSION_MEMORY_MAX_PREFERENCE_FACTS]
+
+
+def _build_user_preference_memory_content(signal: Dict[str, Any]) -> str:
+    return f"user.preference.{signal['key']}={signal['value']}"
 
 
 async def _flush_session_memories(
@@ -898,40 +1046,63 @@ async def _flush_session_memories(
 
     mem_interface = get_agent_memory_interface()
     turn_count = len(turns)
+    extracted_signals = _extract_user_preference_signals(turns)
+    if not extracted_signals:
+        logger.info(
+            "Skipped session memory persistence: no persistent user preference signals",
+            extra={"session_id": session.session_id, "turn_count": turn_count},
+        )
+        return
+
+    extracted_at = datetime.utcnow().isoformat() + "Z"
     metadata_base = {
-        "source": "agent_test_session",
+        "source": "agent_test_preference_extractor",
         "session_id": session.session_id,
         "turn_count": turn_count,
         "session_end_reason": reason,
         "aggregated": True,
         "agent_name": agent_name,
+        "extracted_at": extracted_at,
     }
 
-    try:
-        mem_interface.store_agent_memory(
-            agent_id=session.agent_id,
-            content=_build_agent_session_memory_content(turns, agent_name),
-            user_id=session.user_id,
-            metadata={**metadata_base},
-        )
-    except Exception as e:
-        logger.warning(
-            "Failed to store aggregated agent memory on session end",
-            extra={"session_id": session.session_id, "reason": reason, "error": str(e)},
-        )
+    stored_count = 0
+    for signal in extracted_signals:
+        try:
+            mem_interface.store_user_context(
+                user_id=session.user_id,
+                agent_id=session.agent_id,
+                content=_build_user_preference_memory_content(signal),
+                metadata={
+                    **metadata_base,
+                    "signal_type": "user_preference",
+                    "preference_key": signal["key"],
+                    "preference_value": signal["value"],
+                    "evidence_count": signal["evidence_count"],
+                    "confidence": signal["confidence"],
+                    "latest_turn_ts": signal.get("latest_ts"),
+                },
+            )
+            stored_count += 1
+        except Exception as e:
+            logger.warning(
+                "Failed to store extracted user preference memory on session end",
+                extra={
+                    "session_id": session.session_id,
+                    "reason": reason,
+                    "error": str(e),
+                    "preference_key": signal.get("key"),
+                },
+            )
 
-    try:
-        mem_interface.store_user_context(
-            user_id=session.user_id,
-            agent_id=session.agent_id,
-            content=_build_user_context_session_content(turns, agent_name),
-            metadata={**metadata_base},
-        )
-    except Exception as e:
-        logger.warning(
-            "Failed to store aggregated user-context memory on session end",
-            extra={"session_id": session.session_id, "reason": reason, "error": str(e)},
-        )
+    logger.info(
+        "Stored extracted user preference memories on session end",
+        extra={
+            "session_id": session.session_id,
+            "reason": reason,
+            "stored_count": stored_count,
+            "candidate_count": len(extracted_signals),
+        },
+    )
 
 
 def _ensure_session_memory_callback_registered() -> None:

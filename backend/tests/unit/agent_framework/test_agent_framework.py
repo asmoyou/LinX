@@ -792,6 +792,25 @@ class TestAgentMemoryInterface:
         assert "plain" not in results[0].metadata
         mock_repo.search_keywords.assert_not_called()
 
+    def test_store_user_context_preserves_custom_source_metadata(self):
+        """store_user_context should not overwrite explicit metadata source."""
+        mock_memory_system = Mock()
+        mock_memory_system.store_memory.return_value = 321
+        interface = AgentMemoryInterface(memory_system=mock_memory_system)
+
+        interface.store_user_context(
+            user_id=uuid4(),
+            agent_id=uuid4(),
+            content="user.preference.output_format=markdown",
+            metadata={"source": "agent_test_preference_extractor", "signal_type": "user_preference"},
+        )
+
+        stored_item = mock_memory_system.store_memory.call_args.args[0]
+        assert stored_item.memory_type == MemoryType.USER_CONTEXT
+        assert stored_item.metadata["source"] == "agent_test_preference_extractor"
+        assert stored_item.metadata["auto_generated"] is True
+        assert stored_item.metadata["signal_type"] == "user_preference"
+
 
 class TestAgentExecutor:
     """Test agent executor."""

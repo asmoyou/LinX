@@ -434,9 +434,9 @@ class AgentMemoryInterface:
         Returns:
             Memory ID
         """
-        meta = metadata or {}
-        meta["auto_generated"] = True
-        meta["source"] = "conversation"
+        meta = dict(metadata or {})
+        meta.setdefault("auto_generated", True)
+        meta.setdefault("source", "conversation")
 
         memory_item = MemoryItem(
             content=content,

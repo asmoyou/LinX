@@ -155,8 +155,8 @@ def test_executor_injects_task_context_memories_when_task_scope_enabled():
     assert execute_context["task_context_memories"] == ["continue previous task context 1"]
 
 
-def test_executor_stores_successful_response_as_agent_memory():
-    """Successful executions should be persisted to agent memory with structured format."""
+def test_executor_does_not_store_task_completion_as_agent_memory():
+    """Task completion should not create task-log style agent memory records."""
     memory_interface = Mock()
     memory_interface.retrieve_agent_memory.return_value = []
     memory_interface.retrieve_company_memory.return_value = []
@@ -175,10 +175,4 @@ def test_executor_stores_successful_response_as_agent_memory():
     result = executor.execute(agent, context)
 
     assert result["success"] is True
-    memory_interface.store_agent_memory.assert_called_once()
-    call_kwargs = memory_interface.store_agent_memory.call_args.kwargs
-    assert call_kwargs["agent_id"] == context.agent_id
-    assert call_kwargs["user_id"] == context.user_id
-    # New structured format uses _format_agent_memory_content
-    assert "Task: Summarize Q4 report" in call_kwargs["content"]
-    assert "[Agent: Memory Integration Agent]" in call_kwargs["content"]
+    memory_interface.store_agent_memory.assert_not_called()

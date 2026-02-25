@@ -62,6 +62,30 @@ def test_prune_interaction_log_memories_respects_history_intent():
     assert kept_pruned_count == 1
 
 
+def test_format_memory_for_prompt_includes_timestamp_label():
+    executor = _build_executor()
+    memory = {
+        "content": "user.preference.output_format=markdown",
+        "timestamp": "2026-02-25T10:30:00+00:00",
+    }
+
+    formatted = executor._format_memory_for_prompt(memory)
+
+    assert formatted is not None
+    assert formatted.startswith("[memory_time=2026-02-25 10:30 UTC] ")
+    assert formatted.endswith("user.preference.output_format=markdown")
+
+
+def test_structured_user_preference_memory_is_always_relevant():
+    executor = _build_executor()
+    memory = {
+        "content": "user.preference.output_format=markdown",
+        "metadata": {"signal_type": "user_preference"},
+    }
+
+    assert executor._is_context_memory_relevant(memory, "写一份山西旅游攻略") is True
+
+
 def test_execute_does_not_persist_task_memory_for_debug_chat_profile():
     memory_interface = MagicMock()
     executor = AgentExecutor(memory_interface=memory_interface)

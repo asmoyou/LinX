@@ -14,6 +14,7 @@ from api_gateway.routers.agents import (
     _build_segmented_user_prompt,
     _extract_itemized_target_count,
     _extract_token_usage_from_metadata,
+    _extract_user_preference_signals,
     _is_output_truncated_from_metadata,
     _list_session_workspace_entries,
     _resolve_safe_workspace_path,
@@ -184,3 +185,51 @@ def test_build_download_content_disposition_handles_non_ascii_filename() -> None
     assert "attachment;" in header
     assert "filename*=UTF-8''" in header
     assert "%E8%AF%95%E5%8D%B7-%E6%95%B0%E5%AD%A6.pdf" in header
+
+
+def test_extract_user_preference_signals_ignores_one_off_format_request() -> None:
+    """Single-turn deliverable format requests should not become long-term memory."""
+    turns = [
+        {
+            "user_message": "写一份山西旅游攻略，生成md文档给我",
+            "agent_response": "已生成",
+            "timestamp": "2026-02-25T10:00:00+00:00",
+        }
+    ]
+
+    assert _extract_user_preference_signals(turns) == []
+
+
+def test_extract_user_preference_signals_keeps_persistent_cues() -> None:
+    """Explicit default/persistent preference cues should be extracted."""
+    turns = [
+        {
+            "user_message": "以后默认用markdown输出，中文回复",
+            "agent_response": "好的",
+            "timestamp": "2026-02-25T10:01:00+00:00",
+        }
+    ]
+
+    signals = _extract_user_preference_signals(turns)
+    assert any(item["key"] == "output_format" and item["value"] == "markdown" for item in signals)
+    assert any(item["key"] == "language" and item["value"] == "zh-CN" for item in signals)
+    assert all(item["persistent"] for item in signals)
+
+
+def test_extract_user_preference_signals_keeps_repeated_non_persistent_preference() -> None:
+    """Repeated same preference across turns should be retained even without explicit cue."""
+    turns = [
+        {
+            "user_message": "这次输出成pdf",
+            "agent_response": "好的",
+            "timestamp": "2026-02-25T10:02:00+00:00",
+        },
+        {
+            "user_message": "还是给我pdf格式",
+            "agent_response": "收到",
+            "timestamp": "2026-02-25T10:03:00+00:00",
+        },
+    ]
+
+    signals = _extract_user_preference_signals(turns)
+    assert any(item["key"] == "output_format" and item["value"] == "pdf" for item in signals)

@@ -9,6 +9,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
@@ -152,6 +153,72 @@ class AgentExecutor:
             return None
 
     @staticmethod
+    def _parse_datetime(value: Any) -> Optional[datetime]:
+        """Best-effort datetime parsing for memory timeline annotations."""
+        if isinstance(value, datetime):
+            return value
+
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+
+    def _extract_timestamp(self, value: Any) -> Optional[datetime]:
+        """Extract timestamp from memory object or metadata."""
+        candidates = [self._extract_value(value, "timestamp")]
+        metadata = self._extract_metadata(value)
+        candidates.extend(
+            [
+                metadata.get("timestamp"),
+                metadata.get("extracted_at"),
+                metadata.get("created_at"),
+                metadata.get("latest_turn_ts"),
+            ]
+        )
+
+        for candidate in candidates:
+            parsed = self._parse_datetime(candidate)
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _memory_sort_key(self, memory: Any) -> Tuple[float, float]:
+        """Sort memories by timeline first, then semantic score."""
+        timestamp = self._extract_timestamp(memory)
+        if timestamp is not None and timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        ts_epoch = timestamp.timestamp() if timestamp is not None else -1.0
+        similarity = self._extract_similarity_score(memory) or 0.0
+        return ts_epoch, similarity
+
+    def _sort_context_memories(self, memories: List[Any]) -> List[Any]:
+        """Prioritize newer memories to keep prompt timeline coherent."""
+        if not memories:
+            return []
+        return sorted(memories, key=self._memory_sort_key, reverse=True)
+
+    def _format_memory_for_prompt(self, memory: Any) -> Optional[str]:
+        """Render memory with timestamp marker so model can reason about timeline."""
+        content = self._extract_content(memory)
+        if not content:
+            return None
+
+        timestamp = self._extract_timestamp(memory)
+        if timestamp is None:
+            return content
+
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        time_label = timestamp.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        return f"[memory_time={time_label}] {content}"
+
+    @staticmethod
     def _normalize_match_text(text: Optional[str]) -> str:
         """Normalize text for lightweight overlap matching."""
         raw = str(text or "").lower()
@@ -290,8 +357,23 @@ class AgentExecutor:
                 overlap += 1
         return overlap
 
+    def _is_structured_user_preference_memory(self, memory: Any) -> bool:
+        """Detect compact user preference memories that should always be available."""
+        metadata = self._extract_metadata(memory)
+        signal_type = str(metadata.get("signal_type") or "").strip().lower()
+        if signal_type == "user_preference":
+            return True
+
+        content = self._extract_content(memory)
+        if not content:
+            return False
+        return str(content).strip().lower().startswith("user.preference.")
+
     def _is_context_memory_relevant(self, memory: Any, query_text: str) -> bool:
         """Guard memory injection with a lightweight topic-relevance check."""
+        if self._is_structured_user_preference_memory(memory):
+            return True
+
         content = self._extract_content(memory)
         if not content:
             return False
@@ -750,25 +832,30 @@ class AgentExecutor:
             task_context_memories, context.task_description
         )
 
+        agent_memories = self._sort_context_memories(agent_memories)
+        company_memories = self._sort_context_memories(company_memories)
+        user_context_memories = self._sort_context_memories(user_context_memories)
+        task_context_memories = self._sort_context_memories(task_context_memories)
+
         memory_debug["agent"]["filtered_out_count"] = agent_filtered
         memory_debug["company"]["filtered_out_count"] = company_filtered
         memory_debug["user_context"]["filtered_out_count"] = user_context_filtered
         memory_debug["task_context"]["filtered_out_count"] = task_context_filtered
 
         for memory in agent_memories:
-            content = self._extract_content(memory)
+            content = self._format_memory_for_prompt(memory)
             if content:
                 exec_context["agent_memories"].append(content)
         for memory in company_memories:
-            content = self._extract_content(memory)
+            content = self._format_memory_for_prompt(memory)
             if content:
                 exec_context["company_memories"].append(content)
         for memory in user_context_memories:
-            content = self._extract_content(memory)
+            content = self._format_memory_for_prompt(memory)
             if content:
                 exec_context["user_context_memories"].append(content)
         for memory in task_context_memories:
-            content = self._extract_content(memory)
+            content = self._format_memory_for_prompt(memory)
             if content:
                 exec_context["task_context_memories"].append(content)
 
