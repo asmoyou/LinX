@@ -6,6 +6,7 @@ References:
 """
 
 import asyncio
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -233,6 +234,29 @@ class TestCodeExecutionSandbox:
         assert sandbox.resource_limits.cpu_cores == 1.0
         assert sandbox.resource_limits.memory_mb == 1024
         assert sandbox.resource_limits.execution_timeout_seconds == 60
+
+    @pytest.mark.asyncio
+    async def test_create_sandbox_mounts_workspace_root(self, tmp_path):
+        """Workspace root should be mounted to /workspace when provided."""
+        sandbox = CodeExecutionSandbox()
+        sandbox.container_manager = MagicMock()
+        sandbox.container_manager.create_container.return_value = "container-123"
+
+        execution_id = "12345678-1234-5678-1234-567812345678"
+        workspace_root = tmp_path / "session_workspace"
+
+        container_id = await sandbox._create_sandbox(
+            execution_id,
+            workspace_root=str(workspace_root),
+        )
+
+        assert container_id == "container-123"
+        assert sandbox.container_manager.create_container.called
+        _, kwargs = sandbox.container_manager.create_container.call_args
+        config = kwargs["config"]
+        assert str(workspace_root.resolve()) in config.volume_mounts
+        assert config.volume_mounts[str(workspace_root.resolve())] == "/workspace"
+        sandbox.container_manager.start_container.assert_called_once_with("container-123")
 
     @pytest.mark.asyncio
     async def test_execute_safe_code(self):

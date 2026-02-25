@@ -245,9 +245,96 @@ class TestBaseAgent:
 
         assert agent._requires_file_delivery("写一篇福州旅游攻略，整理成md文档给我") is True
         assert agent._requires_file_delivery("写一篇福州5天旅游攻略，交付md文档给我") is True
+        assert agent._requires_file_delivery("写一篇北京的5天旅游攻略，然后生成md文档给我") is True
+        assert agent._requires_file_delivery("请生成PDF文件给我") is True
+        assert agent._requires_file_delivery("写一份天津的旅游攻略，给我pdf文档") is True
         assert agent._requires_file_delivery("Please save this guide as a markdown file.") is True
+        assert agent._requires_file_delivery("Generate this as a markdown document.") is True
         assert agent._requires_file_delivery("Deliver this as a markdown document.") is True
-        assert agent._requires_file_delivery("请写一篇福州旅游攻略，使用 markdown 格式输出") is False
+        assert (
+            agent._requires_file_delivery("请写一篇福州旅游攻略，使用 markdown 格式输出") is False
+        )
+
+    def test_requested_file_formats_and_delivery_match(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        requested = agent._extract_requested_file_formats("写一份天津旅游攻略，给我pdf文档")
+        assert requested == {"pdf"}
+
+        md_records = [
+            {
+                "tool_name": "write_file",
+                "status": "success",
+                "args": {"file_path": "/workspace/outputs/tianjin.md"},
+                "result": "Successfully wrote /workspace/outputs/tianjin.md",
+            }
+        ]
+        assert agent._has_successful_requested_format_call(md_records, {"md"}) is True
+        assert agent._has_successful_requested_format_call(md_records, {"pdf"}) is False
+
+        pdf_records = [
+            {
+                "tool_name": "code_execution",
+                "status": "success",
+                "args": {"code": "print('/workspace/outputs/tianjin.pdf')"},
+                "result": "Code executed successfully:\n/workspace/outputs/tianjin.pdf",
+            }
+        ]
+        assert agent._has_successful_requested_format_call(pdf_records, {"pdf"}) is True
+
+    def test_extract_native_tool_calls_from_ai_message(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.tools_by_name = {"write_file": Mock()}
+
+        message = SimpleNamespace(
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "args": {
+                        "file_path": "/workspace/outputs/result.md",
+                        "content": "# Title",
+                    },
+                }
+            ]
+        )
+
+        tool_calls = agent._extract_native_tool_calls(message)
+
+        assert len(tool_calls) == 1
+        assert tool_calls[0].tool_name == "write_file"
+        assert tool_calls[0].arguments["file_path"] == "/workspace/outputs/result.md"
+
+    def test_extract_tool_runtime_error_detects_error_like_outputs(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        assert agent._extract_tool_runtime_error("Error: File not found")
+        assert agent._extract_tool_runtime_error("Code execution failed:\nboom")
+        assert agent._extract_tool_runtime_error("❌ Command failed (exit code 1)")
+        assert agent._extract_tool_runtime_error({"success": False, "error": "boom"})
+        assert (
+            agent._extract_tool_runtime_error("Successfully wrote /workspace/outputs/a.md") is None
+        )
 
     def test_recovery_file_delivery_guard_triggers_extra_write_round(self):
         """When file intent exists and no file write occurred, recovery loop should add one save round."""

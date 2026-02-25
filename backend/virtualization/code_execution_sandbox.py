@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -226,7 +227,7 @@ class CodeExecutionSandbox:
                     language=language,
                     explicit_deps=explicit_dependencies,
                 )
-                
+
                 if dependencies:
                     self.logger.info(
                         f"Detected {len(dependencies)} dependencies",
@@ -235,7 +236,7 @@ class CodeExecutionSandbox:
                             "dependencies": [dep.name for dep in dependencies],
                         },
                     )
-                    
+
                     # Check if dependencies are cached
                     if self.dependency_manager.is_cached(dependencies):
                         self.logger.info("Using cached dependencies")
@@ -247,9 +248,14 @@ class CodeExecutionSandbox:
 
             # 3. Create isolated sandbox environment (and start it)
             network_enabled = bool(context.get("network_access", False))
+            workspace_root_value = context.get("workspace_root")
+            workspace_root = (
+                str(workspace_root_value).strip() if workspace_root_value is not None else None
+            )
             sandbox_id = await self._create_sandbox(
                 execution_id,
                 network_enabled=network_enabled,
+                workspace_root=workspace_root or None,
             )
 
             # 4. Install dependencies if needed
@@ -258,11 +264,11 @@ class CodeExecutionSandbox:
                     dependencies=dependencies,
                     language=language,
                 )
-                
+
                 if install_script:
                     self.logger.info("Installing dependencies in sandbox")
                     await self._install_dependencies(sandbox_id, install_script)
-                    
+
                     # Cache the dependencies
                     self.dependency_manager.cache_dependencies(
                         dependencies=dependencies,
@@ -399,6 +405,7 @@ class CodeExecutionSandbox:
         execution_id: str,
         *,
         network_enabled: bool = False,
+        workspace_root: Optional[str] = None,
     ) -> str:
         """Create isolated sandbox environment.
 
@@ -413,12 +420,29 @@ class CodeExecutionSandbox:
 
         temp_agent_id = UUID(execution_id)
 
+        volume_mounts: Dict[str, str] = {}
+        if workspace_root:
+            try:
+                host_workspace = Path(workspace_root).expanduser().resolve()
+                host_workspace.mkdir(parents=True, exist_ok=True)
+                volume_mounts[str(host_workspace)] = "/workspace"
+            except Exception as workspace_error:
+                self.logger.warning(
+                    "Failed to mount workspace for code execution sandbox",
+                    extra={
+                        "execution_id": execution_id,
+                        "workspace_root": workspace_root,
+                        "error": str(workspace_error),
+                    },
+                )
+
         config = ContainerConfig(
             agent_id=temp_agent_id,
             name=f"code-exec-{execution_id[:8]}",
             sandbox_type=self.sandbox_type,
             resource_limits=self.resource_limits,
             network_disabled=not network_enabled,
+            volume_mounts=volume_mounts,
         )
 
         container_id = self.container_manager.create_container(
@@ -465,11 +489,11 @@ class CodeExecutionSandbox:
             "bash": ".sh",
             "sh": ".sh",
         }
-        
+
         ext = extensions.get(language.lower(), ".txt")
         code_file = f"/tmp/code{ext}"
         context_file = "/tmp/context.json"
-        
+
         try:
             # 1. Write code to container
             self.container_manager.write_file_to_container(
@@ -478,9 +502,10 @@ class CodeExecutionSandbox:
                 content=code,
                 mode=0o755 if ext == ".sh" else 0o644,
             )
-            
+
             # 2. Write context as JSON
             import json
+
             context_json = json.dumps(context, indent=2)
             self.container_manager.write_file_to_container(
                 container_id=sandbox_id,
@@ -488,7 +513,7 @@ class CodeExecutionSandbox:
                 content=context_json,
                 mode=0o644,
             )
-            
+
             self.logger.debug(
                 "Code and context injected into sandbox",
                 extra={
@@ -498,25 +523,25 @@ class CodeExecutionSandbox:
                     "code_size": len(code),
                 },
             )
-        
+
         except Exception as e:
             self.logger.error(
                 f"Failed to inject code into sandbox: {e}",
                 extra={"sandbox_id": sandbox_id},
             )
             raise
-    
+
     async def _install_dependencies(
         self,
         sandbox_id: str,
         install_script: str,
     ) -> None:
         """Install dependencies in sandbox.
-        
+
         Args:
             sandbox_id: Sandbox container ID
             install_script: Shell script to install dependencies
-            
+
         Raises:
             RuntimeError: If installation fails
         """
@@ -527,7 +552,7 @@ class CodeExecutionSandbox:
                 "script_length": len(install_script),
             },
         )
-        
+
         try:
             # Write install script to container
             script_path = "/tmp/install_deps.sh"
@@ -537,20 +562,20 @@ class CodeExecutionSandbox:
                 content=install_script,
                 mode=0o755,
             )
-            
+
             # Execute install script
             exit_code, stdout, stderr = self.container_manager.exec_in_container(
                 container_id=sandbox_id,
                 command=f"/bin/bash {script_path}",
             )
-            
+
             if exit_code != 0:
                 error_msg = f"Dependency installation failed with exit code {exit_code}"
                 if stderr:
                     error_msg += f"\nError: {stderr}"
                 if stdout:
                     error_msg += f"\nOutput: {stdout}"
-                
+
                 self.logger.error(
                     "Dependency installation failed",
                     extra={
@@ -561,7 +586,7 @@ class CodeExecutionSandbox:
                     },
                 )
                 raise RuntimeError(error_msg)
-            
+
             self.logger.info(
                 "Dependencies installed successfully",
                 extra={
@@ -569,7 +594,7 @@ class CodeExecutionSandbox:
                     "output": stdout[:200] if stdout else "",
                 },
             )
-        
+
         except Exception as e:
             self.logger.error(
                 f"Failed to install dependencies: {e}",
@@ -589,7 +614,7 @@ class CodeExecutionSandbox:
         """
         # Map language to interpreter and file
         language = language.lower()
-        
+
         interpreters = {
             "python": ("python3", "/tmp/code.py"),
             "py": ("python3", "/tmp/code.py"),
@@ -600,20 +625,20 @@ class CodeExecutionSandbox:
             "bash": ("/bin/bash", "/tmp/code.sh"),
             "sh": ("/bin/bash", "/tmp/code.sh"),
         }
-        
+
         if language not in interpreters:
             return {
                 "output": "",
                 "error": f"Unsupported language: {language}",
                 "return_value": None,
             }
-        
+
         interpreter, code_file = interpreters[language]
-        
+
         try:
             # Execute code in container
             command = f"{interpreter} {code_file}"
-            
+
             self.logger.debug(
                 f"Executing code in sandbox",
                 extra={
@@ -621,25 +646,25 @@ class CodeExecutionSandbox:
                     "command": command,
                 },
             )
-            
+
             exit_code, stdout, stderr = self.container_manager.exec_in_container(
                 container_id=sandbox_id,
                 command=command,
                 workdir="/tmp",
             )
-            
+
             # Parse results
             output = stdout if stdout else ""
             error = stderr if stderr else ""
-            
+
             # If exit code is non-zero, treat as error
             if exit_code != 0 and not error:
                 error = f"Process exited with code {exit_code}"
-            
+
             # Try to extract return value from output
             # For Python, we could look for special markers
             return_value = None
-            
+
             self.logger.debug(
                 f"Code execution completed",
                 extra={
@@ -649,13 +674,13 @@ class CodeExecutionSandbox:
                     "error_length": len(error),
                 },
             )
-            
+
             return {
                 "output": output,
                 "error": error,
                 "return_value": return_value,
             }
-        
+
         except Exception as e:
             self.logger.error(
                 f"Failed to run code in sandbox: {e}",

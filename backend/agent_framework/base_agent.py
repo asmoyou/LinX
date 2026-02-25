@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from uuid import UUID
 
 from langchain_core.language_models import BaseChatModel
@@ -38,6 +38,9 @@ _FILE_DELIVERY_ACTION_KEYWORDS = (
     "存成",
     "存为",
     "写入",
+    "生成",
+    "生成为",
+    "生成成",
     "交付",
     "提交",
     "产出",
@@ -48,6 +51,9 @@ _FILE_DELIVERY_ACTION_KEYWORDS = (
     "生成文件",
     "save",
     "export",
+    "create",
+    "generate",
+    "produce",
     "deliver",
     "deliverable",
     "submit",
@@ -57,6 +63,8 @@ _FILE_DELIVERY_ACTION_KEYWORDS = (
 _FILE_DELIVERY_TARGET_KEYWORDS = (
     "文件",
     "文档",
+    "pdf",
+    ".pdf",
     "markdown",
     ".md",
     "md文档",
@@ -65,14 +73,33 @@ _FILE_DELIVERY_TARGET_KEYWORDS = (
     "json文件",
     "csv文件",
     "yaml文件",
+    "doc",
+    "docx",
+    "xlsx",
+    "pptx",
     "document",
     "file",
 )
 _FILE_DELIVERY_FORCE_PATTERN = re.compile(
-    r"(?:整理成|保存为|保存成|交付|提交|save as|save to|deliver as|deliver to|submit as|submit to).{0,12}"
-    r"(?:md|markdown|txt|json|csv|yaml|yml|文件|文档|file|document)",
+    r"(?:整理成|保存为|保存成|生成(?:为|成)?|交付|提交|save as|save to|generate as|generate to|deliver as|deliver to|submit as|submit to|export as|export to).{0,16}"
+    r"(?:pdf|md|markdown|txt|json|csv|yaml|yml|docx?|xlsx?|pptx?|文件|文档|file|document)",
     re.IGNORECASE,
 )
+_FILE_DELIVERY_REQUEST_PATTERN = re.compile(
+    r"(?:给我|给出|提供|交付|提交|发我|send me|give me|provide|deliver|submit).{0,16}"
+    r"(?:pdf|md|markdown|txt|json|csv|yaml|yml|docx?|xlsx?|pptx?|文件|文档|file|document)",
+    re.IGNORECASE,
+)
+_REQUESTED_FORMAT_PATTERN = re.compile(
+    r"(?<![a-z0-9])(pdf|md|markdown|txt|json|csv|yaml|yml|docx|doc|xlsx|xls|pptx|ppt)(?![a-z0-9])",
+    re.IGNORECASE,
+)
+_WORKSPACE_PATH_PATTERN = re.compile(r"(/workspace/[^\s'\"`<>]+)")
+_TEXT_FILE_FORMATS = {"md", "txt", "json", "csv", "yml"}
+_FORMAT_ALIASES = {
+    "markdown": "md",
+    "yaml": "yml",
+}
 _FILE_WRITE_TOOL_NAMES = {"write_file", "append_file", "edit_file"}
 
 
@@ -748,7 +775,29 @@ class BaseAgent:
         if has_action and has_target:
             return True
 
-        return bool(_FILE_DELIVERY_FORCE_PATTERN.search(text))
+        if _FILE_DELIVERY_FORCE_PATTERN.search(text):
+            return True
+
+        return bool(_FILE_DELIVERY_REQUEST_PATTERN.search(text))
+
+    @staticmethod
+    def _normalize_requested_file_format(format_name: str) -> str:
+        """Normalize aliases for requested file formats."""
+        lowered = str(format_name or "").strip().lower().lstrip(".")
+        return _FORMAT_ALIASES.get(lowered, lowered)
+
+    def _extract_requested_file_formats(self, task_description: str) -> Set[str]:
+        """Extract explicitly requested output file formats from user task text."""
+        text = str(task_description or "")
+        if not text:
+            return set()
+
+        formats: Set[str] = set()
+        for match in _REQUESTED_FORMAT_PATTERN.findall(text):
+            normalized = self._normalize_requested_file_format(match)
+            if normalized:
+                formats.add(normalized)
+        return formats
 
     @staticmethod
     def _extract_tool_record_name(record: Any) -> str:
@@ -774,6 +823,109 @@ class BaseAgent:
             value = getattr(record, "status", None)
         return str(value or "").strip().lower()
 
+    @staticmethod
+    def _extract_workspace_paths_from_text(text: Any) -> List[str]:
+        """Extract /workspace paths from free-form text/code snippets."""
+        raw = str(text or "")
+        if not raw:
+            return []
+
+        extracted: List[str] = []
+        for match in _WORKSPACE_PATH_PATTERN.findall(raw):
+            path = str(match or "").strip()
+            if not path:
+                continue
+            normalized = path.rstrip(".,;:!?)]}>\"'")
+            if normalized and normalized not in extracted:
+                extracted.append(normalized)
+        return extracted
+
+    @staticmethod
+    def _extract_tool_record_arguments(record: Any) -> Dict[str, Any]:
+        """Extract tool arguments from dict/dataclass records."""
+        args: Any = None
+        if isinstance(record, dict):
+            args = record.get("arguments")
+            if args is None:
+                args = record.get("args")
+        else:
+            args = getattr(record, "arguments", None)
+            if args is None:
+                args = getattr(record, "args", None)
+        return args if isinstance(args, dict) else {}
+
+    @staticmethod
+    def _extract_tool_record_result(record: Any) -> Any:
+        """Extract tool result payload from dict/dataclass records."""
+        if isinstance(record, dict):
+            return record.get("result")
+        return getattr(record, "result", None)
+
+    def _extract_tool_record_paths(self, record: Any) -> List[str]:
+        """Extract file paths referenced by a tool call record."""
+        paths: List[str] = []
+        args = self._extract_tool_record_arguments(record)
+        tool_name = self._extract_tool_record_name(record)
+
+        file_path = args.get("file_path")
+        if isinstance(file_path, str) and file_path.strip():
+            normalized_path = file_path.strip()
+            if normalized_path.startswith("/workspace/") and normalized_path not in paths:
+                paths.append(normalized_path)
+
+        if tool_name == "code_execution":
+            code = args.get("code")
+            for code_path in self._extract_workspace_paths_from_text(code):
+                if code_path not in paths:
+                    paths.append(code_path)
+
+        result = self._extract_tool_record_result(record)
+        for result_path in self._extract_workspace_paths_from_text(result):
+            if result_path not in paths:
+                paths.append(result_path)
+
+        return paths
+
+    @staticmethod
+    def _path_matches_requested_formats(path: str, requested_formats: Set[str]) -> bool:
+        """Check whether path extension satisfies requested file formats."""
+        if not requested_formats:
+            return True
+
+        normalized_path = str(path or "").strip()
+        if not normalized_path:
+            return False
+
+        _, dot_ext = os.path.splitext(normalized_path)
+        ext = dot_ext.lower().lstrip(".")
+        if not ext:
+            return False
+
+        normalized_ext = _FORMAT_ALIASES.get(ext, ext)
+        return normalized_ext in requested_formats
+
+    def _has_successful_requested_format_call(
+        self, tool_call_records: List[Any], requested_formats: Set[str]
+    ) -> bool:
+        """Check whether successful tool execution produced requested output format."""
+        if not requested_formats:
+            return self._has_successful_file_write_call(tool_call_records)
+
+        for record in tool_call_records:
+            status = self._extract_tool_record_status(record)
+            if status and status not in {"success", "ok", "completed"}:
+                continue
+
+            tool_name = self._extract_tool_record_name(record)
+            if tool_name not in _FILE_WRITE_TOOL_NAMES and tool_name != "code_execution":
+                continue
+
+            for path in self._extract_tool_record_paths(record):
+                if self._path_matches_requested_formats(path, requested_formats):
+                    return True
+
+        return False
+
     def _has_successful_file_write_call(self, tool_call_records: List[Any]) -> bool:
         """Check whether any successful file-writing tool call has already happened."""
         for record in tool_call_records:
@@ -787,15 +939,116 @@ class BaseAgent:
                 return True
         return False
 
-    @staticmethod
-    def _build_file_delivery_guard_feedback() -> str:
+    def _build_file_delivery_guard_feedback(
+        self, requested_formats: Optional[Set[str]] = None
+    ) -> str:
         """Build corrective prompt when user requested file output but no file write happened."""
+        normalized_formats = {
+            self._normalize_requested_file_format(fmt)
+            for fmt in (requested_formats or set())
+            if fmt
+        }
+        target_format = sorted(normalized_formats)[0] if normalized_formats else "md"
+        suggested_path = f"/workspace/outputs/result.{target_format}"
+        format_hint = (
+            f"用户明确要求的交付格式是: {', '.join(sorted(normalized_formats))}。\n"
+            if normalized_formats
+            else ""
+        )
+        binary_delivery = bool(normalized_formats - _TEXT_FILE_FORMATS)
+
+        if binary_delivery:
+            delivery_rule = (
+                "你可以先用 write_file/append_file 生成中间文本，再使用 code_execution 产出目标格式文件。\n"
+                "生成后请调用 list_files 验证目标文件存在。"
+            )
+        else:
+            delivery_rule = "不要使用 code_execution 来代替文件交付步骤。"
+
         return (
             "你上一轮尚未把结果保存成文件。用户明确要求交付文档/文件。\n"
-            "请立即调用文件工具完成保存：首次使用 write_file 创建目标文件，后续内容使用 append_file 追加（优先单文件）。\n"
-            "建议路径：/workspace/outputs/result.md\n"
-            "完成后仅简要回复保存路径与状态，不要只输出正文。"
+            + format_hint
+            + "请立即调用文件工具完成保存：首次使用 write_file 创建目标文件，后续内容使用 append_file 追加（优先单文件）。\n"
+            + delivery_rule
+            + "\n"
+            + f"建议路径：{suggested_path}\n"
+            + "完成后仅简要回复保存路径与状态，不要只输出正文。"
         )
+
+    @staticmethod
+    def _extract_tool_runtime_error(result: Any) -> Optional[str]:
+        """Infer tool-level failure from returned payload/content."""
+        if isinstance(result, dict):
+            success_value = result.get("success")
+            status_value = str(result.get("status", "")).strip().lower()
+            if success_value is False or status_value in {"error", "failed", "failure", "timeout"}:
+                detail = result.get("error") or result.get("message") or result
+                return str(detail)
+
+        text = str(result or "").strip()
+        if not text:
+            return None
+
+        lowered = text.lower()
+        if lowered.startswith("error:"):
+            return text
+        if lowered.startswith("code execution failed:") or lowered.startswith(
+            "code execution error:"
+        ):
+            return text
+        if lowered.startswith("❌") or "command failed (exit code" in lowered:
+            return text
+
+        return None
+
+    @staticmethod
+    def _merge_stream_message(accumulated: Any, chunk: Any) -> Any:
+        """Best-effort merge of streamed chunks into a final message object."""
+        if accumulated is None:
+            return chunk
+
+        try:
+            return accumulated + chunk
+        except Exception:
+            return accumulated
+
+    def _extract_native_tool_calls(self, message: Any) -> List[ToolCall]:
+        """Extract LangChain-native tool calls from AI message/chunk objects."""
+        if message is None:
+            return []
+
+        raw_calls = getattr(message, "tool_calls", None) or []
+        normalized_calls: List[ToolCall] = []
+
+        for raw_call in raw_calls:
+            if not isinstance(raw_call, dict):
+                continue
+
+            tool_name = str(raw_call.get("name") or "").strip()
+            if not tool_name:
+                continue
+            if tool_name not in self.tools_by_name:
+                continue
+
+            args = raw_call.get("args")
+            if args is None:
+                args = raw_call.get("arguments")
+
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+
+            if not isinstance(args, dict):
+                args = {}
+
+            raw_json = json.dumps({"tool": tool_name, **args}, ensure_ascii=False)
+            normalized_calls.append(
+                ToolCall(tool_name=tool_name, arguments=args, raw_json=raw_json)
+            )
+
+        return normalized_calls
 
     def _resolve_runtime_policy(
         self,
@@ -914,12 +1167,9 @@ class BaseAgent:
             loop_mode = resolved_policy.loop_mode
 
             # Respect policy intent but stay safe when agent-level recovery is disabled.
-            if (
-                loop_mode == LoopMode.RECOVERY_MULTI_TURN
-                and (
-                    not self.config.enable_error_recovery
-                    or not bool(resolved_policy.enable_error_recovery)
-                )
+            if loop_mode == LoopMode.RECOVERY_MULTI_TURN and (
+                not self.config.enable_error_recovery
+                or not bool(resolved_policy.enable_error_recovery)
             ):
                 loop_mode = LoopMode.AUTO_MULTI_TURN
 
@@ -1020,6 +1270,7 @@ class BaseAgent:
                 iteration = 0
                 final_output = ""
                 file_delivery_guard_required = self._requires_file_delivery(task_description)
+                requested_file_formats = self._extract_requested_file_formats(task_description)
                 file_delivery_guard_prompted = False
 
                 logger.info(
@@ -1040,9 +1291,15 @@ class BaseAgent:
                     round_thinking = ""
                     chunk_count = 0
                     stream_failed = False
+                    native_tool_calls: List[ToolCall] = []
+                    merged_stream_message: Any = None
+                    llm_for_round = self.llm_with_tools if self.tools else self.llm
 
                     try:
-                        for chunk in self.llm.stream(messages):
+                        for chunk in llm_for_round.stream(messages):
+                            merged_stream_message = self._merge_stream_message(
+                                merged_stream_message, chunk
+                            )
                             if hasattr(chunk, "content") and chunk.content:
                                 # Check for content_type in additional_kwargs
                                 content_type = "content"  # default
@@ -1065,8 +1322,10 @@ class BaseAgent:
                                     round_output += chunk.content
                                 chunk_count += 1
 
+                        native_tool_calls = self._extract_native_tool_calls(merged_stream_message)
+
                         # If no chunks were received, mark streaming as failed
-                        if chunk_count == 0:
+                        if chunk_count == 0 and not native_tool_calls:
                             stream_failed = True
                             logger.warning("LLM streaming returned no chunks")
 
@@ -1078,14 +1337,18 @@ class BaseAgent:
                     if stream_failed:
                         logger.info("Falling back to non-streaming mode")
                         try:
-                            result = self.llm.invoke(messages)
+                            result = llm_for_round.invoke(messages)
                             if hasattr(result, "content"):
                                 round_output = result.content
                             else:
                                 round_output = str(result)
+                            native_tool_calls = self._extract_native_tool_calls(result)
 
                             if not round_output:
-                                raise ValueError("LLM returned empty content")
+                                if native_tool_calls:
+                                    round_output = ""
+                                else:
+                                    raise ValueError("LLM returned empty content")
                         except Exception as invoke_error:
                             logger.error(f"Non-streaming fallback also failed: {invoke_error}")
                             raise
@@ -1100,6 +1363,9 @@ class BaseAgent:
                     import json
 
                     parsed_calls, parsed_errors = self._parse_tool_calls(round_output)
+                    if not parsed_calls and native_tool_calls:
+                        parsed_calls = native_tool_calls
+                        parsed_errors = []
                     tool_json_blocks = []
                     for tc in parsed_calls:
                         tool_json_blocks.append(tc.raw_json)
@@ -1140,6 +1406,10 @@ class BaseAgent:
                                 # Execute tool
                                 try:
                                     result = tool.invoke(tool_args)
+                                    runtime_error = self._extract_tool_runtime_error(result)
+                                    if runtime_error:
+                                        raise RuntimeError(runtime_error)
+
                                     tool_calls_made.append(
                                         {
                                             "name": tool_name,
@@ -1230,11 +1500,14 @@ class BaseAgent:
                             break
                     else:
                         # No tool calls in this round - this is the final answer
+                        file_delivery_satisfied = self._has_successful_requested_format_call(
+                            tool_calls_made, requested_file_formats
+                        )
                         if (
                             file_delivery_guard_required
                             and not file_delivery_guard_prompted
                             and iteration < max_iterations
-                            and not self._has_successful_file_write_call(tool_calls_made)
+                            and not file_delivery_satisfied
                         ):
                             file_delivery_guard_prompted = True
                             logger.info(
@@ -1254,9 +1527,34 @@ class BaseAgent:
                             )
                             messages.append(AIMessage(content=round_output))
                             messages.append(
-                                HumanMessage(content=self._build_file_delivery_guard_feedback())
+                                HumanMessage(
+                                    content=self._build_file_delivery_guard_feedback(
+                                        requested_file_formats
+                                    )
+                                )
                             )
                             continue
+
+                        if file_delivery_guard_required and not file_delivery_satisfied:
+                            logger.warning(
+                                "[TOOL-LOOP] File delivery incomplete at conversation end",
+                                extra={
+                                    "agent_id": str(self.config.agent_id),
+                                    "round": iteration,
+                                    "requested_formats": sorted(requested_file_formats),
+                                },
+                            )
+                            self._emit_stream_chunk(
+                                stream_callback=stream_callback,
+                                content=(
+                                    "未检测到符合要求的文件交付，当前回复不能视为已完成保存。"
+                                    "请继续调用工具完成文件落盘。"
+                                ),
+                                content_type="warning",
+                            )
+                            messages.append(AIMessage(content=round_output))
+                            final_output = "文件交付未完成：未检测到符合要求的落盘文件。"
+                            break
 
                         logger.info(
                             f"[TOOL-LOOP] No tool calls in round {iteration}, conversation complete",
@@ -1858,6 +2156,10 @@ class BaseAgent:
                     tool.ainvoke(tool_call.arguments), timeout=self.config.tool_timeout_seconds
                 )
 
+                runtime_error = self._extract_tool_runtime_error(result)
+                if runtime_error:
+                    raise RuntimeError(runtime_error)
+
                 # Success
                 results.append(
                     ToolResult(
@@ -2202,6 +2504,7 @@ class BaseAgent:
         # Initialize conversation state
         state = ConversationState(max_rounds=self.config.max_iterations)
         file_delivery_guard_required = self._requires_file_delivery(task_description)
+        requested_file_formats = self._extract_requested_file_formats(task_description)
         file_delivery_guard_prompted = False
 
         # Prepare system prompt and initial messages
@@ -2255,7 +2558,9 @@ class BaseAgent:
                 "max_rounds": state.max_rounds,
                 "runtime_profile": parse_execution_profile(execution_profile).value,
                 "runtime_loop_mode": (
-                    runtime_policy.loop_mode.value if runtime_policy else LoopMode.RECOVERY_MULTI_TURN.value
+                    runtime_policy.loop_mode.value
+                    if runtime_policy
+                    else LoopMode.RECOVERY_MULTI_TURN.value
                 ),
             },
         )
@@ -2311,9 +2616,13 @@ class BaseAgent:
             round_output = ""
             round_thinking = ""
             round_usage = None  # Track usage from LLM response
+            native_tool_calls: List[ToolCall] = []
+            merged_stream_message: Any = None
+            llm_for_round = self.llm_with_tools if self.tools else self.llm
 
             try:
-                for chunk in self.llm.stream(messages):
+                for chunk in llm_for_round.stream(messages):
+                    merged_stream_message = self._merge_stream_message(merged_stream_message, chunk)
                     # Check for usage info in the chunk
                     # LangChain's stream() returns AIMessageChunk objects
                     # The final chunk contains response_metadata with usage info
@@ -2354,12 +2663,16 @@ class BaseAgent:
                             round_thinking += chunk.content
                         else:
                             round_output += chunk.content
+                native_tool_calls = self._extract_native_tool_calls(merged_stream_message)
             except Exception as e:
                 logger.error(f"[RECOVERY] LLM streaming failed: {e}", exc_info=True)
                 # Try non-streaming fallback
                 try:
-                    result = self.llm.invoke(messages)
+                    result = llm_for_round.invoke(messages)
                     round_output = result.content if hasattr(result, "content") else str(result)
+                    native_tool_calls = self._extract_native_tool_calls(result)
+                    if not round_output and native_tool_calls:
+                        round_output = ""
                 except Exception as fallback_error:
                     logger.error(f"[RECOVERY] LLM fallback also failed: {fallback_error}")
                     state.is_terminated = True
@@ -2498,6 +2811,9 @@ class BaseAgent:
 
             # 3. Parse JSON tool calls (fallback if no code blocks)
             tool_calls, parse_errors = self._parse_tool_calls(round_output)
+            if not tool_calls and native_tool_calls:
+                tool_calls = native_tool_calls
+                parse_errors = []
 
             # 4. Handle parse errors
             if parse_errors:
@@ -2545,11 +2861,14 @@ class BaseAgent:
 
             # 5. No tool calls = final answer
             if not tool_calls:
+                file_delivery_satisfied = self._has_successful_requested_format_call(
+                    state.tool_calls_made, requested_file_formats
+                )
                 if (
                     file_delivery_guard_required
                     and not file_delivery_guard_prompted
                     and state.round_number < state.max_rounds
-                    and not self._has_successful_file_write_call(state.tool_calls_made)
+                    and not file_delivery_satisfied
                 ):
                     file_delivery_guard_prompted = True
                     logger.info(
@@ -2568,10 +2887,34 @@ class BaseAgent:
                         )
                     messages.append(AIMessage(content=round_output))
                     messages.append(
-                        HumanMessage(content=self._build_file_delivery_guard_feedback())
+                        HumanMessage(
+                            content=self._build_file_delivery_guard_feedback(requested_file_formats)
+                        )
                     )
                     send_round_stats()
                     continue
+
+                if file_delivery_guard_required and not file_delivery_satisfied:
+                    logger.warning(
+                        "[RECOVERY] File delivery incomplete at conversation end",
+                        extra={
+                            "agent_id": str(self.config.agent_id),
+                            "round": state.round_number,
+                            "requested_formats": sorted(requested_file_formats),
+                        },
+                    )
+                    if stream_callback:
+                        stream_callback(
+                            (
+                                "\n\n⚠️ 未检测到符合要求的文件交付，当前回复不能视为已完成保存。\n",
+                                "warning",
+                            )
+                        )
+                    round_output = "文件交付未完成：未检测到符合要求的落盘文件。"
+                    state.is_terminated = True
+                    state.termination_reason = "file_delivery_incomplete"
+                    send_round_stats()
+                    break
 
                 logger.info(
                     f"[RECOVERY] No tool calls in round {state.round_number}, conversation complete",
@@ -2933,8 +3276,9 @@ Files persist throughout the conversation session.
 1. You MUST use `write_file` to save the deliverable under `/workspace` (prefer `/workspace/outputs/...`).
 2. Prefer a single target file and update it incrementally across rounds (create first, then continue writing).
 3. Only split into multiple files when explicitly requested by the user or when one file is clearly impractical.
-4. In your final response, report the exact saved file path(s).
-5. Never claim a file was saved unless the tool call succeeded.
+4. Do NOT use `code_execution` as the final file-delivery step for plain text documents.
+5. In your final response, report the exact saved file path(s).
+6. Never claim a file was saved unless the tool call succeeded.
 
 **You can also create/manipulate files through code blocks** (Python/Bash) that run in the same workspace.
 
