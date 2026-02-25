@@ -394,10 +394,14 @@ class TestMemoryStorage:
         memory_system.store_memory(memory)
 
         created_item = mock_repository.create.call_args[0][0]
-        assert "user.topic.latest" in created_item.content
+        assert created_item.content
+        assert "=" in created_item.content
         assert created_item.metadata.get("fact_version") == "v2"
         assert created_item.metadata.get("content_hash")
-        assert isinstance(created_item.metadata.get("facts"), list)
+        facts = created_item.metadata.get("facts")
+        assert isinstance(facts, list)
+        assert facts
+        assert all("key" in fact and "value" in fact for fact in facts)
 
     def test_extract_heuristic_facts_avoids_user_profile_from_agent_result(self, memory_system):
         """Agent-result self-intro should not be misclassified as user profile."""
@@ -461,6 +465,72 @@ class TestMemoryStorage:
         assert "topic.domain" not in fact_keys
         assert "agent.name" not in fact_keys
         assert all(key.startswith("agent.") or key.startswith("interaction.") for key in fact_keys)
+
+    def test_collect_facts_prefers_model_only_for_user_context_when_model_enabled(
+        self, memory_system
+    ):
+        """When model extraction is enabled, user_context should prefer model facts over heuristics."""
+        memory = MemoryItem(
+            content="我喜欢黄焖鸡",
+            memory_type=MemoryType.USER_CONTEXT,
+            user_id="user123",
+        )
+        memory_system._fact_extraction_enabled = True
+        memory_system._fact_extraction_model_enabled = True
+        memory_system._fact_extraction_provider = "ollama"
+
+        with patch.object(
+            memory_system,
+            "_extract_heuristic_facts",
+            return_value=[
+                {
+                    "key": "user.topic.latest",
+                    "value": "喜欢黄焖鸡",
+                    "category": "user_context",
+                    "importance": 0.4,
+                    "confidence": 0.7,
+                    "source": "heuristic",
+                }
+            ],
+        ), patch.object(
+            memory_system,
+            "_extract_model_facts",
+            return_value=[
+                {
+                    "key": "user.preference.food",
+                    "value": "黄焖鸡",
+                    "category": "user_preference",
+                    "importance": 0.92,
+                    "confidence": 0.91,
+                    "source": "model",
+                }
+            ],
+        ):
+            facts, _ = memory_system._collect_facts(memory)
+
+        fact_keys = [str(f.get("key") or "") for f in facts]
+        assert "user.preference.food" in fact_keys
+        assert "user.topic.latest" not in fact_keys
+
+    def test_collect_facts_skips_fallback_for_user_context_when_model_mode_empty(self, memory_system):
+        """Model-first user_context extraction should not fabricate fallback facts when model returns none."""
+        memory = MemoryItem(
+            content="这轮只是确认一下",
+            memory_type=MemoryType.USER_CONTEXT,
+            user_id="user123",
+        )
+        memory_system._fact_extraction_enabled = True
+        memory_system._fact_extraction_model_enabled = True
+        memory_system._fact_extraction_provider = "ollama"
+
+        with patch.object(memory_system, "_extract_heuristic_facts", return_value=[]), patch.object(
+            memory_system,
+            "_extract_model_facts",
+            return_value=[],
+        ):
+            facts, _ = memory_system._collect_facts(memory)
+
+        assert facts == []
 
     def test_fact_grounding_rejects_unsupported_user_inference(self, memory_system):
         """Grounding helper should reject inferred values absent from source text."""

@@ -1,5 +1,6 @@
 """Tests for agent attachment helper functions."""
 
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,12 +9,19 @@ from fastapi import HTTPException
 
 from api_gateway.routers.agents import (
     FileReference,
+    _build_agent_metrics_from_task_rows,
+    _build_audit_log_entries,
+    _build_task_log_entries,
     _build_output_segment_ranges,
     _build_attachment_prompt_context,
     _build_download_content_disposition,
     _build_segmented_user_prompt,
+    _extract_session_memory_signals_with_llm,
+    _extract_json_object_from_text,
     _extract_agent_memory_candidates,
     _extract_itemized_target_count,
+    _normalize_llm_agent_candidates,
+    _normalize_llm_user_preference_signals,
     _extract_token_usage_from_metadata,
     _extract_user_preference_signals,
     _is_output_truncated_from_metadata,
@@ -139,6 +147,61 @@ def test_extract_token_usage_from_metadata_supports_usage_and_token_usage() -> N
     ) == (30, 40)
 
 
+def test_build_agent_metrics_from_task_rows_counts_statuses() -> None:
+    """Task status rows should map into detail metrics with derived rates."""
+    metrics = _build_agent_metrics_from_task_rows(
+        [
+            ("completed", 6),
+            ("failed", 2),
+            ("pending", 3),
+            ("in_progress", 1),
+        ]
+    )
+
+    assert metrics["tasksCompleted"] == 6
+    assert metrics["tasksFailed"] == 2
+    assert metrics["tasksExecuted"] == 8
+    assert metrics["pendingTasks"] == 3
+    assert metrics["inProgressTasks"] == 1
+    assert metrics["completionRate"] == pytest.approx(0.75)
+    assert metrics["successRate"] == pytest.approx(0.75)
+    assert metrics["failureRate"] == pytest.approx(0.25)
+
+
+def test_build_task_log_entries_sets_level_and_message() -> None:
+    """Task activity logs should map statuses to UI-friendly level/message."""
+    now = datetime(2026, 2, 25, 10, 0, tzinfo=timezone.utc)
+    entries = _build_task_log_entries(
+        [
+            ("整理周报", "completed", now, now),
+            ("同步日报", "failed", now, now),
+            ("准备会议材料", "in_progress", now, None),
+        ]
+    )
+
+    assert [entry["level"] for entry in entries] == ["SUCCESS", "ERROR", "INFO"]
+    assert "Task completed" in entries[0]["message"]
+    assert "Task failed" in entries[1]["message"]
+    assert entries[2]["source"] == "task"
+
+
+def test_build_audit_log_entries_maps_result_to_level() -> None:
+    """Audit activity should derive level from result and include reason."""
+    now = datetime(2026, 2, 25, 10, 5, tzinfo=timezone.utc)
+    entries = _build_audit_log_entries(
+        [
+            ("agent_updated", {"result": "success", "action": "update"}, now),
+            ("resource_access_denied", {"result": "denied", "reason": "forbidden"}, now),
+        ]
+    )
+
+    assert entries[0]["level"] == "SUCCESS"
+    assert entries[0]["message"] == "Update"
+    assert entries[1]["level"] == "ERROR"
+    assert "forbidden" in entries[1]["message"]
+    assert entries[1]["source"] == "audit"
+
+
 def test_extract_itemized_target_count_handles_strict_and_fallback_patterns() -> None:
     """Target count inference should support strict units and fallback action prompts."""
     assert _extract_itemized_target_count("请根据教材生成300道小学数学题") == 300
@@ -234,6 +297,174 @@ def test_extract_user_preference_signals_keeps_repeated_non_persistent_preferenc
 
     signals = _extract_user_preference_signals(turns)
     assert any(item["key"] == "output_format" and item["value"] == "pdf" for item in signals)
+
+
+def test_extract_user_preference_signals_keeps_explicit_food_like_signal() -> None:
+    """Explicit first-person food preferences should be captured even in one turn."""
+    turns = [
+        {
+            "user_message": "我喜欢黄焖鸡，怎么做的？",
+            "agent_response": "可以按家常做法来",
+            "timestamp": "2026-02-25T10:04:00+00:00",
+        }
+    ]
+
+    signals = _extract_user_preference_signals(turns)
+    assert any(
+        item["key"] == "food_preference_like"
+        and item["value"] == "黄焖鸡"
+        and item["strong_signal"] is True
+        for item in signals
+    )
+
+
+def test_extract_user_preference_signals_keeps_explicit_food_avoid_signal() -> None:
+    """Dietary restrictions should be captured as avoid-preference signals."""
+    turns = [
+        {
+            "user_message": "我对花生过敏，帮我避开相关菜品",
+            "agent_response": "好的",
+            "timestamp": "2026-02-25T10:04:30+00:00",
+        }
+    ]
+
+    signals = _extract_user_preference_signals(turns)
+    assert any(
+        item["key"] == "food_preference_avoid"
+        and item["value"] == "花生"
+        and item["strong_signal"] is True
+        for item in signals
+    )
+
+
+def test_extract_json_object_from_text_supports_markdown_block() -> None:
+    content = """
+说明如下：
+```json
+{"user_preferences":[{"key":"response_language","value":"zh-CN"}]}
+```
+"""
+    parsed = _extract_json_object_from_text(content)
+    assert parsed is not None
+    assert parsed["user_preferences"][0]["key"] == "response_language"
+
+
+def test_normalize_llm_user_preference_signals_filters_low_quality() -> None:
+    turn_ts_map = {1: "2026-02-25T10:00:00+00:00", 2: "2026-02-25T10:01:00+00:00"}
+    items = [
+        {
+            "key": "response_language",
+            "value": "zh-CN",
+            "persistent": True,
+            "confidence": 0.9,
+            "evidence_turns": [1, 2],
+        },
+        {
+            "key": "one_off_temp",
+            "value": "this time only",
+            "persistent": False,
+            "confidence": 0.4,
+            "evidence_turns": [1],
+        },
+    ]
+
+    normalized = _normalize_llm_user_preference_signals(items, turn_ts_map)
+    assert len(normalized) == 1
+    assert normalized[0]["key"] == "response_language"
+    assert normalized[0]["latest_ts"] == "2026-02-25T10:01:00+00:00"
+
+
+def test_normalize_llm_agent_candidates_keeps_reusable_candidate() -> None:
+    turn_ts_map = {2: "2026-02-25T10:02:00+00:00"}
+    items = [
+        {
+            "candidate_type": "sop",
+            "title": "旅游攻略写作流程",
+            "summary": "先梳理天数与交通，再按天输出可执行清单。",
+            "steps": ["确定天数和城市范围", "按天规划路线与交通", "输出每日清单和预算"],
+            "confidence": 0.81,
+            "evidence_turns": [2],
+        }
+    ]
+
+    normalized = _normalize_llm_agent_candidates(
+        items,
+        agent_name="小新2号",
+        turn_ts_map=turn_ts_map,
+    )
+    assert len(normalized) == 1
+    assert normalized[0]["candidate_type"] == "sop"
+    assert normalized[0]["latest_ts"] == "2026-02-25T10:02:00+00:00"
+    assert len(normalized[0]["steps"]) >= 3
+
+
+@pytest.mark.asyncio
+async def test_extract_session_memory_signals_prefers_memory_config_then_fallbacks_to_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRegistry:
+        def get_agent(self, _agent_id):  # noqa: ANN001
+            return SimpleNamespace(llm_provider="agent_provider", llm_model="agent-model")
+
+    class FakeConfig:
+        def get(self, key: str):  # noqa: ANN001
+            values = {
+                "memory.enhanced_memory.fact_extraction.provider": "memory_provider",
+                "memory.enhanced_memory.fact_extraction.model": "memory-model",
+                "llm.model_mapping.chat": "fallback-chat-model",
+                "llm.providers.memory_provider.models": {"chat": "memory-model"},
+            }
+            return values.get(key)
+
+    class FakeRouter:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def generate(  # noqa: ANN001
+            self,
+            *,
+            prompt,
+            provider=None,
+            model=None,
+            temperature=0.1,
+            max_tokens=1800,
+        ):
+            self.calls.append({"provider": provider, "model": model, "prompt": prompt})
+            if provider == "memory_provider":
+                raise ValueError("Provider 'memory_provider' not available")
+            return SimpleNamespace(
+                content=(
+                    '{"user_preferences":[{"key":"output_format","value":"markdown",'
+                    '"persistent":true,"confidence":0.9,"evidence_turns":[1]}],'
+                    '"agent_memory_candidates":[]}'
+                )
+            )
+
+    fake_router = FakeRouter()
+
+    monkeypatch.setattr("api_gateway.routers.agents.get_agent_registry", lambda: FakeRegistry())
+    monkeypatch.setattr("shared.config.get_config", lambda: FakeConfig())
+    monkeypatch.setattr("llm_providers.router.get_llm_provider", lambda: fake_router)
+
+    signals, candidates = await _extract_session_memory_signals_with_llm(
+        turns=[
+            {
+                "user_message": "以后默认markdown输出",
+                "agent_response": "收到",
+                "timestamp": "2026-02-25T10:00:00+00:00",
+            }
+        ],
+        agent_id="agent-1",
+        agent_name="小新2号",
+    )
+
+    assert len(fake_router.calls) >= 2
+    assert fake_router.calls[0]["provider"] == "memory_provider"
+    assert fake_router.calls[0]["model"] == "memory-model"
+    assert fake_router.calls[1]["provider"] == "agent_provider"
+    assert fake_router.calls[1]["model"] == "agent-model"
+    assert any(item["key"] == "output_format" and item["value"] == "markdown" for item in signals)
+    assert candidates == []
 
 
 def test_extract_agent_memory_candidates_requires_step_structure() -> None:

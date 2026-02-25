@@ -962,9 +962,16 @@ class MemorySystem(MemorySystemInterface):
 
         heuristic_facts = self._extract_heuristic_facts(memory)
         model_facts = self._extract_model_facts(memory) if self._fact_extraction_enabled else []
+        prefer_model_only = bool(
+            self._fact_extraction_enabled
+            and self._fact_extraction_model_enabled
+            and self._fact_extraction_provider
+            and memory.memory_type in {MemoryType.AGENT, MemoryType.USER_CONTEXT}
+        )
+        incoming_facts = model_facts if prefer_model_only else (heuristic_facts + model_facts)
         merged_facts, conflicts = self._merge_fact_lists(
             normalized_seed,
-            heuristic_facts + model_facts,
+            incoming_facts,
         )
         merged_facts = self._filter_facts_for_memory_type(memory.memory_type, merged_facts)
 
@@ -975,6 +982,9 @@ class MemorySystem(MemorySystemInterface):
             MemoryType.TASK_CONTEXT: "task.note.latest",
         }
         fallback_key = fallback_key_map.get(memory.memory_type, f"{memory.memory_type.value}.note.latest")
+
+        if not merged_facts and prefer_model_only:
+            return [], conflicts
 
         if not merged_facts:
             fallback_fact = self._normalize_fact(

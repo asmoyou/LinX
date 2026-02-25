@@ -8,11 +8,12 @@ References:
 import base64
 import hashlib
 import io
+import json
 import mimetypes
 import re
 import tempfile
 import urllib.parse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
@@ -280,6 +281,140 @@ def _collect_agent_task_stats(agent_ids: List[UUID]) -> Dict[UUID, Dict[str, Any
         logger.error(f"Failed to collect agent task stats: {e}")
 
     return stats_by_agent
+
+
+def _normalize_event_timestamp(value: Any) -> datetime:
+    """Normalize timestamps for log/event payloads."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    return datetime.now(timezone.utc)
+
+
+def _normalize_task_status(task_status: Any) -> str:
+    """Normalize task status aliases to canonical API values."""
+    normalized_status = str(task_status or "").strip().lower()
+    if normalized_status in {"in progress", "in-progress"}:
+        return "in_progress"
+    return normalized_status
+
+
+def _format_agent_task_log_message(status: str, goal_text: Any) -> str:
+    """Build task-oriented activity message for agent logs."""
+    status_label = {
+        "completed": "Task completed",
+        "failed": "Task failed",
+        "in_progress": "Task in progress",
+        "pending": "Task pending",
+    }.get(status, "Task updated")
+
+    task_goal = _trim_process_text(str(goal_text or "").strip(), max_chars=140)
+    if task_goal:
+        return f"{status_label}: {task_goal}"
+    return status_label
+
+
+def _build_task_log_entries(task_rows: List[Tuple[Any, Any, Any, Any]]) -> List[Dict[str, Any]]:
+    """Build detail-page log entries from task rows."""
+    entries: List[Dict[str, Any]] = []
+    for goal_text, task_status, created_at, completed_at in task_rows:
+        normalized_status = _normalize_task_status(task_status)
+        event_time = completed_at or created_at
+        entries.append(
+            {
+                "timestamp": _normalize_event_timestamp(event_time),
+                "level": (
+                    "SUCCESS"
+                    if normalized_status == "completed"
+                    else "ERROR"
+                    if normalized_status == "failed"
+                    else "INFO"
+                ),
+                "message": _format_agent_task_log_message(normalized_status, goal_text),
+                "source": "task",
+            }
+        )
+    return entries
+
+
+def _build_audit_log_entries(audit_rows: List[Tuple[Any, Any, Any]]) -> List[Dict[str, Any]]:
+    """Build detail-page log entries from audit rows."""
+    entries: List[Dict[str, Any]] = []
+    for action, details, timestamp in audit_rows:
+        detail_map = details if isinstance(details, dict) else {}
+        result = str(detail_map.get("result") or "").strip().lower()
+        if result in {"denied", "failed", "error"}:
+            level = "ERROR"
+        elif result == "success":
+            level = "SUCCESS"
+        else:
+            level = "INFO"
+        message_action = str(
+            detail_map.get("action")
+            or detail_map.get("event_type")
+            or action
+            or "agent event"
+        ).strip()
+        message = message_action.replace("_", " ").capitalize() or "Agent event"
+        reason = str(detail_map.get("reason") or "").strip()
+        if reason:
+            message = f"{message}: {reason}"
+
+        entries.append(
+            {
+                "timestamp": _normalize_event_timestamp(timestamp),
+                "level": level,
+                "message": message,
+                "source": "audit",
+            }
+        )
+    return entries
+
+
+def _default_agent_metrics() -> Dict[str, Any]:
+    """Default metrics payload for agent detail page."""
+    return {
+        "tasksExecuted": 0,
+        "tasksCompleted": 0,
+        "tasksFailed": 0,
+        "completionRate": 0.0,
+        "successRate": 0.0,
+        "failureRate": 0.0,
+        "pendingTasks": 0,
+        "inProgressTasks": 0,
+        "lastActivityAt": None,
+    }
+
+
+def _build_agent_metrics_from_task_rows(
+    task_status_rows: List[Tuple[Any, Any]],
+    last_activity_at: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Build aggregate task metrics for one agent."""
+    metrics = _default_agent_metrics()
+    for task_status, count in task_status_rows:
+        normalized_status = _normalize_task_status(task_status)
+        if normalized_status == "completed":
+            metrics["tasksCompleted"] += int(count or 0)
+        elif normalized_status == "failed":
+            metrics["tasksFailed"] += int(count or 0)
+        elif normalized_status == "pending":
+            metrics["pendingTasks"] += int(count or 0)
+        elif normalized_status == "in_progress":
+            metrics["inProgressTasks"] += int(count or 0)
+
+    tasks_executed = metrics["tasksCompleted"] + metrics["tasksFailed"]
+    metrics["tasksExecuted"] = tasks_executed
+    if tasks_executed > 0:
+        metrics["completionRate"] = round(metrics["tasksCompleted"] / tasks_executed, 4)
+        metrics["successRate"] = metrics["completionRate"]
+        metrics["failureRate"] = round(metrics["tasksFailed"] / tasks_executed, 4)
+
+    if last_activity_at:
+        metrics["lastActivityAt"] = _normalize_event_timestamp(last_activity_at)
+
+    return metrics
 
 
 def _resolve_model_context_window(
@@ -840,6 +975,9 @@ _SESSION_MEMORY_MAX_AGENT_CANDIDATES = 3
 _SESSION_MEMORY_USER_SIGNAL_TYPE = "user_preference"
 _SESSION_MEMORY_AGENT_SIGNAL_TYPE = "agent_memory_candidate"
 _SESSION_MEMORY_AGENT_REVIEW_PENDING = "pending"
+_SESSION_MEMORY_LLM_MIN_PREFERENCE_CONFIDENCE = 0.62
+_SESSION_MEMORY_LLM_MIN_AGENT_CONFIDENCE = 0.6
+_SESSION_MEMORY_LLM_PROMPT_MAX_CHARS = 14000
 _PERSISTENT_PREFERENCE_CUES = (
     "以后",
     "下次",
@@ -869,6 +1007,19 @@ _AGENT_SOP_HINT_CUES = (
 _BULLET_LINE_PATTERN = re.compile(
     r"^\s*(?:\d+[\.、\)]\s*|[-*•]\s*)(.+)$",
     flags=re.MULTILINE,
+)
+_FOOD_PREFERENCE_LIKE_PATTERNS = (
+    re.compile(r"我(?:比较|更)?(?:偏)?喜欢(?:吃)?(?P<item>[^，。！？；,.!?]{1,24})"),
+    re.compile(r"我爱吃(?P<item>[^，。！？；,.!?]{1,24})"),
+    re.compile(r"我偏好(?P<item>[^，。！？；,.!?]{1,24})"),
+)
+_FOOD_PREFERENCE_AVOID_PATTERNS = (
+    re.compile(r"我(?:不吃|不喜欢吃|忌口)(?P<item>[^，。！？；,.!?]{1,24})"),
+    re.compile(r"我(?:对)?(?P<item>[^，。！？；,.!?]{1,24})过敏"),
+)
+_PREFERENCE_ITEM_TRAILING_CLEAN_PATTERN = re.compile(
+    r"(?:怎么做|怎么弄|咋做|如何做|做法|怎么制作|如何制作).*$",
+    flags=re.IGNORECASE,
 )
 
 
@@ -944,6 +1095,48 @@ def _detect_response_style_preference(text: str) -> Optional[str]:
     return None
 
 
+def _normalize_preference_item(value: str, max_chars: int = 24) -> Optional[str]:
+    item = str(value or "").strip()
+    if not item:
+        return None
+
+    item = _PREFERENCE_ITEM_TRAILING_CLEAN_PATTERN.sub("", item).strip()
+    item = re.sub(r"^[：:，,\s]+", "", item)
+    item = re.sub(r"[，,。！？!?；;\s]+$", "", item)
+    item = " ".join(item.split())
+    if not item:
+        return None
+    if len(item) > max_chars:
+        return None
+    if item in {"什么", "啥", "一下", "一点"}:
+        return None
+    return item
+
+
+def _detect_food_preference_signal(text: str) -> Optional[Tuple[str, str]]:
+    message = str(text or "").strip()
+    if not message:
+        return None
+
+    for pattern in _FOOD_PREFERENCE_AVOID_PATTERNS:
+        match = pattern.search(message)
+        if not match:
+            continue
+        item = _normalize_preference_item(match.group("item"))
+        if item:
+            return "food_preference_avoid", item
+
+    for pattern in _FOOD_PREFERENCE_LIKE_PATTERNS:
+        match = pattern.search(message)
+        if not match:
+            continue
+        item = _normalize_preference_item(match.group("item"))
+        if item:
+            return "food_preference_like", item
+
+    return None
+
+
 def _parse_iso_datetime(value: Any) -> Optional[datetime]:
     if isinstance(value, datetime):
         return value
@@ -961,6 +1154,456 @@ def _parse_iso_datetime(value: Any) -> Optional[datetime]:
         return None
 
 
+def _extract_json_object_from_text(text: str) -> Optional[Dict[str, Any]]:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+
+    candidates: List[str] = [raw]
+    block_match = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", raw, flags=re.IGNORECASE)
+    if block_match:
+        candidates.insert(0, block_match.group(1))
+
+    left = raw.find("{")
+    right = raw.rfind("}")
+    if left >= 0 and right > left:
+        candidates.append(raw[left : right + 1])
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _normalize_memory_key(value: Any, max_chars: int = 64) -> Optional[str]:
+    key = str(value or "").strip().lower()
+    if not key:
+        return None
+    key = re.sub(r"[^a-z0-9_]+", "_", key)
+    key = re.sub(r"_+", "_", key).strip("_")
+    if not key:
+        return None
+    if len(key) > max_chars:
+        key = key[:max_chars].rstrip("_")
+    return key or None
+
+
+def _coerce_confidence(value: Any, default: float = 0.7) -> float:
+    try:
+        parsed = float(value)
+    except Exception:
+        parsed = default
+    return max(0.0, min(1.0, parsed))
+
+
+def _resolve_provider_default_chat_model_from_config(
+    config: Any,
+    provider_name: Optional[str],
+) -> Optional[str]:
+    if not config or not provider_name:
+        return None
+
+    raw_models = config.get(f"llm.providers.{provider_name}.models")
+    if isinstance(raw_models, dict):
+        for preferred_key in ("chat", "default", "completion", "instruct"):
+            candidate = str(raw_models.get(preferred_key) or "").strip()
+            if candidate:
+                return candidate
+        for value in raw_models.values():
+            candidate = str(value or "").strip()
+            if candidate:
+                return candidate
+        return None
+
+    if isinstance(raw_models, list):
+        for value in raw_models:
+            candidate = str(value or "").strip()
+            if candidate:
+                return candidate
+        return None
+
+    candidate = str(raw_models or "").strip()
+    return candidate or None
+
+
+def _build_llm_memory_extraction_prompt(
+    turns: List[Dict[str, str]],
+    agent_name: str,
+) -> Tuple[str, Dict[int, Optional[str]]]:
+    selected_turns = turns[-_SESSION_MEMORY_MAX_TURNS_FOR_FLUSH:]
+    lines: List[str] = []
+    turn_ts_map: Dict[int, Optional[str]] = {}
+
+    for idx, turn in enumerate(selected_turns, start=1):
+        user_text = _normalize_session_memory_text(
+            turn.get("user_message", ""),
+            max_chars=520,
+        )
+        agent_text = _normalize_session_memory_text(
+            turn.get("agent_response", ""),
+            max_chars=760,
+        )
+        timestamp = str(turn.get("timestamp") or "").strip() or None
+        turn_ts_map[idx] = timestamp
+        lines.append(
+            "\n".join(
+                [
+                    f"[TURN {idx}] timestamp={timestamp or '-'}",
+                    f"USER: {user_text or '-'}",
+                    f"ASSISTANT: {agent_text or '-'}",
+                ]
+            )
+        )
+
+    transcript = "\n\n".join(lines)
+    if len(transcript) > _SESSION_MEMORY_LLM_PROMPT_MAX_CHARS:
+        transcript = transcript[-_SESSION_MEMORY_LLM_PROMPT_MAX_CHARS :]
+
+    prompt = f"""
+你是“记忆抽取器”。你要从一段会话中提取高价值记忆，输出必须是 JSON 对象，不要输出解释文字。
+
+Agent 名称: {agent_name or "-"}
+
+抽取目标:
+1. user_preferences: 只保留长期稳定、对未来任务有帮助的用户偏好。
+2. agent_memory_candidates: 只保留可复用的 Agent SOP/策略候选（用于后续人工审批）。
+
+强约束:
+- 不要提取一次性临时需求。
+- 不要提取闲聊、客套、泛化无价值信息。
+- 如果没有价值，返回空数组。
+- key 使用英文 snake_case，例如: response_language, output_style, food_preference。
+
+输出 JSON Schema:
+{{
+  "user_preferences": [
+    {{
+      "key": "snake_case",
+      "value": "简短明确",
+      "persistent": true,
+      "confidence": 0.0,
+      "reason": "为什么值得记忆",
+      "evidence_turns": [1, 2]
+    }}
+  ],
+  "agent_memory_candidates": [
+    {{
+      "candidate_type": "sop",
+      "title": "流程标题",
+      "summary": "一段可复用方法总结",
+      "steps": ["步骤1", "步骤2", "步骤3"],
+      "applicability": "适用场景",
+      "avoid": "不适用或注意事项",
+      "confidence": 0.0,
+      "evidence_turns": [2]
+    }}
+  ]
+}}
+
+会话文本:
+{transcript}
+""".strip()
+
+    return prompt, turn_ts_map
+
+
+def _normalize_llm_user_preference_signals(
+    raw_items: Any,
+    turn_ts_map: Dict[int, Optional[str]],
+) -> List[Dict[str, Any]]:
+    if not isinstance(raw_items, list):
+        return []
+
+    extracted: List[Dict[str, Any]] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        key = _normalize_memory_key(raw.get("key"))
+        value = _normalize_session_memory_text(raw.get("value", ""), max_chars=120)
+        if not key or not value:
+            continue
+
+        confidence = _coerce_confidence(raw.get("confidence"), default=0.72)
+        if confidence < _SESSION_MEMORY_LLM_MIN_PREFERENCE_CONFIDENCE:
+            continue
+
+        evidence_turns_raw = raw.get("evidence_turns")
+        evidence_turns: List[int] = []
+        if isinstance(evidence_turns_raw, list):
+            for item in evidence_turns_raw:
+                parsed = _to_positive_int(item)
+                if parsed and parsed not in evidence_turns:
+                    evidence_turns.append(parsed)
+
+        evidence_count = (
+            len(evidence_turns)
+            if evidence_turns
+            else (_to_positive_int(raw.get("evidence_count")) or 1)
+        )
+        is_persistent = bool(raw.get("persistent"))
+        if not is_persistent and evidence_count < 2:
+            continue
+
+        latest_turn_ts: Optional[str] = None
+        for turn_idx in evidence_turns:
+            candidate_ts = turn_ts_map.get(turn_idx)
+            if not candidate_ts:
+                continue
+            if (latest_turn_ts is None) or str(candidate_ts) > str(latest_turn_ts):
+                latest_turn_ts = str(candidate_ts)
+
+        reason = _normalize_session_memory_text(raw.get("reason", ""), max_chars=200)
+        extracted.append(
+            {
+                "key": key,
+                "value": value,
+                "evidence_count": evidence_count,
+                "persistent": is_persistent,
+                "strong_signal": is_persistent,
+                "confidence": confidence,
+                "latest_ts": latest_turn_ts,
+                "reason": reason or None,
+            }
+        )
+
+    extracted.sort(
+        key=lambda item: (
+            int(bool(item.get("persistent"))),
+            float(item.get("confidence") or 0.0),
+            int(item.get("evidence_count") or 0),
+            str(item.get("latest_ts") or ""),
+        ),
+        reverse=True,
+    )
+    return extracted[:_SESSION_MEMORY_MAX_PREFERENCE_FACTS]
+
+
+def _build_agent_candidate_fingerprint(topic: str, steps: List[str]) -> str:
+    payload = f"{topic.strip().lower()}||{'|'.join(steps).strip().lower()}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:20]
+
+
+def _normalize_llm_agent_candidates(
+    raw_items: Any,
+    *,
+    agent_name: str,
+    turn_ts_map: Dict[int, Optional[str]],
+) -> List[Dict[str, Any]]:
+    if not isinstance(raw_items, list):
+        return []
+
+    candidates: List[Dict[str, Any]] = []
+    seen_fingerprints: set[str] = set()
+
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+
+        title = _normalize_session_memory_text(
+            raw.get("title", "") or raw.get("topic", ""),
+            max_chars=96,
+        )
+        summary = _normalize_session_memory_text(raw.get("summary", ""), max_chars=260)
+        steps_raw = raw.get("steps")
+        steps: List[str] = []
+        if isinstance(steps_raw, list):
+            for step in steps_raw:
+                normalized_step = _normalize_session_memory_text(step, max_chars=96)
+                if normalized_step and normalized_step not in steps:
+                    steps.append(normalized_step)
+        elif isinstance(steps_raw, str):
+            for chunk in re.split(r"[|\n]", steps_raw):
+                normalized_step = _normalize_session_memory_text(chunk, max_chars=96)
+                if normalized_step and normalized_step not in steps:
+                    steps.append(normalized_step)
+
+        if len(steps) > 6:
+            steps = steps[:6]
+
+        if len(steps) < 2 and len(summary) < 36:
+            continue
+
+        confidence = _coerce_confidence(raw.get("confidence"), default=0.7)
+        if confidence < _SESSION_MEMORY_LLM_MIN_AGENT_CONFIDENCE:
+            continue
+
+        candidate_type = _normalize_memory_key(raw.get("candidate_type"), max_chars=32) or "sop"
+        applicability = _normalize_session_memory_text(raw.get("applicability", ""), max_chars=200)
+        avoid = _normalize_session_memory_text(raw.get("avoid", ""), max_chars=200)
+
+        topic_for_fingerprint = title or summary or "generic_sop"
+        fingerprint = _build_agent_candidate_fingerprint(topic_for_fingerprint, steps)
+        if fingerprint in seen_fingerprints:
+            continue
+        seen_fingerprints.add(fingerprint)
+
+        evidence_turns_raw = raw.get("evidence_turns")
+        evidence_turns: List[int] = []
+        if isinstance(evidence_turns_raw, list):
+            for item in evidence_turns_raw:
+                parsed = _to_positive_int(item)
+                if parsed and parsed not in evidence_turns:
+                    evidence_turns.append(parsed)
+        latest_turn_ts: Optional[str] = None
+        for turn_idx in evidence_turns:
+            candidate_ts = turn_ts_map.get(turn_idx)
+            if not candidate_ts:
+                continue
+            if (latest_turn_ts is None) or str(candidate_ts) > str(latest_turn_ts):
+                latest_turn_ts = str(candidate_ts)
+
+        candidates.append(
+            {
+                "candidate_type": candidate_type,
+                "topic": topic_for_fingerprint,
+                "title": title,
+                "summary": summary,
+                "steps": steps,
+                "applicability": applicability or None,
+                "avoid": avoid or None,
+                "confidence": confidence,
+                "fingerprint": fingerprint,
+                "agent_name": agent_name,
+                "latest_ts": latest_turn_ts,
+            }
+        )
+        if len(candidates) >= _SESSION_MEMORY_MAX_AGENT_CANDIDATES:
+            break
+
+    return candidates
+
+
+async def _extract_session_memory_signals_with_llm(
+    *,
+    turns: List[Dict[str, str]],
+    agent_id: Any,
+    agent_name: str,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if not turns:
+        return [], []
+
+    prompt, turn_ts_map = _build_llm_memory_extraction_prompt(turns, agent_name)
+
+    agent_provider_name: Optional[str] = None
+    agent_model_name: Optional[str] = None
+    configured_provider_name: Optional[str] = None
+    configured_model_name: Optional[str] = None
+    global_chat_model: Optional[str] = None
+    cfg: Any = None
+    try:
+        registry = get_agent_registry()
+        agent_info = registry.get_agent(agent_id)
+        if agent_info:
+            agent_provider_name = str(agent_info.llm_provider or "").strip() or None
+            agent_model_name = str(agent_info.llm_model or "").strip() or None
+    except Exception:
+        agent_provider_name = None
+        agent_model_name = None
+
+    try:
+        from shared.config import get_config
+
+        cfg = get_config()
+        configured_provider = cfg.get("memory.enhanced_memory.fact_extraction.provider")
+        configured_model = cfg.get("memory.enhanced_memory.fact_extraction.model")
+        configured_chat = cfg.get("llm.model_mapping.chat")
+        configured_provider_name = str(configured_provider or "").strip() or None
+        configured_model_name = str(configured_model or "").strip() or None
+        global_chat_model = str(configured_chat).strip() if configured_chat else None
+    except Exception:
+        cfg = None
+        configured_provider_name = None
+        configured_model_name = None
+        global_chat_model = None
+
+    primary_provider = configured_provider_name or agent_provider_name
+    primary_model = configured_model_name
+    if not primary_model and primary_provider:
+        primary_model = _resolve_provider_default_chat_model_from_config(cfg, primary_provider)
+    if not primary_model and primary_provider == agent_provider_name:
+        primary_model = agent_model_name
+    if not primary_model:
+        primary_model = global_chat_model
+
+    attempt_plan: List[Tuple[Optional[str], Optional[str]]] = []
+    if primary_provider or primary_model:
+        attempt_plan.append((primary_provider, primary_model))
+    if agent_provider_name or agent_model_name:
+        attempt_plan.append((agent_provider_name, agent_model_name))
+    if primary_model:
+        attempt_plan.append((None, primary_model))
+    attempt_plan.append((None, None))
+
+    attempts: List[Tuple[Optional[str], Optional[str]]] = []
+    for candidate in attempt_plan:
+        if candidate not in attempts:
+            attempts.append(candidate)
+
+    parsed: Dict[str, Any] = {}
+    last_error: Optional[Exception] = None
+    try:
+        from llm_providers.router import get_llm_provider
+
+        llm_router = get_llm_provider()
+        for attempt_index, (attempt_provider, attempt_model) in enumerate(attempts, start=1):
+            try:
+                llm_response = await llm_router.generate(
+                    prompt=prompt,
+                    provider=attempt_provider,
+                    model=attempt_model,
+                    temperature=0.1,
+                    max_tokens=1800,
+                )
+                raw_content = str(getattr(llm_response, "content", "") or "")
+                parsed = _extract_json_object_from_text(raw_content) or {}
+                if primary_provider and attempt_provider != primary_provider:
+                    logger.info(
+                        "Session memory extraction fallback provider succeeded",
+                        extra={
+                            "agent_id": str(agent_id),
+                            "original_provider": primary_provider,
+                            "attempt": attempt_index,
+                            "fallback_provider": attempt_provider or "auto",
+                        },
+                    )
+                break
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "Session memory extraction attempt failed",
+                    extra={
+                        "agent_id": str(agent_id),
+                        "attempt": attempt_index,
+                        "provider": attempt_provider or "auto",
+                        "model": attempt_model or "auto",
+                        "error": str(e),
+                    },
+                )
+    except Exception as e:
+        last_error = e
+
+    if last_error and not parsed:
+        logger.warning(
+            "LLM-based session memory extraction failed",
+            extra={"agent_id": str(agent_id), "error": str(last_error)},
+        )
+        return [], []
+
+    user_items = parsed.get("user_preferences")
+    candidate_items = parsed.get("agent_memory_candidates")
+    user_signals = _normalize_llm_user_preference_signals(user_items, turn_ts_map)
+    agent_candidates = _normalize_llm_agent_candidates(
+        candidate_items,
+        agent_name=agent_name,
+        turn_ts_map=turn_ts_map,
+    )
+    return user_signals, agent_candidates
+
+
 def _extract_user_preference_signals(turns: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     """Extract persistent/repeated user preference signals from session turns."""
     selected_turns = turns[-_SESSION_MEMORY_MAX_TURNS_FOR_FLUSH:]
@@ -973,31 +1616,37 @@ def _extract_user_preference_signals(turns: List[Dict[str, str]]) -> List[Dict[s
 
         persistent = _contains_persistent_preference_cue(user_message)
         latest_ts = _parse_iso_datetime(turn.get("timestamp"))
-        detections: List[Tuple[str, str]] = []
+        detections: List[Tuple[str, str, bool]] = []
 
         output_format = _detect_output_format_preference(user_message)
         if output_format:
-            detections.append(("output_format", output_format))
+            detections.append(("output_format", output_format, False))
 
         language = _detect_language_preference(user_message)
         if language:
-            detections.append(("language", language))
+            detections.append(("language", language, False))
 
         style = _detect_response_style_preference(user_message)
         if style:
-            detections.append(("response_style", style))
+            detections.append(("response_style", style, False))
 
-        for preference_key, preference_value in detections:
+        food_preference = _detect_food_preference_signal(user_message)
+        if food_preference:
+            detections.append((food_preference[0], food_preference[1], True))
+
+        for preference_key, preference_value, strong_signal in detections:
             bucket = grouped.setdefault(
                 (preference_key, preference_value),
                 {
                     "count": 0,
                     "persistent": False,
+                    "strong_signal": False,
                     "latest_ts": None,
                 },
             )
             bucket["count"] += 1
             bucket["persistent"] = bool(bucket["persistent"] or persistent)
+            bucket["strong_signal"] = bool(bucket["strong_signal"] or strong_signal)
             if latest_ts and (
                 bucket["latest_ts"] is None or latest_ts > bucket["latest_ts"]
             ):
@@ -1007,7 +1656,8 @@ def _extract_user_preference_signals(turns: List[Dict[str, str]]) -> List[Dict[s
     for (preference_key, preference_value), bucket in grouped.items():
         evidence_count = int(bucket["count"])
         is_persistent = bool(bucket["persistent"])
-        if not is_persistent and evidence_count < 2:
+        strong_signal = bool(bucket.get("strong_signal"))
+        if not is_persistent and not strong_signal and evidence_count < 2:
             continue
 
         latest_ts = bucket.get("latest_ts")
@@ -1017,14 +1667,18 @@ def _extract_user_preference_signals(turns: List[Dict[str, str]]) -> List[Dict[s
                 "value": preference_value,
                 "evidence_count": evidence_count,
                 "persistent": is_persistent,
-                "confidence": 0.88 if is_persistent else 0.68,
+                "strong_signal": strong_signal,
+                "confidence": (
+                    0.92 if strong_signal else 0.88 if is_persistent else 0.68
+                ),
                 "latest_ts": latest_ts.isoformat() if isinstance(latest_ts, datetime) else None,
             }
         )
 
     extracted.sort(
         key=lambda item: (
-            int(bool(item.get("persistent"))),
+            int(bool(item.get("persistent")) or bool(item.get("strong_signal"))),
+            int(bool(item.get("strong_signal"))),
             int(item.get("evidence_count") or 0),
             str(item.get("latest_ts") or ""),
         ),
@@ -1058,11 +1712,6 @@ def _extract_step_lines(response: str) -> List[str]:
         if value:
             cleaned.append(value)
     return cleaned
-
-
-def _build_agent_candidate_fingerprint(topic: str, steps: List[str]) -> str:
-    payload = f"{topic.strip().lower()}||{'|'.join(steps).strip().lower()}"
-    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:20]
 
 
 def _extract_agent_memory_candidates(
@@ -1119,10 +1768,21 @@ def _extract_agent_memory_candidates(
 def _build_agent_candidate_content(candidate: Dict[str, Any]) -> str:
     steps = candidate.get("steps") or []
     step_text = " | ".join(str(step).strip() for step in steps if str(step).strip())
+    title = _normalize_session_memory_text(candidate.get("title", ""), max_chars=96)
+    summary = _normalize_session_memory_text(candidate.get("summary", ""), max_chars=240)
     lines: List[str] = [
         f"interaction.sop.topic={candidate.get('topic')}",
+        f"interaction.sop.title={title or candidate.get('topic')}",
         f"interaction.sop.steps={step_text}",
     ]
+    if summary:
+        lines.append(f"interaction.sop.summary={summary}")
+    applicability = _normalize_session_memory_text(candidate.get("applicability", ""), max_chars=180)
+    if applicability:
+        lines.append(f"interaction.sop.applicability={applicability}")
+    avoid = _normalize_session_memory_text(candidate.get("avoid", ""), max_chars=180)
+    if avoid:
+        lines.append(f"interaction.sop.avoid={avoid}")
     agent_name = str(candidate.get("agent_name") or "").strip()
     if agent_name:
         lines.append(f"agent.identity.name={agent_name}")
@@ -1251,7 +1911,11 @@ async def _flush_session_memories(
 
     mem_interface = get_agent_memory_interface()
     turn_count = len(turns)
-    extracted_signals = _extract_user_preference_signals(turns)
+    extracted_signals, extracted_agent_candidates = await _extract_session_memory_signals_with_llm(
+        turns=turns,
+        agent_id=session.agent_id,
+        agent_name=agent_name,
+    )
     deduped_signals_by_key: Dict[str, Dict[str, Any]] = {}
     for signal in extracted_signals:
         signal_key = str(signal.get("key") or "").strip()
@@ -1276,7 +1940,6 @@ async def _flush_session_memories(
         if current_score >= existing_score:
             deduped_signals_by_key[signal_key] = signal
     extracted_signals = list(deduped_signals_by_key.values())
-    extracted_agent_candidates = _extract_agent_memory_candidates(turns, agent_name)
     if not extracted_signals and not extracted_agent_candidates:
         logger.info(
             "Skipped session memory persistence: no valuable memory signals extracted",
@@ -1340,6 +2003,9 @@ async def _flush_session_memories(
                             or existing_meta.get("latest_turn_ts"),
                             "updated_at_extracted": extracted_at,
                             "is_active": True,
+                            "strong_signal": bool(
+                                signal.get("strong_signal") or existing_meta.get("strong_signal")
+                            ),
                         }
                     )
                     _upsert_existing_user_preference_metadata(int(memory_id), existing_meta)
@@ -1372,7 +2038,9 @@ async def _flush_session_memories(
                     "preference_value": signal_value,
                     "evidence_count": signal["evidence_count"],
                     "confidence": signal["confidence"],
+                    "reason": signal.get("reason"),
                     "latest_turn_ts": signal.get("latest_ts"),
+                    "strong_signal": bool(signal.get("strong_signal")),
                     "is_active": True,
                 },
             )
@@ -1384,6 +2052,7 @@ async def _flush_session_memories(
                     "preference_key": signal_key,
                     "preference_value": signal_value,
                     "latest_turn_ts": signal.get("latest_ts"),
+                    "strong_signal": bool(signal.get("strong_signal")),
                     "is_active": True,
                 },
             }
@@ -1430,6 +2099,10 @@ async def _flush_session_memories(
                     **agent_candidate_metadata_base,
                     "signal_type": _SESSION_MEMORY_AGENT_SIGNAL_TYPE,
                     "candidate_type": candidate.get("candidate_type") or "sop",
+                    "candidate_title": candidate.get("title"),
+                    "candidate_summary": candidate.get("summary"),
+                    "candidate_applicability": candidate.get("applicability"),
+                    "candidate_avoid": candidate.get("avoid"),
                     "candidate_fingerprint": fingerprint,
                     "review_status": _SESSION_MEMORY_AGENT_REVIEW_PENDING,
                     "review_required": True,
@@ -1757,6 +2430,56 @@ class AgentResponse(BaseModel):
     updatedAt: datetime
 
 
+class AgentLogEntryResponse(BaseModel):
+    """Agent detail activity log entry."""
+
+    timestamp: datetime
+    level: str = "INFO"
+    message: str
+    source: str = "task"
+
+
+class AgentMetricsResponse(BaseModel):
+    """Agent detail metrics payload."""
+
+    tasksExecuted: int = 0
+    tasksCompleted: int = 0
+    tasksFailed: int = 0
+    completionRate: float = 0.0
+    successRate: float = 0.0
+    failureRate: float = 0.0
+    pendingTasks: int = 0
+    inProgressTasks: int = 0
+    lastActivityAt: Optional[datetime] = None
+
+
+def _get_owned_agent_or_raise(agent_id: str, current_user: CurrentUser):
+    """Resolve one agent and enforce owner-only access."""
+    try:
+        agent_uuid = UUID(agent_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid agent id: {agent_id}",
+        ) from exc
+
+    registry = get_agent_registry()
+    agent = registry.get_agent(agent_uuid)
+    if not agent:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent {agent_id} not found",
+        )
+
+    if str(agent.owner_user_id) != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to access this agent",
+        )
+
+    return agent, agent_uuid
+
+
 def _public_agent_skills(agent_type: str, capabilities: Optional[List[str]]) -> List[str]:
     """Normalize capabilities for API responses.
 
@@ -1953,21 +2676,7 @@ async def list_agents(current_user: CurrentUser = Depends(get_current_user)):
 async def get_agent(agent_id: str, current_user: CurrentUser = Depends(get_current_user)):
     """Get agent details."""
     try:
-        registry = get_agent_registry()
-        agent = registry.get_agent(UUID(agent_id))
-
-        if not agent:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Agent {agent_id} not found",
-            )
-
-        # Check ownership
-        if str(agent.owner_user_id) != current_user.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have permission to access this agent",
-            )
+        agent, _ = _get_owned_agent_or_raise(agent_id, current_user)
 
         task_stats = _collect_agent_task_stats([agent.agent_id]).get(
             agent.agent_id, _default_agent_task_stats()
@@ -2009,6 +2718,100 @@ async def get_agent(agent_id: str, current_user: CurrentUser = Depends(get_curre
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get agent: {str(e)}",
+        )
+
+
+@router.get("/{agent_id}/metrics", response_model=AgentMetricsResponse)
+async def get_agent_metrics(
+    agent_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Get aggregate metrics for one agent detail page."""
+    try:
+        _, agent_uuid = _get_owned_agent_or_raise(agent_id, current_user)
+
+        from database.connection import get_db_session
+        from database.models import Task
+        from sqlalchemy import func
+
+        with get_db_session() as session:
+            task_status_rows = (
+                session.query(Task.status, func.count(Task.task_id))
+                .filter(Task.assigned_agent_id == agent_uuid)
+                .group_by(Task.status)
+                .all()
+            )
+            last_activity_at = (
+                session.query(func.max(func.coalesce(Task.completed_at, Task.created_at)))
+                .filter(Task.assigned_agent_id == agent_uuid)
+                .scalar()
+            )
+
+        return AgentMetricsResponse(
+            **_build_agent_metrics_from_task_rows(
+                task_status_rows=task_status_rows,
+                last_activity_at=last_activity_at,
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get metrics for agent {agent_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get agent metrics: {str(e)}",
+        )
+
+
+@router.get("/{agent_id}/logs", response_model=List[AgentLogEntryResponse])
+async def get_agent_logs(
+    agent_id: str,
+    limit: int = Query(100, ge=1, le=200),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Get recent task/audit logs for one agent detail page."""
+    try:
+        _, agent_uuid = _get_owned_agent_or_raise(agent_id, current_user)
+
+        from database.connection import get_db_session
+        from database.models import AuditLog, Task
+        from sqlalchemy import and_, func, or_
+
+        with get_db_session() as session:
+            task_rows = (
+                session.query(Task.goal_text, Task.status, Task.created_at, Task.completed_at)
+                .filter(Task.assigned_agent_id == agent_uuid)
+                .order_by(func.coalesce(Task.completed_at, Task.created_at).desc())
+                .limit(limit)
+                .all()
+            )
+
+            audit_rows = (
+                session.query(AuditLog.action, AuditLog.details, AuditLog.timestamp)
+                .filter(
+                    or_(
+                        AuditLog.agent_id == agent_uuid,
+                        and_(
+                            AuditLog.resource_type == "agent",
+                            AuditLog.resource_id == agent_uuid,
+                        ),
+                    )
+                )
+                .order_by(AuditLog.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+
+        entries = _build_task_log_entries(task_rows) + _build_audit_log_entries(audit_rows)
+        entries.sort(key=lambda item: item["timestamp"], reverse=True)
+        return [AgentLogEntryResponse(**item) for item in entries[:limit]]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get logs for agent {agent_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get agent logs: {str(e)}",
         )
 
 
