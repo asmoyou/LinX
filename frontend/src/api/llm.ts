@@ -92,7 +92,7 @@ export interface ModelMetadata {
   model_type?: string;  // chat, vision, reasoning, embedding, rerank, code, image_generation
   display_name?: string;
   description?: string;
-  capabilities: string[];
+  capabilities?: string[];  // Backward-compatible field; frontend display is driven by supports_*
   context_window?: number;
   max_output_tokens?: number;
   embedding_dimension?: number;  // Vector dimension for embedding models (e.g., 1536, 768)
