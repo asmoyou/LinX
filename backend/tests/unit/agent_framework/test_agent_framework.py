@@ -244,7 +244,9 @@ class TestBaseAgent:
         agent = BaseAgent(config=config)
 
         assert agent._requires_file_delivery("写一篇福州旅游攻略，整理成md文档给我") is True
+        assert agent._requires_file_delivery("写一篇福州5天旅游攻略，交付md文档给我") is True
         assert agent._requires_file_delivery("Please save this guide as a markdown file.") is True
+        assert agent._requires_file_delivery("Deliver this as a markdown document.") is True
         assert agent._requires_file_delivery("请写一篇福州旅游攻略，使用 markdown 格式输出") is False
 
     def test_recovery_file_delivery_guard_triggers_extra_write_round(self):

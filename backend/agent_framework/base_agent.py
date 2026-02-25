@@ -38,6 +38,9 @@ _FILE_DELIVERY_ACTION_KEYWORDS = (
     "存成",
     "存为",
     "写入",
+    "交付",
+    "提交",
+    "产出",
     "导出",
     "输出到",
     "输出成",
@@ -45,6 +48,9 @@ _FILE_DELIVERY_ACTION_KEYWORDS = (
     "生成文件",
     "save",
     "export",
+    "deliver",
+    "deliverable",
+    "submit",
     "write to file",
     "output to file",
 )
@@ -63,7 +69,8 @@ _FILE_DELIVERY_TARGET_KEYWORDS = (
     "file",
 )
 _FILE_DELIVERY_FORCE_PATTERN = re.compile(
-    r"(?:整理成|保存为|保存成|save as|save to).{0,12}(?:md|markdown|txt|json|csv|yaml|yml|文件|文档|file|document)",
+    r"(?:整理成|保存为|保存成|交付|提交|save as|save to|deliver as|deliver to|submit as|submit to).{0,12}"
+    r"(?:md|markdown|txt|json|csv|yaml|yml|文件|文档|file|document)",
     re.IGNORECASE,
 )
 _FILE_WRITE_TOOL_NAMES = {"write_file", "append_file", "edit_file"}
