@@ -179,19 +179,22 @@ print(f"Square root of 16 is {result}")
         try:
             # Get user environment variables from SkillEnvManager
             from skill_library.skill_env_manager import get_skill_env_manager
-            
+            from agent_framework.tools.file_tools import get_workspace_root
+
             env_manager = get_skill_env_manager()
             user_env_vars = env_manager.get_env_for_user(self.user_id)
-            
+            workspace_root = get_workspace_root()
+
             logger.debug(
                 f"Loaded {len(user_env_vars)} environment variables for user",
                 extra={
                     "agent_id": str(self.agent_id),
                     "user_id": str(self.user_id),
-                    "env_keys": list(user_env_vars.keys())
+                    "env_keys": list(user_env_vars.keys()),
+                    "workspace_root": str(workspace_root) if workspace_root else None,
                 }
             )
-            
+
             # Execute in sandbox with user environment variables
             result = await self.sandbox.execute_code(
                 code=code,
@@ -201,6 +204,7 @@ print(f"Square root of 16 is {result}")
                     "user_id": str(self.user_id),
                     "environment": user_env_vars,  # Pass user env vars
                     "network_access": bool(self.network_access),
+                    "workspace_root": str(workspace_root) if workspace_root else None,
                 }
             )
             

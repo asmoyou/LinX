@@ -25,6 +25,38 @@ from memory_system.memory_interface import MemoryType, SearchQuery
 
 logger = logging.getLogger(__name__)
 
+_INTERACTION_LOG_SOURCES = {
+    "agent_executor_task",
+    "session_turn_aggregate",
+}
+
+_HISTORY_QUERY_CUES = {
+    "上次",
+    "之前",
+    "刚才",
+    "继续",
+    "接着",
+    "延续",
+    "沿用",
+    "参考上次",
+    "还记得",
+    "最早",
+    "历史",
+    "回顾",
+    "复盘",
+    "前文",
+    "上文",
+    "前一次",
+    "上一轮",
+    "继续上一个",
+    "continue",
+    "previous",
+    "earlier",
+    "history",
+    "last time",
+    "follow up",
+}
+
 
 @dataclass
 class ExecutionContext:
@@ -173,6 +205,46 @@ class AgentExecutor:
                         return terms
         return terms
 
+    def _query_requests_historical_context(self, query_text: str) -> bool:
+        """Detect whether user explicitly asks to continue/refer historical context."""
+        query = str(query_text or "").strip().lower()
+        if not query:
+            return False
+        return any(cue in query for cue in _HISTORY_QUERY_CUES)
+
+    def _is_interaction_log_memory(self, memory: Any) -> bool:
+        """Identify task-log style memories that can leak previous deliverables."""
+        metadata = self._extract_metadata(memory)
+        source = str(metadata.get("source") or "").strip().lower()
+        if source in _INTERACTION_LOG_SOURCES:
+            return True
+
+        content = self._extract_content(memory)
+        if not content:
+            return False
+
+        normalized = str(content).strip().lower()
+        return normalized.startswith("[agent:") and "\ntask:" in normalized and "\nresult:" in normalized
+
+    def _prune_interaction_log_memories(
+        self,
+        memories: List[Any],
+        allow_interaction_logs: bool,
+    ) -> Tuple[List[Any], int]:
+        """Drop task-log memories unless query explicitly requests historical context."""
+        if allow_interaction_logs or not memories:
+            return memories, 0
+
+        kept: List[Any] = []
+        pruned = 0
+        for item in memories:
+            if self._is_interaction_log_memory(item):
+                pruned += 1
+                continue
+            kept.append(item)
+
+        return kept, pruned
+
     def _count_query_term_overlap(self, content: str, query_terms: List[str]) -> int:
         """Count how many extracted query terms appear in memory content."""
         if not query_terms:
@@ -278,6 +350,9 @@ class AgentExecutor:
             "query": context.task_description,
             "top_k": top_k,
             "scopes": memory_scopes,
+            "history_context_requested": self._query_requests_historical_context(
+                context.task_description
+            ),
             "agent": {
                 "enabled": "agent" in memory_scopes,
                 "filter": f"agent_id={context.agent_id}, user_id={context.user_id}",
@@ -285,6 +360,7 @@ class AgentExecutor:
                 "pre_filter_hit_count": 0,
                 "hit_count": 0,
                 "filtered_out_count": 0,
+                "interaction_logs_pruned": 0,
                 "hits": [],
                 "fallback_used": False,
                 "fallback_hit_count": 0,
@@ -298,6 +374,7 @@ class AgentExecutor:
                 "pre_filter_hit_count": 0,
                 "hit_count": 0,
                 "filtered_out_count": 0,
+                "interaction_logs_pruned": 0,
                 "hits": [],
                 "fallback_used": False,
                 "fallback_hit_count": 0,
@@ -311,6 +388,7 @@ class AgentExecutor:
                 "pre_filter_hit_count": 0,
                 "hit_count": 0,
                 "filtered_out_count": 0,
+                "interaction_logs_pruned": 0,
                 "hits": [],
                 "fallback_used": False,
                 "fallback_hit_count": 0,
@@ -328,6 +406,7 @@ class AgentExecutor:
                 "pre_filter_hit_count": 0,
                 "hit_count": 0,
                 "filtered_out_count": 0,
+                "interaction_logs_pruned": 0,
                 "hits": [],
                 "fallback_used": False,
                 "fallback_hit_count": 0,
@@ -615,6 +694,24 @@ class AgentExecutor:
         memory_debug["task_context"]["pre_filter_hit_count"] = len(task_context_memories)
 
         memory_postprocess_started = time.perf_counter()
+        allow_interaction_logs = bool(memory_debug.get("history_context_requested"))
+        agent_memories, agent_pruned = self._prune_interaction_log_memories(
+            agent_memories, allow_interaction_logs
+        )
+        company_memories, company_pruned = self._prune_interaction_log_memories(
+            company_memories, allow_interaction_logs
+        )
+        user_context_memories, user_context_pruned = self._prune_interaction_log_memories(
+            user_context_memories, allow_interaction_logs
+        )
+        task_context_memories, task_context_pruned = self._prune_interaction_log_memories(
+            task_context_memories, allow_interaction_logs
+        )
+        memory_debug["agent"]["interaction_logs_pruned"] = agent_pruned
+        memory_debug["company"]["interaction_logs_pruned"] = company_pruned
+        memory_debug["user_context"]["interaction_logs_pruned"] = user_context_pruned
+        memory_debug["task_context"]["interaction_logs_pruned"] = task_context_pruned
+
         agent_memories, agent_filtered = self._filter_context_memories(
             agent_memories, context.task_description
         )

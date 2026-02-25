@@ -708,6 +708,10 @@ def _build_retrieval_process_messages(context_debug: Dict[str, Any]) -> List[str
     scopes = memory_debug.get("scopes") or []
     if scopes:
         messages.append(f"[记忆检索] 有效作用域: {', '.join(scopes)}")
+    messages.append(
+        "[记忆检索] 历史上下文意图: "
+        + ("是" if memory_debug.get("history_context_requested") else "否")
+    )
 
     for scope_key, scope_label in (
         ("agent", "agent"),
@@ -747,6 +751,12 @@ def _build_retrieval_process_messages(context_debug: Dict[str, Any]) -> List[str
             messages.append(
                 f"[记忆检索][{scope_label}] 原始命中 {pre_filter_hit_count} 条，"
                 f"过滤后 {hit_count} 条，剔除 {filtered_out_count} 条"
+            )
+
+        interaction_logs_pruned = int(scope_info.get("interaction_logs_pruned") or 0)
+        if interaction_logs_pruned:
+            messages.append(
+                f"[记忆检索][{scope_label}] 已剔除任务日志型记忆 {interaction_logs_pruned} 条"
             )
 
         if scope_info.get("fallback_used"):
