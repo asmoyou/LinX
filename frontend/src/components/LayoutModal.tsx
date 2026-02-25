@@ -20,6 +20,29 @@ const sizeClasses: Record<ModalSize, string> = {
   full: 'max-w-[calc(100vw-2rem)] sm:max-w-[calc(100vw-4rem)]',
 };
 
+// Custom scrollbar styles
+const scrollbarStyles = `
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(156, 163, 175, 0.3);
+    border-radius: 10px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(156, 163, 175, 0.5);
+  }
+  .dark .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(75, 85, 99, 0.4);
+  }
+  .dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(75, 85, 99, 0.6);
+  }
+`;
+
 interface LayoutModalProps {
   isOpen: boolean;
   onClose?: () => void;
@@ -37,28 +60,23 @@ interface LayoutModalProps {
   zIndexClassName?: string;
   respectLayoutBounds?: boolean;
   maxHeight?: string;
-  /**
-   * If true, skips the default structured layout (Header/Body/Footer).
-   * Useful for custom layouts or legacy components that provide their own panels.
-   * Automatically true if no title/footer/compound components are used.
-   */
   isRaw?: boolean;
 }
 
 const Header: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = '' }) => (
-  <div className={`px-6 py-4 border-b border-zinc-100 dark:border-zinc-800 shrink-0 ${className}`}>
+  <div className={`px-5 py-3.5 border-b border-zinc-100 dark:border-zinc-800/60 shrink-0 ${className}`}>
     {children}
   </div>
 );
 
 const Body: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = '' }) => (
-  <div className={`px-6 py-6 overflow-y-auto flex-1 min-h-0 ${className}`}>
+  <div className={`px-5 py-5 overflow-y-auto flex-1 min-h-0 custom-scrollbar ${className}`}>
     {children}
   </div>
 );
 
 const Footer: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = '' }) => (
-  <div className={`px-6 py-4 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/50 shrink-0 ${className}`}>
+  <div className={`px-5 py-3.5 border-t border-zinc-100 dark:border-zinc-800/60 bg-zinc-50/30 dark:bg-zinc-900/30 shrink-0 ${className}`}>
     {children}
   </div>
 );
@@ -83,7 +101,7 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
   backdropClassName = 'bg-black/40 backdrop-blur-sm',
   zIndexClassName = 'z-[70]',
   respectLayoutBounds = true,
-  maxHeight = 'calc(100vh - 120px)',
+  maxHeight = 'calc(100vh - 140px)',
   isRaw,
 }) => {
   useEffect(() => {
@@ -99,7 +117,6 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, closeOnEscape, onClose]);
 
-  // Lock body scroll when modal is open
   useEffect(() => {
     if (isOpen) {
       const originalStyle = window.getComputedStyle(document.body).overflow;
@@ -120,22 +137,21 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
       (child.type === Header || child.type === Body || child.type === Footer)
   );
 
-  // If isRaw is not specified, we determine it based on props
   const useRawLayout = isRaw !== undefined ? isRaw : (!title && !footer && !hasCompoundComponents);
 
   const modalVariants = {
-    hidden: { opacity: 0, scale: 0.95, y: 10 },
+    hidden: { opacity: 0, scale: 0.96, y: 8 },
     visible: { 
       opacity: 1, 
       scale: 1, 
       y: 0,
-      transition: { type: 'spring', stiffness: 400, damping: 30, mass: 0.8 }
+      transition: { type: 'spring', stiffness: 450, damping: 32, mass: 1 }
     },
     exit: { 
       opacity: 0, 
       scale: 0.98, 
-      y: 8,
-      transition: { duration: 0.2, ease: 'easeOut' }
+      y: 4,
+      transition: { duration: 0.15, ease: 'easeOut' }
     }
   };
 
@@ -160,7 +176,8 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
                 }
           }
         >
-          {/* Backdrop */}
+          <style>{scrollbarStyles}</style>
+          
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -170,10 +187,9 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
             onClick={closeOnBackdropClick ? onClose : undefined}
           />
 
-          {/* Centering wrapper */}
-          <div className="relative w-full h-full flex items-center justify-center p-4 sm:p-6 pointer-events-none">
+          <div className="relative w-full h-full flex items-center justify-center p-4 sm:p-8 pointer-events-none">
             {useRawLayout ? (
-              <div className="w-full h-full overflow-y-auto pointer-events-auto flex items-center justify-center">
+              <div className="w-full h-full overflow-y-auto pointer-events-auto flex items-center justify-center custom-scrollbar">
                 <motion.div
                   variants={modalVariants}
                   initial="hidden"
@@ -190,20 +206,20 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
                 initial="hidden"
                 animate="visible"
                 exit="exit"
-                className={`pointer-events-auto relative w-full ${sizeClasses[size]} bg-white dark:bg-zinc-900 rounded-[28px] shadow-2xl overflow-hidden flex flex-col ${contentClassName}`}
+                className={`pointer-events-auto relative w-full ${sizeClasses[size]} bg-white dark:bg-zinc-900 rounded-[22px] shadow-2xl overflow-hidden flex flex-col border border-zinc-100 dark:border-zinc-800/50 ${contentClassName}`}
                 style={{ maxHeight }}
               >
                 {/* Auto Header */}
                 {(title || (showCloseButton && onClose)) && !hasCompoundComponents && (
-                  <div className="px-6 py-5 sm:px-8 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between shrink-0">
+                  <div className="px-5 py-3.5 sm:px-6 border-b border-zinc-100 dark:border-zinc-800/60 flex items-center justify-between shrink-0">
                     <div className="flex-1 min-w-0">
                       {title && (
-                        <h2 className="text-xl font-bold text-zinc-900 dark:text-white truncate">
+                        <h2 className="text-lg font-bold text-zinc-900 dark:text-white truncate">
                           {title}
                         </h2>
                       )}
                       {description && (
-                        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+                        <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
                           {description}
                         </p>
                       )}
@@ -211,10 +227,10 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
                     {showCloseButton && onClose && (
                       <button
                         onClick={onClose}
-                        className="ml-4 p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+                        className="ml-4 p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
                         aria-label="Close modal"
                       >
-                        <X className="w-5 h-5" />
+                        <X className="w-4.5 h-4.5" />
                       </button>
                     )}
                   </div>
@@ -225,11 +241,11 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
                   children
                 ) : (
                   <>
-                    <div className="px-6 py-6 sm:px-8 overflow-y-auto flex-1 min-h-0">
+                    <div className="px-5 py-5 sm:px-6 overflow-y-auto flex-1 min-h-0 custom-scrollbar">
                       {children}
                     </div>
                     {footer && (
-                      <div className="px-6 py-5 sm:px-8 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/50 flex flex-col sm:flex-row justify-end gap-3 shrink-0">
+                      <div className="px-5 py-3.5 sm:px-6 border-t border-zinc-100 dark:border-zinc-800/60 bg-zinc-50/30 dark:bg-zinc-900/30 flex flex-col sm:flex-row justify-end gap-2.5 shrink-0">
                         {footer}
                       </div>
                     )}
