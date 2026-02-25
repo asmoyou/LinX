@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Settings as SettingsIcon, Cpu, User, Shield, Bell, Palette, Key } from 'lucide-react';
+import { Settings as SettingsIcon, Cpu, KeyRound, SlidersHorizontal, Building2 } from 'lucide-react';
 import { LLMSettings } from '../components/settings/LLMSettings';
 import { EnvVarsSettings } from '../components/settings/EnvVarsSettings';
+import { MissionPolicySettings } from '../components/settings/MissionPolicySettings';
+import { BusinessBaselineSettings } from '../components/settings/BusinessBaselineSettings';
 
-type SettingsTab = 'llm' | 'envVars' | 'profile' | 'security' | 'notifications' | 'appearance';
+export type SettingsTab = 'baseline' | 'llm' | 'envVars' | 'missionPolicy';
 
 interface TabConfig {
   id: SettingsTab;
@@ -15,9 +17,15 @@ interface TabConfig {
 
 export const Settings: React.FC = () => {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<SettingsTab>('llm');
+  const [activeTab, setActiveTab] = useState<SettingsTab>('baseline');
 
   const tabs: TabConfig[] = [
+    {
+      id: 'baseline',
+      label: t('settings.tabs.baseline', 'Business Baseline'),
+      icon: <Building2 className="w-5 h-5" />,
+      component: <BusinessBaselineSettings onOpenTab={setActiveTab} />,
+    },
     {
       id: 'llm',
       label: t('settings.tabs.llm', 'LLM Providers'),
@@ -27,48 +35,14 @@ export const Settings: React.FC = () => {
     {
       id: 'envVars',
       label: t('settings.tabs.envVars', 'Environment Variables'),
-      icon: <Key className="w-5 h-5" />,
+      icon: <KeyRound className="w-5 h-5" />,
       component: <EnvVarsSettings />,
     },
     {
-      id: 'profile',
-      label: t('settings.tabs.profile', 'Profile'),
-      icon: <User className="w-5 h-5" />,
-      component: (
-        <div className="p-8 text-center text-zinc-500">
-          {t('settings.comingSoon', 'Coming soon...')}
-        </div>
-      ),
-    },
-    {
-      id: 'security',
-      label: t('settings.tabs.security', 'Security'),
-      icon: <Shield className="w-5 h-5" />,
-      component: (
-        <div className="p-8 text-center text-zinc-500">
-          {t('settings.comingSoon', 'Coming soon...')}
-        </div>
-      ),
-    },
-    {
-      id: 'notifications',
-      label: t('settings.tabs.notifications', 'Notifications'),
-      icon: <Bell className="w-5 h-5" />,
-      component: (
-        <div className="p-8 text-center text-zinc-500">
-          {t('settings.comingSoon', 'Coming soon...')}
-        </div>
-      ),
-    },
-    {
-      id: 'appearance',
-      label: t('settings.tabs.appearance', 'Appearance'),
-      icon: <Palette className="w-5 h-5" />,
-      component: (
-        <div className="p-8 text-center text-zinc-500">
-          {t('settings.comingSoon', 'Coming soon...')}
-        </div>
-      ),
+      id: 'missionPolicy',
+      label: t('settings.tabs.missionPolicy', 'Mission Policy'),
+      icon: <SlidersHorizontal className="w-5 h-5" />,
+      component: <MissionPolicySettings />,
     },
   ];
 
@@ -86,7 +60,7 @@ export const Settings: React.FC = () => {
             {t('settings.title', 'Settings')}
           </h1>
           <p className="text-sm text-zinc-600 dark:text-zinc-400">
-            {t('settings.subtitle', 'Manage your platform configuration and preferences')}
+            {t('settings.subtitle', 'Manage platform-level configuration and governance')}
           </p>
         </div>
       </div>
@@ -119,4 +93,3 @@ export const Settings: React.FC = () => {
     </div>
   );
 };
-

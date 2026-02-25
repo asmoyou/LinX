@@ -65,6 +65,20 @@ export const Layout: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyPress);
   }, []);
 
+  // Keep layout CSS variables on :root so portal-based modals can resolve them.
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      '--sidebar-width',
+      sidebarCollapsed ? '5rem' : '16rem'
+    );
+    document.documentElement.style.setProperty('--app-header-height', '4rem');
+
+    return () => {
+      document.documentElement.style.removeProperty('--sidebar-width');
+      document.documentElement.style.removeProperty('--app-header-height');
+    };
+  }, [sidebarCollapsed]);
+
   // Responsive: collapse sidebar on mobile
   useEffect(() => {
     const handleResize = () => {

@@ -1,20 +1,28 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { User, Settings, Shield, Bell, Key, Monitor, Globe, Download, LogOut } from 'lucide-react';
+import { User, Settings, Shield, Bell, Download, LogOut, KeyRound, Monitor, ShieldAlert } from 'lucide-react';
 import { GlassPanel } from '../components/GlassPanel';
 import { ProfileSection } from '../components/profile/ProfileSection';
 import { SecuritySection } from '../components/profile/SecuritySection';
 import { PreferencesSection } from '../components/profile/PreferencesSection';
 import { NotificationsSection } from '../components/profile/NotificationsSection';
+import { QuotaSection } from '../components/profile/QuotaSection';
 import { APIKeysSection } from '../components/profile/APIKeysSection';
 import { SessionsSection } from '../components/profile/SessionsSection';
 import { PrivacySection } from '../components/profile/PrivacySection';
-import { QuotaSection } from '../components/profile/QuotaSection';
 import { useAuthStore } from '../stores';
 import { useNotificationStore } from '../stores/notificationStore';
 
-type TabType = 'profile' | 'security' | 'preferences' | 'notifications' | 'api-keys' | 'sessions' | 'privacy' | 'quotas';
+type TabType =
+  | 'profile'
+  | 'security'
+  | 'preferences'
+  | 'notifications'
+  | 'quotas'
+  | 'apiKeys'
+  | 'sessions'
+  | 'privacy';
 
 export const Profile = () => {
   const { t } = useTranslation();
@@ -40,10 +48,10 @@ export const Profile = () => {
     { id: 'security' as TabType, label: t('profileSettings.tabs.security'), icon: Shield },
     { id: 'preferences' as TabType, label: t('profileSettings.tabs.preferences'), icon: Settings },
     { id: 'notifications' as TabType, label: t('profileSettings.tabs.notifications'), icon: Bell },
-    { id: 'api-keys' as TabType, label: t('profileSettings.tabs.apiKeys'), icon: Key },
-    { id: 'sessions' as TabType, label: t('profileSettings.tabs.sessions'), icon: Monitor },
-    { id: 'privacy' as TabType, label: t('profileSettings.tabs.privacy'), icon: Globe },
     { id: 'quotas' as TabType, label: t('profileSettings.tabs.quotas'), icon: Download },
+    { id: 'apiKeys' as TabType, label: t('profileSettings.tabs.apiKeys'), icon: KeyRound },
+    { id: 'sessions' as TabType, label: t('profileSettings.tabs.sessions'), icon: Monitor },
+    { id: 'privacy' as TabType, label: t('profileSettings.tabs.privacy'), icon: ShieldAlert },
   ];
 
   return (
@@ -51,8 +59,10 @@ export const Profile = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-white mb-2">{t('profileSettings.title')}</h1>
-          <p className="text-gray-400">{t('profileSettings.subtitle')}</p>
+          <h1 className="text-3xl font-bold text-zinc-900 dark:text-zinc-100 mb-2">
+            {t('profileSettings.title')}
+          </h1>
+          <p className="text-zinc-600 dark:text-zinc-400">{t('profileSettings.subtitle')}</p>
         </div>
         <button
           onClick={handleLogout}
@@ -75,7 +85,7 @@ export const Profile = () => {
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
                   activeTab === tab.id
                     ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                    : 'text-gray-400 hover:text-white hover:bg-white/5'
+                    : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-white/5'
                 }`}
               >
                 <Icon className="w-4 h-4" />
@@ -92,10 +102,10 @@ export const Profile = () => {
         {activeTab === 'security' && <SecuritySection />}
         {activeTab === 'preferences' && <PreferencesSection />}
         {activeTab === 'notifications' && <NotificationsSection />}
-        {activeTab === 'api-keys' && <APIKeysSection />}
+        {activeTab === 'quotas' && <QuotaSection />}
+        {activeTab === 'apiKeys' && <APIKeysSection />}
         {activeTab === 'sessions' && <SessionsSection />}
         {activeTab === 'privacy' && <PrivacySection />}
-        {activeTab === 'quotas' && <QuotaSection />}
       </div>
     </div>
   );

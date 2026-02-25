@@ -396,6 +396,20 @@ def blacklist_token(token: str) -> None:
         pass
 
 
+def blacklist_token_jti(token_jti: str) -> None:
+    """Add a token JTI directly to the blacklist.
+
+    This is used by session management flows where only the session/token ID is known.
+
+    Args:
+        token_jti: JWT ID (jti) to blacklist
+    """
+    if not token_jti:
+        return
+    _token_blacklist.add(token_jti)
+    logger.info("Token JTI blacklisted", extra={"jti": token_jti})
+
+
 def is_token_blacklisted(token: str) -> bool:
     """Check if a token is blacklisted.
 

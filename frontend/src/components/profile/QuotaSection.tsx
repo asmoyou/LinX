@@ -96,8 +96,10 @@ export const QuotaSection = () => {
     <GlassPanel className="p-6">
       <div className="space-y-6">
         <div>
-          <h2 className="text-xl font-semibold text-white">{t('profileSettings.quotas.title')}</h2>
-          <p className="text-sm text-gray-400 mt-1">
+          <h2 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">
+            {t('profileSettings.quotas.title')}
+          </h2>
+          <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">
             {t('profileSettings.quotas.subtitle')}
           </p>
         </div>
@@ -111,14 +113,14 @@ export const QuotaSection = () => {
             return (
               <div
                 key={item.label}
-                className="p-4 bg-white/5 rounded-lg border border-white/10"
+                className="p-4 bg-zinc-50 dark:bg-white/5 rounded-lg border border-zinc-200 dark:border-white/10"
               >
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <Icon className={`w-5 h-5 ${colors.text}`} />
-                    <h3 className="text-white font-medium">{item.label}</h3>
+                    <h3 className="text-zinc-900 dark:text-zinc-100 font-medium">{item.label}</h3>
                   </div>
-                  <span className="text-sm text-gray-400">
+                  <span className="text-sm text-zinc-600 dark:text-zinc-400">
                     {item.current}{item.unit} / {item.max}{item.unit}
                   </span>
                 </div>
@@ -130,7 +132,7 @@ export const QuotaSection = () => {
                   />
                 </div>
                 
-                <p className="text-xs text-gray-500 mt-2">
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
                   {percentage.toFixed(1)}% {t('profileSettings.quotas.used')}
                 </p>
               </div>
@@ -139,8 +141,8 @@ export const QuotaSection = () => {
         </div>
 
         {quotas && (
-          <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-            <p className="text-sm text-blue-400">
+          <div className="p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+            <p className="text-sm text-blue-700 dark:text-blue-400">
               <strong>{t('profileSettings.quotas.note')}:</strong> {t('profileSettings.quotas.noteMessage')}
             </p>
           </div>

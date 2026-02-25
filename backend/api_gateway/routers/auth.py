@@ -8,15 +8,17 @@ References:
 - Task 2.1.5: Create authentication endpoints (login, logout, refresh)
 """
 
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from access_control import (
     TokenPair,
     UserModel,
     blacklist_token,
+    decode_token,
     create_token_pair,
     refresh_access_token,
     verify_password,
@@ -36,6 +38,32 @@ from shared.logging import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+
+def _append_login_session(
+    attributes: dict[str, Any] | None,
+    session_id: str,
+    user_agent: str | None,
+    ip_address: str | None,
+) -> dict[str, Any]:
+    """Record the current login session metadata in user attributes."""
+    next_attrs: dict[str, Any] = dict(attributes or {})
+    sessions = list(next_attrs.get("security_sessions", []))
+    now = datetime.now(timezone.utc).isoformat()
+
+    sessions = [item for item in sessions if item.get("session_id") != session_id]
+    sessions.append(
+        {
+            "session_id": session_id,
+            "user_agent": user_agent or "Unknown",
+            "ip_address": ip_address,
+            "created_at": now,
+            "last_seen_at": now,
+        }
+    )
+    sessions = sorted(sessions, key=lambda item: item.get("last_seen_at", ""), reverse=True)[:20]
+    next_attrs["security_sessions"] = sessions
+    return next_attrs
 
 
 class LoginRequest(BaseModel):
@@ -91,13 +119,14 @@ class RefreshResponse(BaseModel):
 
 
 @router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
-async def login(request: LoginRequest):
+async def login(payload: LoginRequest, http_request: Request):
     """Authenticate user and return JWT tokens.
     
     Supports login with either username or email.
 
     Args:
-        request: Login credentials (username or email + password)
+        payload: Login credentials (username or email + password)
+        http_request: HTTP request context
 
     Returns:
         JWT token pair and user information
@@ -108,22 +137,23 @@ async def login(request: LoginRequest):
     from database.connection import get_db_session
     from database.models import User
     from sqlalchemy import or_
+    from sqlalchemy.orm.attributes import flag_modified
 
     try:
         with get_db_session() as session:
             # Query user by username OR email
             user = session.query(User).filter(
                 or_(
-                    User.username == request.username,
-                    User.email == request.username  # Allow email as username
+                    User.username == payload.username,
+                    User.email == payload.username  # Allow email as username
                 )
             ).first()
 
-            if not user or not verify_password(request.password, user.password_hash):
+            if not user or not verify_password(payload.password, user.password_hash):
                 log_authentication_event(
                     session=session,
                     event_type="login_failed",
-                    username=request.username,
+                    username=payload.username,
                     success=False,
                     reason="invalid_credentials",
                 )
@@ -140,7 +170,7 @@ async def login(request: LoginRequest):
                 log_authentication_event(
                     session=session,
                     event_type="login_failed",
-                    username=request.username,
+                    username=payload.username,
                     user_id=str(user.user_id),
                     success=False,
                     reason="account_disabled",
@@ -155,6 +185,17 @@ async def login(request: LoginRequest):
             tokens = create_token_pair(
                 user_id=str(user.user_id), username=user.username, role=user.role
             )
+            token_data = decode_token(tokens.access_token)
+            session_id = token_data.jti
+
+            if session_id:
+                user.attributes = _append_login_session(
+                    user.attributes,
+                    session_id=session_id,
+                    user_agent=http_request.headers.get("user-agent"),
+                    ip_address=http_request.client.host if http_request.client else None,
+                )
+                flag_modified(user, "attributes")
 
             log_authentication_event(
                 session=session,
@@ -283,7 +324,10 @@ async def refresh(request: RefreshRequest):
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout(current_user: CurrentUser = Depends(get_current_user)):
+async def logout(
+    http_request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """Logout user by blacklisting their token.
 
     Args:
@@ -294,8 +338,12 @@ async def logout(current_user: CurrentUser = Depends(get_current_user)):
     """
     from database.connection import get_db_session
 
-    # TODO: Get token from request and blacklist it
-    # For now, just log the event
+    # Best effort token blacklist (immediate invalidation for current process)
+    auth_header = http_request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            blacklist_token(token)
 
     with get_db_session() as session:
         log_authentication_event(

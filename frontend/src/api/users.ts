@@ -1,6 +1,5 @@
 import apiClient from './client';
 import type { UserProfile, ResourceQuota } from '../stores/userStore';
-import type { Preferences } from '../stores/preferencesStore';
 
 export interface UpdateProfileRequest {
   username?: string;
@@ -18,6 +17,62 @@ export interface UserPreferences {
   sound_enabled: boolean;
   auto_refresh: boolean;
   refresh_interval: number;
+}
+
+export interface UserApiKey {
+  key_id: string;
+  name: string;
+  prefix: string;
+  created_at: string;
+  last_used_at?: string | null;
+}
+
+export interface CreateApiKeyResponse {
+  key_id: string;
+  name: string;
+  key: string;
+  prefix: string;
+  created_at: string;
+}
+
+export interface UserSession {
+  session_id: string;
+  user_agent: string;
+  ip_address?: string | null;
+  created_at: string;
+  last_seen_at: string;
+  is_current: boolean;
+}
+
+export interface SessionListResponse {
+  sessions: UserSession[];
+  total: number;
+}
+
+export interface TwoFactorStatus {
+  enabled: boolean;
+  configured_at?: string | null;
+  backup_codes_remaining: number;
+  setup_pending: boolean;
+}
+
+export interface TwoFactorSetupResponse {
+  secret: string;
+  otpauth_uri: string;
+  backup_codes: string[];
+}
+
+export interface PrivacySettings {
+  profile_visibility: 'private' | 'team' | 'organization';
+  searchable_profile: boolean;
+  allow_telemetry: boolean;
+  allow_training: boolean;
+  data_retention_days: number;
+}
+
+export interface UserDataExportResponse {
+  filename: string;
+  data: Record<string, unknown>;
 }
 
 /**
@@ -93,8 +148,13 @@ export const usersApi = {
   /**
    * Update current user preferences
    */
-  updatePreferences: async (preferences: Partial<Preferences>): Promise<UserPreferences> => {
-    const response = await apiClient.put<UserPreferences>('/users/me/preferences', preferences);
+  updatePreferences: async (preferences: Partial<UserPreferences>): Promise<UserPreferences> => {
+    const currentPreferences = await usersApi.getPreferences();
+    const payload: UserPreferences = {
+      ...currentPreferences,
+      ...preferences,
+    };
+    const response = await apiClient.put<UserPreferences>('/users/me/preferences', payload);
     return response.data;
   },
 
@@ -157,6 +217,126 @@ export const usersApi = {
     );
     
     return response.data;
+  },
+
+  /**
+   * List user API keys
+   */
+  getApiKeys: async (): Promise<UserApiKey[]> => {
+    const response = await apiClient.get<UserApiKey[]>('/users/me/api-keys');
+    return response.data;
+  },
+
+  /**
+   * Create user API key
+   */
+  createApiKey: async (name: string): Promise<CreateApiKeyResponse> => {
+    const response = await apiClient.post<CreateApiKeyResponse>('/users/me/api-keys', { name });
+    return response.data;
+  },
+
+  /**
+   * Delete user API key
+   */
+  deleteApiKey: async (keyId: string): Promise<void> => {
+    await apiClient.delete(`/users/me/api-keys/${keyId}`);
+  },
+
+  /**
+   * List active sessions
+   */
+  getSessions: async (): Promise<SessionListResponse> => {
+    const response = await apiClient.get<SessionListResponse>('/users/me/sessions');
+    return response.data;
+  },
+
+  /**
+   * Revoke one session
+   */
+  revokeSession: async (sessionId: string): Promise<void> => {
+    await apiClient.delete(`/users/me/sessions/${sessionId}`);
+  },
+
+  /**
+   * Revoke all sessions except current
+   */
+  revokeOtherSessions: async (): Promise<{ message: string; revoked_count: number }> => {
+    const response = await apiClient.post<{ message: string; revoked_count: number }>(
+      '/users/me/sessions/revoke-others'
+    );
+    return response.data;
+  },
+
+  /**
+   * Two-factor authentication status
+   */
+  getTwoFactorStatus: async (): Promise<TwoFactorStatus> => {
+    const response = await apiClient.get<TwoFactorStatus>('/users/me/two-factor');
+    return response.data;
+  },
+
+  /**
+   * Setup two-factor authentication
+   */
+  setupTwoFactor: async (): Promise<TwoFactorSetupResponse> => {
+    const response = await apiClient.post<TwoFactorSetupResponse>('/users/me/two-factor/setup');
+    return response.data;
+  },
+
+  /**
+   * Enable two-factor authentication
+   */
+  enableTwoFactor: async (verificationCode: string): Promise<TwoFactorStatus> => {
+    const response = await apiClient.post<TwoFactorStatus>('/users/me/two-factor/enable', {
+      verification_code: verificationCode,
+    });
+    return response.data;
+  },
+
+  /**
+   * Disable two-factor authentication
+   */
+  disableTwoFactor: async (currentPassword: string): Promise<TwoFactorStatus> => {
+    const response = await apiClient.post<TwoFactorStatus>('/users/me/two-factor/disable', {
+      current_password: currentPassword,
+    });
+    return response.data;
+  },
+
+  /**
+   * Privacy settings
+   */
+  getPrivacySettings: async (): Promise<PrivacySettings> => {
+    const response = await apiClient.get<PrivacySettings>('/users/me/privacy');
+    return response.data;
+  },
+
+  /**
+   * Update privacy settings
+   */
+  updatePrivacySettings: async (settings: PrivacySettings): Promise<PrivacySettings> => {
+    const response = await apiClient.put<PrivacySettings>('/users/me/privacy', settings);
+    return response.data;
+  },
+
+  /**
+   * Export current user data
+   */
+  exportUserData: async (): Promise<UserDataExportResponse> => {
+    const response = await apiClient.post<UserDataExportResponse>('/users/me/privacy/export');
+    return response.data;
+  },
+
+  /**
+   * Delete account
+   */
+  deleteAccount: async (currentPassword: string, confirmation: string = 'DELETE'): Promise<void> => {
+    await apiClient.delete('/users/me', {
+      data: {
+        current_password: currentPassword,
+        confirmation,
+      },
+    });
   },
 };
 

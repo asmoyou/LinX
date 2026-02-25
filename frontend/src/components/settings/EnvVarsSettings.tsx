@@ -193,7 +193,7 @@ export const EnvVarsSettings: React.FC = () => {
           closeOnEscape={true}
           backdropClassName="bg-black/50"
         >
-          <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-xl max-w-md w-full p-6">
+          <div className="w-full max-w-2xl my-auto modal-panel rounded-[24px] shadow-2xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto p-6">
             <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100 mb-4">
               {t('settings.envVars.addNew', 'Add Environment Variable')}
             </h3>
@@ -209,7 +209,7 @@ export const EnvVarsSettings: React.FC = () => {
                   value={newKey}
                   onChange={(e) => setNewKey(e.target.value.toUpperCase())}
                   placeholder="TAVILY_API_KEY"
-                  className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-600 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent font-mono text-sm"
+                  className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-600 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent font-mono text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500"
                 />
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                   {t('settings.envVars.keyHint', 'Use uppercase letters, numbers, and underscores')}
@@ -226,7 +226,7 @@ export const EnvVarsSettings: React.FC = () => {
                   value={newValue}
                   onChange={(e) => setNewValue(e.target.value)}
                   placeholder="tvly-xxxxxxxxxxxxx"
-                  className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-600 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent font-mono text-sm"
+                  className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-600 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent font-mono text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500"
                 />
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                   {t('settings.envVars.valueHint', 'API key or secret value')}

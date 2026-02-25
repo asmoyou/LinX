@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 
 interface LayoutModalProps {
@@ -39,7 +40,11 @@ export const LayoutModal: React.FC<LayoutModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, closeOnEscape, onClose]);
 
-  return (
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  return createPortal(
     <AnimatePresence>
       {isOpen && (
         <motion.div
@@ -92,6 +97,7 @@ export const LayoutModal: React.FC<LayoutModalProps> = ({
           </div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 };

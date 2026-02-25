@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useThemeStore } from '@/stores/themeStore';
 import { useNotificationStore } from '@/stores/notificationStore';
+import { usePreferencesStore } from '@/stores';
 import { usersApi } from '@/api/users';
 import { notificationsApi } from '@/api/notifications';
 import { healthApi, type DependencyHealth, type SystemHealthResponse } from '@/api/health';
@@ -26,6 +27,15 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
   const { i18n, t } = useTranslation();
   const navigate = useNavigate();
   const { theme, setTheme } = useThemeStore();
+  const {
+    sidebarCollapsed,
+    dashboardLayout,
+    notificationsEnabled,
+    soundEnabled,
+    autoRefresh,
+    refreshInterval,
+    updatePreferences: updatePreferenceStore,
+  } = usePreferencesStore();
   const {
     notifications,
     unreadCount,
@@ -51,24 +61,28 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
 
   const savePreferences = async (updates: { language?: string; theme?: string }) => {
     try {
-      // Get current preferences
       const currentPrefs = {
         language: i18n.language,
         theme: theme,
-        sidebar_collapsed: false,
-        dashboard_layout: 'default',
-        notifications_enabled: true,
-        sound_enabled: false,
-        auto_refresh: true,
-        refresh_interval: 30,
+        sidebar_collapsed: sidebarCollapsed,
+        dashboard_layout: dashboardLayout,
+        notifications_enabled: notificationsEnabled,
+        sound_enabled: soundEnabled,
+        auto_refresh: autoRefresh,
+        refresh_interval: refreshInterval,
       };
 
-      // Merge with updates
       const newPrefs = { ...currentPrefs, ...updates };
 
-      // Save to backend using usersApi (fire and forget, don't block UI)
-      usersApi.updatePreferences(newPrefs).catch((error) => {
-        console.error('Failed to save preferences:', error);
+      const savedPreferences = await usersApi.updatePreferences(newPrefs);
+      updatePreferenceStore({
+        language: savedPreferences.language as 'en' | 'zh',
+        sidebarCollapsed: savedPreferences.sidebar_collapsed,
+        dashboardLayout: savedPreferences.dashboard_layout as 'default' | 'compact' | 'detailed',
+        notificationsEnabled: savedPreferences.notifications_enabled,
+        soundEnabled: savedPreferences.sound_enabled,
+        autoRefresh: savedPreferences.auto_refresh,
+        refreshInterval: savedPreferences.refresh_interval,
       });
     } catch (error) {
       console.error('Failed to save preferences:', error);
@@ -77,12 +91,12 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
 
   const handleThemeChange = (newTheme: 'light' | 'dark' | 'system') => {
     setTheme(newTheme);
-    savePreferences({ theme: newTheme });
+    void savePreferences({ theme: newTheme });
   };
 
   const handleLanguageChange = (newLanguage: string) => {
     i18n.changeLanguage(newLanguage);
-    savePreferences({ language: newLanguage });
+    void savePreferences({ language: newLanguage });
   };
 
   React.useEffect(() => {

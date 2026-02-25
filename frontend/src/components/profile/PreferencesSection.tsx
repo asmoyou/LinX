@@ -4,6 +4,7 @@ import { useThemeStore } from '../../stores/themeStore';
 import { useTranslation } from 'react-i18next';
 import { useEffect, useState } from 'react';
 import { usersApi } from '@/api/users';
+import { usePreferencesStore } from '@/stores';
 import toast from 'react-hot-toast';
 
 interface UserPreferences {
@@ -19,8 +20,10 @@ interface UserPreferences {
 
 export const PreferencesSection = () => {
   const { theme, setTheme } = useThemeStore();
+  const { updatePreferences: updatePreferenceStore, ...storedPreferences } = usePreferencesStore();
   const { i18n, t } = useTranslation();
   const [isLoading, setIsLoading] = useState(false);
+  const [serverPreferences, setServerPreferences] = useState<UserPreferences | null>(null);
 
   // Load preferences from backend on mount
   useEffect(() => {
@@ -30,6 +33,7 @@ export const PreferencesSection = () => {
   const loadPreferences = async () => {
     try {
       const prefs = await usersApi.getPreferences();
+      setServerPreferences(prefs);
       
       // Apply loaded preferences
       if (prefs.language && prefs.language !== i18n.language) {
@@ -38,6 +42,15 @@ export const PreferencesSection = () => {
       if (prefs.theme && prefs.theme !== theme) {
         setTheme(prefs.theme as 'light' | 'dark' | 'system');
       }
+      updatePreferenceStore({
+        language: prefs.language as 'en' | 'zh',
+        sidebarCollapsed: prefs.sidebar_collapsed,
+        dashboardLayout: prefs.dashboard_layout as 'default' | 'compact' | 'detailed',
+        notificationsEnabled: prefs.notifications_enabled,
+        soundEnabled: prefs.sound_enabled,
+        autoRefresh: prefs.auto_refresh,
+        refreshInterval: prefs.refresh_interval,
+      });
     } catch (error) {
       console.error('Failed to load preferences:', error);
       // Don't show error toast on initial load, use defaults
@@ -47,23 +60,32 @@ export const PreferencesSection = () => {
   const savePreferences = async (updates: Partial<UserPreferences>) => {
     setIsLoading(true);
     try {
-      // Get current preferences
-      const currentPrefs: UserPreferences = {
-        language: i18n.language,
-        theme: theme,
-        sidebar_collapsed: false,
-        dashboard_layout: 'default',
-        notifications_enabled: true,
-        sound_enabled: false,
-        auto_refresh: true,
-        refresh_interval: 30,
+      const currentPrefs: UserPreferences = serverPreferences ?? {
+        language: (storedPreferences.language || i18n.language) as string,
+        theme,
+        sidebar_collapsed: storedPreferences.sidebarCollapsed,
+        dashboard_layout: storedPreferences.dashboardLayout,
+        notifications_enabled: storedPreferences.notificationsEnabled,
+        sound_enabled: storedPreferences.soundEnabled,
+        auto_refresh: storedPreferences.autoRefresh,
+        refresh_interval: storedPreferences.refreshInterval,
       };
 
       // Merge with updates
       const newPrefs = { ...currentPrefs, ...updates };
 
       // Save to backend using usersApi
-      await usersApi.updatePreferences(newPrefs);
+      const savedPreferences = await usersApi.updatePreferences(newPrefs);
+      setServerPreferences(savedPreferences);
+      updatePreferenceStore({
+        language: savedPreferences.language as 'en' | 'zh',
+        sidebarCollapsed: savedPreferences.sidebar_collapsed,
+        dashboardLayout: savedPreferences.dashboard_layout as 'default' | 'compact' | 'detailed',
+        notificationsEnabled: savedPreferences.notifications_enabled,
+        soundEnabled: savedPreferences.sound_enabled,
+        autoRefresh: savedPreferences.auto_refresh,
+        refreshInterval: savedPreferences.refresh_interval,
+      });
       
       toast.success(t('profileSettings.preferences.preferencesSaved'));
     } catch (error) {
@@ -103,8 +125,10 @@ export const PreferencesSection = () => {
           <div className="flex items-center gap-3">
             <Monitor className="w-5 h-5 text-emerald-400" />
             <div>
-              <h2 className="text-xl font-semibold text-white">{t('profileSettings.preferences.theme.title')}</h2>
-              <p className="text-sm text-gray-400 mt-1">
+              <h2 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">
+                {t('profileSettings.preferences.theme.title')}
+              </h2>
+              <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">
                 {t('profileSettings.preferences.theme.subtitle')}
               </p>
             </div>
@@ -123,14 +147,14 @@ export const PreferencesSection = () => {
                   className={`p-4 rounded-lg border-2 transition-all disabled:opacity-50 ${
                     isActive
                       ? 'border-emerald-500 bg-emerald-500/10'
-                      : 'border-white/10 bg-white/5 hover:border-white/20'
+                      : 'border-zinc-200 dark:border-white/10 bg-zinc-50 dark:bg-white/5 hover:border-zinc-300 dark:hover:border-white/20'
                   }`}
                 >
                   <Icon className={`w-8 h-8 mx-auto mb-2 ${
-                    isActive ? 'text-emerald-400' : 'text-gray-400'
+                    isActive ? 'text-emerald-400' : 'text-zinc-500 dark:text-zinc-400'
                   }`} />
                   <p className={`text-sm font-medium ${
-                    isActive ? 'text-emerald-400' : 'text-gray-300'
+                    isActive ? 'text-emerald-400' : 'text-zinc-700 dark:text-zinc-300'
                   }`}>
                     {themeOption.label}
                   </p>
@@ -147,8 +171,10 @@ export const PreferencesSection = () => {
           <div className="flex items-center gap-3">
             <Globe className="w-5 h-5 text-emerald-400" />
             <div>
-              <h2 className="text-xl font-semibold text-white">{t('profileSettings.preferences.language.title')}</h2>
-              <p className="text-sm text-gray-400 mt-1">
+              <h2 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">
+                {t('profileSettings.preferences.language.title')}
+              </h2>
+              <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">
                 {t('profileSettings.preferences.language.subtitle')}
               </p>
             </div>
@@ -166,12 +192,12 @@ export const PreferencesSection = () => {
                   className={`p-4 rounded-lg border-2 transition-all disabled:opacity-50 ${
                     isActive
                       ? 'border-emerald-500 bg-emerald-500/10'
-                      : 'border-white/10 bg-white/5 hover:border-white/20'
+                      : 'border-zinc-200 dark:border-white/10 bg-zinc-50 dark:bg-white/5 hover:border-zinc-300 dark:hover:border-white/20'
                   }`}
                 >
                   <div className="text-3xl mb-2">{lang.flag}</div>
                   <p className={`text-sm font-medium ${
-                    isActive ? 'text-emerald-400' : 'text-gray-300'
+                    isActive ? 'text-emerald-400' : 'text-zinc-700 dark:text-zinc-300'
                   }`}>
                     {lang.label}
                   </p>
