@@ -162,6 +162,39 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
     Number.isFinite(memory.relevanceScore)
       ? Math.max(0, Math.min(1, memory.relevanceScore))
       : null;
+  const signalType = String(memory.metadata?.signal_type || "")
+    .trim()
+    .toLowerCase();
+  const reviewStatus = String(memory.metadata?.review_status || "")
+    .trim()
+    .toLowerCase();
+  const isAgentCandidate =
+    memory.type === "agent" && signalType === "agent_memory_candidate";
+  const candidateStatusKey =
+    reviewStatus === "published" || reviewStatus === "rejected"
+      ? reviewStatus
+      : "pending";
+  const candidateStatusBadge = (() => {
+    if (!isAgentCandidate) {
+      return null;
+    }
+    if (candidateStatusKey === "published") {
+      return {
+        label: t("memory.card.reviewPublished", { defaultValue: "已审批" }),
+        className: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300",
+      };
+    }
+    if (candidateStatusKey === "rejected") {
+      return {
+        label: t("memory.card.reviewRejected", { defaultValue: "已拒绝" }),
+        className: "bg-rose-500/20 text-rose-700 dark:text-rose-300",
+      };
+    }
+    return {
+      label: t("memory.card.reviewPending", { defaultValue: "待审批" }),
+      className: "bg-amber-500/20 text-amber-700 dark:text-amber-300",
+    };
+  })();
   const sharedTargetNames = (
     memory.sharedWithNames && memory.sharedWithNames.length > 0
       ? memory.sharedWithNames
@@ -194,11 +227,16 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
     "department_tree",
     "public",
   ].includes(visibility);
+  const candidatePublished = isAgentCandidate && candidateStatusKey === "published";
   const isPublished =
-    publishMode === "promote" ||
-    hasPromotionBacklink ||
-    (memory.type === "agent" &&
-      ["explicit", "department", "department_tree", "public", "account"].includes(visibility));
+    isAgentCandidate
+      ? candidatePublished
+      : publishMode === "promote" ||
+        hasPromotionBacklink ||
+        (memory.type === "agent" &&
+          ["explicit", "department", "department_tree", "public", "account"].includes(
+            visibility,
+          ));
   const sharingBadgeText = isPublished
     ? t("memory.card.published")
     : t("memory.card.shared");
@@ -220,9 +258,25 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
         return "";
     }
   })();
-  const isPolicyShared = Boolean(memory.isShared) || hasPolicyScope || isPublished;
+  const isPolicyShared = isAgentCandidate
+    ? candidatePublished
+    : Boolean(memory.isShared) || hasPolicyScope || isPublished;
+  const candidateHintText = isAgentCandidate
+    ? candidateStatusKey === "published"
+      ? t("memory.card.reviewPublishedHint", {
+          defaultValue: "已审批，可作为记忆参考",
+        })
+      : candidateStatusKey === "rejected"
+        ? t("memory.card.reviewRejectedHint", {
+            defaultValue: "已拒绝，不参与记忆注入",
+          })
+        : t("memory.card.reviewPendingHint", {
+            defaultValue: "待审批，当前不会注入 Agent 上下文",
+          })
+    : "";
   const policyHintText =
-    sharedTargetNames.length > 0
+    candidateHintText ||
+    (sharedTargetNames.length > 0
       ? t("memory.card.sharedWithNames", {
           names: sharedTargetNames.join(", "),
         })
@@ -230,7 +284,7 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
         ? t("memory.card.scopeLabel", { scope: scopeSuffix })
         : isPolicyShared
           ? t("memory.card.policyApplied")
-          : "";
+          : "");
 
   return (
     <div onClick={() => onClick(memory)} className="cursor-pointer">
@@ -250,6 +304,13 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
               {indexBadge.icon}
               {indexBadge.label}
             </span>
+            {candidateStatusBadge && (
+              <span
+                className={`text-xs px-2 py-1 rounded-full ${candidateStatusBadge.className}`}
+              >
+                {candidateStatusBadge.label}
+              </span>
+            )}
           </div>
           {showRelevance && relevanceScore !== null && (
             <div className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400">

@@ -269,6 +269,9 @@ export const Memory: React.FC = () => {
     null,
   );
   const [updatingMemoryId, setUpdatingMemoryId] = useState<string | null>(null);
+  const [reviewingCandidateId, setReviewingCandidateId] = useState<string | null>(
+    null,
+  );
   const [indexInspectingMemoryId, setIndexInspectingMemoryId] = useState<
     string | null
   >(null);
@@ -581,6 +584,33 @@ export const Memory: React.FC = () => {
     }
   };
 
+  const handleReviewCandidate = async (
+    memory: MemoryType,
+    action: "publish" | "reject" | "revise",
+  ) => {
+    if (reviewingCandidateId) return;
+    setReviewingCandidateId(memory.id);
+    try {
+      const updated = await memoriesApi.reviewAgentCandidate(memory.id, { action });
+      updateMemory(memory.id, updated);
+      if (selectedMemory?.id === memory.id) {
+        setSelectedMemory(updated);
+      }
+      fetchMemoriesByType("agent");
+      toast.success(
+        action === "publish"
+          ? t("memory.share.reviewApproveSuccess", { defaultValue: "候选记忆已审批发布" })
+          : action === "reject"
+            ? t("memory.share.reviewRejectSuccess", { defaultValue: "候选记忆已拒绝" })
+            : t("memory.share.reviewReviseSuccess", { defaultValue: "候选记忆已更新状态" }),
+      );
+    } catch (error: unknown) {
+      toast.error(getErrorDetail(error) || t("memory.share.error"));
+    } finally {
+      setReviewingCandidateId(null);
+    }
+  };
+
   const handleTagToggle = (tag: string) => {
     setSelectedTags((prev) =>
       prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
@@ -761,10 +791,14 @@ export const Memory: React.FC = () => {
         onShare={handleShare}
         onDelete={handleDelete}
         onUpdate={handleUpdateMemory}
+        onReviewCandidate={handleReviewCandidate}
         onReindex={handleReindex}
         onInspectIndex={handleInspectIndex}
         isUpdating={
           selectedMemory ? updatingMemoryId === selectedMemory.id : false
+        }
+        isReviewingCandidate={
+          selectedMemory ? reviewingCandidateId === selectedMemory.id : false
         }
         isReindexing={
           selectedMemory ? reindexingMemoryId === selectedMemory.id : false

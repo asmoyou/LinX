@@ -113,7 +113,12 @@ interface MemoryDetailViewProps {
       reindexAfterSave: boolean;
     },
   ) => Promise<void> | void;
+  onReviewCandidate?: (
+    memory: Memory,
+    action: "publish" | "reject" | "revise",
+  ) => Promise<void> | void;
   isUpdating?: boolean;
+  isReviewingCandidate?: boolean;
   isReindexing?: boolean;
   isInspectingIndex?: boolean;
   indexInfo?: MemoryIndexInfo | null;
@@ -128,7 +133,9 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
   onReindex,
   onInspectIndex,
   onUpdate,
+  onReviewCandidate,
   isUpdating = false,
+  isReviewingCandidate = false,
   isReindexing = false,
   isInspectingIndex = false,
   indexInfo = null,
@@ -223,6 +230,48 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
   const rawVisibility = String(memory.metadata?.visibility || "")
     .trim()
     .toLowerCase();
+  const signalType = String(memory.metadata?.signal_type || "")
+    .trim()
+    .toLowerCase();
+  const reviewStatus = String(memory.metadata?.review_status || "")
+    .trim()
+    .toLowerCase();
+  const isAgentCandidate =
+    memory.type === "agent" && signalType === "agent_memory_candidate";
+  const candidateStatusKey =
+    reviewStatus === "published" || reviewStatus === "rejected"
+      ? reviewStatus
+      : "pending";
+  const candidateStatusView = (() => {
+    if (!isAgentCandidate) {
+      return null;
+    }
+    if (candidateStatusKey === "published") {
+      return {
+        label: t("memory.card.reviewPublished", { defaultValue: "已审批" }),
+        hint: t("memory.card.reviewPublishedHint", {
+          defaultValue: "该候选记忆已审批，会参与 Agent 记忆注入。",
+        }),
+        className: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300",
+      };
+    }
+    if (candidateStatusKey === "rejected") {
+      return {
+        label: t("memory.card.reviewRejected", { defaultValue: "已拒绝" }),
+        hint: t("memory.card.reviewRejectedHint", {
+          defaultValue: "该候选记忆已拒绝，不会参与 Agent 记忆注入。",
+        }),
+        className: "bg-rose-500/20 text-rose-700 dark:text-rose-300",
+      };
+    }
+    return {
+      label: t("memory.card.reviewPending", { defaultValue: "待审批" }),
+      hint: t("memory.card.reviewPendingHint", {
+        defaultValue: "该候选记忆待审批，当前不会参与 Agent 记忆注入。",
+      }),
+      className: "bg-amber-500/20 text-amber-700 dark:text-amber-300",
+    };
+  })();
   const visibility = (() => {
     if (memory.type === "user_context") {
       return rawVisibility === "explicit" || rawVisibility === "private"
@@ -247,11 +296,16 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
     .trim()
     .toLowerCase();
   const hasPromotionBacklink = Boolean(memory.metadata?.last_promoted_memory_id);
+  const candidatePublished = isAgentCandidate && candidateStatusKey === "published";
   const isPublished =
-    publishMode === "promote" ||
-    hasPromotionBacklink ||
-    (memory.type === "agent" &&
-      ["explicit", "department", "department_tree", "public", "account"].includes(visibility));
+    isAgentCandidate
+      ? candidatePublished
+      : publishMode === "promote" ||
+        hasPromotionBacklink ||
+        (memory.type === "agent" &&
+          ["explicit", "department", "department_tree", "public", "account"].includes(
+            visibility,
+          ));
   const sharingScopeLabel = (() => {
     switch (visibility) {
       case "private":
@@ -270,11 +324,16 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
         return t("memory.share.scope.unknown");
     }
   })();
-  const sharingTitle = memory.type === "agent"
-    ? t("memory.share.publishTitle")
-    : t("memory.share.title");
-  const isPolicyShared =
-    Boolean(memory.isShared) || hasPolicyScope || isPublished;
+  const sharingTitle = isAgentCandidate
+    ? t("memory.share.reviewPublishTitle", { defaultValue: "审批并发布" })
+    : memory.type === "agent"
+      ? t("memory.share.publishTitle")
+      : t("memory.share.title");
+  const isPolicyShared = isAgentCandidate
+    ? candidatePublished
+    : Boolean(memory.isShared) || hasPolicyScope || isPublished;
+  const canRenderCandidateReviewActions =
+    isAgentCandidate && typeof onReviewCandidate === "function";
 
   const formatTimestamp = (value?: string | null) => {
     if (!value) return "-";
@@ -352,9 +411,18 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             {getTypeIcon(memory.type)}
-            <h2 className="text-2xl font-bold text-gray-800 dark:text-white">
-              {getTypeLabel(memory.type)}
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-bold text-gray-800 dark:text-white">
+                {getTypeLabel(memory.type)}
+              </h2>
+              {candidateStatusView && (
+                <span
+                  className={`text-xs px-2 py-1 rounded-full ${candidateStatusView.className}`}
+                >
+                  {candidateStatusView.label}
+                </span>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-2">
             {onUpdate && (
@@ -855,6 +923,37 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
 
         {/* Visibility / Sharing Status */}
         <div className="p-4 bg-indigo-500/10 border border-indigo-500/30 rounded-lg">
+          {candidateStatusView && (
+            <p className="text-sm text-gray-700 dark:text-gray-300 mb-2">
+              {candidateStatusView.hint}
+            </p>
+          )}
+          {canRenderCandidateReviewActions && (
+            <div className="mb-3 flex flex-wrap gap-2">
+              {candidateStatusKey !== "published" && (
+                <button
+                  onClick={() => onReviewCandidate?.(memory, "publish")}
+                  disabled={isReviewingCandidate}
+                  className="inline-flex items-center gap-1 rounded-md bg-emerald-500 text-white px-3 py-1.5 text-xs font-medium hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isReviewingCandidate
+                    ? t("common.loading")
+                    : t("memory.share.reviewApprove", { defaultValue: "审批发布" })}
+                </button>
+              )}
+              {candidateStatusKey === "pending" && (
+                <button
+                  onClick={() => onReviewCandidate?.(memory, "reject")}
+                  disabled={isReviewingCandidate}
+                  className="inline-flex items-center gap-1 rounded-md bg-rose-500 text-white px-3 py-1.5 text-xs font-medium hover:bg-rose-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isReviewingCandidate
+                    ? t("common.loading")
+                    : t("memory.share.reviewReject", { defaultValue: "拒绝候选" })}
+                </button>
+              )}
+            </div>
+          )}
           {!isPolicyShared && !isPublished ? (
             <div className="flex items-center gap-2 mb-2">
               <ShieldAlert className="w-5 h-5 text-indigo-500" />
