@@ -8,7 +8,9 @@ References:
 import base64
 import io
 import mimetypes
+import re
 import tempfile
+import urllib.parse
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -447,9 +449,7 @@ def _extract_token_usage_from_metadata(metadata: Dict[str, Any]) -> Tuple[int, i
             return int(input_tokens or 0), int(output_tokens or 0)
 
         input_tokens = getattr(usage, "input_tokens", 0) or getattr(usage, "prompt_tokens", 0)
-        output_tokens = getattr(usage, "output_tokens", 0) or getattr(
-            usage, "completion_tokens", 0
-        )
+        output_tokens = getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0)
         return int(input_tokens or 0), int(output_tokens or 0)
 
     if "token_usage" in metadata:
@@ -459,6 +459,228 @@ def _extract_token_usage_from_metadata(metadata: Dict[str, Any]) -> Tuple[int, i
         return int(input_tokens or 0), int(output_tokens or 0)
 
     return 0, 0
+
+
+_LONG_OUTPUT_TASK_KEYWORDS = (
+    "题",
+    "题目",
+    "question",
+    "questions",
+    "quiz",
+    "exercise",
+    "exercises",
+    "problem",
+    "problems",
+    "worksheet",
+    "worksheets",
+    "item",
+    "items",
+)
+_LONG_OUTPUT_ACTION_KEYWORDS = (
+    "出",
+    "生成",
+    "给我",
+    "制作",
+    "写",
+    "列出",
+    "整理",
+    "generate",
+    "create",
+    "produce",
+    "give",
+    "write",
+    "list",
+)
+_ITEM_COUNT_PATTERN = re.compile(
+    r"(?P<count>\d{2,5})\s*(?:道|题|个|条|questions?|question|items?|item|problems?|problem)\b",
+    re.IGNORECASE,
+)
+_ACTION_COUNT_PATTERN = re.compile(
+    r"(?:出|生成|给我|制作|写|列出|整理|generate|create|produce|give|write|list)"
+    r".{0,12}?(?P<count>\d{2,5})",
+    re.IGNORECASE,
+)
+_BARE_COUNT_PATTERN = re.compile(r"\b(?P<count>\d{2,5})\b")
+_TRUNCATION_FINISH_REASONS = {"length", "max_tokens", "token_limit"}
+_WORKSPACE_INLINE_PREVIEW_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".markdown",
+    ".json",
+    ".csv",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".html",
+    ".htm",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".css",
+    ".scss",
+    ".sql",
+    ".log",
+}
+
+
+def _extract_itemized_target_count(task_text: str) -> Optional[int]:
+    """Infer long-output target count from prompt text (e.g., 300 questions)."""
+    text = str(task_text or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if not any(keyword in lowered for keyword in _LONG_OUTPUT_TASK_KEYWORDS):
+        return None
+
+    candidates: List[int] = []
+
+    for pattern in (_ITEM_COUNT_PATTERN, _ACTION_COUNT_PATTERN):
+        for match in pattern.finditer(text):
+            raw_count = match.groupdict().get("count")
+            if not raw_count:
+                continue
+            try:
+                value = int(raw_count)
+            except ValueError:
+                continue
+            if 50 <= value <= 10000:
+                candidates.append(value)
+
+    if not candidates and any(keyword in lowered for keyword in _LONG_OUTPUT_ACTION_KEYWORDS):
+        for match in _BARE_COUNT_PATTERN.finditer(text):
+            raw_count = match.groupdict().get("count")
+            if not raw_count:
+                continue
+            try:
+                value = int(raw_count)
+            except ValueError:
+                continue
+            # Fallback must stay conservative to avoid treating years like 2024 as item counts.
+            if 120 <= value <= 10000:
+                candidates.append(value)
+
+    if not candidates:
+        return None
+    return max(candidates)
+
+
+def _is_output_truncated_from_metadata(metadata: Dict[str, Any]) -> bool:
+    """Detect whether provider metadata indicates output truncation."""
+    if not isinstance(metadata, dict):
+        return False
+
+    reasons: List[str] = []
+
+    finish_reason = metadata.get("finish_reason") or metadata.get("stop_reason")
+    if isinstance(finish_reason, str) and finish_reason.strip():
+        reasons.append(finish_reason.strip().lower())
+
+    choices = metadata.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            choice_finish_reason = choice.get("finish_reason") or choice.get("stop_reason")
+            if isinstance(choice_finish_reason, str) and choice_finish_reason.strip():
+                reasons.append(choice_finish_reason.strip().lower())
+
+    for reason in reasons:
+        if reason in _TRUNCATION_FINISH_REASONS:
+            return True
+    return False
+
+
+def _resolve_safe_workspace_path(workdir: Path, requested_path: str = "") -> Tuple[Path, str]:
+    """Resolve user path under session workdir and prevent traversal."""
+    root = workdir.resolve()
+    raw_path = str(requested_path or "").replace("\\", "/").lstrip("/")
+    if raw_path.startswith("workspace/"):
+        raw_path = raw_path[len("workspace/") :]
+
+    candidate = (root / raw_path).resolve() if raw_path else root
+    if candidate != root and root not in candidate.parents:
+        raise HTTPException(status_code=400, detail="Invalid workspace file path")
+
+    if candidate.exists():
+        relative = str(candidate.relative_to(root)).replace("\\", "/")
+    else:
+        relative = raw_path
+    return candidate, relative
+
+
+def _list_session_workspace_entries(
+    workdir: Path,
+    path: str = "",
+    recursive: bool = False,
+) -> List[Dict[str, Any]]:
+    """List files/directories from a session workspace."""
+    target, _ = _resolve_safe_workspace_path(workdir, path)
+    if not target.exists():
+        return []
+
+    root = workdir.resolve()
+    candidates: List[Path] = []
+    if target.is_file():
+        candidates = [target]
+    elif recursive:
+        candidates = [item for item in target.rglob("*")]
+    else:
+        candidates = list(target.iterdir())
+
+    entries: List[Dict[str, Any]] = []
+    for item in candidates:
+        if item.name in {".DS_Store"}:
+            continue
+
+        try:
+            stat_result = item.stat()
+        except OSError:
+            continue
+
+        is_directory = item.is_dir()
+        relative_path = str(item.resolve().relative_to(root)).replace("\\", "/")
+        # Keep hidden process markers accessible if user explicitly asks for them,
+        # but avoid cluttering default list with top-level dot files.
+        if not path and not recursive and item.name.startswith("."):
+            continue
+
+        entries.append(
+            {
+                "name": item.name,
+                "path": relative_path,
+                "size": int(stat_result.st_size) if not is_directory else 0,
+                "is_directory": is_directory,
+                "modified_at": datetime.fromtimestamp(stat_result.st_mtime).isoformat(),
+                "previewable_inline": (
+                    (item.suffix or "").lower() in _WORKSPACE_INLINE_PREVIEW_EXTENSIONS
+                ),
+            }
+        )
+
+    entries.sort(key=lambda e: (e["path"].count("/"), e["path"]))
+    return entries
+
+
+def _build_download_content_disposition(
+    filename: str,
+    disposition: str = "attachment",
+) -> str:
+    """Build RFC-compliant Content-Disposition header."""
+    normalized_name = str(filename or "").replace("\\", "/").split("/")[-1].strip()
+    if not normalized_name:
+        normalized_name = "download"
+
+    ascii_name = normalized_name.encode("ascii", "ignore").decode("ascii")
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", ascii_name).strip("._")
+    if not ascii_name:
+        ascii_name = "download"
+
+    encoded_name = urllib.parse.quote(normalized_name)
+    safe_disposition = "inline" if disposition == "inline" else "attachment"
+    return f'{safe_disposition}; filename="{ascii_name}"; ' f"filename*=UTF-8''{encoded_name}"
 
 
 def _build_retrieval_process_messages(context_debug: Dict[str, Any]) -> List[str]:
@@ -751,9 +973,7 @@ def _build_agent_cache_key(
     capabilities_hash = hash(tuple(sorted(capabilities or [])))
     provider_key = provider or ""
     model_key = model or ""
-    return (
-        f"{_AGENT_CACHE_KEY_VERSION}_{agent_id}_{provider_key}_{model_key}_{capabilities_hash}"
-    )
+    return f"{_AGENT_CACHE_KEY_VERSION}_{agent_id}_{provider_key}_{model_key}_{capabilities_hash}"
 
 
 def get_dynamic_cache_limit() -> int:
@@ -905,7 +1125,8 @@ def invalidate_agent_cache(agent_id: str):
     cache_keys_to_remove = [
         key
         for key in _agent_cache.keys()
-        if key.startswith(f"{agent_id}_") or key.startswith(f"{_AGENT_CACHE_KEY_VERSION}_{agent_id}_")
+        if key.startswith(f"{agent_id}_")
+        or key.startswith(f"{_AGENT_CACHE_KEY_VERSION}_{agent_id}_")
     ]
 
     for key in cache_keys_to_remove:
@@ -1984,7 +2205,7 @@ async def test_agent(
         description="Enable segmented output loop for large itemized tasks.",
     ),
     segment_item_limit: int = Query(
-        default=120,
+        default=80,
         ge=20,
         le=500,
         description="Maximum items per output segment when segmented output is enabled.",
@@ -2565,15 +2786,40 @@ async def test_agent(
                 logger.debug("[STREAM] Sent status: type='info', content='Generating response...'")
 
                 # Optional multi-pass segmented generation for very large itemized tasks.
+                detected_target_items = _extract_itemized_target_count(message)
+                target_items_for_segmentation = (
+                    int(segmented_target_items)
+                    if segmented_target_items and segmented_target_items > 0
+                    else detected_target_items
+                )
+                auto_segment_by_target = bool(
+                    target_items_for_segmentation and target_items_for_segmentation >= 120
+                )
+                segmenting_requested = bool(segmented_output or auto_segment_by_target)
+                effective_segment_item_limit = int(segment_item_limit)
+                effective_max_output_segments = int(max_output_segments)
+                # Auto mode uses safer chunk size to reduce model truncation risk.
+                if auto_segment_by_target and not segmented_output:
+                    effective_segment_item_limit = min(effective_segment_item_limit, 80)
+                    if target_items_for_segmentation and effective_segment_item_limit > 0:
+                        required_segments = (
+                            int(target_items_for_segmentation) + effective_segment_item_limit - 1
+                        ) // effective_segment_item_limit
+                        effective_max_output_segments = min(
+                            50, max(effective_max_output_segments, required_segments)
+                        )
+
                 segment_ranges: List[Tuple[int, int]] = []
                 segmented_mode_enabled = bool(
-                    segmented_output and segmented_target_items and segmented_target_items > 0
+                    segmenting_requested
+                    and target_items_for_segmentation
+                    and target_items_for_segmentation > 0
                 )
                 if segmented_mode_enabled:
                     segment_ranges = _build_output_segment_ranges(
-                        target_items=int(segmented_target_items),
-                        segment_item_limit=segment_item_limit,
-                        max_output_segments=max_output_segments,
+                        target_items=int(target_items_for_segmentation),
+                        segment_item_limit=effective_segment_item_limit,
+                        max_output_segments=effective_max_output_segments,
                     )
                     # Enable only when multiple segments are actually needed.
                     segmented_mode_enabled = len(segment_ranges) > 1
@@ -2595,8 +2841,8 @@ async def test_agent(
                         + "\n\n"
                     )
 
-                if segmented_output and not segmented_mode_enabled:
-                    if segmented_target_items and segmented_target_items > 0:
+                if segmenting_requested and not segmented_mode_enabled:
+                    if target_items_for_segmentation and target_items_for_segmentation > 0:
                         yield (
                             "data: "
                             + json.dumps(
@@ -2604,7 +2850,8 @@ async def test_agent(
                                     "type": "info",
                                     "content": (
                                         "Segmented output requested but not needed "
-                                        f"(target={segmented_target_items}, per_segment={segment_item_limit})."
+                                        f"(target={target_items_for_segmentation}, "
+                                        f"per_segment={effective_segment_item_limit})."
                                     ),
                                 }
                             )
@@ -2634,14 +2881,17 @@ async def test_agent(
                                 "type": "info",
                                 "content": (
                                     "Segmented output enabled: "
-                                    f"{len(segment_ranges)} segments, up to {segment_item_limit} items/segment, "
-                                    f"target={segmented_target_items}."
+                                    f"{len(segment_ranges)} segments, up to {effective_segment_item_limit} "
+                                    f"items/segment, target={target_items_for_segmentation}."
                                 ),
                             }
                         )
                         + "\n\n"
                     )
-                    if segmented_target_items and planned_items < segmented_target_items:
+                    if (
+                        target_items_for_segmentation
+                        and planned_items < target_items_for_segmentation
+                    ):
                         yield (
                             "data: "
                             + json.dumps(
@@ -2649,7 +2899,7 @@ async def test_agent(
                                     "type": "info",
                                     "content": (
                                         "Segment planning reached max_output_segments before target completion: "
-                                        f"planned up to item {planned_items}/{segmented_target_items}."
+                                        f"planned up to item {planned_items}/{target_items_for_segmentation}."
                                     ),
                                 }
                             )
@@ -2693,13 +2943,15 @@ async def test_agent(
                             total_segments=total_segments,
                             start_item=start_item,
                             end_item=end_item,
-                            target_items=int(segmented_target_items or end_item),
+                            target_items=int(target_items_for_segmentation or end_item),
                         )
                     else:
                         task_description_for_run = user_message
 
                     message_content_for_run = (
-                        multimodal_content if (segment_idx == 0 or not segmented_mode_enabled) else None
+                        multimodal_content
+                        if (segment_idx == 0 or not segmented_mode_enabled)
+                        else None
                     )
 
                     def stream_callback(token_data):
@@ -2857,6 +3109,17 @@ async def test_agent(
                 final_response_text = "\n\n".join(
                     segment for segment in final_output_segments if segment
                 ).strip()
+                output_truncated = any(
+                    _is_output_truncated_from_metadata(metadata)
+                    for metadata in response_metadata_list
+                )
+                segment_plan_incomplete = bool(
+                    segmented_mode_enabled
+                    and target_items_for_segmentation
+                    and segment_ranges
+                    and segment_ranges[-1][1] < target_items_for_segmentation
+                )
+                partially_completed = bool(output_truncated or segment_plan_incomplete)
 
                 # Surface execution error if any.
                 if run_error:
@@ -2877,8 +3140,8 @@ async def test_agent(
                         "[TOKEN-STATS] Segment metadata: %s",
                         json.dumps(metadata, default=str, ensure_ascii=False),
                     )
-                    segment_input_tokens, segment_output_tokens = _extract_token_usage_from_metadata(
-                        metadata
+                    segment_input_tokens, segment_output_tokens = (
+                        _extract_token_usage_from_metadata(metadata)
                     )
                     input_tokens += segment_input_tokens
                     output_tokens += segment_output_tokens
@@ -2948,7 +3211,27 @@ async def test_agent(
                         "totalTime": round(end_time - start_time, 2),
                     }
                     yield f"data: {json.dumps(stats)}\n\n"
-                    yield f"data: {json.dumps({'type': 'done', 'content': 'Agent execution completed'})}\n\n"
+                    if partially_completed:
+                        partial_reason_parts: List[str] = []
+                        if output_truncated:
+                            partial_reason_parts.append("model output hit token limit")
+                        if segment_plan_incomplete:
+                            partial_reason_parts.append("segment cap reached before target count")
+                        partial_reason = (
+                            ", ".join(partial_reason_parts) or "partial output detected"
+                        )
+                        done_payload = {
+                            "type": "done",
+                            "content": f"Agent execution partially completed ({partial_reason}).",
+                            "partial": True,
+                        }
+                    else:
+                        done_payload = {
+                            "type": "done",
+                            "content": "Agent execution completed",
+                            "partial": False,
+                        }
+                    yield f"data: {json.dumps(done_payload)}\n\n"
 
                     # Buffer turn-level memory candidates; flush once on session end.
                     if final_response_text:
@@ -3280,6 +3563,110 @@ async def get_agent_sessions(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get sessions: {str(e)}",
+        )
+
+
+@router.get("/{agent_id}/sessions/{session_id}/workspace/files")
+async def list_agent_session_workspace_files(
+    agent_id: str,
+    session_id: str,
+    path: str = "",
+    recursive: bool = False,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """List files from an active agent-test session workspace."""
+    try:
+        from agent_framework.session_manager import get_session_manager
+
+        session_mgr = get_session_manager()
+        session = session_mgr.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found or expired")
+
+        if session.user_id != UUID(current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to access this session",
+            )
+        if str(session.agent_id) != agent_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Session {session_id} does not belong to agent {agent_id}",
+            )
+
+        session.touch()
+        return _list_session_workspace_entries(session.workdir, path, recursive)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to list workspace files for session {session_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list workspace files: {str(e)}",
+        )
+
+
+@router.get("/{agent_id}/sessions/{session_id}/workspace/download")
+async def download_agent_session_workspace_file(
+    agent_id: str,
+    session_id: str,
+    path: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Download one file from an active agent-test session workspace."""
+    try:
+        from fastapi.responses import FileResponse
+        from agent_framework.session_manager import get_session_manager
+
+        session_mgr = get_session_manager()
+        session = session_mgr.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found or expired")
+
+        if session.user_id != UUID(current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to access this session",
+            )
+        if str(session.agent_id) != agent_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Session {session_id} does not belong to agent {agent_id}",
+            )
+
+        file_path, relative_path = _resolve_safe_workspace_path(session.workdir, path)
+        if not file_path.exists() or not file_path.is_file():
+            raise HTTPException(status_code=404, detail="Workspace file not found")
+
+        session.touch()
+        filename = file_path.name or (
+            relative_path.rsplit("/", 1)[-1] if relative_path else "download"
+        )
+        media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        headers = {
+            "Content-Disposition": _build_download_content_disposition(
+                filename,
+                disposition="attachment",
+            )
+        }
+        return FileResponse(
+            path=file_path, media_type=media_type, filename=filename, headers=headers
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to download workspace file from session {session_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to download workspace file: {str(e)}",
         )
 
 

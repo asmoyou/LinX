@@ -1,13 +1,22 @@
 """Tests for agent attachment helper functions."""
 
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
 
 from api_gateway.routers.agents import (
     FileReference,
     _build_output_segment_ranges,
     _build_attachment_prompt_context,
+    _build_download_content_disposition,
     _build_segmented_user_prompt,
+    _extract_itemized_target_count,
     _extract_token_usage_from_metadata,
+    _is_output_truncated_from_metadata,
+    _list_session_workspace_entries,
+    _resolve_safe_workspace_path,
     _extract_attachment_text,
     _infer_attachment_bucket_type,
     _infer_attachment_type,
@@ -126,3 +135,52 @@ def test_extract_token_usage_from_metadata_supports_usage_and_token_usage() -> N
     assert _extract_token_usage_from_metadata(
         {"token_usage": {"prompt_tokens": 30, "completion_tokens": 40}}
     ) == (30, 40)
+
+
+def test_extract_itemized_target_count_handles_strict_and_fallback_patterns() -> None:
+    """Target count inference should support strict units and fallback action prompts."""
+    assert _extract_itemized_target_count("请根据教材生成300道小学数学题") == 300
+    assert _extract_itemized_target_count("帮我出300到小学数学题，按难度分级") == 300
+    assert _extract_itemized_target_count("请总结 2024 年报告") is None
+
+
+def test_is_output_truncated_from_metadata_detects_length_reason() -> None:
+    """Truncation detector should flag finish_reason=length (including choices)."""
+    assert _is_output_truncated_from_metadata({"finish_reason": "length"}) is True
+    assert _is_output_truncated_from_metadata({"choices": [{"finish_reason": "length"}]}) is True
+    assert _is_output_truncated_from_metadata({"finish_reason": "stop"}) is False
+
+
+def test_resolve_safe_workspace_path_blocks_traversal(tmp_path: Path) -> None:
+    """Workspace helper should resolve valid children and reject path traversal."""
+    (tmp_path / "safe.txt").write_text("ok", encoding="utf-8")
+
+    resolved, relative = _resolve_safe_workspace_path(tmp_path, "safe.txt")
+    assert resolved == (tmp_path / "safe.txt").resolve()
+    assert relative == "safe.txt"
+
+    with pytest.raises(HTTPException, match="Invalid workspace file path"):
+        _resolve_safe_workspace_path(tmp_path, "../outside.txt")
+
+
+def test_list_session_workspace_entries_reports_previewable_files(tmp_path: Path) -> None:
+    """Workspace file listing should include metadata and previewable flag."""
+    (tmp_path / "a.txt").write_text("hello", encoding="utf-8")
+    (tmp_path / "b.bin").write_bytes(b"\x00\x01")
+
+    entries = _list_session_workspace_entries(tmp_path, recursive=True)
+    by_name = {item["name"]: item for item in entries}
+
+    assert by_name["a.txt"]["previewable_inline"] is True
+    assert by_name["b.bin"]["previewable_inline"] is False
+    assert by_name["a.txt"]["is_directory"] is False
+    assert isinstance(by_name["a.txt"]["modified_at"], str)
+
+
+def test_build_download_content_disposition_handles_non_ascii_filename() -> None:
+    """Download header should include ASCII fallback and UTF-8 filename* encoding."""
+    header = _build_download_content_disposition("试卷-数学.pdf")
+
+    assert "attachment;" in header
+    assert "filename*=UTF-8''" in header
+    assert "%E8%AF%95%E5%8D%B7-%E6%95%B0%E5%AD%A6.pdf" in header

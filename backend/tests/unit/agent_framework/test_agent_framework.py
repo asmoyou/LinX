@@ -6,7 +6,7 @@ References:
 """
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from uuid import uuid4
 
 import pytest
@@ -213,6 +213,94 @@ class TestBaseAgent:
             {"role": "user", "content": "first"},
             {"role": "assistant", "content": "second"},
         ]
+
+    def test_create_system_prompt_enforces_write_file_for_file_deliverables(self):
+        """Workspace prompt should require write_file when user asks for file outputs."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        prompt = agent._create_system_prompt()
+
+        assert "When users ask for deliverables as files/documents" in prompt
+        assert "MUST use `write_file`" in prompt
+        assert "**append_file**" in prompt
+        assert "report the exact saved file path" in prompt
+
+    def test_requires_file_delivery_detects_explicit_file_intent(self):
+        """File-delivery guard should only trigger when prompt explicitly asks for file output."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        assert agent._requires_file_delivery("写一篇福州旅游攻略，整理成md文档给我") is True
+        assert agent._requires_file_delivery("Please save this guide as a markdown file.") is True
+        assert agent._requires_file_delivery("请写一篇福州旅游攻略，使用 markdown 格式输出") is False
+
+    def test_recovery_file_delivery_guard_triggers_extra_write_round(self):
+        """When file intent exists and no file write occurred, recovery loop should add one save round."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()  # initialize guard
+        agent.tools = []
+
+        write_tool = Mock()
+        write_tool.ainvoke = AsyncMock(
+            return_value="Successfully wrote /workspace/outputs/fuzhou.md"
+        )
+        agent.tools_by_name = {"write_file": write_tool}
+
+        stream_call_count = {"count": 0}
+
+        def _fake_stream(_messages):
+            stream_call_count["count"] += 1
+            current_round = stream_call_count["count"]
+            if current_round == 1:
+                yield SimpleNamespace(content="这是福州旅游攻略正文。", additional_kwargs={})
+            elif current_round == 2:
+                yield SimpleNamespace(
+                    content=(
+                        '{"tool":"write_file","file_path":"/workspace/outputs/fuzhou.md",'
+                        '"content":"# 福州旅游攻略\\n\\n第一天..."}'
+                    ),
+                    additional_kwargs={},
+                )
+            else:
+                yield SimpleNamespace(
+                    content="已保存到 /workspace/outputs/fuzhou.md",
+                    additional_kwargs={},
+                )
+
+        agent.llm = Mock()
+        agent.llm.stream = _fake_stream
+
+        result = agent.execute_task(
+            task_description="写一篇福州旅游攻略，整理成md文档给我",
+            stream_callback=lambda *_args, **_kwargs: None,
+        )
+
+        assert result["success"] is True
+        assert stream_call_count["count"] == 3
+        write_tool.ainvoke.assert_awaited_once()
+        assert "/workspace/outputs/fuzhou.md" in result["output"]
 
 
 class TestAgentRegistry:

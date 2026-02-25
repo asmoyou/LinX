@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { X, Send, AlertCircle, Bot, Paperclip, Image as ImageIcon, FileText, X as XIcon, Sparkles } from 'lucide-react';
+import { X, Send, AlertCircle, Bot, Paperclip, Image as ImageIcon, FileText, X as XIcon, Sparkles, FolderOpen } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Agent } from '@/types/agent';
@@ -12,6 +12,7 @@ import type {
   AttachedFile
 } from '@/types/streaming';
 import { ConversationRoundComponent } from './ConversationRound';
+import { SessionWorkspacePanel } from './SessionWorkspacePanel';
 import { createMarkdownComponents } from './CodeBlock';
 import { LayoutModal } from '@/components/LayoutModal';
 
@@ -76,6 +77,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
 
   // Session state for persistent execution environment
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [showWorkspacePanel, setShowWorkspacePanel] = useState(false);
   // Use ref to track sessionId for cleanup (avoids stale closure issues)
   const sessionIdRef = useRef<string | null>(null);
   // Use ref to track agentId for cleanup (agent may be null when modal closes)
@@ -133,14 +135,24 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
     );
 
   const extractTargetItemCount = (prompt: string): number | null => {
-    const matches = [
+    const strictMatches = [
       ...prompt.matchAll(
-        /(\d{3,5})\s*(?:道|题|个|条|questions?|question|items?|item|problems?|problem)\b/gi
+        /(\d{2,5})\s*(?:道|题|个|条|questions?|question|items?|item|problems?|problem)\b/gi
       ),
     ];
+    let matches = strictMatches;
     if (!matches.length) {
-      return null;
+      const hasActionIntent = /(出|生成|给我|制作|写|整理|generate|create|produce|write|list)/i.test(
+        prompt
+      );
+      const hasQuestionIntent = /(题|题目|问题|question|questions|quiz|exercise|exercises|problem|problems)/i.test(
+        prompt
+      );
+      if (hasActionIntent && hasQuestionIntent) {
+        matches = [...prompt.matchAll(/\b(\d{2,5})\b/g)];
+      }
     }
+    if (!matches.length) return null;
 
     let maxCandidate = 0;
     for (const match of matches) {
@@ -150,15 +162,14 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
       }
     }
 
-    if (maxCandidate < 200 || maxCandidate > 10000) {
+    if (maxCandidate < 120 || maxCandidate > 10000) {
       return null;
     }
     return maxCandidate;
   };
 
   const buildSegmentedOutputOptions = (
-    prompt: string,
-    files: AttachedFile[]
+    prompt: string
   ): {
     enabled: boolean;
     targetItems?: number;
@@ -169,13 +180,12 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
     const hasQuestionIntent = /(题|题目|问题|question|questions|quiz|exercise|exercises)/i.test(
       prompt
     );
-    const hasDocumentAttachment = files.some((file) => file.type === 'document');
 
-    if (!targetItems || !hasQuestionIntent || !hasDocumentAttachment) {
+    if (!targetItems || !hasQuestionIntent) {
       return { enabled: false };
     }
 
-    const segmentItemLimit = Math.min(120, targetItems);
+    const segmentItemLimit = Math.min(80, targetItems);
     const maxOutputSegments = Math.max(1, Math.ceil(targetItems / segmentItemLimit));
     return {
       enabled: true,
@@ -252,12 +262,19 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
       });
       setCurrentRoundNumber(1);
       setSessionId(null);  // Reset session ID
+      setShowWorkspacePanel(false);
       sessionIdRef.current = null;  // Also reset ref
       agentIdRef.current = null;  // Also reset agent ID ref
       setError(null);
       setIsStreaming(false);
     }
   }, [isOpen]);  // Only depend on isOpen - use refs for other values
+
+  useEffect(() => {
+    if (!sessionId) {
+      setShowWorkspacePanel(false);
+    }
+  }, [sessionId]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   if (!isOpen || !agent) return null;
@@ -395,7 +412,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
 
     try {
       const filesToUpload = attachedFiles.map(af => af.file);
-      const segmentedOutput = buildSegmentedOutputOptions(userMessage.content, attachedFiles);
+      const segmentedOutput = buildSegmentedOutputOptions(userMessage.content);
       
       await agentsApi.testAgent(
         agent.id,
@@ -733,19 +750,31 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                 <p className="text-xs text-white/80">AI Agent Testing Environment</p>
               </div>
             </div>
-            <button
-              onClick={onClose}
-              className="p-2 hover:bg-white/20 rounded-lg transition-colors text-white"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowWorkspacePanel((prev) => !prev)}
+                disabled={!sessionId}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 transition-colors text-white text-xs font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                title={sessionId ? 'Browse workspace files' : 'Workspace available after session starts'}
+              >
+                <FolderOpen className="w-4 h-4" />
+                Workspace
+              </button>
+              <button
+                onClick={onClose}
+                className="p-2 hover:bg-white/20 rounded-lg transition-colors text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Messages Area with custom scrollbar */}
-        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 scrollbar-thin scrollbar-thumb-zinc-300 dark:scrollbar-thumb-zinc-700 scrollbar-track-transparent">
-          {messages.map((message, index) => (
-            <div key={index} className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+        <div className="flex-1 min-h-0 flex">
+          {/* Messages Area with custom scrollbar */}
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 scrollbar-thin scrollbar-thumb-zinc-300 dark:scrollbar-thumb-zinc-700 scrollbar-track-transparent">
+            {messages.map((message, index) => (
+              <div key={index} className="animate-in fade-in slide-in-from-bottom-2 duration-300">
               {message.role === 'user' ? (
                 <div className="flex justify-end">
                   <div className="max-w-[75%] space-y-1">
@@ -835,62 +864,70 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
                   </div>
                 </div>
               ) : null}
-            </div>
-          ))}
-
-          {/* Current streaming rounds */}
-          {isStreaming && (currentRounds.length > 0 || hasRoundActivity(currentRoundData)) && (
-            <div className="flex justify-start animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="max-w-[85%] space-y-3">
-                {/* Completed rounds */}
-                {currentRounds.map((round, idx) => (
-                  <ConversationRoundComponent
-                    key={`stream-round-${round.roundNumber}-${idx}`}
-                    round={round}
-                    isLatest={false}
-                    defaultCollapsed={true}
-                  />
-                ))}
-                
-                {/* Current round being streamed */}
-                {(currentRoundData.thinking || currentRoundData.content || 
-                  currentRoundData.statusMessages.length > 0 ||
-                  currentRoundData.retryAttempts.length > 0 ||
-                  currentRoundData.errorFeedback.length > 0) && (
-                  <ConversationRoundComponent
-                    round={{
-                      roundNumber: currentRoundNumber,
-                      thinking: currentRoundData.thinking,
-                      content: currentRoundData.content,
-                      statusMessages: currentRoundData.statusMessages,
-                      retryAttempts: currentRoundData.retryAttempts.length > 0 ? currentRoundData.retryAttempts : undefined,
-                      errorFeedback: currentRoundData.errorFeedback.length > 0 ? currentRoundData.errorFeedback : undefined,
-                      stats: currentRoundData.stats || undefined,
-                    }}
-                    isLatest={true}
-                    isStreaming={true}
-                  />
-                )}
               </div>
-            </div>
-          )}
+            ))}
 
-          {/* Error Message */}
-          {error && (
-            <div className="flex justify-center animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="max-w-[85%] rounded-xl px-4 py-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 flex items-start gap-3 shadow-lg">
-                <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-semibold text-red-700 dark:text-red-400">
-                    Error
-                  </p>
-                  <p className="text-xs text-red-600 dark:text-red-500 mt-1">{error}</p>
+            {/* Current streaming rounds */}
+            {isStreaming && (currentRounds.length > 0 || hasRoundActivity(currentRoundData)) && (
+              <div className="flex justify-start animate-in fade-in slide-in-from-bottom-2 duration-300">
+                <div className="max-w-[85%] space-y-3">
+                  {/* Completed rounds */}
+                  {currentRounds.map((round, idx) => (
+                    <ConversationRoundComponent
+                      key={`stream-round-${round.roundNumber}-${idx}`}
+                      round={round}
+                      isLatest={false}
+                      defaultCollapsed={true}
+                    />
+                  ))}
+                  
+                  {/* Current round being streamed */}
+                  {(currentRoundData.thinking || currentRoundData.content || 
+                    currentRoundData.statusMessages.length > 0 ||
+                    currentRoundData.retryAttempts.length > 0 ||
+                    currentRoundData.errorFeedback.length > 0) && (
+                    <ConversationRoundComponent
+                      round={{
+                        roundNumber: currentRoundNumber,
+                        thinking: currentRoundData.thinking,
+                        content: currentRoundData.content,
+                        statusMessages: currentRoundData.statusMessages,
+                        retryAttempts: currentRoundData.retryAttempts.length > 0 ? currentRoundData.retryAttempts : undefined,
+                        errorFeedback: currentRoundData.errorFeedback.length > 0 ? currentRoundData.errorFeedback : undefined,
+                        stats: currentRoundData.stats || undefined,
+                      }}
+                      isLatest={true}
+                      isStreaming={true}
+                    />
+                  )}
                 </div>
               </div>
-            </div>
-          )}
+            )}
 
-          <div ref={messagesEndRef} />
+            {/* Error Message */}
+            {error && (
+              <div className="flex justify-center animate-in fade-in slide-in-from-bottom-2 duration-300">
+                <div className="max-w-[85%] rounded-xl px-4 py-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 flex items-start gap-3 shadow-lg">
+                  <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-semibold text-red-700 dark:text-red-400">
+                      Error
+                    </p>
+                    <p className="text-xs text-red-600 dark:text-red-500 mt-1">{error}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+
+          <SessionWorkspacePanel
+            agentId={agent.id}
+            sessionId={sessionId}
+            isOpen={showWorkspacePanel}
+            onClose={() => setShowWorkspacePanel(false)}
+          />
         </div>
 
         {/* Input Area with modern design */}

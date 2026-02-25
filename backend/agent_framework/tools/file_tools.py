@@ -1,12 +1,13 @@
 """File operation tools for agent sandbox execution.
 
-Provides Read, Edit, Write, and ListFiles tools that operate on the session
+Provides Read, Edit, Write, Append, and ListFiles tools that operate on the session
 workspace directory (/workspace in container, host workdir on filesystem).
 
 Modeled after Claude Code's file tools:
 - ReadFile: Read with offset/limit for large files
 - EditFile: Exact string replacement (old_string -> new_string) with syntax validation
 - WriteFile: Create or overwrite files with syntax validation
+- AppendFile: Append content to an existing file (or create it if missing)
 - ListFiles: List directory contents
 """
 
@@ -368,6 +369,56 @@ Example:
 
 
 # ---------------------------------------------------------------------------
+# AppendFile Tool
+# ---------------------------------------------------------------------------
+
+class AppendFileInput(BaseModel):
+    file_path: str = Field(description="Path where content should be appended")
+    content: str = Field(description="Content to append")
+
+
+class AppendFileTool(BaseTool):
+    """Append content to a file."""
+
+    name: str = "append_file"
+    description: str = """Append content to a file in the workspace. Creates parent directories if needed.
+If the file does not exist, it will be created.
+
+Example:
+  {"tool": "append_file", "file_path": "/workspace/output.md", "content": "\\n## Section 2\\nMore content..."}
+"""
+    args_schema: Type[BaseModel] = AppendFileInput
+
+    def _run(
+        self,
+        file_path: str,
+        content: str,
+        run_manager: Optional[CallbackManagerForToolRun] = None,
+    ) -> str:
+        try:
+            resolved = _resolve_path(file_path)
+
+            # Create parent directories if needed
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+
+            with resolved.open("a", encoding="utf-8") as handle:
+                handle.write(content)
+
+            appended_bytes = len(content.encode("utf-8"))
+            total_size = resolved.stat().st_size if resolved.exists() else appended_bytes
+            result = (
+                f"Successfully appended to {file_path} "
+                f"({appended_bytes} bytes added, {total_size} bytes total)."
+            )
+            return result
+        except ValueError as e:
+            return f"Error: {e}"
+        except Exception as e:
+            logger.error(f"AppendFile error: {e}", exc_info=True)
+            return f"Error appending file: {e}"
+
+
+# ---------------------------------------------------------------------------
 # ListFiles Tool
 # ---------------------------------------------------------------------------
 
@@ -439,11 +490,12 @@ def create_file_tools() -> list:
     """Create all file operation tools.
 
     Returns:
-        List of [ReadFileTool, EditFileTool, WriteFileTool, ListFilesTool]
+        List of [ReadFileTool, EditFileTool, WriteFileTool, AppendFileTool, ListFilesTool]
     """
     return [
         ReadFileTool(),
         EditFileTool(),
         WriteFileTool(),
+        AppendFileTool(),
         ListFilesTool(),
     ]

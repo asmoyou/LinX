@@ -51,6 +51,15 @@ export interface AgentTemplate {
   default_config: Record<string, any>;
 }
 
+export interface AgentSessionWorkspaceFile {
+  name: string;
+  path: string;
+  size: number;
+  is_dir: boolean;
+  modified_at?: string;
+  previewable_inline?: boolean;
+}
+
 /**
  * Agents API
  */
@@ -395,6 +404,54 @@ export const agentsApi = {
     total_count: number;
   }> => {
     const response = await apiClient.get(`/agents/${agentId}/sessions`);
+    return response.data;
+  },
+
+  /**
+   * Browse files in an active agent session workspace.
+   */
+  getSessionWorkspaceFiles: async (
+    agentId: string,
+    sessionId: string,
+    path?: string,
+    recursive = false
+  ): Promise<AgentSessionWorkspaceFile[]> => {
+    const response = await apiClient.get<Array<{
+      name: string;
+      path: string;
+      size: number;
+      is_directory?: boolean;
+      is_dir?: boolean;
+      modified_at?: string;
+      previewable_inline?: boolean;
+    }>>(`/agents/${agentId}/sessions/${sessionId}/workspace/files`, {
+      params: {
+        ...(path ? { path } : {}),
+        ...(recursive ? { recursive: true } : {}),
+      },
+    });
+    return response.data.map((item) => ({
+      name: item.name,
+      path: item.path,
+      size: item.size,
+      is_dir: item.is_dir ?? Boolean(item.is_directory),
+      modified_at: item.modified_at,
+      previewable_inline: item.previewable_inline,
+    }));
+  },
+
+  /**
+   * Download one file from an active agent session workspace.
+   */
+  downloadSessionWorkspaceFile: async (
+    agentId: string,
+    sessionId: string,
+    path: string
+  ): Promise<Blob> => {
+    const response = await apiClient.get(
+      `/agents/${agentId}/sessions/${sessionId}/workspace/download`,
+      { params: { path }, responseType: 'blob' }
+    );
     return response.data;
   },
 };

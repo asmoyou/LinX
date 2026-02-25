@@ -33,6 +33,42 @@ from agent_framework.runtime_policy import (
 logger = logging.getLogger(__name__)
 
 
+_FILE_DELIVERY_ACTION_KEYWORDS = (
+    "保存",
+    "存成",
+    "存为",
+    "写入",
+    "导出",
+    "输出到",
+    "输出成",
+    "整理成",
+    "生成文件",
+    "save",
+    "export",
+    "write to file",
+    "output to file",
+)
+_FILE_DELIVERY_TARGET_KEYWORDS = (
+    "文件",
+    "文档",
+    "markdown",
+    ".md",
+    "md文档",
+    "md文件",
+    "txt文件",
+    "json文件",
+    "csv文件",
+    "yaml文件",
+    "document",
+    "file",
+)
+_FILE_DELIVERY_FORCE_PATTERN = re.compile(
+    r"(?:整理成|保存为|保存成|save as|save to).{0,12}(?:md|markdown|txt|json|csv|yaml|yml|文件|文档|file|document)",
+    re.IGNORECASE,
+)
+_FILE_WRITE_TOOL_NAMES = {"write_file", "append_file", "edit_file"}
+
+
 def _get_env_int(key: str, default: int) -> int:
     """Get integer from environment variable with fallback."""
     try:
@@ -474,13 +510,13 @@ class BaseAgent:
             )
             self.tools.append(code_exec_tool)
 
-            # Add file operation tools (read, edit, write, list files in workspace)
+            # Add file operation tools (read, edit, write, append, list files in workspace)
             from agent_framework.tools.file_tools import create_file_tools
 
             file_tools = create_file_tools()
             self.tools.extend(file_tools)
             logger.info(
-                f"✓ Added file tools (read_file, edit_file, write_file, list_files)",
+                f"✓ Added file tools (read_file, edit_file, write_file, append_file, list_files)",
                 extra={"agent_id": str(self.config.agent_id)},
             )
 
@@ -691,6 +727,68 @@ class BaseAgent:
 
         messages.append(HumanMessage(content=human_content))
         return messages
+
+    @staticmethod
+    def _requires_file_delivery(task_description: str) -> bool:
+        """Infer whether user explicitly requests file/document deliverable output."""
+        text = str(task_description or "").strip()
+        if not text:
+            return False
+
+        lowered = text.lower()
+        has_action = any(keyword in lowered for keyword in _FILE_DELIVERY_ACTION_KEYWORDS)
+        has_target = any(keyword in lowered for keyword in _FILE_DELIVERY_TARGET_KEYWORDS)
+        if has_action and has_target:
+            return True
+
+        return bool(_FILE_DELIVERY_FORCE_PATTERN.search(text))
+
+    @staticmethod
+    def _extract_tool_record_name(record: Any) -> str:
+        """Extract normalized tool name from dict/dataclass tool call records."""
+        value: Any = None
+        if isinstance(record, dict):
+            value = record.get("tool_name") or record.get("name") or record.get("tool")
+        else:
+            value = (
+                getattr(record, "tool_name", None)
+                or getattr(record, "name", None)
+                or getattr(record, "tool", None)
+            )
+        return str(value or "").strip().lower()
+
+    @staticmethod
+    def _extract_tool_record_status(record: Any) -> str:
+        """Extract normalized status from dict/dataclass tool call records."""
+        value: Any = None
+        if isinstance(record, dict):
+            value = record.get("status")
+        else:
+            value = getattr(record, "status", None)
+        return str(value or "").strip().lower()
+
+    def _has_successful_file_write_call(self, tool_call_records: List[Any]) -> bool:
+        """Check whether any successful file-writing tool call has already happened."""
+        for record in tool_call_records:
+            tool_name = self._extract_tool_record_name(record)
+            if tool_name not in _FILE_WRITE_TOOL_NAMES:
+                continue
+
+            status = self._extract_tool_record_status(record)
+            # Legacy AUTO loop only stores successful calls and has no explicit status.
+            if not status or status in {"success", "ok", "completed"}:
+                return True
+        return False
+
+    @staticmethod
+    def _build_file_delivery_guard_feedback() -> str:
+        """Build corrective prompt when user requested file output but no file write happened."""
+        return (
+            "你上一轮尚未把结果保存成文件。用户明确要求交付文档/文件。\n"
+            "请立即调用文件工具完成保存：首次使用 write_file 创建目标文件，后续内容使用 append_file 追加（优先单文件）。\n"
+            "建议路径：/workspace/outputs/result.md\n"
+            "完成后仅简要回复保存路径与状态，不要只输出正文。"
+        )
 
     def _resolve_runtime_policy(
         self,
@@ -914,6 +1012,8 @@ class BaseAgent:
                 max_iterations = max(1, int(resolved_policy.max_rounds or 20))
                 iteration = 0
                 final_output = ""
+                file_delivery_guard_required = self._requires_file_delivery(task_description)
+                file_delivery_guard_prompted = False
 
                 logger.info(
                     f"[TOOL-LOOP] Starting multi-round conversation (max {max_iterations} iterations)",
@@ -1123,6 +1223,34 @@ class BaseAgent:
                             break
                     else:
                         # No tool calls in this round - this is the final answer
+                        if (
+                            file_delivery_guard_required
+                            and not file_delivery_guard_prompted
+                            and iteration < max_iterations
+                            and not self._has_successful_file_write_call(tool_calls_made)
+                        ):
+                            file_delivery_guard_prompted = True
+                            logger.info(
+                                "[TOOL-LOOP] File-delivery guard triggered; requesting file save step",
+                                extra={
+                                    "agent_id": str(self.config.agent_id),
+                                    "round": iteration,
+                                },
+                            )
+                            self._emit_stream_chunk(
+                                stream_callback=stream_callback,
+                                content=(
+                                    "检测到用户要求文件交付，但尚未成功写入文件；"
+                                    "正在追加一次保存步骤。"
+                                ),
+                                content_type="info",
+                            )
+                            messages.append(AIMessage(content=round_output))
+                            messages.append(
+                                HumanMessage(content=self._build_file_delivery_guard_feedback())
+                            )
+                            continue
+
                         logger.info(
                             f"[TOOL-LOOP] No tool calls in round {iteration}, conversation complete",
                             extra={"agent_id": str(self.config.agent_id)},
@@ -2066,6 +2194,8 @@ class BaseAgent:
 
         # Initialize conversation state
         state = ConversationState(max_rounds=self.config.max_iterations)
+        file_delivery_guard_required = self._requires_file_delivery(task_description)
+        file_delivery_guard_prompted = False
 
         # Prepare system prompt and initial messages
         user_message = task_description
@@ -2408,6 +2538,34 @@ class BaseAgent:
 
             # 5. No tool calls = final answer
             if not tool_calls:
+                if (
+                    file_delivery_guard_required
+                    and not file_delivery_guard_prompted
+                    and state.round_number < state.max_rounds
+                    and not self._has_successful_file_write_call(state.tool_calls_made)
+                ):
+                    file_delivery_guard_prompted = True
+                    logger.info(
+                        "[RECOVERY] File-delivery guard triggered; requesting file save step",
+                        extra={
+                            "agent_id": str(self.config.agent_id),
+                            "round": state.round_number,
+                        },
+                    )
+                    if stream_callback:
+                        stream_callback(
+                            (
+                                "\n\n📁 检测到用户要求文件交付，但尚未成功写入文件；正在追加一次保存步骤。\n",
+                                "info",
+                            )
+                        )
+                    messages.append(AIMessage(content=round_output))
+                    messages.append(
+                        HumanMessage(content=self._build_file_delivery_guard_feedback())
+                    )
+                    send_round_stats()
+                    continue
+
                 logger.info(
                     f"[RECOVERY] No tool calls in round {state.round_number}, conversation complete",
                     extra={"agent_id": str(self.config.agent_id)},
@@ -2761,7 +2919,15 @@ Files persist throughout the conversation session.
 - **read_file**: Read file contents. Supports `offset` (start line, 1-based) and `limit` (max lines) for large files.
 - **edit_file**: Replace exact string in a file (`old_string` -> `new_string`). The old_string must match exactly.
 - **write_file**: Create or overwrite a file. Creates parent directories automatically.
+- **append_file**: Append additional content to an existing file (or create it if missing).
 - **list_files**: List files in a directory. Supports `recursive=true`.
+
+**When users ask for deliverables as files/documents** (for example "整理成md文档", "save as markdown"):
+1. You MUST use `write_file` to save the deliverable under `/workspace` (prefer `/workspace/outputs/...`).
+2. Prefer a single target file and update it incrementally across rounds (create first, then continue writing).
+3. Only split into multiple files when explicitly requested by the user or when one file is clearly impractical.
+4. In your final response, report the exact saved file path(s).
+5. Never claim a file was saved unless the tool call succeeded.
 
 **You can also create/manipulate files through code blocks** (Python/Bash) that run in the same workspace.
 
