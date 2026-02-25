@@ -1283,6 +1283,8 @@ Agent 名称: {agent_name or "-"}
 - 不要提取闲聊、客套、泛化无价值信息。
 - 如果没有价值，返回空数组。
 - key 使用英文 snake_case，例如: response_language, output_style, food_preference。
+- 单轮也可以提取“用户明确直接陈述的稳定偏好”（例如喜欢/不喜欢/过敏/禁忌/长期默认偏好），
+  这类应标记 persistent=true，或 explicit_source=true。
 
 输出 JSON Schema:
 {{
@@ -1291,6 +1293,7 @@ Agent 名称: {agent_name or "-"}
       "key": "snake_case",
       "value": "简短明确",
       "persistent": true,
+      "explicit_source": true,
       "confidence": 0.0,
       "reason": "为什么值得记忆",
       "evidence_turns": [1, 2]
@@ -1315,6 +1318,125 @@ Agent 名称: {agent_name or "-"}
 """.strip()
 
     return prompt, turn_ts_map
+
+
+def _build_llm_explicit_preference_recall_prompt(
+    turns: List[Dict[str, str]],
+) -> Tuple[str, Dict[int, Optional[str]]]:
+    selected_turns = turns[-_SESSION_MEMORY_MAX_TURNS_FOR_FLUSH:]
+    lines: List[str] = []
+    turn_ts_map: Dict[int, Optional[str]] = {}
+
+    for idx, turn in enumerate(selected_turns, start=1):
+        user_text = _normalize_session_memory_text(
+            turn.get("user_message", ""),
+            max_chars=520,
+        )
+        agent_text = _normalize_session_memory_text(
+            turn.get("agent_response", ""),
+            max_chars=420,
+        )
+        timestamp = str(turn.get("timestamp") or "").strip() or None
+        turn_ts_map[idx] = timestamp
+        lines.append(
+            "\n".join(
+                [
+                    f"[TURN {idx}] timestamp={timestamp or '-'}",
+                    f"USER: {user_text or '-'}",
+                    f"ASSISTANT: {agent_text or '-'}",
+                ]
+            )
+        )
+
+    transcript = "\n\n".join(lines)
+    if len(transcript) > _SESSION_MEMORY_LLM_PROMPT_MAX_CHARS:
+        transcript = transcript[-_SESSION_MEMORY_LLM_PROMPT_MAX_CHARS :]
+
+    prompt = f"""
+你是“用户偏好补充抽取器”。你的目标是只补充抽取用户明确表达的稳定偏好。
+输出必须是 JSON 对象，不要输出解释文字。
+
+补充抽取规则:
+- 仅抽取用户明确陈述的偏好/禁忌/长期默认习惯（例如：喜欢、不喜欢、过敏、忌口、默认格式、默认语言）。
+- 可以是单轮，但必须是“用户直接表达”，禁止猜测。
+- 一次性任务要求（例如“这次导出 PDF”）不抽取。
+- key 必须是英文 snake_case，value 必须简短。
+- 如无有效项，返回空数组。
+
+输出 JSON Schema:
+{{
+  "user_preferences": [
+    {{
+      "key": "snake_case",
+      "value": "简短明确",
+      "persistent": true,
+      "explicit_source": true,
+      "confidence": 0.0,
+      "reason": "为什么值得记忆",
+      "evidence_turns": [1]
+    }}
+  ]
+}}
+
+会话文本:
+{transcript}
+""".strip()
+
+    return prompt, turn_ts_map
+
+
+def _is_response_format_not_supported_error(error: Exception) -> bool:
+    message = str(error or "").lower()
+    if not message:
+        return False
+    unsupported_cues = (
+        "response_format",
+        "json_object",
+        "json schema",
+        "unsupported",
+        "unexpected keyword argument",
+        "extra fields not permitted",
+        "unknown field",
+    )
+    return any(cue in message for cue in unsupported_cues)
+
+
+async def _call_llm_for_memory_json(
+    *,
+    llm_router: Any,
+    prompt: str,
+    provider: Optional[str],
+    model: Optional[str],
+) -> Dict[str, Any]:
+    base_kwargs = {
+        "prompt": prompt,
+        "provider": provider,
+        "model": model,
+        "temperature": 0.1,
+        "max_tokens": 1800,
+    }
+    try:
+        response = await llm_router.generate(
+            **base_kwargs,
+            response_format={"type": "json_object"},
+        )
+        raw_content = str(getattr(response, "content", "") or "")
+        return _extract_json_object_from_text(raw_content) or {}
+    except Exception as first_error:
+        if not _is_response_format_not_supported_error(first_error):
+            raise
+        logger.info(
+            "Session memory extraction fallback to plain response mode",
+            extra={
+                "provider": provider or "auto",
+                "model": model or "auto",
+                "error": str(first_error),
+            },
+        )
+
+    response = await llm_router.generate(**base_kwargs)
+    raw_content = str(getattr(response, "content", "") or "")
+    return _extract_json_object_from_text(raw_content) or {}
 
 
 def _normalize_llm_user_preference_signals(
@@ -1351,7 +1473,10 @@ def _normalize_llm_user_preference_signals(
             else (_to_positive_int(raw.get("evidence_count")) or 1)
         )
         is_persistent = bool(raw.get("persistent"))
-        if not is_persistent and evidence_count < 2:
+        explicit_source = bool(raw.get("explicit_source"))
+        # Allow single-turn direct preference statements if model gives strong confidence.
+        allow_single_turn = explicit_source or confidence >= 0.82
+        if not is_persistent and evidence_count < 2 and not allow_single_turn:
             continue
 
         latest_turn_ts: Optional[str] = None
@@ -1373,6 +1498,7 @@ def _normalize_llm_user_preference_signals(
                 "confidence": confidence,
                 "latest_ts": latest_turn_ts,
                 "reason": reason or None,
+                "explicit_source": explicit_source,
             }
         )
 
@@ -1549,28 +1675,42 @@ async def _extract_session_memory_signals_with_llm(
         if candidate not in attempts:
             attempts.append(candidate)
 
-    parsed: Dict[str, Any] = {}
-    last_error: Optional[Exception] = None
     try:
         from llm_providers.router import get_llm_provider
 
         llm_router = get_llm_provider()
+    except Exception as e:
+        logger.warning(
+            "LLM-based session memory extraction failed",
+            extra={"agent_id": str(agent_id), "error": str(e)},
+        )
+        return [], []
+
+    async def _run_extraction_with_attempts(
+        extraction_prompt: str,
+        phase: str,
+    ) -> Tuple[Dict[str, Any], Optional[str], Optional[str], Optional[Exception]]:
+        parsed_payload: Dict[str, Any] = {}
+        used_provider: Optional[str] = None
+        used_model: Optional[str] = None
+        last_error: Optional[Exception] = None
+
         for attempt_index, (attempt_provider, attempt_model) in enumerate(attempts, start=1):
             try:
-                llm_response = await llm_router.generate(
-                    prompt=prompt,
+                parsed_payload = await _call_llm_for_memory_json(
+                    llm_router=llm_router,
+                    prompt=extraction_prompt,
                     provider=attempt_provider,
                     model=attempt_model,
-                    temperature=0.1,
-                    max_tokens=1800,
                 )
-                raw_content = str(getattr(llm_response, "content", "") or "")
-                parsed = _extract_json_object_from_text(raw_content) or {}
+                used_provider = attempt_provider
+                used_model = attempt_model
                 if primary_provider and attempt_provider != primary_provider:
                     logger.info(
                         "Session memory extraction fallback provider succeeded",
                         extra={
                             "agent_id": str(agent_id),
+                            "phase": phase,
                             "original_provider": primary_provider,
                             "attempt": attempt_index,
                             "fallback_provider": attempt_provider or "auto",
@@ -1583,15 +1723,20 @@ async def _extract_session_memory_signals_with_llm(
                     "Session memory extraction attempt failed",
                     extra={
                         "agent_id": str(agent_id),
+                        "phase": phase,
                         "attempt": attempt_index,
                         "provider": attempt_provider or "auto",
                         "model": attempt_model or "auto",
                         "error": str(e),
                     },
                 )
-    except Exception as e:
-        last_error = e
 
+        return parsed_payload, used_provider, used_model, last_error
+
+    parsed, used_provider, used_model, last_error = await _run_extraction_with_attempts(
+        prompt,
+        "primary",
+    )
     if last_error and not parsed:
         logger.warning(
             "LLM-based session memory extraction failed",
@@ -1606,6 +1751,93 @@ async def _extract_session_memory_signals_with_llm(
         candidate_items,
         agent_name=agent_name,
         turn_ts_map=turn_ts_map,
+    )
+
+    secondary_raw_user_preferences = 0
+    secondary_normalized_user_preferences = 0
+    secondary_preference_pass_used = False
+    if not user_signals:
+        secondary_preference_pass_used = True
+        recall_prompt, recall_turn_ts_map = _build_llm_explicit_preference_recall_prompt(turns)
+        (
+            recall_parsed,
+            recall_provider,
+            recall_model,
+            recall_error,
+        ) = await _run_extraction_with_attempts(recall_prompt, "explicit_preference_recall")
+        if recall_error and not recall_parsed:
+            logger.warning(
+                "LLM explicit-preference recall extraction failed",
+                extra={"agent_id": str(agent_id), "error": str(recall_error)},
+            )
+        else:
+            recall_user_items = recall_parsed.get("user_preferences")
+            secondary_raw_user_preferences = (
+                len(recall_user_items) if isinstance(recall_user_items, list) else 0
+            )
+            recall_signals = _normalize_llm_user_preference_signals(
+                recall_user_items,
+                recall_turn_ts_map,
+            )
+            secondary_normalized_user_preferences = len(recall_signals)
+            if recall_signals:
+                merged_by_key: Dict[str, Dict[str, Any]] = {
+                    str(item.get("key")): item for item in user_signals if item.get("key")
+                }
+                for signal in recall_signals:
+                    key = str(signal.get("key") or "").strip()
+                    if not key:
+                        continue
+                    existing = merged_by_key.get(key)
+                    if not existing:
+                        merged_by_key[key] = signal
+                        continue
+                    current_score = (
+                        int(bool(signal.get("persistent"))),
+                        int(bool(signal.get("explicit_source"))),
+                        float(signal.get("confidence") or 0.0),
+                        int(signal.get("evidence_count") or 0),
+                        str(signal.get("latest_ts") or ""),
+                    )
+                    existing_score = (
+                        int(bool(existing.get("persistent"))),
+                        int(bool(existing.get("explicit_source"))),
+                        float(existing.get("confidence") or 0.0),
+                        int(existing.get("evidence_count") or 0),
+                        str(existing.get("latest_ts") or ""),
+                    )
+                    if current_score >= existing_score:
+                        merged_by_key[key] = signal
+                user_signals = sorted(
+                    merged_by_key.values(),
+                    key=lambda item: (
+                        int(bool(item.get("persistent"))),
+                        int(bool(item.get("explicit_source"))),
+                        float(item.get("confidence") or 0.0),
+                        int(item.get("evidence_count") or 0),
+                        str(item.get("latest_ts") or ""),
+                    ),
+                    reverse=True,
+                )[:_SESSION_MEMORY_MAX_PREFERENCE_FACTS]
+            if not used_provider and recall_provider:
+                used_provider = recall_provider
+            if not used_model and recall_model:
+                used_model = recall_model
+    logger.info(
+        "Session memory extraction completed",
+        extra={
+            "agent_id": str(agent_id),
+            "provider": used_provider or "auto",
+            "model": used_model or "auto",
+            "turn_count": len(turns),
+            "raw_user_preferences": len(user_items) if isinstance(user_items, list) else 0,
+            "raw_agent_candidates": len(candidate_items) if isinstance(candidate_items, list) else 0,
+            "normalized_user_preferences": len(user_signals),
+            "normalized_agent_candidates": len(agent_candidates),
+            "secondary_preference_pass_used": secondary_preference_pass_used,
+            "secondary_raw_user_preferences": secondary_raw_user_preferences,
+            "secondary_normalized_user_preferences": secondary_normalized_user_preferences,
+        },
     )
     return user_signals, agent_candidates
 
@@ -2012,6 +2244,9 @@ async def _flush_session_memories(
                             "strong_signal": bool(
                                 signal.get("strong_signal") or existing_meta.get("strong_signal")
                             ),
+                            "explicit_source": bool(
+                                signal.get("explicit_source") or existing_meta.get("explicit_source")
+                            ),
                         }
                     )
                     _upsert_existing_user_preference_metadata(int(memory_id), existing_meta)
@@ -2047,6 +2282,7 @@ async def _flush_session_memories(
                     "reason": signal.get("reason"),
                     "latest_turn_ts": signal.get("latest_ts"),
                     "strong_signal": bool(signal.get("strong_signal")),
+                    "explicit_source": bool(signal.get("explicit_source")),
                     "is_active": True,
                 },
             )
@@ -2059,6 +2295,7 @@ async def _flush_session_memories(
                     "preference_value": signal_value,
                     "latest_turn_ts": signal.get("latest_ts"),
                     "strong_signal": bool(signal.get("strong_signal")),
+                    "explicit_source": bool(signal.get("explicit_source")),
                     "is_active": True,
                 },
             }

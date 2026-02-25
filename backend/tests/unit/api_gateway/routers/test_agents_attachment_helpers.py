@@ -374,6 +374,26 @@ def test_normalize_llm_user_preference_signals_filters_low_quality() -> None:
     assert normalized[0]["latest_ts"] == "2026-02-25T10:01:00+00:00"
 
 
+def test_normalize_llm_user_preference_signals_keeps_single_turn_high_confidence_signal() -> None:
+    turn_ts_map = {1: "2026-02-25T10:00:00+00:00"}
+    items = [
+        {
+            "key": "food_preference_like",
+            "value": "冒菜和可乐",
+            "persistent": False,
+            "confidence": 0.91,
+            "evidence_turns": [1],
+            "reason": "用户明确直接表达偏好",
+        }
+    ]
+
+    normalized = _normalize_llm_user_preference_signals(items, turn_ts_map)
+    assert len(normalized) == 1
+    assert normalized[0]["key"] == "food_preference_like"
+    assert normalized[0]["value"] == "冒菜和可乐"
+    assert normalized[0]["latest_ts"] == "2026-02-25T10:00:00+00:00"
+
+
 def test_normalize_llm_agent_candidates_keeps_reusable_candidate() -> None:
     turn_ts_map = {2: "2026-02-25T10:02:00+00:00"}
     items = [
@@ -428,8 +448,16 @@ async def test_extract_session_memory_signals_prefers_memory_config_then_fallbac
             model=None,
             temperature=0.1,
             max_tokens=1800,
+            **kwargs,
         ):
-            self.calls.append({"provider": provider, "model": model, "prompt": prompt})
+            self.calls.append(
+                {
+                    "provider": provider,
+                    "model": model,
+                    "prompt": prompt,
+                    "kwargs": kwargs,
+                }
+            )
             if provider == "memory_provider":
                 raise ValueError("Provider 'memory_provider' not available")
             return SimpleNamespace(
@@ -463,7 +491,71 @@ async def test_extract_session_memory_signals_prefers_memory_config_then_fallbac
     assert fake_router.calls[0]["model"] == "memory-model"
     assert fake_router.calls[1]["provider"] == "agent_provider"
     assert fake_router.calls[1]["model"] == "agent-model"
+    assert fake_router.calls[1]["kwargs"]["response_format"]["type"] == "json_object"
     assert any(item["key"] == "output_format" and item["value"] == "markdown" for item in signals)
+    assert candidates == []
+
+
+@pytest.mark.asyncio
+async def test_extract_session_memory_signals_runs_secondary_preference_recall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRegistry:
+        def get_agent(self, _agent_id):  # noqa: ANN001
+            return SimpleNamespace(llm_provider=None, llm_model=None)
+
+    class FakeConfig:
+        def get(self, _key: str):  # noqa: ANN001
+            return None
+
+    class FakeRouter:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def generate(  # noqa: ANN001
+            self,
+            *,
+            prompt,
+            provider=None,
+            model=None,
+            temperature=0.1,
+            max_tokens=1800,
+            **kwargs,
+        ):
+            self.calls.append({"prompt": prompt, "kwargs": kwargs})
+            if "用户偏好补充抽取器" in prompt:
+                return SimpleNamespace(
+                    content=(
+                        '{"user_preferences":[{"key":"food_preference_like",'
+                        '"value":"黄焖鸡","persistent":true,"explicit_source":true,'
+                        '"confidence":0.9,"evidence_turns":[1]}]}'
+                    )
+                )
+            return SimpleNamespace(
+                content='{"user_preferences":[],"agent_memory_candidates":[]}'
+            )
+
+    fake_router = FakeRouter()
+
+    monkeypatch.setattr("api_gateway.routers.agents.get_agent_registry", lambda: FakeRegistry())
+    monkeypatch.setattr("shared.config.get_config", lambda: FakeConfig())
+    monkeypatch.setattr("llm_providers.router.get_llm_provider", lambda: fake_router)
+
+    signals, candidates = await _extract_session_memory_signals_with_llm(
+        turns=[
+            {
+                "user_message": "我喜欢黄焖鸡，怎么做的？",
+                "agent_response": "可以按家常做法来",
+                "timestamp": "2026-02-25T10:00:00+00:00",
+            }
+        ],
+        agent_id="agent-1",
+        agent_name="小新2号",
+    )
+
+    assert len(fake_router.calls) >= 2
+    assert all(call["kwargs"]["response_format"]["type"] == "json_object" for call in fake_router.calls)
+    assert any(item["key"] == "food_preference_like" and item["value"] == "黄焖鸡" for item in signals)
     assert candidates == []
 
 
