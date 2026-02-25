@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
+import toast from 'react-hot-toast';
 import type { ServerNotification } from '@/types/notification';
 
 export type NotificationType = 'info' | 'success' | 'warning' | 'error';
@@ -88,6 +89,27 @@ export const useNotificationStore = create<NotificationState>()(
             unreadCount: computeUnreadCount(nextNotifications),
           };
         });
+
+        const toastMessage = notification.message?.trim() || notification.title?.trim();
+        if (!toastMessage) return;
+
+        if (notification.type === 'success') {
+          toast.success(toastMessage);
+          return;
+        }
+
+        if (notification.type === 'warning') {
+          toast(toastMessage, {
+            icon: '⚠️',
+          });
+          return;
+        }
+
+        if (notification.type === 'info') {
+          toast(toastMessage, {
+            icon: 'ℹ️',
+          });
+        }
       },
 
       replaceServerNotifications: (serverNotifications) =>

@@ -70,6 +70,10 @@ export const EnvVarsSettings: React.FC = () => {
       loadEnvVars();
     } catch (error) {
       console.error('Failed to add env var:', error);
+      addNotification({
+        type: 'error',
+        message: t('settings.envVars.addFailed', 'Failed to add environment variable'),
+      });
     } finally {
       setAddingVar(false);
     }
@@ -91,6 +95,10 @@ export const EnvVarsSettings: React.FC = () => {
       loadEnvVars();
     } catch (error) {
       console.error('Failed to delete env var:', error);
+      addNotification({
+        type: 'error',
+        message: t('settings.envVars.deleteFailed', 'Failed to delete environment variable'),
+      });
     }
   };
 

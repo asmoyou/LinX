@@ -67,6 +67,8 @@ def _notification_to_response(notification) -> NotificationResponse:
 @router.get("", response_model=NotificationListResponse)
 async def list_notifications(
     status_filter: Literal["all", "unread"] = Query(default="all", alias="status"),
+    severity: Optional[Literal["info", "success", "warning", "error"]] = Query(default=None),
+    query_text: Optional[str] = Query(default=None, alias="query"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     current_user: CurrentUser = Depends(get_current_user),
@@ -77,6 +79,8 @@ async def list_notifications(
     notifications, total, unread_count = list_user_notifications(
         user_id=UUID(current_user.user_id),
         unread_only=status_filter == "unread",
+        severity=severity,
+        query=query_text,
         limit=limit,
         offset=offset,
     )

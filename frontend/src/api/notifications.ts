@@ -1,9 +1,12 @@
+import type { NotificationSeverity } from '@/types/notification';
 import apiClient from './client';
 import type { NotificationListResponse, ServerNotification } from '@/types/notification';
 
 export const notificationsApi = {
   getAll: async (params?: {
     status?: 'all' | 'unread';
+    severity?: NotificationSeverity;
+    query?: string;
     limit?: number;
     offset?: number;
   }): Promise<NotificationListResponse> => {

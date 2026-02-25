@@ -23,6 +23,7 @@ const UserManagement = lazy(() => import('./pages/UserManagement').then(m => ({ 
 const RoleManagement = lazy(() => import('./pages/RoleManagement').then(m => ({ default: m.RoleManagement })));
 const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings })));
 const Profile = lazy(() => import('./pages/Profile').then(m => ({ default: m.Profile })));
+const Notifications = lazy(() => import('./pages/Notifications').then(m => ({ default: m.Notifications })));
 const Login = lazy(() => import('./pages/Login'));
 const Register = lazy(() => import('./pages/Register'));
 
@@ -280,6 +281,23 @@ const AnimatedRoutes = () => {
               </PageErrorBoundary>
             }
           />
+          <Route
+            path="notifications"
+            element={
+              <PageErrorBoundary pageName="通知中心">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <Notifications />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
+            }
+          />
         </Route>
       </Routes>
     </AnimatePresence>
@@ -301,4 +319,3 @@ function App() {
 }
 
 export default App;
-

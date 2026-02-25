@@ -11,6 +11,7 @@ import {
   Cpu,
   Building2,
   Settings,
+  Bell,
   Mail,
   Shield,
   UserCog,
@@ -49,6 +50,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
     { path: '/departments', icon: Building2, label: t('nav.departments') },
     { path: '/user-management', icon: UserCog, label: t('nav.userManagement'), requiredRoles: ['admin', 'manager'] as string[] },
     { path: '/role-management', icon: ShieldCheck, label: t('nav.roleManagement'), requiredRoles: ['admin', 'manager'] as string[] },
+    { path: '/notifications', icon: Bell, label: t('nav.notifications', 'Notifications') },
     { path: '/settings', icon: Settings, label: t('nav.settings') },
   ];
 

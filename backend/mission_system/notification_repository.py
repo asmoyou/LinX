@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
-from sqlalchemy import desc
+from sqlalchemy import desc, or_
 
 from database.connection import get_db_session
 from database.mission_models import UserNotification
@@ -53,6 +53,8 @@ def list_user_notifications(
     *,
     user_id: UUID,
     unread_only: bool = False,
+    severity: Optional[str] = None,
+    query: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> Tuple[List[UserNotification], int, int]:
@@ -65,6 +67,18 @@ def list_user_notifications(
         base_query = session.query(UserNotification).filter(UserNotification.user_id == user_id)
         if unread_only:
             base_query = base_query.filter(UserNotification.is_read.is_(False))
+        if severity:
+            base_query = base_query.filter(UserNotification.severity == severity)
+        if query:
+            keyword = query.strip()
+            if keyword:
+                like_keyword = f"%{keyword}%"
+                base_query = base_query.filter(
+                    or_(
+                        UserNotification.title.ilike(like_keyword),
+                        UserNotification.message.ilike(like_keyword),
+                    )
+                )
 
         items = (
             base_query.order_by(desc(UserNotification.created_at)).offset(offset).limit(limit).all()

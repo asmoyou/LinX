@@ -40,18 +40,18 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
     notifications,
     unreadCount,
     markAsRead,
-    markAllAsRead,
-    clearAll,
-    removeNotification,
     markServerNotificationRead,
-    removeServerNotification,
   } = useNotificationStore();
   const [showNotifications, setShowNotifications] = React.useState(false);
   const [showSystemHealth, setShowSystemHealth] = React.useState(false);
   const [systemHealth, setSystemHealth] = React.useState<SystemHealthResponse | null>(null);
   const [healthLoading, setHealthLoading] = React.useState(true);
   const [healthError, setHealthError] = React.useState<string | null>(null);
-  const [notificationBusy, setNotificationBusy] = React.useState(false);
+  const notificationContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const previewNotifications = React.useMemo(
+    () => notifications.filter((notification) => !notification.read).slice(0, 20),
+    [notifications]
+  );
 
   const themeOptions = [
     { id: 'light' as const, icon: Sun },
@@ -138,6 +138,31 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
       window.clearInterval(timer);
     };
   }, []);
+
+  React.useEffect(() => {
+    if (!showNotifications) return;
+
+    const handleOutsidePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (notificationContainerRef.current && target && !notificationContainerRef.current.contains(target)) {
+        setShowNotifications(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowNotifications(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsidePointerDown);
+    document.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.removeEventListener('mousedown', handleOutsidePointerDown);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [showNotifications]);
 
   type HeaderHealthState = 'checking' | 'unknown' | 'optimal' | 'degraded' | 'critical';
 
@@ -252,32 +277,6 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
 
   const badge = healthBadgeConfig[headerHealthState];
 
-  const handleMarkAllRead = async () => {
-    if (notificationBusy) return;
-    setNotificationBusy(true);
-    try {
-      await notificationsApi.markAllAsRead();
-      markAllAsRead();
-    } catch {
-      // Global API interceptor handles error toast.
-    } finally {
-      setNotificationBusy(false);
-    }
-  };
-
-  const handleClearAll = async () => {
-    if (notificationBusy) return;
-    setNotificationBusy(true);
-    try {
-      await notificationsApi.clear('all');
-      clearAll();
-    } catch {
-      // Global API interceptor handles error toast.
-    } finally {
-      setNotificationBusy(false);
-    }
-  };
-
   const handleOpenNotification = async (notification: (typeof notifications)[number]) => {
     if (!notification.read) {
       if (notification.serverNotificationId) {
@@ -297,17 +296,20 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
     }
   };
 
-  const handleRemoveNotification = async (notification: (typeof notifications)[number]) => {
+  const handleMarkNotificationRead = async (notification: (typeof notifications)[number]) => {
+    if (notification.read) return;
+
     if (notification.serverNotificationId) {
       try {
-        await notificationsApi.deleteOne(notification.serverNotificationId);
-        removeServerNotification(notification.serverNotificationId);
+        await notificationsApi.markAsRead(notification.serverNotificationId);
+        markServerNotificationRead(notification.serverNotificationId);
       } catch {
         // API interceptor handles error toast.
       }
       return;
     }
-    removeNotification(notification.id);
+
+    markAsRead(notification.id);
   };
 
   return (
@@ -486,11 +488,11 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
         </div>
 
         {/* Notifications */}
-        <div className="relative">
+        <div className="relative" ref={notificationContainerRef}>
           <button
             onClick={() => setShowNotifications(!showNotifications)}
             className="relative p-2.5 hover:bg-zinc-500/5 rounded-full transition-colors text-zinc-400"
-            aria-label="Notifications"
+            aria-label={t('header.notifications.title', 'Notifications')}
             aria-expanded={showNotifications}
           >
             <Bell className="w-5 h-5" />
@@ -505,104 +507,88 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
           </button>
 
           {showNotifications && (
-            <>
-              <div
-                className="fixed inset-0 z-40"
-                onClick={() => setShowNotifications(false)}
-              />
-              <div 
-                className="absolute right-0 mt-2 w-80 glass-panel rounded-[24px] shadow-2xl p-6 animate-slide-in-right z-50"
-                role="menu"
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">
-                    Notifications
-                  </h3>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => {
-                        void handleMarkAllRead();
-                      }}
-                      disabled={notificationBusy}
-                      className="text-[10px] text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
-                    >
-                      Mark all read
-                    </button>
-                    <button
-                      onClick={() => {
-                        void handleClearAll();
-                      }}
-                      disabled={notificationBusy}
-                      className="text-[10px] text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
-                    >
-                      Clear
-                    </button>
+            <div 
+              className="absolute right-0 mt-2 w-80 rounded-[24px] shadow-2xl p-6 animate-slide-in-right z-50 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700"
+              role="menu"
+            >
+              <div className="mb-3">
+                <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">
+                  {t('header.notifications.title', 'Notifications')}
+                </h3>
+              </div>
+              <div className="space-y-2 max-h-80 overflow-y-auto pr-1 custom-scrollbar">
+                {previewNotifications.length === 0 ? (
+                  <div className="text-sm text-zinc-600 dark:text-zinc-400 p-3 rounded-xl">
+                    {t('header.notifications.empty', 'No new notifications')}
                   </div>
-                </div>
-                <div className="space-y-2 max-h-80 overflow-y-auto pr-1 custom-scrollbar">
-                  {notifications.length === 0 ? (
-                    <div className="text-sm text-zinc-600 dark:text-zinc-400 p-3 rounded-xl">
-                      No new notifications
-                    </div>
-                  ) : (
-                    notifications.map((notification) => (
-                      <div
-                        key={notification.id}
-                        className={`p-3 rounded-xl border transition-colors ${
-                          notification.read
-                            ? 'border-zinc-200/70 dark:border-zinc-700/70 bg-white/60 dark:bg-zinc-800/40'
-                            : 'border-emerald-200 dark:border-emerald-500/40 bg-emerald-50/70 dark:bg-emerald-500/10'
-                        }`}
+                ) : (
+                  previewNotifications.map((notification) => (
+                    <div
+                      key={notification.id}
+                      className={`p-3 rounded-xl border transition-colors ${
+                        notification.read
+                          ? 'border-zinc-200/70 dark:border-zinc-700/70 bg-white/60 dark:bg-zinc-800/40'
+                          : 'border-emerald-200 dark:border-emerald-500/40 bg-emerald-50/70 dark:bg-emerald-500/10'
+                      }`}
+                    >
+                      <button
+                        className="w-full text-left"
+                        onClick={() => {
+                          void handleOpenNotification(notification);
+                        }}
                       >
-                        <button
-                          className="w-full text-left"
-                          onClick={() => {
-                            void handleOpenNotification(notification);
-                          }}
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-200 truncate">
-                                {notification.title}
-                              </div>
-                              <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-300 whitespace-pre-wrap break-words">
-                                {notification.message}
-                              </div>
-                              <div className="mt-1 text-[10px] text-zinc-400">
-                                {formatNotificationTimestamp(notification.timestamp)}
-                              </div>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-200 truncate">
+                              {notification.title}
                             </div>
-                            {!notification.read && (
-                              <span className="mt-1 w-2 h-2 rounded-full bg-emerald-500" />
-                            )}
+                            <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-300 whitespace-pre-wrap break-words">
+                              {notification.message}
+                            </div>
+                            <div className="mt-1 text-[10px] text-zinc-400">
+                              {formatNotificationTimestamp(notification.timestamp)}
+                            </div>
                           </div>
-                        </button>
-                        <div className="mt-2 flex items-center justify-end gap-2">
-                          {notification.actionUrl && (
-                            <button
-                              onClick={() => {
-                                void handleOpenNotification(notification);
-                              }}
-                              className="text-[10px] px-2 py-1 rounded-md border border-emerald-300 dark:border-emerald-500/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-500/10"
-                            >
-                              {notification.actionLabel || 'Open'}
-                            </button>
+                          {!notification.read && (
+                            <span className="mt-1 w-2 h-2 rounded-full bg-emerald-500" />
                           )}
+                        </div>
+                      </button>
+                      <div className="mt-2 flex items-center justify-end gap-2">
+                        {notification.actionUrl && (
                           <button
                             onClick={() => {
-                              void handleRemoveNotification(notification);
+                              void handleOpenNotification(notification);
                             }}
-                            className="text-[10px] px-2 py-1 rounded-md border border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
-                          >
-                            Dismiss
+                          className="text-[10px] px-2 py-1 rounded-md border border-emerald-300 dark:border-emerald-500/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-500/10"
+                        >
+                            {notification.actionLabel ||
+                              t('header.notifications.open', 'Open')}
                           </button>
-                        </div>
+                        )}
+                        <button
+                          onClick={() => {
+                            void handleMarkNotificationRead(notification);
+                          }}
+                          className="text-[10px] px-2 py-1 rounded-md border border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                        >
+                          {t('header.notifications.markRead', 'Mark read')}
+                        </button>
                       </div>
-                    ))
-                  )}
-                </div>
+                    </div>
+                  ))
+                )}
               </div>
-            </>
+              <button
+                onClick={() => {
+                  setShowNotifications(false);
+                  navigate('/notifications');
+                }}
+                className="mt-3 w-full text-xs py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              >
+                {t('header.notifications.viewAll', 'View all notifications')}
+              </button>
+            </div>
           )}
         </div>
       </div>
