@@ -29,7 +29,7 @@ import { LayoutModal } from '@/components/LayoutModal';
 import { ModalPanel } from '@/components/ModalPanel';
 import { useMissionStore } from '@/stores/missionStore';
 import { selectLatestMissionRunEvents } from '@/utils/missionEvents';
-import type { MissionEvent, MissionTask } from '@/types/mission';
+import type { Mission, MissionEvent, MissionStatus, MissionTask } from '@/types/mission';
 
 const nodeTypes = {
   missionNode: MissionNode,
@@ -55,7 +55,7 @@ const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
 };
 
 const FLOW_POLL_INTERVAL_MS = 10_000;
-const FLOW_POLL_INTERVAL_WS_CONNECTED_MS = 180_000;
+const FLOW_POLL_INTERVAL_WS_CONNECTED_MS = 30_000;
 
 function formatDetailTimestamp(value?: string): string {
   if (!value) return '-';
@@ -279,6 +279,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
   } = useMissionStore();
 
   const wsRef = useRef<WebSocket | null>(null);
+  const wsReconcileTimerRef = useRef<number | null>(null);
   const pollingInFlightRef = useRef(false);
   const previousStructureSignatureRef = useRef<string>('');
   const previousMissionIdRef = useRef<string | null>(null);
@@ -308,6 +309,24 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     setClarificationReply('');
   }, [missionId]);
 
+  const scheduleWsReconciliation = useCallback(() => {
+    if (wsReconcileTimerRef.current !== null) {
+      return;
+    }
+    wsReconcileTimerRef.current = window.setTimeout(() => {
+      wsReconcileTimerRef.current = null;
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+      void Promise.all([
+        fetchMission(missionId),
+        fetchMissionTasks(missionId),
+        fetchMissionAgents(missionId),
+        fetchMissionEvents(missionId),
+      ]);
+    }, 1200);
+  }, [fetchMission, fetchMissionTasks, fetchMissionAgents, fetchMissionEvents, missionId]);
+
   // WebSocket connection
   useEffect(() => {
     const configuredWsBase = (import.meta.env.VITE_WS_URL as string | undefined)?.trim() || '';
@@ -334,6 +353,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
       try {
         const data = JSON.parse(event.data);
         const store = useMissionStore.getState();
+        let handled = false;
 
         if (data.type === 'mission_event' && data.data) {
           const payload = data.data;
@@ -347,16 +367,48 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
             message: payload.message || undefined,
             created_at: payload.created_at || new Date().toISOString(),
           });
-        } else if (data.type === 'mission_state' && data.data) {
+          handled = true;
+        } else if (data.type === 'mission_state') {
+          const payload = (data.data && typeof data.data === 'object' ? data.data : data) as {
+            mission_id?: string;
+            status?: string;
+            [key: string]: unknown;
+          };
+          if (!payload.mission_id || !payload.status) return;
           store.handleMissionStatusUpdate({
-            mission_id: data.data.mission_id,
-            status: data.data.status,
-            updates: data.data,
+            mission_id: payload.mission_id,
+            status: payload.status as MissionStatus,
+            updates: payload as Partial<Mission>,
           });
+          handled = true;
         } else if (data.type === 'mission_status') {
-          store.handleMissionStatusUpdate(data);
-        } else if (data.type === 'task_status' && data.task_id && data.updates) {
-          store.handleTaskStatusUpdate(data);
+          const payload = (data.data && typeof data.data === 'object' ? data.data : data) as {
+            mission_id?: string;
+            status?: string;
+            updates?: Record<string, unknown>;
+          };
+          if (!payload.mission_id || !payload.status) return;
+          store.handleMissionStatusUpdate({
+            mission_id: payload.mission_id,
+            status: payload.status as MissionStatus,
+            updates: payload.updates as Partial<Mission>,
+          });
+          handled = true;
+        } else if (data.type === 'task_status') {
+          const payload = (data.data && typeof data.data === 'object' ? data.data : data) as {
+            task_id?: string;
+            updates?: Record<string, unknown>;
+          };
+          if (!payload.task_id || !payload.updates) return;
+          store.handleTaskStatusUpdate({
+            task_id: payload.task_id,
+            updates: payload.updates as Partial<MissionTask>,
+          });
+          handled = true;
+        }
+
+        if (handled) {
+          scheduleWsReconciliation();
         }
       } catch {
         // ignore parse errors
@@ -371,10 +423,14 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
 
     return () => {
       setIsMissionWsConnected(false);
+      if (wsReconcileTimerRef.current !== null) {
+        window.clearTimeout(wsReconcileTimerRef.current);
+        wsReconcileTimerRef.current = null;
+      }
       ws.close();
       wsRef.current = null;
     };
-  }, [missionId]);
+  }, [missionId, scheduleWsReconciliation]);
 
   // Polling fallback when websocket updates are delayed or disconnected.
   useEffect(() => {

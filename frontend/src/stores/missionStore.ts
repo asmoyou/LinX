@@ -785,6 +785,25 @@ export const useMissionStore = create<MissionState>((set, get) => ({
               ? eventData.error.trim()
               : event.message?.trim() || undefined)
           : undefined;
+      const shouldPatchMissionTasks =
+        state.selectedMission?.mission_id === event.mission_id &&
+        typeof event.task_id === 'string' &&
+        event.task_id.length > 0 &&
+        TASK_EVENT_TYPES.has(normalizedEventType);
+      const nextMissionTasks = shouldPatchMissionTasks
+        ? state.missionTasks.map((task) =>
+            task.task_id === event.task_id ? applyTaskEventUpdate(task, event) : task
+          )
+        : state.missionTasks;
+      const derivedMissionCounters =
+        shouldPatchMissionTasks && nextMissionTasks.length > 0
+          ? {
+              total_tasks: nextMissionTasks.length,
+              completed_tasks: nextMissionTasks.filter((task) => task.status === 'completed').length,
+              failed_tasks: nextMissionTasks.filter((task) => task.status === 'failed').length,
+            }
+          : null;
+      const hasDerivedMissionCounters = derivedMissionCounters !== null;
 
       const patchMission = (mission: Mission): Mission => {
         if (mission.mission_id !== event.mission_id) return mission;
@@ -801,10 +820,15 @@ export const useMissionStore = create<MissionState>((set, get) => ({
           patched = { ...patched, title: eventTitle };
         }
 
-        if (hasCounterSnapshot) {
-          const nextTotalRaw = totalTasksFromEvent ?? patched.total_tasks;
-          const nextCompletedRaw = completedTasksFromEvent ?? patched.completed_tasks;
-          const nextFailedRaw = failedTasksFromEvent ?? patched.failed_tasks;
+        if (hasCounterSnapshot || hasDerivedMissionCounters) {
+          const nextTotalRaw =
+            derivedMissionCounters?.total_tasks ?? totalTasksFromEvent ?? patched.total_tasks;
+          const nextCompletedRaw =
+            derivedMissionCounters?.completed_tasks ??
+            completedTasksFromEvent ??
+            patched.completed_tasks;
+          const nextFailedRaw =
+            derivedMissionCounters?.failed_tasks ?? failedTasksFromEvent ?? patched.failed_tasks;
           const normalizedTotal = Math.max(0, nextTotalRaw, nextCompletedRaw + nextFailedRaw);
           patched = {
             ...patched,
@@ -845,12 +869,6 @@ export const useMissionStore = create<MissionState>((set, get) => ({
         return normalizeMissionStatus(patched);
       };
 
-      const shouldPatchMissionTasks =
-        state.selectedMission?.mission_id === event.mission_id &&
-        typeof event.task_id === 'string' &&
-        event.task_id.length > 0 &&
-        TASK_EVENT_TYPES.has(normalizedEventType);
-
       return {
         missionEvents: nextEvents.slice(-500),
         missions: state.missions.map((mission) => patchMission(mission)),
@@ -858,11 +876,7 @@ export const useMissionStore = create<MissionState>((set, get) => ({
           state.selectedMission?.mission_id === event.mission_id
             ? patchMission(state.selectedMission)
             : state.selectedMission,
-        missionTasks: shouldPatchMissionTasks
-          ? state.missionTasks.map((task) =>
-              task.task_id === event.task_id ? applyTaskEventUpdate(task, event) : task
-            )
-          : state.missionTasks,
+        missionTasks: nextMissionTasks,
       };
     });
   },
