@@ -137,83 +137,73 @@ const ResetPasswordDialog: React.FC<ResetPasswordDialogProps> = ({ user, onClose
       onClose={onClose}
       closeOnBackdropClick={false}
       closeOnEscape={true}
-      backdropClassName="bg-black/50"
-    >
-      <div className="bg-white dark:bg-zinc-800 rounded-2xl shadow-2xl w-full max-w-md mx-4">
-        <div className="flex items-center justify-between p-6 border-b border-zinc-200 dark:border-zinc-700">
-          <div>
-            <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">
-              {t('userManagement.resetPassword')}
-            </h2>
-            <p className="text-sm text-zinc-500 mt-0.5">
-              {t('userManagement.resetPasswordFor', { username: user.username })}
-            </p>
-          </div>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-700">
-            <X className="w-5 h-5 text-zinc-500" />
+      title={t('userManagement.resetPassword')}
+      description={t('userManagement.resetPasswordFor', { username: user.username })}
+      size="md"
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-lg transition-colors"
+          >
+            {t('common.cancel')}
           </button>
-        </div>
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-              {t('userManagement.newPassword')} *
-            </label>
-            <div className="flex gap-2">
-              <div className="flex-1">
-                <PasswordInput
-                  value={newPassword}
-                  onChange={setNewPassword}
-                  required
-                  minLength={8}
-                  autoFocus
-                />
-              </div>
-              <button
-                type="button"
-                onClick={handleCopyPassword}
-                disabled={!newPassword}
-                className="p-2 rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors disabled:opacity-30"
-                title={t('userManagement.copyPassword')}
-              >
-                <Copy className="w-4 h-4" />
-              </button>
+          <button
+            form="reset-password-form"
+            type="submit"
+            disabled={saving || !isValid}
+            className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors disabled:opacity-50"
+          >
+            {saving ? t('common.loading') : t('userManagement.resetPassword')}
+          </button>
+        </>
+      }
+    >
+      <form id="reset-password-form" onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+            {t('userManagement.newPassword')} *
+          </label>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <PasswordInput
+                value={newPassword}
+                onChange={setNewPassword}
+                required
+                minLength={8}
+                autoFocus
+              />
             </div>
-            {newPassword && newPassword.length < 8 && (
-              <p className="text-xs text-amber-500 mt-1">{t('userManagement.passwordMinLength')}</p>
-            )}
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-              {t('userManagement.confirmPassword')} *
-            </label>
-            <PasswordInput
-              value={confirmPassword}
-              onChange={setConfirmPassword}
-              required
-              minLength={8}
-            />
-            {confirmPassword && !passwordsMatch && (
-              <p className="text-xs text-red-500 mt-1">{t('userManagement.passwordMismatch')}</p>
-            )}
-          </div>
-          <div className="flex justify-end gap-3 pt-2">
             <button
               type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-lg transition-colors"
+              onClick={handleCopyPassword}
+              disabled={!newPassword}
+              className="p-2 rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors disabled:opacity-30"
+              title={t('userManagement.copyPassword')}
             >
-              {t('common.cancel')}
-            </button>
-            <button
-              type="submit"
-              disabled={saving || !isValid}
-              className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors disabled:opacity-50"
-            >
-              {saving ? t('common.loading') : t('userManagement.resetPassword')}
+              <Copy className="w-4 h-4" />
             </button>
           </div>
-        </form>
-      </div>
+          {newPassword && newPassword.length < 8 && (
+            <p className="text-xs text-amber-500 mt-1">{t('userManagement.passwordMinLength')}</p>
+          )}
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+            {t('userManagement.confirmPassword')} *
+          </label>
+          <PasswordInput
+            value={confirmPassword}
+            onChange={setConfirmPassword}
+            required
+            minLength={8}
+          />
+          {confirmPassword && !passwordsMatch && (
+            <p className="text-xs text-red-500 mt-1">{t('userManagement.passwordMismatch')}</p>
+          )}
+        </div>
+      </form>
     </LayoutModal>
   );
 };
@@ -276,107 +266,101 @@ const UserFormDialog: React.FC<UserFormDialogProps> = ({ user, onClose, onSaved 
       onClose={onClose}
       closeOnBackdropClick={false}
       closeOnEscape={true}
-      backdropClassName="bg-black/50"
-    >
-      <div className="bg-white dark:bg-zinc-800 rounded-2xl shadow-2xl w-full max-w-md mx-4">
-        <div className="flex items-center justify-between p-6 border-b border-zinc-200 dark:border-zinc-700">
-          <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">
-            {isEditing ? t('userManagement.editUser') : t('userManagement.createUser')}
-          </h2>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-700">
-            <X className="w-5 h-5 text-zinc-500" />
+      title={isEditing ? t('userManagement.editUser') : t('userManagement.createUser')}
+      size="md"
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-lg transition-colors"
+          >
+            {t('common.cancel')}
           </button>
-        </div>
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          {!isEditing && (
-            <div>
-              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-                {t('userManagement.username')} *
-              </label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                required
-                minLength={3}
-                maxLength={30}
-                pattern="^[a-zA-Z0-9_-]+$"
-                className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
-              />
-            </div>
-          )}
+          <button
+            form="user-form"
+            type="submit"
+            disabled={saving}
+            className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors disabled:opacity-50"
+          >
+            {saving ? t('common.loading') : t('common.save')}
+          </button>
+        </>
+      }
+    >
+      <form id="user-form" onSubmit={handleSubmit} className="space-y-4">
+        {!isEditing && (
           <div>
             <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-              {t('userManagement.email')} *
+              {t('userManagement.username')} *
             </label>
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
               required
+              minLength={3}
+              maxLength={30}
+              pattern="^[a-zA-Z0-9_-]+$"
               className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
             />
           </div>
-          {!isEditing && (
-            <div>
-              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-                {t('userManagement.password')} *
-              </label>
-              <PasswordInput
-                value={password}
-                onChange={setPassword}
-                required
-                minLength={8}
-              />
-              {password && password.length < 8 && (
-                <p className="text-xs text-amber-500 mt-1">{t('userManagement.passwordMinLength')}</p>
-              )}
-            </div>
-          )}
+        )}
+        <div>
+          <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+            {t('userManagement.email')} *
+          </label>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+          />
+        </div>
+        {!isEditing && (
           <div>
             <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-              {t('userManagement.role')}
+              {t('userManagement.password')} *
             </label>
-            <select
-              value={role}
-              onChange={(e) => setRole(e.target.value)}
-              disabled={!isAdmin}
-              className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 disabled:opacity-50"
-            >
-              <option value="admin">{t('roleManagement.roles.admin')}</option>
-              <option value="manager">{t('roleManagement.roles.manager')}</option>
-              <option value="user">{t('roleManagement.roles.user')}</option>
-              <option value="viewer">{t('roleManagement.roles.viewer')}</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-              {t('userManagement.department')}
-            </label>
-            <DepartmentSelect
-              value={departmentId}
-              onChange={setDepartmentId}
-              showAll={false}
+            <PasswordInput
+              value={password}
+              onChange={setPassword}
+              required
+              minLength={8}
             />
+            {password && password.length < 8 && (
+              <p className="text-xs text-amber-500 mt-1">{t('userManagement.passwordMinLength')}</p>
+            )}
           </div>
-          <div className="flex justify-end gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-lg transition-colors"
-            >
-              {t('common.cancel')}
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors disabled:opacity-50"
-            >
-              {saving ? t('common.loading') : t('common.save')}
-            </button>
-          </div>
-        </form>
-      </div>
+        )}
+        <div>
+          <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+            {t('userManagement.role')}
+          </label>
+          <select
+            value={role}
+            onChange={(e) => setRole(e.target.value)}
+            disabled={!isAdmin}
+            className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 disabled:opacity-50"
+          >
+            <option value="admin">{t('roleManagement.roles.admin')}</option>
+            <option value="manager">{t('roleManagement.roles.manager')}</option>
+            <option value="user">{t('roleManagement.roles.user')}</option>
+            <option value="viewer">{t('roleManagement.roles.viewer')}</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+            {t('userManagement.department')}
+          </label>
+          <DepartmentSelect
+            value={departmentId}
+            onChange={setDepartmentId}
+            showAll={false}
+          />
+        </div>
+      </form>
     </LayoutModal>
   );
 };

@@ -476,111 +476,105 @@ export const Robots: React.FC = () => {
       </div>
 
       {/* Telemetry Modal */}
-      <AnimatePresence>
-        {showTelemetry && selectedRobot && (
-          <LayoutModal
-            isOpen={true}
-            onClose={() => setShowTelemetry(false)}
-            closeOnBackdropClick={true}
-            closeOnEscape={true}
-            zIndexClassName="z-[100]"
-          >
-            <div className="relative w-full max-w-2xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] flex flex-col bg-white dark:bg-zinc-900 rounded-[32px] shadow-2xl overflow-hidden border border-zinc-500/10">
-              {/* Modal Header */}
-              <div className="p-6 border-b border-zinc-500/10 flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center bg-emerald-500/10 text-emerald-500`}>
-                    <Cpu className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h2 className="text-xl font-bold text-zinc-800 dark:text-white">{selectedRobot.name}</h2>
-                    <p className="text-xs text-zinc-500 uppercase font-bold tracking-widest">{selectedRobot.model} 深度遥测</p>
-                  </div>
-                </div>
-                <button 
-                  onClick={() => setShowTelemetry(false)}
-                  className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors"
-                >
-                  <X className="w-6 h-6 text-zinc-400" />
-                </button>
+      <LayoutModal
+        isOpen={showTelemetry}
+        onClose={() => setShowTelemetry(false)}
+        closeOnBackdropClick={true}
+        closeOnEscape={true}
+        zIndexClassName="z-[100]"
+        size="2xl"
+      >
+        <LayoutModal.Header>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center bg-emerald-500/10 text-emerald-500`}>
+                <Cpu className="w-6 h-6" />
               </div>
-
-              {/* Modal Content */}
-              <div className="p-8 overflow-y-auto flex-1 min-h-0">
-                {/* Metrics Grid */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
-                  {telemetryConfig.metrics.map((stat, i) => (
-                    <div key={i} className="bg-zinc-500/5 rounded-2xl p-4 border border-zinc-500/10">
-                      <stat.icon className={`w-4 h-4 mb-2 ${stat.color}`} />
-                      <p className="text-[10px] font-bold text-zinc-500 uppercase mb-1">{stat.label}</p>
-                      <p className="text-lg font-black text-zinc-800 dark:text-white">{stat.value}</p>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Type Specific Sections */}
-                <div className="space-y-6">
-                  <div>
-                    <h3 className="text-sm font-bold text-zinc-800 dark:text-white mb-4 flex items-center gap-2">
-                      <Activity className="w-4 h-4 text-emerald-500" />
-                      关键运行数据 (Technical Details)
-                    </h3>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {telemetryConfig.details.map((detail, i) => (
-                        <div key={i} className="flex flex-col p-4 rounded-xl bg-zinc-500/5 border border-zinc-500/10">
-                          <span className="text-[10px] font-bold text-zinc-400 uppercase mb-1">{detail.label}</span>
-                          <div className="flex items-baseline gap-2">
-                            <span className="text-sm font-bold text-zinc-800 dark:text-zinc-100">{detail.value}</span>
-                            {detail.subValue && (
-                              <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">{detail.subValue}</span>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Shared Logic Section */}
-                  <div className="p-4 rounded-2xl bg-zinc-800 dark:bg-zinc-100 flex items-center justify-between">
-                    <div>
-                      <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase">当前运行状态</p>
-                      <p className="text-sm font-bold text-white dark:text-zinc-900">健康度: 100% (Optimal)</p>
-                    </div>
-                    <div className="flex -space-x-2">
-                      {[1, 2, 3].map(i => (
-                        <div key={i} className="w-6 h-6 rounded-full border-2 border-zinc-800 dark:border-white bg-zinc-700 dark:bg-zinc-300 flex items-center justify-center">
-                          <Zap className="w-3 h-3 text-emerald-500" />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/10">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Shield className="w-4 h-4 text-emerald-500" />
-                      <h3 className="text-xs font-bold text-emerald-600 dark:text-emerald-400">LinX 隔离保护 (Isolation Guard)</h3>
-                    </div>
-                    <p className="text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
-                      该实体通过 <b>LinX Shield</b> 加密通道连接。所有下发的物理动作指令均经过 Agent 控制层级权限校验。
-                      环境感知的视频流已进行本地匿名化处理后再进入 AI 分析链条。
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Modal Footer */}
-              <div className="p-6 bg-zinc-50 dark:bg-zinc-800/50 border-t border-zinc-500/10 flex justify-end">
-                <button 
-                  onClick={() => setShowTelemetry(false)}
-                  className="px-8 py-2.5 rounded-xl bg-zinc-800 dark:bg-zinc-100 text-white dark:text-black font-bold text-sm hover:scale-105 transition-transform"
-                >
-                  关闭
-                </button>
+              <div>
+                <h2 className="text-xl font-bold text-zinc-800 dark:text-white">{selectedRobot?.name}</h2>
+                <p className="text-xs text-zinc-500 uppercase font-bold tracking-widest">{selectedRobot?.model} 深度遥测</p>
               </div>
             </div>
-          </LayoutModal>
-        )}
-      </AnimatePresence>
+            <button 
+              onClick={() => setShowTelemetry(false)}
+              className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors"
+            >
+              <X className="w-6 h-6 text-zinc-400" />
+            </button>
+          </div>
+        </LayoutModal.Header>
+
+        <LayoutModal.Body className="p-8">
+          {/* Metrics Grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
+            {telemetryConfig.metrics.map((stat, i) => (
+              <div key={i} className="bg-zinc-500/5 rounded-2xl p-4 border border-zinc-500/10">
+                <stat.icon className={`w-4 h-4 mb-2 ${stat.color}`} />
+                <p className="text-[10px] font-bold text-zinc-500 uppercase mb-1">{stat.label}</p>
+                <p className="text-lg font-black text-zinc-800 dark:text-white">{stat.value}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Type Specific Sections */}
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-sm font-bold text-zinc-800 dark:text-white mb-4 flex items-center gap-2">
+                <Activity className="w-4 h-4 text-emerald-500" />
+                关键运行数据 (Technical Details)
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {telemetryConfig.details.map((detail, i) => (
+                  <div key={i} className="flex flex-col p-4 rounded-xl bg-zinc-500/5 border border-zinc-500/10">
+                    <span className="text-[10px] font-bold text-zinc-400 uppercase mb-1">{detail.label}</span>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-sm font-bold text-zinc-800 dark:text-zinc-100">{detail.value}</span>
+                      {detail.subValue && (
+                        <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">{detail.subValue}</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Shared Logic Section */}
+            <div className="p-4 rounded-2xl bg-zinc-800 dark:bg-zinc-100 flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase">当前运行状态</p>
+                <p className="text-sm font-bold text-white dark:text-zinc-900">健康度: 100% (Optimal)</p>
+              </div>
+              <div className="flex -space-x-2">
+                {[1, 2, 3].map(i => (
+                  <div key={i} className="w-6 h-6 rounded-full border-2 border-zinc-800 dark:border-white bg-zinc-700 dark:bg-zinc-300 flex items-center justify-center">
+                    <Zap className="w-3 h-3 text-emerald-500" />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/10">
+              <div className="flex items-center gap-2 mb-2">
+                <Shield className="w-4 h-4 text-emerald-500" />
+                <h3 className="text-xs font-bold text-emerald-600 dark:text-emerald-400">LinX 隔离保护 (Isolation Guard)</h3>
+              </div>
+              <p className="text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                该实体通过 <b>LinX Shield</b> 加密通道连接。所有下发的物理动作指令均经过 Agent 控制层级权限校验。
+                环境感知的视频流已进行本地匿名化处理后再进入 AI 分析链条。
+              </p>
+            </div>
+          </div>
+        </LayoutModal.Body>
+
+        <LayoutModal.Footer className="flex justify-end">
+          <button 
+            onClick={() => setShowTelemetry(false)}
+            className="px-8 py-2.5 rounded-xl bg-zinc-800 dark:bg-zinc-100 text-white dark:text-black font-bold text-sm hover:scale-105 transition-transform"
+          >
+            关闭
+          </button>
+        </LayoutModal.Footer>
+      </LayoutModal>
 
       {/* Demo Footer */}
       <div className="bg-emerald-500/5 rounded-3xl p-8 border border-emerald-500/10 relative overflow-hidden group">

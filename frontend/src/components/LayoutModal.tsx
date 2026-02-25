@@ -1,31 +1,90 @@
 import React, { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
+import { X } from 'lucide-react';
+
+type ModalSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl' | '4xl' | '5xl' | '6xl' | '7xl' | 'full';
+
+const sizeClasses: Record<ModalSize, string> = {
+  xs: 'max-w-xs',
+  sm: 'max-w-sm',
+  md: 'max-w-md',
+  lg: 'max-w-lg',
+  xl: 'max-w-xl',
+  '2xl': 'max-w-2xl',
+  '3xl': 'max-w-3xl',
+  '4xl': 'max-w-4xl',
+  '5xl': 'max-w-5xl',
+  '6xl': 'max-w-6xl',
+  '7xl': 'max-w-7xl',
+  full: 'max-w-[calc(100vw-2rem)] sm:max-w-[calc(100vw-4rem)]',
+};
 
 interface LayoutModalProps {
   isOpen: boolean;
   onClose?: () => void;
   children: React.ReactNode;
+  title?: React.ReactNode;
+  description?: React.ReactNode;
+  footer?: React.ReactNode;
+  size?: ModalSize;
   closeOnBackdropClick?: boolean;
   closeOnEscape?: boolean;
+  showCloseButton?: boolean;
   containerClassName?: string;
   contentClassName?: string;
   backdropClassName?: string;
   zIndexClassName?: string;
   respectLayoutBounds?: boolean;
+  maxHeight?: string;
+  /**
+   * If true, skips the default structured layout (Header/Body/Footer).
+   * Useful for custom layouts or legacy components that provide their own panels.
+   * Automatically true if no title/footer/compound components are used.
+   */
+  isRaw?: boolean;
 }
 
-export const LayoutModal: React.FC<LayoutModalProps> = ({
+const Header: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = '' }) => (
+  <div className={`px-6 py-4 border-b border-zinc-100 dark:border-zinc-800 shrink-0 ${className}`}>
+    {children}
+  </div>
+);
+
+const Body: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = '' }) => (
+  <div className={`px-6 py-6 overflow-y-auto flex-1 min-h-0 ${className}`}>
+    {children}
+  </div>
+);
+
+const Footer: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = '' }) => (
+  <div className={`px-6 py-4 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/50 shrink-0 ${className}`}>
+    {children}
+  </div>
+);
+
+export const LayoutModal: React.FC<LayoutModalProps> & {
+  Header: typeof Header;
+  Body: typeof Body;
+  Footer: typeof Footer;
+} = ({
   isOpen,
   onClose,
   children,
+  title,
+  description,
+  footer,
+  size = '2xl',
   closeOnBackdropClick = true,
   closeOnEscape = true,
+  showCloseButton = true,
   containerClassName = '',
   contentClassName = '',
-  backdropClassName = 'bg-black/60 backdrop-blur-md',
+  backdropClassName = 'bg-black/40 backdrop-blur-sm',
   zIndexClassName = 'z-[70]',
   respectLayoutBounds = true,
+  maxHeight = 'calc(100vh - 120px)',
+  isRaw,
 }) => {
   useEffect(() => {
     if (!isOpen || !closeOnEscape || !onClose) return;
@@ -40,15 +99,51 @@ export const LayoutModal: React.FC<LayoutModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, closeOnEscape, onClose]);
 
+  // Lock body scroll when modal is open
+  useEffect(() => {
+    if (isOpen) {
+      const originalStyle = window.getComputedStyle(document.body).overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = originalStyle;
+      };
+    }
+  }, [isOpen]);
+
   if (typeof document === 'undefined') {
     return null;
   }
 
+  const hasCompoundComponents = React.Children.toArray(children).some(
+    (child) =>
+      React.isValidElement(child) &&
+      (child.type === Header || child.type === Body || child.type === Footer)
+  );
+
+  // If isRaw is not specified, we determine it based on props
+  const useRawLayout = isRaw !== undefined ? isRaw : (!title && !footer && !hasCompoundComponents);
+
+  const modalVariants = {
+    hidden: { opacity: 0, scale: 0.95, y: 10 },
+    visible: { 
+      opacity: 1, 
+      scale: 1, 
+      y: 0,
+      transition: { type: 'spring', stiffness: 400, damping: 30, mass: 0.8 }
+    },
+    exit: { 
+      opacity: 0, 
+      scale: 0.98, 
+      y: 8,
+      transition: { duration: 0.2, ease: 'easeOut' }
+    }
+  };
+
   return createPortal(
     <AnimatePresence>
       {isOpen && (
-        <motion.div
-          className={`fixed ${zIndexClassName}`}
+        <div 
+          className={`fixed inset-0 flex items-center justify-center ${zIndexClassName} ${containerClassName}`}
           style={
             respectLayoutBounds
               ? {
@@ -64,40 +159,92 @@ export const LayoutModal: React.FC<LayoutModalProps> = ({
                   bottom: 0,
                 }
           }
-          role="presentation"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
         >
-          <motion.button
-            type="button"
-            aria-label="Close modal"
-            className={`absolute inset-0 ${backdropClassName}`}
-            onClick={closeOnBackdropClick ? onClose : undefined}
+          {/* Backdrop */}
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+            transition={{ duration: 0.2 }}
+            className={`absolute inset-0 ${backdropClassName}`}
+            onClick={closeOnBackdropClick ? onClose : undefined}
           />
-          <div className="relative h-full w-full overflow-y-auto">
-            <div
-              className={`pointer-events-none min-h-full w-full flex items-center justify-center p-4 sm:p-6 ${containerClassName}`}
-            >
+
+          {/* Centering wrapper */}
+          <div className="relative w-full h-full flex items-center justify-center p-4 sm:p-6 pointer-events-none">
+            {useRawLayout ? (
+              <div className="w-full h-full overflow-y-auto pointer-events-auto flex items-center justify-center">
+                <motion.div
+                  variants={modalVariants}
+                  initial="hidden"
+                  animate="visible"
+                  exit="exit"
+                  className={`flex justify-center w-full ${contentClassName}`}
+                >
+                  {children}
+                </motion.div>
+              </div>
+            ) : (
               <motion.div
-                className={`pointer-events-auto w-full flex justify-center ${contentClassName}`}
-                initial={{ opacity: 0, scale: 0.9, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 12 }}
-                transition={{ type: 'spring', stiffness: 360, damping: 30, mass: 0.8 }}
+                variants={modalVariants}
+                initial="hidden"
+                animate="visible"
+                exit="exit"
+                className={`pointer-events-auto relative w-full ${sizeClasses[size]} bg-white dark:bg-zinc-900 rounded-[28px] shadow-2xl overflow-hidden flex flex-col ${contentClassName}`}
+                style={{ maxHeight }}
               >
-                {children}
+                {/* Auto Header */}
+                {(title || (showCloseButton && onClose)) && !hasCompoundComponents && (
+                  <div className="px-6 py-5 sm:px-8 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between shrink-0">
+                    <div className="flex-1 min-w-0">
+                      {title && (
+                        <h2 className="text-xl font-bold text-zinc-900 dark:text-white truncate">
+                          {title}
+                        </h2>
+                      )}
+                      {description && (
+                        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+                          {description}
+                        </p>
+                      )}
+                    </div>
+                    {showCloseButton && onClose && (
+                      <button
+                        onClick={onClose}
+                        className="ml-4 p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+                        aria-label="Close modal"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Content */}
+                {hasCompoundComponents ? (
+                  children
+                ) : (
+                  <>
+                    <div className="px-6 py-6 sm:px-8 overflow-y-auto flex-1 min-h-0">
+                      {children}
+                    </div>
+                    {footer && (
+                      <div className="px-6 py-5 sm:px-8 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/50 flex flex-col sm:flex-row justify-end gap-3 shrink-0">
+                        {footer}
+                      </div>
+                    )}
+                  </>
+                )}
               </motion.div>
-            </div>
+            )}
           </div>
-        </motion.div>
+        </div>
       )}
     </AnimatePresence>,
     document.body
   );
 };
+
+LayoutModal.Header = Header;
+LayoutModal.Body = Body;
+LayoutModal.Footer = Footer;
