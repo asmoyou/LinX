@@ -1674,6 +1674,50 @@ class BaseAgent:
             logger.info("Re-initializing agent with new tool")
             self.initialize()
 
+    def _extract_balanced_json_objects(self, text: str) -> List[Tuple[str, int, int]]:
+        """Extract balanced JSON object substrings with spans from arbitrary text.
+
+        This scanner is quote-aware, so braces inside JSON strings do not break extraction.
+        """
+        objects: List[Tuple[str, int, int]] = []
+        if not text:
+            return objects
+
+        depth = 0
+        start_idx: Optional[int] = None
+        in_string = False
+        escape_next = False
+
+        for idx, char in enumerate(text):
+            if escape_next:
+                escape_next = False
+                continue
+
+            if in_string:
+                if char == "\\":
+                    escape_next = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+                continue
+
+            if char == "{":
+                if depth == 0:
+                    start_idx = idx
+                depth += 1
+                continue
+
+            if char == "}" and depth > 0:
+                depth -= 1
+                if depth == 0 and start_idx is not None:
+                    objects.append((text[start_idx : idx + 1], start_idx, idx + 1))
+                    start_idx = None
+
+        return objects
+
     def _parse_tool_calls(self, llm_output: str) -> Tuple[List[ToolCall], List[ParseError]]:
         """Parse tool calls from LLM output, collecting all errors.
 
@@ -1683,115 +1727,143 @@ class BaseAgent:
         Returns:
             Tuple of (tool_calls, parse_errors)
         """
-        import re
-        import json
+        tool_calls: List[ToolCall] = []
+        parse_errors: List[ParseError] = []
+        preprocessed = llm_output or ""
 
-        tool_calls = []
-        parse_errors = []
+        candidates: List[Tuple[str, bool]] = []  # (json_str, explicit_tool_intent)
+        seen_candidates: Set[str] = set()
 
-        # Pre-process: convert model-native tool call formats to standard JSON format.
-        # GLM format: <tool_call>tool_name<|end_of_box|> <tool_call>key: value<|end_of_box|>
-        # Qwen format: <tool_call>\n{"name":"tool","arguments":{"key":"val"}}\n</tool_call>
-        # Generic XML: <function_call>{"name":"tool",...}</function_call>
-        preprocessed = llm_output
+        def _add_candidate(raw_json: str, explicit: bool) -> None:
+            candidate = (raw_json or "").strip()
+            if not candidate:
+                return
+            if '"tool"' not in candidate:
+                return
+            if candidate in seen_candidates:
+                return
+            seen_candidates.add(candidate)
+            candidates.append((candidate, explicit))
 
-        # Qwen/ChatGLM <tool_call>JSON</tool_call> format
+        # Qwen / ChatGLM style: <tool_call>{"name":"x","arguments":{...}}</tool_call>
         qwen_tool_pattern = r"<tool_call>\s*(\{.*?\})\s*</tool_call>"
-        qwen_matches = re.findall(qwen_tool_pattern, preprocessed, re.DOTALL)
-        for qwen_json in qwen_matches:
+        for qwen_json in re.findall(qwen_tool_pattern, preprocessed, re.DOTALL):
             try:
                 data = json.loads(qwen_json)
-                # Normalize: Qwen uses {"name":"x","arguments":{...}}
-                if "name" in data and "arguments" in data:
-                    tool_name = data["name"]
-                    args = data["arguments"] if isinstance(data["arguments"], dict) else {}
-                    normalized = json.dumps({"tool": tool_name, **args})
-                    preprocessed = preprocessed.replace(
-                        re.search(qwen_tool_pattern, preprocessed, re.DOTALL).group(0),
-                        f"```json\n{normalized}\n```",
-                        1,
+                if not isinstance(data, dict):
+                    continue
+                tool_name = data.get("name")
+                args = data.get("arguments", {})
+                if isinstance(tool_name, str) and isinstance(args, dict):
+                    normalized = json.dumps({"tool": tool_name, **args}, ensure_ascii=False)
+                    _add_candidate(normalized, explicit=True)
+            except json.JSONDecodeError as err:
+                parse_errors.append(
+                    ParseError(
+                        error_type="json_decode_error",
+                        message=f"Failed to parse tool_call JSON: {str(err)}",
+                        malformed_input=qwen_json,
+                        details={"line": err.lineno, "column": err.colno, "pos": err.pos},
                     )
-            except (json.JSONDecodeError, AttributeError):
-                pass
+                )
 
-        # GLM <tool_call>name<|end_of_box|> <tool_call>key: val<|end_of_box|> format
+        # GLM boxed format: first block usually tool name, following blocks key:value args.
         glm_blocks = re.findall(
             r"<tool_call>\s*(.*?)\s*(?:<\|end_of_box\|>|</tool_call>)",
             preprocessed,
             re.DOTALL,
         )
-        if glm_blocks and not qwen_matches:
-            # First block is typically the tool name, subsequent blocks are parameters
-            tool_name = None
-            args = {}
+        if glm_blocks:
+            tool_name: Optional[str] = None
+            args: Dict[str, Any] = {}
             for block in glm_blocks:
-                block = block.strip()
-                if ":" in block:
-                    key, _, val = block.partition(":")
-                    args[key.strip()] = val.strip()
+                value = block.strip()
+                if ":" in value:
+                    key, _, val = value.partition(":")
+                    if key.strip():
+                        args[key.strip()] = val.strip()
                 elif not tool_name:
-                    tool_name = block
-            if tool_name and tool_name in (self.tools_by_name or {}):
-                normalized = json.dumps({"tool": tool_name, **args})
-                preprocessed += f"\n```json\n{normalized}\n```"
+                    tool_name = value
+            if tool_name:
+                normalized = json.dumps({"tool": tool_name, **args}, ensure_ascii=False)
+                _add_candidate(normalized, explicit=True)
 
-        # <function_call>JSON</function_call> format
+        # XML-style function call payloads.
         fc_pattern = r"<function_call>\s*(\{.*?\})\s*</function_call>"
-        fc_matches = re.findall(fc_pattern, preprocessed, re.DOTALL)
-        for fc_json in fc_matches:
+        for fc_json in re.findall(fc_pattern, preprocessed, re.DOTALL):
             try:
                 data = json.loads(fc_json)
-                if "name" in data:
-                    tool_name = data.pop("name")
-                    args = data.get("arguments", data)
-                    if isinstance(args, dict):
-                        normalized = json.dumps({"tool": tool_name, **args})
-                    else:
-                        normalized = json.dumps({"tool": tool_name})
-                    preprocessed = preprocessed.replace(
-                        re.search(fc_pattern, preprocessed, re.DOTALL).group(0),
-                        f"```json\n{normalized}\n```",
-                        1,
+                if not isinstance(data, dict):
+                    continue
+                tool_name = data.get("name")
+                args = data.get("arguments", data)
+                if isinstance(tool_name, str):
+                    normalized_args = args if isinstance(args, dict) else {}
+                    normalized = json.dumps(
+                        {"tool": tool_name, **normalized_args},
+                        ensure_ascii=False,
                     )
-            except (json.JSONDecodeError, AttributeError):
-                pass
-
-        # Pattern 1: JSON block with ```json wrapper
-        json_pattern1 = r'```json\s*\n\s*(\{[^}]*"tool"\s*:\s*"([^"]+)"[^}]*\})\s*\n\s*```'
-
-        # Pattern 2: Plain JSON without wrapper (more common)
-        json_pattern2 = r'\{[^}]*"tool"\s*:\s*"([^"]+)"[^}]*\}'
-
-        # Try pattern 1 first (with wrapper)
-        matches1 = re.findall(json_pattern1, preprocessed, re.DOTALL)
-
-        # Try pattern 2 (without wrapper)
-        matches2 = re.findall(json_pattern2, preprocessed, re.DOTALL)
-
-        # Combine matches
-        json_blocks = []
-
-        # Process pattern 1 matches
-        for json_str, tool_name in matches1:
-            json_blocks.append(json_str)
-
-        # Process pattern 2 matches (only if pattern 1 didn't match)
-        if not matches1 and matches2:
-            for tool_name in matches2:
-                # Extract the full JSON block
-                match = re.search(
-                    r'\{[^}]*"tool"\s*:\s*"' + re.escape(tool_name) + r'"[^}]*\}', llm_output
+                    _add_candidate(normalized, explicit=True)
+            except json.JSONDecodeError as err:
+                parse_errors.append(
+                    ParseError(
+                        error_type="json_decode_error",
+                        message=f"Failed to parse function_call JSON: {str(err)}",
+                        malformed_input=fc_json,
+                        details={"line": err.lineno, "column": err.colno, "pos": err.pos},
+                    )
                 )
-                if match:
-                    json_blocks.append(match.group(0))
 
-        # Parse each JSON block
-        for json_str in json_blocks:
+        # JSON code fences are strong tool-call signals.
+        fenced_pattern = r"```(?:json)?\s*(.*?)\s*```"
+        for fenced_payload in re.findall(fenced_pattern, preprocessed, re.DOTALL | re.IGNORECASE):
+            for obj_text, _, _ in self._extract_balanced_json_objects(fenced_payload):
+                _add_candidate(obj_text, explicit=True)
+
+        stripped_output = preprocessed.strip()
+        if stripped_output.startswith("{") and stripped_output.endswith("}") and '"tool"' in stripped_output:
+            _add_candidate(stripped_output, explicit=True)
+
+        # Fallback scan: collect balanced objects containing "tool". Mark as explicit only
+        # when nearby context indicates the model is trying to call tools.
+        for obj_text, start, end in self._extract_balanced_json_objects(preprocessed):
+            if '"tool"' not in obj_text:
+                continue
+            context = preprocessed[max(0, start - 64) : min(len(preprocessed), end + 64)].lower()
+            explicit_intent = any(
+                marker in context
+                for marker in ("tool_call", "function_call", "调用工具", "use tool", "call tool")
+            )
+            _add_candidate(obj_text, explicit=explicit_intent)
+
+        for json_str, explicit in candidates:
             try:
                 tool_data = json.loads(json_str)
+            except json.JSONDecodeError as err:
+                if explicit:
+                    parse_errors.append(
+                        ParseError(
+                            error_type="json_decode_error",
+                            message=f"Failed to parse JSON: {str(err)}",
+                            malformed_input=json_str,
+                            details={"line": err.lineno, "column": err.colno, "pos": err.pos},
+                        )
+                    )
+                continue
 
-                # Validate required fields
-                if "tool" not in tool_data:
+            if not isinstance(tool_data, dict):
+                if explicit:
+                    parse_errors.append(
+                        ParseError(
+                            error_type="invalid_type",
+                            message="Tool call payload must be a JSON object",
+                            malformed_input=json_str,
+                        )
+                    )
+                continue
+
+            if "tool" not in tool_data:
+                if explicit:
                     parse_errors.append(
                         ParseError(
                             error_type="missing_field",
@@ -1799,44 +1871,41 @@ class BaseAgent:
                             malformed_input=json_str,
                         )
                     )
-                    continue
+                continue
 
-                tool_name = tool_data["tool"]
+            tool_name = tool_data["tool"]
+            if not isinstance(tool_name, str):
+                if explicit:
+                    parse_errors.append(
+                        ParseError(
+                            error_type="invalid_type",
+                            message="Field 'tool' must be a string",
+                            malformed_input=json_str,
+                        )
+                    )
+                continue
 
-                # Check if tool exists
-                if tool_name not in self.tools_by_name:
+            if tool_name not in self.tools_by_name:
+                if explicit:
                     available_tools = ", ".join(self.tools_by_name.keys())
                     parse_errors.append(
                         ParseError(
                             error_type="unknown_tool",
-                            message=f"Tool '{tool_name}' not found. Available tools: {available_tools}",
+                            message=(
+                                f"Tool '{tool_name}' not found. "
+                                f"Available tools: {available_tools}"
+                            ),
                             malformed_input=json_str,
                         )
                     )
-                    continue
+                continue
 
-                # Extract arguments
-                args = {k: v for k, v in tool_data.items() if k != "tool"}
+            args = {k: v for k, v in tool_data.items() if k != "tool"}
+            tool_calls.append(ToolCall(tool_name=tool_name, arguments=args, raw_json=json_str))
 
-                tool_calls.append(ToolCall(tool_name=tool_name, arguments=args, raw_json=json_str))
-
-            except json.JSONDecodeError as e:
-                parse_errors.append(
-                    ParseError(
-                        error_type="json_decode_error",
-                        message=f"Failed to parse JSON: {str(e)}",
-                        malformed_input=json_str,
-                        details={"line": e.lineno, "column": e.colno, "pos": e.pos},
-                    )
-                )
-            except Exception as e:
-                parse_errors.append(
-                    ParseError(
-                        error_type="unknown_error",
-                        message=f"Unexpected error: {str(e)}",
-                        malformed_input=json_str,
-                    )
-                )
+        # If at least one valid tool call is available, execute it and ignore malformed extras.
+        if tool_calls:
+            parse_errors = []
 
         return tool_calls, parse_errors
 

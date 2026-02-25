@@ -294,10 +294,6 @@ export const agentsApi = {
               try {
                 const data = JSON.parse(line.slice(6));
                 onChunk(data);
-
-                if (data.type === 'error' && onError) {
-                  onError(data.content);
-                }
               } catch (e) {
                 console.error('Failed to parse SSE data:', line, e);
               }

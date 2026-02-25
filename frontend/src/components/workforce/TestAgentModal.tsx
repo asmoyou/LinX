@@ -49,6 +49,15 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
   isOpen,
   onClose,
 }) => {
+  const createEmptyRoundData = () => ({
+    thinking: '',
+    content: '',
+    statusMessages: [] as StatusMessage[],
+    retryAttempts: [] as RetryAttempt[],
+    errorFeedback: [] as ErrorFeedback[],
+    stats: null as ConversationRound['stats'] | null,
+  });
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
@@ -64,14 +73,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
     retryAttempts: RetryAttempt[];
     errorFeedback: ErrorFeedback[];
     stats: ConversationRound['stats'] | null;
-  }>({
-    thinking: '',
-    content: '',
-    statusMessages: [],
-    retryAttempts: [],
-    errorFeedback: [],
-    stats: null,
-  });
+  }>(() => createEmptyRoundData());
   
   const [currentRoundNumber, setCurrentRoundNumber] = useState(1);
 
@@ -108,14 +110,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
     currentRoundNumber: number;
   }>({
     rounds: [],
-    currentRound: {
-      thinking: '',
-      content: '',
-      statusMessages: [],
-      retryAttempts: [],
-      errorFeedback: [],
-      stats: null,
-    },
+    currentRound: createEmptyRoundData(),
     currentRoundNumber: 1,
   });
 
@@ -133,6 +128,59 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
         round.retryAttempts.length > 0 ||
         round.errorFeedback.length > 0
     );
+
+  const buildRoundSnapshot = (
+    roundData: typeof currentRoundData,
+    roundNumber: number
+  ): ConversationRound => ({
+    roundNumber,
+    thinking: roundData.thinking,
+    content: roundData.content,
+    statusMessages: roundData.statusMessages,
+    retryAttempts: roundData.retryAttempts.length > 0 ? roundData.retryAttempts : undefined,
+    errorFeedback: roundData.errorFeedback.length > 0 ? roundData.errorFeedback : undefined,
+    stats: roundData.stats || undefined,
+  });
+
+  const commitStreamingOutputToMessages = () => {
+    const { rounds, currentRound, currentRoundNumber } = streamingDataRef.current;
+    const finalizedRounds = [...rounds];
+
+    if (hasRoundActivity(currentRound)) {
+      finalizedRounds.push(buildRoundSnapshot(currentRound, currentRoundNumber));
+    }
+
+    if (finalizedRounds.length === 0) {
+      return;
+    }
+
+    const finalContentRound = [...finalizedRounds]
+      .reverse()
+      .find((round) => Boolean(round.content && round.content.trim()));
+    const assistantContent = finalContentRound?.content?.trim() || '';
+
+    const newMessage: Message = {
+      role: 'assistant',
+      content: assistantContent,
+      timestamp: new Date(),
+      rounds: finalizedRounds,
+    };
+
+    setMessages((prev) => [...prev, newMessage]);
+  };
+
+  const resetStreamingState = () => {
+    setCurrentRounds([]);
+    setCurrentRoundData(createEmptyRoundData());
+    setCurrentRoundNumber(1);
+    setIsStreaming(false);
+    abortControllerRef.current = null;
+    streamingDataRef.current = {
+      rounds: [],
+      currentRound: createEmptyRoundData(),
+      currentRoundNumber: 1,
+    };
+  };
 
   const extractTargetItemCount = (prompt: string): number | null => {
     const strictMatches = [
@@ -252,14 +300,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
       setInputMessage('');
       setAttachedFiles([]);
       setCurrentRounds([]);
-      setCurrentRoundData({
-        thinking: '',
-        content: '',
-        statusMessages: [],
-        retryAttempts: [],
-        errorFeedback: [],
-        stats: null,
-      });
+      setCurrentRoundData(createEmptyRoundData());
       setCurrentRoundNumber(1);
       setSessionId(null);  // Reset session ID
       setShowWorkspacePanel(false);
@@ -375,14 +416,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
     
     // Reset streaming state
     setCurrentRounds([]);
-    setCurrentRoundData({
-      thinking: '',
-      content: '',
-      statusMessages: [],
-      retryAttempts: [],
-      errorFeedback: [],
-      stats: null,
-    });
+    setCurrentRoundData(createEmptyRoundData());
     setCurrentRoundNumber(1);
     lastStatusTimeRef.current = Date.now();
     
@@ -392,14 +426,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
     // Reset streaming data ref
     streamingDataRef.current = { 
       rounds: [], 
-      currentRound: {
-        thinking: '',
-        content: '',
-        statusMessages: [],
-        retryAttempts: [],
-        errorFeedback: [],
-        stats: null,
-      },
+      currentRound: createEmptyRoundData(),
       currentRoundNumber: 1,
     };
 
@@ -444,19 +471,10 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
               
               // Save previous round when it has any visible activity
               if (hasRoundActivity(streamingDataRef.current.currentRound)) {
-                const completedRound: ConversationRound = {
-                  roundNumber: streamingDataRef.current.currentRoundNumber,
-                  thinking: streamingDataRef.current.currentRound.thinking,
-                  content: streamingDataRef.current.currentRound.content,
-                  statusMessages: streamingDataRef.current.currentRound.statusMessages,
-                  retryAttempts: streamingDataRef.current.currentRound.retryAttempts.length > 0 
-                    ? streamingDataRef.current.currentRound.retryAttempts 
-                    : undefined,
-                  errorFeedback: streamingDataRef.current.currentRound.errorFeedback.length > 0 
-                    ? streamingDataRef.current.currentRound.errorFeedback 
-                    : undefined,
-                  stats: streamingDataRef.current.currentRound.stats || undefined,
-                };
+                const completedRound = buildRoundSnapshot(
+                  streamingDataRef.current.currentRound,
+                  streamingDataRef.current.currentRoundNumber
+                );
                 
                 streamingDataRef.current.rounds.push(completedRound);
                 setCurrentRounds([...streamingDataRef.current.rounds]);
@@ -464,14 +482,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
               
               // Start new round
               streamingDataRef.current.currentRoundNumber = newRoundNumber;
-              streamingDataRef.current.currentRound = {
-                thinking: '',
-                content: '',
-                statusMessages: [],
-                retryAttempts: [],
-                errorFeedback: [],
-                stats: null,
-              };
+              streamingDataRef.current.currentRound = createEmptyRoundData();
               setCurrentRoundNumber(newRoundNumber);
               setCurrentRoundData({ ...streamingDataRef.current.currentRound });
             }
@@ -586,97 +597,34 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
             }
 
           } else if (chunk.type === 'error') {
+            const now = Date.now();
+            const duration = (now - lastStatusTimeRef.current) / 1000;
+
+            if (streamingDataRef.current.currentRound.statusMessages.length > 0) {
+              const lastIndex = streamingDataRef.current.currentRound.statusMessages.length - 1;
+              streamingDataRef.current.currentRound.statusMessages[lastIndex].duration = duration;
+            }
+
+            const errorStatus: StatusMessage = {
+              content: chunk.content,
+              type: 'error',
+              timestamp: new Date(),
+              duration: undefined,
+            };
+            streamingDataRef.current.currentRound.statusMessages.push(errorStatus);
+            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            lastStatusTimeRef.current = now;
             setError(chunk.content);
-            setIsStreaming(false);
           }
         },
         (error) => {
           setError(error);
-          setIsStreaming(false);
-          setCurrentRounds([]);
-          setCurrentRoundData({
-            thinking: '',
-            content: '',
-            statusMessages: [],
-            retryAttempts: [],
-            errorFeedback: [],
-            stats: null,
-          });
-          streamingDataRef.current = { 
-            rounds: [], 
-            currentRound: {
-              thinking: '',
-              content: '',
-              statusMessages: [],
-              retryAttempts: [],
-              errorFeedback: [],
-              stats: null,
-            },
-            currentRoundNumber: 1,
-          };
+          commitStreamingOutputToMessages();
+          resetStreamingState();
         },
         () => {
-          // On complete - save final round and create message
-          const { rounds, currentRound, currentRoundNumber } = streamingDataRef.current;
-          
-          // Save current round when it has any visible activity
-          if (hasRoundActivity(currentRound)) {
-            const completedRound: ConversationRound = {
-              roundNumber: currentRoundNumber,
-              thinking: currentRound.thinking,
-              content: currentRound.content,
-              statusMessages: currentRound.statusMessages,
-              retryAttempts: currentRound.retryAttempts.length > 0 ? currentRound.retryAttempts : undefined,
-              errorFeedback: currentRound.errorFeedback.length > 0 ? currentRound.errorFeedback : undefined,
-              stats: currentRound.stats || undefined,
-            };
-            
-            rounds.push(completedRound);
-          }
-          
-          // Create assistant message with all rounds
-          if (rounds.length > 0) {
-            // Use the latest non-empty assistant content as message content.
-            const finalContentRound = [...rounds]
-              .reverse()
-              .find((round) => Boolean(round.content && round.content.trim()));
-            const assistantContent = finalContentRound?.content?.trim() || '';
-            
-            const newMessage: Message = {
-              role: 'assistant',
-              content: assistantContent,
-              timestamp: new Date(),
-              rounds: rounds,
-            };
-            
-            setMessages((prev) => [...prev, newMessage]);
-          }
-          
-          // Reset streaming state
-          setCurrentRounds([]);
-          setCurrentRoundData({
-            thinking: '',
-            content: '',
-            statusMessages: [],
-            retryAttempts: [],
-            errorFeedback: [],
-            stats: null,
-          });
-          setCurrentRoundNumber(1);
-          setIsStreaming(false);
-          abortControllerRef.current = null;
-          streamingDataRef.current = { 
-            rounds: [], 
-            currentRound: {
-              thinking: '',
-              content: '',
-              statusMessages: [],
-              retryAttempts: [],
-              errorFeedback: [],
-              stats: null,
-            },
-            currentRoundNumber: 1,
-          };
+          commitStreamingOutputToMessages();
+          resetStreamingState();
         },
         history,
         filesToUpload.length > 0 ? filesToUpload : undefined,
@@ -686,28 +634,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message');
-      setIsStreaming(false);
-      setCurrentRounds([]);
-      setCurrentRoundData({
-        thinking: '',
-        content: '',
-        statusMessages: [],
-        retryAttempts: [],
-        errorFeedback: [],
-        stats: null,
-      });
-      streamingDataRef.current = { 
-        rounds: [], 
-        currentRound: {
-          thinking: '',
-          content: '',
-          statusMessages: [],
-          retryAttempts: [],
-          errorFeedback: [],
-          stats: null,
-        },
-        currentRoundNumber: 1,
-      };
+      commitStreamingOutputToMessages();
+      resetStreamingState();
     }
   };
 

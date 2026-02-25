@@ -318,6 +318,50 @@ class TestBaseAgent:
         assert tool_calls[0].tool_name == "write_file"
         assert tool_calls[0].arguments["file_path"] == "/workspace/outputs/result.md"
 
+    def test_parse_tool_calls_supports_nested_braces_in_string_arguments(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.tools_by_name = {"write_file": Mock()}
+
+        llm_output = (
+            '{"tool":"write_file","file_path":"/workspace/outputs/tianjin_travel_guide.md",'
+            '"content":"# 天津攻略\\n\\n示例内容包含花括号 {a:1} 与表格 |A|B|"}'
+        )
+
+        tool_calls, parse_errors = agent._parse_tool_calls(llm_output)
+
+        assert len(tool_calls) == 1
+        assert not parse_errors
+        assert tool_calls[0].tool_name == "write_file"
+        assert "花括号 {a:1}" in tool_calls[0].arguments["content"]
+
+    def test_parse_tool_calls_ignores_unknown_tool_examples_without_explicit_intent(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.tools_by_name = {"write_file": Mock()}
+
+        llm_output = (
+            '这是格式示例，不需要执行：{"tool":"unknown_tool","foo":"bar"}。'
+            "我接下来会直接给出答案。"
+        )
+
+        tool_calls, parse_errors = agent._parse_tool_calls(llm_output)
+
+        assert not tool_calls
+        assert not parse_errors
+
     def test_extract_tool_runtime_error_detects_error_like_outputs(self):
         config = AgentConfig(
             agent_id=uuid4(),
