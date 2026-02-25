@@ -1011,7 +1011,7 @@ class BaseAgent:
             if fmt
         }
         target_format = sorted(normalized_formats)[0] if normalized_formats else "md"
-        suggested_path = f"/workspace/outputs/result.{target_format}"
+        suggested_path = f"/workspace/output/result.{target_format}"
         format_hint = (
             f"用户明确要求的交付格式是: {', '.join(sorted(normalized_formats))}。\n"
             if normalized_formats
@@ -1214,12 +1214,14 @@ class BaseAgent:
                             extra={"agent_id": str(self.config.agent_id)},
                         )
 
-            # Set workspace root for file tools
-            if session_workdir:
-                from agent_framework.tools.file_tools import set_workspace_root
+            # Set workspace root for file tools; clear stale root when not provided.
+            from agent_framework.tools.file_tools import clear_workspace_root, set_workspace_root
 
+            if session_workdir:
                 set_workspace_root(session_workdir)
                 logger.debug(f"Set workspace root to {session_workdir}")
+            else:
+                clear_workspace_root()
 
             resolved_policy = self._resolve_runtime_policy(
                 execution_profile=execution_profile,
@@ -1235,6 +1237,15 @@ class BaseAgent:
             ):
                 loop_mode = LoopMode.AUTO_MULTI_TURN
 
+            execution_context_tag = ""
+            if isinstance(context, dict):
+                execution_context_tag = str(
+                    context.get("execution_context_tag")
+                    or context.get("runtime_context_tag")
+                    or context.get("runtime_execution_context")
+                    or ""
+                ).strip()
+
             logger.info(
                 "Resolved agent runtime policy",
                 extra={
@@ -1244,6 +1255,8 @@ class BaseAgent:
                     "runtime_loop_mode": loop_mode.value,
                     "runtime_stream_output": resolved_policy.stream_output,
                     "runtime_has_stream_callback": bool(stream_callback),
+                    "runtime_execution_context_tag": execution_context_tag or "unspecified",
+                    "runtime_has_execution_context_tag": bool(execution_context_tag),
                 },
             )
 
@@ -3501,7 +3514,7 @@ Files persist throughout the conversation session.
 - Do NOT proactively call `write_file`/`append_file` for ordinary Q&A or content generation.
 
 **When users ask for deliverables as files/documents** (for example "整理成md文档", "save as markdown"):
-1. You MUST use `write_file` to save the deliverable under `/workspace` (prefer `/workspace/outputs/...`).
+1. You MUST use `write_file` to save the deliverable under `/workspace` (prefer `/workspace/output/...`).
 2. Prefer a single target file and update it incrementally across rounds (create first, then continue writing).
 3. Only split into multiple files when explicitly requested by the user or when one file is clearly impractical.
 4. Do NOT use `code_execution` as the final file-delivery step for plain text documents.

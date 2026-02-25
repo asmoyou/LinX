@@ -115,6 +115,62 @@ def test_collect_deliverables_demotes_runtime_root_script(monkeypatch):
     assert item.artifact_kind == "intermediate"
 
 
+def test_collect_deliverables_reads_output_directory_only(monkeypatch):
+    mission_id = uuid4()
+    encoded = base64.b64encode(b"final-markdown").decode("ascii")
+
+    class FakeContainerManager:
+        def exec_in_container(self, _container_id, command, **_kwargs):
+            if command.startswith("find '/workspace/output'"):
+                return (0, "12 /workspace/output/final.md\n", "")
+            if command.startswith("find '/workspace/shared'"):
+                return 0, "", ""
+            if command.startswith("find '/workspace/tasks'"):
+                return 0, "", ""
+            if command.startswith("find '/workspace/logs'"):
+                return 0, "", ""
+            if command.startswith("find '/workspace/input'"):
+                return 0, "", ""
+            if command.startswith("find '/workspace' -maxdepth 1 -type f"):
+                return 0, "", ""
+            if command == "base64 '/workspace/output/final.md'":
+                return 0, encoded, ""
+            if "/workspace/outputs" in command:
+                raise AssertionError("outputs path should not be accessed")
+            raise AssertionError(f"unexpected command: {command}")
+
+    class FakeMinio:
+        def upload_file(self, *, bucket_type, file_data, filename, user_id):
+            assert bucket_type == "artifacts"
+            assert filename == "output/final.md"
+            assert user_id == str(mission_id)
+            assert file_data.read() == b"final-markdown"
+            return "artifacts", "missions/output/final.md"
+
+    monkeypatch.setattr(
+        "mission_system.workspace_manager.get_minio_client",
+        lambda: FakeMinio(),
+    )
+
+    manager = MissionWorkspaceManager.__new__(MissionWorkspaceManager)
+    manager._container_manager = FakeContainerManager()
+    manager._workspaces = {
+        mission_id: WorkspaceInfo(
+            mission_id=mission_id,
+            container_id="container-1",
+            workspace_path="/workspace",
+        )
+    }
+
+    deliverables = manager.collect_deliverables(mission_id)
+    assert len(deliverables) == 1
+    item = deliverables[0]
+    assert item.filename == "output/final.md"
+    assert item.is_target is True
+    assert item.source_scope == "output"
+    assert item.artifact_kind == "final"
+
+
 def test_snapshot_workspace_uploads_archive(monkeypatch):
     mission_id = uuid4()
     archive_bytes = b"workspace-archive"
@@ -236,3 +292,53 @@ def test_restore_workspace_downloads_and_extracts_snapshot(monkeypatch):
     assert restored["path"] == "artifacts/workspace_snapshot_restore.tar.gz"
     assert restored["restored_file_count"] == 7
     assert restored["archive_size"] == len(b"workspace-archive")
+
+
+def test_build_mission_container_config_sets_mission_name_and_workspace_mount():
+    mission_id = uuid4()
+    host_workspace_path = f"/tmp/linx-mission-test-{mission_id}"
+
+    manager = MissionWorkspaceManager.__new__(MissionWorkspaceManager)
+    config = manager._build_mission_container_config(
+        mission_id=mission_id,
+        mission_config={},
+        host_workspace_path=host_workspace_path,
+    )
+
+    assert config.name.startswith("mission-")
+    assert config.volume_mounts[host_workspace_path] == "/workspace"
+    assert config.environment["WORKSPACE"] == "/workspace"
+
+
+def test_create_workspace_does_not_create_legacy_outputs_alias():
+    mission_id = uuid4()
+    executed_commands = []
+
+    class FakeContainerManager:
+        def create_container(self, *, agent_id, config):
+            assert agent_id == mission_id
+            assert config is not None
+            return "container-1"
+
+        def start_container(self, container_id):
+            assert container_id == "container-1"
+            return True
+
+        def exec_in_container(self, container_id, command, **_kwargs):
+            assert container_id == "container-1"
+            executed_commands.append(command)
+            return 0, "", ""
+
+    manager = MissionWorkspaceManager.__new__(MissionWorkspaceManager)
+    manager._container_manager = FakeContainerManager()
+    manager._workspaces = {}
+    manager._prepare_host_workspace = lambda _mission_id: "/tmp/linx-mission-test"
+    manager._build_mission_container_config = lambda **_kwargs: object()
+
+    manager.create_workspace(mission_id, config={})
+
+    assert (
+        "mkdir -p /workspace/input /workspace/output /workspace/tasks /workspace/shared "
+        "/workspace/logs"
+    ) in executed_commands
+    assert all("/workspace/outputs" not in command for command in executed_commands)

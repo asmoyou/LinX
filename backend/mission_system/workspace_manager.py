@@ -2,15 +2,19 @@
 
 Provides a shared Docker container workspace for mission execution.
 All agents in a mission share a single container with a structured
-directory layout for inputs, outputs, tasks, shared files, and logs.
+directory layout for inputs, output, tasks, shared files, and logs.
 """
 
 import base64
 import io
 import logging
+import os
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
@@ -26,6 +30,12 @@ logger = logging.getLogger(__name__)
 # Standard workspace directory layout inside the container
 WORKSPACE_ROOT = "/workspace"
 WORKSPACE_DIRS = ["input", "output", "tasks", "shared", "logs"]
+MISSION_HOST_WORKSPACE_ROOT = Path(
+    os.getenv(
+        "LINX_MISSION_WORKSPACE_ROOT",
+        str(Path(tempfile.gettempdir()) / "linx_mission_workspaces"),
+    )
+)
 RUNTIME_ARTIFACT_NAME_PATTERNS = (
     re.compile(r"^code_[0-9a-f]{8}\.(?:py|sh|js|ts|tsx|jsx|bash|zsh|txt)$", re.IGNORECASE),
     re.compile(r"^requirements(?:\.[a-z0-9_-]+)?\.txt$", re.IGNORECASE),
@@ -42,6 +52,7 @@ class WorkspaceInfo:
     mission_id: UUID
     container_id: str
     workspace_path: str
+    host_workspace_path: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.utcnow)
 
 
@@ -117,7 +128,12 @@ class MissionWorkspaceManager:
             WorkspaceInfo with container details.
         """
         config = config or {}
-        container_config = self._build_mission_container_config(config)
+        host_workspace_path = self._prepare_host_workspace(mission_id)
+        container_config = self._build_mission_container_config(
+            mission_id=mission_id,
+            mission_config=config,
+            host_workspace_path=host_workspace_path,
+        )
 
         container_id = self._container_manager.create_container(
             agent_id=mission_id,  # reuse agent_id param for mission ownership
@@ -141,6 +157,7 @@ class MissionWorkspaceManager:
             mission_id=mission_id,
             container_id=container_id,
             workspace_path=WORKSPACE_ROOT,
+            host_workspace_path=host_workspace_path,
         )
         self._workspaces[mission_id] = workspace
 
@@ -149,6 +166,7 @@ class MissionWorkspaceManager:
             extra={
                 "mission_id": str(mission_id),
                 "container_id": container_id,
+                "host_workspace_path": host_workspace_path,
             },
         )
         return workspace
@@ -227,6 +245,13 @@ class MissionWorkspaceManager:
         if workspace is None:
             return None
         return workspace.container_id
+
+    def get_host_workspace_path(self, mission_id: UUID) -> Optional[str]:
+        """Return host workspace path for a mission, if available."""
+        workspace = self._workspaces.get(mission_id)
+        if workspace is None:
+            return None
+        return workspace.host_workspace_path
 
     def write_file(
         self,
@@ -394,6 +419,8 @@ class MissionWorkspaceManager:
                 seen_filepaths.add(filepath)
 
                 relative_path = filepath.replace(f"{WORKSPACE_ROOT}/", "", 1)
+                if not relative_path:
+                    continue
                 runtime_artifact = self._is_runtime_process_artifact(relative_path)
                 effective_is_target = is_target and not runtime_artifact
 
@@ -632,6 +659,13 @@ class MissionWorkspaceManager:
 
         try:
             self._container_manager.terminate_container(workspace.container_id)
+            if workspace.host_workspace_path:
+                try:
+                    shutil.rmtree(workspace.host_workspace_path, ignore_errors=True)
+                except Exception:
+                    logger.exception(
+                        "Error cleaning host workspace for mission %s", mission_id
+                    )
             logger.info("Workspace cleaned up for mission %s", mission_id)
         except Exception:
             logger.exception("Error cleaning up workspace for mission %s", mission_id)
@@ -700,9 +734,21 @@ class MissionWorkspaceManager:
         if exit_code != 0:
             raise RuntimeError(f"Failed to decode base64 payload in container: {stderr}")
 
+    @staticmethod
+    def _prepare_host_workspace(mission_id: UUID) -> str:
+        """Create a dedicated host workspace directory for a mission."""
+        workspace_root = MISSION_HOST_WORKSPACE_ROOT.expanduser()
+        workspace_path = workspace_root / str(mission_id)
+        if workspace_path.exists():
+            shutil.rmtree(workspace_path, ignore_errors=True)
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        return str(workspace_path.resolve())
+
     def _build_mission_container_config(
         self,
+        mission_id: UUID,
         mission_config: Dict[str, Any],
+        host_workspace_path: str,
     ) -> ContainerConfig:
         """Build a ContainerConfig tailored for mission workspaces.
 
@@ -710,7 +756,7 @@ class MissionWorkspaceManager:
         - read_only_root is False (agents install packages)
         - Base image is python:3.11-bookworm
         - /tmp uses tmpfs for ephemeral temporary files
-        - /workspace uses container writable layer for runtime files
+        - /workspace is bind-mounted to a dedicated host mission workspace
         - 24-hour max lifetime (enforced externally)
         - Network access configurable via mission_config
         """
@@ -727,12 +773,16 @@ class MissionWorkspaceManager:
             network_enabled = bool(mission_config.get("network_enabled", True))
 
         config = ContainerConfig(
+            name=f"mission-{str(mission_id).replace('-', '')[:12]}",
             image=mission_config.get("image", "python:3.11-bookworm"),
             read_only_root=False,
             network_disabled=not network_enabled,
             network_mode="bridge" if network_enabled else "isolated-network",
             tmpfs_mounts={
                 "/tmp": "size=200M,mode=1777",
+            },
+            volume_mounts={
+                host_workspace_path: WORKSPACE_ROOT,
             },
             environment={
                 "WORKSPACE": WORKSPACE_ROOT,

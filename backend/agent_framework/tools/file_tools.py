@@ -12,6 +12,7 @@ Modeled after Claude Code's file tools:
 """
 
 import ast
+from contextvars import ContextVar
 import json
 import logging
 import os
@@ -30,16 +31,22 @@ logger = logging.getLogger(__name__)
 # Shared workspace root – set by BaseAgent before each task execution
 # ---------------------------------------------------------------------------
 
-_workspace_root: Optional[Path] = None
+_workspace_root_ctx: ContextVar[Optional[Path]] = ContextVar(
+    "agent_file_tools_workspace_root",
+    default=None,
+)
 
 
 def set_workspace_root(path: Path) -> None:
-    global _workspace_root
-    _workspace_root = path
+    _workspace_root_ctx.set(path)
+
+
+def clear_workspace_root() -> None:
+    _workspace_root_ctx.set(None)
 
 
 def get_workspace_root() -> Optional[Path]:
-    return _workspace_root
+    return _workspace_root_ctx.get()
 
 
 def _resolve_path(file_path: str) -> Path:

@@ -15,6 +15,7 @@ import re
 import traceback
 from collections import Counter, defaultdict, deque
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from uuid import UUID
 
@@ -66,6 +67,7 @@ MAX_ALLOWED_REWORK_CYCLES = 5
 MAX_ALLOWED_QA_CYCLES = 5
 MIN_TASK_RELEVANCE_SCORE = 0.12
 MAX_OFF_TOPIC_TASK_RATIO = 0.5
+MISSION_RUNTIME_CONTEXT_TAG = "mission_run"
 
 
 class MissionOrchestrator:
@@ -1662,6 +1664,7 @@ class MissionOrchestrator:
         *,
         execution_context: Optional[Dict[str, Any]] = None,
         execution_profile: ExecutionProfile | str = ExecutionProfile.MISSION_CONTROL,
+        session_workdir: Optional[Path] = None,
         container_id: Optional[str] = None,
         code_execution_network_access: Optional[bool] = None,
     ) -> Dict[str, Any]:
@@ -1675,11 +1678,17 @@ class MissionOrchestrator:
         )
 
         use_unified_runtime = is_mission_task_unified_runtime_enabled()
+        if isinstance(execution_context, dict):
+            request_context = dict(execution_context)
+            request_context.setdefault("execution_context_tag", MISSION_RUNTIME_CONTEXT_TAG)
+        else:
+            request_context = {"execution_context_tag": MISSION_RUNTIME_CONTEXT_TAG}
         request = RuntimeAdapterRequest(
             agent=agent,
             task_description=prompt,
-            context=execution_context,
+            context=request_context,
             execution_profile=execution_profile if use_unified_runtime else None,
+            session_workdir=session_workdir,
             container_id=container_id,
             code_execution_network_access=code_execution_network_access,
         )
@@ -3429,12 +3438,17 @@ class MissionOrchestrator:
                     )
 
                 workspace_container_id: Optional[str] = None
+                workspace_host_path: Optional[str] = None
                 workspace_manager = getattr(self, "_workspace", None)
                 if workspace_manager is not None:
                     try:
                         workspace_container_id = workspace_manager.get_container_id(mission_id)
                     except Exception:
                         workspace_container_id = None
+                    try:
+                        workspace_host_path = workspace_manager.get_host_workspace_path(mission_id)
+                    except Exception:
+                        workspace_host_path = None
                 code_execution_network_access = self._coerce_bool(
                     exec_cfg.get("network_access", False),
                     default=False,
@@ -3444,7 +3458,14 @@ class MissionOrchestrator:
                     "container_id": workspace_container_id,
                     "code_execution_network_access": code_execution_network_access,
                 }
+                if workspace_host_path:
+                    execute_kwargs["session_workdir"] = Path(workspace_host_path)
                 if execution_context_payload:
+                    execution_context_payload = dict(execution_context_payload)
+                    execution_context_payload.setdefault(
+                        "execution_context_tag",
+                        MISSION_RUNTIME_CONTEXT_TAG,
+                    )
                     execute_kwargs["execution_context"] = execution_context_payload
                 if task_timeout_s > 0:
                     result = await asyncio.wait_for(

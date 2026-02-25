@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import List
 from uuid import uuid4
@@ -359,7 +360,38 @@ async def test_execute_agent_task_without_container_passes_execution_context():
     args, kwargs = agent.calls[0]
     assert args == ()
     assert kwargs["task_description"] == "ping"
-    assert kwargs["context"] == exec_context
+    assert kwargs["context"] == {
+        "agent_memories": ["prior context"],
+        "execution_context_tag": "mission_run",
+    }
+    assert exec_context == {"agent_memories": ["prior context"]}
+    assert kwargs["execution_profile"] == ExecutionProfile.MISSION_CONTROL
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_task_passes_session_workdir():
+    class _FakeAgent:
+        def __init__(self):
+            self.calls = []
+
+        def execute_task(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return {"success": True, "output": "ok"}
+
+    agent = _FakeAgent()
+    workdir = Path("/tmp/mission-workspace-test")
+    result = await MissionOrchestrator._execute_agent_task(
+        agent,
+        "ping",
+        session_workdir=workdir,
+    )
+
+    assert result["success"] is True
+    assert len(agent.calls) == 1
+    args, kwargs = agent.calls[0]
+    assert args == ()
+    assert kwargs["task_description"] == "ping"
+    assert kwargs["session_workdir"] == workdir
     assert kwargs["execution_profile"] == ExecutionProfile.MISSION_CONTROL
 
 

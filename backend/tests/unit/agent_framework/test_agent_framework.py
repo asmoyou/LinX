@@ -238,6 +238,7 @@ class TestBaseAgent:
         assert "MUST use `write_file`" in prompt
         assert "**append_file**" in prompt
         assert "report the exact saved file path" in prompt
+        assert "prefer `/workspace/output/...`" in prompt
         assert "Default behavior" in prompt
         assert "Do NOT proactively call `write_file`/`append_file`" in prompt
 
@@ -315,8 +316,8 @@ class TestBaseAgent:
             {
                 "tool_name": "write_file",
                 "status": "success",
-                "args": {"file_path": "/workspace/outputs/tianjin.md"},
-                "result": "Successfully wrote /workspace/outputs/tianjin.md",
+                "args": {"file_path": "/workspace/output/tianjin.md"},
+                "result": "Successfully wrote /workspace/output/tianjin.md",
             }
         ]
         assert agent._has_successful_requested_format_call(md_records, {"md"}) is True
@@ -326,8 +327,8 @@ class TestBaseAgent:
             {
                 "tool_name": "code_execution",
                 "status": "success",
-                "args": {"code": "print('/workspace/outputs/tianjin.pdf')"},
-                "result": "Code executed successfully:\n/workspace/outputs/tianjin.pdf",
+                "args": {"code": "print('/workspace/output/tianjin.pdf')"},
+                "result": "Code executed successfully:\n/workspace/output/tianjin.pdf",
             }
         ]
         assert agent._has_successful_requested_format_call(pdf_records, {"pdf"}) is True
@@ -344,7 +345,7 @@ class TestBaseAgent:
 
         assert agent._allows_file_write_tools("写一份山西的旅游攻略") is False
         assert agent._allows_file_write_tools("写一份山西的旅游攻略，整理成md文档给我") is True
-        assert agent._allows_file_write_tools("请保存到 /workspace/outputs/guide.md") is True
+        assert agent._allows_file_write_tools("请保存到 /workspace/output/guide.md") is True
         assert agent._allows_file_write_tools("创建一个 main.py 文件并写入 hello world") is True
 
     def test_extract_native_tool_calls_from_ai_message(self):
@@ -363,7 +364,7 @@ class TestBaseAgent:
                 {
                     "name": "write_file",
                     "args": {
-                        "file_path": "/workspace/outputs/result.md",
+                        "file_path": "/workspace/output/result.md",
                         "content": "# Title",
                     },
                 }
@@ -374,7 +375,7 @@ class TestBaseAgent:
 
         assert len(tool_calls) == 1
         assert tool_calls[0].tool_name == "write_file"
-        assert tool_calls[0].arguments["file_path"] == "/workspace/outputs/result.md"
+        assert tool_calls[0].arguments["file_path"] == "/workspace/output/result.md"
 
     def test_parse_tool_calls_supports_nested_braces_in_string_arguments(self):
         config = AgentConfig(
@@ -388,7 +389,7 @@ class TestBaseAgent:
         agent.tools_by_name = {"write_file": Mock()}
 
         llm_output = (
-            '{"tool":"write_file","file_path":"/workspace/outputs/tianjin_travel_guide.md",'
+            '{"tool":"write_file","file_path":"/workspace/output/tianjin_travel_guide.md",'
             '"content":"# 天津攻略\\n\\n示例内容包含花括号 {a:1} 与表格 |A|B|"}'
         )
 
@@ -435,7 +436,7 @@ class TestBaseAgent:
         assert agent._extract_tool_runtime_error("❌ Command failed (exit code 1)")
         assert agent._extract_tool_runtime_error({"success": False, "error": "boom"})
         assert (
-            agent._extract_tool_runtime_error("Successfully wrote /workspace/outputs/a.md") is None
+            agent._extract_tool_runtime_error("Successfully wrote /workspace/output/a.md") is None
         )
 
     def test_handle_execution_failures_returns_policy_feedback(self):
@@ -483,7 +484,7 @@ class TestBaseAgent:
 
         write_tool = Mock()
         write_tool.ainvoke = AsyncMock(
-            return_value="Successfully wrote /workspace/outputs/fuzhou.md"
+            return_value="Successfully wrote /workspace/output/fuzhou.md"
         )
         agent.tools_by_name = {"write_file": write_tool}
 
@@ -497,14 +498,14 @@ class TestBaseAgent:
             elif current_round == 2:
                 yield SimpleNamespace(
                     content=(
-                        '{"tool":"write_file","file_path":"/workspace/outputs/fuzhou.md",'
+                        '{"tool":"write_file","file_path":"/workspace/output/fuzhou.md",'
                         '"content":"# 福州旅游攻略\\n\\n第一天..."}'
                     ),
                     additional_kwargs={},
                 )
             else:
                 yield SimpleNamespace(
-                    content="已保存到 /workspace/outputs/fuzhou.md",
+                    content="已保存到 /workspace/output/fuzhou.md",
                     additional_kwargs={},
                 )
 
@@ -519,7 +520,7 @@ class TestBaseAgent:
         assert result["success"] is True
         assert stream_call_count["count"] == 3
         write_tool.ainvoke.assert_awaited_once()
-        assert "/workspace/outputs/fuzhou.md" in result["output"]
+        assert "/workspace/output/fuzhou.md" in result["output"]
 
 
 class TestAgentRegistry:

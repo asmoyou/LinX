@@ -30,6 +30,7 @@ from shared.logging import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
+AGENT_TEST_RUNTIME_CONTEXT_TAG = "agent_test_session"
 
 
 def _resolve_agent_avatar(avatar_ref: Optional[str]) -> Optional[str]:
@@ -4194,6 +4195,7 @@ async def test_agent(
                     user_id=UUID(current_user.user_id),
                     user_role=current_user.role,
                     task_description=message,
+                    additional_context={"execution_context_tag": AGENT_TEST_RUNTIME_CONTEXT_TAG},
                 )
                 executor = get_agent_executor()
                 try:
@@ -4567,6 +4569,9 @@ async def test_agent(
                                 user_id=UUID(current_user.user_id),
                                 user_role=current_user.role,
                                 task_description=task_description_override,
+                                additional_context={
+                                    "execution_context_tag": AGENT_TEST_RUNTIME_CONTEXT_TAG
+                                },
                             )
                             if use_unified_runtime:
                                 result = executor.execute(
@@ -4981,6 +4986,7 @@ async def test_agent(
                     user_id=UUID(current_user.user_id),
                     user_role=current_user.role,
                     task_description=message_with_attachments,
+                    additional_context={"execution_context_tag": AGENT_TEST_RUNTIME_CONTEXT_TAG},
                 )
 
                 executor = get_agent_executor()

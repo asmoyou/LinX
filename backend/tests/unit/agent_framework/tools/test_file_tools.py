@@ -1,6 +1,12 @@
 """Tests for agent file tools."""
 
-from agent_framework.tools.file_tools import AppendFileTool, create_file_tools, set_workspace_root
+from agent_framework.tools.file_tools import (
+    AppendFileTool,
+    clear_workspace_root,
+    create_file_tools,
+    get_workspace_root,
+    set_workspace_root,
+)
 
 
 def test_create_file_tools_includes_append_file() -> None:
@@ -25,10 +31,23 @@ def test_append_file_tool_appends_existing_file(tmp_path) -> None:
 def test_append_file_tool_creates_file_when_missing(tmp_path) -> None:
     """append_file should create missing files and parent directories."""
     set_workspace_root(tmp_path)
-    target = tmp_path / "outputs" / "draft.md"
+    target = tmp_path / "output" / "draft.md"
 
     tool = AppendFileTool()
-    result = tool._run("/workspace/outputs/draft.md", "hello")
+    result = tool._run("/workspace/output/draft.md", "hello")
 
     assert "Successfully appended" in result
     assert target.read_text(encoding="utf-8") == "hello"
+
+
+def test_clear_workspace_root_prevents_stale_path_writes(tmp_path) -> None:
+    """clear_workspace_root should disable file writes until a new root is set."""
+    set_workspace_root(tmp_path)
+    assert get_workspace_root() == tmp_path
+
+    clear_workspace_root()
+    assert get_workspace_root() is None
+
+    tool = AppendFileTool()
+    result = tool._run("/workspace/output/draft.md", "hello")
+    assert "Workspace root not set" in result
