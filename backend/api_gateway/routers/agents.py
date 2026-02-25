@@ -224,6 +224,11 @@ def _to_positive_int(value: Any) -> Optional[int]:
 _NON_TERMINAL_TASK_STATUSES = {"pending", "in_progress"}
 
 
+def _mission_bound_tasks_only(task_model: Any):
+    """Restrict task stats/logs to mission-generated tasks only."""
+    return task_model.mission_id.isnot(None)
+
+
 def _default_agent_task_stats() -> Dict[str, Any]:
     """Default task metrics for agents with no execution records."""
     return {
@@ -253,6 +258,7 @@ def _collect_agent_task_stats(agent_ids: List[UUID]) -> Dict[UUID, Dict[str, Any
             rows = (
                 session.query(Task.assigned_agent_id, Task.status, func.count(Task.task_id))
                 .filter(Task.assigned_agent_id.in_(unique_agent_ids))
+                .filter(_mission_bound_tasks_only(Task))
                 .group_by(Task.assigned_agent_id, Task.status)
                 .all()
             )
@@ -2738,12 +2744,14 @@ async def get_agent_metrics(
             task_status_rows = (
                 session.query(Task.status, func.count(Task.task_id))
                 .filter(Task.assigned_agent_id == agent_uuid)
+                .filter(_mission_bound_tasks_only(Task))
                 .group_by(Task.status)
                 .all()
             )
             last_activity_at = (
                 session.query(func.max(func.coalesce(Task.completed_at, Task.created_at)))
                 .filter(Task.assigned_agent_id == agent_uuid)
+                .filter(_mission_bound_tasks_only(Task))
                 .scalar()
             )
 
@@ -2781,6 +2789,7 @@ async def get_agent_logs(
             task_rows = (
                 session.query(Task.goal_text, Task.status, Task.created_at, Task.completed_at)
                 .filter(Task.assigned_agent_id == agent_uuid)
+                .filter(_mission_bound_tasks_only(Task))
                 .order_by(func.coalesce(Task.completed_at, Task.created_at).desc())
                 .limit(limit)
                 .all()
