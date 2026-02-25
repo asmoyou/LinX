@@ -873,37 +873,47 @@ class AgentExecutor:
             )
 
             # Persist one task-level memory record per task completion (success or failure).
-            try:
-                execution_success = bool(result.get("success"))
-                execution_summary = result.get("output")
-                if not execution_success:
-                    execution_summary = result.get("error") or "Task execution failed"
+            # Skip DEBUG_CHAT to keep agent-test streaming completion responsive.
+            if execution_profile != ExecutionProfile.DEBUG_CHAT:
+                try:
+                    execution_success = bool(result.get("success"))
+                    execution_summary = result.get("output")
+                    if not execution_success:
+                        execution_summary = result.get("error") or "Task execution failed"
 
-                content = _format_agent_memory_content(
-                    task=context.task_description,
-                    result=str(execution_summary or ""),
-                    agent_name=agent.config.name,
-                )
-                self.memory_interface.store_agent_memory(
-                    agent_id=context.agent_id,
-                    content=content,
-                    user_id=context.user_id,
-                    metadata={
-                        "task_id": str(context.task_id) if context.task_id else None,
-                        "execution_status": "success" if execution_success else "failed",
-                        "source": "agent_executor_task",
-                    },
-                )
+                    content = _format_agent_memory_content(
+                        task=context.task_description,
+                        result=str(execution_summary or ""),
+                        agent_name=agent.config.name,
+                    )
+                    self.memory_interface.store_agent_memory(
+                        agent_id=context.agent_id,
+                        content=content,
+                        user_id=context.user_id,
+                        metadata={
+                            "task_id": str(context.task_id) if context.task_id else None,
+                            "execution_status": "success" if execution_success else "failed",
+                            "source": "agent_executor_task",
+                        },
+                    )
+                    logger.debug(
+                        "Stored task completion memory",
+                        extra={
+                            "agent_id": str(context.agent_id),
+                            "task_id": str(context.task_id) if context.task_id else None,
+                            "execution_status": "success" if execution_success else "failed",
+                        },
+                    )
+                except Exception as mem_error:
+                    logger.warning(f"Failed to store task completion memory (continuing): {mem_error}")
+            else:
                 logger.debug(
-                    "Stored task completion memory",
+                    "Skipped task completion memory persistence for debug_chat profile",
                     extra={
                         "agent_id": str(context.agent_id),
                         "task_id": str(context.task_id) if context.task_id else None,
-                        "execution_status": "success" if execution_success else "failed",
                     },
                 )
-            except Exception as mem_error:
-                logger.warning(f"Failed to store task completion memory (continuing): {mem_error}")
 
             logger.info(f"Agent execution completed: {agent.config.name}")
             return result

@@ -1,6 +1,9 @@
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
-from agent_framework.agent_executor import AgentExecutor
+from agent_framework.agent_executor import AgentExecutor, ExecutionContext
+from agent_framework.runtime_policy import ExecutionProfile
 
 
 def _build_executor() -> AgentExecutor:
@@ -52,3 +55,57 @@ def test_prune_interaction_log_memories_respects_history_intent():
 
     assert len(kept_memories) == 2
     assert kept_pruned_count == 0
+
+
+def test_execute_skips_task_memory_persistence_for_debug_chat_profile():
+    memory_interface = MagicMock()
+    executor = AgentExecutor(memory_interface=memory_interface)
+    mock_runtime_service = MagicMock()
+    mock_runtime_service.execute.return_value = {"success": True, "output": "ok"}
+
+    agent = MagicMock()
+    agent.config = SimpleNamespace(name="Test Agent")
+    context = ExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        task_description="写一份旅游攻略",
+    )
+
+    with patch("agent_framework.agent_executor.get_unified_agent_runtime_service") as get_runtime:
+        get_runtime.return_value = mock_runtime_service
+        result = executor.execute(
+            agent=agent,
+            context=context,
+            execution_profile=ExecutionProfile.DEBUG_CHAT,
+            prebuilt_execution_context={},
+        )
+
+    assert result["success"] is True
+    memory_interface.store_agent_memory.assert_not_called()
+
+
+def test_execute_persists_task_memory_for_non_debug_profile():
+    memory_interface = MagicMock()
+    executor = AgentExecutor(memory_interface=memory_interface)
+    mock_runtime_service = MagicMock()
+    mock_runtime_service.execute.return_value = {"success": True, "output": "ok"}
+
+    agent = MagicMock()
+    agent.config = SimpleNamespace(name="Test Agent")
+    context = ExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        task_description="写一份旅游攻略",
+    )
+
+    with patch("agent_framework.agent_executor.get_unified_agent_runtime_service") as get_runtime:
+        get_runtime.return_value = mock_runtime_service
+        result = executor.execute(
+            agent=agent,
+            context=context,
+            execution_profile=ExecutionProfile.MISSION_TASK,
+            prebuilt_execution_context={},
+        )
+
+    assert result["success"] is True
+    memory_interface.store_agent_memory.assert_called_once()

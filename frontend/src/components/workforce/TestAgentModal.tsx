@@ -649,9 +649,23 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({
   const handleAbortStreaming = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-      setIsStreaming(false);
-      setError('输出已终止');
+
+      const now = Date.now();
+      const duration = (now - lastStatusTimeRef.current) / 1000;
+      if (streamingDataRef.current.currentRound.statusMessages.length > 0) {
+        const lastIndex = streamingDataRef.current.currentRound.statusMessages.length - 1;
+        streamingDataRef.current.currentRound.statusMessages[lastIndex].duration = duration;
+      }
+      streamingDataRef.current.currentRound.statusMessages.push({
+        content: '用户已取消本次输出',
+        type: 'info',
+        timestamp: new Date(),
+        duration: undefined,
+      });
+
+      commitStreamingOutputToMessages();
+      resetStreamingState();
+      setError(null);
     }
   };
 

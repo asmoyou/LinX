@@ -3268,6 +3268,12 @@ async def test_agent(
                     f"Agent test completed: {agent_info.name} (tokens: {input_tokens}/{output_tokens}, speed: {tokens_per_second:.1f} tok/s)"
                 )
 
+            except asyncio.CancelledError:
+                logger.info(
+                    "Agent test stream cancelled by client",
+                    extra={"agent_id": agent_id, "session_id": conversation_session.session_id},
+                )
+                return
             except Exception as e:
                 logger.error(f"Error during agent test streaming: {e}", exc_info=True)
                 yield f"data: {json.dumps({'type': 'error', 'content': f'Error: {str(e)}'})}\n\n"
