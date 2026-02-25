@@ -26,7 +26,7 @@ export const useStoreSync = (options: {
   const {
     syncUser = true,
     syncAgents = true,
-    syncTasks = true,
+    syncTasks = false,
     syncKnowledge = true,
     syncMemories = true,
   } = options;
@@ -81,12 +81,10 @@ export const useStoreSync = (options: {
         if (syncTasks) {
           taskStore.setLoading(true);
           try {
-            const [goalsResponse, tasksResponse] = await Promise.all([
-              apiClient.get('/goals'),
-              apiClient.get('/tasks'),
-            ]);
-            taskStore.setGoals(goalsResponse.data);
-            taskStore.setTasks(tasksResponse.data);
+            // Legacy /goals and /tasks APIs are deprecated.
+            // Mission orchestration data is handled by missionStore.
+            taskStore.setGoals([]);
+            taskStore.setTasks([]);
           } catch (error) {
             console.error('Failed to fetch tasks:', error);
             taskStore.setError('Failed to load tasks');
@@ -172,12 +170,9 @@ export const useRefreshStore = () => {
     const taskStore = useTaskStore.getState();
     taskStore.setLoading(true);
     try {
-      const [goalsResponse, tasksResponse] = await Promise.all([
-        apiClient.get('/goals'),
-        apiClient.get('/tasks'),
-      ]);
-      taskStore.setGoals(goalsResponse.data);
-      taskStore.setTasks(tasksResponse.data);
+      // Legacy /goals and /tasks APIs are deprecated.
+      taskStore.setGoals([]);
+      taskStore.setTasks([]);
     } catch (error) {
       console.error('Failed to refresh tasks:', error);
       taskStore.setError('Failed to refresh tasks');

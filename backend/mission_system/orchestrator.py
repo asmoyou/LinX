@@ -43,6 +43,7 @@ from mission_system.mission_repository import (
     update_mission_status,
 )
 from mission_system.workspace_manager import get_workspace_manager
+from object_storage.minio_client import get_minio_client
 
 logger = logging.getLogger(__name__)
 
@@ -313,14 +314,14 @@ class MissionOrchestrator:
         except asyncio.CancelledError:
             logger.info("Mission %s was cancelled", mission_id)
             try:
-                self._snapshot_deliverables(mission_id)
+                self._snapshot_deliverables(mission_id, reason="cancelled")
                 update_mission_status(mission_id, "cancelled")
             except Exception:
                 logger.exception("Failed to set cancelled status for mission %s", mission_id)
             raise
         except MissionCancelledException:
             logger.info("Mission %s cancelled via exception", mission_id)
-            self._snapshot_deliverables(mission_id)
+            self._snapshot_deliverables(mission_id, reason="cancelled")
             update_mission_status(mission_id, "cancelled")
         except Exception as exc:
             trace = traceback.format_exc()
@@ -336,7 +337,7 @@ class MissionOrchestrator:
             if debug_mode:
                 failure_data["traceback"] = trace
             logger.exception("Mission %s failed: %s", mission_id, exc)
-            self._snapshot_deliverables(mission_id)
+            self._snapshot_deliverables(mission_id, reason="failed")
             try:
                 self._sync_mission_task_counters(
                     mission_id,
@@ -369,6 +370,7 @@ class MissionOrchestrator:
             if mission is None:
                 raise MissionError(mission_id, "Mission not found")
             self._prepare_workspace(mission_id, mission)
+            self._restore_workspace_snapshot_if_available(mission_id, mission)
 
             await self._phase_execution(mission_id)
             await self._phase_review(mission_id)
@@ -377,14 +379,14 @@ class MissionOrchestrator:
         except asyncio.CancelledError:
             logger.info("Mission %s partial retry was cancelled", mission_id)
             try:
-                self._snapshot_deliverables(mission_id)
+                self._snapshot_deliverables(mission_id, reason="cancelled")
                 update_mission_status(mission_id, "cancelled")
             except Exception:
                 logger.exception("Failed to set cancelled status for mission %s", mission_id)
             raise
         except MissionCancelledException:
             logger.info("Mission %s partial retry cancelled via exception", mission_id)
-            self._snapshot_deliverables(mission_id)
+            self._snapshot_deliverables(mission_id, reason="cancelled")
             update_mission_status(mission_id, "cancelled")
         except Exception as exc:
             trace = traceback.format_exc()
@@ -401,7 +403,7 @@ class MissionOrchestrator:
             if debug_mode:
                 failure_data["traceback"] = trace
             logger.exception("Mission %s partial retry failed: %s", mission_id, exc)
-            self._snapshot_deliverables(mission_id)
+            self._snapshot_deliverables(mission_id, reason="failed")
             try:
                 self._sync_mission_task_counters(
                     mission_id,
@@ -1767,10 +1769,18 @@ class MissionOrchestrator:
 
     def _prepare_workspace(self, mission_id: UUID, mission: Any) -> None:
         """Create mission workspace container and mount mission attachments."""
-        self._workspace.create_workspace(
+        workspace = self._workspace.create_workspace(
             mission_id,
             config=mission.mission_config or {},
         )
+        try:
+            update_mission_fields(mission_id, container_id=workspace.container_id)
+        except Exception:
+            logger.debug(
+                "Failed to persist workspace container ID for mission %s",
+                mission_id,
+                exc_info=True,
+            )
 
         if not getattr(mission, "attachments", None):
             return
@@ -4342,21 +4352,227 @@ class MissionOrchestrator:
             message="Mission completed successfully",
         )
 
-    def _snapshot_deliverables(self, mission_id: UUID) -> None:
-        """Best-effort snapshot of artifacts before workspace cleanup."""
+    @staticmethod
+    def _normalize_workspace_snapshot_record(raw_snapshot: Any) -> Optional[Dict[str, Any]]:
+        """Normalize workspace snapshot payload to a dict with required path field."""
+        if isinstance(raw_snapshot, str):
+            path = raw_snapshot.strip()
+            if path:
+                return {"path": path}
+            return None
+        if not isinstance(raw_snapshot, dict):
+            return None
+
+        path = str(raw_snapshot.get("path") or "").strip()
+        if not path:
+            return None
+        normalized = dict(raw_snapshot)
+        normalized["path"] = path
+        return normalized
+
+    @staticmethod
+    def _split_storage_path(storage_path: str) -> Optional[tuple[str, str]]:
+        """Split MinIO storage path (<bucket>/<object_key>) into tuple."""
+        value = str(storage_path or "").strip()
+        if "/" not in value:
+            return None
+        bucket_name, object_key = value.split("/", 1)
+        bucket_name = bucket_name.strip()
+        object_key = object_key.strip().lstrip("/")
+        if not bucket_name or not object_key:
+            return None
+        return bucket_name, object_key
+
+    def _delete_storage_objects(
+        self,
+        mission_id: UUID,
+        storage_paths: List[str],
+        *,
+        reason: str,
+    ) -> None:
+        """Best-effort delete MinIO objects by <bucket>/<object_key> paths."""
+        if not storage_paths:
+            return
+
+        minio = get_minio_client()
+        seen_objects: set[tuple[str, str]] = set()
+        for storage_path in storage_paths:
+            parsed_path = self._split_storage_path(storage_path)
+            if parsed_path is None:
+                continue
+            if parsed_path in seen_objects:
+                continue
+            seen_objects.add(parsed_path)
+
+            bucket_name, object_key = parsed_path
+            try:
+                minio.delete_file(bucket_name, object_key)
+            except Exception:
+                logger.debug(
+                    "Failed to delete stale object %s/%s (mission=%s, reason=%s)",
+                    bucket_name,
+                    object_key,
+                    mission_id,
+                    reason,
+                    exc_info=True,
+                )
+
+    def _extract_latest_workspace_snapshot_record(self, mission: Any) -> Optional[Dict[str, Any]]:
+        """Extract the latest workspace snapshot record from mission.result."""
+        result_payload = getattr(mission, "result", None)
+        if not isinstance(result_payload, dict):
+            return None
+
+        latest = self._normalize_workspace_snapshot_record(result_payload.get("workspace_snapshot"))
+        if latest is not None:
+            return latest
+
+        history = result_payload.get("workspace_snapshots")
+        if isinstance(history, list):
+            for item in reversed(history):
+                normalized = self._normalize_workspace_snapshot_record(item)
+                if normalized is not None:
+                    return normalized
+        return None
+
+    def _restore_workspace_snapshot_if_available(self, mission_id: UUID, mission: Any) -> None:
+        """Restore workspace snapshot before partial retry execution, if available."""
+        snapshot_record = self._extract_latest_workspace_snapshot_record(mission)
+        if snapshot_record is None:
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="WORKSPACE_RESTORE_SKIPPED",
+                data={"reason": "snapshot_not_found"},
+                message="No previous workspace snapshot found; partial retry starts from attachments",
+            )
+            return
+
+        snapshot_path = str(snapshot_record.get("path") or "").strip()
+        if not snapshot_path:
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="WORKSPACE_RESTORE_SKIPPED",
+                data={"reason": "snapshot_path_missing"},
+                message="Workspace snapshot metadata is invalid; skipping restore",
+            )
+            return
+
+        try:
+            restore_meta = self._workspace.restore_workspace(mission_id, snapshot_path)
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="WORKSPACE_RESTORED",
+                data={
+                    "path": snapshot_path,
+                    "restored_file_count": restore_meta.get("restored_file_count", 0),
+                    "archive_size": restore_meta.get("archive_size", 0),
+                    "restored_at": restore_meta.get("restored_at"),
+                },
+                message="Workspace snapshot restored for partial retry",
+            )
+        except Exception as exc:
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="WORKSPACE_RESTORE_FAILED",
+                data={"path": snapshot_path, "error": str(exc)},
+                message="Failed to restore workspace snapshot for partial retry",
+            )
+            raise MissionError(mission_id, f"Failed to restore workspace snapshot: {exc}")
+
+    def _snapshot_deliverables(self, mission_id: UUID, reason: str = "automatic") -> None:
+        """Best-effort snapshot of artifacts and workspace state before cleanup."""
+        deliverables = []
         try:
             deliverables = self._workspace.collect_deliverables(mission_id)
         except Exception:
             # Workspace may not exist (e.g. failed before requirements phase).
-            return
-        if not deliverables:
+            logger.debug(
+                "Skipping deliverables snapshot for mission %s because workspace is unavailable",
+                mission_id,
+                exc_info=True,
+            )
+
+        workspace_snapshot: Optional[Dict[str, Any]] = None
+        try:
+            workspace_snapshot = self._workspace.snapshot_workspace(mission_id, reason=reason)
+            self._emitter.emit(
+                mission_id=mission_id,
+                event_type="WORKSPACE_SNAPSHOTTED",
+                data={
+                    "path": workspace_snapshot.get("path"),
+                    "size": workspace_snapshot.get("size"),
+                    "file_count": workspace_snapshot.get("file_count"),
+                    "reason": workspace_snapshot.get("reason"),
+                },
+                message="Workspace snapshot saved",
+            )
+        except Exception:
+            logger.debug(
+                "Skipping workspace snapshot for mission %s because snapshot failed",
+                mission_id,
+                exc_info=True,
+            )
+
+        if not deliverables and workspace_snapshot is None:
             return
 
         try:
             mission = get_mission(mission_id)
             existing_result = dict(mission.result or {}) if mission else {}
-            existing_result["deliverables"] = [d.__dict__ for d in deliverables]
+            stale_storage_paths: List[str] = []
+            if deliverables:
+                previous_deliverables = self._coerce_deliverable_records(
+                    existing_result.get("deliverables")
+                )
+                previous_paths = {
+                    str(item.get("path") or "").strip()
+                    for item in previous_deliverables
+                    if str(item.get("path") or "").strip()
+                }
+                current_deliverables = [d.__dict__ for d in deliverables]
+                current_paths = {
+                    str(item.get("path") or "").strip()
+                    for item in current_deliverables
+                    if str(item.get("path") or "").strip()
+                }
+                stale_storage_paths.extend(sorted(previous_paths - current_paths))
+                existing_result["deliverables"] = current_deliverables
+            if workspace_snapshot is not None:
+                latest_existing = self._normalize_workspace_snapshot_record(
+                    existing_result.get("workspace_snapshot")
+                )
+                existing_result["workspace_snapshot"] = workspace_snapshot
+
+                history_payload = existing_result.get("workspace_snapshots")
+                history: List[Dict[str, Any]] = []
+                if isinstance(history_payload, list):
+                    for item in history_payload:
+                        normalized = self._normalize_workspace_snapshot_record(item)
+                        if normalized is not None:
+                            history.append(normalized)
+                if latest_existing is not None:
+                    history.append(latest_existing)
+                history.append(workspace_snapshot)
+
+                deduped_history: List[Dict[str, Any]] = []
+                seen_paths = set()
+                for item in history:
+                    path = str(item.get("path") or "").strip()
+                    if not path or path in seen_paths:
+                        continue
+                    seen_paths.add(path)
+                    deduped_history.append(item)
+                stale_storage_paths.extend(
+                    str(item.get("path") or "").strip() for item in deduped_history[:-10]
+                )
+                existing_result["workspace_snapshots"] = deduped_history[-10:]
+
             update_mission_fields(mission_id, result=existing_result)
+            self._delete_storage_objects(
+                mission_id,
+                stale_storage_paths,
+                reason="snapshot_rotation",
+            )
         except Exception:
             logger.exception("Failed to persist deliverable snapshot for mission %s", mission_id)
 
@@ -4986,6 +5202,14 @@ class MissionOrchestrator:
             self._workspace.cleanup_workspace(mission_id)
         except Exception:
             logger.exception("Workspace cleanup failed for mission %s", mission_id)
+        try:
+            update_mission_fields(mission_id, container_id=None)
+        except Exception:
+            logger.debug(
+                "Failed to clear mission container ID during cleanup for %s",
+                mission_id,
+                exc_info=True,
+            )
 
     def _cleanup_temporary_agents(self, mission_id: UUID) -> None:
         """Delete temporary agents created for a mission."""

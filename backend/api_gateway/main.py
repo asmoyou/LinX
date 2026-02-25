@@ -36,7 +36,6 @@ from api_gateway.routers import (
     notifications,
     roles,
     skills,
-    tasks,
     users,
 )
 from api_gateway.websocket import router as websocket_router
@@ -354,7 +353,6 @@ def create_app() -> FastAPI:
     app.include_router(departments.router, prefix="/api/v1/departments", tags=["Departments"])
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
     app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
-    app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["Tasks"])
     app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["Knowledge"])
     app.include_router(memory.router, prefix="/api/v1/memories", tags=["Memory"])
     app.include_router(missions.router, prefix="/api/v1/missions", tags=["Missions"])

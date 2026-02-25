@@ -145,10 +145,15 @@ def delete_mission(mission_id: UUID) -> bool:
     Returns:
         bool: True when a mission row was deleted, False when it did not exist.
     """
+    from database.models import Task
+
     with get_db_session() as session:
         mission = session.query(Mission).filter(Mission.mission_id == mission_id).first()
         if mission is None:
             return False
+        # Mission tasks are internal execution nodes and should be removed
+        # together with their owning mission.
+        session.query(Task).filter(Task.mission_id == mission_id).delete(synchronize_session=False)
         session.delete(mission)
         return True
 

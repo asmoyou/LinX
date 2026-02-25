@@ -1381,6 +1381,166 @@ def test_cleanup_deletes_temporary_agents(monkeypatch):
     assert mission_id not in orchestrator._clarification_responses
 
 
+def test_restore_workspace_snapshot_if_available_uses_latest_history_record():
+    mission_id = uuid4()
+    emitted_events = []
+    restored_paths = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+    orchestrator._workspace = SimpleNamespace(
+        restore_workspace=lambda _mission_id, path: (
+            restored_paths.append(path) or {
+                "restored_file_count": 4,
+                "archive_size": 256,
+                "restored_at": "2026-02-25T00:00:00Z",
+            }
+        )
+    )
+
+    mission = SimpleNamespace(
+        result={
+            "workspace_snapshots": [
+                {"path": "artifacts/old_snapshot.tar.gz"},
+                {"path": "artifacts/new_snapshot.tar.gz"},
+            ]
+        }
+    )
+
+    MissionOrchestrator._restore_workspace_snapshot_if_available(orchestrator, mission_id, mission)
+
+    assert restored_paths == ["artifacts/new_snapshot.tar.gz"]
+    assert any(
+        event.get("event_type") == "WORKSPACE_RESTORED" for event in emitted_events
+    )
+
+
+def test_restore_workspace_snapshot_if_available_emits_skip_when_absent():
+    mission_id = uuid4()
+    emitted_events = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+    orchestrator._workspace = SimpleNamespace(restore_workspace=lambda *_args, **_kwargs: None)
+
+    mission = SimpleNamespace(result={"deliverables": []})
+
+    MissionOrchestrator._restore_workspace_snapshot_if_available(orchestrator, mission_id, mission)
+
+    assert any(
+        event.get("event_type") == "WORKSPACE_RESTORE_SKIPPED" for event in emitted_events
+    )
+
+
+def test_snapshot_deliverables_persists_workspace_snapshot_history(monkeypatch):
+    mission_id = uuid4()
+    emitted_events = []
+    mission_updates = {}
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+    orchestrator._workspace = SimpleNamespace(
+        collect_deliverables=lambda _mission_id: [],
+        snapshot_workspace=lambda _mission_id, reason: {
+            "path": "artifacts/new_snapshot.tar.gz",
+            "size": 321,
+            "file_count": 12,
+            "reason": reason,
+            "created_at": "2026-02-25T00:00:00Z",
+        },
+    )
+
+    mission = SimpleNamespace(
+        result={"workspace_snapshots": [{"path": "artifacts/old_snapshot.tar.gz"}]}
+    )
+
+    monkeypatch.setattr("mission_system.orchestrator.get_mission", lambda _mission_id: mission)
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_fields",
+        lambda _mission_id, **kwargs: mission_updates.update(kwargs),
+    )
+
+    MissionOrchestrator._snapshot_deliverables(orchestrator, mission_id, reason="failed")
+
+    result_payload = mission_updates.get("result")
+    assert isinstance(result_payload, dict)
+    assert result_payload.get("workspace_snapshot", {}).get("path") == "artifacts/new_snapshot.tar.gz"
+    history = result_payload.get("workspace_snapshots", [])
+    assert {"path": "artifacts/old_snapshot.tar.gz"} in history
+    assert any(item.get("path") == "artifacts/new_snapshot.tar.gz" for item in history)
+    assert any(
+        event.get("event_type") == "WORKSPACE_SNAPSHOTTED" for event in emitted_events
+    )
+
+
+def test_snapshot_deliverables_deletes_rotated_storage_objects(monkeypatch):
+    mission_id = uuid4()
+    mission_updates = {}
+    deleted_objects = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **_kwargs: None)
+    orchestrator._workspace = SimpleNamespace(
+        collect_deliverables=lambda _mission_id: [
+            SimpleNamespace(
+                filename="output/new.md",
+                path="artifacts/new_deliverable.md",
+                size=123,
+                is_target=True,
+                source_scope="output",
+                artifact_kind="final",
+            )
+        ],
+        snapshot_workspace=lambda _mission_id, reason: {
+            "path": "artifacts/ws11.tar.gz",
+            "size": 1024,
+            "file_count": 8,
+            "reason": reason,
+            "created_at": "2026-02-25T00:00:00Z",
+        },
+    )
+
+    mission = SimpleNamespace(
+        result={
+            "deliverables": [
+                {
+                    "filename": "output/old.md",
+                    "path": "artifacts/old_deliverable.md",
+                }
+            ],
+            "workspace_snapshot": {"path": "artifacts/ws10.tar.gz"},
+            "workspace_snapshots": [
+                {"path": f"artifacts/ws{i}.tar.gz"} for i in range(1, 11)
+            ],
+        }
+    )
+
+    class _FakeMinio:
+        def delete_file(self, bucket_name, object_key):
+            deleted_objects.append((bucket_name, object_key))
+
+    monkeypatch.setattr("mission_system.orchestrator.get_mission", lambda _mission_id: mission)
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_fields",
+        lambda _mission_id, **kwargs: mission_updates.update(kwargs),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.get_minio_client",
+        lambda: _FakeMinio(),
+    )
+
+    MissionOrchestrator._snapshot_deliverables(orchestrator, mission_id, reason="failed")
+
+    assert ("artifacts", "old_deliverable.md") in deleted_objects
+    assert ("artifacts", "ws1.tar.gz") in deleted_objects
+
+    result_payload = mission_updates.get("result", {})
+    history = result_payload.get("workspace_snapshots", [])
+    assert len(history) == 10
+    assert history[0].get("path") == "artifacts/ws2.tar.gz"
+    assert history[-1].get("path") == "artifacts/ws11.tar.gz"
+
+
 def test_provision_temporary_worker_agent_registers_without_default_skills(monkeypatch):
     mission_id = uuid4()
     task_id = uuid4()

@@ -62,7 +62,7 @@ def test_delete_mission_returns_false_when_not_found(monkeypatch):
 
 
 def test_delete_mission_deletes_existing_row(monkeypatch):
-    deleted = {"count": 0}
+    deleted = {"mission_count": 0, "task_count": 0}
 
     class _FakeQuery:
         def __init__(self, mission):
@@ -78,11 +78,27 @@ def test_delete_mission_deletes_existing_row(monkeypatch):
         def __init__(self):
             self._mission = object()
 
-        def query(self, *args, **kwargs):
-            return _FakeQuery(self._mission)
+        def query(self, model, *args, **kwargs):
+            model_name = getattr(model, "__name__", str(model))
+            if model_name == "Mission":
+                return _FakeQuery(self._mission)
+
+            if model_name == "Task":
+                class _DeleteQuery:
+                    def filter(self, *args, **kwargs):
+                        return self
+
+                    def delete(self, synchronize_session=False):
+                        assert synchronize_session is False
+                        deleted["task_count"] += 1
+                        return 1
+
+                return _DeleteQuery()
+
+            raise AssertionError(f"Unexpected model query: {model_name}")
 
         def delete(self, _row):
-            deleted["count"] += 1
+            deleted["mission_count"] += 1
 
     @contextmanager
     def _fake_db_session():
@@ -91,7 +107,8 @@ def test_delete_mission_deletes_existing_row(monkeypatch):
     monkeypatch.setattr(mission_repository, "get_db_session", _fake_db_session)
 
     assert mission_repository.delete_mission(uuid4()) is True
-    assert deleted["count"] == 1
+    assert deleted["task_count"] == 1
+    assert deleted["mission_count"] == 1
 
 
 def test_reset_failed_mission_for_retry_rejects_non_retryable_status(monkeypatch):

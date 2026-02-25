@@ -12,7 +12,7 @@ import urllib.parse
 import zipfile
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
@@ -402,6 +402,47 @@ def _filter_deliverables_by_scope(
     return items
 
 
+def _split_storage_path(storage_path: str) -> Optional[Tuple[str, str]]:
+    value = str(storage_path or "").strip()
+    if "/" not in value:
+        return None
+    bucket_name, object_key = value.split("/", 1)
+    bucket_name = bucket_name.strip()
+    object_key = object_key.strip().lstrip("/")
+    if not bucket_name or not object_key:
+        return None
+    return bucket_name, object_key
+
+
+def _collect_mission_storage_objects(mission: Any) -> List[Tuple[str, str]]:
+    objects: set[Tuple[str, str]] = set()
+
+    for attachment in getattr(mission, "attachments", []) or []:
+        parsed = _split_storage_path(getattr(attachment, "file_reference", ""))
+        if parsed is not None:
+            objects.add(parsed)
+
+    result_payload = getattr(mission, "result", None)
+    if isinstance(result_payload, dict):
+        deliverables = _normalize_mission_deliverables(result_payload.get("deliverables", []))
+        for item in deliverables:
+            parsed = _split_storage_path(str(item.get("path") or ""))
+            if parsed is not None:
+                objects.add(parsed)
+
+        snapshot_candidates: List[Any] = [result_payload.get("workspace_snapshot")]
+        history = result_payload.get("workspace_snapshots")
+        if isinstance(history, list):
+            snapshot_candidates.extend(history)
+        for candidate in snapshot_candidates:
+            path = candidate if isinstance(candidate, str) else candidate.get("path") if isinstance(candidate, dict) else ""
+            parsed = _split_storage_path(str(path or ""))
+            if parsed is not None:
+                objects.add(parsed)
+
+    return sorted(objects)
+
+
 def _extract_clarification_request_text(event: Any) -> Optional[str]:
     event_data = getattr(event, "event_data", None)
     if isinstance(event_data, dict):
@@ -749,11 +790,14 @@ async def delete_mission(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Delete a mission. Running missions are cancelled first, then deleted."""
+    from mission_system.workspace_manager import get_workspace_manager
     from mission_system.mission_repository import (
         delete_mission as repo_delete,
         get_mission as repo_get,
     )
     from mission_system.orchestrator import get_orchestrator
+    from object_storage.minio_client import get_minio_client
+    from virtualization.container_manager import get_docker_cleanup_manager
 
     mission = repo_get(mission_id)
     if mission is None:
@@ -761,8 +805,53 @@ async def delete_mission(
     if mission.created_by_user_id != UUID(current_user.user_id):
         raise HTTPException(status_code=404, detail="Mission not found")
 
+    known_container_ids: set[str] = set()
+    if getattr(mission, "container_id", None):
+        known_container_ids.add(str(mission.container_id))
+
     if mission.status in ("executing", "requirements", "planning", "reviewing", "qa"):
         await get_orchestrator().cancel_mission(mission_id)
+
+    refreshed_mission = repo_get(mission_id)
+    if refreshed_mission is not None:
+        mission = refreshed_mission
+        if getattr(mission, "container_id", None):
+            known_container_ids.add(str(mission.container_id))
+
+    # Always attempt workspace/container cleanup before deleting mission row.
+    try:
+        get_workspace_manager().cleanup_workspace(mission_id)
+    except Exception:
+        logger.warning("Workspace cleanup failed before mission delete: %s", mission_id, exc_info=True)
+
+    if known_container_ids:
+        cleanup_manager = get_docker_cleanup_manager()
+        for container_id in known_container_ids:
+            if not container_id:
+                continue
+            try:
+                cleanup_manager.cleanup_container_by_internal_id(container_id)
+            except Exception:
+                logger.warning(
+                    "Failed to force-clean mission container %s before delete",
+                    container_id,
+                    exc_info=True,
+                )
+
+    storage_objects = _collect_mission_storage_objects(mission)
+    if storage_objects:
+        minio = get_minio_client()
+        for bucket_name, object_key in storage_objects:
+            try:
+                minio.delete_file(bucket_name, object_key)
+            except Exception:
+                logger.warning(
+                    "Failed to delete mission storage object %s/%s during mission delete",
+                    bucket_name,
+                    object_key,
+                    exc_info=True,
+                )
+
     if not repo_delete(mission_id):
         raise HTTPException(status_code=404, detail="Mission not found")
     # Defensive verification to avoid "deleted locally but reappears after refresh" surprises.
@@ -858,6 +947,7 @@ async def delete_attachment(
     """Delete a mission attachment."""
     from database.connection import get_db_session
     from database.mission_models import MissionAttachment
+    from object_storage.minio_client import get_minio_client
 
     with get_db_session() as session:
         att = (
@@ -870,6 +960,20 @@ async def delete_attachment(
         )
         if att is None:
             raise HTTPException(status_code=404, detail="Attachment not found")
+
+        parsed_ref = _split_storage_path(att.file_reference)
+        if parsed_ref is not None:
+            bucket_name, object_key = parsed_ref
+            try:
+                get_minio_client().delete_file(bucket_name, object_key)
+            except Exception:
+                logger.warning(
+                    "Failed to delete attachment object %s/%s for mission %s",
+                    bucket_name,
+                    object_key,
+                    mission_id,
+                    exc_info=True,
+                )
         session.delete(att)
 
 

@@ -15,7 +15,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from object_storage.minio_client import get_minio_client
-from shared.config import get_config
 from virtualization.container_manager import (
     ContainerConfig,
     ContainerManager,
@@ -485,6 +484,142 @@ class MissionWorkspaceManager:
         )
         return deliverables
 
+    def snapshot_workspace(
+        self,
+        mission_id: UUID,
+        reason: str = "automatic",
+    ) -> Dict[str, Any]:
+        """Snapshot the live workspace filesystem into object storage.
+
+        The snapshot archive is uploaded to MinIO artifacts storage and can be
+        restored later when retrying failed mission parts.
+        """
+        workspace = self._get_workspace(mission_id)
+        minio = get_minio_client()
+
+        timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        archive_name = f"workspace_snapshot_{timestamp}.tar.gz"
+        archive_path = f"/tmp/{archive_name}"
+
+        try:
+            exit_code, _stdout, stderr = self._container_manager.exec_in_container(
+                workspace.container_id,
+                f"tar -czf '{archive_path}' -C '{WORKSPACE_ROOT}' .",
+            )
+            if exit_code != 0:
+                raise RuntimeError(f"Failed to create workspace snapshot archive: {stderr}")
+
+            exit_code, file_count_stdout, _stderr = self._container_manager.exec_in_container(
+                workspace.container_id,
+                f"find '{WORKSPACE_ROOT}' -type f | wc -l",
+            )
+            file_count = 0
+            if exit_code == 0:
+                try:
+                    file_count = int((file_count_stdout or "0").strip() or "0")
+                except ValueError:
+                    file_count = 0
+
+            exit_code, archive_b64, stderr = self._container_manager.exec_in_container(
+                workspace.container_id,
+                f"base64 '{archive_path}'",
+            )
+            if exit_code != 0:
+                raise RuntimeError(f"Failed to read workspace snapshot archive: {stderr}")
+
+            try:
+                archive_bytes = base64.b64decode((archive_b64 or "").strip())
+            except Exception as exc:
+                raise RuntimeError(f"Failed to decode workspace snapshot archive: {exc}")
+
+            metadata = {
+                "artifact_type": "workspace_snapshot",
+                "mission_id": str(mission_id),
+                "snapshot_reason": str(reason or "automatic"),
+                "snapshot_timestamp": datetime.utcnow().isoformat(),
+            }
+            bucket_name, object_key = minio.upload_file(
+                bucket_type="artifacts",
+                file_data=io.BytesIO(archive_bytes),
+                filename=archive_name,
+                user_id=str(mission_id),
+                content_type="application/gzip",
+                metadata=metadata,
+            )
+
+            snapshot_record: Dict[str, Any] = {
+                "path": f"{bucket_name}/{object_key}",
+                "filename": archive_name,
+                "size": len(archive_bytes),
+                "file_count": file_count,
+                "reason": str(reason or "automatic"),
+                "created_at": datetime.utcnow().isoformat(),
+            }
+            return snapshot_record
+        finally:
+            self._container_manager.exec_in_container(
+                workspace.container_id,
+                f"rm -f '{archive_path}'",
+            )
+
+    def restore_workspace(
+        self,
+        mission_id: UUID,
+        storage_path: str,
+    ) -> Dict[str, Any]:
+        """Restore workspace content from an object storage snapshot archive."""
+        workspace = self._get_workspace(mission_id)
+        minio = get_minio_client()
+
+        parsed_path = self._split_storage_path(storage_path)
+        if parsed_path is None:
+            raise RuntimeError(f"Invalid workspace snapshot path: {storage_path}")
+        bucket_name, object_key = parsed_path
+
+        archive_name = object_key.rsplit("/", 1)[-1] or "workspace_snapshot_restore.tar.gz"
+        archive_path = f"/tmp/{archive_name}"
+
+        try:
+            stream, _meta = minio.download_file(bucket_name, object_key)
+            archive_bytes = stream.read()
+            archive_b64 = base64.b64encode(archive_bytes).decode("ascii")
+
+            self._write_base64_to_container_file(
+                container_id=workspace.container_id,
+                base64_payload=archive_b64,
+                target_path=archive_path,
+            )
+
+            exit_code, _stdout, stderr = self._container_manager.exec_in_container(
+                workspace.container_id,
+                f"tar -xzf '{archive_path}' -C '{WORKSPACE_ROOT}' --overwrite",
+            )
+            if exit_code != 0:
+                raise RuntimeError(f"Failed to extract workspace snapshot archive: {stderr}")
+
+            exit_code, file_count_stdout, _stderr = self._container_manager.exec_in_container(
+                workspace.container_id,
+                f"find '{WORKSPACE_ROOT}' -type f | wc -l",
+            )
+            restored_file_count = 0
+            if exit_code == 0:
+                try:
+                    restored_file_count = int((file_count_stdout or "0").strip() or "0")
+                except ValueError:
+                    restored_file_count = 0
+
+            return {
+                "path": storage_path,
+                "restored_file_count": restored_file_count,
+                "archive_size": len(archive_bytes),
+                "restored_at": datetime.utcnow().isoformat(),
+            }
+        finally:
+            self._container_manager.exec_in_container(
+                workspace.container_id,
+                f"rm -f '{archive_path}' '{archive_path}.b64'",
+            )
+
     def cleanup_workspace(self, mission_id: UUID) -> None:
         """Stop and remove the mission container. Idempotent.
 
@@ -512,6 +647,59 @@ class MissionWorkspaceManager:
             raise RuntimeError(f"No workspace found for mission {mission_id}")
         return workspace
 
+    @staticmethod
+    def _split_storage_path(storage_path: str) -> Optional[Tuple[str, str]]:
+        """Split MinIO storage path (<bucket>/<object_key>) into tuple."""
+        value = str(storage_path or "").strip()
+        if "/" not in value:
+            return None
+        bucket_name, object_key = value.split("/", 1)
+        bucket_name = bucket_name.strip()
+        object_key = object_key.strip().lstrip("/")
+        if not bucket_name or not object_key:
+            return None
+        return bucket_name, object_key
+
+    def _write_base64_to_container_file(
+        self,
+        container_id: str,
+        base64_payload: str,
+        target_path: str,
+        *,
+        chunk_size: int = 16384,
+    ) -> None:
+        """Write base64 payload into a container file in chunks.
+
+        Chunked writes avoid shell argument-size limits for larger archives.
+        """
+        temp_b64_path = f"{target_path}.b64"
+
+        exit_code, _stdout, stderr = self._container_manager.exec_in_container(
+            container_id,
+            f": > '{temp_b64_path}'",
+        )
+        if exit_code != 0:
+            raise RuntimeError(f"Failed to initialize base64 temp file: {stderr}")
+
+        for index in range(0, len(base64_payload), chunk_size):
+            chunk = base64_payload[index : index + chunk_size]
+            exit_code, _stdout, stderr = self._container_manager.exec_in_container(
+                container_id,
+                f"printf '%s' '{chunk}' >> '{temp_b64_path}'",
+            )
+            if exit_code != 0:
+                raise RuntimeError(
+                    "Failed to write base64 chunk to container "
+                    f"(offset={index}, size={len(chunk)}): {stderr}"
+                )
+
+        exit_code, _stdout, stderr = self._container_manager.exec_in_container(
+            container_id,
+            f"base64 -d '{temp_b64_path}' > '{target_path}'",
+        )
+        if exit_code != 0:
+            raise RuntimeError(f"Failed to decode base64 payload in container: {stderr}")
+
     def _build_mission_container_config(
         self,
         mission_config: Dict[str, Any],
@@ -521,7 +709,8 @@ class MissionWorkspaceManager:
         Key differences from per-agent containers:
         - read_only_root is False (agents install packages)
         - Base image is python:3.11-bookworm
-        - tmpfs includes /workspace as the main working area
+        - /tmp uses tmpfs for ephemeral temporary files
+        - /workspace uses container writable layer for runtime files
         - 24-hour max lifetime (enforced externally)
         - Network access configurable via mission_config
         """

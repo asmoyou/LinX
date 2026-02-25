@@ -221,19 +221,23 @@ class TestAgentEndpoints:
 
 
 class TestTaskEndpoints:
-    """Test task management endpoints."""
+    """Test legacy task endpoint removal."""
 
-    def test_list_tasks_requires_auth(self, client):
-        """Test list tasks endpoint requires authentication."""
-        response = client.get("/api/v1/tasks")
+    def test_list_tasks_endpoint_not_registered(self, client, auth_token):
+        """Legacy /tasks endpoint should be fully removed."""
+        response = client.get("/api/v1/tasks", headers={"Authorization": f"Bearer {auth_token}"})
 
-        assert response.status_code == 401
+        assert response.status_code == 404
 
-    def test_create_task_requires_auth(self, client):
-        """Test create task endpoint requires authentication."""
-        response = client.post("/api/v1/tasks", json={"goal_text": "Test goal"})
+    def test_create_task_endpoint_not_registered(self, client, auth_token):
+        """Legacy /tasks create endpoint should be fully removed."""
+        response = client.post(
+            "/api/v1/tasks",
+            json={"goal_text": "Test goal"},
+            headers={"Authorization": f"Bearer {auth_token}"},
+        )
 
-        assert response.status_code == 401
+        assert response.status_code == 404
 
 
 class TestDashboardEndpoints:
