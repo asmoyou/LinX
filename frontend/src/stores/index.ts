@@ -14,6 +14,7 @@ import { useTaskStore } from './taskStore';
 import { useKnowledgeStore } from './knowledgeStore';
 import { useMemoryStore } from './memoryStore';
 import { useMissionStore } from './missionStore';
+import { useHealthStore } from './healthStore';
 import { usePreferencesStore } from './preferencesStore';
 
 // Authentication and user management
@@ -32,6 +33,7 @@ export { useTaskStore } from './taskStore';
 export { useKnowledgeStore } from './knowledgeStore';
 export { useMemoryStore } from './memoryStore';
 export { useMissionStore } from './missionStore';
+export { useHealthStore } from './healthStore';
 
 // UI and preferences
 export { useThemeStore } from './themeStore';
@@ -101,6 +103,7 @@ export const resetAllStores = () => {
   const knowledgeStore = useKnowledgeStore.getState();
   const memoryStore = useMemoryStore.getState();
   const missionStore = useMissionStore.getState();
+  const healthStore = useHealthStore.getState();
   const preferencesStore = usePreferencesStore.getState();
 
   authStore.logout();
@@ -111,6 +114,7 @@ export const resetAllStores = () => {
   knowledgeStore.reset();
   memoryStore.reset();
   missionStore.reset();
+  healthStore.reset();
   preferencesStore.reset();
   // Note: Theme and notifications are intentionally not reset
 };

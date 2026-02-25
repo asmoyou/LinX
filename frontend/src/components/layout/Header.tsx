@@ -13,15 +13,17 @@ import {
 } from 'lucide-react';
 import { useThemeStore } from '@/stores/themeStore';
 import { useNotificationStore } from '@/stores/notificationStore';
-import { usePreferencesStore } from '@/stores';
+import { useHealthStore, usePreferencesStore } from '@/stores';
 import { usersApi } from '@/api/users';
 import { notificationsApi } from '@/api/notifications';
-import { healthApi, type DependencyHealth, type SystemHealthResponse } from '@/api/health';
+import { type DependencyHealth } from '@/api/health';
 
 interface HeaderProps {
   isCollapsed: boolean;
   onToggle: () => void;
 }
+
+const HEALTH_POLL_MS = 60_000;
 
 export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
   const { i18n, t } = useTranslation();
@@ -42,11 +44,13 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
     markAsRead,
     markServerNotificationRead,
   } = useNotificationStore();
+  const systemHealth = useHealthStore((state) => state.systemHealth);
+  const healthLoading = useHealthStore((state) => state.healthLoading);
+  const healthError = useHealthStore((state) => state.healthError);
+  const fetchSystemHealth = useHealthStore((state) => state.fetchSystemHealth);
   const [showNotifications, setShowNotifications] = React.useState(false);
   const [showSystemHealth, setShowSystemHealth] = React.useState(false);
-  const [systemHealth, setSystemHealth] = React.useState<SystemHealthResponse | null>(null);
-  const [healthLoading, setHealthLoading] = React.useState(true);
-  const [healthError, setHealthError] = React.useState<string | null>(null);
+  const systemHealthContainerRef = React.useRef<HTMLDivElement | null>(null);
   const notificationContainerRef = React.useRef<HTMLDivElement | null>(null);
   const previewNotifications = React.useMemo(
     () => notifications.filter((notification) => !notification.read).slice(0, 20),
@@ -100,44 +104,23 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
   };
 
   React.useEffect(() => {
-    let mounted = true;
+    void fetchSystemHealth({ showLoading: true });
+  }, [fetchSystemHealth]);
 
-    const fetchHealth = async (initialLoad: boolean = false) => {
-      if (initialLoad) {
-        setHealthLoading(true);
-      }
+  React.useEffect(() => {
+    if (!showSystemHealth) return;
 
-      try {
-        const response = await healthApi.getSystemHealth();
-        if (!mounted) {
-          return;
-        }
+    void fetchSystemHealth({ showLoading: !systemHealth });
 
-        setSystemHealth(response);
-        setHealthError(null);
-      } catch (error) {
-        if (!mounted) {
-          return;
-        }
-        const message = error instanceof Error ? error.message : 'Failed to fetch system health';
-        setHealthError(message);
-      } finally {
-        if (mounted) {
-          setHealthLoading(false);
-        }
-      }
-    };
-
-    void fetchHealth(true);
     const timer = window.setInterval(() => {
-      void fetchHealth(false);
-    }, 30000);
+      if (document.visibilityState !== 'visible') return;
+      void fetchSystemHealth();
+    }, HEALTH_POLL_MS);
 
     return () => {
-      mounted = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [fetchSystemHealth, showSystemHealth, systemHealth]);
 
   React.useEffect(() => {
     if (!showNotifications) return;
@@ -164,12 +147,50 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
     };
   }, [showNotifications]);
 
+  React.useEffect(() => {
+    if (!showSystemHealth) return;
+
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (
+        systemHealthContainerRef.current &&
+        target &&
+        !systemHealthContainerRef.current.contains(target)
+      ) {
+        setShowSystemHealth(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowSystemHealth(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handleOutsidePointerDown, true);
+    document.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.removeEventListener('pointerdown', handleOutsidePointerDown, true);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [showSystemHealth]);
+
   type HeaderHealthState = 'checking' | 'unknown' | 'optimal' | 'degraded' | 'critical';
 
   const headerHealthState: HeaderHealthState = (() => {
     if (healthLoading && !systemHealth) return 'checking';
     if (!systemHealth) return 'unknown';
-    return systemHealth.overall;
+
+    if (
+      systemHealth.overall === 'optimal' ||
+      systemHealth.overall === 'degraded' ||
+      systemHealth.overall === 'critical'
+    ) {
+      return systemHealth.overall;
+    }
+
+    return systemHealth.status === 'healthy' ? 'optimal' : 'critical';
   })();
 
   const healthBadgeConfig: Record<
@@ -332,7 +353,7 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
           )}
         </button>
 
-        <div className="relative hidden md:block">
+        <div className="relative hidden md:block" ref={systemHealthContainerRef}>
           <button
             onClick={() => setShowSystemHealth((prev) => !prev)}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-[11px] font-medium uppercase tracking-widest transition-colors ${badge.borderClass} ${badge.bgClass}`}
@@ -352,93 +373,87 @@ export const Header: React.FC<HeaderProps> = ({ isCollapsed, onToggle }) => {
           </button>
 
           {showSystemHealth && (
-            <>
-              <div
-                className="fixed inset-0 z-40"
-                onClick={() => setShowSystemHealth(false)}
-              />
-              <div className="absolute left-0 mt-2 w-[440px] rounded-[24px] border border-zinc-200/80 bg-white/95 p-5 shadow-2xl backdrop-blur-xl dark:border-zinc-700/80 dark:bg-zinc-900/95 z-50">
-                <div className="flex items-start justify-between gap-3 mb-4">
-                  <div>
-                    <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-500 dark:text-zinc-300">
-                      {t('header.health.title', 'System Dependencies')}
-                    </h3>
-                    {systemHealth && (
-                      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                        {t('header.health.lastUpdated', 'Updated')}: {' '}
-                        {formatHealthTimestamp(systemHealth.timestamp)}
-                      </p>
-                    )}
-                  </div>
-                  <span
-                    className={`px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider ${badge.bgClass} ${badge.textClass}`}
-                  >
-                    {badge.label}
-                  </span>
+            <div className="absolute left-0 mt-2 w-[440px] rounded-[24px] border border-zinc-200/80 bg-white/95 p-5 shadow-2xl backdrop-blur-xl dark:border-zinc-700/80 dark:bg-zinc-900/95 z-50">
+              <div className="flex items-start justify-between gap-3 mb-4">
+                <div>
+                  <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-500 dark:text-zinc-300">
+                    {t('header.health.title', 'System Dependencies')}
+                  </h3>
+                  {systemHealth && (
+                    <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                      {t('header.health.lastUpdated', 'Updated')}: {' '}
+                      {formatHealthTimestamp(systemHealth.timestamp)}
+                    </p>
+                  )}
                 </div>
+                <span
+                  className={`px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider ${badge.bgClass} ${badge.textClass}`}
+                >
+                  {badge.label}
+                </span>
+              </div>
 
-                {healthLoading && !systemHealth && (
-                  <div className="text-sm text-zinc-500 dark:text-zinc-400 py-3">
-                    {t('header.health.checkingDetails', 'Checking dependencies...')}
-                  </div>
-                )}
+              {healthLoading && !systemHealth && (
+                <div className="text-sm text-zinc-500 dark:text-zinc-400 py-3">
+                  {t('header.health.checkingDetails', 'Checking dependencies...')}
+                </div>
+              )}
 
-                {healthError && !systemHealth && (
-                  <div className="text-sm text-rose-600 dark:text-rose-400 py-3">
-                    {t('header.health.fetchFailed', 'Failed to load health status')}: {healthError}
-                  </div>
-                )}
+              {healthError && !systemHealth && (
+                <div className="text-sm text-rose-600 dark:text-rose-400 py-3">
+                  {t('header.health.fetchFailed', 'Failed to load health status')}: {healthError}
+                </div>
+              )}
 
-                {systemHealth && (
-                  <>
-                    <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1 custom-scrollbar">
-                      {systemHealth.dependencies.map((dependency) => (
-                        <div
-                          key={dependency.id}
-                          className="p-3 rounded-xl border border-zinc-200/70 bg-white/80 dark:border-zinc-700/70 dark:bg-zinc-800/70"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <span className={`w-2 h-2 rounded-full ${getDependencyDotClass(dependency)}`} />
-                              <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-200 truncate">
-                                {dependency.name}
-                              </p>
-                              <span className="px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wide bg-zinc-500/10 text-zinc-500 dark:text-zinc-400">
-                                {dependency.required
-                                  ? t('header.health.required', 'Required')
-                                  : t('header.health.optional', 'Optional')}
-                              </span>
-                            </div>
-
-                            <span className={`text-xs font-semibold uppercase tracking-wider ${getDependencyStatusClass(dependency)}`}>
-                              {getDependencyStatusText(dependency)}
+              {systemHealth && (
+                <>
+                  <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1 custom-scrollbar">
+                    {systemHealth.dependencies.map((dependency) => (
+                      <div
+                        key={dependency.id}
+                        className="p-3 rounded-xl border border-zinc-200/70 bg-white/80 dark:border-zinc-700/70 dark:bg-zinc-800/70"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className={`w-2 h-2 rounded-full ${getDependencyDotClass(dependency)}`} />
+                            <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-200 truncate">
+                              {dependency.name}
+                            </p>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wide bg-zinc-500/10 text-zinc-500 dark:text-zinc-400">
+                              {dependency.required
+                                ? t('header.health.required', 'Required')
+                                : t('header.health.optional', 'Optional')}
                             </span>
                           </div>
 
-                          <p className="mt-1.5 text-xs text-zinc-600 dark:text-zinc-400">
-                            {dependency.message}
-                          </p>
-
-                          {dependency.status === 'down' && (
-                            <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">
-                              {t('header.health.impact', 'Impact')}: {dependency.impact}
-                            </p>
-                          )}
+                          <span className={`text-xs font-semibold uppercase tracking-wider ${getDependencyStatusClass(dependency)}`}>
+                            {getDependencyStatusText(dependency)}
+                          </span>
                         </div>
-                      ))}
-                    </div>
 
-                    <p className="mt-4 text-xs text-zinc-500 dark:text-zinc-400">
-                      {t('header.health.summary', 'Required healthy {{requiredHealthy}}/{{requiredTotal}}, optional down {{optionalDown}}', {
-                        requiredHealthy: systemHealth.summary.required_healthy,
-                        requiredTotal: systemHealth.summary.required_total,
-                        optionalDown: systemHealth.summary.optional_unhealthy,
-                      })}
-                    </p>
-                  </>
-                )}
-              </div>
-            </>
+                        <p className="mt-1.5 text-xs text-zinc-600 dark:text-zinc-400">
+                          {dependency.message}
+                        </p>
+
+                        {dependency.status === 'down' && (
+                          <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">
+                            {t('header.health.impact', 'Impact')}: {dependency.impact}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <p className="mt-4 text-xs text-zinc-500 dark:text-zinc-400">
+                    {t('header.health.summary', 'Required healthy {{requiredHealthy}}/{{requiredTotal}}, optional down {{optionalDown}}', {
+                      requiredHealthy: systemHealth.summary.required_healthy,
+                      requiredTotal: systemHealth.summary.required_total,
+                      optionalDown: systemHealth.summary.optional_unhealthy,
+                    })}
+                  </p>
+                </>
+              )}
+            </div>
           )}
         </div>
       </div>
