@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
-import { X, Send, HelpCircle } from 'lucide-react';
+import { Send, HelpCircle } from 'lucide-react';
 import { LayoutModal } from '@/components/LayoutModal';
-import { ModalPanel } from '@/components/ModalPanel';
 
 interface ClarificationModalProps {
   isOpen: boolean;
@@ -20,8 +19,7 @@ export const ClarificationModal: React.FC<ClarificationModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = () => {
     if (answers.every((a) => a.trim())) {
       onSubmit(answers);
       setAnswers(new Array(questions.length).fill(''));
@@ -39,67 +37,53 @@ export const ClarificationModal: React.FC<ClarificationModalProps> = ({
     <LayoutModal
       isOpen={isOpen}
       onClose={onClose}
-      closeOnBackdropClick={false}
-      closeOnEscape={true}
-    >
-      <ModalPanel className="w-full max-w-2xl max-h-[calc(100vh-var(--app-header-height,4rem)-3rem)] overflow-y-auto">
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-3">
-            <HelpCircle className="w-6 h-6 text-yellow-500" />
-            <h2 className="text-2xl font-bold text-gray-800 dark:text-white">
-              Clarification Needed
-            </h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-white/20 rounded-lg transition-colors"
-          >
-            <X className="w-6 h-6 text-gray-700 dark:text-gray-300" />
-          </button>
+      size="2xl"
+      title={
+        <div className="flex items-center gap-2 text-zinc-900 dark:text-zinc-100">
+          <HelpCircle className="w-5 h-5 text-amber-500" />
+          <span>Clarification Needed</span>
         </div>
-
-        <p className="text-gray-600 dark:text-gray-400 mb-6">
-          Please provide additional information to help us better understand your goal:
-        </p>
-
-        <form onSubmit={handleSubmit}>
-          <div className="space-y-4 mb-6">
-            {questions.map((question, index) => (
-              <div key={index}>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  {index + 1}. {question}
-                </label>
-                <textarea
-                  value={answers[index]}
-                  onChange={(e) => handleAnswerChange(index, e.target.value)}
-                  placeholder="Your answer..."
-                  rows={3}
-                  className="w-full px-4 py-2 bg-white/50 dark:bg-black/20 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-800 dark:text-white resize-none"
-                  required
-                />
-              </div>
-            ))}
+      }
+      description="Please provide additional information to help us better understand your goal:"
+      closeOnBackdropClick={false}
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors font-medium border border-transparent dark:border-zinc-700"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={!answers.every((a) => a.trim())}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+          >
+            <Send className="w-4 h-4" />
+            Submit Answers
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-6">
+        {questions.map((question, index) => (
+          <div key={index} className="space-y-2">
+            <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+              <span className="text-emerald-500 mr-1">{index + 1}.</span> {question}
+            </label>
+            <textarea
+              value={answers[index]}
+              onChange={(e) => handleAnswerChange(index, e.target.value)}
+              placeholder="Your answer..."
+              rows={3}
+              className="w-full px-4 py-3 bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/50 text-zinc-800 dark:text-zinc-200 resize-none transition-shadow"
+              required
+            />
           </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 px-4 py-3 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-white rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors font-medium"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={!answers.every((a) => a.trim())}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Send className="w-5 h-5" />
-              Submit Answers
-            </button>
-          </div>
-        </form>
-      </ModalPanel>
+        ))}
+      </div>
     </LayoutModal>
   );
 };
