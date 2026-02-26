@@ -3,7 +3,6 @@ import { Plus, Search, RefreshCw, Package, Layers, Power, BarChart3 } from 'luci
 import SkillCardV2 from '@/components/skills/SkillCardV2';
 import AddSkillModalV2 from '@/components/skills/AddSkillModalV2';
 import EditSkillModal from '@/components/skills/EditSkillModal';
-import CodePreviewModal from '@/components/skills/CodePreviewModal';
 import AgentSkillViewer from '@/components/skills/AgentSkillViewer';
 import SkillTesterModal from '@/components/skills/SkillTesterModal';
 import { skillsApi, type Skill, type CreateSkillRequest, type SkillOverviewStats } from '@/api/skills';
@@ -50,7 +49,6 @@ export default function Skills() {
   const [isLoading, setIsLoading] = useState(true);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const [isCodePreviewOpen, setIsCodePreviewOpen] = useState(false);
   const [isAgentSkillViewerOpen, setIsAgentSkillViewerOpen] = useState(false);
   const [isTesterModalOpen, setIsTesterModalOpen] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
@@ -134,14 +132,6 @@ export default function Skills() {
       console.error('Failed to update skill:', error);
       throw error;
     }
-  };
-
-  const handleViewCode = (skill: Skill) => {
-    if (skill.skill_type === 'agent_skill') {
-      return;
-    }
-    setSelectedSkill(skill);
-    setIsCodePreviewOpen(true);
   };
 
   const handleDeleteSkill = async (skillId: string) => {
@@ -325,7 +315,6 @@ export default function Skills() {
                 onEdit={handleEditSkill}
                 onDelete={handleDeleteSkill}
                 onToggleActive={handleToggleActive}
-                onViewCode={handleViewCode}
                 onTest={handleTestSkill}
               />
             ))}
@@ -352,18 +341,6 @@ export default function Skills() {
           />
         )}
 
-        {/* Code Preview Modal */}
-        {selectedSkill && (
-          <CodePreviewModal
-            isOpen={isCodePreviewOpen}
-            onClose={() => {
-              setIsCodePreviewOpen(false);
-              setSelectedSkill(null);
-            }}
-            skill={selectedSkill}
-          />
-        )}
-
         {/* Agent Skill Viewer */}
         {selectedSkill && (
           <AgentSkillViewer
@@ -386,6 +363,7 @@ export default function Skills() {
             onClose={() => {
               setIsTesterModalOpen(false);
               setSelectedSkill(null);
+              void loadSkills();
             }}
             skillId={selectedSkill.skill_id}
             skillName={selectedSkill.name}

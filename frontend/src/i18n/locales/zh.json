@@ -828,6 +828,7 @@
     "copied": "已复制",
     "metadata": "元数据",
     "createdAt": "创建时间",
+    "updatedAt": "更新时间",
     "packages": "个包",
     "inputs": "输入参数",
     "outputs": "输出参数",

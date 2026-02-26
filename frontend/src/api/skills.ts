@@ -21,6 +21,7 @@ export interface Skill {
   execution_count?: number;
   last_executed_at?: string;
   average_execution_time?: number;
+  updated_at?: string;
   interface_definition: {
     inputs: Record<string, string>;
     outputs: Record<string, string>;

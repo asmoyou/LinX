@@ -1,4 +1,5 @@
-import { Code2, Package, Layers, Trash2, Edit, Eye, Play, Power, PowerOff, BookOpen, AlertCircle } from 'lucide-react';
+import { Code2, Package, Layers, Trash2, Edit, Play, Power, PowerOff, BookOpen, AlertCircle } from 'lucide-react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { Skill } from '@/api/skills';
 import { useTranslation } from 'react-i18next';
 
@@ -30,7 +31,6 @@ interface SkillCardV2Props {
   onEdit: (skill: Skill) => void;
   onDelete: (skillId: string) => void;
   onToggleActive?: (skillId: string, isActive: boolean) => void;
-  onViewCode?: (skill: Skill) => void;
   onTest?: (skill: Skill) => void;
 }
 
@@ -87,17 +87,115 @@ const getSkillTypeInfo = (type: string, t: any) => {
   }
 };
 
+const STAT_MAX_FONT_SIZE_PX = 18;
+const STAT_MIN_FONT_SIZE_PX = 11;
+
+interface AutoFitStatValueProps {
+  value: string;
+  maxFontPx?: number;
+  minFontPx?: number;
+  className?: string;
+}
+
+function AutoFitStatValue({
+  value,
+  maxFontPx = STAT_MAX_FONT_SIZE_PX,
+  minFontPx = STAT_MIN_FONT_SIZE_PX,
+  className = '',
+}: AutoFitStatValueProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null);
+
+  const fitFontSize = useCallback(() => {
+    const container = containerRef.current;
+    const text = textRef.current;
+    if (!container || !text) {
+      return;
+    }
+
+    text.style.fontSize = `${maxFontPx}px`;
+    const availableWidth = container.clientWidth;
+    const requiredWidth = text.scrollWidth;
+
+    if (!availableWidth || !requiredWidth || requiredWidth <= availableWidth) {
+      text.style.fontSize = `${maxFontPx}px`;
+      return;
+    }
+
+    const scaled = (maxFontPx * availableWidth) / requiredWidth;
+    const nextSize = Math.max(minFontPx, Math.min(maxFontPx, scaled));
+    text.style.fontSize = `${nextSize}px`;
+  }, [maxFontPx, minFontPx]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const rafId = window.requestAnimationFrame(() => {
+      fitFontSize();
+    });
+
+    const observer = new ResizeObserver(() => {
+      fitFontSize();
+    });
+    observer.observe(container);
+
+    const fontSet = (document as Document & { fonts?: { ready?: Promise<unknown> } }).fonts;
+    fontSet?.ready?.then(() => {
+      fitFontSize();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      observer.disconnect();
+    };
+  }, [fitFontSize, value]);
+
+  return (
+    <div ref={containerRef} className="w-full min-w-0 overflow-hidden">
+      <span
+        ref={textRef}
+        className={`block w-full text-center font-semibold leading-none whitespace-nowrap ${className}`}
+        style={{ fontSize: `${maxFontPx}px` }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
 export default function SkillCardV2({
   skill,
   onEdit,
   onDelete,
   onToggleActive,
-  onViewCode,
   onTest,
 }: SkillCardV2Props) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const typeInfo = getSkillTypeInfo(skill.skill_type || 'langchain_tool', t);
   const TypeIcon = typeInfo.icon;
+  const latestUpdatedAt = skill.updated_at || skill.created_at;
+  const updatedDate = latestUpdatedAt ? new Date(latestUpdatedAt) : null;
+  const dateLocale = i18n.language === 'zh' ? 'zh-CN' : undefined;
+  const updatedYearLabel =
+    updatedDate && !Number.isNaN(updatedDate.getTime())
+      ? String(updatedDate.getFullYear())
+      : '-';
+  const updatedMonthDayTimeLabel =
+    updatedDate && !Number.isNaN(updatedDate.getTime())
+      ? `${String(updatedDate.getMonth() + 1).padStart(2, '0')}-${String(updatedDate.getDate()).padStart(2, '0')} ${new Intl.DateTimeFormat(dateLocale, {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        }).format(updatedDate)}`
+      : '-';
+  const executionCountLabel = String(skill.execution_count || 0);
+  const avgTimeLabel =
+    skill.average_execution_time !== undefined && skill.average_execution_time !== null
+      ? `${skill.average_execution_time.toFixed(3)}s`
+      : '-';
 
   return (
     <div className="glass-panel group relative rounded-2xl overflow-hidden p-6 hover:-translate-y-1 transition-all duration-300 flex flex-col h-full shadow-xl hover:shadow-2xl">
@@ -117,10 +215,10 @@ export default function SkillCardV2({
               )}
             </div>
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-1 flex-wrap">
-                <h3 className="text-lg font-semibold text-foreground truncate group-hover:text-primary transition-colors">
-                  {skill.name}
-                </h3>
+              <h3 className="text-lg font-semibold text-foreground truncate group-hover:text-primary transition-colors">
+                {skill.name}
+              </h3>
+              <div className="flex items-center gap-2 mt-2 mb-1 flex-wrap min-w-0">
                 <span className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${typeInfo.bgColor} ${typeInfo.color}`}>
                   {typeInfo.badge}
                 </span>
@@ -136,21 +234,9 @@ export default function SkillCardV2({
                   </span>
                 )}
               </div>
-              <p className="text-sm text-muted-foreground line-clamp-2">
+              <p className="text-sm text-muted-foreground line-clamp-2 break-words">
                 {skill.description}
               </p>
-              
-              {/* Homepage link for agent_skill */}
-              {skill.skill_type === 'agent_skill' && skill.homepage && (
-                <a
-                  href={skill.homepage}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs text-primary hover:underline mt-1 inline-block"
-                >
-                  🔗 {skill.homepage}
-                </a>
-              )}
             </div>
           </div>
         </div>
@@ -188,25 +274,23 @@ export default function SkillCardV2({
 
         {/* Stats */}
         <div className="grid grid-cols-3 gap-3 mb-4 flex-shrink-0">
-          <div className="text-center p-3 rounded-xl bg-muted/30 hover:bg-muted/50 transition-colors">
-            <div className="text-lg font-semibold text-foreground">
-              {skill.execution_count || 0}
-            </div>
-            <div className="text-xs text-muted-foreground">{t('skills.executionCount')}</div>
+          <div className="text-center p-2.5 rounded-xl bg-muted/30 hover:bg-muted/50 transition-colors min-w-0">
+            <AutoFitStatValue value={executionCountLabel} />
+            <div className="mt-1 text-[11px] leading-tight text-muted-foreground">{t('skills.executionCount')}</div>
           </div>
-          <div className="text-center p-3 rounded-xl bg-muted/30 hover:bg-muted/50 transition-colors">
-            <div className="text-lg font-semibold text-foreground">
-              {skill.average_execution_time !== undefined && skill.average_execution_time !== null
-                ? `${skill.average_execution_time.toFixed(3)}s`
-                : '-'}
-            </div>
-            <div className="text-xs text-muted-foreground">{t('skills.avgTime')}</div>
+          <div className="text-center p-2.5 rounded-xl bg-muted/30 hover:bg-muted/50 transition-colors min-w-0">
+            <AutoFitStatValue value={avgTimeLabel} />
+            <div className="mt-1 text-[11px] leading-tight text-muted-foreground">{t('skills.avgTime')}</div>
           </div>
-          <div className="text-center p-3 rounded-xl bg-muted/30 hover:bg-muted/50 transition-colors">
-            <div className="text-lg font-semibold text-foreground">
-              v{skill.version}
-            </div>
-            <div className="text-xs text-muted-foreground">{t('skills.version')}</div>
+          <div className="text-center p-2.5 rounded-xl bg-muted/30 hover:bg-muted/50 transition-colors min-w-0">
+            <AutoFitStatValue value={updatedYearLabel} maxFontPx={13} minFontPx={8} />
+            <AutoFitStatValue
+              value={updatedMonthDayTimeLabel}
+              maxFontPx={11}
+              minFontPx={7}
+              className="mt-1 text-muted-foreground"
+            />
+            <div className="mt-1 text-[11px] leading-tight text-muted-foreground">{t('skills.updatedAt')}</div>
           </div>
         </div>
 
@@ -223,16 +307,6 @@ export default function SkillCardV2({
           
           {/* Icon buttons - grouped together */}
           <div className="flex items-center gap-2">
-            {onViewCode && skill.skill_type !== 'agent_skill' && (
-              <button
-                onClick={() => onViewCode(skill)}
-                className="p-2.5 rounded-xl bg-muted/30 hover:bg-muted/50 text-foreground transition-all duration-300 hover:shadow-lg"
-                title={t('skills.viewCode')}
-              >
-                <Eye className="w-4 h-4" />
-              </button>
-            )}
-            
             {onToggleActive && (
               <button
                 onClick={() => onToggleActive(skill.skill_id, skill.is_active || false)}

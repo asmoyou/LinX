@@ -176,6 +176,52 @@ def _serialize_tool_calls_for_response(tool_calls: Any) -> List[Dict[str, Any]]:
     return steps
 
 
+def _record_skill_execution_stats(skill_id: UUID, execution_time: float) -> None:
+    """Record one skill execution and update rolling average latency."""
+    try:
+        from datetime import datetime
+
+        from database.connection import get_db_session
+        from database.models import Skill as SkillModel
+
+        execution_time = max(float(execution_time), 0.0)
+
+        with get_db_session() as session:
+            db_skill = (
+                session.query(SkillModel)
+                .filter(SkillModel.skill_id == skill_id)
+                .first()
+            )
+            if not db_skill:
+                logger.warning(
+                    "Skip skill execution stats update because skill was not found",
+                    extra={"skill_id": str(skill_id)},
+                )
+                return
+
+            previous_count = int(db_skill.execution_count or 0)
+            new_count = previous_count + 1
+            db_skill.execution_count = new_count
+            db_skill.last_executed_at = datetime.utcnow()
+
+            if db_skill.average_execution_time is None:
+                db_skill.average_execution_time = execution_time
+            else:
+                total_time = (db_skill.average_execution_time * previous_count) + execution_time
+                db_skill.average_execution_time = total_time / new_count
+
+            session.commit()
+    except Exception as exc:
+        logger.warning(
+            "Failed to record skill execution stats",
+            extra={
+                "skill_id": str(skill_id),
+                "execution_time": execution_time,
+                "error": str(exc),
+            },
+        )
+
+
 # Request/Response Models
 class InterfaceDefinition(BaseModel):
     """Skill interface definition."""
@@ -223,6 +269,7 @@ class SkillResponse(BaseModel):
     average_execution_time: Optional[float] = 0.0
     last_executed_at: Optional[str] = None
     created_at: Optional[str] = None
+    updated_at: Optional[str] = None
     created_by: Optional[str] = None
     skill_md_content: Optional[str] = None
     homepage: Optional[str] = None
@@ -270,6 +317,7 @@ class SkillResponse(BaseModel):
             average_execution_time=skill_info.average_execution_time,
             last_executed_at=skill_info.last_executed_at.isoformat() if skill_info.last_executed_at else None,
             created_at=skill_info.created_at.isoformat() if skill_info.created_at else None,
+            updated_at=skill_info.updated_at.isoformat() if skill_info.updated_at else None,
             created_by=str(skill_info.created_by) if skill_info.created_by else None,
             skill_md_content=skill_md_content,
             homepage=homepage,
@@ -1395,6 +1443,7 @@ Requirements:
                                 result_holder[0],
                                 time.time() - start_time,
                             )
+                            _record_skill_execution_stats(skill_uuid, result_payload["execution_time"])
                             yield (
                                 "data: "
                                 + json.dumps(
@@ -1435,6 +1484,7 @@ Requirements:
                     **execute_kwargs,
                 )
                 execution_time = time.time() - start_time
+                _record_skill_execution_stats(skill_uuid, execution_time)
 
                 logger.info(
                     f"Agent skill executed by Agent {agent_id}",
@@ -1653,7 +1703,8 @@ async def get_skill_stats(
             "last_executed_at": skill.last_executed_at.isoformat() if skill.last_executed_at else None,
             "average_execution_time": skill.average_execution_time,
             "is_active": skill.is_active,
-            "created_at": skill.created_at.isoformat() if skill.created_at else None
+            "created_at": skill.created_at.isoformat() if skill.created_at else None,
+            "updated_at": skill.updated_at.isoformat() if skill.updated_at else None,
         }
         
     except ValueError:
