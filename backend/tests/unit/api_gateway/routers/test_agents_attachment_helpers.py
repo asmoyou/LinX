@@ -1,5 +1,6 @@
 """Tests for agent attachment helper functions."""
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from api_gateway.routers.agents import (
     _build_attachment_prompt_context,
     _build_download_content_disposition,
     _build_segmented_user_prompt,
+    _call_llm_for_memory_json,
     _extract_session_memory_signals_with_llm,
     _extract_json_object_from_text,
     _extract_agent_memory_candidates,
@@ -557,6 +559,85 @@ async def test_extract_session_memory_signals_runs_secondary_preference_recall(
     assert all(call["kwargs"]["response_format"]["type"] == "json_object" for call in fake_router.calls)
     assert any(item["key"] == "food_preference_like" and item["value"] == "黄焖鸡" for item in signals)
     assert candidates == []
+
+
+@pytest.mark.asyncio
+async def test_call_llm_for_memory_json_falls_back_when_json_mode_returns_empty() -> None:
+    class FakeRouter:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def generate(self, **kwargs):  # noqa: ANN003
+            self.calls.append(kwargs)
+            if "response_format" in kwargs:
+                return SimpleNamespace(content="")
+            return SimpleNamespace(
+                content=(
+                    '{"user_preferences":[{"key":"food_preference_like","value":"黄焖鸡",'
+                    '"persistent":true,"explicit_source":true,"confidence":0.9,'
+                    '"evidence_turns":[1]}],"agent_memory_candidates":[]}'
+                )
+            )
+
+    fake_router = FakeRouter()
+    parsed, parse_meta = await _call_llm_for_memory_json(
+        llm_router=fake_router,
+        prompt="测试抽取",
+        provider="llm-pool",
+        model="Qwen/Qwen3-Next-80B-A3B-Instruct",
+    )
+
+    assert len(fake_router.calls) == 2
+    assert fake_router.calls[0]["response_format"]["type"] == "json_object"
+    assert "response_format" not in fake_router.calls[1]
+    assert parse_meta["response_mode"] == "plain_fallback"
+    assert parse_meta["fallback_triggered"] is True
+    assert parse_meta["parse_status"] == "ok"
+    assert isinstance(parsed.get("user_preferences"), list)
+
+
+@pytest.mark.asyncio
+async def test_call_llm_for_memory_json_times_out() -> None:
+    class SlowRouter:
+        async def generate(self, **kwargs):  # noqa: ANN003
+            await asyncio.sleep(0.7)
+            return SimpleNamespace(content='{"user_preferences":[],"agent_memory_candidates":[]}')
+
+    with pytest.raises(TimeoutError, match="session_memory_extraction_timeout_0.5s"):
+        await _call_llm_for_memory_json(
+            llm_router=SlowRouter(),
+            prompt="测试超时",
+            provider="llm-pool",
+            model="Qwen/Qwen3-Next-80B-A3B-Instruct",
+            timeout_seconds=0.5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_call_llm_for_memory_json_timeout_invalidates_provider_cache() -> None:
+    class SlowRouter:
+        def __init__(self) -> None:
+            self.invalidated = []
+
+        async def generate(self, **kwargs):  # noqa: ANN003
+            await asyncio.sleep(0.7)
+            return SimpleNamespace(content='{"user_preferences":[],"agent_memory_candidates":[]}')
+
+        async def invalidate_provider(self, provider_name: str) -> bool:
+            self.invalidated.append(provider_name)
+            return True
+
+    router = SlowRouter()
+    with pytest.raises(TimeoutError, match="session_memory_extraction_timeout_0.5s"):
+        await _call_llm_for_memory_json(
+            llm_router=router,
+            prompt="测试超时并失效缓存",
+            provider="aliyun-bl",
+            model="qwen3.5-flash-2026-02-23",
+            timeout_seconds=0.5,
+        )
+
+    assert router.invalidated == ["aliyun-bl"]
 
 
 def test_extract_agent_memory_candidates_requires_step_structure() -> None:

@@ -6,6 +6,7 @@ References:
 """
 
 import base64
+import asyncio
 import hashlib
 import io
 import json
@@ -985,6 +986,7 @@ _SESSION_MEMORY_AGENT_REVIEW_PENDING = "pending"
 _SESSION_MEMORY_LLM_MIN_PREFERENCE_CONFIDENCE = 0.62
 _SESSION_MEMORY_LLM_MIN_AGENT_CONFIDENCE = 0.6
 _SESSION_MEMORY_LLM_PROMPT_MAX_CHARS = 14000
+_SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS = 4.0
 _PERSISTENT_PREFERENCE_CUES = (
     "以后",
     "下次",
@@ -1162,28 +1164,86 @@ def _parse_iso_datetime(value: Any) -> Optional[datetime]:
 
 
 def _extract_json_object_from_text(text: str) -> Optional[Dict[str, Any]]:
-    raw = str(text or "").strip()
-    if not raw:
-        return None
+    parsed, _ = _extract_json_object_from_text_with_meta(text)
+    return parsed
 
-    candidates: List[str] = [raw]
+
+def _extract_json_object_from_text_with_meta(
+    text: str,
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    raw = str(text or "")
+    stripped = raw.strip()
+    metadata: Dict[str, Any] = {
+        "parse_status": "empty_response",
+        "parse_source": None,
+        "json_root_type": None,
+        "parse_error": None,
+        "raw_content_chars": len(raw),
+    }
+    if not stripped:
+        return None, metadata
+
+    candidates: List[Tuple[str, str]] = []
+    seen_candidates: set[str] = set()
+
+    def _add_candidate(source: str, candidate: str) -> None:
+        normalized_candidate = str(candidate or "").strip()
+        if not normalized_candidate or normalized_candidate in seen_candidates:
+            return
+        seen_candidates.add(normalized_candidate)
+        candidates.append((source, normalized_candidate))
+
+    _add_candidate("raw", stripped)
+
     block_match = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", raw, flags=re.IGNORECASE)
     if block_match:
-        candidates.insert(0, block_match.group(1))
+        _add_candidate("code_fence", block_match.group(1))
 
     left = raw.find("{")
     right = raw.rfind("}")
     if left >= 0 and right > left:
-        candidates.append(raw[left : right + 1])
+        _add_candidate("brace_slice", raw[left : right + 1])
 
-    for candidate in candidates:
+    first_non_object_root: Optional[str] = None
+    parse_errors: List[str] = []
+    for source, candidate in candidates:
         try:
             parsed = json.loads(candidate)
-        except Exception:
+        except Exception as e:
+            parse_errors.append(
+                f"{source}:{_normalize_session_memory_text(str(e), max_chars=96)}"
+            )
             continue
+
         if isinstance(parsed, dict):
-            return parsed
-    return None
+            metadata.update(
+                {
+                    "parse_status": "ok",
+                    "parse_source": source,
+                    "json_root_type": "object",
+                }
+            )
+            return parsed, metadata
+
+        if not first_non_object_root:
+            first_non_object_root = type(parsed).__name__
+
+    if first_non_object_root:
+        metadata.update(
+            {
+                "parse_status": "json_not_object",
+                "json_root_type": first_non_object_root,
+            }
+        )
+    else:
+        metadata.update({"parse_status": "json_parse_failed"})
+
+    if parse_errors:
+        metadata["parse_error"] = _normalize_session_memory_text(
+            "; ".join(parse_errors),
+            max_chars=240,
+        )
+    return None, metadata
 
 
 def _normalize_memory_key(value: Any, max_chars: int = 64) -> Optional[str]:
@@ -1287,6 +1347,15 @@ Agent 名称: {agent_name or "-"}
 - 单轮也可以提取“用户明确直接陈述的稳定偏好”（例如喜欢/不喜欢/过敏/禁忌/长期默认偏好），
   这类应标记 persistent=true，或 explicit_source=true。
 
+高优先级规则（覆盖“保守不提取”倾向）:
+- 只要用户明确说出稳定偏好，就必须至少输出 1 条 user_preferences。
+- 明确偏好表达包括但不限于：
+  “我喜欢X / 我不喜欢X / 我讨厌X / 我不吃X / 我忌口X / 我对X过敏 / 以后默认用X格式”。
+- 禁止推断延伸偏好：只能提取用户明确说过的内容。
+  例如用户说“我喜欢吃黄焖鸡”，只能提取“喜欢黄焖鸡”，
+  不能推断“喜欢米饭/喜欢浓汤/喜欢家常菜”等未明说结论。
+- 对这类明确偏好，confidence 建议 >= 0.8，且 explicit_source=true。
+
 输出 JSON Schema:
 {{
   "user_preferences": [
@@ -1312,6 +1381,27 @@ Agent 名称: {agent_name or "-"}
       "evidence_turns": [2]
     }}
   ]
+}}
+
+示例（必须遵守）:
+输入:
+USER: 我喜欢吃黄焖鸡
+ASSISTANT: 好的
+
+输出:
+{{
+  "user_preferences": [
+    {{
+      "key": "food_preference_like",
+      "value": "黄焖鸡",
+      "persistent": true,
+      "explicit_source": true,
+      "confidence": 0.9,
+      "reason": "用户明确表达喜欢的食物偏好",
+      "evidence_turns": [1]
+    }}
+  ],
+  "agent_memory_candidates": []
 }}
 
 会话文本:
@@ -1363,6 +1453,8 @@ def _build_llm_explicit_preference_recall_prompt(
 - 一次性任务要求（例如“这次导出 PDF”）不抽取。
 - key 必须是英文 snake_case，value 必须简短。
 - 如无有效项，返回空数组。
+- 若会话中出现明确偏好表达（如“我喜欢吃黄焖鸡”），必须提取，不可返回空数组。
+- 禁止偏好延伸推断：只能提取用户明确说过的偏好项，不可脑补。
 
 输出 JSON Schema:
 {{
@@ -1374,6 +1466,26 @@ def _build_llm_explicit_preference_recall_prompt(
       "explicit_source": true,
       "confidence": 0.0,
       "reason": "为什么值得记忆",
+      "evidence_turns": [1]
+    }}
+  ]
+}}
+
+示例:
+输入:
+USER: 我喜欢吃黄焖鸡
+ASSISTANT: 收到
+
+输出:
+{{
+  "user_preferences": [
+    {{
+      "key": "food_preference_like",
+      "value": "黄焖鸡",
+      "persistent": true,
+      "explicit_source": true,
+      "confidence": 0.9,
+      "reason": "用户明确陈述喜欢的食物",
       "evidence_turns": [1]
     }}
   ]
@@ -1402,13 +1514,48 @@ def _is_response_format_not_supported_error(error: Exception) -> bool:
     return any(cue in message for cue in unsupported_cues)
 
 
+def _coerce_positive_timeout_seconds(value: Any, *, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed <= 0:
+        return default
+    return min(max(parsed, 0.5), 120.0)
+
+
+async def _invalidate_timed_out_llm_provider(
+    *,
+    llm_router: Any,
+    provider_name: Optional[str],
+) -> None:
+    if not provider_name:
+        return
+    invalidate_fn = getattr(llm_router, "invalidate_provider", None)
+    if not callable(invalidate_fn):
+        return
+    try:
+        invalidated = await invalidate_fn(provider_name)
+        if invalidated:
+            logger.info(
+                "Session memory extraction invalidated timed-out provider cache",
+                extra={"provider": provider_name},
+            )
+    except Exception as e:
+        logger.warning(
+            "Session memory extraction failed to invalidate timed-out provider cache",
+            extra={"provider": provider_name, "error": str(e)},
+        )
+
+
 async def _call_llm_for_memory_json(
     *,
     llm_router: Any,
     prompt: str,
     provider: Optional[str],
     model: Optional[str],
-) -> Dict[str, Any]:
+    timeout_seconds: float = _SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     base_kwargs = {
         "prompt": prompt,
         "provider": provider,
@@ -1416,13 +1563,56 @@ async def _call_llm_for_memory_json(
         "temperature": 0.1,
         "max_tokens": 1800,
     }
-    try:
-        response = await llm_router.generate(
-            **base_kwargs,
-            response_format={"type": "json_object"},
-        )
+
+    async def _generate_and_parse(
+        *,
+        with_response_format: bool,
+        response_mode: str,
+        fallback_triggered: bool,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        kwargs = dict(base_kwargs)
+        if with_response_format:
+            kwargs["response_format"] = {"type": "json_object"}
+        try:
+            response = await asyncio.wait_for(
+                llm_router.generate(**kwargs),
+                timeout=max(float(timeout_seconds), 0.5),
+            )
+        except asyncio.TimeoutError as timeout_error:
+            await _invalidate_timed_out_llm_provider(
+                llm_router=llm_router,
+                provider_name=provider,
+            )
+            raise TimeoutError(
+                f"session_memory_extraction_timeout_{max(float(timeout_seconds), 0.5):.1f}s"
+            ) from timeout_error
         raw_content = str(getattr(response, "content", "") or "")
-        return _extract_json_object_from_text(raw_content) or {}
+        parsed_payload, parse_meta = _extract_json_object_from_text_with_meta(raw_content)
+        parse_meta.update(
+            {
+                "response_mode": response_mode,
+                "fallback_triggered": fallback_triggered,
+            }
+        )
+        return parsed_payload or {}, parse_meta
+
+    try:
+        parsed_payload, parse_meta = await _generate_and_parse(
+            with_response_format=True,
+            response_mode="json_object",
+            fallback_triggered=False,
+        )
+        if str(parse_meta.get("parse_status")) == "ok":
+            return parsed_payload, parse_meta
+        logger.info(
+            "Session memory extraction fallback to plain response mode after non-json response",
+            extra={
+                "provider": provider or "auto",
+                "model": model or "auto",
+                "parse_status": parse_meta.get("parse_status"),
+                "raw_content_chars": parse_meta.get("raw_content_chars"),
+            },
+        )
     except Exception as first_error:
         if not _is_response_format_not_supported_error(first_error):
             raise
@@ -1435,9 +1625,11 @@ async def _call_llm_for_memory_json(
             },
         )
 
-    response = await llm_router.generate(**base_kwargs)
-    raw_content = str(getattr(response, "content", "") or "")
-    return _extract_json_object_from_text(raw_content) or {}
+    return await _generate_and_parse(
+        with_response_format=False,
+        response_mode="plain_fallback",
+        fallback_triggered=True,
+    )
 
 
 def _normalize_llm_user_preference_signals(
@@ -1615,6 +1807,7 @@ async def _extract_session_memory_signals_with_llm(
     turns: List[Dict[str, str]],
     agent_id: Any,
     agent_name: str,
+    session_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     if not turns:
         return [], []
@@ -1626,6 +1819,7 @@ async def _extract_session_memory_signals_with_llm(
     configured_provider_name: Optional[str] = None
     configured_model_name: Optional[str] = None
     global_chat_model: Optional[str] = None
+    extraction_timeout_seconds = _SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS
     cfg: Any = None
     try:
         registry = get_agent_registry()
@@ -1644,14 +1838,20 @@ async def _extract_session_memory_signals_with_llm(
         configured_provider = cfg.get("memory.enhanced_memory.fact_extraction.provider")
         configured_model = cfg.get("memory.enhanced_memory.fact_extraction.model")
         configured_chat = cfg.get("llm.model_mapping.chat")
+        configured_timeout = cfg.get("memory.enhanced_memory.fact_extraction.timeout_seconds")
         configured_provider_name = str(configured_provider or "").strip() or None
         configured_model_name = str(configured_model or "").strip() or None
         global_chat_model = str(configured_chat).strip() if configured_chat else None
+        extraction_timeout_seconds = _coerce_positive_timeout_seconds(
+            configured_timeout,
+            default=_SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS,
+        )
     except Exception:
         cfg = None
         configured_provider_name = None
         configured_model_name = None
         global_chat_model = None
+        extraction_timeout_seconds = _SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS
 
     primary_provider = configured_provider_name or agent_provider_name
     primary_model = configured_model_name
@@ -1675,6 +1875,22 @@ async def _extract_session_memory_signals_with_llm(
     for candidate in attempt_plan:
         if candidate not in attempts:
             attempts.append(candidate)
+    attempt_plan_summary = [
+        {"provider": provider_name or "auto", "model": model_name or "auto"}
+        for provider_name, model_name in attempts
+    ]
+    extraction_log_base = {
+        "agent_id": str(agent_id),
+        "session_id": session_id,
+    }
+    logger.info(
+        "Session memory extraction attempt plan",
+        extra={
+            **extraction_log_base,
+            "attempt_plan": attempt_plan_summary,
+            "attempt_timeout_seconds": extraction_timeout_seconds,
+        },
+    )
 
     try:
         from llm_providers.router import get_llm_provider
@@ -1683,34 +1899,72 @@ async def _extract_session_memory_signals_with_llm(
     except Exception as e:
         logger.warning(
             "LLM-based session memory extraction failed",
-            extra={"agent_id": str(agent_id), "error": str(e)},
+            extra={**extraction_log_base, "error": str(e)},
         )
         return [], []
 
     async def _run_extraction_with_attempts(
         extraction_prompt: str,
         phase: str,
-    ) -> Tuple[Dict[str, Any], Optional[str], Optional[str], Optional[Exception]]:
+    ) -> Tuple[Dict[str, Any], Optional[str], Optional[str], Optional[Exception], Dict[str, Any]]:
         parsed_payload: Dict[str, Any] = {}
         used_provider: Optional[str] = None
         used_model: Optional[str] = None
         last_error: Optional[Exception] = None
+        extraction_meta: Dict[str, Any] = {
+            "phase": phase,
+            "parse_status": "not_attempted",
+            "response_mode": None,
+            "fallback_triggered": False,
+            "raw_content_chars": 0,
+        }
 
         for attempt_index, (attempt_provider, attempt_model) in enumerate(attempts, start=1):
             try:
-                parsed_payload = await _call_llm_for_memory_json(
+                parsed_payload, extraction_meta = await _call_llm_for_memory_json(
                     llm_router=llm_router,
                     prompt=extraction_prompt,
                     provider=attempt_provider,
                     model=attempt_model,
+                    timeout_seconds=extraction_timeout_seconds,
                 )
+                extraction_meta = {
+                    **extraction_meta,
+                    "phase": phase,
+                    "attempt": attempt_index,
+                    "provider": attempt_provider or "auto",
+                    "model": attempt_model or "auto",
+                }
+                parse_status = str(extraction_meta.get("parse_status") or "")
+                if parse_status != "ok":
+                    last_error = ValueError(f"memory_json_{parse_status or 'unknown'}")
+                    logger.warning(
+                        "Session memory extraction response parse failed",
+                        extra={
+                            **extraction_log_base,
+                            "phase": phase,
+                            "attempt": attempt_index,
+                            "provider": attempt_provider or "auto",
+                            "model": attempt_model or "auto",
+                            "parse_status": parse_status or "unknown",
+                            "parse_source": extraction_meta.get("parse_source"),
+                            "json_root_type": extraction_meta.get("json_root_type"),
+                            "response_mode": extraction_meta.get("response_mode"),
+                            "raw_content_chars": extraction_meta.get("raw_content_chars"),
+                            "fallback_triggered": bool(
+                                extraction_meta.get("fallback_triggered")
+                            ),
+                            "parse_error": extraction_meta.get("parse_error"),
+                        },
+                    )
+                    continue
                 used_provider = attempt_provider
                 used_model = attempt_model
                 if primary_provider and attempt_provider != primary_provider:
                     logger.info(
                         "Session memory extraction fallback provider succeeded",
                         extra={
-                            "agent_id": str(agent_id),
+                            **extraction_log_base,
                             "phase": phase,
                             "original_provider": primary_provider,
                             "attempt": attempt_index,
@@ -1723,7 +1977,7 @@ async def _extract_session_memory_signals_with_llm(
                 logger.warning(
                     "Session memory extraction attempt failed",
                     extra={
-                        "agent_id": str(agent_id),
+                        **extraction_log_base,
                         "phase": phase,
                         "attempt": attempt_index,
                         "provider": attempt_provider or "auto",
@@ -1732,16 +1986,29 @@ async def _extract_session_memory_signals_with_llm(
                     },
                 )
 
-        return parsed_payload, used_provider, used_model, last_error
+        return parsed_payload, used_provider, used_model, last_error, extraction_meta
 
-    parsed, used_provider, used_model, last_error = await _run_extraction_with_attempts(
+    parsed, used_provider, used_model, last_error, primary_extraction_meta = (
+        await _run_extraction_with_attempts(
         prompt,
         "primary",
+        )
     )
     if last_error and not parsed:
         logger.warning(
             "LLM-based session memory extraction failed",
-            extra={"agent_id": str(agent_id), "error": str(last_error)},
+            extra={
+                **extraction_log_base,
+                "error": str(last_error),
+                "phase": primary_extraction_meta.get("phase"),
+                "parse_status": primary_extraction_meta.get("parse_status"),
+                "response_mode": primary_extraction_meta.get("response_mode"),
+                "raw_content_chars": primary_extraction_meta.get("raw_content_chars"),
+                "attempt": primary_extraction_meta.get("attempt"),
+                "provider": primary_extraction_meta.get("provider"),
+                "model": primary_extraction_meta.get("model"),
+                "parse_error": primary_extraction_meta.get("parse_error"),
+            },
         )
         return [], []
 
@@ -1757,6 +2024,13 @@ async def _extract_session_memory_signals_with_llm(
     secondary_raw_user_preferences = 0
     secondary_normalized_user_preferences = 0
     secondary_preference_pass_used = False
+    secondary_extraction_meta: Dict[str, Any] = {
+        "phase": "explicit_preference_recall",
+        "parse_status": "not_run",
+        "response_mode": None,
+        "fallback_triggered": False,
+        "raw_content_chars": 0,
+    }
     if not user_signals:
         secondary_preference_pass_used = True
         recall_prompt, recall_turn_ts_map = _build_llm_explicit_preference_recall_prompt(turns)
@@ -1765,11 +2039,23 @@ async def _extract_session_memory_signals_with_llm(
             recall_provider,
             recall_model,
             recall_error,
+            secondary_extraction_meta,
         ) = await _run_extraction_with_attempts(recall_prompt, "explicit_preference_recall")
         if recall_error and not recall_parsed:
             logger.warning(
                 "LLM explicit-preference recall extraction failed",
-                extra={"agent_id": str(agent_id), "error": str(recall_error)},
+                extra={
+                    **extraction_log_base,
+                    "error": str(recall_error),
+                    "phase": secondary_extraction_meta.get("phase"),
+                    "parse_status": secondary_extraction_meta.get("parse_status"),
+                    "response_mode": secondary_extraction_meta.get("response_mode"),
+                    "raw_content_chars": secondary_extraction_meta.get("raw_content_chars"),
+                    "attempt": secondary_extraction_meta.get("attempt"),
+                    "provider": secondary_extraction_meta.get("provider"),
+                    "model": secondary_extraction_meta.get("model"),
+                    "parse_error": secondary_extraction_meta.get("parse_error"),
+                },
             )
         else:
             recall_user_items = recall_parsed.get("user_preferences")
@@ -1824,20 +2110,57 @@ async def _extract_session_memory_signals_with_llm(
                 used_provider = recall_provider
             if not used_model and recall_model:
                 used_model = recall_model
+
+    primary_raw_user_preferences = len(user_items) if isinstance(user_items, list) else 0
+    primary_raw_agent_candidates = len(candidate_items) if isinstance(candidate_items, list) else 0
+    if (
+        str(primary_extraction_meta.get("parse_status")) == "ok"
+        and primary_raw_user_preferences == 0
+        and primary_raw_agent_candidates == 0
+    ):
+        logger.info(
+            "Session memory extraction primary response contained no extractable candidates",
+            extra={
+                **extraction_log_base,
+                "response_mode": primary_extraction_meta.get("response_mode"),
+                "parse_source": primary_extraction_meta.get("parse_source"),
+                "raw_content_chars": primary_extraction_meta.get("raw_content_chars"),
+                "parsed_top_level_keys": sorted(list(parsed.keys()))[:10],
+            },
+        )
+
     logger.info(
         "Session memory extraction completed",
         extra={
-            "agent_id": str(agent_id),
+            **extraction_log_base,
             "provider": used_provider or "auto",
             "model": used_model or "auto",
             "turn_count": len(turns),
-            "raw_user_preferences": len(user_items) if isinstance(user_items, list) else 0,
-            "raw_agent_candidates": len(candidate_items) if isinstance(candidate_items, list) else 0,
+            "raw_user_preferences": primary_raw_user_preferences,
+            "raw_agent_candidates": primary_raw_agent_candidates,
             "normalized_user_preferences": len(user_signals),
             "normalized_agent_candidates": len(agent_candidates),
             "secondary_preference_pass_used": secondary_preference_pass_used,
             "secondary_raw_user_preferences": secondary_raw_user_preferences,
             "secondary_normalized_user_preferences": secondary_normalized_user_preferences,
+            "primary_phase": primary_extraction_meta.get("phase"),
+            "primary_attempt": primary_extraction_meta.get("attempt"),
+            "primary_parse_status": primary_extraction_meta.get("parse_status"),
+            "primary_parse_source": primary_extraction_meta.get("parse_source"),
+            "primary_response_mode": primary_extraction_meta.get("response_mode"),
+            "primary_fallback_triggered": bool(
+                primary_extraction_meta.get("fallback_triggered")
+            ),
+            "primary_raw_content_chars": primary_extraction_meta.get("raw_content_chars"),
+            "secondary_phase": secondary_extraction_meta.get("phase"),
+            "secondary_attempt": secondary_extraction_meta.get("attempt"),
+            "secondary_parse_status": secondary_extraction_meta.get("parse_status"),
+            "secondary_parse_source": secondary_extraction_meta.get("parse_source"),
+            "secondary_response_mode": secondary_extraction_meta.get("response_mode"),
+            "secondary_fallback_triggered": bool(
+                secondary_extraction_meta.get("fallback_triggered")
+            ),
+            "secondary_raw_content_chars": secondary_extraction_meta.get("raw_content_chars"),
         },
     )
     return user_signals, agent_candidates
@@ -2154,6 +2477,7 @@ async def _flush_session_memories(
         turns=turns,
         agent_id=session.agent_id,
         agent_name=agent_name,
+        session_id=session.session_id,
     )
     deduped_signals_by_key: Dict[str, Dict[str, Any]] = {}
     for signal in extracted_signals:

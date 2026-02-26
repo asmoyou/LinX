@@ -9,6 +9,7 @@ References:
 """
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any, Dict
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -208,6 +209,114 @@ async def test_openai_generate_chat_model():
         assert payload["max_completion_tokens"] == 256
 
 
+@pytest.mark.asyncio
+async def test_openai_provider_allows_missing_key_for_compatible_base_url():
+    """OpenAI-compatible endpoints can run without API key."""
+    provider = OpenAIProvider({"base_url": "http://127.0.0.1:6006/v1"})
+    assert provider.api_key is None
+    assert provider.base_url == "http://127.0.0.1:6006/v1"
+
+
+@pytest.mark.asyncio
+async def test_openai_generate_adds_v1_when_base_url_has_no_version() -> None:
+    """Base URLs without /v1 should still hit /v1/chat/completions."""
+    provider = OpenAIProvider({"base_url": "http://127.0.0.1:6006"})
+
+    mock_response = {
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"total_tokens": 10, "prompt_tokens": 4, "completion_tokens": 6},
+    }
+
+    class _ResponseContext:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return False
+
+        async def json(self):
+            return mock_response
+
+        def raise_for_status(self):
+            return None
+
+    mock_post = Mock(return_value=_ResponseContext())
+    mock_session_obj = SimpleNamespace(post=mock_post)
+
+    async def mock_get_session():
+        return mock_session_obj
+
+    with patch.object(provider, "_get_session", side_effect=mock_get_session):
+        response = await provider.generate(prompt="Test prompt", model="qwen", temperature=0.2)
+
+    assert response.content == "ok"
+    assert mock_post.call_args.args[0] == "http://127.0.0.1:6006/v1/chat/completions"
+
+
+@pytest.mark.asyncio
+async def test_openai_generate_supports_plain_output_wrapper():
+    """Gateways returning plain text in `output` should still produce content."""
+    provider = OpenAIProvider({"base_url": "http://127.0.0.1:6006/v1"})
+
+    mock_response = {
+        "output": '{"user_preferences":[{"key":"food_preference_like","value":"黄焖鸡"}]}',
+        "request_tokens": 12,
+        "response_tokens": 18,
+    }
+
+    class _ResponseContext:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return False
+
+        async def json(self):
+            return mock_response
+
+        def raise_for_status(self):
+            return None
+
+    mock_session_obj = SimpleNamespace(post=Mock(return_value=_ResponseContext()))
+
+    async def mock_get_session():
+        return mock_session_obj
+
+    with patch.object(provider, "_get_session", side_effect=mock_get_session):
+        response = await provider.generate(prompt="Test prompt", model="qwen", temperature=0.2)
+
+    assert response.content == '{"user_preferences":[{"key":"food_preference_like","value":"黄焖鸡"}]}'
+    assert response.tokens_used == 30
+    assert response.metadata["prompt_tokens"] == 12
+    assert response.metadata["completion_tokens"] == 18
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_close_resets_session() -> None:
+    """Provider close should release and clear cached session."""
+    provider = OpenAIProvider({"base_url": "http://127.0.0.1:6006/v1"})
+    mock_session = SimpleNamespace(closed=False, close=AsyncMock())
+    provider.session = mock_session
+
+    await provider.close()
+
+    mock_session.close.assert_awaited_once()
+    assert provider.session is None
+
+
+@pytest.mark.asyncio
+async def test_vllm_provider_close_resets_session() -> None:
+    """Provider close should release and clear cached session."""
+    provider = VLLMProvider({"base_url": "http://127.0.0.1:6006"})
+    mock_session = SimpleNamespace(closed=False, close=AsyncMock())
+    provider.session = mock_session
+
+    await provider.close()
+
+    mock_session.close.assert_awaited_once()
+    assert provider.session is None
+
+
 # Test Anthropic Provider
 
 
@@ -294,6 +403,40 @@ async def test_router_token_tracking():
     usage = router.get_token_usage()
     assert usage["ollama"] == 150
     assert usage["vllm"] == 75
+
+
+@pytest.mark.asyncio
+async def test_router_invalidate_provider_closes_single_provider() -> None:
+    """Invalidate should close and evict only the target provider."""
+    router = LLMRouter({"providers": {}})
+    provider_a = SimpleNamespace(close=AsyncMock())
+    provider_b = SimpleNamespace(close=AsyncMock())
+    router._provider_cache["provider-a"] = (provider_a, 0.0)
+    router._provider_cache["provider-b"] = (provider_b, 0.0)
+
+    invalidated = await router.invalidate_provider("provider-a")
+
+    assert invalidated is True
+    provider_a.close.assert_awaited_once()
+    provider_b.close.assert_not_awaited()
+    assert "provider-a" not in router._provider_cache
+    assert "provider-b" in router._provider_cache
+
+
+@pytest.mark.asyncio
+async def test_router_clear_cache_closes_cached_providers() -> None:
+    """Cache clear should close all cached providers before eviction."""
+    router = LLMRouter({"providers": {}})
+    provider_a = SimpleNamespace(close=AsyncMock())
+    provider_b = SimpleNamespace(close=AsyncMock())
+    router._provider_cache["provider-a"] = (provider_a, 0.0)
+    router._provider_cache["provider-b"] = (provider_b, 0.0)
+
+    await router.clear_cache()
+
+    provider_a.close.assert_awaited_once()
+    provider_b.close.assert_awaited_once()
+    assert router._provider_cache == {}
 
 
 # Test Prompt Templates

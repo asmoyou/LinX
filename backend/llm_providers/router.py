@@ -162,13 +162,16 @@ class LLMRouter:
         """Create provider instance from database model."""
         try:
             # Build config
+            base_url = str(db_provider.base_url or "")
+            require_api_key = "api.openai.com" in base_url
             provider_config = {
                 "enabled": db_provider.enabled,
-                "base_url": db_provider.base_url,
+                "base_url": base_url,
                 "timeout": db_provider.timeout,
                 "max_retries": db_provider.max_retries,
                 "models": {},
-                "available_models": db_provider.models or []
+                "available_models": db_provider.models or [],
+                "require_api_key": require_api_key,
             }
             
             # Add models
@@ -356,19 +359,38 @@ class LLMRouter:
         """Get token usage by provider."""
         return self.token_usage.copy()
 
-    def clear_cache(self):
-        """Clear provider cache (force reload on next use)."""
-        self._provider_cache.clear()
+    async def invalidate_provider(self, provider_name: str) -> bool:
+        """Close and evict a single cached provider instance."""
+        cached_provider: Optional[tuple[BaseLLMProvider, float]] = None
+        async with self._cache_lock:
+            cached_provider = self._provider_cache.pop(provider_name, None)
+
+        if not cached_provider:
+            return False
+
+        provider, _ = cached_provider
+        try:
+            await provider.close()
+        except Exception as e:
+            logger.error(f"Error closing provider '{provider_name}': {e}")
+        return True
+
+    async def clear_cache(self):
+        """Clear provider cache and close cached sessions."""
+        async with self._cache_lock:
+            cached_items = list(self._provider_cache.items())
+            self._provider_cache.clear()
+
+        for provider_name, (provider, _) in cached_items:
+            try:
+                await provider.close()
+            except Exception as e:
+                logger.error(f"Error closing provider '{provider_name}' during cache clear: {e}")
         logger.info("Provider cache cleared")
 
     async def close(self):
         """Close all cached providers."""
-        for provider, _ in self._provider_cache.values():
-            try:
-                await provider.close()
-            except Exception as e:
-                logger.error(f"Error closing provider: {e}")
-        self._provider_cache.clear()
+        await self.clear_cache()
 
 
 # Singleton instance

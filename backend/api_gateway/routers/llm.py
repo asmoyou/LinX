@@ -997,7 +997,7 @@ async def create_provider(
             if get_llm_provider is not None:
                 try:
                     llm_router = get_llm_provider()
-                    llm_router.clear_cache()
+                    await llm_router.clear_cache()
                     logger.info(f"Cleared provider cache after creating {provider.name}")
                 except Exception as cache_error:
                     logger.error(f"Failed to clear cache: {cache_error}")
@@ -1057,7 +1057,7 @@ async def update_provider(
             if get_llm_provider is not None:
                 try:
                     llm_router = get_llm_provider()
-                    llm_router.clear_cache()
+                    await llm_router.clear_cache()
                     logger.info(f"Cleared provider cache after updating {provider.name}")
                 except Exception as cache_error:
                     logger.error(f"Failed to clear cache: {cache_error}")

@@ -505,9 +505,9 @@ memory:
     fact_extraction:
       enabled: true
       model_enabled: true
-      provider: llm-pool
-      model: Qwen/Qwen3-Next-80B-A3B-Instruct
-      timeout_seconds: 4
+      provider: aliyun-bl
+      model: qwen3.5-flash-2026-02-23
+      timeout_seconds: 20
       max_facts: 8
       failure_backoff_seconds: 60
   cleanup_orphans:

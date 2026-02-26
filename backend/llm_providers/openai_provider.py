@@ -33,33 +33,57 @@ class OpenAIProvider(BaseLLMProvider):
 
         Args:
             config: Configuration dict with keys:
-                - api_key: OpenAI API key (required)
+                - api_key: OpenAI API key (required for official OpenAI endpoint)
                 - base_url: API base URL (should include full path, e.g., https://api.openai.com/v1)
                 - timeout: Request timeout in seconds (default: 60)
                 - organization: Optional organization ID
+                - require_api_key: Optional explicit switch to enforce API key
         """
         super().__init__(config)
-        self.api_key = config.get("api_key")
-        if not self.api_key:
-            raise ValueError("OpenAI API key is required")
-
         # Use base_url as-is, don't modify it
         # User should provide the complete base URL including version path
         base_url = config.get("base_url", "https://api.openai.com/v1")
         self.base_url = base_url.rstrip('/')
+        self.api_key = config.get("api_key")
+
+        # Backward compatible default:
+        # - Official OpenAI endpoint requires API key
+        # - OpenAI-compatible gateways may allow no key
+        require_api_key = config.get("require_api_key")
+        if require_api_key is None:
+            require_api_key = "api.openai.com" in self.base_url
+        if require_api_key and not self.api_key:
+            raise ValueError("OpenAI API key is required")
         
         self.timeout = config.get("timeout", 60)
         self.organization = config.get("organization")
         self.session: Optional[aiohttp.ClientSession] = None
+
+    def _build_api_url(self, path: str) -> str:
+        """Build API URL with OpenAI-compatible `/v1` fallback behavior.
+
+        Some providers are configured as `http://host:port` while exposing
+        OpenAI-compatible endpoints under `/v1/*`. Align with CustomOpenAIChat
+        behavior so both agent runtime and memory extraction hit the same route.
+        """
+        normalized_path = path if path.startswith("/") else f"/{path}"
+        base = self.base_url.rstrip("/")
+
+        if base.endswith(normalized_path):
+            return base
+        if base.endswith("/v1"):
+            return f"{base}{normalized_path}"
+        return f"{base}/v1{normalized_path}"
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session"""
         if self.session is None or self.session.closed:
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             headers = {
-                "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             }
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
             if self.organization:
                 headers["OpenAI-Organization"] = self.organization
 
@@ -105,6 +129,7 @@ class OpenAIProvider(BaseLLMProvider):
         
         if use_chat_api:
             # Use chat completions API (standard for all modern models)
+            chat_url = self._build_api_url("/chat/completions")
             payload = {
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
@@ -118,34 +143,70 @@ class OpenAIProvider(BaseLLMProvider):
             payload.update(kwargs)
 
             try:
-                async with session.post(
-                    f"{self.base_url}/chat/completions", json=payload
-                ) as response:
+                async with session.post(chat_url, json=payload) as response:
                     response.raise_for_status()
                     data = await response.json()
                     
                     # Handle wrapped response format (some proxies wrap the response)
                     # Example: {"output": "{...}", "request_tokens": 12, ...}
                     if "output" in data and isinstance(data["output"], str):
+                        wrapped_output = data["output"]
+                        request_tokens = int(data.get("request_tokens", 0) or 0)
+                        response_tokens = int(data.get("response_tokens", 0) or 0)
                         try:
                             # Parse the wrapped JSON string
-                            data = json.loads(data["output"])
+                            parsed_output = json.loads(wrapped_output)
+                            # If wrapped payload is already final model text/JSON result
+                            # (not OpenAI `choices` envelope), surface it directly.
+                            if not (
+                                isinstance(parsed_output, dict) and "choices" in parsed_output
+                            ):
+                                return LLMResponse(
+                                    content=wrapped_output,
+                                    model=model,
+                                    provider="OpenAI",
+                                    tokens_used=request_tokens + response_tokens,
+                                    finish_reason="stop",
+                                    metadata={
+                                        "prompt_tokens": request_tokens,
+                                        "completion_tokens": response_tokens,
+                                    },
+                                )
+                            data = parsed_output
                             logger.debug("Unwrapped proxy response format")
                         except json.JSONDecodeError:
-                            logger.warning("Failed to parse wrapped output, using original response")
+                            # Some gateways return plain text in "output" directly.
+                            return LLMResponse(
+                                content=wrapped_output,
+                                model=model,
+                                provider="OpenAI",
+                                tokens_used=request_tokens + response_tokens,
+                                finish_reason="stop",
+                                metadata={
+                                    "prompt_tokens": request_tokens,
+                                    "completion_tokens": response_tokens,
+                                },
+                            )
 
                     choice = data.get("choices", [{}])[0]
                     message = choice.get("message", {})
                     usage = data.get("usage", {})
                     
                     # Extract content - try multiple fields for compatibility
-                    # Some models put content in "reasoning_content" instead of "content"
+                    # Some models put content in reasoning fields instead of plain "content".
                     content = message.get("content", "")
                     if not content:
                         content = message.get("reasoning_content", "")
                     if not content:
+                        content = message.get("reasoning", "")
+                    if not content:
+                        content = message.get("thinking", "")
+                    if not content:
                         # Fallback to text field for completion-style responses
                         content = message.get("text", "")
+                    if not content and usage.get("completion_tokens", 0) > 0:
+                        # Last-resort fallback for provider-specific formats.
+                        content = str(message)
 
                     return LLMResponse(
                         content=content,
@@ -166,6 +227,7 @@ class OpenAIProvider(BaseLLMProvider):
                 raise
         else:
             # Use legacy completions API (only for specific old models)
+            completion_url = self._build_api_url("/completions")
             payload = {
                 "model": model,
                 "prompt": prompt,
@@ -178,7 +240,7 @@ class OpenAIProvider(BaseLLMProvider):
             payload.update(kwargs)
 
             try:
-                async with session.post(f"{self.base_url}/completions", json=payload) as response:
+                async with session.post(completion_url, json=payload) as response:
                     response.raise_for_status()
                     data = await response.json()
 
@@ -216,6 +278,7 @@ class OpenAIProvider(BaseLLMProvider):
             EmbeddingResponse with embedding vector
         """
         session = await self._get_session()
+        embedding_url = self._build_api_url("/embeddings")
 
         payload = {
             "model": model,
@@ -223,7 +286,7 @@ class OpenAIProvider(BaseLLMProvider):
         }
 
         try:
-            async with session.post(f"{self.base_url}/embeddings", json=payload) as response:
+            async with session.post(embedding_url, json=payload) as response:
                 response.raise_for_status()
                 data = await response.json()
 
@@ -259,11 +322,12 @@ class OpenAIProvider(BaseLLMProvider):
             List of model IDs
         """
         session = await self._get_session()
+        models_url = self._build_api_url("/models")
 
         # Strategy 1: Try to fetch from API
         try:
             async with session.get(
-                f"{self.base_url}/models",
+                models_url,
                 timeout=aiohttp.ClientTimeout(total=5)
             ) as response:
                 if response.status == 200:
@@ -316,11 +380,13 @@ class OpenAIProvider(BaseLLMProvider):
             True if OpenAI is healthy
         """
         session = await self._get_session()
+        models_url = self._build_api_url("/models")
+        chat_url = self._build_api_url("/chat/completions")
 
         # Strategy 1: Try /models endpoint
         try:
             async with session.get(
-                f"{self.base_url}/models",
+                models_url,
                 timeout=aiohttp.ClientTimeout(total=3)
             ) as response:
                 if response.status == 200:
@@ -352,7 +418,7 @@ class OpenAIProvider(BaseLLMProvider):
                 }
                 
                 async with session.post(
-                    f"{self.base_url}/chat/completions",
+                    chat_url,
                     json=test_payload,
                     timeout=aiohttp.ClientTimeout(total=3)
                 ) as response:
@@ -373,3 +439,4 @@ class OpenAIProvider(BaseLLMProvider):
         """Close the aiohttp session"""
         if self.session and not self.session.closed:
             await self.session.close()
+        self.session = None
