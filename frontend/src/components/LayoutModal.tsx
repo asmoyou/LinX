@@ -187,71 +187,75 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
             onClick={closeOnBackdropClick ? onClose : undefined}
           />
 
-          <div className="relative w-full h-full flex items-center justify-center p-4 sm:p-8 pointer-events-none">
+          <div className="relative w-full h-full pointer-events-none">
             {useRawLayout ? (
-              <div className="w-full h-full overflow-y-auto pointer-events-auto flex items-center justify-center custom-scrollbar">
+              <div className="w-full h-full overflow-y-auto overscroll-contain pointer-events-auto custom-scrollbar p-4 sm:p-8">
+                <div className="min-h-full w-full flex items-start sm:items-center justify-center">
+                  <motion.div
+                    variants={modalVariants}
+                    initial="hidden"
+                    animate="visible"
+                    exit="exit"
+                    className={`w-full flex justify-center ${contentClassName}`}
+                  >
+                    {children}
+                  </motion.div>
+                </div>
+              </div>
+            ) : (
+              <div className="w-full h-full flex items-center justify-center p-4 sm:p-8">
                 <motion.div
                   variants={modalVariants}
                   initial="hidden"
                   animate="visible"
                   exit="exit"
-                  className={`flex justify-center w-full ${contentClassName}`}
+                  className={`pointer-events-auto relative w-full ${sizeClasses[size]} bg-white dark:bg-zinc-900 rounded-[22px] shadow-2xl overflow-hidden flex flex-col border border-zinc-100 dark:border-zinc-800/50 ${contentClassName}`}
+                  style={{ maxHeight }}
                 >
-                  {children}
+                  {/* Auto Header */}
+                  {(title || (showCloseButton && onClose)) && !hasCompoundComponents && (
+                    <div className="px-5 py-3.5 sm:px-6 border-b border-zinc-100 dark:border-zinc-800/60 flex items-center justify-between shrink-0">
+                      <div className="flex-1 min-w-0">
+                        {title && (
+                          <h2 className="text-lg font-bold text-zinc-900 dark:text-white truncate">
+                            {title}
+                          </h2>
+                        )}
+                        {description && (
+                          <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                            {description}
+                          </p>
+                        )}
+                      </div>
+                      {showCloseButton && onClose && (
+                        <button
+                          onClick={onClose}
+                          className="ml-4 p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+                          aria-label="Close modal"
+                        >
+                          <X className="w-4.5 h-4.5" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Content */}
+                  {hasCompoundComponents ? (
+                    children
+                  ) : (
+                    <>
+                      <div className="px-5 py-5 sm:px-6 overflow-y-auto flex-1 min-h-0 custom-scrollbar">
+                        {children}
+                      </div>
+                      {footer && (
+                        <div className="px-5 py-3.5 sm:px-6 border-t border-zinc-100 dark:border-zinc-800/60 bg-zinc-50/30 dark:bg-zinc-900/30 flex flex-col sm:flex-row justify-end gap-2.5 shrink-0">
+                          {footer}
+                        </div>
+                      )}
+                    </>
+                  )}
                 </motion.div>
               </div>
-            ) : (
-              <motion.div
-                variants={modalVariants}
-                initial="hidden"
-                animate="visible"
-                exit="exit"
-                className={`pointer-events-auto relative w-full ${sizeClasses[size]} bg-white dark:bg-zinc-900 rounded-[22px] shadow-2xl overflow-hidden flex flex-col border border-zinc-100 dark:border-zinc-800/50 ${contentClassName}`}
-                style={{ maxHeight }}
-              >
-                {/* Auto Header */}
-                {(title || (showCloseButton && onClose)) && !hasCompoundComponents && (
-                  <div className="px-5 py-3.5 sm:px-6 border-b border-zinc-100 dark:border-zinc-800/60 flex items-center justify-between shrink-0">
-                    <div className="flex-1 min-w-0">
-                      {title && (
-                        <h2 className="text-lg font-bold text-zinc-900 dark:text-white truncate">
-                          {title}
-                        </h2>
-                      )}
-                      {description && (
-                        <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-                          {description}
-                        </p>
-                      )}
-                    </div>
-                    {showCloseButton && onClose && (
-                      <button
-                        onClick={onClose}
-                        className="ml-4 p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
-                        aria-label="Close modal"
-                      >
-                        <X className="w-4.5 h-4.5" />
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                {/* Content */}
-                {hasCompoundComponents ? (
-                  children
-                ) : (
-                  <>
-                    <div className="px-5 py-5 sm:px-6 overflow-y-auto flex-1 min-h-0 custom-scrollbar">
-                      {children}
-                    </div>
-                    {footer && (
-                      <div className="px-5 py-3.5 sm:px-6 border-t border-zinc-100 dark:border-zinc-800/60 bg-zinc-50/30 dark:bg-zinc-900/30 flex flex-col sm:flex-row justify-end gap-2.5 shrink-0">
-                        {footer}
-                      </div>
-                    )}
-                  </>
-                )}
-              </motion.div>
             )}
           </div>
         </div>
