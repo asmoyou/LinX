@@ -155,6 +155,9 @@ export const MemoryRetrievalTestPanel: React.FC<MemoryRetrievalTestPanelProps> =
                 <option value="user_context">
                   {t("memory.retrievalTest.scopeUserContext")}
                 </option>
+                <option value="task_context">
+                  {t("memory.retrievalTest.scopeTaskContext")}
+                </option>
               </select>
             </label>
 
@@ -239,7 +242,9 @@ export const MemoryRetrievalTestPanel: React.FC<MemoryRetrievalTestPanelProps> =
                       ? t("memory.tabs.agent")
                       : item.type === "company"
                         ? t("memory.tabs.company")
-                        : t("memory.tabs.userContext")}
+                        : item.type === "user_context"
+                          ? t("memory.tabs.userContext")
+                          : t("memory.tabs.taskContext")}
                   </div>
                   <p className="text-sm text-zinc-700 dark:text-zinc-300 line-clamp-3">
                     {item.content}

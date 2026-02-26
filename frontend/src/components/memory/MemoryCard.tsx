@@ -4,6 +4,7 @@ import {
   Brain,
   User,
   Building,
+  ListTodo,
   Clock,
   Tag,
   Share2,
@@ -93,6 +94,8 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
         return <Building className="w-5 h-5 text-green-500" />;
       case "user_context":
         return <User className="w-5 h-5 text-purple-500" />;
+      case "task_context":
+        return <ListTodo className="w-5 h-5 text-amber-500" />;
     }
   };
 
@@ -104,6 +107,8 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
         return t("memory.tabs.company");
       case "user_context":
         return t("memory.tabs.userContext");
+      case "task_context":
+        return t("memory.tabs.taskContext");
     }
   };
 
@@ -115,6 +120,8 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
         return "bg-green-500/20 text-green-700 dark:text-green-400";
       case "user_context":
         return "bg-purple-500/20 text-purple-700 dark:text-purple-400";
+      case "task_context":
+        return "bg-amber-500/20 text-amber-700 dark:text-amber-300";
     }
   };
 

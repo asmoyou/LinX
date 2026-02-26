@@ -1452,17 +1452,20 @@
     "tabs": {
       "agent": "智能体记忆",
       "company": "公司记忆",
-      "userContext": "用户画像"
+      "userContext": "用户画像",
+      "taskContext": "任务记忆"
     },
     "description": {
       "agent": "智能体在执行任务过程中自动生成的私有记忆。智能体利用这些记忆从过往经验中学习。",
       "company": "全公司共享的知识，所有智能体均可访问。用于公司政策、流程和共享洞察。",
-      "userContext": "关于个别用户的个人偏好和上下文信息。智能体在为该用户提供服务时会参考这些信息。"
+      "userContext": "关于个别用户的个人偏好和上下文信息。智能体在为该用户提供服务时会参考这些信息。",
+      "taskContext": "围绕具体任务沉淀的上下文记忆，例如任务目标、关键结论、执行过程摘要。仅在关联任务执行时优先注入。"
     },
     "empty": {
       "agent": "暂无智能体记忆。智能体完成任务后将自动创建记忆。",
       "company": "暂无公司记忆。",
-      "userContext": "暂无用户画像。"
+      "userContext": "暂无用户画像。",
+      "taskContext": "暂无任务记忆。"
     },
     "noResults": "没有匹配搜索条件的记忆。",
     "search": {
@@ -1493,7 +1496,8 @@
       "agentUnbound": "不关联（账号级记忆）",
       "agentNone": "无（全局公司记忆）",
       "agentBindingHint": "该关联仅用于追踪来源，不直接控制可见范围。可见性由发布/共享策略（范围 + 例外授权）决定。",
-      "companyOnly": "仅支持手动创建组织记忆。智能体记忆和用户画像会在对话与任务过程中自动生成，跨主体可见性请通过发布/共享策略配置。",
+      "companyOnly": "仅支持手动创建公司记忆。智能体记忆与用户画像会在对话/任务中自动生成。",
+      "defaultVisibilityHint": "新建记忆默认按“同部门可见（department）”保存。若需按智能体、跨部门或组织范围共享，请创建后在“共享/发布”中配置。",
       "submit": "创建记忆",
       "cancel": "取消",
       "success": "记忆创建成功",
@@ -1644,6 +1648,7 @@
       "scopeAgent": "智能体记忆",
       "scopeCompany": "公司记忆",
       "scopeUserContext": "用户画像",
+      "scopeTaskContext": "任务记忆",
       "limitLabel": "结果数量：{{limit}}",
       "minScoreLabel": "最小相似度：{{score}}",
       "searching": "正在检索...",

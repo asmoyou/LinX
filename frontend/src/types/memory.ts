@@ -1,4 +1,4 @@
-export type MemoryType = "agent" | "company" | "user_context";
+export type MemoryType = "agent" | "company" | "user_context" | "task_context";
 
 export type MemoryFact = {
   key: string;

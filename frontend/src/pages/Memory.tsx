@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   User,
+  ListTodo,
   Plus,
   Search,
   Settings2,
@@ -22,7 +23,6 @@ import { MemoryConfigPanel } from "@/components/memory/MemoryConfigPanel";
 import { MemoryRetrievalTestPanel } from "@/components/memory/MemoryRetrievalTestPanel";
 import { LayoutModal } from "@/components/LayoutModal";
 import { memoriesApi } from "@/api/memories";
-import { agentsApi } from "@/api/agents";
 import { useMemoryStore } from "@/stores/memoryStore";
 import { ModalPanel } from "@/components/ModalPanel";
 import type {
@@ -30,7 +30,6 @@ import type {
   MemoryType as MemoryCategory,
   MemoryIndexInfo,
 } from "@/types/memory";
-import type { Agent } from "@/types/agent";
 
 const getErrorDetail = (error: unknown): string | null => {
   if (!error || typeof error !== "object") {
@@ -56,28 +55,8 @@ const CreateMemoryModal: React.FC<{
   const [content, setContent] = useState("");
   const [summary, setSummary] = useState("");
   const [tags, setTags] = useState("");
-  const [agentId, setAgentId] = useState("");
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [isLoadingAgents, setIsLoadingAgents] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Fetch agents for the selector
-  useEffect(() => {
-    if (!isOpen) return;
-    const fetchAgents = async () => {
-      setIsLoadingAgents(true);
-      try {
-        const data = await agentsApi.getAll();
-        setAgents(data);
-      } catch {
-        setAgents([]);
-      } finally {
-        setIsLoadingAgents(false);
-      }
-    };
-    fetchAgents();
-  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -94,14 +73,15 @@ const CreateMemoryModal: React.FC<{
         type,
         content: content.trim(),
         summary: summary.trim() || undefined,
-        agent_id: agentId || undefined,
         tags: tagList.length > 0 ? tagList : undefined,
+        metadata: {
+          visibility: "department",
+        },
       });
       onCreated(memory);
       setContent("");
       setSummary("");
       setTags("");
-      setAgentId("");
       onClose();
     } catch (error: unknown) {
       setError(getErrorDetail(error) || t("memory.create.error"));
@@ -134,6 +114,9 @@ const CreateMemoryModal: React.FC<{
         <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg text-blue-700 dark:text-blue-400 text-sm">
           {t("memory.create.companyOnly")}
         </div>
+        <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-700 dark:text-amber-300 text-sm">
+          {t("memory.create.defaultVisibilityHint")}
+        </div>
 
         {error && (
           <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-600 dark:text-red-400 text-sm">
@@ -142,40 +125,6 @@ const CreateMemoryModal: React.FC<{
         )}
 
         <div className="space-y-4">
-          {/* Agent selector */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              {t("memory.create.agentBinding")}
-            </label>
-            {isLoadingAgents ? (
-              <div className="flex items-center gap-2 px-3 py-2">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span className="text-sm text-gray-500">
-                  {t("common.loading")}
-                </span>
-              </div>
-            ) : (
-              <select
-                value={agentId}
-                onChange={(e) => setAgentId(e.target.value)}
-                className="w-full px-3 py-2 bg-white/10 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-800 dark:text-white"
-              >
-                <option value="">{t("memory.create.agentUnbound")}</option>
-                {agents.map((agent) => (
-                  <option
-                    key={agent.agentId || agent.id}
-                    value={agent.agentId || agent.id}
-                  >
-                    {agent.name}
-                  </option>
-                ))}
-              </select>
-            )}
-            <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">
-              {t("memory.create.agentBindingHint")}
-            </p>
-          </div>
-
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               {t("memory.create.summary")}
@@ -275,6 +224,7 @@ export const Memory: React.FC = () => {
     agent: 0,
     company: 0,
     user_context: 0,
+    task_context: 0,
   });
   const [useSemanticSearchResults, setUseSemanticSearchResults] =
     useState(false);
@@ -296,12 +246,14 @@ export const Memory: React.FC = () => {
     agent: "memory.description.agent",
     company: "memory.description.company",
     user_context: "memory.description.userContext",
+    task_context: "memory.description.taskContext",
   };
 
   const emptyKey: Record<MemoryCategory, string> = {
     agent: "memory.empty.agent",
     company: "memory.empty.company",
     user_context: "memory.empty.userContext",
+    task_context: "memory.empty.taskContext",
   };
 
   const fetchTabTotalByType = useCallback(
@@ -323,7 +275,12 @@ export const Memory: React.FC = () => {
   );
 
   useEffect(() => {
-    const types: MemoryCategory[] = ["agent", "company", "user_context"];
+    const types: MemoryCategory[] = [
+      "agent",
+      "company",
+      "user_context",
+      "task_context",
+    ];
     types.forEach((type) => {
       void fetchTabTotalByType(type);
     });
@@ -723,6 +680,12 @@ export const Memory: React.FC = () => {
       label: t("memory.tabs.userContext"),
       icon: User,
       color: "text-purple-500",
+    },
+    {
+      id: "task_context" as MemoryCategory,
+      label: t("memory.tabs.taskContext"),
+      icon: ListTodo,
+      color: "text-amber-500",
     },
   ];
   return (

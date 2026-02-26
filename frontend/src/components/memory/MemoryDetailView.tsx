@@ -5,6 +5,7 @@ import {
   Brain,
   User,
   Building,
+  ListTodo,
   Clock,
   Tag,
   Share2,
@@ -213,6 +214,8 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
         return <Building className="w-6 h-6 text-green-500" />;
       case "user_context":
         return <User className="w-6 h-6 text-purple-500" />;
+      case "task_context":
+        return <ListTodo className="w-6 h-6 text-amber-500" />;
     }
   };
 
@@ -224,6 +227,8 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
         return t("memory.tabs.company");
       case "user_context":
         return t("memory.tabs.userContext");
+      case "task_context":
+        return t("memory.tabs.taskContext");
     }
   };
 
