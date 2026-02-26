@@ -10,7 +10,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from database.connection import get_db_session
-from database.models import Skill
+from database.models import Agent, Skill
 
 logger = logging.getLogger(__name__)
 
@@ -215,10 +215,37 @@ class SkillModel:
             if not skill:
                 return False
 
+            skill_name = skill.name
+            detached_agent_ids: List[str] = []
+
+            # Keep agent capability lists in sync with active skills.
+            # Agent capabilities are stored as skill names, so deleting a skill
+            # should remove stale names from all agents that reference it.
+            agents = (
+                session.query(Agent)
+                .filter(Agent.capabilities.isnot(None))
+                .filter(Agent.capabilities.contains([skill_name]))
+                .all()
+            )
+            for agent in agents:
+                capabilities = agent.capabilities if isinstance(agent.capabilities, list) else []
+                normalized = [name for name in capabilities if name != skill_name]
+                if normalized != capabilities:
+                    agent.capabilities = normalized
+                    detached_agent_ids.append(str(agent.agent_id))
+
             session.delete(skill)
             session.commit()
 
-            logger.info(f"Skill deleted: {skill_id}")
+            logger.info(
+                "Skill deleted and detached from agent capabilities",
+                extra={
+                    "skill_id": str(skill_id),
+                    "skill_name": skill_name,
+                    "detached_agent_count": len(detached_agent_ids),
+                    "detached_agent_ids": detached_agent_ids[:20],
+                },
+            )
             return True
 
     def search_skills(self, query: str) -> List[Skill]:
