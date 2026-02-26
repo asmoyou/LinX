@@ -51,7 +51,7 @@ Use this tool when you need to:
 
 The code will run in an isolated environment with:
 - Resource limits (CPU, memory, time)
-- Network disabled
+- Network enabled by default (can be disabled by runtime policy)
 - File system restrictions
 - Security validation
 
@@ -79,7 +79,8 @@ print(f"Square root of 16 is {result}")
 
     # Private attribute for sandbox (not validated by Pydantic)
     _sandbox: Optional[Any] = None
-    network_access: bool = False
+    network_access: bool = True
+    session_sandbox_id: Optional[str] = None
     
     def __init__(self, agent_id: UUID, user_id: UUID, **kwargs):
         """Initialize code execution tool.
@@ -108,6 +109,11 @@ print(f"Square root of 16 is {result}")
     def set_network_access(self, enabled: bool) -> None:
         """Set whether tool sandbox execution may use network."""
         self.network_access = bool(enabled)
+
+    def set_execution_context(self, sandbox_id: Optional[str]) -> None:
+        """Set preferred sandbox container for session-scoped execution."""
+        normalized = str(sandbox_id).strip() if sandbox_id else ""
+        self.session_sandbox_id = normalized or None
     
     def _run(
         self,
@@ -172,7 +178,8 @@ print(f"Square root of 16 is {result}")
             extra={
                 "agent_id": str(self.agent_id),
                 "code_length": len(code),
-                "language": language
+                "language": language,
+                "network_access": bool(self.network_access),
             }
         )
         
@@ -205,6 +212,7 @@ print(f"Square root of 16 is {result}")
                     "environment": user_env_vars,  # Pass user env vars
                     "network_access": bool(self.network_access),
                     "workspace_root": str(workspace_root) if workspace_root else None,
+                    "existing_sandbox_id": self.session_sandbox_id,
                 }
             )
             

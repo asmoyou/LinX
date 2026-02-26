@@ -254,6 +254,70 @@ def get_weather(city):
         assert package.skill_id == skill_id
         assert package.skill_name == 'test_skill'
         assert len(package.code_blocks) == 0
+
+    def test_load_skill_prefers_preloaded_package_files(self, monkeypatch):
+        """Test preloaded package files are used instead of fetching from storage."""
+        loader = SkillLoader()
+        skill_id = uuid4()
+        preloaded_files = {
+            "weather-forcast/SKILL.md": "# Weather Skill",
+            "weather-forcast/scripts/weather_helper.py": "print('ok')",
+        }
+
+        called = False
+
+        def _unexpected_load(_: str):
+            nonlocal called
+            called = True
+            return {}
+
+        monkeypatch.setattr(loader, "_load_package_files", _unexpected_load)
+
+        package = loader.load_skill(
+            skill_id=skill_id,
+            skill_name="weather-forcast",
+            skill_md_content=None,
+            storage_path="system/weather-forcast.zip",
+            package_files=preloaded_files,
+        )
+
+        assert package.package_files == preloaded_files
+        assert called is False
+
+    def test_load_package_files_from_zip_preserves_structure(self, monkeypatch):
+        """Test ZIP package loading keeps original top-level folder structure."""
+        import io
+        import zipfile
+
+        loader = SkillLoader()
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zip_ref:
+            zip_ref.writestr("weather-forcast/SKILL.md", "# Weather Skill")
+            zip_ref.writestr(
+                "weather-forcast/scripts/weather_helper.py",
+                "print('hello weather')\n",
+            )
+            zip_ref.writestr("weather-forcast/requirements.txt", "requests==2.31.0\n")
+            zip_ref.writestr("weather-forcast/.DS_Store", "ignored")
+
+        payload = zip_buffer.getvalue()
+
+        class _FakeMinioClient:
+            buckets = {"artifacts": "agent-artifacts"}
+
+            def download_file(self, bucket_name: str, object_key: str):
+                return io.BytesIO(payload), {}
+
+        import object_storage.minio_client as minio_client_module
+
+        monkeypatch.setattr(minio_client_module, "get_minio_client", lambda: _FakeMinioClient())
+
+        package_files = loader._load_package_files("system/weather-forcast-1.0.0.zip")
+
+        assert "weather-forcast/SKILL.md" in package_files
+        assert "weather-forcast/scripts/weather_helper.py" in package_files
+        assert "weather-forcast/requirements.txt" in package_files
+        assert "weather-forcast/.DS_Store" not in package_files
     
     def test_extract_description(self):
         """Test extracting description from preceding text."""

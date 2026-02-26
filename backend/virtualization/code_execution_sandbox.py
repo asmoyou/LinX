@@ -16,11 +16,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from virtualization.code_validator import ValidationResult, get_code_validator
-from virtualization.container_manager import ContainerConfig, get_container_manager
+from virtualization.container_manager import ContainerConfig, ContainerStatus, get_container_manager
 from virtualization.dependency_manager import DependencyManager, get_dependency_manager
 from virtualization.resource_limits import ResourceLimits, ResourceUsage, get_default_limits
 from virtualization.sandbox_selector import SandboxType, get_sandbox_selector
@@ -217,6 +217,7 @@ class CodeExecutionSandbox:
             )
 
         sandbox_id = None
+        owns_sandbox = False
 
         try:
             # 2. Detect and manage dependencies
@@ -246,17 +247,42 @@ class CodeExecutionSandbox:
                         self.logger.info("Dependencies not cached, will install")
                         dependencies_installed = True
 
-            # 3. Create isolated sandbox environment (and start it)
-            network_enabled = bool(context.get("network_access", False))
+            runtime_environment: Dict[str, str] = {}
+            raw_environment = context.get("environment")
+            if isinstance(raw_environment, dict):
+                for key, value in raw_environment.items():
+                    env_key = str(key).strip()
+                    if not env_key or value is None:
+                        continue
+                    runtime_environment[env_key] = str(value)
+
+            # 3. Resolve sandbox environment (reuse session sandbox when provided)
+            existing_sandbox_id = str(context.get("existing_sandbox_id") or "").strip()
+            network_enabled = bool(context.get("network_access", True))
             workspace_root_value = context.get("workspace_root")
             workspace_root = (
                 str(workspace_root_value).strip() if workspace_root_value is not None else None
             )
-            sandbox_id = await self._create_sandbox(
-                execution_id,
-                network_enabled=network_enabled,
-                workspace_root=workspace_root or None,
-            )
+            if existing_sandbox_id:
+                sandbox_id = existing_sandbox_id
+                sandbox_status = self.container_manager.get_container_status(sandbox_id)
+                if sandbox_status != ContainerStatus.RUNNING:
+                    started = self.container_manager.start_container(sandbox_id)
+                    if not started:
+                        raise RuntimeError(
+                            f"Failed to start existing sandbox container: {sandbox_id}"
+                        )
+                self.logger.info(
+                    "Reusing existing sandbox container",
+                    extra={"execution_id": execution_id, "sandbox_id": sandbox_id},
+                )
+            else:
+                sandbox_id = await self._create_sandbox(
+                    execution_id,
+                    network_enabled=network_enabled,
+                    workspace_root=workspace_root or None,
+                )
+                owns_sandbox = True
 
             # 4. Install dependencies if needed
             if dependencies_installed and self.dependency_manager and dependencies:
@@ -267,7 +293,11 @@ class CodeExecutionSandbox:
 
                 if install_script:
                     self.logger.info("Installing dependencies in sandbox")
-                    await self._install_dependencies(sandbox_id, install_script)
+                    await self._install_dependencies(
+                        sandbox_id,
+                        install_script,
+                        environment=runtime_environment or None,
+                    )
 
                     # Cache the dependencies
                     self.dependency_manager.cache_dependencies(
@@ -276,13 +306,21 @@ class CodeExecutionSandbox:
                     )
 
             # 5. Inject code and context into sandbox
-            await self._inject_code(sandbox_id, code, context, language)
+            code_file, execution_workdir = await self._inject_code(
+                sandbox_id, code, context, language
+            )
 
             # 6. Execute with resource limits and timeout
             start_time = time.time()
 
             result = await asyncio.wait_for(
-                self._run_code(sandbox_id, language),
+                self._run_code(
+                    sandbox_id,
+                    language,
+                    code_file=code_file,
+                    workdir=execution_workdir,
+                    environment=runtime_environment or None,
+                ),
                 timeout=timeout,
             )
 
@@ -337,7 +375,7 @@ class CodeExecutionSandbox:
                 },
             )
 
-            if sandbox_id:
+            if sandbox_id and owns_sandbox:
                 await self._kill_sandbox(sandbox_id)
 
             return ExecutionResult(
@@ -360,7 +398,7 @@ class CodeExecutionSandbox:
                 },
             )
 
-            if sandbox_id:
+            if sandbox_id and owns_sandbox:
                 await self._kill_sandbox(sandbox_id)
 
             return ExecutionResult(
@@ -397,7 +435,7 @@ class CodeExecutionSandbox:
 
         finally:
             # 7. Collect output and metrics
-            if sandbox_id:
+            if sandbox_id and owns_sandbox:
                 await self._destroy_sandbox(sandbox_id)
 
     async def _create_sandbox(
@@ -442,6 +480,7 @@ class CodeExecutionSandbox:
             sandbox_type=self.sandbox_type,
             resource_limits=self.resource_limits,
             network_disabled=not network_enabled,
+            network_mode="bridge" if network_enabled else "none",
             volume_mounts=volume_mounts,
         )
 
@@ -469,7 +508,7 @@ class CodeExecutionSandbox:
         code: str,
         context: Dict[str, Any],
         language: str,
-    ) -> None:
+    ) -> Tuple[str, str]:
         """Inject code and context into sandbox.
 
         Args:
@@ -477,6 +516,9 @@ class CodeExecutionSandbox:
             code: Source code
             context: Execution context
             language: Programming language
+
+        Returns:
+            Tuple of (code_file_path, execution_workdir)
         """
         # Determine file extension and path
         extensions = {
@@ -491,10 +533,16 @@ class CodeExecutionSandbox:
         }
 
         ext = extensions.get(language.lower(), ".txt")
-        code_file = f"/tmp/code{ext}"
-        context_file = "/tmp/context.json"
+        execution_workdir = "/workspace" if context.get("workspace_root") else "/tmp"
+        code_file = f"{execution_workdir}/code{ext}"
+        context_file = f"{execution_workdir}/context.json"
 
         try:
+            self.container_manager.exec_in_container(
+                container_id=sandbox_id,
+                command=f"mkdir -p {execution_workdir}",
+            )
+
             # 1. Write code to container
             self.container_manager.write_file_to_container(
                 container_id=sandbox_id,
@@ -521,8 +569,10 @@ class CodeExecutionSandbox:
                     "language": language,
                     "code_file": code_file,
                     "code_size": len(code),
+                    "execution_workdir": execution_workdir,
                 },
             )
+            return code_file, execution_workdir
 
         except Exception as e:
             self.logger.error(
@@ -535,6 +585,7 @@ class CodeExecutionSandbox:
         self,
         sandbox_id: str,
         install_script: str,
+        environment: Optional[Dict[str, str]] = None,
     ) -> None:
         """Install dependencies in sandbox.
 
@@ -567,6 +618,7 @@ class CodeExecutionSandbox:
             exit_code, stdout, stderr = self.container_manager.exec_in_container(
                 container_id=sandbox_id,
                 command=f"/bin/bash {script_path}",
+                environment=environment,
             )
 
             if exit_code != 0:
@@ -602,7 +654,15 @@ class CodeExecutionSandbox:
             )
             raise
 
-    async def _run_code(self, sandbox_id: str, language: str) -> Dict[str, Any]:
+    async def _run_code(
+        self,
+        sandbox_id: str,
+        language: str,
+        *,
+        code_file: Optional[str] = None,
+        workdir: str = "/tmp",
+        environment: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """Run code in sandbox.
 
         Args:
@@ -616,14 +676,24 @@ class CodeExecutionSandbox:
         language = language.lower()
 
         interpreters = {
-            "python": ("python3", "/tmp/code.py"),
-            "py": ("python3", "/tmp/code.py"),
-            "javascript": ("node", "/tmp/code.js"),
-            "js": ("node", "/tmp/code.js"),
-            "typescript": ("ts-node", "/tmp/code.ts"),
-            "ts": ("ts-node", "/tmp/code.ts"),
-            "bash": ("/bin/bash", "/tmp/code.sh"),
-            "sh": ("/bin/bash", "/tmp/code.sh"),
+            "python": "python3",
+            "py": "python3",
+            "javascript": "node",
+            "js": "node",
+            "typescript": "ts-node",
+            "ts": "ts-node",
+            "bash": "/bin/bash",
+            "sh": "/bin/bash",
+        }
+        default_code_files = {
+            "python": "/tmp/code.py",
+            "py": "/tmp/code.py",
+            "javascript": "/tmp/code.js",
+            "js": "/tmp/code.js",
+            "typescript": "/tmp/code.ts",
+            "ts": "/tmp/code.ts",
+            "bash": "/tmp/code.sh",
+            "sh": "/tmp/code.sh",
         }
 
         if language not in interpreters:
@@ -633,24 +703,27 @@ class CodeExecutionSandbox:
                 "return_value": None,
             }
 
-        interpreter, code_file = interpreters[language]
+        interpreter = interpreters[language]
+        target_code_file = code_file or default_code_files[language]
 
         try:
             # Execute code in container
-            command = f"{interpreter} {code_file}"
+            command = f"{interpreter} {target_code_file}"
 
             self.logger.debug(
                 f"Executing code in sandbox",
                 extra={
                     "sandbox_id": sandbox_id,
                     "command": command,
+                    "workdir": workdir,
                 },
             )
 
             exit_code, stdout, stderr = self.container_manager.exec_in_container(
                 container_id=sandbox_id,
                 command=command,
-                workdir="/tmp",
+                workdir=workdir,
+                environment=environment,
             )
 
             # Parse results

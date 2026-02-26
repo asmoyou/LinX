@@ -4062,8 +4062,8 @@ class MissionOrchestrator:
                     except Exception:
                         workspace_host_path = None
                 code_execution_network_access = self._coerce_bool(
-                    exec_cfg.get("network_access", False),
-                    default=False,
+                    exec_cfg.get("network_access", True),
+                    default=True,
                 )
                 execute_kwargs: Dict[str, Any] = {
                     "execution_profile": ExecutionProfile.MISSION_TASK,

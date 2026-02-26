@@ -12,7 +12,11 @@ References:
 
 import logging
 import re
+import tarfile
+import tempfile
+import zipfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional
 from uuid import UUID
 
@@ -107,6 +111,7 @@ class SkillLoader:
         skill_md_content: Optional[str] = None,
         storage_path: Optional[str] = None,
         manifest: Optional[dict] = None,
+        package_files: Optional[Dict[str, str]] = None,
     ) -> SkillPackage:
         """Load a skill and extract all code.
         
@@ -116,6 +121,7 @@ class SkillLoader:
             skill_md_content: SKILL.md content
             storage_path: MinIO storage path for package skills
             manifest: Parsed manifest for package skills
+            package_files: Optional pre-loaded package files (preferred if available)
             
         Returns:
             SkillPackage with extracted code
@@ -138,8 +144,18 @@ class SkillLoader:
                 }
             )
         
-        # Load package files from MinIO if available
-        if storage_path:
+        # Use pre-loaded package files when available to avoid repeated MinIO downloads.
+        if package_files is not None:
+            package.package_files = dict(package_files)
+            self.logger.info(
+                f"Loaded {len(package.package_files)} files from preloaded package files",
+                extra={
+                    'skill_id': str(skill_id),
+                    'skill_name': skill_name,
+                }
+            )
+        # Fallback: load package files from MinIO when storage path is available.
+        elif storage_path:
             package.package_files = self._load_package_files(storage_path)
             self.logger.info(
                 f"Loaded {len(package.package_files)} files from package",
@@ -286,18 +302,77 @@ class SkillLoader:
         Returns:
             Dictionary mapping filename to content
         """
-        # TODO: Implement MinIO file loading
-        # For now, return empty dict
-        # In real implementation:
-        # 1. Connect to MinIO
-        # 2. List files in storage_path
-        # 3. Download and read each file
-        # 4. Return as dict
-        
-        self.logger.debug(
-            f"Package file loading not yet implemented for: {storage_path}"
-        )
-        return {}
+        package_files: Dict[str, str] = {}
+        tmp_path: Optional[Path] = None
+        file_stream = None
+
+        try:
+            from object_storage.minio_client import get_minio_client
+
+            minio_client = get_minio_client()
+            bucket_name = minio_client.buckets.get("artifacts", "agent-artifacts")
+            object_key = storage_path
+            if object_key.startswith(f"{bucket_name}/"):
+                object_key = object_key[len(bucket_name) + 1:]
+
+            file_stream, _ = minio_client.download_file(bucket_name, object_key)
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".skillpkg") as tmp_file:
+                tmp_file.write(file_stream.read())
+                tmp_file.flush()
+                tmp_path = Path(tmp_file.name)
+
+            with tempfile.TemporaryDirectory() as extract_dir:
+                extract_path = Path(extract_dir)
+
+                try:
+                    with zipfile.ZipFile(tmp_path, "r") as zip_ref:
+                        zip_ref.extractall(extract_path)
+                except zipfile.BadZipFile:
+                    with tarfile.open(tmp_path, "r:gz") as tar_ref:
+                        tar_ref.extractall(extract_path)
+
+                relevant_extensions = {".py", ".yaml", ".yml", ".json", ".txt", ".md"}
+                for file_path in extract_path.rglob("*"):
+                    if not file_path.is_file():
+                        continue
+                    if file_path.suffix.lower() not in relevant_extensions:
+                        continue
+
+                    relative_path = file_path.relative_to(extract_path)
+                    if (
+                        "__pycache__" in relative_path.parts
+                        or any(part.startswith("__") for part in relative_path.parts)
+                        or any(part.startswith(".") for part in relative_path.parts)
+                        or file_path.name.startswith(".")
+                    ):
+                        continue
+
+                    try:
+                        content = file_path.read_text(encoding="utf-8")
+                    except UnicodeDecodeError:
+                        content = file_path.read_text(encoding="utf-8", errors="replace")
+
+                    package_files[str(relative_path)] = content
+
+        except Exception as e:
+            self.logger.warning(
+                "Failed to load package files from MinIO",
+                extra={"storage_path": storage_path, "error": str(e)},
+            )
+        finally:
+            try:
+                if file_stream is not None:
+                    file_stream.close()
+            except Exception:
+                pass
+            if tmp_path:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        return package_files
     
     def get_code_by_language(
         self,

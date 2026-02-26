@@ -431,6 +431,35 @@ def create_bash_tool(agent_id: UUID, user_id: UUID, process_manager=None) -> Too
         LangChain Tool for bash execution
     """
     bash_executor = EnhancedBashTool(process_manager=process_manager)
+
+    def _load_user_skill_env() -> Dict[str, str]:
+        """Load user-level skill environment variables for shell execution."""
+        try:
+            from skill_library.skill_env_manager import get_skill_env_manager
+
+            env_manager = get_skill_env_manager()
+            env_vars = env_manager.get_env_for_user(user_id)
+            normalized = {str(k): str(v) for k, v in (env_vars or {}).items()}
+            logger.debug(
+                "Loaded skill env vars for bash tool",
+                extra={
+                    "agent_id": str(agent_id),
+                    "user_id": str(user_id),
+                    "env_keys": sorted(normalized.keys()),
+                    "env_count": len(normalized),
+                },
+            )
+            return normalized
+        except Exception as env_error:
+            logger.warning(
+                "Failed to load skill env vars for bash tool",
+                extra={
+                    "agent_id": str(agent_id),
+                    "user_id": str(user_id),
+                    "error": str(env_error),
+                },
+            )
+            return {}
     
     def bash_execute(
         command: str,
@@ -466,7 +495,8 @@ def create_bash_tool(agent_id: UUID, user_id: UUID, process_manager=None) -> Too
             pty=pty,
             workdir=workdir,
             background=background,
-            timeout=timeout or 300
+            timeout=timeout or 300,
+            env=_load_user_skill_env() or None,
         )
         
         result = bash_executor.execute(config)

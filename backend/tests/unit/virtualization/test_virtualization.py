@@ -10,6 +10,7 @@ from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
+from docker.errors import DockerException, NotFound
 
 from virtualization.container_manager import (
     ContainerConfig,
@@ -291,6 +292,45 @@ class TestContainerManager:
         assert success
         assert manager.containers[container_id]["status"] == ContainerStatus.RUNNING.value
         assert manager.containers[container_id]["started_at"] is not None
+
+    def test_start_container_recovers_missing_network(self):
+        """Test starting container retries after creating missing custom network."""
+        manager = ContainerManager()
+        manager.docker_available = True
+        manager.docker_client = Mock()
+        manager.docker_client.networks.get.side_effect = NotFound("network not found")
+
+        container = Mock()
+
+        def _reload_status():
+            container.status = "running"
+
+        container.reload.side_effect = _reload_status
+        container.start.side_effect = [
+            DockerException("failed to set up container networking: network isolated-network not found"),
+            None,
+        ]
+        container.status = "created"
+
+        container_id = "sandbox-123"
+        manager.containers[container_id] = {
+            "id": container_id,
+            "docker_id": "docker-123",
+            "docker_container": container,
+            "agent_id": str(uuid4()),
+            "status": ContainerStatus.CREATING.value,
+            "config": ContainerConfig(network_mode="isolated-network", network_disabled=False),
+            "created_at": None,
+            "started_at": None,
+            "stopped_at": None,
+        }
+
+        success = manager.start_container(container_id)
+
+        assert success is True
+        assert container.start.call_count == 2
+        manager.docker_client.networks.create.assert_called_once()
+        assert manager.containers[container_id]["status"] == ContainerStatus.RUNNING.value
 
     def test_stop_container(self):
         """Test stopping a container."""

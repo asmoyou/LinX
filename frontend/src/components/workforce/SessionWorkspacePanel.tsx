@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Eye, FileText, RefreshCw, X } from 'lucide-react';
+import { Download, Eye, FileText, Folder, RefreshCw, X } from 'lucide-react';
 import { agentsApi } from '@/api';
 import type { AgentSessionWorkspaceFile } from '@/api/agents';
 
@@ -105,8 +105,7 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
       }
       try {
         const list = await agentsApi.getSessionWorkspaceFiles(agentId, sessionId, '', true);
-        const nonDirs = list.filter((file) => !file.is_dir);
-        setFiles(nonDirs);
+        setFiles(list);
         setError(null);
       } catch (e) {
         const message = e instanceof Error ? e.message : 'Failed to load workspace files';
@@ -153,13 +152,23 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
       return;
     }
 
-    if (!selectedPath || !files.some((file) => file.path === selectedPath)) {
-      setSelectedPath(files[0].path);
+    const fileEntries = files.filter((file) => !file.is_dir);
+    if (fileEntries.length === 0) {
+      setSelectedPath(null);
+      resetPreview();
+      return;
+    }
+
+    if (!selectedPath || !fileEntries.some((file) => file.path === selectedPath)) {
+      setSelectedPath(fileEntries[0].path);
     }
   }, [files, resetPreview, selectedPath]);
 
   const selectedFile = useMemo(
-    () => (selectedPath ? files.find((item) => item.path === selectedPath) || null : null),
+    () =>
+      selectedPath
+        ? files.find((item) => item.path === selectedPath && !item.is_dir) || null
+        : null,
     [files, selectedPath]
   );
 
@@ -247,7 +256,9 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
       <div className="px-3 py-2 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">Workspace Files</h3>
-          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{files.length} file(s)</p>
+          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+            {files.filter((item) => !item.is_dir).length} file(s), {files.length} item(s)
+          </p>
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -280,20 +291,33 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
           ) : (
             <div className="p-2 space-y-1">
               {files.map((file) => {
-                const selected = file.path === selectedPath;
+                const selected = !file.is_dir && file.path === selectedPath;
+                const depth = Math.max(file.path.split('/').filter(Boolean).length - 1, 0);
                 return (
                   <button
                     key={file.path}
                     type="button"
-                    onClick={() => setSelectedPath(file.path)}
+                    onClick={() => {
+                      if (!file.is_dir) {
+                        setSelectedPath(file.path);
+                      }
+                    }}
+                    aria-disabled={file.is_dir}
                     className={`w-full text-left px-2 py-2 rounded-md border transition-colors ${
                       selected
                         ? 'border-emerald-300 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-900/20'
-                        : 'border-transparent hover:border-zinc-200 dark:hover:border-zinc-700 hover:bg-white/80 dark:hover:bg-zinc-800/80'
+                        : file.is_dir
+                          ? 'border-transparent bg-transparent'
+                          : 'border-transparent hover:border-zinc-200 dark:hover:border-zinc-700 hover:bg-white/80 dark:hover:bg-zinc-800/80'
                     }`}
+                    style={{ paddingLeft: `${8 + depth * 12}px` }}
                   >
                     <div className="flex items-start gap-2">
-                      <FileText className="w-4 h-4 mt-0.5 text-zinc-500 dark:text-zinc-400" />
+                      {file.is_dir ? (
+                        <Folder className="w-4 h-4 mt-0.5 text-zinc-500 dark:text-zinc-400" />
+                      ) : (
+                        <FileText className="w-4 h-4 mt-0.5 text-zinc-500 dark:text-zinc-400" />
+                      )}
                       <div className="min-w-0 flex-1">
                         <p className="text-xs font-medium text-zinc-800 dark:text-zinc-200 truncate">
                           {file.name}
@@ -301,9 +325,11 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
                         <p className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
                           {file.path}
                         </p>
-                        <p className="text-[11px] text-zinc-400 dark:text-zinc-500">
-                          {formatFileSize(file.size)}
-                        </p>
+                        {!file.is_dir && (
+                          <p className="text-[11px] text-zinc-400 dark:text-zinc-500">
+                            {formatFileSize(file.size)}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </button>

@@ -293,40 +293,27 @@ class SkillManager:
                         with tarfile.open(tmp_path, 'r:gz') as tar_ref:
                             tar_ref.extractall(extract_path)
                     
-                    # Find the skill directory (skip __MACOSX and other system dirs)
-                    skill_dirs = [
-                        d for d in extract_path.iterdir()
-                        if d.is_dir() and not d.name.startswith('__') and not d.name.startswith('.')
-                    ]
-                    
-                    if not skill_dirs:
-                        logger.warning(
-                            f"No skill directory found in package for {skill_info.name}",
-                            extra={"skill_id": str(skill_info.skill_id)}
-                        )
-                        return package_files
-                    
-                    skill_dir = skill_dirs[0]
-                    
-                    # Read relevant files (Python, YAML, JSON, TXT)
+                    # Read relevant files while preserving original package structure.
+                    # Example: weather-forcast/scripts/weather_helper.py
                     relevant_extensions = {'.py', '.yaml', '.yml', '.json', '.txt', '.md'}
-                    
-                    for file_path in skill_dir.rglob('*'):
+
+                    for file_path in extract_path.rglob('*'):
                         if file_path.is_file() and file_path.suffix in relevant_extensions:
-                            # Skip SKILL.md (already loaded separately)
-                            if file_path.name == 'SKILL.md':
-                                continue
-                            
                             # Skip __pycache__ and other system files
-                            if '__pycache__' in file_path.parts or file_path.name.startswith('.'):
+                            relative_path = file_path.relative_to(extract_path)
+                            if (
+                                '__pycache__' in relative_path.parts
+                                or any(part.startswith('__') for part in relative_path.parts)
+                                or any(part.startswith('.') for part in relative_path.parts)
+                                or file_path.name.startswith('.')
+                            ):
                                 continue
                             
                             try:
                                 # Read file content
                                 content = file_path.read_text(encoding='utf-8')
                                 
-                                # Use relative path as key
-                                relative_path = file_path.relative_to(skill_dir)
+                                # Use full relative path (including package root dir) as key.
                                 package_files[str(relative_path)] = content
                                 
                                 logger.debug(

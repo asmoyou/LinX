@@ -1310,11 +1310,22 @@ class BaseAgent:
             self.status = AgentStatus.BUSY
             logger.info(f"Agent executing task: {self.config.name}")
 
-            # Propagate mission/network policy to code_execution tool when provided.
-            if code_execution_network_access is not None:
-                for tool in self.tools:
-                    if getattr(tool, "name", "") != "code_execution":
-                        continue
+            # Propagate session/runtime settings to code_execution tool.
+            session_sandbox_id = str(container_id).strip() if container_id else None
+            for tool in self.tools:
+                if getattr(tool, "name", "") != "code_execution":
+                    continue
+                try:
+                    if hasattr(tool, "set_execution_context"):
+                        tool.set_execution_context(session_sandbox_id)
+                except Exception as cfg_error:
+                    logger.warning(
+                        "Failed to set code_execution session context: %s",
+                        cfg_error,
+                        extra={"agent_id": str(self.config.agent_id)},
+                    )
+
+                if code_execution_network_access is not None:
                     try:
                         if hasattr(tool, "set_network_access"):
                             tool.set_network_access(bool(code_execution_network_access))
@@ -1331,6 +1342,9 @@ class BaseAgent:
             if session_workdir:
                 set_workspace_root(session_workdir)
                 logger.debug(f"Set workspace root to {session_workdir}")
+                self._sync_skill_package_files_to_workdir(
+                    session_workdir, log_prefix="[WORKSPACE]"
+                )
             else:
                 clear_workspace_root()
 
@@ -2355,6 +2369,68 @@ class BaseAgent:
                 suggestions=["Review the tool call format and try again"],
             )
 
+    def _sync_skill_package_files_to_workdir(
+        self, workdir: "Path", log_prefix: str = "[SKILL_SYNC]"
+    ) -> int:
+        """Copy loaded Agent Skill package files into the active workspace."""
+        if not self.skill_manager:
+            return 0
+
+        copied_files = 0
+        try:
+            agent_skills = self.skill_manager.get_agent_skill_docs()
+            for skill_ref in agent_skills:
+                copied_for_skill = 0
+                skill_doc_path_for_log: Optional[str] = None
+
+                if skill_ref.package_files:
+                    for filename, content in skill_ref.package_files.items():
+                        file_path = workdir / filename
+                        file_path.parent.mkdir(parents=True, exist_ok=True)
+                        file_path.write_text(content, encoding="utf-8")
+                        if filename.endswith((".sh", ".py")):
+                            file_path.chmod(0o755)
+                        copied_files += 1
+                        copied_for_skill += 1
+
+                has_skill_doc_in_package = bool(
+                    skill_ref.package_files
+                    and any(path.endswith("SKILL.md") for path in skill_ref.package_files)
+                )
+
+                # Backward-compatible fallback for old packages where SKILL.md
+                # was not included in loaded package files.
+                if skill_ref.skill_md_content and not has_skill_doc_in_package:
+                    skill_dir_name = re.sub(
+                        r"[^a-zA-Z0-9._-]+", "_", skill_ref.name
+                    ).strip("._")
+                    if not skill_dir_name:
+                        skill_dir_name = "skill"
+                    skill_doc_path = workdir / skill_dir_name / "SKILL.md"
+                    skill_doc_path.parent.mkdir(parents=True, exist_ok=True)
+                    skill_doc_path.write_text(skill_ref.skill_md_content, encoding="utf-8")
+                    skill_doc_path_for_log = f"{skill_dir_name}/SKILL.md"
+                    copied_files += 1
+                    copied_for_skill += 1
+
+                if not copied_for_skill:
+                    continue
+
+                logger.info(
+                    f"{log_prefix} Copied {copied_for_skill} skill files to workdir",
+                    extra={
+                        "agent_id": str(self.config.agent_id),
+                        "skill_name": skill_ref.name,
+                        "workdir": str(workdir),
+                        "copied_package_files": len(skill_ref.package_files or {}),
+                        "skill_doc_path": skill_doc_path_for_log,
+                    },
+                )
+        except Exception as e:
+            logger.warning(f"{log_prefix} Failed to copy skill files: {e}")
+
+        return copied_files
+
     async def _execute_code_blocks(
         self,
         code_blocks: List,
@@ -2412,29 +2488,8 @@ class BaseAgent:
             session_id = uuid4().hex[:8]
             workdir = self.code_executor.create_workdir(session_id)
 
-        # Copy skill package files to workdir (so scripts/weather_helper.py etc. are available)
-        if self.skill_manager:
-            try:
-                agent_skills = self.skill_manager.get_agent_skill_docs()
-                for skill_ref in agent_skills:
-                    if skill_ref.package_files:
-                        for filename, content in skill_ref.package_files.items():
-                            file_path = workdir / filename
-                            file_path.parent.mkdir(parents=True, exist_ok=True)
-                            file_path.write_text(content, encoding="utf-8")
-                            # Make scripts executable
-                            if filename.endswith((".sh", ".py")):
-                                file_path.chmod(0o755)
-                        logger.info(
-                            f"[CODE_BLOCK] Copied {len(skill_ref.package_files)} skill files to workdir",
-                            extra={
-                                "agent_id": str(self.config.agent_id),
-                                "skill_name": skill_ref.name,
-                                "workdir": str(workdir),
-                            },
-                        )
-            except Exception as e:
-                logger.warning(f"[CODE_BLOCK] Failed to copy skill files: {e}")
+        # Ensure skill package files are available for imports/scripts in this workspace.
+        self._sync_skill_package_files_to_workdir(workdir, log_prefix="[CODE_BLOCK]")
 
         for i, block in enumerate(code_blocks):
             # Send execution indicator to frontend
@@ -3493,11 +3548,30 @@ class BaseAgent:
             },
         )
 
+        success = state.termination_reason in ["final_answer_provided"]
+        error_message: Optional[str] = None
+        if not success:
+            if state.errors:
+                error_message = state.errors[-1].error_message
+            elif state.termination_reason == "max_execution_retries_exceeded":
+                error_message = "Tool execution failed after maximum retries"
+            elif state.termination_reason == "max_parse_retries_exceeded":
+                error_message = "Tool call parsing failed after maximum retries"
+            elif state.termination_reason == "max_rounds_reached":
+                error_message = f"Max conversation rounds reached ({state.max_rounds})"
+            elif state.termination_reason == "llm_failure":
+                error_message = "LLM request failed during recovery conversation"
+            elif state.termination_reason:
+                error_message = f"Conversation terminated: {state.termination_reason}"
+            else:
+                error_message = "Conversation terminated without final answer"
+
         return {
-            "success": state.termination_reason in ["final_answer_provided"],
+            "success": success,
             "output": round_output if state.is_terminated else "Incomplete",
             "messages": messages,
             "state": state,
+            "error": error_message,
             "error_recovery_stats": {
                 "total_errors": len(state.errors),
                 "recovered_errors": len([e for e in state.errors if e.is_recoverable]),

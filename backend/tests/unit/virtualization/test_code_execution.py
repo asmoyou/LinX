@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from virtualization.container_manager import ContainerStatus
 from virtualization.code_execution_sandbox import (
     CodeExecutionSandbox,
     ExecutionResult,
@@ -256,7 +257,63 @@ class TestCodeExecutionSandbox:
         config = kwargs["config"]
         assert str(workspace_root.resolve()) in config.volume_mounts
         assert config.volume_mounts[str(workspace_root.resolve())] == "/workspace"
+        assert config.network_disabled is True
+        assert config.network_mode == "none"
         sandbox.container_manager.start_container.assert_called_once_with("container-123")
+
+    @pytest.mark.asyncio
+    async def test_create_sandbox_enables_bridge_network_when_requested(self):
+        """Network-enabled sandboxes should use Docker bridge network."""
+        sandbox = CodeExecutionSandbox()
+        sandbox.container_manager = MagicMock()
+        sandbox.container_manager.create_container.return_value = "container-123"
+
+        execution_id = "12345678-1234-5678-1234-567812345678"
+        await sandbox._create_sandbox(execution_id, network_enabled=True)
+
+        _, kwargs = sandbox.container_manager.create_container.call_args
+        config = kwargs["config"]
+        assert config.network_disabled is False
+        assert config.network_mode == "bridge"
+
+    @pytest.mark.asyncio
+    async def test_execute_code_reuses_existing_sandbox(self):
+        """When existing sandbox ID is provided, do not create/destroy new one."""
+        sandbox = CodeExecutionSandbox()
+        sandbox.container_manager = MagicMock()
+        sandbox.container_manager.get_container_status.return_value = ContainerStatus.RUNNING
+        sandbox._create_sandbox = MagicMock()
+        sandbox._destroy_sandbox = MagicMock()
+        sandbox.dependency_manager = None
+        sandbox.code_validator = MagicMock()
+        sandbox.code_validator.validate_code.return_value = ValidationResult(
+            safe=True,
+            issues=[],
+            warnings=[],
+        )
+
+        async def _fake_inject(*args, **kwargs):
+            return ("/workspace/code.py", "/workspace")
+
+        async def _fake_run(*args, **kwargs):
+            return {"output": "ok", "error": "", "return_value": None}
+
+        sandbox._inject_code = _fake_inject
+        sandbox._run_code = _fake_run
+
+        result = await sandbox.execute_code(
+            code="print('ok')",
+            language="python",
+            context={
+                "existing_sandbox_id": "session-sandbox-1",
+                "workspace_root": "/tmp/agent_sessions/test-session",
+            },
+        )
+
+        assert result.success is True
+        assert result.status == ExecutionStatus.COMPLETED
+        sandbox._create_sandbox.assert_not_called()
+        sandbox._destroy_sandbox.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_execute_safe_code(self):

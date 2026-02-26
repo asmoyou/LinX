@@ -187,6 +187,7 @@ class SkillExecutor:
                 skill_md_content=getattr(skill_info, 'skill_md_content', None),
                 storage_path=skill_info.storage_path,
                 manifest=skill_info.manifest,
+                package_files=getattr(skill_info, "package_files", None),
             )
 
             # Check if skill has executable code

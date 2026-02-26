@@ -13,7 +13,9 @@ References:
 """
 
 import logging
-from typing import Any, Dict, Optional
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from langchain_core.tools import BaseTool
@@ -58,6 +60,41 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
     
     # Use model_config instead of Config class
     model_config = {"arbitrary_types_allowed": True}
+
+    @staticmethod
+    def _sanitize_skill_dir(skill_name: str) -> str:
+        """Normalize skill name to a safe directory name."""
+        candidate = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(skill_name or "")).strip("._")
+        return candidate or "skill"
+
+    @classmethod
+    def _infer_skill_base_dir(
+        cls, skill_name: str, package_files: Optional[Dict[str, str]]
+    ) -> str:
+        """Infer workspace base directory for package files."""
+        if not package_files:
+            return "."
+
+        # Preferred: directory containing SKILL.md in package structure.
+        for rel_path in package_files:
+            path_obj = Path(rel_path)
+            if path_obj.name != "SKILL.md":
+                continue
+            if len(path_obj.parts) > 1:
+                return path_obj.parts[0]
+
+        top_level_dirs = {
+            Path(rel_path).parts[0]
+            for rel_path in package_files
+            if len(Path(rel_path).parts) > 1
+        }
+        if len(top_level_dirs) == 1:
+            only_dir = next(iter(top_level_dirs))
+            if only_dir.lower() not in {"scripts", "src", "lib", "docs"}:
+                return only_dir
+
+        # Legacy layout stores files directly in workspace root.
+        return "."
     
     def _run(self, skill_name: str) -> str:
         """Read skill documentation synchronously."""
@@ -84,14 +121,34 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
                 skill_id=skill_ref.skill_id,
                 skill_name=skill_ref.name,
                 skill_md_content=skill_ref.skill_md_content,
-                storage_path=skill_ref.storage_path,
+                storage_path=None,
                 manifest=skill_ref.manifest,
+                package_files=skill_ref.package_files or {},
             )
 
-            # Replace {baseDir} placeholders with relative path hint
-            # Since skill files are copied to workdir, {baseDir} should be "."
-            skill_md_cleaned = skill_ref.skill_md_content.replace('{baseDir}/', '')
-            skill_md_cleaned = skill_md_cleaned.replace('{baseDir}', '.')
+            package_files = skill_ref.package_files or {}
+            skill_base_dir = self._infer_skill_base_dir(skill_ref.name, package_files)
+
+            skill_md_source = skill_ref.skill_md_content or ""
+            if skill_base_dir == ".":
+                skill_md_cleaned = skill_md_source.replace("{baseDir}/", "")
+                skill_md_cleaned = skill_md_cleaned.replace("{baseDir}", ".")
+            else:
+                skill_md_cleaned = skill_md_source.replace(
+                    "{baseDir}/", f"{skill_base_dir}/"
+                )
+                skill_md_cleaned = skill_md_cleaned.replace("{baseDir}", skill_base_dir)
+
+            python_scripts: List[str] = sorted(
+                path for path in package_files if path.endswith(".py")
+            )
+            requirements_files: List[str] = sorted(
+                path for path in package_files if Path(path).name.startswith("requirements")
+            )
+            preferred_script = next(
+                (path for path in python_scripts if path.endswith("weather_helper.py")),
+                python_scripts[0] if python_scripts else None,
+            )
 
             # Format the skill documentation
             output = f"""# Skill: {skill_ref.name}
@@ -99,16 +156,51 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
 ## Description
 {skill_ref.description}
 
-## Documentation (SKILL.md)
+## Package Workspace Layout
+
+- Skill base directory: `{skill_base_dir}`
+- Use relative paths from workspace root, e.g. `{skill_base_dir}/scripts/...` (or `scripts/...` when base is `.`)
+
+"""
+
+            if preferred_script or requirements_files:
+                output += "## Execution Strategy (MANDATORY)\n\n"
+                output += "1. Run existing packaged scripts first; do NOT rewrite API logic first.\n"
+                if requirements_files:
+                    output += (
+                        f"2. If dependency is missing, install from `{requirements_files[0]}`.\n"
+                    )
+                else:
+                    output += "2. If dependency is missing, install required package(s) before rerun.\n"
+                output += "3. Only write custom code when packaged scripts are unusable.\n\n"
+                if requirements_files:
+                    output += f"```bash\npython3 -m pip install -r {requirements_files[0]}\n```\n\n"
+                if preferred_script:
+                    output += f"```bash\npython3 {preferred_script} --help\n```\n\n"
+                    output += (
+                        "Never hardcode placeholder API keys such as `your_api_key`; "
+                        "use environment variables expected by the script.\n\n"
+                    )
+
+            output += f"""## Documentation (SKILL.md)
 
 {skill_md_cleaned}
 
 """
-            
-            # Add extracted executable code blocks
+
+            # Add package files first so model can prioritize scripts/config over ad-hoc code.
+            if package_files:
+                output += "## Available Files in Skill Package\n\n"
+                for filename, content in sorted(package_files.items()):
+                    if Path(filename).name == "SKILL.md":
+                        continue
+                    if filename.endswith((".py", ".yaml", ".yml", ".json", ".txt", ".md")):
+                        output += f"### File: {filename}\n\n```text\n{content}\n```\n\n"
+
+            # Add extracted executable code blocks (reference/fallback).
             if skill_package.code_blocks:
-                output += "\n## Extracted Executable Code\n\n"
-                output += "The following code blocks have been extracted and are ready for execution:\n\n"
+                output += "\n## Extracted Code Blocks (Reference)\n\n"
+                output += "Use packaged scripts first; these blocks are fallback/reference.\n\n"
                 
                 for idx, code_block in enumerate(skill_package.code_blocks, 1):
                     if code_block.is_executable:
@@ -118,60 +210,15 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
                         if code_block.description:
                             output += f"\n**Description:** {code_block.description}"
                         output += f"\n\n```{code_block.language}\n{code_block.code}\n```\n\n"
-                
-                # Provide execution instructions
-                output += "\n## How to Execute This Code\n\n"
-                output += "**CRITICAL: All skill files are pre-loaded in the working directory!**\n\n"
-                output += "To execute code, simply output it as a markdown code block:\n\n"
-
-                python_code = skill_package.get_executable_code('python')
-                if python_code:
-                    output += """**For Python scripts in the skill package**, use RELATIVE paths:
-```bash
-python3 scripts/weather_helper.py current --location "Fuzhou"
-```
-
-**For inline Python code**:
-```python
-import requests
-# ... your code here ...
-print(result)
-```
-
-"""
-
-                bash_code = skill_package.get_executable_code('bash')
-                if bash_code:
-                    output += """**For Bash code**:
-```bash
-curl "https://api.example.com/..."
-```
-
-"""
-                output += "**IMPORTANT RULES:**\n"
-                output += "- Use RELATIVE paths like `scripts/xxx.py`, NOT absolute paths\n"
-                output += "- DO NOT use placeholders like `{baseDir}` or `/path/to/...`\n"
-                output += "- All skill files are ALREADY in the current working directory\n"
-                output += "- API keys and credentials are pre-configured in the environment\n"
-                output += "- Just output the code block - it will be executed automatically\n\n"
-            
-            # Add package files if available
-            if skill_ref.package_files:
-                output += "\n## Available Files in Skill Package\n\n"
-                for filename, content in skill_ref.package_files.items():
-                    # Only include relevant files (Python, YAML, JSON, TXT)
-                    if filename.endswith(('.py', '.yaml', '.yml', '.json', '.txt')):
-                        output += f"### File: {filename}\n\n```python\n{content}\n```\n\n"
             
             # Add execution note
             if skill_ref.has_scripts or skill_package.code_blocks:
                 output += "\n## Execution Rules\n\n"
                 output += "1. All skill files are PRE-LOADED in the working directory\n"
-                output += "2. Use RELATIVE paths: `python3 scripts/xxx.py` (NOT `/path/to/...`)\n"
-                output += "3. Output code as ```bash or ```python code blocks\n"
-                output += "4. The code will be executed automatically\n"
-                output += "5. DO NOT use {baseDir} placeholders - just use relative paths\n"
-                output += "6. API keys are pre-configured - just run the code\n"
+                output += "2. Use packaged script paths first (from file list above)\n"
+                output += "3. Install dependencies from requirements file when needed\n"
+                output += "4. Avoid placeholder API keys; rely on environment variables\n"
+                output += "5. Only fallback to ad-hoc code when packaged scripts fail\n"
             else:
                 output += "\n## Execution Note\n\nThis is a workflow/documentation skill. Follow the instructions to accomplish the task.\n"
             

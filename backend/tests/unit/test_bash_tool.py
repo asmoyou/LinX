@@ -337,6 +337,24 @@ class TestCreateBashTool:
         
         assert "failed" in result.lower() or "error" in result.lower()
 
+    def test_tool_injects_user_skill_env(self, monkeypatch):
+        """Bash tool should inject user skill env vars into command execution."""
+        import skill_library.skill_env_manager as env_module
+
+        class _FakeEnvManager:
+            def get_env_for_user(self, user_id):
+                return {"WEATHER_API_KEY": "test_key_123"}
+
+        monkeypatch.setattr(env_module, "get_skill_env_manager", lambda: _FakeEnvManager())
+
+        agent_id = uuid4()
+        user_id = uuid4()
+        tool = create_bash_tool(agent_id, user_id)
+
+        result = tool.func(command="echo $WEATHER_API_KEY")
+
+        assert "test_key_123" in result
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

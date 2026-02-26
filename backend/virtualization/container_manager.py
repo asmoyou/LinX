@@ -358,6 +358,8 @@ class ContainerManager:
             return True
 
         except DockerException as e:
+            if self._retry_start_after_network_recovery(container_id, e):
+                return True
             self.logger.error(
                 "Failed to start Docker container",
                 extra={
@@ -374,6 +376,119 @@ class ContainerManager:
                 extra={
                     "container_id": container_id,
                     "error": str(e),
+                },
+            )
+            self.containers[container_id]["status"] = ContainerStatus.FAILED.value
+            return False
+
+    def _ensure_network_exists(self, network_name: str) -> bool:
+        """Ensure a Docker network exists before container startup."""
+        if not self.docker_available or not self.docker_client:
+            return False
+
+        try:
+            self.docker_client.networks.get(network_name)
+            return True
+        except NotFound:
+            try:
+                self.logger.warning(
+                    "Docker network not found, creating it",
+                    extra={"network_name": network_name},
+                )
+                self.docker_client.networks.create(
+                    name=network_name,
+                    driver="bridge",
+                    check_duplicate=True,
+                    labels={
+                        "com.linx.managed": "true",
+                        "com.linx.type": "sandbox-network",
+                    },
+                )
+                self.logger.info(
+                    "Docker network created successfully",
+                    extra={"network_name": network_name},
+                )
+                return True
+            except DockerException as create_error:
+                self.logger.error(
+                    "Failed to create Docker network",
+                    extra={"network_name": network_name, "error": str(create_error)},
+                )
+                return False
+        except DockerException as lookup_error:
+            self.logger.error(
+                "Failed to inspect Docker network",
+                extra={"network_name": network_name, "error": str(lookup_error)},
+            )
+            return False
+
+    def _retry_start_after_network_recovery(
+        self, container_id: str, start_error: DockerException
+    ) -> bool:
+        """Retry container start once after creating missing Docker network."""
+        container_meta = self.containers.get(container_id)
+        if not container_meta:
+            return False
+
+        config = container_meta.get("config")
+        network_mode = getattr(config, "network_mode", None)
+        network_disabled = bool(getattr(config, "network_disabled", False))
+        error_message = str(start_error).lower()
+
+        if network_disabled or not network_mode:
+            return False
+        if network_mode in {"bridge", "host", "none"}:
+            return False
+        if "network" not in error_message or "not found" not in error_message:
+            return False
+
+        if not self._ensure_network_exists(network_mode):
+            return False
+
+        container = container_meta.get("docker_container")
+        if container is None:
+            return False
+
+        try:
+            self.logger.warning(
+                "Retrying container start after recovering missing network",
+                extra={
+                    "container_id": container_id,
+                    "network_mode": network_mode,
+                },
+            )
+            container.start()
+            container.reload()
+
+            if container.status != "running":
+                self.logger.error(
+                    "Container still failed after network recovery",
+                    extra={
+                        "container_id": container_id,
+                        "docker_status": container.status,
+                        "network_mode": network_mode,
+                    },
+                )
+                self.containers[container_id]["status"] = ContainerStatus.FAILED.value
+                return False
+
+            self.containers[container_id]["status"] = ContainerStatus.RUNNING.value
+            self.containers[container_id]["started_at"] = datetime.utcnow().isoformat()
+            self.logger.info(
+                "Container started after network recovery",
+                extra={
+                    "container_id": container_id,
+                    "network_mode": network_mode,
+                },
+            )
+            return True
+        except DockerException as retry_error:
+            self.logger.error(
+                "Retry start failed after network recovery",
+                extra={
+                    "container_id": container_id,
+                    "network_mode": network_mode,
+                    "error": str(retry_error),
                 },
             )
             self.containers[container_id]["status"] = ContainerStatus.FAILED.value

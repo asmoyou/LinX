@@ -84,7 +84,7 @@ class MissionExecutionConfigSchema(BaseModel):
     require_dependency_review_pass: bool = True
     max_rework_cycles: int = 2
     max_qa_cycles: int = 1
-    network_access: bool = False
+    network_access: bool = True
     max_concurrent_tasks: int = 3
     debug_mode: bool = False
     enable_team_blueprint: bool = True
