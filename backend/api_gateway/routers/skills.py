@@ -7,6 +7,7 @@ References:
 """
 
 import logging
+import json
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -50,6 +51,129 @@ def _get_minio_object_key(storage_path: str, bucket_name: str) -> str:
             object_key = parts[1]
     
     return object_key
+
+
+def _extract_tool_call_status(call: Any) -> Optional[str]:
+    """Extract status field from a tool-call record."""
+    if isinstance(call, dict):
+        value = call.get("status")
+    else:
+        value = getattr(call, "status", None)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _looks_like_agent_skill_failure_output(output_text: str) -> bool:
+    """Heuristic detection for agent outputs that clearly indicate execution failure."""
+    if not output_text:
+        return False
+    text = output_text.lower()
+    failure_signals = (
+        "cannot",
+        "can't",
+        "unable to",
+        "could not",
+        "failed to",
+        "not found",
+        "not available",
+        "missing",
+        "permission denied",
+        "no such file",
+        "无法",
+        "不能",
+        "未能",
+        "失败",
+        "无法访问",
+        "无法定位",
+        "无法完成",
+        "当前环境无法",
+        "请检查",
+    )
+    return any(signal in text for signal in failure_signals)
+
+
+def _normalize_agent_skill_test_outcome(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize agent execution result into a reliable pass/fail outcome."""
+    output_text = str(result.get("output") or "")
+    tool_calls = result.get("tool_calls") or []
+    successful_tool_calls = 0
+    if isinstance(tool_calls, list):
+        successful_tool_calls = sum(
+            1 for call in tool_calls if _extract_tool_call_status(call) == "success"
+        )
+
+    reported_success = bool(result.get("success", False))
+    has_error = bool(result.get("error"))
+    looks_like_failure = _looks_like_agent_skill_failure_output(output_text)
+    semantic_failure = looks_like_failure and successful_tool_calls == 0
+    effective_success = reported_success and not has_error and not semantic_failure
+    effective_error = result.get("error") or (output_text if semantic_failure else None)
+
+    return {
+        "effective_success": effective_success,
+        "effective_error": effective_error,
+        "output_text": output_text,
+        "reported_success": reported_success,
+        "semantic_failure": semantic_failure,
+        "successful_tool_calls": successful_tool_calls,
+    }
+
+
+def _stringify_preview(value: Any, max_chars: int = 500) -> str:
+    """Render value as a compact preview string."""
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple)):
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    else:
+        text = str(value)
+    return text if len(text) <= max_chars else text[:max_chars] + "..."
+
+
+def _extract_tool_call_field(call: Any, field_name: str, default: Any = None) -> Any:
+    """Extract one field from dict/object tool-call representations."""
+    if isinstance(call, dict):
+        return call.get(field_name, default)
+    return getattr(call, field_name, default)
+
+
+def _serialize_tool_calls_for_response(tool_calls: Any) -> List[Dict[str, Any]]:
+    """Serialize internal tool-call records into JSON-safe response payload."""
+    if not isinstance(tool_calls, list):
+        return []
+
+    steps: List[Dict[str, Any]] = []
+    for index, call in enumerate(tool_calls, start=1):
+        tool_name = (
+            _extract_tool_call_field(call, "tool_name")
+            or _extract_tool_call_field(call, "tool")
+            or "unknown"
+        )
+        status = _extract_tool_call_status(call) or "unknown"
+        arguments = _extract_tool_call_field(call, "arguments", {})
+        if not isinstance(arguments, dict):
+            arguments = {}
+        timestamp = _extract_tool_call_field(call, "timestamp")
+        if hasattr(timestamp, "isoformat"):
+            timestamp = timestamp.isoformat()
+        elif timestamp is not None:
+            timestamp = str(timestamp)
+
+        steps.append(
+            {
+                "step": index,
+                "round_number": _extract_tool_call_field(call, "round_number"),
+                "retry_number": _extract_tool_call_field(call, "retry_number"),
+                "tool_name": str(tool_name),
+                "status": status,
+                "arguments": arguments,
+                "error": _extract_tool_call_field(call, "error"),
+                "result_preview": _stringify_preview(_extract_tool_call_field(call, "result")),
+                "timestamp": timestamp,
+            }
+        )
+    return steps
 
 
 # Request/Response Models
@@ -824,6 +948,7 @@ async def test_skill(
     inputs: Optional[Dict[str, Any]] = Body(None),
     natural_language_input: Optional[str] = Body(None),
     agent_id: Optional[str] = Body(None),
+    stream: bool = Query(default=False),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Test skill execution.
@@ -836,6 +961,7 @@ async def test_skill(
         inputs: Input parameters for langchain_tool (structured)
         natural_language_input: Natural language input for agent_skill
         agent_id: Agent ID to execute the skill (agent_skill only)
+        stream: Enable SSE streaming for agent_skill testing
         current_user: Authenticated user
         
     Returns:
@@ -888,10 +1014,16 @@ async def test_skill(
                     ExecutionProfile,
                     is_agent_test_chat_unified_runtime_enabled,
                 )
+                from agent_framework.session_manager import get_session_manager
                 from llm_providers.custom_openai_provider import CustomOpenAIChat
                 from database.connection import get_db_session
                 from llm_providers.db_manager import ProviderDBManager
                 from api_gateway.routers.agents import _resolve_model_context_window
+
+                current_user_uuid = UUID(current_user.user_id)
+                session_mgr = None
+                conversation_session = None
+                session_cleanup_managed_by_stream = False
 
                 try:
                     agent_uuid = UUID(agent_id)
@@ -918,7 +1050,7 @@ async def test_skill(
                     agent_id=agent_uuid,
                     name=agent_info.name,
                     agent_type=agent_info.agent_type,
-                    owner_user_id=UUID(current_user.user_id),
+                    owner_user_id=current_user_uuid,
                     capabilities=capabilities,
                     access_level=agent_info.access_level or "private",
                     allowed_knowledge=agent_info.allowed_knowledge or [],
@@ -979,21 +1111,60 @@ async def test_skill(
 
                 await agent.initialize()
 
+                # Skill testing requires a real workspace root so read_skill can
+                # materialize package files under .skills/<skill_name>/...
+                session_mgr = get_session_manager()
+                conversation_session, _ = await session_mgr.get_or_create_session(
+                    agent_id=agent_uuid,
+                    user_id=current_user_uuid,
+                    use_sandbox=True,
+                )
+                if not conversation_session.use_sandbox or not conversation_session.sandbox_id:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            "Sandbox container is unavailable for skill testing. "
+                            "Refusing to run on host to avoid environment pollution."
+                        ),
+                    )
+                synced_skill_files = agent._sync_skill_package_files_to_workdir(
+                    conversation_session.workdir,
+                    log_prefix="[SKILL_TEST_SYNC]",
+                )
+                logger.info(
+                    "Prepared skill test workspace",
+                    extra={
+                        "skill_id": skill_id,
+                        "agent_id": agent_id,
+                        "session_id": conversation_session.session_id,
+                        "workdir": str(conversation_session.workdir),
+                        "sandbox_id": conversation_session.sandbox_id,
+                        "synced_skill_files": synced_skill_files,
+                    },
+                )
+                logger.info(
+                    "Skill test will run in sandbox container",
+                    extra={
+                        "skill_id": skill_id,
+                        "agent_id": agent_id,
+                        "sandbox_id": conversation_session.sandbox_id,
+                        "session_id": conversation_session.session_id,
+                    },
+                )
+
                 task_description = f"""You are testing the agent skill "{skill.name}".
 
 Skill description: {skill.description}
 User request: {natural_language_input}
 
 Requirements:
-1. Use the loaded skill documentation to solve the request.
-2. Execute required tools/code when needed.
+1. First call read_skill for "{skill.name}" before running any skill files.
+2. Execute required tools/code using files under .skills/<skill_name>/ in the workspace.
 3. Return concrete execution results and any errors clearly.
 """
-
-                start_time = time.time()
                 exec_context = ExecutionContext(
                     agent_id=agent_uuid,
-                    user_id=UUID(current_user.user_id),
+                    user_id=current_user_uuid,
                     user_role=current_user.role,
                     task_description=task_description,
                     additional_context={"execution_context_tag": "skill_test_session"},
@@ -1004,10 +1175,233 @@ Requirements:
                     execute_kwargs["execution_profile"] = ExecutionProfile.DEBUG_CHAT
 
                 executor = get_agent_executor()
+
+                def build_result_payload(execution_result: Dict[str, Any], execution_time: float) -> Dict[str, Any]:
+                    normalized_outcome = _normalize_agent_skill_test_outcome(execution_result)
+                    serialized_tool_calls = _serialize_tool_calls_for_response(
+                        execution_result.get("tool_calls")
+                    )
+                    trace_summary = {
+                        "total_steps": len(serialized_tool_calls),
+                        "successful_steps": sum(
+                            1 for item in serialized_tool_calls if item.get("status") == "success"
+                        ),
+                        "failed_steps": sum(
+                            1
+                            for item in serialized_tool_calls
+                            if item.get("status") not in {"success", "timeout"}
+                        ),
+                        "timeout_steps": sum(
+                            1 for item in serialized_tool_calls if item.get("status") == "timeout"
+                        ),
+                    }
+
+                    if (
+                        normalized_outcome["reported_success"]
+                        and normalized_outcome["semantic_failure"]
+                    ):
+                        logger.warning(
+                            "Agent reported success but output indicates failure; coercing to failed test",
+                            extra={
+                                "skill_id": skill_id,
+                                "agent_id": agent_id,
+                                "successful_tool_calls": normalized_outcome["successful_tool_calls"],
+                            },
+                        )
+
+                    return {
+                        "success": normalized_outcome["effective_success"],
+                        "input": natural_language_input,
+                        "agent_id": str(agent_id),
+                        "agent_name": agent_info.name,
+                        "output": normalized_outcome["output_text"],
+                        "error": normalized_outcome["effective_error"],
+                        "execution_time": execution_time,
+                        "mode": "agent_execution",
+                        "execution_trace": {
+                            "session_id": conversation_session.session_id,
+                            "sandbox_id": conversation_session.sandbox_id,
+                            "workspace_root": "/workspace",
+                            "synced_skill_files": synced_skill_files,
+                            "summary": trace_summary,
+                            "tool_calls": serialized_tool_calls,
+                        },
+                    }
+
+                if stream:
+                    from fastapi.responses import StreamingResponse
+                    import queue
+                    import threading
+
+                    session_cleanup_managed_by_stream = True
+
+                    async def generate_stream():
+                        start_time = time.time()
+                        token_queue: queue.Queue = queue.Queue()
+                        result_holder: List[Optional[Dict[str, Any]]] = [None]
+                        error_holder: List[Optional[str]] = [None]
+
+                        async def cleanup_stream_session() -> None:
+                            if not session_mgr or not conversation_session:
+                                return
+                            try:
+                                ended = await session_mgr.end_session(
+                                    conversation_session.session_id,
+                                    current_user_uuid,
+                                )
+                                if not ended:
+                                    logger.warning(
+                                        "Failed to end streamed skill test session cleanly",
+                                        extra={
+                                            "session_id": conversation_session.session_id,
+                                            "agent_id": agent_id,
+                                        },
+                                    )
+                            except Exception as session_error:
+                                logger.warning(
+                                    "Failed to cleanup streamed skill test session: %s",
+                                    session_error,
+                                    extra={
+                                        "session_id": conversation_session.session_id,
+                                        "agent_id": agent_id,
+                                    },
+                                )
+
+                        def stream_callback(token_data: Any):
+                            token_queue.put(token_data)
+
+                        def execute_agent_with_stream():
+                            try:
+                                result_holder[0] = executor.execute(
+                                    agent,
+                                    exec_context,
+                                    session_workdir=conversation_session.workdir,
+                                    container_id=conversation_session.sandbox_id,
+                                    stream_callback=stream_callback,
+                                    **execute_kwargs,
+                                )
+                            except Exception as execute_error:
+                                error_holder[0] = str(execute_error)
+                            finally:
+                                token_queue.put(None)
+
+                        worker_thread = threading.Thread(target=execute_agent_with_stream)
+                        worker_thread.start()
+
+                        try:
+                            yield (
+                                "data: "
+                                + json.dumps(
+                                    {
+                                        "type": "session",
+                                        "session_id": conversation_session.session_id,
+                                        "sandbox_id": conversation_session.sandbox_id,
+                                        "workspace_root": "/workspace",
+                                        "synced_skill_files": synced_skill_files,
+                                    }
+                                )
+                                + "\n\n"
+                            )
+
+                            while True:
+                                try:
+                                    token_data = await asyncio.to_thread(token_queue.get, True, 0.1)
+                                except queue.Empty:
+                                    if not worker_thread.is_alive():
+                                        break
+                                    continue
+
+                                if token_data is None:
+                                    break
+
+                                if isinstance(token_data, tuple):
+                                    token, content_type = token_data
+                                else:
+                                    token = token_data
+                                    content_type = "content"
+
+                                yield (
+                                    "data: "
+                                    + json.dumps(
+                                        {"type": str(content_type), "content": str(token)}
+                                    )
+                                    + "\n\n"
+                                )
+
+                            await asyncio.to_thread(worker_thread.join, 5)
+
+                            if error_holder[0]:
+                                yield (
+                                    "data: "
+                                    + json.dumps({"type": "error", "content": error_holder[0]})
+                                    + "\n\n"
+                                )
+                                yield (
+                                    "data: "
+                                    + json.dumps({"type": "done", "success": False})
+                                    + "\n\n"
+                                )
+                                return
+
+                            if result_holder[0] is None:
+                                yield (
+                                    "data: "
+                                    + json.dumps(
+                                        {
+                                            "type": "error",
+                                            "content": "Stream ended without execution result",
+                                        }
+                                    )
+                                    + "\n\n"
+                                )
+                                yield (
+                                    "data: "
+                                    + json.dumps({"type": "done", "success": False})
+                                    + "\n\n"
+                                )
+                                return
+
+                            result_payload = build_result_payload(
+                                result_holder[0],
+                                time.time() - start_time,
+                            )
+                            yield (
+                                "data: "
+                                + json.dumps(
+                                    {
+                                        "type": "final_result",
+                                        "result": result_payload,
+                                    }
+                                )
+                                + "\n\n"
+                            )
+                            yield (
+                                "data: "
+                                + json.dumps(
+                                    {"type": "done", "success": bool(result_payload.get("success"))}
+                                )
+                                + "\n\n"
+                            )
+                        finally:
+                            await cleanup_stream_session()
+
+                    return StreamingResponse(
+                        generate_stream(),
+                        media_type="text/event-stream",
+                        headers={
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive",
+                            "X-Accel-Buffering": "no",
+                        },
+                    )
+
+                start_time = time.time()
                 result = await asyncio.to_thread(
                     executor.execute,
                     agent,
                     exec_context,
+                    session_workdir=conversation_session.workdir,
+                    container_id=conversation_session.sandbox_id,
                     **execute_kwargs,
                 )
                 execution_time = time.time() - start_time
@@ -1021,17 +1415,7 @@ Requirements:
                     },
                 )
 
-                return {
-                    "success": result.get("success", False),
-                    "input": natural_language_input,
-                    "agent_id": str(agent_id),
-                    "agent_name": agent_info.name,
-                    "output": result.get("output", ""),
-                    "error": result.get("error"),
-                    "execution_time": execution_time,
-                    "mode": "agent_execution",
-                }
-
+                return build_result_payload(result, execution_time)
             except HTTPException:
                 raise
             except Exception as e:
@@ -1044,6 +1428,34 @@ Requirements:
                     "execution_time": 0.0,
                     "mode": "agent_execution",
                 }
+            finally:
+                if (
+                    session_mgr
+                    and conversation_session
+                    and not session_cleanup_managed_by_stream
+                ):
+                    try:
+                        ended = await session_mgr.end_session(
+                            conversation_session.session_id,
+                            current_user_uuid,
+                        )
+                        if not ended:
+                            logger.warning(
+                                "Failed to end skill test session cleanly",
+                                extra={
+                                    "session_id": conversation_session.session_id,
+                                    "agent_id": agent_id,
+                                },
+                            )
+                    except Exception as session_error:
+                        logger.warning(
+                            "Failed to cleanup skill test session: %s",
+                            session_error,
+                            extra={
+                                "session_id": conversation_session.session_id,
+                                "agent_id": agent_id,
+                            },
+                        )
         
         # Handle langchain_tool with structured testing
         elif skill.skill_type == "langchain_tool":

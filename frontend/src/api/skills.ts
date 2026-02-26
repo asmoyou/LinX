@@ -67,6 +67,24 @@ export interface UpdateSkillRequest {
   dependencies?: string[];
 }
 
+export interface SkillTestRequest {
+  inputs?: Record<string, any>;
+  natural_language_input?: string;
+  agent_id?: string;
+}
+
+export interface SkillTestStreamChunk {
+  type: string;
+  content?: string;
+  result?: any;
+  success?: boolean;
+  session_id?: string;
+  sandbox_id?: string;
+  workspace_root?: string;
+  synced_skill_files?: number;
+  [key: string]: any;
+}
+
 export const skillsApi = {
   /**
    * Get all skills
@@ -165,14 +183,107 @@ export const skillsApi = {
    */
   async testSkill(
     skillId: string,
-    params: { 
-      inputs?: Record<string, any>; 
-      natural_language_input?: string; 
-      agent_id?: string;
-    }
+    params: SkillTestRequest
   ): Promise<any> {
     const response = await apiClient.post(`/skills/${skillId}/test`, params);
     return response.data;
+  },
+
+  /**
+   * Test agent_skill execution with streaming SSE events.
+   */
+  async testSkillStream(
+    skillId: string,
+    params: SkillTestRequest,
+    onChunk: (chunk: SkillTestStreamChunk) => void,
+    onError?: (error: string) => void,
+    onComplete?: () => void,
+    signal?: AbortSignal
+  ): Promise<void> {
+    try {
+      const { useAuthStore } = await import('../stores/authStore');
+      const token = useAuthStore.getState().token;
+
+      const url = `${apiClient.defaults.baseURL}/skills/${skillId}/test?stream=true`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Accept': 'text/event-stream',
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(params),
+        signal,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorMessage = 'Failed to test skill';
+
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.message || errorData.detail || errorMessage;
+        } catch {
+          errorMessage = errorText || errorMessage;
+        }
+
+        if (onError) onError(errorMessage);
+        throw new Error(errorMessage);
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) {
+        const error = 'No response body';
+        if (onError) onError(error);
+        throw new Error(error);
+      }
+
+      try {
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            if (onComplete) onComplete();
+            break;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) {
+              continue;
+            }
+            try {
+              const data = JSON.parse(line.slice(6));
+              onChunk(data);
+            } catch (e) {
+              console.error('Failed to parse skill SSE data:', line, e);
+            }
+          }
+        }
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          return;
+        }
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        if (onError) onError(errorMessage);
+        throw error;
+      } finally {
+        reader.releaseLock();
+      }
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return;
+      }
+      const errorMessage = error?.message || 'Failed to test skill';
+      if (onError) onError(errorMessage);
+      throw error;
+    }
   },
 
   /**
