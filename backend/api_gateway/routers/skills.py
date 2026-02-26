@@ -285,6 +285,20 @@ class RegisterDefaultsResponse(BaseModel):
     message: str
 
 
+class SkillsOverviewStatsResponse(BaseModel):
+    """Aggregated statistics for the skills library."""
+
+    total_skills: int
+    active_skills: int
+    inactive_skills: int
+    agent_skills: int
+    langchain_tool_skills: int
+    skills_with_dependencies: int
+    total_execution_count: int
+    average_execution_time: float
+    last_executed_at: Optional[str] = None
+
+
 @router.get("", response_model=List[SkillResponse])
 async def list_skills(
     limit: int = Query(100, ge=1, le=1000),
@@ -503,6 +517,22 @@ async def delete_env_var(
     except Exception as e:
         logger.error(f"Failed to delete env var: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete environment variable")
+
+
+@router.get("/stats/overview", response_model=SkillsOverviewStatsResponse)
+async def get_skills_overview_stats(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Get aggregated overview metrics for all skills."""
+    try:
+        from skill_library.skill_model import get_skill_model
+
+        skill_model = get_skill_model()
+        return skill_model.get_overview_stats()
+
+    except Exception as e:
+        logger.error(f"Failed to get skills overview stats: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get skills overview stats")
 
 
 @router.get("/{skill_id}", response_model=SkillResponse)

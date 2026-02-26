@@ -6,8 +6,10 @@ References:
 """
 
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
+
+from sqlalchemy import case, func
 
 from database.connection import get_db_session
 from database.models import Agent, Skill
@@ -158,6 +160,62 @@ class SkillModel:
         """
         with get_db_session() as session:
             return session.query(Skill).limit(limit).offset(offset).all()
+
+    def get_overview_stats(self) -> Dict[str, Any]:
+        """Get aggregated overview statistics for the skills library."""
+        with get_db_session() as session:
+            aggregate_row = (
+                session.query(
+                    func.count(Skill.skill_id).label("total_skills"),
+                    func.coalesce(
+                        func.sum(case((Skill.is_active.is_(True), 1), else_=0)),
+                        0,
+                    ).label("active_skills"),
+                    func.coalesce(
+                        func.sum(case((Skill.is_active.is_(False), 1), else_=0)),
+                        0,
+                    ).label("inactive_skills"),
+                    func.coalesce(
+                        func.sum(case((Skill.skill_type == "agent_skill", 1), else_=0)),
+                        0,
+                    ).label("agent_skills"),
+                    func.coalesce(
+                        func.sum(case((Skill.skill_type == "langchain_tool", 1), else_=0)),
+                        0,
+                    ).label("langchain_tool_skills"),
+                    func.coalesce(func.sum(Skill.execution_count), 0).label("total_execution_count"),
+                    func.max(Skill.last_executed_at).label("last_executed_at"),
+                )
+                .one()
+            )
+
+            avg_execution_time = (
+                session.query(func.avg(Skill.average_execution_time))
+                .filter(Skill.execution_count > 0)
+                .filter(Skill.average_execution_time.isnot(None))
+                .scalar()
+                or 0.0
+            )
+
+            dependency_rows = session.query(Skill.dependencies).all()
+            skills_with_dependencies = sum(
+                1
+                for (dependencies,) in dependency_rows
+                if isinstance(dependencies, list) and len(dependencies) > 0
+            )
+
+            last_executed_at = aggregate_row.last_executed_at
+            return {
+                "total_skills": int(aggregate_row.total_skills or 0),
+                "active_skills": int(aggregate_row.active_skills or 0),
+                "inactive_skills": int(aggregate_row.inactive_skills or 0),
+                "agent_skills": int(aggregate_row.agent_skills or 0),
+                "langchain_tool_skills": int(aggregate_row.langchain_tool_skills or 0),
+                "skills_with_dependencies": skills_with_dependencies,
+                "total_execution_count": int(aggregate_row.total_execution_count or 0),
+                "average_execution_time": float(avg_execution_time),
+                "last_executed_at": last_executed_at.isoformat() if last_executed_at else None,
+            }
 
     def update_skill(
         self,

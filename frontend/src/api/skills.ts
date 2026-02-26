@@ -85,6 +85,18 @@ export interface SkillTestStreamChunk {
   [key: string]: any;
 }
 
+export interface SkillOverviewStats {
+  total_skills: number;
+  active_skills: number;
+  inactive_skills: number;
+  agent_skills: number;
+  langchain_tool_skills: number;
+  skills_with_dependencies: number;
+  total_execution_count: number;
+  average_execution_time: number;
+  last_executed_at?: string | null;
+}
+
 export const skillsApi = {
   /**
    * Get all skills
@@ -298,6 +310,14 @@ export const skillsApi = {
    */
   async deactivateSkill(skillId: string): Promise<void> {
     await apiClient.post(`/skills/${skillId}/deactivate`);
+  },
+
+  /**
+   * Get skills library overview statistics
+   */
+  async getOverviewStats(): Promise<SkillOverviewStats> {
+    const response = await apiClient.get<SkillOverviewStats>('/skills/stats/overview');
+    return response.data;
   },
 
   /**

@@ -1,17 +1,50 @@
 import { useState, useEffect } from 'react';
-import { Plus, Search, RefreshCw, Package, Layers } from 'lucide-react';
+import { Plus, Search, RefreshCw, Package, Layers, Power, BarChart3 } from 'lucide-react';
 import SkillCardV2 from '@/components/skills/SkillCardV2';
 import AddSkillModalV2 from '@/components/skills/AddSkillModalV2';
 import EditSkillModal from '@/components/skills/EditSkillModal';
 import CodePreviewModal from '@/components/skills/CodePreviewModal';
 import AgentSkillViewer from '@/components/skills/AgentSkillViewer';
 import SkillTesterModal from '@/components/skills/SkillTesterModal';
-import { skillsApi, type Skill, type CreateSkillRequest } from '@/api/skills';
+import { skillsApi, type Skill, type CreateSkillRequest, type SkillOverviewStats } from '@/api/skills';
 import { useTranslation } from 'react-i18next';
+
+const buildOverviewStatsFromSkills = (skills: Skill[]): SkillOverviewStats => {
+  const activeSkills = skills.filter((skill) => skill.is_active !== false).length;
+  const skillsWithDependencies = skills.filter(
+    (skill) => Array.isArray(skill.dependencies) && skill.dependencies.length > 0
+  ).length;
+  const totalExecutionCount = skills.reduce(
+    (total, skill) => total + (skill.execution_count ?? 0),
+    0
+  );
+  const averageExecutionTimeSamples = skills.filter(
+    (skill) => (skill.execution_count ?? 0) > 0 && typeof skill.average_execution_time === 'number'
+  );
+  const averageExecutionTime = averageExecutionTimeSamples.length
+    ? averageExecutionTimeSamples.reduce(
+      (total, skill) => total + (skill.average_execution_time ?? 0),
+      0
+    ) / averageExecutionTimeSamples.length
+    : 0;
+
+  return {
+    total_skills: skills.length,
+    active_skills: activeSkills,
+    inactive_skills: Math.max(skills.length - activeSkills, 0),
+    agent_skills: skills.filter((skill) => skill.skill_type === 'agent_skill').length,
+    langchain_tool_skills: skills.filter((skill) => skill.skill_type === 'langchain_tool').length,
+    skills_with_dependencies: skillsWithDependencies,
+    total_execution_count: totalExecutionCount,
+    average_execution_time: averageExecutionTime,
+    last_executed_at: null,
+  };
+};
 
 export default function Skills() {
   const { t } = useTranslation();
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [overviewStats, setOverviewStats] = useState<SkillOverviewStats | null>(null);
   const [filteredSkills, setFilteredSkills] = useState<Skill[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -43,9 +76,28 @@ export default function Skills() {
   const loadSkills = async () => {
     try {
       setIsLoading(true);
-      const data = await skillsApi.getAll();
-      setSkills(data);
-      setFilteredSkills(data);
+      const [skillsResult, overviewStatsResult] = await Promise.allSettled([
+        skillsApi.getAll(),
+        skillsApi.getOverviewStats(),
+      ]);
+
+      if (overviewStatsResult.status === 'fulfilled') {
+        setOverviewStats(overviewStatsResult.value);
+      }
+
+      if (skillsResult.status === 'fulfilled') {
+        const data = skillsResult.value;
+        setSkills(data);
+        setFilteredSkills(data);
+
+        if (overviewStatsResult.status !== 'fulfilled') {
+          console.warn('Failed to load skills overview stats, falling back to list-derived stats.');
+          setOverviewStats(buildOverviewStatsFromSkills(data));
+        }
+        return;
+      }
+
+      throw skillsResult.reason;
     } catch (error) {
       console.error('Failed to load skills:', error);
     } finally {
@@ -123,6 +175,14 @@ export default function Skills() {
     setIsTesterModalOpen(true);
   };
 
+  const resolvedOverviewStats = overviewStats ?? buildOverviewStatsFromSkills(skills);
+  const formattedCardValues = {
+    total: resolvedOverviewStats.total_skills.toLocaleString(),
+    active: resolvedOverviewStats.active_skills.toLocaleString(),
+    executions: resolvedOverviewStats.total_execution_count.toLocaleString(),
+    dependencies: resolvedOverviewStats.skills_with_dependencies.toLocaleString(),
+  };
+
   return (
     <div>
       <div className="max-w-7xl mx-auto p-6 space-y-6">
@@ -167,35 +227,55 @@ export default function Skills() {
               <RefreshCw className={`w-5 h-5 ${isLoading ? 'animate-spin' : ''}`} />
             </button>
           </div>
+          <div className="mt-3 text-xs text-muted-foreground">
+            {t('skills.filteredResults')}: <span className="font-semibold text-foreground">{filteredSkills.length}</span>
+          </div>
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="glass-panel p-6 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-sm font-medium text-muted-foreground">{t('skills.totalSkills')}</div>
-              <Package className="w-5 h-5 text-primary/60" />
-            </div>
-            <div className="text-3xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
-              {skills.length}
-            </div>
-          </div>
-          <div className="glass-panel p-6 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-sm font-medium text-muted-foreground">{t('skills.filteredResults')}</div>
-              <Search className="w-5 h-5 text-primary/60" />
-            </div>
-            <div className="text-3xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
-              {filteredSkills.length}
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+          <div className="glass-panel px-4 py-3 rounded-xl border border-border/40 shadow-sm transition-all hover:border-primary/40 hover:shadow-md">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-medium text-muted-foreground mb-1">{t('skills.totalSkills')}</div>
+                <div className="text-2xl font-semibold text-foreground leading-none">{formattedCardValues.total}</div>
+              </div>
+              <div className="rounded-lg p-2 bg-primary/10 text-primary">
+                <Package className="w-4 h-4" />
+              </div>
             </div>
           </div>
-          <div className="glass-panel p-6 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-sm font-medium text-muted-foreground">{t('skills.withDependencies')}</div>
-              <Layers className="w-5 h-5 text-primary/60" />
+          <div className="glass-panel px-4 py-3 rounded-xl border border-border/40 shadow-sm transition-all hover:border-primary/40 hover:shadow-md">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-medium text-muted-foreground mb-1">{t('skills.active')}</div>
+                <div className="text-2xl font-semibold text-foreground leading-none">{formattedCardValues.active}</div>
+              </div>
+              <div className="rounded-lg p-2 bg-primary/10 text-primary">
+                <Power className="w-4 h-4" />
+              </div>
             </div>
-            <div className="text-3xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
-              {skills.filter((s) => s.dependencies && s.dependencies.length > 0).length}
+          </div>
+          <div className="glass-panel px-4 py-3 rounded-xl border border-border/40 shadow-sm transition-all hover:border-primary/40 hover:shadow-md">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-medium text-muted-foreground mb-1">{t('skills.executionCount')}</div>
+                <div className="text-2xl font-semibold text-foreground leading-none">{formattedCardValues.executions}</div>
+              </div>
+              <div className="rounded-lg p-2 bg-primary/10 text-primary">
+                <BarChart3 className="w-4 h-4" />
+              </div>
+            </div>
+          </div>
+          <div className="glass-panel px-4 py-3 rounded-xl border border-border/40 shadow-sm transition-all hover:border-primary/40 hover:shadow-md">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-medium text-muted-foreground mb-1">{t('skills.withDependencies')}</div>
+                <div className="text-2xl font-semibold text-foreground leading-none">{formattedCardValues.dependencies}</div>
+              </div>
+              <div className="rounded-lg p-2 bg-primary/10 text-primary">
+                <Layers className="w-4 h-4" />
+              </div>
             </div>
           </div>
         </div>
