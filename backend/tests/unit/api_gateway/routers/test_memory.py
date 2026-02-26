@@ -891,6 +891,35 @@ class TestMemoryConfigPayload:
         )
         assert payload["runtime"]["delete_timeout_seconds"] == 2.0
 
+    def test_payload_fact_extraction_limits_support_session_fields(self):
+        from api_gateway.routers.memory import _build_memory_config_payload
+
+        memory_section = {
+            "enhanced_memory": {
+                "fact_extraction": {
+                    "max_facts": 9,
+                    "max_agent_candidates": 2,
+                }
+            }
+        }
+
+        with patch(
+            "memory_system.embedding_service.resolve_embedding_settings",
+            return_value={
+                "provider": "embed-provider",
+                "model": "embed-model",
+                "dimension": 1024,
+                "provider_source": "memory.embedding.provider",
+                "model_source": "memory.embedding.model",
+                "dimension_source": "memory.embedding.dimension",
+            },
+        ):
+            payload = _build_memory_config_payload(memory_section, {}, {})
+
+        assert payload["fact_extraction"]["max_facts"] == 9
+        assert payload["fact_extraction"]["max_preference_facts"] == 9
+        assert payload["fact_extraction"]["max_agent_candidates"] == 2
+
 
 class TestMemoryConfigEndpoints:
     """Test GET/PUT memory config endpoint behavior."""

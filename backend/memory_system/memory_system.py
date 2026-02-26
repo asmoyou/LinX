@@ -96,6 +96,10 @@ class MemorySystem(MemorySystemInterface):
             "agent.",
         ),
     }
+    _PRE_EXTRACTED_SESSION_SIGNAL_TYPES = {
+        "user_preference",
+        "agent_memory_candidate",
+    }
 
     def __init__(self):
         """Initialize the Memory System."""
@@ -366,7 +370,7 @@ class MemorySystem(MemorySystemInterface):
             llm_cfg = {}
 
         self._fact_extraction_enabled = bool(fact_cfg.get("enabled", True))
-        self._fact_extraction_model_enabled = bool(fact_cfg.get("model_enabled", False))
+        self._fact_extraction_model_enabled = bool(fact_cfg.get("model_enabled", True))
         self._fact_extraction_provider = _cfg_text(
             fact_cfg.get("provider"),
             llm_cfg.get("default_provider"),
@@ -511,6 +515,44 @@ class MemorySystem(MemorySystemInterface):
             "source": self._truncate_text(source, max_chars=32),
         }
         return fact
+
+    def _is_pre_extracted_session_memory(self, memory: MemoryItem) -> bool:
+        metadata = memory.metadata or {}
+        if bool(metadata.get("skip_secondary_fact_extraction")):
+            return True
+        signal_type = str(metadata.get("signal_type") or "").strip().lower()
+        if signal_type in self._PRE_EXTRACTED_SESSION_SIGNAL_TYPES:
+            return True
+        source = str(metadata.get("source") or "").strip().lower()
+        return source in {
+            "agent_test_preference_extractor",
+            "agent_test_agent_candidate_extractor",
+        }
+
+    def _extract_structured_line_facts(self, memory: MemoryItem) -> List[Dict[str, Any]]:
+        facts: List[Dict[str, Any]] = []
+        for raw_line in str(memory.content or "").splitlines():
+            line = str(raw_line or "").strip()
+            if not line or "=" not in line:
+                continue
+            left, right = line.split("=", 1)
+            key = self._sanitize_fact_key(left)
+            value = self._truncate_text(right, max_chars=260)
+            if not key or not value:
+                continue
+            normalized = self._normalize_fact(
+                {
+                    "key": key,
+                    "value": value,
+                    "category": key.split(".", 1)[0],
+                    "importance": 0.72,
+                    "confidence": 0.86,
+                },
+                source="session_seed",
+            )
+            if normalized:
+                facts.append(normalized)
+        return facts
 
     def _is_fact_allowed_for_memory_type(self, memory_type: MemoryType, fact_key: str) -> bool:
         key = str(fact_key or "").strip().lower()
@@ -959,6 +1001,10 @@ class MemorySystem(MemorySystemInterface):
             fact = self._normalize_fact(raw_seed, source=raw_seed.get("source") or "seed")
             if fact:
                 normalized_seed.append(fact)
+
+        if self._is_pre_extracted_session_memory(memory):
+            seeded_facts = normalized_seed or self._extract_structured_line_facts(memory)
+            return self._filter_facts_for_memory_type(memory.memory_type, seeded_facts), []
 
         heuristic_facts = self._extract_heuristic_facts(memory)
         model_facts = self._extract_model_facts(memory) if self._fact_extraction_enabled else []

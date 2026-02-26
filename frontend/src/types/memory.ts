@@ -147,6 +147,8 @@ export type MemoryConfigFactExtraction = {
   model?: string;
   timeout_seconds?: number;
   max_facts?: number;
+  max_preference_facts?: number;
+  max_agent_candidates?: number;
   failure_backoff_seconds?: number;
   effective?: {
     provider?: string;

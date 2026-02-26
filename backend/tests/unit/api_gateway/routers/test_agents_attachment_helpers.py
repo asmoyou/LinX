@@ -1,6 +1,7 @@
 """Tests for agent attachment helper functions."""
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from fastapi import HTTPException
 
 from api_gateway.routers.agents import (
     FileReference,
+    _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL,
     _build_agent_metrics_from_task_rows,
     _build_audit_log_entries,
     _build_task_log_entries,
@@ -559,6 +561,172 @@ async def test_extract_session_memory_signals_runs_secondary_preference_recall(
     assert all(call["kwargs"]["response_format"]["type"] == "json_object" for call in fake_router.calls)
     assert any(item["key"] == "food_preference_like" and item["value"] == "黄焖鸡" for item in signals)
     assert candidates == []
+
+
+@pytest.mark.asyncio
+async def test_extract_session_memory_signals_uses_max_facts_and_agent_candidate_caps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRegistry:
+        def get_agent(self, _agent_id):  # noqa: ANN001
+            return SimpleNamespace(llm_provider="agent_provider", llm_model="agent-model")
+
+    class FakeConfig:
+        def get(self, key: str):  # noqa: ANN001
+            values = {
+                "memory.enhanced_memory.fact_extraction.provider": "memory_provider",
+                "memory.enhanced_memory.fact_extraction.model": "memory-model",
+                "memory.enhanced_memory.fact_extraction.max_facts": 2,
+                "memory.enhanced_memory.fact_extraction.max_agent_candidates": 2,
+                "llm.providers.memory_provider.models": {"chat": "memory-model"},
+            }
+            return values.get(key)
+
+    class FakeRouter:
+        async def generate(self, **kwargs):  # noqa: ANN003
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "user_preferences": [
+                            {
+                                "key": "food_preference_like",
+                                "value": "黄焖鸡",
+                                "persistent": True,
+                                "confidence": 0.95,
+                                "evidence_turns": [1],
+                            },
+                            {
+                                "key": "response_language",
+                                "value": "中文",
+                                "persistent": True,
+                                "confidence": 0.9,
+                                "evidence_turns": [1],
+                            },
+                            {
+                                "key": "response_style",
+                                "value": "简洁",
+                                "persistent": True,
+                                "confidence": 0.88,
+                                "evidence_turns": [1],
+                            },
+                        ],
+                        "agent_memory_candidates": [
+                            {
+                                "candidate_type": "sop",
+                                "title": "流程A",
+                                "summary": "先明确需求，再给出步骤和校验点。",
+                                "steps": ["明确需求", "执行方案"],
+                                "confidence": 0.9,
+                                "evidence_turns": [1],
+                            },
+                            {
+                                "candidate_type": "sop",
+                                "title": "流程B",
+                                "summary": "先检查上下文，再输出结果。",
+                                "steps": ["检查上下文", "输出结果"],
+                                "confidence": 0.86,
+                                "evidence_turns": [1],
+                            },
+                            {
+                                "candidate_type": "sop",
+                                "title": "流程C",
+                                "summary": "用于验证是否被截断。",
+                                "steps": ["步骤1", "步骤2"],
+                                "confidence": 0.85,
+                                "evidence_turns": [1],
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    monkeypatch.setattr("api_gateway.routers.agents.get_agent_registry", lambda: FakeRegistry())
+    monkeypatch.setattr("shared.config.get_config", lambda: FakeConfig())
+    monkeypatch.setattr("llm_providers.router.get_llm_provider", lambda: FakeRouter())
+
+    signals, candidates = await _extract_session_memory_signals_with_llm(
+        turns=[
+            {
+                "user_message": "我喜欢黄焖鸡，回答简洁，用中文。",
+                "agent_response": "收到",
+                "timestamp": "2026-02-25T10:00:00+00:00",
+            }
+        ],
+        agent_id="agent-1",
+        agent_name="小新2号",
+    )
+
+    assert len(signals) == 2
+    assert len(candidates) == 2
+
+
+@pytest.mark.asyncio
+async def test_extract_session_memory_signals_applies_failure_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRegistry:
+        def get_agent(self, _agent_id):  # noqa: ANN001
+            return SimpleNamespace(llm_provider="agent_provider", llm_model="agent-model")
+
+    class FakeConfig:
+        def get(self, key: str):  # noqa: ANN001
+            values = {
+                "memory.enhanced_memory.fact_extraction.provider": "memory_provider",
+                "memory.enhanced_memory.fact_extraction.model": "memory-model",
+                "memory.enhanced_memory.fact_extraction.failure_backoff_seconds": 10,
+                "llm.providers.memory_provider.models": {"chat": "memory-model"},
+            }
+            return values.get(key)
+
+    class FailingRouter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate(self, **kwargs):  # noqa: ANN003
+            self.calls += 1
+            raise RuntimeError("upstream unavailable")
+
+    router = FailingRouter()
+    backoff_key = "agent-backoff::"
+    _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL.pop(backoff_key, None)
+
+    monkeypatch.setattr("api_gateway.routers.agents.get_agent_registry", lambda: FakeRegistry())
+    monkeypatch.setattr("shared.config.get_config", lambda: FakeConfig())
+    monkeypatch.setattr("llm_providers.router.get_llm_provider", lambda: router)
+
+    signals_1, candidates_1 = await _extract_session_memory_signals_with_llm(
+        turns=[
+            {
+                "user_message": "我喜欢骑车。",
+                "agent_response": "收到",
+                "timestamp": "2026-02-25T10:00:00+00:00",
+            }
+        ],
+        agent_id="agent-backoff",
+        agent_name="小新2号",
+    )
+
+    first_call_count = router.calls
+    signals_2, candidates_2 = await _extract_session_memory_signals_with_llm(
+        turns=[
+            {
+                "user_message": "我也喜欢游泳。",
+                "agent_response": "收到",
+                "timestamp": "2026-02-25T10:01:00+00:00",
+            }
+        ],
+        agent_id="agent-backoff",
+        agent_name="小新2号",
+    )
+
+    assert signals_1 == []
+    assert candidates_1 == []
+    assert signals_2 == []
+    assert candidates_2 == []
+    assert router.calls == first_call_count
+    assert _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL.get(backoff_key, 0) > 0
+    _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL.pop(backoff_key, None)
 
 
 @pytest.mark.asyncio

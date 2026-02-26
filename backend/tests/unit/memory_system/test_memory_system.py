@@ -532,6 +532,38 @@ class TestMemoryStorage:
 
         assert facts == []
 
+    def test_collect_facts_skips_secondary_extraction_for_session_pre_extracted(self, memory_system):
+        """Session pre-extracted memories should reuse seed facts without secondary extraction."""
+        memory = MemoryItem(
+            content="user.preference.food_preference_like=黄焖鸡",
+            memory_type=MemoryType.USER_CONTEXT,
+            user_id="user123",
+            metadata={
+                "signal_type": "user_preference",
+                "skip_secondary_fact_extraction": True,
+                "facts": [
+                    {
+                        "key": "user.preference.food_preference_like",
+                        "value": "黄焖鸡",
+                        "category": "user_preference",
+                        "importance": 0.9,
+                        "confidence": 0.92,
+                        "source": "session_llm",
+                    }
+                ],
+            },
+        )
+
+        with patch.object(memory_system, "_extract_heuristic_facts") as heuristic_mock, patch.object(
+            memory_system, "_extract_model_facts"
+        ) as model_mock:
+            facts, _ = memory_system._collect_facts(memory)
+
+        assert len(facts) == 1
+        assert facts[0]["key"] == "user.preference.food_preference_like"
+        heuristic_mock.assert_not_called()
+        model_mock.assert_not_called()
+
     def test_fact_grounding_rejects_unsupported_user_inference(self, memory_system):
         """Grounding helper should reject inferred values absent from source text."""
         content = "User discussed: 我在学摄影，最近主要拍夜景，想提升构图。"

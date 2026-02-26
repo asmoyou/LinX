@@ -483,11 +483,13 @@ _MEMORY_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
     },
     "fact_extraction": {
         "enabled": True,
-        "model_enabled": False,
+        "model_enabled": True,
         "provider": "",
         "model": "",
         "timeout_seconds": 4,
         "max_facts": 8,
+        "max_preference_facts": 8,
+        "max_agent_candidates": 4,
         "failure_backoff_seconds": 60,
     },
     "runtime": {
@@ -507,6 +509,14 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
         else:
             merged[key] = value
     return merged
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
 
 
 def _resolve_provider_default_chat_model(llm_section: dict, provider: str) -> str:
@@ -576,6 +586,28 @@ def _build_memory_config_payload(
     embedding_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["embedding"], embedding_cfg)
     retrieval_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["retrieval"], retrieval_cfg)
     fact_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["fact_extraction"], fact_cfg)
+    fact_default_cfg = _MEMORY_RECOMMENDED_DEFAULTS["fact_extraction"]
+    max_facts = _coerce_positive_int(
+        fact_merged.get("max_facts"),
+        int(fact_default_cfg.get("max_facts", 8)),
+    )
+    configured_max_preference_facts = (
+        fact_cfg.get("max_preference_facts") if isinstance(fact_cfg, dict) else None
+    )
+    configured_max_agent_candidates = (
+        fact_cfg.get("max_agent_candidates") if isinstance(fact_cfg, dict) else None
+    )
+    max_preference_facts = _coerce_positive_int(
+        configured_max_preference_facts,
+        max_facts,
+    )
+    max_agent_candidates = _coerce_positive_int(
+        configured_max_agent_candidates,
+        int(fact_default_cfg.get("max_agent_candidates", 4)),
+    )
+    fact_merged["max_facts"] = max_facts
+    fact_merged["max_preference_facts"] = max_preference_facts
+    fact_merged["max_agent_candidates"] = max_agent_candidates
     runtime_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["runtime"], runtime_cfg)
     for key in _MEMORY_RUNTIME_KEYS:
         if key in memory_section:

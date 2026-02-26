@@ -13,6 +13,7 @@ import json
 import mimetypes
 import re
 import tempfile
+import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -978,8 +979,8 @@ _SESSION_MEMORY_CALLBACK_REGISTERED = False
 _SESSION_MEMORY_MAX_TURNS = 24
 _SESSION_MEMORY_MAX_TURNS_FOR_FLUSH = 16
 _SESSION_MEMORY_ITEM_MAX_CHARS = 320
-_SESSION_MEMORY_MAX_PREFERENCE_FACTS = 6
-_SESSION_MEMORY_MAX_AGENT_CANDIDATES = 3
+_SESSION_MEMORY_MAX_PREFERENCE_FACTS = 12
+_SESSION_MEMORY_MAX_AGENT_CANDIDATES = 4
 _SESSION_MEMORY_USER_SIGNAL_TYPE = "user_preference"
 _SESSION_MEMORY_AGENT_SIGNAL_TYPE = "agent_memory_candidate"
 _SESSION_MEMORY_AGENT_REVIEW_PENDING = "pending"
@@ -987,6 +988,8 @@ _SESSION_MEMORY_LLM_MIN_PREFERENCE_CONFIDENCE = 0.62
 _SESSION_MEMORY_LLM_MIN_AGENT_CONFIDENCE = 0.6
 _SESSION_MEMORY_LLM_PROMPT_MAX_CHARS = 14000
 _SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS = 4.0
+_SESSION_MEMORY_FAILURE_BACKOFF_SECONDS = 60.0
+_SESSION_MEMORY_EXTRACTION_FAIL_UNTIL: Dict[str, float] = {}
 _PERSISTENT_PREFERENCE_CUES = (
     "以后",
     "下次",
@@ -1331,30 +1334,38 @@ def _build_llm_memory_extraction_prompt(
         transcript = transcript[-_SESSION_MEMORY_LLM_PROMPT_MAX_CHARS :]
 
     prompt = f"""
-你是“记忆抽取器”。你要从一段会话中提取高价值记忆，输出必须是 JSON 对象，不要输出解释文字。
+你是“会话记忆抽取器”。你要从会话中提取高价值、可长期复用的记忆。输出必须是 JSON 对象，不要输出解释文字。
 
 Agent 名称: {agent_name or "-"}
 
 抽取目标:
-1. user_preferences: 只保留长期稳定、对未来任务有帮助的用户偏好。
-2. agent_memory_candidates: 只保留可复用的 Agent SOP/策略候选（用于后续人工审批）。
+1. user_preferences: 提取“用户画像事实”，不仅限于喜欢/不喜欢。
+2. agent_memory_candidates: 提取可跨场景复用的通用方法模板（后续人工审批）。
+
+user_preferences 可包含的画像要素（示例）:
+- 偏好/禁忌: food_preference_like, food_preference_avoid, communication_style_preference
+- 经历/背景: experience_*
+- 能力/擅长: skill_*, capability_*
+- 长期目标: goal_*
+- 稳定约束: allergy_*, constraint_*, budget_preference_*
+- 习惯/决策方式: habit_*, decision_style_*
 
 强约束:
-- 不要提取一次性临时需求。
-- 不要提取闲聊、客套、泛化无价值信息。
-- 如果没有价值，返回空数组。
-- key 使用英文 snake_case，例如: response_language, output_style, food_preference。
-- 单轮也可以提取“用户明确直接陈述的稳定偏好”（例如喜欢/不喜欢/过敏/禁忌/长期默认偏好），
-  这类应标记 persistent=true，或 explicit_source=true。
+- 只保留“未来任务仍有帮助”的稳定事实；一次性临时诉求不提取。
+- 禁止猜测和延伸推断，只能提取用户明确说过的信息。
+- 若单次会话出现多条有效画像事实，必须全部提取，不要只保留 1 条。
+- key 使用英文 snake_case；value 简短明确。
+- 如无有效项，返回空数组。
 
-高优先级规则（覆盖“保守不提取”倾向）:
-- 只要用户明确说出稳定偏好，就必须至少输出 1 条 user_preferences。
-- 明确偏好表达包括但不限于：
-  “我喜欢X / 我不喜欢X / 我讨厌X / 我不吃X / 我忌口X / 我对X过敏 / 以后默认用X格式”。
-- 禁止推断延伸偏好：只能提取用户明确说过的内容。
-  例如用户说“我喜欢吃黄焖鸡”，只能提取“喜欢黄焖鸡”，
-  不能推断“喜欢米饭/喜欢浓汤/喜欢家常菜”等未明说结论。
-- 对这类明确偏好，confidence 建议 >= 0.8，且 explicit_source=true。
+高优先级规则:
+- 对用户直接陈述（如“我喜欢X/我做过X/我擅长X/我不吃X/我过敏X/我通常预算X”）优先提取。
+- 这类直接陈述建议 explicit_source=true，confidence >= 0.82。
+
+agent_memory_candidates 规则:
+- 必须可迁移、可复用：避免绑定具体人名/地名/商品名/单次任务细节。
+- 输出应简洁：summary 1-2 句，steps 2-4 步，每步一句动作。
+- 优先抽象为通用流程，如“澄清目标 -> 识别约束 -> 生成方案 -> 校验结果”。
+- 若只是本次答案内容而非方法模板，不要提取。
 
 输出 JSON Schema:
 {{
@@ -1373,7 +1384,7 @@ Agent 名称: {agent_name or "-"}
     {{
       "candidate_type": "sop",
       "title": "流程标题",
-      "summary": "一段可复用方法总结",
+      "summary": "通用方法总结",
       "steps": ["步骤1", "步骤2", "步骤3"],
       "applicability": "适用场景",
       "avoid": "不适用或注意事项",
@@ -1383,21 +1394,39 @@ Agent 名称: {agent_name or "-"}
   ]
 }}
 
-示例（必须遵守）:
+示例:
 输入:
-USER: 我喜欢吃黄焖鸡
-ASSISTANT: 好的
+USER: 我喜欢骑车，做过电商运营，也擅长写SQL
+ASSISTANT: 收到
 
 输出:
 {{
   "user_preferences": [
     {{
-      "key": "food_preference_like",
-      "value": "黄焖鸡",
+      "key": "activity_preference_like",
+      "value": "骑车",
       "persistent": true,
       "explicit_source": true,
       "confidence": 0.9,
-      "reason": "用户明确表达喜欢的食物偏好",
+      "reason": "用户明确陈述喜欢的活动",
+      "evidence_turns": [1]
+    }},
+    {{
+      "key": "experience_background",
+      "value": "做过电商运营",
+      "persistent": true,
+      "explicit_source": true,
+      "confidence": 0.86,
+      "reason": "用户明确陈述过往经历",
+      "evidence_turns": [1]
+    }},
+    {{
+      "key": "skill_strength",
+      "value": "SQL",
+      "persistent": true,
+      "explicit_source": true,
+      "confidence": 0.88,
+      "reason": "用户明确陈述擅长技能",
       "evidence_turns": [1]
     }}
   ],
@@ -1444,17 +1473,17 @@ def _build_llm_explicit_preference_recall_prompt(
         transcript = transcript[-_SESSION_MEMORY_LLM_PROMPT_MAX_CHARS :]
 
     prompt = f"""
-你是“用户偏好补充抽取器”。你的目标是只补充抽取用户明确表达的稳定偏好。
+你是“用户偏好补充抽取器”。你的目标是补充抽取用户明确陈述的稳定画像事实。
 输出必须是 JSON 对象，不要输出解释文字。
 
 补充抽取规则:
-- 仅抽取用户明确陈述的偏好/禁忌/长期默认习惯（例如：喜欢、不喜欢、过敏、忌口、默认格式、默认语言）。
-- 可以是单轮，但必须是“用户直接表达”，禁止猜测。
-- 一次性任务要求（例如“这次导出 PDF”）不抽取。
-- key 必须是英文 snake_case，value 必须简短。
+- 不仅抽取偏好，也可抽取经历/能力/长期目标/稳定约束/习惯（都要求用户明确陈述）。
+- 可以是单轮，但必须是“用户直接表达”；禁止猜测、禁止偏好延伸。
+- 一次性临时要求（如“这次导出 PDF”）不抽取。
+- 同一会话若有多条有效画像事实，应全部提取。
+- key 必须是英文 snake_case；value 必须简短。
 - 如无有效项，返回空数组。
-- 若会话中出现明确偏好表达（如“我喜欢吃黄焖鸡”），必须提取，不可返回空数组。
-- 禁止偏好延伸推断：只能提取用户明确说过的偏好项，不可脑补。
+- 若出现明确陈述（如“我喜欢吃黄焖鸡/我擅长SQL/我做过运营”），不得漏提。
 
 输出 JSON Schema:
 {{
@@ -1473,7 +1502,7 @@ def _build_llm_explicit_preference_recall_prompt(
 
 示例:
 输入:
-USER: 我喜欢吃黄焖鸡
+USER: 我喜欢吃黄焖鸡，也做过前端开发，擅长 SQL
 ASSISTANT: 收到
 
 输出:
@@ -1486,6 +1515,24 @@ ASSISTANT: 收到
       "explicit_source": true,
       "confidence": 0.9,
       "reason": "用户明确陈述喜欢的食物",
+      "evidence_turns": [1]
+    }},
+    {{
+      "key": "experience_background",
+      "value": "做过前端开发",
+      "persistent": true,
+      "explicit_source": true,
+      "confidence": 0.86,
+      "reason": "用户明确陈述过往经历",
+      "evidence_turns": [1]
+    }},
+    {{
+      "key": "skill_strength",
+      "value": "SQL",
+      "persistent": true,
+      "explicit_source": true,
+      "confidence": 0.88,
+      "reason": "用户明确陈述擅长技能",
       "evidence_turns": [1]
     }}
   ]
@@ -1635,10 +1682,12 @@ async def _call_llm_for_memory_json(
 def _normalize_llm_user_preference_signals(
     raw_items: Any,
     turn_ts_map: Dict[int, Optional[str]],
+    max_items: int = _SESSION_MEMORY_MAX_PREFERENCE_FACTS,
 ) -> List[Dict[str, Any]]:
     if not isinstance(raw_items, list):
         return []
 
+    safe_max_items = max(int(max_items or 0), 1)
     extracted: List[Dict[str, Any]] = []
     for raw in raw_items:
         if not isinstance(raw, dict):
@@ -1704,7 +1753,7 @@ def _normalize_llm_user_preference_signals(
         ),
         reverse=True,
     )
-    return extracted[:_SESSION_MEMORY_MAX_PREFERENCE_FACTS]
+    return extracted[:safe_max_items]
 
 
 def _build_agent_candidate_fingerprint(topic: str, steps: List[str]) -> str:
@@ -1717,10 +1766,12 @@ def _normalize_llm_agent_candidates(
     *,
     agent_name: str,
     turn_ts_map: Dict[int, Optional[str]],
+    max_items: int = _SESSION_MEMORY_MAX_AGENT_CANDIDATES,
 ) -> List[Dict[str, Any]]:
     if not isinstance(raw_items, list):
         return []
 
+    safe_max_items = max(int(max_items or 0), 1)
     candidates: List[Dict[str, Any]] = []
     seen_fingerprints: set[str] = set()
 
@@ -1730,26 +1781,26 @@ def _normalize_llm_agent_candidates(
 
         title = _normalize_session_memory_text(
             raw.get("title", "") or raw.get("topic", ""),
-            max_chars=96,
+            max_chars=72,
         )
-        summary = _normalize_session_memory_text(raw.get("summary", ""), max_chars=260)
+        summary = _normalize_session_memory_text(raw.get("summary", ""), max_chars=180)
         steps_raw = raw.get("steps")
         steps: List[str] = []
         if isinstance(steps_raw, list):
             for step in steps_raw:
-                normalized_step = _normalize_session_memory_text(step, max_chars=96)
+                normalized_step = _normalize_session_memory_text(step, max_chars=72)
                 if normalized_step and normalized_step not in steps:
                     steps.append(normalized_step)
         elif isinstance(steps_raw, str):
             for chunk in re.split(r"[|\n]", steps_raw):
-                normalized_step = _normalize_session_memory_text(chunk, max_chars=96)
+                normalized_step = _normalize_session_memory_text(chunk, max_chars=72)
                 if normalized_step and normalized_step not in steps:
                     steps.append(normalized_step)
 
-        if len(steps) > 6:
-            steps = steps[:6]
+        if len(steps) > 4:
+            steps = steps[:4]
 
-        if len(steps) < 2 and len(summary) < 36:
+        if len(steps) < 2 and len(summary) < 30:
             continue
 
         confidence = _coerce_confidence(raw.get("confidence"), default=0.7)
@@ -1757,8 +1808,8 @@ def _normalize_llm_agent_candidates(
             continue
 
         candidate_type = _normalize_memory_key(raw.get("candidate_type"), max_chars=32) or "sop"
-        applicability = _normalize_session_memory_text(raw.get("applicability", ""), max_chars=200)
-        avoid = _normalize_session_memory_text(raw.get("avoid", ""), max_chars=200)
+        applicability = _normalize_session_memory_text(raw.get("applicability", ""), max_chars=140)
+        avoid = _normalize_session_memory_text(raw.get("avoid", ""), max_chars=140)
 
         topic_for_fingerprint = title or summary or "generic_sop"
         fingerprint = _build_agent_candidate_fingerprint(topic_for_fingerprint, steps)
@@ -1796,7 +1847,7 @@ def _normalize_llm_agent_candidates(
                 "latest_ts": latest_turn_ts,
             }
         )
-        if len(candidates) >= _SESSION_MEMORY_MAX_AGENT_CANDIDATES:
+        if len(candidates) >= safe_max_items:
             break
 
     return candidates
@@ -1820,6 +1871,9 @@ async def _extract_session_memory_signals_with_llm(
     configured_model_name: Optional[str] = None
     global_chat_model: Optional[str] = None
     extraction_timeout_seconds = _SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS
+    failure_backoff_seconds = _SESSION_MEMORY_FAILURE_BACKOFF_SECONDS
+    max_preference_facts = _SESSION_MEMORY_MAX_PREFERENCE_FACTS
+    max_agent_candidates = _SESSION_MEMORY_MAX_AGENT_CANDIDATES
     cfg: Any = None
     try:
         registry = get_agent_registry()
@@ -1839,6 +1893,16 @@ async def _extract_session_memory_signals_with_llm(
         configured_model = cfg.get("memory.enhanced_memory.fact_extraction.model")
         configured_chat = cfg.get("llm.model_mapping.chat")
         configured_timeout = cfg.get("memory.enhanced_memory.fact_extraction.timeout_seconds")
+        configured_failure_backoff = cfg.get(
+            "memory.enhanced_memory.fact_extraction.failure_backoff_seconds"
+        )
+        configured_max_facts = cfg.get("memory.enhanced_memory.fact_extraction.max_facts")
+        configured_max_preferences = cfg.get(
+            "memory.enhanced_memory.fact_extraction.max_preference_facts"
+        )
+        configured_max_candidates = cfg.get(
+            "memory.enhanced_memory.fact_extraction.max_agent_candidates"
+        )
         configured_provider_name = str(configured_provider or "").strip() or None
         configured_model_name = str(configured_model or "").strip() or None
         global_chat_model = str(configured_chat).strip() if configured_chat else None
@@ -1846,12 +1910,60 @@ async def _extract_session_memory_signals_with_llm(
             configured_timeout,
             default=_SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS,
         )
+        failure_backoff_seconds = _coerce_positive_timeout_seconds(
+            configured_failure_backoff,
+            default=_SESSION_MEMORY_FAILURE_BACKOFF_SECONDS,
+        )
+        configured_max_facts_value = _to_positive_int(configured_max_facts)
+        max_preference_facts = (
+            _to_positive_int(configured_max_preferences)
+            or configured_max_facts_value
+            or _SESSION_MEMORY_MAX_PREFERENCE_FACTS
+        )
+        max_agent_candidates = (
+            _to_positive_int(configured_max_candidates)
+            or _SESSION_MEMORY_MAX_AGENT_CANDIDATES
+        )
     except Exception:
         cfg = None
         configured_provider_name = None
         configured_model_name = None
         global_chat_model = None
         extraction_timeout_seconds = _SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS
+        failure_backoff_seconds = _SESSION_MEMORY_FAILURE_BACKOFF_SECONDS
+        max_preference_facts = _SESSION_MEMORY_MAX_PREFERENCE_FACTS
+        max_agent_candidates = _SESSION_MEMORY_MAX_AGENT_CANDIDATES
+
+    backoff_key = f"{str(agent_id)}::{str(session_id or '')}"
+    current_monotonic = time.monotonic()
+    backoff_until = _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL.get(backoff_key, 0.0)
+    if current_monotonic < backoff_until:
+        logger.info(
+            "Session memory extraction skipped due to active failure backoff",
+            extra={
+                "agent_id": str(agent_id),
+                "session_id": session_id,
+                "remaining_backoff_seconds": round(backoff_until - current_monotonic, 3),
+                "failure_backoff_seconds": failure_backoff_seconds,
+            },
+        )
+        return [], []
+
+    def _activate_failure_backoff(reason: str) -> None:
+        if failure_backoff_seconds <= 0:
+            return
+        fail_until = time.monotonic() + max(float(failure_backoff_seconds), 0.5)
+        _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL[backoff_key] = fail_until
+        logger.info(
+            "Session memory extraction failure backoff activated",
+            extra={
+                "agent_id": str(agent_id),
+                "session_id": session_id,
+                "reason": reason,
+                "failure_backoff_seconds": failure_backoff_seconds,
+                "fail_until_monotonic": round(fail_until, 3),
+            },
+        )
 
     primary_provider = configured_provider_name or agent_provider_name
     primary_model = configured_model_name
@@ -1889,6 +2001,9 @@ async def _extract_session_memory_signals_with_llm(
             **extraction_log_base,
             "attempt_plan": attempt_plan_summary,
             "attempt_timeout_seconds": extraction_timeout_seconds,
+            "failure_backoff_seconds": failure_backoff_seconds,
+            "max_preference_facts": max_preference_facts,
+            "max_agent_candidates": max_agent_candidates,
         },
     )
 
@@ -1901,6 +2016,7 @@ async def _extract_session_memory_signals_with_llm(
             "LLM-based session memory extraction failed",
             extra={**extraction_log_base, "error": str(e)},
         )
+        _activate_failure_backoff("llm_router_unavailable")
         return [], []
 
     async def _run_extraction_with_attempts(
@@ -2010,15 +2126,21 @@ async def _extract_session_memory_signals_with_llm(
                 "parse_error": primary_extraction_meta.get("parse_error"),
             },
         )
+        _activate_failure_backoff("all_attempts_failed")
         return [], []
 
     user_items = parsed.get("user_preferences")
     candidate_items = parsed.get("agent_memory_candidates")
-    user_signals = _normalize_llm_user_preference_signals(user_items, turn_ts_map)
+    user_signals = _normalize_llm_user_preference_signals(
+        user_items,
+        turn_ts_map,
+        max_items=max_preference_facts,
+    )
     agent_candidates = _normalize_llm_agent_candidates(
         candidate_items,
         agent_name=agent_name,
         turn_ts_map=turn_ts_map,
+        max_items=max_agent_candidates,
     )
 
     secondary_raw_user_preferences = 0
@@ -2065,6 +2187,7 @@ async def _extract_session_memory_signals_with_llm(
             recall_signals = _normalize_llm_user_preference_signals(
                 recall_user_items,
                 recall_turn_ts_map,
+                max_items=max_preference_facts,
             )
             secondary_normalized_user_preferences = len(recall_signals)
             if recall_signals:
@@ -2105,7 +2228,7 @@ async def _extract_session_memory_signals_with_llm(
                         str(item.get("latest_ts") or ""),
                     ),
                     reverse=True,
-                )[:_SESSION_MEMORY_MAX_PREFERENCE_FACTS]
+                )[:max_preference_facts]
             if not used_provider and recall_provider:
                 used_provider = recall_provider
             if not used_model and recall_model:
@@ -2163,6 +2286,7 @@ async def _extract_session_memory_signals_with_llm(
             "secondary_raw_content_chars": secondary_extraction_meta.get("raw_content_chars"),
         },
     )
+    _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL.pop(backoff_key, None)
     return user_signals, agent_candidates
 
 
@@ -2253,6 +2377,26 @@ def _build_user_preference_memory_content(signal: Dict[str, Any]) -> str:
     return f"user.preference.{signal['key']}={signal['value']}"
 
 
+def _build_user_preference_seed_facts(signal: Dict[str, Any]) -> List[Dict[str, Any]]:
+    preference_key = _normalize_memory_key(signal.get("key"), max_chars=80)
+    preference_value = _normalize_session_memory_text(signal.get("value", ""), max_chars=120)
+    if not preference_key or not preference_value:
+        return []
+
+    confidence = _coerce_confidence(signal.get("confidence"), default=0.78)
+    importance = 0.9 if bool(signal.get("persistent")) else 0.74
+    return [
+        {
+            "key": f"user.preference.{preference_key}",
+            "value": preference_value,
+            "category": "user_preference",
+            "confidence": confidence,
+            "importance": importance,
+            "source": "session_llm",
+        }
+    ]
+
+
 def _split_user_preference_content(content: str) -> Tuple[Optional[str], Optional[str]]:
     normalized = str(content or "").strip()
     if not normalized.lower().startswith("user.preference.") or "=" not in normalized:
@@ -2328,10 +2472,17 @@ def _extract_agent_memory_candidates(
 
 
 def _build_agent_candidate_content(candidate: Dict[str, Any]) -> str:
-    steps = candidate.get("steps") or []
-    step_text = " | ".join(str(step).strip() for step in steps if str(step).strip())
-    title = _normalize_session_memory_text(candidate.get("title", ""), max_chars=96)
-    summary = _normalize_session_memory_text(candidate.get("summary", ""), max_chars=240)
+    steps_raw = candidate.get("steps") or []
+    normalized_steps: List[str] = []
+    for step in steps_raw:
+        normalized_step = _normalize_session_memory_text(step, max_chars=72)
+        if normalized_step and normalized_step not in normalized_steps:
+            normalized_steps.append(normalized_step)
+    steps = normalized_steps[:4]
+    step_text = " | ".join(steps)
+
+    title = _normalize_session_memory_text(candidate.get("title", ""), max_chars=72)
+    summary = _normalize_session_memory_text(candidate.get("summary", ""), max_chars=180)
     lines: List[str] = [
         f"interaction.sop.topic={candidate.get('topic')}",
         f"interaction.sop.title={title or candidate.get('topic')}",
@@ -2339,16 +2490,55 @@ def _build_agent_candidate_content(candidate: Dict[str, Any]) -> str:
     ]
     if summary:
         lines.append(f"interaction.sop.summary={summary}")
-    applicability = _normalize_session_memory_text(candidate.get("applicability", ""), max_chars=180)
+    applicability = _normalize_session_memory_text(candidate.get("applicability", ""), max_chars=120)
     if applicability:
         lines.append(f"interaction.sop.applicability={applicability}")
-    avoid = _normalize_session_memory_text(candidate.get("avoid", ""), max_chars=180)
+    avoid = _normalize_session_memory_text(candidate.get("avoid", ""), max_chars=120)
     if avoid:
         lines.append(f"interaction.sop.avoid={avoid}")
     agent_name = str(candidate.get("agent_name") or "").strip()
     if agent_name:
         lines.append(f"agent.identity.name={agent_name}")
     return "\n".join(lines)
+
+
+def _build_agent_candidate_seed_facts(candidate: Dict[str, Any]) -> List[Dict[str, Any]]:
+    facts: List[Dict[str, Any]] = []
+    confidence = _coerce_confidence(candidate.get("confidence"), default=0.72)
+    importance = 0.78
+
+    def _append_fact(key: str, value: Any, *, category: str) -> None:
+        normalized_value = _normalize_session_memory_text(value, max_chars=260)
+        if not key or not normalized_value:
+            return
+        facts.append(
+            {
+                "key": key,
+                "value": normalized_value,
+                "category": category,
+                "confidence": confidence,
+                "importance": importance,
+                "source": "session_llm",
+            }
+        )
+
+    _append_fact("interaction.sop.topic", candidate.get("topic"), category="interaction")
+    _append_fact("interaction.sop.title", candidate.get("title"), category="interaction")
+    steps = candidate.get("steps")
+    if isinstance(steps, list):
+        steps_value = " | ".join(
+            _normalize_session_memory_text(step, max_chars=72) for step in steps if step
+        )
+        _append_fact("interaction.sop.steps", steps_value, category="interaction")
+    _append_fact("interaction.sop.summary", candidate.get("summary"), category="interaction")
+    _append_fact(
+        "interaction.sop.applicability",
+        candidate.get("applicability"),
+        category="interaction",
+    )
+    _append_fact("interaction.sop.avoid", candidate.get("avoid"), category="interaction")
+    _append_fact("agent.identity.name", candidate.get("agent_name"), category="agent")
+    return facts
 
 
 def _load_existing_user_preference_map(user_id: str) -> Dict[str, Dict[str, Any]]:
@@ -2609,6 +2799,8 @@ async def _flush_session_memories(
                     "strong_signal": bool(signal.get("strong_signal")),
                     "explicit_source": bool(signal.get("explicit_source")),
                     "is_active": True,
+                    "skip_secondary_fact_extraction": True,
+                    "facts": _build_user_preference_seed_facts(signal),
                 },
             )
             existing_preference_map[signal_key] = {
@@ -2678,6 +2870,8 @@ async def _flush_session_memories(
                     "confidence": candidate.get("confidence"),
                     "latest_turn_ts": candidate.get("latest_ts"),
                     "is_active": True,
+                    "skip_secondary_fact_extraction": True,
+                    "facts": _build_agent_candidate_seed_facts(candidate),
                 },
             )
             existing_candidate_fingerprints.add(fingerprint)

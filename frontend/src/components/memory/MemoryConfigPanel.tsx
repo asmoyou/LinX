@@ -53,6 +53,8 @@ type MemoryConfigFormState = {
     model: string;
     timeout_seconds: number;
     max_facts: number;
+    max_preference_facts: number;
+    max_agent_candidates: number;
     failure_backoff_seconds: number;
   };
   runtime: {
@@ -88,11 +90,13 @@ const DEFAULT_FORM_STATE: MemoryConfigFormState = {
   },
   fact_extraction: {
     enabled: true,
-    model_enabled: false,
+    model_enabled: true,
     provider: "",
     model: "",
     timeout_seconds: 4,
     max_facts: 8,
+    max_preference_facts: 8,
+    max_agent_candidates: 4,
     failure_backoff_seconds: 60,
   },
   runtime: {
@@ -241,12 +245,17 @@ const toFormState = (config: MemoryConfig | null): MemoryConfigFormState => {
       milvus_nprobe: asNumber(retrievalMilvus.nprobe, 10),
     },
     fact_extraction: {
-      enabled: asBoolean(config.fact_extraction?.enabled, true),
-      model_enabled: asBoolean(config.fact_extraction?.model_enabled, false),
+      enabled: true,
+      model_enabled: true,
       provider: asString(config.fact_extraction?.provider, ""),
       model: asString(config.fact_extraction?.model, ""),
       timeout_seconds: asNumber(config.fact_extraction?.timeout_seconds, 4),
       max_facts: asNumber(config.fact_extraction?.max_facts, 8),
+      max_preference_facts: asNumber(
+        config.fact_extraction?.max_preference_facts,
+        asNumber(config.fact_extraction?.max_facts, 8),
+      ),
+      max_agent_candidates: asNumber(config.fact_extraction?.max_agent_candidates, 4),
       failure_backoff_seconds: asNumber(
         config.fact_extraction?.failure_backoff_seconds,
         60,
@@ -293,12 +302,17 @@ const toUpdatePayload = (
       },
     },
     fact_extraction: {
-      enabled: formState.fact_extraction.enabled,
-      model_enabled: formState.fact_extraction.model_enabled,
+      enabled: true,
+      model_enabled: true,
       provider: formState.fact_extraction.provider.trim(),
       model: formState.fact_extraction.model.trim(),
       timeout_seconds: Math.max(0.5, formState.fact_extraction.timeout_seconds),
       max_facts: Math.max(1, Math.floor(formState.fact_extraction.max_facts)),
+      max_preference_facts: Math.max(
+        1,
+        Math.floor(formState.fact_extraction.max_preference_facts),
+      ),
+      max_agent_candidates: Math.max(1, Math.floor(formState.fact_extraction.max_agent_candidates)),
       failure_backoff_seconds: Math.max(1, formState.fact_extraction.failure_backoff_seconds),
     },
     runtime: {
@@ -595,11 +609,8 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
       },
       fact_extraction: {
         ...prev.fact_extraction,
-        enabled: asBoolean(recommendedFactExtraction.enabled, prev.fact_extraction.enabled),
-        model_enabled: asBoolean(
-          recommendedFactExtraction.model_enabled,
-          prev.fact_extraction.model_enabled,
-        ),
+        enabled: true,
+        model_enabled: true,
         provider: asString(
           recommendedFactExtraction.provider,
           prev.fact_extraction.provider,
@@ -612,6 +623,14 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
         max_facts: asNumber(
           recommendedFactExtraction.max_facts,
           prev.fact_extraction.max_facts,
+        ),
+        max_preference_facts: asNumber(
+          recommendedFactExtraction.max_preference_facts,
+          prev.fact_extraction.max_preference_facts,
+        ),
+        max_agent_candidates: asNumber(
+          recommendedFactExtraction.max_agent_candidates,
+          prev.fact_extraction.max_agent_candidates,
         ),
         failure_backoff_seconds: asNumber(
           recommendedFactExtraction.failure_backoff_seconds,
@@ -1472,71 +1491,27 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
             <div className="rounded-xl border border-zinc-200/80 dark:border-zinc-700/80 bg-white/60 dark:bg-zinc-900/50 p-4">
               <div className="mb-3">
                 <h3 className="text-base font-semibold text-zinc-800 dark:text-zinc-100">
-                  {t("memory.config.factExtraction", "Fact Extraction")}
+                  {t(
+                    "memory.config.factExtraction",
+                    "Session Extraction & Storage Normalization",
+                  )}
                 </h3>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                   {t(
                     "memory.config.factExtractionHint",
-                    "Extract structured facts and deduplicate conversational memory noise.",
+                    "Two-stage pipeline: session LLM extraction first, then storage normalization.",
                   )}
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
-                    <input
-                      type="checkbox"
-                      checked={formState.fact_extraction.enabled}
-                      onChange={(event) =>
-                        setFormState((prev) => ({
-                          ...prev,
-                          fact_extraction: {
-                            ...prev.fact_extraction,
-                            enabled: event.target.checked,
-                          },
-                        }))
-                      }
-                      className="rounded"
-                    />
-                    {t("memory.config.factExtractionEnabled", "Enable fact extraction")}
-                  </label>
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                    {t(
-                      "memory.config.factExtractionEnabledHint",
-                      "Enable rule-based extraction and dedupe pipeline.",
-                    )}
-                  </p>
-                </div>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
+                {t(
+                  "memory.config.factExtractionModeHint",
+                  "Provider/model/timeout/backoff below control session extraction first; storage normalization reuses pre-extracted signals and keeps compatibility for other write paths.",
+                )}
+              </p>
 
-                <div>
-                  <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
-                    <input
-                      type="checkbox"
-                      checked={formState.fact_extraction.model_enabled}
-                      onChange={(event) =>
-                        setFormState((prev) => ({
-                          ...prev,
-                          fact_extraction: {
-                            ...prev.fact_extraction,
-                            model_enabled: event.target.checked,
-                          },
-                        }))
-                      }
-                      className="rounded"
-                    />
-                    {t("memory.config.factExtractionModel", "Enable model extraction")}
-                  </label>
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                    {t(
-                      "memory.config.factExtractionModelHint",
-                      "Call LLM to enrich facts on top of rule-based extraction.",
-                    )}
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
                 <label className="text-sm text-zinc-700 dark:text-zinc-300">
                   <span className="block mb-1">
                     {t("memory.config.provider", "Provider")}
@@ -1555,11 +1530,17 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                       </option>
                     ))}
                   </select>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                    {t(
+                      "memory.config.factExtractionProviderHint",
+                      "Primary provider for session extraction; if unavailable, system falls back to agent/global model.",
+                    )}
+                  </p>
                 </label>
 
                 <label className="text-sm text-zinc-700 dark:text-zinc-300">
                   <span className="block mb-1">
-                    {t("memory.config.factExtractionMaxFacts", "Max Facts")}
+                    {t("memory.config.factExtractionMaxFacts", "Max Facts / Memory")}
                   </span>
                   <input
                     type="number"
@@ -1579,6 +1560,74 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                     }
                     className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                   />
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                    {t(
+                      "memory.config.factExtractionMaxFactsHint",
+                      "Second-stage storage normalization cap per memory item (all write paths).",
+                    )}
+                  </p>
+                </label>
+
+                <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                  <span className="block mb-1">
+                    {t("memory.config.factExtractionMaxPreferenceFacts", "Max User Facts")}
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={formState.fact_extraction.max_preference_facts}
+                    onChange={(event) =>
+                      setFormState((prev) => ({
+                        ...prev,
+                        fact_extraction: {
+                          ...prev.fact_extraction,
+                          max_preference_facts: asNumber(
+                            event.target.value,
+                            prev.fact_extraction.max_preference_facts,
+                          ),
+                        },
+                      }))
+                    }
+                    className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                  />
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                    {t(
+                      "memory.config.factExtractionMaxPreferenceFactsHint",
+                      "First-stage session extraction cap for user profile/preference items per flush.",
+                    )}
+                  </p>
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                  <span className="block mb-1">
+                    {t("memory.config.factExtractionMaxAgentCandidates", "Max Agent Candidates")}
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={formState.fact_extraction.max_agent_candidates}
+                    onChange={(event) =>
+                      setFormState((prev) => ({
+                        ...prev,
+                        fact_extraction: {
+                          ...prev.fact_extraction,
+                          max_agent_candidates: asNumber(
+                            event.target.value,
+                            prev.fact_extraction.max_agent_candidates,
+                          ),
+                        },
+                      }))
+                    }
+                    className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                  />
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                    {t(
+                      "memory.config.factExtractionMaxAgentCandidatesHint",
+                      "First-stage session extraction cap for reusable agent candidate memories per flush.",
+                    )}
+                  </p>
                 </label>
               </div>
 
@@ -1624,6 +1673,12 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                     </option>
                   ))}
                 </select>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                  {t(
+                    "memory.config.factExtractionModelHintNew",
+                    "Primary model for session extraction and storage normalization.",
+                  )}
+                </p>
               </label>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
@@ -1650,6 +1705,12 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                     }
                     className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                   />
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                    {t(
+                      "memory.config.factExtractionTimeoutHint",
+                      "Per-attempt timeout for first-stage session extraction requests.",
+                    )}
+                  </p>
                 </label>
 
                 <label className="text-sm text-zinc-700 dark:text-zinc-300">
@@ -1677,6 +1738,12 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                     }
                     className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                   />
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                    {t(
+                      "memory.config.factExtractionBackoffHint",
+                      "After first-stage extraction failures, skip new attempts for this duration.",
+                    )}
+                  </p>
                 </label>
               </div>
 
