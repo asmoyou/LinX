@@ -69,6 +69,70 @@ class TestBaseAgent:
         assert len(capabilities) == 3
         assert "skill1" in capabilities
 
+    def test_sync_skill_package_files_scopes_into_hidden_skills_dir(self, tmp_path):
+        """Loaded skill package files should be copied under workspace .skills namespace."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.skill_manager = SimpleNamespace(
+            get_agent_skill_docs=lambda: [
+                SimpleNamespace(
+                    name="Weather Skill",
+                    package_files={
+                        "weather/SKILL.md": "# Weather Skill",
+                        "weather/scripts/run.py": "print('ok')",
+                        "weather/requirements.txt": "requests",
+                    },
+                    skill_md_content="# Weather Skill",
+                )
+            ]
+        )
+
+        copied = agent._sync_skill_package_files_to_workdir(tmp_path)
+
+        assert copied == 3
+        assert (tmp_path / ".skills" / "Weather_Skill" / "scripts" / "run.py").exists()
+        assert (tmp_path / ".skills" / "Weather_Skill" / "requirements.txt").exists()
+        assert (tmp_path / ".skills" / "Weather_Skill" / "SKILL.md").exists()
+        assert not (tmp_path / "weather" / "scripts" / "run.py").exists()
+
+    def test_sync_skill_package_files_avoids_duplicate_skill_root(self, tmp_path):
+        """Skill package root matching skill name should not create duplicate nested directory."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.skill_manager = SimpleNamespace(
+            get_agent_skill_docs=lambda: [
+                SimpleNamespace(
+                    name="weather-forcast",
+                    package_files={
+                        "weather-forcast/SKILL.md": "# Weather Skill",
+                        "weather-forcast/scripts/run.py": "print('ok')",
+                    },
+                    skill_md_content="# Weather Skill",
+                )
+            ]
+        )
+
+        copied = agent._sync_skill_package_files_to_workdir(tmp_path)
+
+        assert copied == 2
+        assert (tmp_path / ".skills" / "weather-forcast" / "scripts" / "run.py").exists()
+        assert (tmp_path / ".skills" / "weather-forcast" / "SKILL.md").exists()
+        assert not (
+            tmp_path / ".skills" / "weather-forcast" / "weather-forcast" / "scripts" / "run.py"
+        ).exists()
+
     def test_execute_task_streaming_includes_conversation_history(self):
         """Streaming execution should prepend provided conversation history."""
         config = AgentConfig(

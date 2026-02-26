@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from uuid import UUID
 
@@ -313,7 +314,7 @@ class AgentConfig:
             self.max_parse_retries = _get_env_int("AGENT_MAX_PARSE_RETRIES", 3)
 
         if self.max_execution_retries is None:
-            self.max_execution_retries = _get_env_int("AGENT_MAX_EXECUTION_RETRIES", 3)
+            self.max_execution_retries = _get_env_int("AGENT_MAX_EXECUTION_RETRIES", 5)
 
         if self.tool_timeout_seconds is None:
             self.tool_timeout_seconds = _get_env_float("AGENT_TOOL_TIMEOUT", 30.0)
@@ -1342,9 +1343,6 @@ class BaseAgent:
             if session_workdir:
                 set_workspace_root(session_workdir)
                 logger.debug(f"Set workspace root to {session_workdir}")
-                self._sync_skill_package_files_to_workdir(
-                    session_workdir, log_prefix="[WORKSPACE]"
-                )
             else:
                 clear_workspace_root()
 
@@ -2382,10 +2380,62 @@ class BaseAgent:
             for skill_ref in agent_skills:
                 copied_for_skill = 0
                 skill_doc_path_for_log: Optional[str] = None
+                skill_dir_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", skill_ref.name).strip("._")
+                if not skill_dir_name:
+                    skill_dir_name = "skill"
+                skill_workspace_root = workdir / ".skills" / skill_dir_name
+                package_files = skill_ref.package_files or {}
 
-                if skill_ref.package_files:
-                    for filename, content in skill_ref.package_files.items():
-                        file_path = workdir / filename
+                def _sanitize_relative_path(raw_path: str) -> Optional[Path]:
+                    parts = []
+                    for part in Path(str(raw_path or "").replace("\\", "/")).parts:
+                        if part in {"", ".", ".."}:
+                            continue
+                        parts.append(part)
+                    if not parts:
+                        return None
+                    return Path(*parts)
+
+                def _infer_package_root_dir(files: Dict[str, str]) -> Optional[str]:
+                    normalized_paths: List[Path] = []
+                    for rel_path in files:
+                        safe_path = _sanitize_relative_path(rel_path)
+                        if safe_path is not None:
+                            normalized_paths.append(safe_path)
+
+                    if not normalized_paths:
+                        return None
+
+                    for path_obj in normalized_paths:
+                        if path_obj.name == "SKILL.md" and len(path_obj.parts) > 1:
+                            return path_obj.parts[0]
+
+                    top_level_dirs = {p.parts[0] for p in normalized_paths if len(p.parts) > 1}
+                    has_root_files = any(len(p.parts) == 1 for p in normalized_paths)
+                    if len(top_level_dirs) == 1 and not has_root_files:
+                        only_dir = next(iter(top_level_dirs))
+                        if only_dir.lower() not in {"scripts", "src", "lib", "docs"}:
+                            return only_dir
+                    return None
+
+                package_root_dir = _infer_package_root_dir(package_files)
+
+                def _normalize_package_path(raw_path: str) -> Optional[Path]:
+                    safe_path = _sanitize_relative_path(raw_path)
+                    if safe_path is None:
+                        return None
+                    if package_root_dir and safe_path.parts and safe_path.parts[0] == package_root_dir:
+                        stripped_parts = safe_path.parts[1:]
+                        if stripped_parts:
+                            return Path(*stripped_parts)
+                    return safe_path
+
+                if package_files:
+                    for filename, content in package_files.items():
+                        safe_relative_path = _normalize_package_path(filename)
+                        if safe_relative_path is None:
+                            continue
+                        file_path = skill_workspace_root / safe_relative_path
                         file_path.parent.mkdir(parents=True, exist_ok=True)
                         file_path.write_text(content, encoding="utf-8")
                         if filename.endswith((".sh", ".py")):
@@ -2394,22 +2444,18 @@ class BaseAgent:
                         copied_for_skill += 1
 
                 has_skill_doc_in_package = bool(
-                    skill_ref.package_files
-                    and any(path.endswith("SKILL.md") for path in skill_ref.package_files)
+                    package_files and any(Path(path).name == "SKILL.md" for path in package_files)
                 )
 
                 # Backward-compatible fallback for old packages where SKILL.md
                 # was not included in loaded package files.
                 if skill_ref.skill_md_content and not has_skill_doc_in_package:
-                    skill_dir_name = re.sub(
-                        r"[^a-zA-Z0-9._-]+", "_", skill_ref.name
-                    ).strip("._")
-                    if not skill_dir_name:
-                        skill_dir_name = "skill"
-                    skill_doc_path = workdir / skill_dir_name / "SKILL.md"
+                    skill_doc_path = skill_workspace_root / "SKILL.md"
                     skill_doc_path.parent.mkdir(parents=True, exist_ok=True)
                     skill_doc_path.write_text(skill_ref.skill_md_content, encoding="utf-8")
-                    skill_doc_path_for_log = f"{skill_dir_name}/SKILL.md"
+                    skill_doc_path_for_log = (
+                        str(skill_doc_path.relative_to(workdir)).replace("\\", "/")
+                    )
                     copied_files += 1
                     copied_for_skill += 1
 
@@ -2422,7 +2468,10 @@ class BaseAgent:
                         "agent_id": str(self.config.agent_id),
                         "skill_name": skill_ref.name,
                         "workdir": str(workdir),
-                        "copied_package_files": len(skill_ref.package_files or {}),
+                        "workspace_skill_root": str(
+                            (Path(".skills") / skill_dir_name).as_posix()
+                        ),
+                        "copied_package_files": len(package_files),
                         "skill_doc_path": skill_doc_path_for_log,
                     },
                 )
@@ -2487,9 +2536,6 @@ class BaseAgent:
         else:
             session_id = uuid4().hex[:8]
             workdir = self.code_executor.create_workdir(session_id)
-
-        # Ensure skill package files are available for imports/scripts in this workspace.
-        self._sync_skill_package_files_to_workdir(workdir, log_prefix="[CODE_BLOCK]")
 
         for i, block in enumerate(code_blocks):
             # Send execution indicator to frontend

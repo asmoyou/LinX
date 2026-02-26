@@ -272,11 +272,10 @@ class TestAgentSkillNaturalLanguageTesting:
         auth_headers: dict,
         created_skill: Skill
     ):
-        """Test agent skill with natural language input."""
+        """Test agent skill requires agent_id for real execution."""
         # Arrange
         test_data = {
             'natural_language_input': 'Get weather for Seattle',
-            'dry_run': True
         }
         
         # Act
@@ -287,12 +286,8 @@ class TestAgentSkillNaturalLanguageTesting:
         )
         
         # Assert
-        assert response.status_code == 200
-        result = response.json()
-        assert 'commands' in result
-        assert 'output' in result
-        assert len(result['commands']) > 0
-        assert 'curl' in result['commands'][0]['command'].lower()
+        assert response.status_code == 400
+        assert 'agent_id required' in response.json()['detail']
     
     def test_test_agent_skill_dry_run_mode(
         self,
@@ -300,7 +295,7 @@ class TestAgentSkillNaturalLanguageTesting:
         auth_headers: dict,
         created_skill: Skill
     ):
-        """Test agent skill in dry run mode."""
+        """Dry-run mode is removed for agent_skill."""
         # Arrange
         test_data = {
             'natural_language_input': 'What is the forecast for New York?',
@@ -315,10 +310,8 @@ class TestAgentSkillNaturalLanguageTesting:
         )
         
         # Assert
-        assert response.status_code == 200
-        result = response.json()
-        assert result['dry_run'] is True
-        assert 'simulated' in result['output'].lower() or 'mock' in result['output'].lower()
+        assert response.status_code == 400
+        assert 'agent_id required' in response.json()['detail']
 
 
 class TestGatingStatusInResponse:
@@ -532,14 +525,13 @@ class TestEndToEndAgentSkillFlow:
         # 3. Test
         test_data = {
             'natural_language_input': 'Get weather for Seattle',
-            'dry_run': True
         }
         test_response = client.post(
             f'/api/v1/skills/{skill_id}/test',
             headers=auth_headers,
             json=test_data
         )
-        assert test_response.status_code == 200
+        assert test_response.status_code == 400
         
         # 4. Update
         update_data = {

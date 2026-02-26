@@ -161,14 +161,13 @@ export const skillsApi = {
   /**
    * Test skill execution
    * For langchain_tool: Pass structured inputs
-   * For agent_skill: Pass natural_language_input and optional dry_run or agent_id
+   * For agent_skill: Pass natural_language_input and required agent_id
    */
   async testSkill(
     skillId: string,
     params: { 
       inputs?: Record<string, any>; 
       natural_language_input?: string; 
-      dry_run?: boolean;
       agent_id?: string;
     }
   ): Promise<any> {

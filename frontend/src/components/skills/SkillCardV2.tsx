@@ -223,7 +223,7 @@ export default function SkillCardV2({
           
           {/* Icon buttons - grouped together */}
           <div className="flex items-center gap-2">
-            {onViewCode && (
+            {onViewCode && skill.skill_type !== 'agent_skill' && (
               <button
                 onClick={() => onViewCode(skill)}
                 className="p-2.5 rounded-xl bg-muted/30 hover:bg-muted/50 text-foreground transition-all duration-300 hover:shadow-lg"

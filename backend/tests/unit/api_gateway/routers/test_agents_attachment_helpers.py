@@ -17,6 +17,7 @@ from api_gateway.routers.agents import (
     _build_task_log_entries,
     _build_output_segment_ranges,
     _build_attachment_prompt_context,
+    _build_attachment_workspace_context,
     _build_download_content_disposition,
     _build_segmented_user_prompt,
     _call_llm_for_memory_json,
@@ -34,6 +35,7 @@ from api_gateway.routers.agents import (
     _extract_attachment_text,
     _infer_attachment_bucket_type,
     _infer_attachment_type,
+    _materialize_attachment_files_to_workspace,
 )
 
 
@@ -119,6 +121,58 @@ def test_build_attachment_prompt_context_limits_size_and_includes_fallback() -> 
     assert "Attached files context:" in context
     assert "[Document: c.bin] Attached, but text extraction unavailable" in context
     assert len(context) < 13000
+
+
+def test_materialize_attachment_files_to_workspace_writes_files_and_sets_paths(tmp_path: Path) -> None:
+    """Uploaded attachments should be copied into workspace and path-mapped for prompts."""
+    refs = [
+        FileReference(
+            path="documents/a",
+            type="document",
+            name="report.txt",
+            size=5,
+            content_type="text/plain",
+        ),
+        FileReference(
+            path="documents/b",
+            type="document",
+            name="report.txt",
+            size=6,
+            content_type="text/plain",
+        ),
+    ]
+    payloads = {
+        "documents/a": b"hello",
+        "documents/b": b"world!",
+    }
+
+    written, errors = _materialize_attachment_files_to_workspace(tmp_path, refs, payloads)
+
+    assert written == 2
+    assert errors == []
+    assert refs[0].workspace_path == "input/report.txt"
+    assert refs[1].workspace_path == "input/report_2.txt"
+    assert (tmp_path / "input" / "report.txt").read_bytes() == b"hello"
+    assert (tmp_path / "input" / "report_2.txt").read_bytes() == b"world!"
+
+
+def test_build_attachment_workspace_context_includes_workspace_paths() -> None:
+    """Workspace context should provide agent-readable /workspace paths."""
+    refs = [
+        FileReference(
+            path="documents/a",
+            type="document",
+            name="slides.pptx",
+            size=128,
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            workspace_path="input/slides.pptx",
+        )
+    ]
+
+    context = _build_attachment_workspace_context(refs)
+
+    assert "Attached files are available in workspace:" in context
+    assert "/workspace/input/slides.pptx" in context
 
 
 def test_build_output_segment_ranges_respects_limits() -> None:

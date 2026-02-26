@@ -31,49 +31,68 @@ Get current weather conditions and multi-day forecasts for any location worldwid
 
 ## Description
 
-This skill allows agents to retrieve weather information including:
-- Current temperature, humidity, and conditions
-- 5-day weather forecast
-- Severe weather alerts
-- Historical weather data
+This skill supports:
+- Current temperature, humidity, wind, and conditions
+- 1-5 day forecast
 
-The skill includes Python helper scripts for data processing and formatting.
+The main entry point is `scripts/weather_helper.py`.
+
+## Execution Contract (MANDATORY)
+
+Always follow this sequence to avoid retries:
+
+1. Validate CLI shape first:
+
+```bash
+python3 {baseDir}/scripts/weather_helper.py --help
+python3 {baseDir}/scripts/weather_helper.py current --help
+```
+
+2. Use one of these exact command forms:
+
+```bash
+# Current weather by city (preferred)
+python3 {baseDir}/scripts/weather_helper.py current --location "Fuzhou,CN"
+
+# Current weather by coordinates
+python3 {baseDir}/scripts/weather_helper.py current --lat 26.0745 --lon 119.2965
+
+# Forecast (1-5 days)
+python3 {baseDir}/scripts/weather_helper.py forecast --location "London,GB" --days 5
+```
+
+3. Do not call the script without a subcommand:
+- Wrong: `python3 weather_helper.py --city 福州`
+- Wrong: `python3 weather_helper.py current 福州` (use `--location` form in prompts)
+
+4. If location input is non-English text (e.g. Chinese), prefer:
+- `City,CountryCode` in Latin script (example: `Fuzhou,CN`), or
+- direct coordinates with `--lat/--lon`.
 
 ## Usage Examples
 
 ### Get Current Weather
 
-Use the Python helper script for formatted output:
-
 ```bash
-python3 {baseDir}/scripts/weather_helper.py current --location "Seattle"
-```
-
-Or use direct API call:
-
-```bash
-curl "https://api.openweathermap.org/data/2.5/weather?q=Seattle&appid=${WEATHER_API_KEY}&units=metric"
-```
-
-**Expected Output:**
-```
-Seattle Weather:
-Temperature: 15.5°C
-Conditions: Scattered clouds
-Humidity: 72%
-Wind: 12 km/h
+python3 {baseDir}/scripts/weather_helper.py current --location "Seattle,US"
 ```
 
 ### Get 5-Day Forecast
 
 ```bash
-python3 {baseDir}/scripts/weather_helper.py forecast --location "London" --days 5
+python3 {baseDir}/scripts/weather_helper.py forecast --location "London,GB" --days 5
 ```
 
 ### Get Weather by Coordinates
 
 ```bash
 python3 {baseDir}/scripts/weather_helper.py current --lat 37.7749 --lon -122.4194
+```
+
+### Direct API Call (Fallback)
+
+```bash
+curl "https://api.openweathermap.org/data/2.5/weather?q=Seattle,US&appid=${WEATHER_API_KEY}&units=metric"
 ```
 
 ## Natural Language Testing
@@ -85,7 +104,7 @@ You can test this skill with natural language queries like:
 - "Is it going to rain in Tokyo tomorrow?"
 - "What's the temperature in New York right now?"
 
-The agent will automatically use the appropriate Python scripts or API calls.
+When the query contains non-Latin city names, normalize to `City,CountryCode` before command execution.
 
 ## Package Contents
 
@@ -124,8 +143,13 @@ Note: The `api.weather.enabled` config check has been removed. Use environment v
 
 Common errors and solutions:
 
+- **CLI argument error (exit code 2)**:
+  - Run `python3 {baseDir}/scripts/weather_helper.py current --help`
+  - Then retry with `current --location "<City,CountryCode>"`
 - **401 Unauthorized**: Check that `WEATHER_API_KEY` is set correctly
-- **404 Not Found**: Verify the location name is spelled correctly
+- **404 Not Found**:
+  - First retry with `City,CountryCode` (example: `Fuzhou,CN`)
+  - If still failing, use `--lat/--lon`
 - **429 Too Many Requests**: You've exceeded the API rate limit
 - **ModuleNotFoundError**: Install dependencies with `pip install -r requirements.txt`
 

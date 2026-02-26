@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Loader2, CheckCircle, XCircle, Clock, Terminal, Code, Bot } from 'lucide-react';
+import { Play, Loader2, CheckCircle, XCircle, Clock, Bot } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { skillsApi } from '@/api/skills';
@@ -29,15 +29,9 @@ interface TestResult {
   output?: any;
   error?: string;
   execution_time: number;
-  // Agent skill specific fields
   input?: string;
-  parsed_commands?: Array<{
-    command_type: string;
-    command: string;
-    description: string;
-  }>;
-  simulated_output?: string;
-  actual_output?: string;
+  agent_name?: string;
+  mode?: string;
 }
 
 const SkillTester: React.FC<SkillTesterProps> = ({
@@ -48,8 +42,6 @@ const SkillTester: React.FC<SkillTesterProps> = ({
 }) => {
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [naturalLanguageInput, setNaturalLanguageInput] = useState('');
-  const [dryRun] = useState(true);
-  const [useAgent, setUseAgent] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string>('');
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loadingAgents, setLoadingAgents] = useState(false);
@@ -86,28 +78,15 @@ const SkillTester: React.FC<SkillTesterProps> = ({
   const handleTest = async () => {
     setTesting(true);
     setResult(null);
-    
+
     try {
       let testResult;
       if (isAgentSkill) {
-        // Natural language testing for agent_skill
-        const params: any = {
+        testResult = await skillsApi.testSkill(skillId, {
           natural_language_input: naturalLanguageInput,
-        };
-        
-        // If using agent, pass agent_id instead of dry_run
-        if (useAgent && selectedAgentId) {
-          params.agent_id = selectedAgentId;
-          console.log('Testing with agent:', { skillId, agent_id: selectedAgentId, natural_language_input: naturalLanguageInput });
-        } else {
-          params.dry_run = dryRun;
-          console.log('Testing with dry run:', { skillId, dry_run: dryRun, natural_language_input: naturalLanguageInput });
-        }
-        
-        testResult = await skillsApi.testSkill(skillId, params);
+          agent_id: selectedAgentId,
+        });
       } else {
-        // Structured testing for langchain_tool
-        console.log('Testing langchain tool:', { skillId, inputs });
         testResult = await skillsApi.testSkill(skillId, { inputs });
       }
       setResult(testResult);
@@ -143,107 +122,35 @@ const SkillTester: React.FC<SkillTesterProps> = ({
             className="w-full px-3 py-2 rounded-xl bg-muted/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 min-h-[100px]"
             placeholder={t('skills.naturalLanguageInputPlaceholder', '例如：获取伦敦的天气信息')}
           />
-          
-          {/* Execution Mode Selection */}
+
           <div className="space-y-2">
-            <label className="block text-sm font-medium text-foreground">
-              {t('skills.executionMode', '执行模式')}
+            <label className="block text-xs font-medium text-foreground">
+              {t('skills.selectAgent', '选择 Agent')}
             </label>
-            
-            {/* Dry Run Mode */}
-            <div 
-              className={`p-3 rounded-lg border cursor-pointer transition-colors ${
-                !useAgent 
-                  ? 'border-primary bg-primary/10' 
-                  : 'border-border/50 bg-muted/30 hover:bg-muted/50'
-              }`}
-              onClick={() => setUseAgent(false)}
-            >
-              <div className="flex items-start gap-3">
-                <input
-                  type="radio"
-                  checked={!useAgent}
-                  onChange={() => setUseAgent(false)}
-                  className="mt-0.5"
-                />
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Terminal className="w-4 h-4" />
-                    <span className="font-medium text-sm">{t('skills.dryRunMode', '模拟运行')}</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {t('skills.dryRunModeDesc', '解析指令但不实际执行，快速查看将要执行的命令')}
-                  </p>
-                </div>
+            {loadingAgents ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                {t('common.loading', '加载中...')}
               </div>
-            </div>
-            
-            {/* Agent Execution Mode */}
-            <div 
-              className={`p-3 rounded-lg border cursor-pointer transition-colors ${
-                useAgent 
-                  ? 'border-primary bg-primary/10' 
-                  : 'border-border/50 bg-muted/30 hover:bg-muted/50'
-              }`}
-              onClick={() => setUseAgent(true)}
-            >
-              <div className="flex items-start gap-3">
-                <input
-                  type="radio"
-                  checked={useAgent}
-                  onChange={() => setUseAgent(true)}
-                  className="mt-0.5"
-                />
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Bot className="w-4 h-4" />
-                    <span className="font-medium text-sm">{t('skills.agentExecutionMode', '使用 Agent 执行')}</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {t('skills.agentExecutionModeDesc', 'Agent 使用 LLM 理解指令并真实执行技能包中的代码')}
-                  </p>
-                  
-                  {/* Agent Selection */}
-                  {useAgent && (
-                    <div className="mt-3 space-y-2">
-                      <label className="block text-xs font-medium text-foreground">
-                        {t('skills.selectAgent', '选择 Agent')}
-                      </label>
-                      {loadingAgents ? (
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                          {t('common.loading', '加载中...')}
-                        </div>
-                      ) : agents.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">
-                          {t('skills.noAgentsAvailable', '暂无可用 Agent，请先创建 Agent')}
-                        </p>
-                      ) : (
-                        <select
-                          value={selectedAgentId}
-                          onChange={(e) => setSelectedAgentId(e.target.value)}
-                          className="w-full px-3 py-2 text-sm rounded-lg bg-muted/50 border border-border/50 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                        >
-                          {agents.map((agent) => (
-                            <option key={agent.id} value={agent.id}>
-                              {agent.name}
-                              {agent.provider && agent.model 
-                                ? ` (${agent.provider}/${agent.model})`
-                                : ''}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
+            ) : agents.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {t('skills.noAgentsAvailable', '暂无可用 Agent，请先创建 Agent')}
+              </p>
+            ) : (
+              <select
+                value={selectedAgentId}
+                onChange={(e) => setSelectedAgentId(e.target.value)}
+                className="w-full px-3 py-2 text-sm rounded-lg bg-muted/50 border border-border/50 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+              >
+                {agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name}
+                    {agent.provider && agent.model ? ` (${agent.provider}/${agent.model})` : ''}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
-          
-          <p className="text-xs text-muted-foreground">
-            💡 {t('skills.testTip', '提示：模拟运行可快速验证指令解析，使用 Agent 执行可获得真实结果')}
-          </p>
         </div>
       ) : (
         // Structured inputs for langchain_tool
@@ -276,9 +183,9 @@ const SkillTester: React.FC<SkillTesterProps> = ({
       <button
         onClick={handleTest}
         disabled={
-          testing || 
+          testing ||
           (isAgentSkill && !naturalLanguageInput.trim()) ||
-          (isAgentSkill && useAgent && !selectedAgentId)
+          (isAgentSkill && !selectedAgentId)
         }
         className="w-full px-4 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-medium"
       >
@@ -329,65 +236,18 @@ const SkillTester: React.FC<SkillTesterProps> = ({
               
               {result.success ? (
                 isAgentSkill ? (
-                  // Agent skill result display
-                  <div className="space-y-3">
-                    {result.mode === 'agent_execution' ? (
-                      // Agent execution result
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <Bot className="w-4 h-4 text-muted-foreground" />
-                          <div className="text-sm font-medium text-foreground">
-                            {t('skills.agentExecutionResult', 'Agent 执行结果：')}
-                          </div>
-                        </div>
-                        <div className="markdown-content bg-muted/30 p-4 rounded-lg overflow-x-auto">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {result.output || ''}
-                          </ReactMarkdown>
-                        </div>
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <Bot className="w-4 h-4 text-muted-foreground" />
+                      <div className="text-sm font-medium text-foreground">
+                        {t('skills.agentExecutionResult', 'Agent 执行结果：')}
                       </div>
-                    ) : result.parsed_commands ? (
-                      // Dry run result with parsed commands
-                      <>
-                        {/* Parsed Commands */}
-                        <div>
-                          <div className="flex items-center gap-2 mb-2">
-                            <Terminal className="w-4 h-4 text-muted-foreground" />
-                            <div className="text-sm font-medium text-foreground">
-                              {t('skills.parsedCommands', '解析的命令：')}
-                            </div>
-                          </div>
-                          <div className="space-y-2">
-                            {result.parsed_commands.map((cmd, i) => (
-                              <div key={i} className="p-3 bg-muted/30 rounded-lg border border-border/30">
-                                <div className="flex items-start gap-2 mb-1">
-                                  <Code className="w-3 h-3 text-muted-foreground mt-0.5 flex-shrink-0" />
-                                  <div className="text-xs text-muted-foreground">{cmd.command_type}</div>
-                                </div>
-                                <pre className="text-sm text-foreground font-mono mb-1 overflow-x-auto whitespace-pre-wrap break-words">
-                                  {cmd.command}
-                                </pre>
-                                {cmd.description && (
-                                  <div className="text-xs text-muted-foreground mt-2">{cmd.description}</div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                        
-                        {/* Output */}
-                        <div>
-                          <div className="text-sm font-medium text-foreground mb-2">
-                            {dryRun ? t('skills.simulatedOutput', '模拟输出：') : t('skills.actualOutput', '实际输出：')}
-                          </div>
-                          <div className="markdown-content bg-muted/30 p-4 rounded-lg overflow-x-auto">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {result.actual_output || result.simulated_output || ''}
-                            </ReactMarkdown>
-                          </div>
-                        </div>
-                      </>
-                    ) : null}
+                    </div>
+                    <div className="markdown-content bg-muted/30 p-4 rounded-lg overflow-x-auto">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {String(result.output || '')}
+                      </ReactMarkdown>
+                    </div>
                   </div>
                 ) : (
                   // LangChain tool result display

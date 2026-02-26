@@ -3983,6 +3983,8 @@ _GENERIC_CONTENT_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
 _ATTACHMENT_MAX_CHARS_PER_FILE = 6000
 _ATTACHMENT_MAX_CHARS_TOTAL = 12000
 _ATTACHMENT_MAX_TEXT_BYTES = 2 * 1024 * 1024
+_ATTACHMENT_WORKSPACE_DIR = "input"
+_ATTACHMENT_DEFAULT_FILENAME = "attachment.bin"
 
 _MINIO_DOCUMENT_EXTENSIONS = {
     "pdf",
@@ -4284,6 +4286,80 @@ def _build_attachment_prompt_context(
     return "\n\nAttached files context:\n" + "\n\n".join(sections)
 
 
+def _sanitize_workspace_attachment_filename(filename: str) -> str:
+    """Normalize user-provided attachment filename for workspace storage."""
+    name = Path(str(filename or "")).name.strip().replace("\x00", "")
+    if not name:
+        return _ATTACHMENT_DEFAULT_FILENAME
+    name = name.replace("\\", "_").replace("/", "_")
+    return name or _ATTACHMENT_DEFAULT_FILENAME
+
+
+def _materialize_attachment_files_to_workspace(
+    workdir: Path,
+    file_refs: List["FileReference"],
+    attachment_payloads: Dict[str, bytes],
+    *,
+    target_dir: str = _ATTACHMENT_WORKSPACE_DIR,
+) -> Tuple[int, List[str]]:
+    """Write uploaded file bytes to session workspace and annotate workspace paths."""
+    if not file_refs or not attachment_payloads:
+        return 0, []
+
+    destination_root = (workdir / target_dir).resolve()
+    destination_root.mkdir(parents=True, exist_ok=True)
+
+    written_count = 0
+    errors: List[str] = []
+    reserved_names: set[str] = set()
+
+    for file_ref in file_refs:
+        payload = attachment_payloads.get(file_ref.path)
+        if payload is None:
+            continue
+
+        safe_name = _sanitize_workspace_attachment_filename(file_ref.name)
+        stem = Path(safe_name).stem or "attachment"
+        suffix = Path(safe_name).suffix
+        candidate = safe_name
+        duplicate_index = 2
+        while candidate in reserved_names or (destination_root / candidate).exists():
+            candidate = f"{stem}_{duplicate_index}{suffix}"
+            duplicate_index += 1
+
+        destination_path = destination_root / candidate
+        try:
+            destination_path.write_bytes(payload)
+            reserved_names.add(candidate)
+            written_count += 1
+            file_ref.workspace_path = f"{target_dir}/{candidate}".replace("\\", "/")
+        except OSError as exc:
+            errors.append(f"{file_ref.name}: {str(exc)}")
+
+    return written_count, errors
+
+
+def _build_attachment_workspace_context(file_refs: List["FileReference"]) -> str:
+    """Build prompt section that tells the agent where uploaded files are in workspace."""
+    if not file_refs:
+        return ""
+
+    lines: List[str] = []
+    for file_ref in file_refs:
+        if not file_ref.workspace_path:
+            continue
+        lines.append(f"- {file_ref.name}: /workspace/{file_ref.workspace_path}")
+
+    if not lines:
+        return ""
+
+    return (
+        "\n\nAttached files are available in workspace:\n"
+        + "\n".join(lines)
+        + "\nUse these paths when reading original uploaded files."
+    )
+
+
 class TestAgentRequest(BaseModel):
     """Test agent request."""
 
@@ -4303,6 +4379,7 @@ class FileReference(BaseModel):
     content_type: str  # MIME type
     extracted_text: Optional[str] = None  # Extracted text for document-like files
     extraction_error: Optional[str] = None  # Extraction failure reason, if any
+    workspace_path: Optional[str] = None  # Session workspace path (e.g., input/report.pdf)
 
 
 @router.post("/{agent_id}/test")
@@ -4356,6 +4433,7 @@ async def test_agent(
     - Document attachments are parsed to text using knowledge_base extractors
     - Text-like unknown files use a safe decode fallback
     - Unsupported/binary files are still attached with a metadata note
+    - Uploaded files are materialized under `/workspace/input/` for direct file access
 
     Args:
         agent_id: Agent ID
@@ -4414,6 +4492,7 @@ async def test_agent(
 
         # Upload files to MinIO and create file references
         file_refs: List[FileReference] = []
+        attachment_payloads: Dict[str, bytes] = {}
         if files:
             minio_client = get_minio_client()
 
@@ -4479,6 +4558,7 @@ async def test_agent(
                         extraction_error=extraction_error,
                     )
                     file_refs.append(file_ref)
+                    attachment_payloads[file_ref.path] = file_data
 
                     logger.info(
                         f"File uploaded for agent test: {file.filename}",
@@ -4565,6 +4645,41 @@ async def test_agent(
                         "sandbox_id": conversation_session.sandbox_id,
                     },
                 )
+
+                if file_refs:
+                    written_files, materialize_errors = _materialize_attachment_files_to_workspace(
+                        conversation_session.workdir,
+                        file_refs,
+                        attachment_payloads,
+                    )
+                    if written_files > 0:
+                        yield (
+                            "data: "
+                            + json.dumps(
+                                {
+                                    "type": "info",
+                                    "content": (
+                                        f"Copied {written_files} uploaded file(s) to "
+                                        "/workspace/input/ for agent access."
+                                    ),
+                                }
+                            )
+                            + "\n\n"
+                        )
+                    for error_text in materialize_errors:
+                        yield (
+                            "data: "
+                            + json.dumps(
+                                {
+                                    "type": "info",
+                                    "content": (
+                                        "Failed to copy one uploaded file to workspace: "
+                                        f"{error_text}"
+                                    ),
+                                }
+                            )
+                            + "\n\n"
+                        )
 
                 # Check if agent is already cached
                 # Include capabilities in cache key to invalidate when skills change
@@ -4792,8 +4907,13 @@ async def test_agent(
                                 + "\n\n"
                             )
 
-                # Keep task text clean; BaseAgent will inject context consistently.
-                user_message = message_with_attachments
+                # Keep task text clean; BaseAgent will inject retrieval context consistently.
+                attachment_workspace_context = _build_attachment_workspace_context(file_refs)
+                user_message = (
+                    f"{message_with_attachments}{attachment_workspace_context}"
+                    if attachment_workspace_context
+                    else message_with_attachments
+                )
 
                 # Check if model supports vision
                 model_supports_vision = False

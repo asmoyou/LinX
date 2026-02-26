@@ -19,7 +19,6 @@ export default function Skills() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isCodePreviewOpen, setIsCodePreviewOpen] = useState(false);
   const [isAgentSkillViewerOpen, setIsAgentSkillViewerOpen] = useState(false);
-  const [agentSkillViewerMode, setAgentSkillViewerMode] = useState<'view' | 'edit'>('view');
   const [isTesterModalOpen, setIsTesterModalOpen] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
   useEffect(() => {
@@ -69,7 +68,6 @@ export default function Skills() {
     setSelectedSkill(skill);
     // Use different editor based on skill type
     if (skill.skill_type === 'agent_skill') {
-      setAgentSkillViewerMode('edit');
       setIsAgentSkillViewerOpen(true);
     } else {
       setIsEditModalOpen(true);
@@ -87,14 +85,11 @@ export default function Skills() {
   };
 
   const handleViewCode = (skill: Skill) => {
-    setSelectedSkill(skill);
-    // Use different viewer based on skill type
     if (skill.skill_type === 'agent_skill') {
-      setAgentSkillViewerMode('view');
-      setIsAgentSkillViewerOpen(true);
-    } else {
-      setIsCodePreviewOpen(true);
+      return;
     }
+    setSelectedSkill(skill);
+    setIsCodePreviewOpen(true);
   };
 
   const handleDeleteSkill = async (skillId: string) => {
@@ -296,11 +291,10 @@ export default function Skills() {
             onClose={() => {
               setIsAgentSkillViewerOpen(false);
               setSelectedSkill(null);
-              setAgentSkillViewerMode('view');
             }}
             skillId={selectedSkill.skill_id}
             skillName={selectedSkill.name}
-            mode={agentSkillViewerMode}
+            mode="edit"
             onUpdate={loadSkills}
           />
         )}
