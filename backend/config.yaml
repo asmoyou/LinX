@@ -507,9 +507,11 @@ memory:
       model_enabled: true
       provider: aliyun-bl
       model: qwen3.5-flash-2026-02-23
-      timeout_seconds: 20
-      max_facts: 8
+      timeout_seconds: 120
+      max_facts: 10
       failure_backoff_seconds: 60
+      max_preference_facts: 10
+      max_agent_candidates: 6
   cleanup_orphans:
     enabled: true
     run_on_startup: true
