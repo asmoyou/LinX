@@ -1,5 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Eye, FileText, Folder, RefreshCw, X } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  Download,
+  Eye,
+  File,
+  Folder,
+  FolderOpen,
+  RefreshCw,
+  X,
+} from 'lucide-react';
 import { agentsApi } from '@/api';
 import type { AgentSessionWorkspaceFile } from '@/api/agents';
 
@@ -11,6 +21,15 @@ interface SessionWorkspacePanelProps {
 }
 
 type PreviewKind = 'empty' | 'loading' | 'text' | 'image' | 'pdf' | 'unsupported' | 'error';
+
+interface FileTreeNode {
+  name: string;
+  path: string;
+  treePath: string;
+  type: 'file' | 'directory';
+  size?: number;
+  children?: FileTreeNode[];
+}
 
 const POLL_INTERVAL_MS = 8000;
 const TEXT_PREVIEW_MAX_CHARS = 120000;
@@ -61,6 +80,121 @@ function downloadBlob(blob: Blob, fileName: string): void {
   window.URL.revokeObjectURL(url);
 }
 
+function splitPathSegments(path: string): string[] {
+  return path.split('/').filter(Boolean);
+}
+
+function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
+  const sorted = [...nodes].sort((a, b) => {
+    if (a.type !== b.type) {
+      return a.type === 'directory' ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  return sorted.map((node) =>
+    node.type === 'directory' && node.children
+      ? { ...node, children: sortTree(node.children) }
+      : node
+  );
+}
+
+function buildFileTree(entries: AgentSessionWorkspaceFile[]): FileTreeNode[] {
+  const root: FileTreeNode[] = [];
+
+  const ensureDirectory = (
+    container: FileTreeNode[],
+    name: string,
+    treePath: string
+  ): FileTreeNode => {
+    const existing = container.find(
+      (node) => node.type === 'directory' && node.treePath === treePath
+    );
+    if (existing) return existing;
+
+    const created: FileTreeNode = {
+      name,
+      path: treePath,
+      treePath,
+      type: 'directory',
+      children: [],
+    };
+    container.push(created);
+    return created;
+  };
+
+  const sortedEntries = [...entries].sort((a, b) => a.path.localeCompare(b.path));
+
+  sortedEntries.forEach((entry) => {
+    const parts = splitPathSegments(entry.path);
+    if (parts.length === 0) return;
+
+    let currentLevel = root;
+    let currentTreePath = '';
+
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i];
+      currentTreePath = currentTreePath ? `${currentTreePath}/${part}` : part;
+      const isLeaf = i === parts.length - 1;
+
+      if (isLeaf && !entry.is_dir) {
+        const exists = currentLevel.some(
+          (node) => node.type === 'file' && node.path === entry.path
+        );
+        if (!exists) {
+          currentLevel.push({
+            name: entry.name || part,
+            path: entry.path,
+            treePath: currentTreePath,
+            type: 'file',
+            size: entry.size,
+          });
+        }
+      } else {
+        const directory = ensureDirectory(currentLevel, part, currentTreePath);
+        currentLevel = directory.children || [];
+        directory.children = currentLevel;
+      }
+    }
+  });
+
+  return sortTree(root);
+}
+
+function findFirstFileNode(nodes: FileTreeNode[]): FileTreeNode | null {
+  for (const node of nodes) {
+    if (node.type === 'file') return node;
+    if (node.children) {
+      const found = findFirstFileNode(node.children);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findFileNodeByPath(nodes: FileTreeNode[], path: string): FileTreeNode | null {
+  for (const node of nodes) {
+    if (node.type === 'file' && node.path === path) return node;
+    if (node.type === 'directory' && node.children) {
+      const found = findFileNodeByPath(node.children, path);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function collectAncestorFolders(treePath: string): string[] {
+  const parts = splitPathSegments(treePath);
+  const ancestors: string[] = [];
+
+  parts.slice(0, -1).forEach((part, index) => {
+    const parentPath = index === 0 ? part : `${ancestors[index - 1]}/${part}`;
+    ancestors.push(parentPath);
+  });
+
+  return ancestors;
+}
+
 export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
   agentId,
   sessionId,
@@ -71,6 +205,7 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [previewKind, setPreviewKind] = useState<PreviewKind>('empty');
   const [previewText, setPreviewText] = useState('');
@@ -123,6 +258,7 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
     if (!isOpen || !sessionId) {
       setFiles([]);
       setSelectedPath(null);
+      setExpandedFolders(new Set());
       setError(null);
       resetPreview();
       return;
@@ -145,24 +281,53 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
     };
   }, [cleanupPreviewUrl]);
 
-  useEffect(() => {
-    if (!files.length) {
-      setSelectedPath(null);
-      resetPreview();
-      return;
-    }
+  const fileEntries = useMemo(() => files.filter((file) => !file.is_dir), [files]);
+  const fileTree = useMemo(() => buildFileTree(files), [files]);
 
-    const fileEntries = files.filter((file) => !file.is_dir);
+  const expandAncestors = useCallback((treePath: string) => {
+    const ancestors = collectAncestorFolders(treePath);
+    if (ancestors.length === 0) return;
+
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+      ancestors.forEach((folderPath) => {
+        if (!next.has(folderPath)) {
+          next.add(folderPath);
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
+  useEffect(() => {
     if (fileEntries.length === 0) {
       setSelectedPath(null);
+      setExpandedFolders(new Set());
       resetPreview();
       return;
     }
 
-    if (!selectedPath || !fileEntries.some((file) => file.path === selectedPath)) {
-      setSelectedPath(fileEntries[0].path);
+    if (selectedPath && fileEntries.some((file) => file.path === selectedPath)) {
+      const currentNode = findFileNodeByPath(fileTree, selectedPath);
+      if (currentNode) {
+        expandAncestors(currentNode.treePath);
+      }
+      return;
     }
-  }, [files, resetPreview, selectedPath]);
+
+    const firstFileNode = findFirstFileNode(fileTree);
+    if (!firstFileNode) {
+      setSelectedPath(null);
+      setExpandedFolders(new Set());
+      resetPreview();
+      return;
+    }
+
+    setSelectedPath(firstFileNode.path);
+    expandAncestors(firstFileNode.treePath);
+  }, [expandAncestors, fileEntries, fileTree, resetPreview, selectedPath]);
 
   const selectedFile = useMemo(
     () =>
@@ -249,6 +414,81 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
     [agentId, sessionId]
   );
 
+  const toggleFolder = useCallback((path: string) => {
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleSelectNode = useCallback(
+    (node: FileTreeNode) => {
+      if (node.type !== 'file') return;
+      setSelectedPath(node.path);
+      expandAncestors(node.treePath);
+    },
+    [expandAncestors]
+  );
+
+  const renderTree = useCallback(
+    (nodes: FileTreeNode[], level = 0): React.ReactNode =>
+      nodes.map((node) => {
+        if (node.type === 'directory') {
+          const isExpanded = expandedFolders.has(node.treePath);
+          return (
+            <div key={`dir:${node.treePath}`}>
+              <button
+                type="button"
+                onClick={() => toggleFolder(node.treePath)}
+                className="w-full flex items-center gap-1.5 py-1.5 px-2 text-left rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+                style={{ paddingLeft: `${level * 16 + 8}px` }}
+              >
+                {isExpanded ? (
+                  <ChevronDown className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+                )}
+                {isExpanded ? (
+                  <FolderOpen className="w-4 h-4 text-cyan-500 dark:text-cyan-400" />
+                ) : (
+                  <Folder className="w-4 h-4 text-cyan-500 dark:text-cyan-400" />
+                )}
+                <span className="text-xs text-zinc-700 dark:text-zinc-200 truncate">{node.name}</span>
+              </button>
+              {isExpanded && node.children && <div>{renderTree(node.children, level + 1)}</div>}
+            </div>
+          );
+        }
+
+        const isSelected = node.path === selectedPath;
+        return (
+          <button
+            key={`file:${node.path}`}
+            type="button"
+            onClick={() => handleSelectNode(node)}
+            className={`w-full flex items-center gap-1.5 py-1.5 px-2 text-left rounded-md transition-colors ${
+              isSelected
+                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
+                : 'text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+            }`}
+            style={{ paddingLeft: `${level * 16 + 28}px` }}
+          >
+            <File className="w-3.5 h-3.5 flex-shrink-0" />
+            <span className="text-xs truncate flex-1">{node.name}</span>
+            <span className="text-[10px] text-zinc-400 dark:text-zinc-500 flex-shrink-0">
+              {formatFileSize(node.size || 0)}
+            </span>
+          </button>
+        );
+      }),
+    [expandedFolders, handleSelectNode, selectedPath, toggleFolder]
+  );
+
   if (!isOpen) return null;
 
   return (
@@ -257,7 +497,7 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
         <div>
           <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">Workspace Files</h3>
           <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-            {files.filter((item) => !item.is_dir).length} file(s), {files.length} item(s)
+            {fileEntries.length} file(s), {files.length} item(s)
           </p>
         </div>
         <div className="flex items-center gap-1">
@@ -289,52 +529,8 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
               No files in workspace yet.
             </div>
           ) : (
-            <div className="p-2 space-y-1">
-              {files.map((file) => {
-                const selected = !file.is_dir && file.path === selectedPath;
-                const depth = Math.max(file.path.split('/').filter(Boolean).length - 1, 0);
-                return (
-                  <button
-                    key={file.path}
-                    type="button"
-                    onClick={() => {
-                      if (!file.is_dir) {
-                        setSelectedPath(file.path);
-                      }
-                    }}
-                    aria-disabled={file.is_dir}
-                    className={`w-full text-left px-2 py-2 rounded-md border transition-colors ${
-                      selected
-                        ? 'border-emerald-300 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-900/20'
-                        : file.is_dir
-                          ? 'border-transparent bg-transparent'
-                          : 'border-transparent hover:border-zinc-200 dark:hover:border-zinc-700 hover:bg-white/80 dark:hover:bg-zinc-800/80'
-                    }`}
-                    style={{ paddingLeft: `${8 + depth * 12}px` }}
-                  >
-                    <div className="flex items-start gap-2">
-                      {file.is_dir ? (
-                        <Folder className="w-4 h-4 mt-0.5 text-zinc-500 dark:text-zinc-400" />
-                      ) : (
-                        <FileText className="w-4 h-4 mt-0.5 text-zinc-500 dark:text-zinc-400" />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs font-medium text-zinc-800 dark:text-zinc-200 truncate">
-                          {file.name}
-                        </p>
-                        <p className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
-                          {file.path}
-                        </p>
-                        {!file.is_dir && (
-                          <p className="text-[11px] text-zinc-400 dark:text-zinc-500">
-                            {formatFileSize(file.size)}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
+            <div className="p-2">
+              {renderTree(fileTree)}
             </div>
           )}
         </div>
@@ -343,7 +539,7 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
           <div className="px-3 py-2 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-2">
             <div className="min-w-0">
               <p className="text-xs font-medium text-zinc-700 dark:text-zinc-200 truncate">
-                {selectedFile?.name || 'No file selected'}
+                {selectedFile?.path || 'No file selected'}
               </p>
               {previewMime && (
                 <p className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">{previewMime}</p>
