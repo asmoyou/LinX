@@ -1471,6 +1471,13 @@
       "dateTo": "结束日期",
       "tags": "标签"
     },
+    "pagination": {
+      "summary": "{{start}}-{{end}} / {{total}}",
+      "pageSize": "{{size}} / 页",
+      "page": "第 {{current}} / {{total}} 页",
+      "prev": "上一页",
+      "next": "下一页"
+    },
     "create": {
       "title": "新建记忆",
       "type": "类型",

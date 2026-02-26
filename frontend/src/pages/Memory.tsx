@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Brain,
   Building,
+  ChevronLeft,
+  ChevronRight,
   User,
   Plus,
   Search,
@@ -39,6 +41,9 @@ const getErrorDetail = (error: unknown): string | null => {
     ?.detail;
   return typeof detail === "string" && detail.trim() ? detail : null;
 };
+
+const DEFAULT_MEMORY_PAGE_SIZE = 18;
+const MEMORY_PAGE_SIZE_OPTIONS = [12, 18, 24, 36];
 
 const CreateMemoryModal: React.FC<{
   isOpen: boolean;
@@ -243,7 +248,6 @@ export const Memory: React.FC = () => {
     isLoading,
     error,
     setMemoriesByType,
-    addMemory,
     updateMemory,
     removeMemory,
     setLoading,
@@ -263,6 +267,15 @@ export const Memory: React.FC = () => {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isConfigPanelOpen, setIsConfigPanelOpen] = useState(false);
   const [isRetrievalTestOpen, setIsRetrievalTestOpen] = useState(false);
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_MEMORY_PAGE_SIZE);
+  const [activeTotal, setActiveTotal] = useState(0);
+  const [tabTotals, setTabTotals] = useState<Record<MemoryCategory, number>>({
+    agent: 0,
+    company: 0,
+    user_context: 0,
+  });
   const [useSemanticSearchResults, setUseSemanticSearchResults] =
     useState(false);
   const [reindexingMemoryId, setReindexingMemoryId] = useState<string | null>(
@@ -291,117 +304,173 @@ export const Memory: React.FC = () => {
     user_context: "memory.empty.userContext",
   };
 
-  // Fetch memories for a specific type (merges into store without clearing other types)
-  const fetchMemoriesByType = useCallback(
+  const fetchTabTotalByType = useCallback(
     async (type: MemoryCategory) => {
       try {
-        const data = await memoriesApi.getByType(type);
-        setMemoriesByType(type, data);
+        const data = await memoriesApi.getByTypePaged(type, {
+          offset: 0,
+          limit: 1,
+        });
+        setTabTotals((prev) => ({
+          ...prev,
+          [type]: data.total,
+        }));
       } catch {
-        // Silently fail for background tab loading
+        // Silently fail for background tab total loading
       }
     },
-    [setMemoriesByType],
+    [],
   );
 
-  // Load all tab counts on mount
   useEffect(() => {
     const types: MemoryCategory[] = ["agent", "company", "user_context"];
-    types.forEach((type) => fetchMemoriesByType(type));
-  }, [fetchMemoriesByType]);
+    types.forEach((type) => {
+      void fetchTabTotalByType(type);
+    });
+  }, [fetchTabTotalByType]);
 
-  // Fetch active tab memories when tab changes
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery.trim());
+    }, 400);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [searchQuery]);
+
+  const selectedTagsKey = useMemo(
+    () => [...selectedTags].sort().join("|"),
+    [selectedTags],
+  );
+  const activeFilters = useMemo(
+    () => ({
+      dateFrom: dateFrom || undefined,
+      dateTo: dateTo || undefined,
+      tags: selectedTags.length > 0 ? selectedTags : undefined,
+    }),
+    [dateFrom, dateTo, selectedTags],
+  );
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeTab, debouncedSearchQuery, dateFrom, dateTo, selectedTagsKey, pageSize]);
+
   const fetchActiveTabMemories = useCallback(async () => {
     setLoading(true);
     clearError();
+    const query = debouncedSearchQuery;
+
     try {
-      const data = await memoriesApi.getByType(activeTab);
-      setMemoriesByType(activeTab, data);
+      if (query && activeTab === "agent") {
+        const data = await memoriesApi.search({
+          query,
+          type: activeTab,
+          limit: 100,
+        });
+        setUseSemanticSearchResults(true);
+        setMemoriesByType(activeTab, data);
+        setActiveTotal(data.length);
+        setTabTotals((prev) => ({
+          ...prev,
+          [activeTab]: data.length,
+        }));
+        return;
+      }
+
+      const data = await memoriesApi.getByTypePaged(activeTab, {
+        offset: (currentPage - 1) * pageSize,
+        limit: pageSize,
+        query: query || undefined,
+        filters: activeFilters,
+      });
+      setUseSemanticSearchResults(false);
+      setMemoriesByType(activeTab, data.items);
+      setActiveTotal(data.total);
+      setTabTotals((prev) => ({
+        ...prev,
+        [activeTab]: data.total,
+      }));
     } catch (error: unknown) {
       setError(getErrorDetail(error) || t("memory.loadError"));
     } finally {
       setLoading(false);
     }
-  }, [activeTab, setMemoriesByType, setLoading, setError, clearError, t]);
+  }, [
+    activeFilters,
+    activeTab,
+    clearError,
+    currentPage,
+    debouncedSearchQuery,
+    pageSize,
+    setError,
+    setLoading,
+    setMemoriesByType,
+    t,
+  ]);
 
   useEffect(() => {
-    fetchActiveTabMemories();
+    void fetchActiveTabMemories();
   }, [fetchActiveTabMemories]);
 
-  // Debounced search
-  useEffect(() => {
-    const query = searchQuery.trim();
-    if (!query) {
-      setUseSemanticSearchResults(false);
-      return;
-    }
-
-    // Company and user-context tabs use local keyword filtering
-    // so users can still search when embedding services are unavailable.
-    if (activeTab !== "agent") {
-      setUseSemanticSearchResults(false);
-      return;
-    }
-
-    const timer = setTimeout(async () => {
-      setLoading(true);
-      setUseSemanticSearchResults(true);
-      try {
-        const data = await memoriesApi.search({
-          query,
-          type: activeTab,
-          limit: 50,
-        });
-        setMemoriesByType(activeTab, data);
-      } catch {
-        // Fallback to local keyword filtering if semantic search fails.
-        setUseSemanticSearchResults(false);
-      } finally {
-        setLoading(false);
-      }
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [searchQuery, activeTab, setMemoriesByType, setLoading]);
-
-  // Re-fetch when search is cleared
-  useEffect(() => {
-    if (searchQuery === "") {
-      fetchActiveTabMemories();
-    }
-  }, [searchQuery, fetchActiveTabMemories]);
-
-  // Get all unique tags for the current type
-  const allTags = Array.from(
-    new Set(
-      memories.filter((m) => m.type === activeTab).flatMap((m) => m.tags),
-    ),
+  const allTags = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          memories.filter((m) => m.type === activeTab).flatMap((m) => m.tags),
+        ),
+      ),
+    [activeTab, memories],
   );
 
-  // Filter memories locally (for date/tag filters)
-  const filteredMemories = memories.filter((memory) => {
-    if (memory.type !== activeTab) return false;
-    if (dateFrom && new Date(memory.createdAt) < new Date(dateFrom))
-      return false;
-    if (dateTo && new Date(memory.createdAt) > new Date(dateTo)) return false;
-    if (selectedTags.length > 0) {
-      if (!selectedTags.some((tag) => memory.tags.includes(tag))) return false;
+  const filteredMemories = useMemo(
+    () =>
+      memories.filter((memory) => {
+        if (memory.type !== activeTab) return false;
+        if (!useSemanticSearchResults) return true;
+        if (dateFrom && new Date(memory.createdAt) < new Date(dateFrom))
+          return false;
+        if (dateTo && new Date(memory.createdAt) > new Date(dateTo)) return false;
+        if (selectedTags.length > 0) {
+          if (!selectedTags.some((tag) => memory.tags.includes(tag))) return false;
+        }
+        return true;
+      }),
+    [activeTab, dateFrom, dateTo, memories, selectedTags, useSemanticSearchResults],
+  );
+
+  const hasActiveFilters = Boolean(
+    debouncedSearchQuery || dateFrom || dateTo || selectedTags.length > 0,
+  );
+  const effectiveTotal = useMemo(
+    () => (useSemanticSearchResults ? filteredMemories.length : activeTotal),
+    [activeTotal, filteredMemories.length, useSemanticSearchResults],
+  );
+  const totalPages = Math.max(1, Math.ceil(effectiveTotal / pageSize));
+  const visibleMemories = useMemo(() => {
+    if (!useSemanticSearchResults) {
+      return filteredMemories;
     }
-    if (searchQuery.trim() && !useSemanticSearchResults) {
-      const query = searchQuery.trim().toLowerCase();
-      const summaryText = memory.summary?.toLowerCase() || "";
-      const hasMatchingTag = memory.tags.some((tag) =>
-        tag.toLowerCase().includes(query),
-      );
-      if (
-        !memory.content.toLowerCase().includes(query) &&
-        !summaryText.includes(query) &&
-        !hasMatchingTag
-      ) {
-        return false;
-      }
+    const start = (currentPage - 1) * pageSize;
+    return filteredMemories.slice(start, start + pageSize);
+  }, [currentPage, filteredMemories, pageSize, useSemanticSearchResults]);
+  const pageStart = effectiveTotal === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const pageEnd = effectiveTotal === 0
+    ? 0
+    : Math.min(effectiveTotal, (currentPage - 1) * pageSize + visibleMemories.length);
+  const showPagerPanel = effectiveTotal > 0 || hasActiveFilters;
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
     }
-    return true;
-  });
+  }, [currentPage, totalPages]);
+
+  useEffect(() => {
+    if (selectedMemory && !memories.some((item) => item.id === selectedMemory.id)) {
+      setSelectedMemory(null);
+      setIsDetailViewOpen(false);
+    }
+  }, [memories, selectedMemory]);
 
   const handleMemoryClick = (memory: MemoryType) => {
     setSelectedMemory(memory);
@@ -468,7 +537,7 @@ export const Memory: React.FC = () => {
       if (selectedMemory?.id === memoryId) {
         setSelectedMemory(updated);
       }
-      fetchActiveTabMemories();
+      void fetchActiveTabMemories();
       toast.success(
         payload.mode === "publish"
           ? t("memory.share.publishSuccess")
@@ -556,7 +625,8 @@ export const Memory: React.FC = () => {
         });
       }
 
-      fetchMemoriesByType(activeTab);
+      void fetchActiveTabMemories();
+      void fetchTabTotalByType(activeTab);
       toast.success(
         options.reindexAfterSave
           ? t("memory.detail.saveAndReindexSuccess", "Memory updated and index rebuilt")
@@ -579,6 +649,8 @@ export const Memory: React.FC = () => {
       removeMemory(memory.id);
       setIsDetailViewOpen(false);
       setSelectedMemory(null);
+      void fetchActiveTabMemories();
+      void fetchTabTotalByType(activeTab);
     } catch {
       // Delete failed
     }
@@ -596,7 +668,10 @@ export const Memory: React.FC = () => {
       if (selectedMemory?.id === memory.id) {
         setSelectedMemory(updated);
       }
-      fetchMemoriesByType("agent");
+      if (activeTab === "agent") {
+        void fetchActiveTabMemories();
+      }
+      void fetchTabTotalByType("agent");
       toast.success(
         action === "publish"
           ? t("memory.share.reviewApproveSuccess", { defaultValue: "候选记忆已审批发布" })
@@ -618,14 +693,15 @@ export const Memory: React.FC = () => {
   };
 
   const handleMemoryCreated = (memory: MemoryType) => {
-    addMemory(memory);
+    void memory;
     setActiveTab("company");
     setSearchQuery("");
     setDateFrom("");
     setDateTo("");
     setSelectedTags([]);
     setUseSemanticSearchResults(false);
-    fetchMemoriesByType("company");
+    setCurrentPage(1);
+    void fetchTabTotalByType("company");
     toast.success(t("memory.create.success"));
   };
 
@@ -695,7 +771,7 @@ export const Memory: React.FC = () => {
       <div className="flex gap-2 mb-4 overflow-x-auto">
         {tabs.map((tab) => {
           const Icon = tab.icon;
-          const count = memories.filter((m) => m.type === tab.id).length;
+          const count = tabTotals[tab.id] || 0;
           return (
             <button
               key={tab.id}
@@ -752,16 +828,16 @@ export const Memory: React.FC = () => {
       {/* Memory Grid */}
       {!isLoading && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredMemories.length === 0 ? (
+          {visibleMemories.length === 0 ? (
             <div className="col-span-full text-center py-12">
               <p className="text-gray-500 dark:text-gray-400">
-                {memories.filter((m) => m.type === activeTab).length === 0
+                {effectiveTotal === 0 && !hasActiveFilters
                   ? t(emptyKey[activeTab])
                   : t("memory.noResults")}
               </p>
             </div>
           ) : (
-            filteredMemories.map((memory) => (
+            visibleMemories.map((memory) => (
               <MemoryCard
                 key={memory.id}
                 memory={memory}
@@ -776,6 +852,58 @@ export const Memory: React.FC = () => {
               />
             ))
           )}
+        </div>
+      )}
+
+      {!isLoading && showPagerPanel && (
+        <div className="mt-6 pt-4 border-t border-zinc-200 dark:border-zinc-700 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            {t("memory.pagination.summary", {
+              start: pageStart,
+              end: pageEnd,
+              total: effectiveTotal,
+              defaultValue: "{{start}}-{{end}} / {{total}}",
+            })}
+          </p>
+          <div className="flex items-center gap-2">
+            <select
+              value={String(pageSize)}
+              onChange={(event) => setPageSize(Number(event.target.value))}
+              className="px-2.5 py-1.5 bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-md text-xs text-zinc-700 dark:text-zinc-200"
+            >
+              {MEMORY_PAGE_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>
+                  {t("memory.pagination.pageSize", {
+                    size,
+                    defaultValue: "{{size}} / page",
+                  })}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+              disabled={currentPage <= 1}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs rounded-md border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+              {t("memory.pagination.prev", { defaultValue: "Prev" })}
+            </button>
+            <span className="px-3 py-1 text-xs text-zinc-600 dark:text-zinc-400">
+              {t("memory.pagination.page", {
+                current: currentPage,
+                total: totalPages,
+                defaultValue: "Page {{current}} / {{total}}",
+              })}
+            </span>
+            <button
+              onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+              disabled={currentPage >= totalPages}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs rounded-md border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50"
+            >
+              {t("memory.pagination.next", { defaultValue: "Next" })}
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       )}
 

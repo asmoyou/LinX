@@ -401,6 +401,18 @@ class MemoryResponse(BaseModel):
     index_error: Optional[str] = Field(None, alias="indexError")
 
 
+class MemoryPageResponse(BaseModel):
+    """Paginated memory list response model."""
+
+    model_config = {"populate_by_name": True, "serialize_by_alias": True}
+
+    items: List[MemoryResponse]
+    total: int
+    offset: int
+    limit: int
+    has_more: bool = Field(False, alias="hasMore")
+
+
 class MemoryIndexInspectResponse(BaseModel):
     """Detailed vector index inspection response."""
 
@@ -1725,6 +1737,7 @@ def _apply_response_filters(
     date_from: Optional[str],
     date_to: Optional[str],
     tags: Optional[str],
+    query_text: Optional[str] = None,
 ) -> List[dict]:
     """Apply lightweight response filters (date/tags) on list endpoints."""
 
@@ -1736,8 +1749,9 @@ def _apply_response_filters(
     start_dt = _normalize(_parse_datetime_safe(date_from))
     end_dt = _normalize(_parse_datetime_safe(date_to))
     expected_tags = [tag.strip() for tag in (tags or "").split(",") if tag.strip()]
+    normalized_query = str(query_text or "").strip().lower()
 
-    if not start_dt and not end_dt and not expected_tags:
+    if not start_dt and not end_dt and not expected_tags and not normalized_query:
         return responses
 
     filtered = []
@@ -1755,9 +1769,45 @@ def _apply_response_filters(
             if not all(tag in item_tags for tag in expected_tags):
                 continue
 
+        if normalized_query:
+            content = str(item.get("content") or "").lower()
+            summary = str(item.get("summary") or "").lower()
+            item_tags = item.get("tags") or []
+            has_matching_tag = (
+                isinstance(item_tags, list)
+                and any(normalized_query in str(tag).lower() for tag in item_tags)
+            )
+            if (
+                normalized_query not in content
+                and normalized_query not in summary
+                and not has_matching_tag
+            ):
+                continue
+
         filtered.append(item)
 
     return filtered
+
+
+def _build_paginated_memory_response(
+    responses: List[dict],
+    *,
+    offset: int,
+    limit: int,
+) -> MemoryPageResponse:
+    """Build a paginated response from full result list."""
+    safe_offset = max(int(offset or 0), 0)
+    safe_limit = max(min(int(limit or 20), 100), 1)
+    total = len(responses)
+    items = responses[safe_offset : safe_offset + safe_limit]
+    has_more = safe_offset + len(items) < total
+    return MemoryPageResponse(
+        items=[MemoryResponse(**item) for item in items],
+        total=total,
+        offset=safe_offset,
+        limit=safe_limit,
+        has_more=has_more,
+    )
 
 
 def _retrieve_memories_sync(query):
@@ -1897,6 +1947,18 @@ def _retrieve_shared_sync(current_user: CurrentUser):
         ):
             shared.append(item)
     return shared
+
+
+def _list_memories_by_type_sync(memory_type, user_id: Optional[str]) -> List[dict]:
+    """List all memories of one type from PostgreSQL source-of-truth."""
+    repo = _get_memory_repository()
+    rows = repo.list_memories(
+        memory_type=memory_type,
+        user_id=user_id,
+        limit=None,
+    )
+    items = [row.to_memory_item() for row in rows]
+    return _items_to_responses(items)
 
 
 def _is_agent_candidate_response(item: dict) -> bool:
@@ -2965,6 +3027,55 @@ async def get_memories_by_type(
     results = await asyncio.to_thread(_filter_company_memory_access_sync, results, current_user)
 
     return [MemoryResponse(**r) for r in results]
+
+
+@router.get("/type/{memory_type}/paged", response_model=MemoryPageResponse)
+async def get_memories_by_type_paged(
+    memory_type: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    query_text: Optional[str] = Query(None, alias="query"),
+    date_from: Optional[str] = Query(None, alias="dateFrom"),
+    date_to: Optional[str] = Query(None, alias="dateTo"),
+    tags: Optional[str] = Query(None, description="Comma-separated tags"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Get paginated memories filtered by type with optional lightweight filters."""
+    from memory_system.memory_interface import MemoryType
+
+    try:
+        mem_type = MemoryType(memory_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid memory type: {memory_type}",
+        )
+
+    effective_user_id = _resolve_effective_user_id(mem_type, current_user)
+
+    try:
+        results = await asyncio.to_thread(
+            _list_memories_by_type_sync,
+            mem_type,
+            effective_user_id,
+        )
+    except Exception as e:
+        logger.error(f"Failed to retrieve paged memories by type: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve memories: {e}",
+        )
+
+    results = await asyncio.to_thread(_filter_agent_memory_access_sync, results, current_user)
+    results = await asyncio.to_thread(_filter_company_memory_access_sync, results, current_user)
+    results = _apply_response_filters(
+        results,
+        date_from=date_from,
+        date_to=date_to,
+        tags=tags,
+        query_text=query_text,
+    )
+    return _build_paginated_memory_response(results, offset=offset, limit=limit)
 
 
 @router.get("/agent/{agent_id}", response_model=List[MemoryResponse])

@@ -35,6 +35,21 @@ export interface SearchMemoriesRequest {
   filters?: MemoryFilter;
 }
 
+export interface MemoryPagedResponse {
+  items: Memory[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}
+
+export interface GetMemoriesByTypePagedOptions {
+  offset?: number;
+  limit?: number;
+  query?: string;
+  filters?: MemoryFilter;
+}
+
 export interface ShareMemoryRequest {
   user_ids?: string[];
   scope?: "explicit" | "department" | "department_tree" | "account" | "private" | "public";
@@ -122,6 +137,39 @@ export const memoriesApi = {
   ): Promise<Memory[]> => {
     const response = await apiClient.get<Memory[]>(`/memories/type/${type}`, {
       params: filters,
+    });
+    return response.data;
+  },
+
+  /**
+   * Get memories by type with pagination
+   */
+  getByTypePaged: async (
+    type: MemoryType,
+    options?: GetMemoriesByTypePagedOptions,
+  ): Promise<MemoryPagedResponse> => {
+    const params: Record<string, unknown> = {};
+    if (typeof options?.offset === "number") {
+      params.offset = options.offset;
+    }
+    if (typeof options?.limit === "number") {
+      params.limit = options.limit;
+    }
+    if (options?.query && options.query.trim()) {
+      params.query = options.query.trim();
+    }
+    if (options?.filters?.dateFrom) {
+      params.dateFrom = options.filters.dateFrom;
+    }
+    if (options?.filters?.dateTo) {
+      params.dateTo = options.filters.dateTo;
+    }
+    if (Array.isArray(options?.filters?.tags) && options?.filters?.tags.length > 0) {
+      params.tags = options.filters.tags.join(",");
+    }
+
+    const response = await apiClient.get<MemoryPagedResponse>(`/memories/type/${type}/paged`, {
+      params,
     });
     return response.data;
   },

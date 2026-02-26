@@ -1471,6 +1471,13 @@
       "dateTo": "To",
       "tags": "Tags"
     },
+    "pagination": {
+      "summary": "{{start}}-{{end}} / {{total}}",
+      "pageSize": "{{size}} / page",
+      "page": "Page {{current}} / {{total}}",
+      "prev": "Prev",
+      "next": "Next"
+    },
     "create": {
       "title": "New Memory",
       "type": "Type",

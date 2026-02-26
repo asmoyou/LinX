@@ -436,6 +436,32 @@ class TestMemoryResponse:
         assert resp.relevance_score is None
 
 
+class TestMemoryPageResponse:
+    """Test MemoryPageResponse schema."""
+
+    def test_page_response_model(self):
+        from api_gateway.routers.memory import MemoryPageResponse
+
+        payload = MemoryPageResponse(
+            items=[
+                {
+                    "id": "1",
+                    "type": "company",
+                    "content": "Test content",
+                    "createdAt": "2026-01-15T12:00:00",
+                }
+            ],
+            total=11,
+            offset=0,
+            limit=10,
+            hasMore=True,
+        )
+        assert payload.total == 11
+        assert payload.offset == 0
+        assert payload.limit == 10
+        assert payload.has_more is True
+
+
 class TestTimestampFormatting:
     """Test helper timestamp conversion used by index inspection."""
 
@@ -622,6 +648,7 @@ class TestRouteRegistration:
             "/api/v1/memories/shared",
             "/api/v1/memories/search",
             "/api/v1/memories/type/{memory_type}",
+            "/api/v1/memories/type/{memory_type}/paged",
             "/api/v1/memories/agent/{agent_id}",
             "/api/v1/memories/diagnostics/agent/{agent_id}",
             "/api/v1/memories/admin/backfill-agent-user-ids",
@@ -643,6 +670,7 @@ class TestRouteRegistration:
         assert "GET" in route_map.get("/api/v1/memories/config", set())
         assert "PUT" in route_map.get("/api/v1/memories/config", set())
         assert "GET" in route_map.get("/api/v1/memories/shared", set())
+        assert "GET" in route_map.get("/api/v1/memories/type/{memory_type}/paged", set())
         assert "GET" in route_map.get("/api/v1/memories/diagnostics/agent/{agent_id}", set())
         assert "POST" in route_map.get("/api/v1/memories/admin/backfill-agent-user-ids", set())
         assert "GET" in route_map.get("/api/v1/memories/{memory_id}", set())
