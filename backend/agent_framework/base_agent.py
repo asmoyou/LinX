@@ -795,20 +795,55 @@ class BaseAgent:
             "Treat this context as authoritative current time for all date/time reasoning."
         )
 
-    def _build_time_aware_system_prompt(self) -> str:
+    def _build_time_aware_system_prompt(self, available_tools: Optional[List[Any]] = None) -> str:
         """Attach live system time context to the base system prompt."""
-        base_prompt = self._create_system_prompt().rstrip()
+        base_prompt = self._create_system_prompt(available_tools=available_tools).rstrip()
         time_context = self._build_system_time_context()
         time_block = self._render_system_time_prompt_block(time_context)
         return f"{base_prompt}\n\n{time_block}"
+
+    def _build_runtime_tool_registry(self, allow_file_write_tools: bool) -> Dict[str, Any]:
+        """Build per-request tool registry constrained by policy."""
+        if allow_file_write_tools:
+            return dict(self.tools_by_name)
+
+        filtered = {
+            name: tool
+            for name, tool in self.tools_by_name.items()
+            if name not in _FILE_DELIVERY_TOOL_NAMES
+        }
+        return filtered
+
+    def _build_runtime_llm(self, runtime_tools_by_name: Dict[str, Any]) -> Any:
+        """Build per-request LLM binding using runtime-filtered tools."""
+        if not runtime_tools_by_name:
+            return self.llm
+        if not self.native_tool_calling_enabled:
+            return self.llm
+
+        runtime_tool_names = set(runtime_tools_by_name.keys())
+        global_tool_names = set(self.tools_by_name.keys())
+        if runtime_tool_names == global_tool_names and self.llm_with_tools is not None:
+            return self.llm_with_tools
+
+        try:
+            return self.llm.bind_tools(list(runtime_tools_by_name.values()))
+        except (NotImplementedError, AttributeError) as bind_error:
+            logger.warning(
+                "Runtime tool binding not supported, fallback to plain LLM: %s",
+                bind_error,
+                extra={"agent_id": str(self.config.agent_id)},
+            )
+            return self.llm
 
     def _build_messages_with_history(
         self,
         human_content: Any,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
+        available_tools: Optional[List[Any]] = None,
     ) -> List[Any]:
         """Build prompt messages with optional conversation history."""
-        system_prompt = self._build_time_aware_system_prompt()
+        system_prompt = self._build_time_aware_system_prompt(available_tools=available_tools)
         messages: List[Any] = [SystemMessage(content=system_prompt)]
 
         for item in self._normalize_conversation_history(conversation_history):
@@ -1093,13 +1128,20 @@ class BaseAgent:
         except Exception:
             return accumulated
 
-    def _extract_native_tool_calls(self, message: Any) -> List[ToolCall]:
+    def _extract_native_tool_calls(
+        self,
+        message: Any,
+        available_tools: Optional[Dict[str, Any]] = None,
+    ) -> List[ToolCall]:
         """Extract LangChain-native tool calls from AI message/chunk objects."""
         if message is None:
             return []
 
-        raw_calls = getattr(message, "tool_calls", None) or []
+        raw_calls = getattr(message, "tool_calls", None)
+        if not isinstance(raw_calls, (list, tuple)):
+            return []
         normalized_calls: List[ToolCall] = []
+        tool_registry = available_tools if available_tools is not None else self.tools_by_name
 
         for raw_call in raw_calls:
             if not isinstance(raw_call, dict):
@@ -1108,7 +1150,7 @@ class BaseAgent:
             tool_name = str(raw_call.get("name") or "").strip()
             if not tool_name:
                 continue
-            if tool_name not in self.tools_by_name:
+            if tool_name not in tool_registry:
                 continue
 
             args = raw_call.get("args")
@@ -1259,6 +1301,28 @@ class BaseAgent:
             return False
         return self._is_direct_tool_request(task_description)
 
+    @staticmethod
+    def _resolve_task_intent_text(
+        task_description: str,
+        context: Optional[Dict[str, Any]] = None,
+        task_intent_text: Optional[str] = None,
+    ) -> str:
+        """Resolve user-intent text used by policy heuristics.
+
+        Some adapters append attachment/context blocks into task_description for model grounding.
+        Heuristic policies (for example file-delivery guard) should evaluate raw user intent instead.
+        """
+        explicit_intent = str(task_intent_text or "").strip()
+        if explicit_intent:
+            return explicit_intent
+
+        if isinstance(context, dict):
+            context_intent = context.get("task_intent_text")
+            if isinstance(context_intent, str) and context_intent.strip():
+                return context_intent.strip()
+
+        return str(task_description or "")
+
     def execute_task(
         self,
         task_description: str,
@@ -1271,6 +1335,7 @@ class BaseAgent:
         container_id: Optional[str] = None,
         code_execution_network_access: Optional[bool] = None,
         message_content: Optional[Any] = None,
+        task_intent_text: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a task using the agent.
 
@@ -1290,6 +1355,8 @@ class BaseAgent:
             code_execution_network_access: Optional network toggle for code_execution tool.
             message_content: Optional multimodal content (list of dicts) for vision models.
                 When provided, used as HumanMessage content instead of plain text.
+            task_intent_text: Optional raw user-intent text for policy heuristics. When omitted,
+                task_description is used.
 
         Returns:
             Dict with execution results
@@ -1310,6 +1377,11 @@ class BaseAgent:
         try:
             self.status = AgentStatus.BUSY
             logger.info(f"Agent executing task: {self.config.name}")
+            resolved_task_intent_text = self._resolve_task_intent_text(
+                task_description=task_description,
+                context=context,
+                task_intent_text=task_intent_text,
+            )
 
             # Propagate session/runtime settings to code_execution tool.
             session_sandbox_id = str(container_id).strip() if container_id else None
@@ -1365,7 +1437,7 @@ class BaseAgent:
             if (
                 loop_mode in (LoopMode.RECOVERY_MULTI_TURN, LoopMode.AUTO_MULTI_TURN)
                 and resolved_policy.profile == ExecutionProfile.DEBUG_CHAT
-                and self._should_use_native_tool_fast_path(task_description)
+                and self._should_use_native_tool_fast_path(resolved_task_intent_text)
             ):
                 loop_mode = LoopMode.SINGLE_TURN
                 used_native_tool_fast_path = True
@@ -1430,6 +1502,7 @@ class BaseAgent:
                             session_workdir=session_workdir,
                             container_id=container_id,
                             message_content=message_content,
+                            task_intent_text=resolved_task_intent_text,
                         )
                     )
                     self.status = AgentStatus.ACTIVE
@@ -1479,10 +1552,27 @@ class BaseAgent:
 
             # Multi-round mode (policy-driven, callback optional for transport).
             if loop_mode == LoopMode.AUTO_MULTI_TURN:
+                file_delivery_guard_required = self._requires_file_delivery(
+                    resolved_task_intent_text
+                )
+                allow_file_write_tools = self._allows_file_write_tools(resolved_task_intent_text)
+                requested_file_formats = self._extract_requested_file_formats(
+                    resolved_task_intent_text
+                )
+                runtime_tools_by_name = self._build_runtime_tool_registry(allow_file_write_tools)
+                runtime_tools = list(runtime_tools_by_name.values())
+                runtime_llm_with_tools = self._build_runtime_llm(runtime_tools_by_name)
+                if not allow_file_write_tools:
+                    logger.info(
+                        "[TOOL-LOOP] File delivery tools disabled for this task",
+                        extra={"agent_id": str(self.config.agent_id)},
+                    )
+
                 human_content = message_content if message_content is not None else user_message
                 messages = self._build_messages_with_history(
                     human_content=human_content,
                     conversation_history=conversation_history,
+                    available_tools=runtime_tools,
                 )
 
                 # Multi-round conversation loop for tool execution
@@ -1490,14 +1580,15 @@ class BaseAgent:
                 max_iterations = max(1, int(resolved_policy.max_rounds or 20))
                 iteration = 0
                 final_output = ""
-                file_delivery_guard_required = self._requires_file_delivery(task_description)
-                allow_file_write_tools = self._allows_file_write_tools(task_description)
-                requested_file_formats = self._extract_requested_file_formats(task_description)
                 file_delivery_guard_prompted = False
 
                 logger.info(
                     f"[TOOL-LOOP] Starting multi-round conversation (max {max_iterations} iterations)",
-                    extra={"agent_id": str(self.config.agent_id), "has_tools": len(self.tools) > 0},
+                    extra={
+                        "agent_id": str(self.config.agent_id),
+                        "has_tools": len(runtime_tools_by_name) > 0,
+                        "file_write_tools_enabled": allow_file_write_tools,
+                    },
                 )
 
                 while iteration < max_iterations:
@@ -1517,7 +1608,7 @@ class BaseAgent:
                     used_non_stream_fallback = False
                     native_tool_calls: List[ToolCall] = []
                     merged_stream_message: Any = None
-                    llm_for_round = self.llm_with_tools if self.tools else self.llm
+                    llm_for_round = runtime_llm_with_tools if runtime_tools_by_name else self.llm
 
                     try:
                         for chunk in llm_for_round.stream(messages):
@@ -1547,7 +1638,10 @@ class BaseAgent:
                                     streamed_content_chars += len(chunk.content)
                                 chunk_count += 1
 
-                        native_tool_calls = self._extract_native_tool_calls(merged_stream_message)
+                        native_tool_calls = self._extract_native_tool_calls(
+                            merged_stream_message,
+                            available_tools=runtime_tools_by_name,
+                        )
 
                         # If no chunks were received, mark streaming as failed
                         if chunk_count == 0 and not native_tool_calls:
@@ -1558,6 +1652,7 @@ class BaseAgent:
                         if self._handle_native_tool_http_rejection(
                             stream_error, runtime_path="auto_multi_stream_http_fallback"
                         ):
+                            runtime_llm_with_tools = self.llm
                             llm_for_round = self.llm
                         stream_failed = True
                         logger.warning(f"Streaming failed: {stream_error}")
@@ -1571,6 +1666,7 @@ class BaseAgent:
                             if self._handle_native_tool_http_rejection(
                                 invoke_error, runtime_path="auto_multi_invoke_http_fallback"
                             ):
+                                runtime_llm_with_tools = self.llm
                                 llm_for_round = self.llm
                                 result = llm_for_round.invoke(messages)
                             else:
@@ -1578,11 +1674,17 @@ class BaseAgent:
                                 raise
 
                         if hasattr(result, "content"):
-                            round_output = result.content
+                            content_value = result.content
+                            round_output = (
+                                content_value if isinstance(content_value, str) else str(content_value)
+                            )
                         else:
                             round_output = str(result)
                         used_non_stream_fallback = True
-                        native_tool_calls = self._extract_native_tool_calls(result)
+                        native_tool_calls = self._extract_native_tool_calls(
+                            result,
+                            available_tools=runtime_tools_by_name,
+                        )
 
                         if not round_output:
                             if native_tool_calls:
@@ -1611,7 +1713,10 @@ class BaseAgent:
                     import re
                     import json
 
-                    parsed_calls, parsed_errors = self._parse_tool_calls(round_output)
+                    parsed_calls, parsed_errors = self._parse_tool_calls(
+                        round_output,
+                        available_tools=runtime_tools_by_name,
+                    )
                     if not parsed_calls and native_tool_calls:
                         parsed_calls = native_tool_calls
                         parsed_errors = []
@@ -1634,7 +1739,7 @@ class BaseAgent:
                         for tc in parsed_calls:
                             tool_name = tc.tool_name
                             tool_args = tc.arguments
-                            tool = self.tools_by_name.get(tool_name)
+                            tool = runtime_tools_by_name.get(tool_name)
                             if tool_name in _FILE_DELIVERY_TOOL_NAMES and not allow_file_write_tools:
                                 policy_error = (
                                     "用户未明确要求保存/导出文件；请直接在对话中给出内容。"
@@ -1919,6 +2024,7 @@ class BaseAgent:
                             container_id=container_id,
                             code_execution_network_access=code_execution_network_access,
                             message_content=message_content,
+                            task_intent_text=resolved_task_intent_text,
                         )
                     result = self.agent.invoke(invoke_payload)
                 except GraphRecursionError as recursion_error:
@@ -2062,7 +2168,11 @@ class BaseAgent:
 
         return objects
 
-    def _parse_tool_calls(self, llm_output: str) -> Tuple[List[ToolCall], List[ParseError]]:
+    def _parse_tool_calls(
+        self,
+        llm_output: str,
+        available_tools: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[List[ToolCall], List[ParseError]]:
         """Parse tool calls from LLM output, collecting all errors.
 
         Args:
@@ -2074,6 +2184,7 @@ class BaseAgent:
         tool_calls: List[ToolCall] = []
         parse_errors: List[ParseError] = []
         preprocessed = llm_output or ""
+        tool_registry = available_tools if available_tools is not None else self.tools_by_name
 
         candidates: List[Tuple[str, bool]] = []  # (json_str, explicit_tool_intent)
         seen_candidates: Set[str] = set()
@@ -2229,15 +2340,15 @@ class BaseAgent:
                     )
                 continue
 
-            if tool_name not in self.tools_by_name:
+            if tool_name not in tool_registry:
                 if explicit:
-                    available_tools = ", ".join(self.tools_by_name.keys())
+                    available_tools_text = ", ".join(tool_registry.keys())
                     parse_errors.append(
                         ParseError(
                             error_type="unknown_tool",
                             message=(
                                 f"Tool '{tool_name}' not found. "
-                                f"Available tools: {available_tools}"
+                                f"Available tools: {available_tools_text}"
                             ),
                             malformed_input=json_str,
                         )
@@ -2254,7 +2365,10 @@ class BaseAgent:
         return tool_calls, parse_errors
 
     def _handle_parse_errors(
-        self, parse_errors: List[ParseError], state: ConversationState
+        self,
+        parse_errors: List[ParseError],
+        state: ConversationState,
+        available_tool_names: Optional[List[str]] = None,
     ) -> Optional[ErrorFeedback]:
         """Generate feedback for parse errors.
 
@@ -2341,7 +2455,8 @@ class BaseAgent:
             )
 
         elif error.error_type == "unknown_tool":
-            available_tools = ", ".join(self.tools_by_name.keys())
+            tool_names = available_tool_names or list(self.tools_by_name.keys())
+            available_tools = ", ".join(tool_names)
             return ErrorFeedback(
                 error_type="Unknown Tool",
                 error_message=error.message,
@@ -2610,6 +2725,7 @@ class BaseAgent:
         state: ConversationState,
         stream_callback: Optional[callable] = None,
         allow_file_write_tools: bool = True,
+        tool_registry: Optional[Dict[str, Any]] = None,
     ) -> List[ToolResult]:
         """Execute tools with error handling and recovery.
 
@@ -2624,14 +2740,50 @@ class BaseAgent:
         import asyncio
 
         results = []
+        runtime_tool_registry = tool_registry if tool_registry is not None else self.tools_by_name
 
         for tool_call in tool_calls:
             tool_name = tool_call.tool_name
-            tool = self.tools_by_name[tool_name]
+            tool = runtime_tool_registry.get(tool_name)
 
             # Check retry count for this specific tool
             retry_key = f"tool_{tool_name}"
             retry_count = state.retry_counts.get(retry_key, 0)
+
+            if tool is None:
+                available_tools = ", ".join(runtime_tool_registry.keys())
+                error_msg = (
+                    f"Tool '{tool_name}' is unavailable in current policy context. "
+                    f"Available tools: {available_tools}"
+                )
+                results.append(
+                    ToolResult(
+                        tool_name=tool_name,
+                        status="error",
+                        error=error_msg,
+                        error_type="unknown_tool",
+                        retry_count=retry_count,
+                    )
+                )
+                state.retry_counts[retry_key] = retry_count + 1
+                state.tool_calls_made.append(
+                    ToolCallRecord(
+                        round_number=state.round_number,
+                        tool_name=tool_name,
+                        arguments=tool_call.arguments,
+                        status="execution_error",
+                        error=error_msg,
+                        retry_number=retry_count,
+                    )
+                )
+                logger.warning(
+                    "[RECOVERY] Tool unavailable under runtime policy",
+                    extra={
+                        "agent_id": str(self.config.agent_id),
+                        "tool_name": tool_name,
+                    },
+                )
+                continue
 
             if tool_name in _FILE_DELIVERY_TOOL_NAMES and not allow_file_write_tools:
                 error_msg = (
@@ -3021,6 +3173,7 @@ class BaseAgent:
         session_workdir: Optional["Path"] = None,
         container_id: Optional[str] = None,
         message_content: Optional[Any] = None,
+        task_intent_text: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute task with error recovery (new implementation).
 
@@ -3039,6 +3192,8 @@ class BaseAgent:
                 If provided, code blocks will be executed inside the container.
             message_content: Optional multimodal content (list of dicts) for vision models.
                 When provided, used as HumanMessage content instead of plain text.
+            task_intent_text: Optional raw user-intent text for policy heuristics. When omitted,
+                task_description is used.
 
         Returns:
             Dict with execution results including conversation state
@@ -3047,9 +3202,22 @@ class BaseAgent:
 
         # Initialize conversation state
         state = ConversationState(max_rounds=self.config.max_iterations)
-        file_delivery_guard_required = self._requires_file_delivery(task_description)
-        allow_file_write_tools = self._allows_file_write_tools(task_description)
-        requested_file_formats = self._extract_requested_file_formats(task_description)
+        resolved_task_intent_text = self._resolve_task_intent_text(
+            task_description=task_description,
+            context=context,
+            task_intent_text=task_intent_text,
+        )
+        file_delivery_guard_required = self._requires_file_delivery(resolved_task_intent_text)
+        allow_file_write_tools = self._allows_file_write_tools(resolved_task_intent_text)
+        requested_file_formats = self._extract_requested_file_formats(resolved_task_intent_text)
+        runtime_tools_by_name = self._build_runtime_tool_registry(allow_file_write_tools)
+        runtime_tools = list(runtime_tools_by_name.values())
+        runtime_llm_with_tools = self._build_runtime_llm(runtime_tools_by_name)
+        if not allow_file_write_tools:
+            logger.info(
+                "[RECOVERY] File delivery tools disabled for this task",
+                extra={"agent_id": str(self.config.agent_id)},
+            )
         file_delivery_guard_prompted = False
 
         # Prepare system prompt and initial messages
@@ -3097,6 +3265,7 @@ class BaseAgent:
         messages = self._build_messages_with_history(
             human_content=human_content,
             conversation_history=conversation_history,
+            available_tools=runtime_tools,
         )
 
         logger.info(
@@ -3110,6 +3279,7 @@ class BaseAgent:
                     if runtime_policy
                     else LoopMode.RECOVERY_MULTI_TURN.value
                 ),
+                "file_write_tools_enabled": allow_file_write_tools,
             },
         )
 
@@ -3168,7 +3338,7 @@ class BaseAgent:
             used_non_stream_fallback = False
             native_tool_calls: List[ToolCall] = []
             merged_stream_message: Any = None
-            llm_for_round = self.llm_with_tools if self.tools else self.llm
+            llm_for_round = runtime_llm_with_tools if runtime_tools_by_name else self.llm
 
             try:
                 for chunk in llm_for_round.stream(messages):
@@ -3214,11 +3384,15 @@ class BaseAgent:
                         else:
                             round_output += chunk.content
                             streamed_content_chars += len(chunk.content)
-                native_tool_calls = self._extract_native_tool_calls(merged_stream_message)
+                native_tool_calls = self._extract_native_tool_calls(
+                    merged_stream_message,
+                    available_tools=runtime_tools_by_name,
+                )
             except Exception as e:
                 if self._handle_native_tool_http_rejection(
                     e, runtime_path="recovery_stream_http_fallback"
                 ):
+                    runtime_llm_with_tools = self.llm
                     llm_for_round = self.llm
                 logger.error(f"[RECOVERY] LLM streaming failed: {e}", exc_info=True)
                 # Try non-streaming fallback
@@ -3228,6 +3402,7 @@ class BaseAgent:
                     if self._handle_native_tool_http_rejection(
                         fallback_error, runtime_path="recovery_invoke_http_fallback"
                     ):
+                        runtime_llm_with_tools = self.llm
                         llm_for_round = self.llm
                         try:
                             result = llm_for_round.invoke(messages)
@@ -3244,9 +3419,18 @@ class BaseAgent:
                         state.termination_reason = "llm_failure"
                         break
 
-                round_output = result.content if hasattr(result, "content") else str(result)
+                if hasattr(result, "content"):
+                    content_value = result.content
+                    round_output = (
+                        content_value if isinstance(content_value, str) else str(content_value)
+                    )
+                else:
+                    round_output = str(result)
                 used_non_stream_fallback = True
-                native_tool_calls = self._extract_native_tool_calls(result)
+                native_tool_calls = self._extract_native_tool_calls(
+                    result,
+                    available_tools=runtime_tools_by_name,
+                )
                 if not round_output and native_tool_calls:
                     round_output = ""
 
@@ -3389,7 +3573,10 @@ class BaseAgent:
                     continue
 
             # 3. Parse JSON tool calls (fallback if no code blocks)
-            tool_calls, parse_errors = self._parse_tool_calls(round_output)
+            tool_calls, parse_errors = self._parse_tool_calls(
+                round_output,
+                available_tools=runtime_tools_by_name,
+            )
             if not tool_calls and native_tool_calls:
                 tool_calls = native_tool_calls
                 parse_errors = []
@@ -3410,7 +3597,11 @@ class BaseAgent:
                         )
                     )
 
-                feedback = self._handle_parse_errors(parse_errors, state)
+                feedback = self._handle_parse_errors(
+                    parse_errors,
+                    state,
+                    available_tool_names=sorted(runtime_tools_by_name.keys()),
+                )
 
                 if feedback:
                     # Send error feedback to frontend
@@ -3510,6 +3701,7 @@ class BaseAgent:
                 state,
                 stream_callback,
                 allow_file_write_tools=allow_file_write_tools,
+                tool_registry=runtime_tools_by_name,
             )
 
             # 7. Check if all tools failed
@@ -3793,7 +3985,7 @@ class BaseAgent:
 
         return modified_output
 
-    def _create_system_prompt(self) -> str:
+    def _create_system_prompt(self, available_tools: Optional[List[Any]] = None) -> str:
         """Create system prompt for the agent.
 
         Includes Agent Skills documentation and available tools if available.
@@ -3822,9 +4014,10 @@ Always be professional, accurate, and helpful."""
         # Include tools in prompt if:
         # 1. LLM doesn't support bind_tools, OR
         # 2. LLM supports bind_tools but we want tools visible in prompt anyway (for better awareness)
-        if self.tools:
+        runtime_tools = available_tools if available_tools is not None else self.tools
+        if runtime_tools:
             # Include ALL tools in the prompt (including code_execution)
-            langchain_tools = self.tools
+            langchain_tools = runtime_tools
 
             if langchain_tools:
                 tools_prompt = "\n\n## Available Tools\n\n"
@@ -3872,25 +4065,33 @@ Always be professional, accurate, and helpful."""
 
                 base_prompt += tools_prompt
 
-        # Add sandbox workspace documentation
-        workspace_prompt = """
+        runtime_tool_names = {
+            str(getattr(tool, "name", "")).strip()
+            for tool in (runtime_tools or [])
+            if getattr(tool, "name", None)
+        }
+        if available_tools is None:
+            file_delivery_tools_enabled = True
+        else:
+            file_delivery_tools_enabled = all(
+                name in runtime_tool_names for name in _FILE_DELIVERY_TOOL_NAMES
+            )
 
-## Sandbox Workspace
-
-You are running inside a Docker sandbox with a persistent workspace at `/workspace`.
-Files persist throughout the conversation session.
-
-**File operation tools available:**
-- **read_file**: Read file contents. Supports `offset` (start line, 1-based) and `limit` (max lines) for large files.
-- **edit_file**: Replace exact string in a file (`old_string` -> `new_string`). The old_string must match exactly.
-- **write_file**: Create or overwrite a file. Creates parent directories automatically.
-- **append_file**: Append additional content to an existing file (or create it if missing).
-- **list_files**: List files in a directory. Supports `recursive=true`.
-
-**Default behavior**:
-- If the user did NOT explicitly ask for file delivery, respond directly in chat.
-- Do NOT proactively call `write_file`/`append_file` for ordinary Q&A or content generation.
-
+        file_tools_lines = [
+            "- **read_file**: Read file contents. Supports `offset` (start line, 1-based) and `limit` (max lines) for large files.",
+            "- **edit_file**: Replace exact string in a file (`old_string` -> `new_string`). The old_string must match exactly.",
+            "- **list_files**: List files in a directory. Supports `recursive=true`.",
+        ]
+        if file_delivery_tools_enabled:
+            file_tools_lines.insert(
+                2,
+                "- **write_file**: Create or overwrite a file. Creates parent directories automatically.",
+            )
+            file_tools_lines.insert(
+                3,
+                "- **append_file**: Append additional content to an existing file (or create it if missing).",
+            )
+            file_delivery_policy = """
 **When users ask for deliverables as files/documents** (for example "整理成md文档", "save as markdown"):
 1. You MUST use `write_file` to save the deliverable under `/workspace` (prefer `/workspace/output/...`).
 2. Prefer a single target file and update it incrementally across rounds (create first, then continue writing).
@@ -3898,6 +4099,34 @@ Files persist throughout the conversation session.
 4. Do NOT use `code_execution` as the final file-delivery step for plain text documents.
 5. In your final response, report the exact saved file path(s).
 6. Never claim a file was saved unless the tool call succeeded.
+"""
+        else:
+            file_tools_lines.append(
+                "- **write_file / append_file**: Temporarily disabled for this request unless user explicitly asks for file delivery."
+            )
+            file_delivery_policy = """
+**Current file-delivery policy for this request**:
+- User did not explicitly request saved-file delivery.
+- `write_file`/`append_file` are disabled in this round.
+- Provide the final content directly in chat.
+"""
+
+        file_tools_section = "\n".join(file_tools_lines)
+        workspace_prompt = f"""
+
+## Sandbox Workspace
+
+You are running inside a Docker sandbox with a persistent workspace at `/workspace`.
+Files persist throughout the conversation session.
+
+**File operation tools available:**
+{file_tools_section}
+
+**Default behavior**:
+- If the user did NOT explicitly ask for file delivery, respond directly in chat.
+- Do NOT proactively call `write_file`/`append_file` for ordinary Q&A or content generation.
+
+{file_delivery_policy}
 
 **You can also create/manipulate files through code blocks** (Python/Bash) that run in the same workspace.
 
