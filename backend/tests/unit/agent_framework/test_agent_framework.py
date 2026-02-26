@@ -10,8 +10,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langgraph.errors import GraphRecursionError
 
 from agent_framework.agent_executor import AgentExecutor, ExecutionContext
 from agent_framework.agent_lifecycle import AgentLifecycleManager, LifecyclePhase
@@ -27,7 +29,7 @@ from agent_framework.base_agent import (
     ToolResult,
 )
 from agent_framework.capability_matcher import CapabilityMatch, CapabilityMatcher
-from agent_framework.runtime_policy import ExecutionProfile, LoopMode
+from agent_framework.runtime_policy import ExecutionProfile, LoopMode, RuntimePolicy
 from memory_system.memory_interface import MemoryItem, MemoryType
 from memory_system.memory_repository import MemoryRecordData
 
@@ -521,6 +523,500 @@ class TestBaseAgent:
         assert stream_call_count["count"] == 3
         write_tool.ainvoke.assert_awaited_once()
         assert "/workspace/output/fuzhou.md" in result["output"]
+
+    def test_should_use_native_tool_fast_path_with_mixed_skills_for_direct_expression(self):
+        """Direct calculator-like prompts should prefer native tool-calling even with agent skills loaded."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.native_tool_calling_enabled = True
+        agent.loaded_langchain_tool_skill_count = 2
+        agent.loaded_agent_skill_count = 1
+        agent.agent_skill_names = {"legal_agent_skill"}
+
+        assert agent._should_use_native_tool_fast_path("23223*23/32=?") is True
+
+    def test_should_not_use_native_tool_fast_path_for_agent_skill_intent(self):
+        """Agent skill intent should keep multi-turn behavior."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.native_tool_calling_enabled = True
+        agent.loaded_langchain_tool_skill_count = 2
+        agent.loaded_agent_skill_count = 1
+        agent.agent_skill_names = {"legal_agent_skill"}
+
+        assert (
+            agent._should_use_native_tool_fast_path("请按 legal_agent_skill workflow 处理合同风险")
+            is False
+        )
+
+    def test_execute_task_debug_chat_switches_to_single_turn_for_direct_tool_request(self):
+        """DEBUG_CHAT should switch from auto multi-turn to single-turn for direct tool requests."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.agent.invoke.return_value = {"messages": [AIMessage(content="16696.53125")]}
+        agent.llm = Mock()
+        agent.tools = [Mock(name="calculator")]
+        agent.tools_by_name = {"calculator": Mock()}
+        agent.native_tool_calling_enabled = True
+        agent.loaded_langchain_tool_skill_count = 2
+        agent.loaded_agent_skill_count = 1
+        agent.agent_skill_names = {"legal_agent_skill"}
+
+        chunks = []
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.DEBUG_CHAT,
+            loop_mode=LoopMode.AUTO_MULTI_TURN,
+            max_rounds=20,
+            enable_error_recovery=True,
+            stream_output=True,
+        )
+
+        result = agent.execute_task(
+            task_description="23223*23/32=?",
+            runtime_policy=runtime_policy,
+            stream_callback=lambda chunk: chunks.append(chunk),
+        )
+
+        assert result["success"] is True
+        agent.agent.invoke.assert_called_once()
+        assert chunks == [("16696.53125", "content")]
+
+    def test_execute_task_debug_chat_keeps_multi_turn_for_agent_skill_intent(self):
+        """DEBUG_CHAT should keep multi-turn path when prompt looks like agent skill workflow."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.agent.invoke.return_value = {"messages": [AIMessage(content="fallback")]}
+        agent.llm = Mock()
+        agent.llm_with_tools = Mock()
+        agent.llm_with_tools.stream.return_value = iter(
+            [SimpleNamespace(content="已按技能流程完成。", additional_kwargs={})]
+        )
+        agent.tools = [Mock(name="calculator")]
+        agent.tools_by_name = {"calculator": Mock()}
+        agent.native_tool_calling_enabled = True
+        agent.loaded_langchain_tool_skill_count = 2
+        agent.loaded_agent_skill_count = 1
+        agent.agent_skill_names = {"legal_agent_skill"}
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.DEBUG_CHAT,
+            loop_mode=LoopMode.AUTO_MULTI_TURN,
+            max_rounds=20,
+            enable_error_recovery=True,
+            stream_output=True,
+        )
+
+        result = agent.execute_task(
+            task_description="请按 legal_agent_skill workflow 处理合同风险",
+            runtime_policy=runtime_policy,
+            stream_callback=lambda *_args, **_kwargs: None,
+        )
+
+        assert result["success"] is True
+        agent.llm_with_tools.stream.assert_called_once()
+        agent.agent.invoke.assert_not_called()
+        assert result["output"] == "已按技能流程完成。"
+
+    def test_execute_task_single_turn_native_tools_uses_graph_recursion_limit(self):
+        """Single-turn graph invoke should cap recursion when native tool-calling is enabled."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.agent.invoke.return_value = {"messages": [AIMessage(content="ok")]}
+        agent.llm = Mock()
+        agent.tools = [Mock(name="calculator")]
+        agent.tools_by_name = {"calculator": Mock()}
+        agent.native_tool_calling_enabled = True
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.MISSION_CONTROL,
+            loop_mode=LoopMode.SINGLE_TURN,
+            max_rounds=1,
+            enable_error_recovery=False,
+            stream_output=False,
+        )
+
+        result = agent.execute_task(
+            task_description="hello",
+            runtime_policy=runtime_policy,
+        )
+
+        assert result["success"] is True
+        _, kwargs = agent.agent.invoke.call_args
+        assert kwargs["config"]["recursion_limit"] == 12
+
+    def test_execute_task_single_turn_recursion_error_falls_back_to_plain_llm(self):
+        """If graph recursion limit is hit, single-turn should fallback to plain LLM invoke."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.agent.invoke.side_effect = GraphRecursionError("loop reached")
+        agent.llm = Mock()
+        agent.llm.invoke.return_value = AIMessage(content="fallback output")
+        agent.tools = [Mock(name="calculator")]
+        agent.tools_by_name = {"calculator": Mock()}
+        agent.native_tool_calling_enabled = True
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.MISSION_CONTROL,
+            loop_mode=LoopMode.SINGLE_TURN,
+            max_rounds=1,
+            enable_error_recovery=False,
+            stream_output=False,
+        )
+
+        result = agent.execute_task(
+            task_description="hello",
+            runtime_policy=runtime_policy,
+        )
+
+        assert result["success"] is True
+        assert result["output"] == "fallback output"
+        agent.llm.invoke.assert_called_once()
+
+    def test_execute_task_single_turn_http_400_downgrades_native_tools(self):
+        """400/422 from upstream tool payload should downgrade native tool-calling and retry."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+        response = httpx.Response(400, request=request)
+        agent.agent.invoke.side_effect = [
+            httpx.HTTPStatusError("bad request", request=request, response=response),
+            {"messages": [AIMessage(content="retry ok")]},
+        ]
+        agent.llm = Mock()
+        agent.tools = [Mock(name="calculator")]
+        agent.tools_by_name = {"calculator": Mock()}
+        agent.native_tool_calling_enabled = True
+        agent.llm_with_tools = Mock()
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.MISSION_CONTROL,
+            loop_mode=LoopMode.SINGLE_TURN,
+            max_rounds=1,
+            enable_error_recovery=False,
+            stream_output=False,
+        )
+
+        result = agent.execute_task(
+            task_description="23223*23/32=?",
+            runtime_policy=runtime_policy,
+        )
+
+        assert result["success"] is True
+        assert result["output"] == "retry ok"
+        assert agent.native_tool_calling_enabled is False
+        assert agent.llm_with_tools is agent.llm
+        assert agent.agent.invoke.call_count == 2
+        assert agent.agent.invoke.call_args_list[0].kwargs["config"]["recursion_limit"] == 12
+        assert "config" not in agent.agent.invoke.call_args_list[1].kwargs
+
+    def test_execute_task_single_turn_fast_path_http_400_reroutes_to_auto_multi_turn(self):
+        """Fast-path downgrade should reroute current request to auto multi-turn parser loop."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+
+        request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+        response = httpx.Response(400, request=request)
+        agent.agent.invoke.side_effect = httpx.HTTPStatusError(
+            "bad request",
+            request=request,
+            response=response,
+        )
+
+        calculator_tool = Mock()
+        calculator_tool.invoke.return_value = "16696.53125"
+        agent.tools = [calculator_tool]
+        agent.tools_by_name = {"calculator": calculator_tool}
+        agent.native_tool_calling_enabled = True
+        agent.loaded_langchain_tool_skill_count = 2
+        agent.loaded_agent_skill_count = 1
+        agent.agent_skill_names = {"legal_agent_skill"}
+
+        round_counter = {"count": 0}
+
+        def _plain_stream(_messages):
+            round_counter["count"] += 1
+            if round_counter["count"] == 1:
+                yield SimpleNamespace(
+                    content='{"tool":"calculator","expression":"23223*23/32"}',
+                    additional_kwargs={},
+                )
+            else:
+                yield SimpleNamespace(content="16696.53125", additional_kwargs={})
+
+        plain_llm = Mock()
+        plain_llm.stream = _plain_stream
+        plain_llm.invoke = Mock(side_effect=AssertionError("Should not invoke in this path"))
+        agent.llm = plain_llm
+        agent.llm_with_tools = Mock()
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.DEBUG_CHAT,
+            loop_mode=LoopMode.AUTO_MULTI_TURN,
+            max_rounds=3,
+            enable_error_recovery=True,
+            stream_output=True,
+        )
+        chunks = []
+
+        result = agent.execute_task(
+            task_description="23223*23/32=?",
+            runtime_policy=runtime_policy,
+            stream_callback=lambda chunk: chunks.append(chunk),
+        )
+
+        assert result["success"] is True
+        assert result["output"] == "16696.53125"
+        assert agent.agent.invoke.call_count == 1
+        assert round_counter["count"] == 2
+        calculator_tool.invoke.assert_called_once_with({"expression": "23223*23/32"})
+        assert agent.native_tool_calling_enabled is False
+        assert agent.llm_with_tools is plain_llm
+        assert ("16696.53125", "content") in chunks
+
+    def test_execute_task_single_turn_fast_path_http_400_reroutes_to_recovery(self):
+        """Fast-path downgrade should restore recovery mode when original policy is recovery."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+
+        request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+        response = httpx.Response(400, request=request)
+        agent.agent.invoke.side_effect = httpx.HTTPStatusError(
+            "bad request",
+            request=request,
+            response=response,
+        )
+
+        agent.execute_task_with_recovery = AsyncMock(  # type: ignore[method-assign]
+            return_value={"success": True, "output": "recovery ok", "messages": []}
+        )
+        agent.llm = Mock()
+        agent.llm_with_tools = Mock()
+        agent.tools = [Mock(name="calculator")]
+        agent.tools_by_name = {"calculator": Mock()}
+        agent.native_tool_calling_enabled = True
+        agent.loaded_langchain_tool_skill_count = 2
+        agent.loaded_agent_skill_count = 1
+        agent.agent_skill_names = {"legal_agent_skill"}
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.DEBUG_CHAT,
+            loop_mode=LoopMode.RECOVERY_MULTI_TURN,
+            max_rounds=10,
+            enable_error_recovery=True,
+            stream_output=True,
+        )
+
+        result = agent.execute_task(
+            task_description="23223*23/32=?",
+            runtime_policy=runtime_policy,
+            stream_callback=lambda *_args, **_kwargs: None,
+        )
+
+        assert result["success"] is True
+        assert result["output"] == "recovery ok"
+        assert agent.agent.invoke.call_count == 1
+        assert agent.native_tool_calling_enabled is False
+        agent.execute_task_with_recovery.assert_awaited_once()
+        recovery_kwargs = agent.execute_task_with_recovery.await_args.kwargs
+        assert recovery_kwargs["task_description"] == "23223*23/32=?"
+        assert recovery_kwargs["runtime_policy"].loop_mode == LoopMode.RECOVERY_MULTI_TURN
+
+    def test_execute_task_auto_multi_turn_http_400_downgrades_to_plain_llm(self):
+        """AUTO multi-turn stream failure on tool payload should retry with plain llm."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()  # initialize guard
+        request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+        response = httpx.Response(400, request=request)
+
+        bound_llm = Mock()
+        bound_llm.stream.side_effect = httpx.HTTPStatusError(
+            "bad request",
+            request=request,
+            response=response,
+        )
+        plain_llm = Mock()
+        plain_llm.invoke.return_value = AIMessage(content="final from plain llm")
+
+        agent.llm = plain_llm
+        agent.llm_with_tools = bound_llm
+        agent.tools = [Mock(name="calculator")]
+        agent.tools_by_name = {"calculator": Mock()}
+        agent.native_tool_calling_enabled = True
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.DEBUG_CHAT,
+            loop_mode=LoopMode.AUTO_MULTI_TURN,
+            max_rounds=1,
+            enable_error_recovery=True,
+            stream_output=True,
+        )
+        chunks = []
+
+        result = agent.execute_task(
+            task_description="你好",
+            runtime_policy=runtime_policy,
+            stream_callback=lambda chunk: chunks.append(chunk),
+        )
+
+        assert result["success"] is True
+        assert result["output"] == "final from plain llm"
+        assert agent.native_tool_calling_enabled is False
+        assert agent.llm_with_tools is plain_llm
+        plain_llm.invoke.assert_called_once()
+        assert ("final from plain llm", "content") in chunks
+
+    def test_execute_task_auto_resets_error_status_and_retries(self):
+        """Cached agent in ERROR status should auto-reset for the next request."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ERROR
+        agent.agent = Mock()
+        agent.agent.invoke.return_value = {"messages": [AIMessage(content="ok after reset")]}
+        agent.llm = Mock()
+        agent.tools = []
+        agent.tools_by_name = {}
+
+        result = agent.execute_task(task_description="ping")
+
+        assert result["success"] is True
+        assert result["output"] == "ok after reset"
+        assert agent.status == AgentStatus.ACTIVE
+
+    def test_execute_task_recovery_multi_turn_stream_fallback_emits_content(self):
+        """Recovery path should still stream content when falling back to non-stream invoke."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()  # initialize guard
+        request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+        response = httpx.Response(400, request=request)
+
+        bound_llm = Mock()
+        bound_llm.stream.side_effect = httpx.HTTPStatusError(
+            "bad request",
+            request=request,
+            response=response,
+        )
+        plain_llm = Mock()
+        plain_llm.invoke.return_value = AIMessage(content="recover output")
+
+        agent.llm = plain_llm
+        agent.llm_with_tools = bound_llm
+        agent.tools = [Mock(name="calculator")]
+        agent.tools_by_name = {"calculator": Mock()}
+        agent.native_tool_calling_enabled = True
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.MISSION_TASK,
+            loop_mode=LoopMode.RECOVERY_MULTI_TURN,
+            max_rounds=1,
+            enable_error_recovery=True,
+            stream_output=True,
+        )
+        chunks = []
+
+        result = agent.execute_task(
+            task_description="请回答",
+            runtime_policy=runtime_policy,
+            stream_callback=lambda chunk: chunks.append(chunk),
+        )
+
+        assert result["success"] is True
+        assert result["output"] == "recover output"
+        assert ("recover output", "content") in chunks
+        assert agent.native_tool_calling_enabled is False
+        assert agent.llm_with_tools is plain_llm
+        plain_llm.invoke.assert_called_once()
 
 
 class TestAgentRegistry:

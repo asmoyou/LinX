@@ -17,8 +17,10 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from uuid import UUID
 
+import httpx
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langgraph.errors import GraphRecursionError
 from langgraph.graph import MessagesState, StateGraph, START, END
 
 from agent_framework.code_block_executor import CodeBlockExecutor, get_code_block_executor
@@ -439,6 +441,11 @@ class BaseAgent:
         self.tools_by_name: Dict[str, Any] = {}
         self.skill_manager = None  # Will be initialized in initialize()
         self.code_executor = get_code_block_executor()  # Direct code block execution
+        self.native_tool_calling_enabled = False
+        self.loaded_langchain_tool_skill_count = 0
+        self.loaded_agent_skill_count = 0
+        self.langchain_tool_skill_names: Set[str] = set()
+        self.agent_skill_names: Set[str] = set()
 
         logger.info(
             f"BaseAgent initialized: {config.name}",
@@ -475,6 +482,8 @@ class BaseAgent:
             # Load skills
             langchain_tool_count = 0
             agent_skill_count = 0
+            langchain_tool_names: Set[str] = set()
+            agent_skill_names: Set[str] = set()
 
             for skill_info in skills:
                 if skill_info.skill_type == "langchain_tool":
@@ -482,6 +491,7 @@ class BaseAgent:
                     if tool:
                         self.tools.append(tool)
                         langchain_tool_count += 1
+                        langchain_tool_names.add(skill_info.name)
                         logger.info(
                             f"✓ Loaded LangChain tool: {skill_info.name}",
                             extra={
@@ -502,6 +512,7 @@ class BaseAgent:
                     skill_ref = await self.skill_manager.load_agent_skill_doc(skill_info)
                     if skill_ref:
                         agent_skill_count += 1
+                        agent_skill_names.add(skill_info.name)
                         logger.info(
                             f"✓ Loaded Agent Skill doc: {skill_info.name}",
                             extra={
@@ -586,19 +597,26 @@ class BaseAgent:
                     "agent_skills": agent_skill_count,
                 },
             )
+            self.loaded_langchain_tool_skill_count = langchain_tool_count
+            self.loaded_agent_skill_count = agent_skill_count
+            self.langchain_tool_skill_names = langchain_tool_names
+            self.agent_skill_names = agent_skill_names
 
             # Bind tools to LLM (if supported)
             if self.tools:
                 self.tools_by_name = {tool.name: tool for tool in self.tools}
                 try:
                     self.llm_with_tools = self.llm.bind_tools(self.tools)
+                    self.native_tool_calling_enabled = True
                 except (NotImplementedError, AttributeError) as e:
                     logger.warning(
                         f"LLM does not support bind_tools, using without tool binding: {e}",
                         extra={"agent_id": str(self.config.agent_id)},
                     )
+                    self.native_tool_calling_enabled = False
                     self.llm_with_tools = self.llm
             else:
+                self.native_tool_calling_enabled = False
                 self.llm_with_tools = self.llm
 
             # Build agent graph using LangGraph 1.0 StateGraph API
@@ -618,7 +636,7 @@ class BaseAgent:
                 return {"messages": [response]}
 
             # Check if LLM supports tool calls
-            llm_supports_tools = self.tools and hasattr(self.llm, "bind_tools")
+            llm_supports_tools = self.tools and self.native_tool_calling_enabled
 
             # Add tool execution node (only if tools are available and LLM supports them)
             if llm_supports_tools:
@@ -1112,6 +1130,29 @@ class BaseAgent:
 
         return normalized_calls
 
+    def _handle_native_tool_http_rejection(
+        self, error: Exception, runtime_path: str
+    ) -> bool:
+        """Downgrade native tool-calling when upstream rejects tool payloads."""
+        if not isinstance(error, httpx.HTTPStatusError):
+            return False
+        if not self.native_tool_calling_enabled or not self.tools:
+            return False
+        if error.response is None or error.response.status_code not in (400, 422):
+            return False
+
+        self.native_tool_calling_enabled = False
+        self.llm_with_tools = self.llm
+        logger.warning(
+            "Native tool-calling rejected by upstream; downgraded to plain chat fallback",
+            extra={
+                "agent_id": str(self.config.agent_id),
+                "runtime_path": runtime_path,
+                "status_code": error.response.status_code,
+            },
+        )
+        return True
+
     def _resolve_runtime_policy(
         self,
         execution_profile: Optional[ExecutionProfile | str],
@@ -1154,6 +1195,69 @@ class BaseAgent:
         if stream_callback:
             stream_callback((content, content_type))
 
+    def _looks_like_agent_skill_task(self, task_description: str) -> bool:
+        """Heuristic: whether this request likely expects agent-skill workflows."""
+        if self.loaded_agent_skill_count <= 0:
+            return False
+
+        text = str(task_description or "").strip().lower()
+        if not text:
+            return False
+
+        skill_hint_keywords = (
+            "skill",
+            "技能",
+            "脚本",
+            "script",
+            "workflow",
+            "read_skill",
+            "skill.md",
+        )
+        if any(keyword in text for keyword in skill_hint_keywords):
+            return True
+
+        for name in self.agent_skill_names:
+            normalized_name = str(name or "").strip().lower()
+            if normalized_name and normalized_name in text:
+                return True
+
+        return False
+
+    def _is_direct_tool_request(self, task_description: str) -> bool:
+        """Heuristic: whether the request is a direct tool task."""
+        text = str(task_description or "").strip()
+        if not text:
+            return False
+
+        lowered = text.lower()
+        for skill_name in self.langchain_tool_skill_names:
+            normalized_name = str(skill_name or "").strip().lower()
+            if normalized_name and normalized_name in lowered:
+                return True
+
+        # Explicit JSON tool invocation intent.
+        if '"tool"' in lowered or "<tool_call>" in lowered or "<function_call>" in lowered:
+            return True
+
+        # Calculator-like pure expression.
+        if re.fullmatch(r"[0-9\.\+\-\*\/\(\)\s=\?]+", text):
+            return True
+
+        if lowered.startswith("计算") or lowered.startswith("calc"):
+            return True
+
+        return False
+
+    def _should_use_native_tool_fast_path(self, task_description: str) -> bool:
+        """Prefer single-turn native tool-calling for direct tool tasks."""
+        if not self.native_tool_calling_enabled:
+            return False
+        if self.loaded_langchain_tool_skill_count <= 0:
+            return False
+        if self._looks_like_agent_skill_task(task_description):
+            return False
+        return self._is_direct_tool_request(task_description)
+
     def execute_task(
         self,
         task_description: str,
@@ -1193,7 +1297,14 @@ class BaseAgent:
             raise RuntimeError("Agent not initialized. Call initialize() first.")
 
         if self.status != AgentStatus.ACTIVE:
-            raise RuntimeError(f"Agent not active. Current status: {self.status.value}")
+            if self.status == AgentStatus.ERROR and self.agent is not None:
+                logger.warning(
+                    "Agent in error state; auto-resetting to ACTIVE for retry",
+                    extra={"agent_id": str(self.config.agent_id)},
+                )
+                self.status = AgentStatus.ACTIVE
+            else:
+                raise RuntimeError(f"Agent not active. Current status: {self.status.value}")
 
         try:
             self.status = AgentStatus.BUSY
@@ -1229,6 +1340,8 @@ class BaseAgent:
                 stream_callback=stream_callback,
             )
             loop_mode = resolved_policy.loop_mode
+            pre_fast_path_loop_mode = loop_mode
+            used_native_tool_fast_path = False
 
             # Respect policy intent but stay safe when agent-level recovery is disabled.
             if loop_mode == LoopMode.RECOVERY_MULTI_TURN and (
@@ -1236,6 +1349,23 @@ class BaseAgent:
                 or not bool(resolved_policy.enable_error_recovery)
             ):
                 loop_mode = LoopMode.AUTO_MULTI_TURN
+
+            if (
+                loop_mode in (LoopMode.RECOVERY_MULTI_TURN, LoopMode.AUTO_MULTI_TURN)
+                and resolved_policy.profile == ExecutionProfile.DEBUG_CHAT
+                and self._should_use_native_tool_fast_path(task_description)
+            ):
+                loop_mode = LoopMode.SINGLE_TURN
+                used_native_tool_fast_path = True
+                logger.info(
+                    "Switching to native tool-calling fast path",
+                    extra={
+                        "agent_id": str(self.config.agent_id),
+                        "runtime_path": "native_tool_fast_path",
+                        "langchain_tool_skills": self.loaded_langchain_tool_skill_count,
+                        "agent_skills": self.loaded_agent_skill_count,
+                    },
+                )
 
             execution_context_tag = ""
             if isinstance(context, dict):
@@ -1370,7 +1500,9 @@ class BaseAgent:
                     round_output = ""
                     round_thinking = ""
                     chunk_count = 0
+                    streamed_content_chars = 0
                     stream_failed = False
+                    used_non_stream_fallback = False
                     native_tool_calls: List[ToolCall] = []
                     merged_stream_message: Any = None
                     llm_for_round = self.llm_with_tools if self.tools else self.llm
@@ -1400,6 +1532,7 @@ class BaseAgent:
                                     round_thinking += chunk.content
                                 else:
                                     round_output += chunk.content
+                                    streamed_content_chars += len(chunk.content)
                                 chunk_count += 1
 
                         native_tool_calls = self._extract_native_tool_calls(merged_stream_message)
@@ -1410,6 +1543,10 @@ class BaseAgent:
                             logger.warning("LLM streaming returned no chunks")
 
                     except Exception as stream_error:
+                        if self._handle_native_tool_http_rejection(
+                            stream_error, runtime_path="auto_multi_stream_http_fallback"
+                        ):
+                            llm_for_round = self.llm
                         stream_failed = True
                         logger.warning(f"Streaming failed: {stream_error}")
 
@@ -1418,20 +1555,40 @@ class BaseAgent:
                         logger.info("Falling back to non-streaming mode")
                         try:
                             result = llm_for_round.invoke(messages)
-                            if hasattr(result, "content"):
-                                round_output = result.content
-                            else:
-                                round_output = str(result)
-                            native_tool_calls = self._extract_native_tool_calls(result)
-
-                            if not round_output:
-                                if native_tool_calls:
-                                    round_output = ""
-                                else:
-                                    raise ValueError("LLM returned empty content")
                         except Exception as invoke_error:
-                            logger.error(f"Non-streaming fallback also failed: {invoke_error}")
-                            raise
+                            if self._handle_native_tool_http_rejection(
+                                invoke_error, runtime_path="auto_multi_invoke_http_fallback"
+                            ):
+                                llm_for_round = self.llm
+                                result = llm_for_round.invoke(messages)
+                            else:
+                                logger.error(f"Non-streaming fallback also failed: {invoke_error}")
+                                raise
+
+                        if hasattr(result, "content"):
+                            round_output = result.content
+                        else:
+                            round_output = str(result)
+                        used_non_stream_fallback = True
+                        native_tool_calls = self._extract_native_tool_calls(result)
+
+                        if not round_output:
+                            if native_tool_calls:
+                                round_output = ""
+                            else:
+                                raise ValueError("LLM returned empty content")
+
+                    if (
+                        used_non_stream_fallback
+                        and stream_callback
+                        and round_output
+                        and streamed_content_chars == 0
+                    ):
+                        self._emit_stream_chunk(
+                            stream_callback=stream_callback,
+                            content=round_output,
+                            content_type="content",
+                        )
 
                     logger.info(
                         f"[TOOL-LOOP] Round {iteration} LLM output: thinking={len(round_thinking)} chars, content={len(round_output)} chars",
@@ -1700,7 +1857,69 @@ class BaseAgent:
                     human_content=user_message,
                     conversation_history=conversation_history,
                 )
-                result = self.agent.invoke({"messages": messages})
+                invoke_payload = {"messages": messages}
+                invoke_config = None
+                if self.native_tool_calling_enabled and self.tools:
+                    # Cap LangGraph tool-call recursion so single-turn runs cannot loop indefinitely.
+                    invoke_config = {"recursion_limit": 12}
+
+                try:
+                    if invoke_config is not None:
+                        result = self.agent.invoke(invoke_payload, config=invoke_config)
+                    else:
+                        result = self.agent.invoke(invoke_payload)
+                except httpx.HTTPStatusError as http_error:
+                    if not self._handle_native_tool_http_rejection(
+                        http_error, runtime_path="single_turn_native_tool_http_fallback"
+                    ):
+                        raise
+                    if used_native_tool_fast_path and pre_fast_path_loop_mode in (
+                        LoopMode.RECOVERY_MULTI_TURN,
+                        LoopMode.AUTO_MULTI_TURN,
+                    ):
+                        logger.info(
+                            "Native tool fast path downgraded; rerouting to multi-turn parser loop",
+                            extra={
+                                "agent_id": str(self.config.agent_id),
+                                "runtime_path": "single_turn_native_tool_http_fallback_reroute",
+                                "fallback_loop_mode": pre_fast_path_loop_mode.value,
+                            },
+                        )
+                        fallback_policy = RuntimePolicy(
+                            profile=resolved_policy.profile,
+                            loop_mode=pre_fast_path_loop_mode,
+                            max_rounds=resolved_policy.max_rounds,
+                            enable_error_recovery=resolved_policy.enable_error_recovery,
+                            max_retries=resolved_policy.max_retries,
+                            timeout_seconds=resolved_policy.timeout_seconds,
+                            include_context=resolved_policy.include_context,
+                            include_memory=resolved_policy.include_memory,
+                            stream_output=resolved_policy.stream_output,
+                        )
+                        self.status = AgentStatus.ACTIVE
+                        return self.execute_task(
+                            task_description=task_description,
+                            context=context,
+                            conversation_history=conversation_history,
+                            runtime_policy=fallback_policy,
+                            stream_callback=stream_callback,
+                            session_workdir=session_workdir,
+                            container_id=container_id,
+                            code_execution_network_access=code_execution_network_access,
+                            message_content=message_content,
+                        )
+                    result = self.agent.invoke(invoke_payload)
+                except GraphRecursionError as recursion_error:
+                    logger.warning(
+                        "Single-turn graph recursion limit reached, fallback to plain LLM invoke",
+                        extra={
+                            "agent_id": str(self.config.agent_id),
+                            "runtime_path": "single_turn_graph_fallback",
+                            "reason": str(recursion_error),
+                        },
+                    )
+                    fallback_response = self.llm.invoke(messages)
+                    result = {"messages": [fallback_response]}
 
                 # Extract output from result
                 messages = result.get("messages", [])
@@ -1722,8 +1941,16 @@ class BaseAgent:
                         )
 
                 # Parse and execute tool calls if LLM doesn't support function calling
-                if self.tools and not hasattr(self.llm, "bind_tools"):
+                if self.tools and not self.native_tool_calling_enabled:
                     final_output = self._parse_and_execute_tools_sync(final_output)
+
+                # Single-turn path does not stream chunks by default; emit final output once.
+                if stream_callback and final_output:
+                    self._emit_stream_chunk(
+                        stream_callback=stream_callback,
+                        content=final_output,
+                        content_type="content",
+                    )
 
                 self.status = AgentStatus.ACTIVE
                 logger.info(f"Task completed: {self.config.name}")
@@ -2836,6 +3063,8 @@ class BaseAgent:
             round_output = ""
             round_thinking = ""
             round_usage = None  # Track usage from LLM response
+            streamed_content_chars = 0
+            used_non_stream_fallback = False
             native_tool_calls: List[ToolCall] = []
             merged_stream_message: Any = None
             llm_for_round = self.llm_with_tools if self.tools else self.llm
@@ -2883,21 +3112,50 @@ class BaseAgent:
                             round_thinking += chunk.content
                         else:
                             round_output += chunk.content
+                            streamed_content_chars += len(chunk.content)
                 native_tool_calls = self._extract_native_tool_calls(merged_stream_message)
             except Exception as e:
+                if self._handle_native_tool_http_rejection(
+                    e, runtime_path="recovery_stream_http_fallback"
+                ):
+                    llm_for_round = self.llm
                 logger.error(f"[RECOVERY] LLM streaming failed: {e}", exc_info=True)
                 # Try non-streaming fallback
                 try:
                     result = llm_for_round.invoke(messages)
-                    round_output = result.content if hasattr(result, "content") else str(result)
-                    native_tool_calls = self._extract_native_tool_calls(result)
-                    if not round_output and native_tool_calls:
-                        round_output = ""
                 except Exception as fallback_error:
-                    logger.error(f"[RECOVERY] LLM fallback also failed: {fallback_error}")
-                    state.is_terminated = True
-                    state.termination_reason = "llm_failure"
-                    break
+                    if self._handle_native_tool_http_rejection(
+                        fallback_error, runtime_path="recovery_invoke_http_fallback"
+                    ):
+                        llm_for_round = self.llm
+                        try:
+                            result = llm_for_round.invoke(messages)
+                        except Exception as downgraded_error:
+                            logger.error(
+                                f"[RECOVERY] LLM fallback after downgrade failed: {downgraded_error}"
+                            )
+                            state.is_terminated = True
+                            state.termination_reason = "llm_failure"
+                            break
+                    else:
+                        logger.error(f"[RECOVERY] LLM fallback also failed: {fallback_error}")
+                        state.is_terminated = True
+                        state.termination_reason = "llm_failure"
+                        break
+
+                round_output = result.content if hasattr(result, "content") else str(result)
+                used_non_stream_fallback = True
+                native_tool_calls = self._extract_native_tool_calls(result)
+                if not round_output and native_tool_calls:
+                    round_output = ""
+
+            if (
+                used_non_stream_fallback
+                and stream_callback
+                and round_output
+                and streamed_content_chars == 0
+            ):
+                stream_callback((round_output, "content"))
 
             logger.info(
                 f"[RECOVERY] Round {state.round_number} output: thinking={len(round_thinking)} chars, content={len(round_output)} chars, usage={round_usage}",
@@ -3457,7 +3715,7 @@ Always be professional, accurate, and helpful."""
                     tools_prompt += f"{tool.description}\n\n"
 
                 # Add note about how to use tools
-                if not hasattr(self.llm, "bind_tools"):
+                if not self.native_tool_calling_enabled:
                     # LLM doesn't support function calling - need manual format
                     tools_prompt += "\n**IMPORTANT - How to use tools**: To use a tool, you MUST write it in this EXACT format:\n\n"
                     tools_prompt += "```json\n"

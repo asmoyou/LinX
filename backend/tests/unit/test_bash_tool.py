@@ -9,14 +9,24 @@ Tests cover:
 
 import pytest
 import time
+from pathlib import Path
 from agent_framework.tools.bash_tool import (
     BashToolConfig,
     BashResult,
     EnhancedBashTool,
     create_bash_tool
 )
+from agent_framework.tools.file_tools import clear_workspace_root, set_workspace_root
 from agent_framework.tools.process_manager import ProcessManager
 from uuid import uuid4
+
+
+@pytest.fixture(autouse=True)
+def _reset_workspace_root():
+    """Avoid cross-test workspace root leakage via ContextVar."""
+    clear_workspace_root()
+    yield
+    clear_workspace_root()
 
 
 class TestBashToolConfig:
@@ -109,6 +119,51 @@ class TestEnhancedBashTool:
         
         assert result.success is True
         assert "test_value" in result.stdout
+
+    def test_normal_execution_defaults_to_session_workspace_root(self, tmp_path: Path):
+        """When workspace root is set, bash without workdir should run there."""
+        set_workspace_root(tmp_path)
+        tool = EnhancedBashTool()
+        config = BashToolConfig(command="pwd")
+
+        result = tool.execute(config)
+
+        assert result.success is True
+        assert str(tmp_path) in result.stdout.strip()
+
+    def test_normal_execution_maps_workspace_workdir(self, tmp_path: Path):
+        """/workspace/... workdir should map to host session workspace path."""
+        output_dir = tmp_path / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        set_workspace_root(tmp_path)
+
+        tool = EnhancedBashTool()
+        config = BashToolConfig(command="pwd", workdir="/workspace/output")
+
+        result = tool.execute(config)
+
+        assert result.success is True
+        assert str(output_dir) in result.stdout.strip()
+
+    def test_normal_execution_rewrites_workspace_paths_in_command(self, tmp_path: Path):
+        """/workspace file paths in command should be rewritten to host workspace path."""
+        report_path = tmp_path / "output" / "gold_price_report.md"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text("report-ok", encoding="utf-8")
+        set_workspace_root(tmp_path)
+
+        tool = EnhancedBashTool()
+        config = BashToolConfig(
+            command=(
+                "python3 -c \"from pathlib import Path; "
+                "print(Path('/workspace/output/gold_price_report.md').read_text())\""
+            )
+        )
+
+        result = tool.execute(config)
+
+        assert result.success is True
+        assert "report-ok" in result.stdout
     
     def test_pty_execution_success(self):
         """Test successful PTY execution."""
@@ -176,14 +231,45 @@ class TestEnhancedBashTool:
         )
         
         result = tool.execute(config)
-        
+
         assert result.success is True
         assert result.session_id is not None
-        assert "session ID" in result.stdout.lower()
+        assert "session id" in result.stdout.lower()
         
         # Verify session exists
         status = process_manager.poll(result.session_id)
         assert status.value in ["running", "completed"]
+
+    def test_background_execution_rewrites_workspace_paths(self, tmp_path: Path):
+        """Background command should receive workspace-mapped command and workdir."""
+        class MockProcessManager:
+            def __init__(self):
+                self.captured_config = None
+
+            def start_process(self, config):
+                self.captured_config = config
+                return "session-1"
+
+        mock_process_manager = MockProcessManager()
+        set_workspace_root(tmp_path)
+        tool = EnhancedBashTool(process_manager=mock_process_manager)
+        config = BashToolConfig(
+            command="cat /workspace/output/file.txt",
+            workdir="/workspace/output",
+            background=True,
+        )
+
+        result = tool.execute(config)
+
+        assert result.success is True
+        assert result.session_id == "session-1"
+        assert mock_process_manager.captured_config is not None
+        assert mock_process_manager.captured_config.workdir == str(
+            (tmp_path / "output").resolve()
+        )
+        assert str((tmp_path / "output" / "file.txt").resolve()) in (
+            mock_process_manager.captured_config.command
+        )
 
 
 class TestCreateBashTool:

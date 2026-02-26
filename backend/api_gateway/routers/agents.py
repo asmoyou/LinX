@@ -4597,6 +4597,20 @@ async def test_agent(
                                     message_content=content_override,
                                 )
 
+                            if not result.get("success", False):
+                                failure_error = str(
+                                    result.get("error")
+                                    or "Unknown agent execution error"
+                                )
+                                failure_output = result.get("output")
+                                segment_response[0] = (
+                                    str(failure_output) if failure_output is not None else ""
+                                )
+                                segment_execution_messages[0] = result.get("messages") or []
+                                error_holder[0] = failure_error
+                                token_queue.put(None)
+                                return
+
                             # Store final response
                             segment_response[0] = result.get("output", "")
                             segment_execution_messages[0] = result.get("messages") or []
@@ -4724,6 +4738,17 @@ async def test_agent(
                     yield (
                         "data: "
                         + json.dumps({"type": "error", "content": f"Error: {run_error}"})
+                        + "\n\n"
+                    )
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "done",
+                                "content": "Agent execution failed",
+                                "partial": True,
+                            }
+                        )
                         + "\n\n"
                     )
 

@@ -14,17 +14,21 @@ import asyncio
 import logging
 import os
 import pty
+import re
 import select
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
 
 from langchain_core.tools import Tool
 
 logger = logging.getLogger(__name__)
+
+_WORKSPACE_PATH_PATTERN = re.compile(r"(/workspace(?:/[^\s'\"`<>(){},;]+)?)")
 
 
 @dataclass
@@ -72,6 +76,60 @@ class EnhancedBashTool:
         """
         self.process_manager = process_manager
         self.logger = logging.getLogger(__name__)
+
+    def _get_workspace_root(self) -> Optional[Path]:
+        """Return current session workspace root when available."""
+        try:
+            from agent_framework.tools.file_tools import get_workspace_root
+
+            root = get_workspace_root()
+            return Path(root) if root else None
+        except Exception:
+            return None
+
+    def _resolve_workdir(self, workdir: Optional[str], workspace_root: Optional[Path]) -> Optional[str]:
+        """Resolve workdir with /workspace semantics."""
+        if workspace_root is None:
+            return workdir
+
+        if not workdir:
+            return str(workspace_root)
+
+        if workdir == "/workspace":
+            return str(workspace_root)
+
+        if workdir.startswith("/workspace/"):
+            relative = workdir[len("/workspace/") :]
+            return str((workspace_root / relative).resolve())
+
+        candidate = Path(workdir).expanduser()
+        if candidate.is_absolute():
+            return str(candidate)
+
+        return str((workspace_root / candidate).resolve())
+
+    def _rewrite_workspace_paths(self, command: str, workspace_root: Optional[Path]) -> str:
+        """Rewrite /workspace paths inside shell command to host workspace paths."""
+        if workspace_root is None or "/workspace" not in command:
+            return command
+
+        root_str = str(workspace_root)
+
+        def _replace(match: re.Match[str]) -> str:
+            token = match.group(1)
+            if token == "/workspace":
+                return root_str
+            relative = token[len("/workspace/") :]
+            return str((workspace_root / relative).resolve())
+
+        return _WORKSPACE_PATH_PATTERN.sub(_replace, command)
+
+    def _prepare_config(self, config: BashToolConfig) -> BashToolConfig:
+        """Apply workspace-aware defaults and path normalization."""
+        workspace_root = self._get_workspace_root()
+        resolved_workdir = self._resolve_workdir(config.workdir, workspace_root)
+        resolved_command = self._rewrite_workspace_paths(config.command, workspace_root)
+        return replace(config, command=resolved_command, workdir=resolved_workdir)
     
     def execute(self, config: BashToolConfig) -> BashResult:
         """Execute bash command with enhanced features.
@@ -83,14 +141,15 @@ class EnhancedBashTool:
             BashResult with execution details
         """
         start_time = time.time()
+        resolved_config = self._prepare_config(config)
         
         try:
-            if config.background:
-                result = self._execute_background(config)
-            elif config.pty:
-                result = self._execute_pty(config)
+            if resolved_config.background:
+                result = self._execute_background(resolved_config)
+            elif resolved_config.pty:
+                result = self._execute_pty(resolved_config)
             else:
-                result = self._execute_normal(config)
+                result = self._execute_normal(resolved_config)
             
             result.execution_time = time.time() - start_time
             return result
