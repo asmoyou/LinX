@@ -48,22 +48,12 @@ const ConversationRoundComponentBase: React.FC<ConversationRoundProps> = ({
 }) => {
   const [statusCollapsed, setStatusCollapsed] = useState(defaultCollapsed);
   const [thinkingCollapsed, setThinkingCollapsed] = useState(defaultCollapsed);
-  const [hasAutoCollapsed, setHasAutoCollapsed] = useState(false);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setStatusCollapsed(defaultCollapsed);
     setThinkingCollapsed(defaultCollapsed);
-    setHasAutoCollapsed(false);
   }, [defaultCollapsed, round.roundNumber]);
-
-  useEffect(() => {
-    if (isStreaming && !hasAutoCollapsed && round.content && round.content.trim().length > 0) {
-      setStatusCollapsed(true);
-      setThinkingCollapsed(true);
-      setHasAutoCollapsed(true);
-    }
-  }, [isStreaming, hasAutoCollapsed, round.content]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const markdownComponents = useMemo(() => createMarkdownComponents(), []);
@@ -171,7 +161,7 @@ const ConversationRoundComponentBase: React.FC<ConversationRoundProps> = ({
                                   : status.type === 'tool_call'
                                   ? 'text-indigo-600 dark:text-indigo-400 font-bold'
                                   : 'text-zinc-600 dark:text-zinc-300'
-                              }`}
+                              } whitespace-pre-wrap break-words`}
                             >
                               {status.content}
                             </span>

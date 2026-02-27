@@ -708,10 +708,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
                     onOpenArtifact={handleOpenArtifactInWorkspace}
                     onDownloadArtifact={handleDownloadArtifact}
                     downloadingArtifactPath={downloadingArtifactPath}
-                    defaultCollapsed={
-                      roundIdx < message.rounds.length - 1 ||
-                      Boolean(round.content && round.content.trim().length > 0)
-                    }
+                    defaultCollapsed={roundIdx < message.rounds.length - 1}
                   />
                 ))}
                 <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-600 uppercase tracking-widest px-1">

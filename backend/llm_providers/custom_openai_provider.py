@@ -40,6 +40,13 @@ class CustomOpenAIChat(BaseChatModel):
     temperature: float = Field(default=0.7, description="Temperature")
     max_tokens: Optional[int] = Field(default=None, description="Maximum tokens to generate")
     timeout: int = Field(default=30, description="Request timeout in seconds")
+    stream_read_timeout: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional read-timeout override for streaming responses. "
+            "When unset, uses max(timeout, 120s)."
+        ),
+    )
     max_retries: int = Field(default=2, description="Maximum retry attempts")
     streaming: bool = Field(default=False, description="Enable streaming mode")
 
@@ -337,6 +344,17 @@ class CustomOpenAIChat(BaseChatModel):
             )
         )
 
+    def _build_stream_timeout(self) -> httpx.Timeout:
+        """Build timeout config for streaming calls.
+
+        For reasoning-heavy models, the first token may take longer than the
+        generic request timeout. Keep connect/write/pool strict while relaxing
+        stream read timeout.
+        """
+        base_timeout = float(self.timeout or 30)
+        read_timeout = float(self.stream_read_timeout or max(base_timeout, 120.0))
+        return httpx.Timeout(timeout=base_timeout, read=read_timeout)
+
     def _stream(
         self,
         messages: List[BaseMessage],
@@ -382,7 +400,7 @@ class CustomOpenAIChat(BaseChatModel):
                 url,
                 json=data,
                 headers=headers,
-                timeout=self.timeout,
+                timeout=self._build_stream_timeout(),
             ) as response:
                 response.raise_for_status()
                 raw_json_lines: List[str] = []

@@ -307,7 +307,7 @@ class TestBaseAgent:
         assert "report the exact saved file path" in prompt
         assert "prefer `/workspace/output/...`" in prompt
         assert "Default behavior" in prompt
-        assert "Do NOT proactively call `write_file`/`append_file`" in prompt
+        assert "Use file tools when the user asks for deliverable files" in prompt
 
     def test_build_system_time_context_contains_utc_and_local_timestamps(self):
         config = AgentConfig(
@@ -359,6 +359,8 @@ class TestBaseAgent:
         assert agent._requires_file_delivery("写一篇北京的5天旅游攻略，然后生成md文档给我") is True
         assert agent._requires_file_delivery("请生成PDF文件给我") is True
         assert agent._requires_file_delivery("写一份天津的旅游攻略，给我pdf文档") is True
+        assert agent._requires_file_delivery("把以上题目整到excel文件给我") is True
+        assert agent._requires_file_delivery("出100道题，整理出excel给我") is True
         assert agent._requires_file_delivery("Please save this guide as a markdown file.") is True
         assert agent._requires_file_delivery("Generate this as a markdown document.") is True
         assert agent._requires_file_delivery("Deliver this as a markdown document.") is True
@@ -400,7 +402,7 @@ class TestBaseAgent:
         ]
         assert agent._has_successful_requested_format_call(pdf_records, {"pdf"}) is True
 
-    def test_allows_file_write_tools_only_on_explicit_file_intent(self):
+    def test_runtime_tool_registry_keeps_file_tools_available(self):
         config = AgentConfig(
             agent_id=uuid4(),
             name="Test Agent",
@@ -409,11 +411,15 @@ class TestBaseAgent:
             capabilities=[],
         )
         agent = BaseAgent(config=config)
+        agent.tools_by_name = {
+            "write_file": Mock(),
+            "append_file": Mock(),
+            "read_file": Mock(),
+        }
 
-        assert agent._allows_file_write_tools("写一份山西的旅游攻略") is False
-        assert agent._allows_file_write_tools("写一份山西的旅游攻略，整理成md文档给我") is True
-        assert agent._allows_file_write_tools("请保存到 /workspace/output/guide.md") is True
-        assert agent._allows_file_write_tools("创建一个 main.py 文件并写入 hello world") is True
+        runtime_registry = agent._build_runtime_tool_registry()
+
+        assert set(runtime_registry.keys()) == {"write_file", "append_file", "read_file"}
 
     def test_extract_native_tool_calls_from_ai_message(self):
         config = AgentConfig(
@@ -524,6 +530,23 @@ class TestBaseAgent:
         assert "file_path=/workspace/output/fuzhou.md" in summary
         assert "content_chars=5" in summary
 
+    def test_summarize_tool_arguments_for_stream_bash_positional_command(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        summary = agent._summarize_tool_arguments_for_stream(
+            "bash",
+            {"__arg1": "pip install openpyxl -q"},
+        )
+
+        assert "command=pip install openpyxl -q" in summary
+
     def test_summarize_tool_result_for_stream_truncates_large_text(self):
         config = AgentConfig(
             agent_id=uuid4(),
@@ -539,7 +562,21 @@ class TestBaseAgent:
         assert len(summary) <= 220
         assert summary.endswith("...")
 
-    def test_handle_execution_failures_returns_policy_feedback(self):
+    def test_summarize_tool_result_for_stream_bash_empty_output(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        summary = agent._summarize_tool_result_for_stream("bash", "")
+
+        assert summary == "命令执行成功（无标准输出）"
+
+    def test_handle_execution_failures_returns_execution_feedback(self):
         config = AgentConfig(
             agent_id=uuid4(),
             name="Test Agent",
@@ -556,8 +593,8 @@ class TestBaseAgent:
                 ToolResult(
                     tool_name="write_file",
                     status="error",
-                    error="policy blocked",
-                    error_type="policy_violation",
+                    error="write failed",
+                    error_type="execution_error",
                     retry_count=1,
                 )
             ],
@@ -565,7 +602,7 @@ class TestBaseAgent:
         )
 
         assert feedback is not None
-        assert feedback.error_type == "Policy Constraint"
+        assert feedback.error_type == "Execution Error"
 
     def test_recovery_file_delivery_guard_triggers_extra_write_round(self):
         """When file intent exists and no file write occurred, recovery loop should add one save round."""

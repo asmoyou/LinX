@@ -51,6 +51,14 @@ _FILE_DELIVERY_ACTION_KEYWORDS = (
     "输出到",
     "输出成",
     "整理成",
+    "整理到",
+    "整理出",
+    "整成",
+    "整到",
+    "做成",
+    "做到",
+    "弄成",
+    "弄到",
     "生成文件",
     "save",
     "export",
@@ -66,6 +74,11 @@ _FILE_DELIVERY_ACTION_KEYWORDS = (
 _FILE_DELIVERY_TARGET_KEYWORDS = (
     "文件",
     "文档",
+    "excel",
+    "xls",
+    "xlsx",
+    "表格",
+    "spreadsheet",
     "pdf",
     ".pdf",
     "markdown",
@@ -85,12 +98,17 @@ _FILE_DELIVERY_TARGET_KEYWORDS = (
 )
 _FILE_DELIVERY_FORCE_PATTERN = re.compile(
     r"(?:整理成|保存为|保存成|生成(?:为|成)?|交付|提交|save as|save to|generate as|generate to|deliver as|deliver to|submit as|submit to|export as|export to).{0,16}"
-    r"(?:pdf|md|markdown|txt|json|csv|yaml|yml|docx?|xlsx?|pptx?|文件|文档|file|document)",
+    r"(?:excel|xls|xlsx|表格|spreadsheet|pdf|md|markdown|txt|json|csv|yaml|yml|docx?|xlsx?|pptx?|文件|文档|file|document)",
     re.IGNORECASE,
 )
 _FILE_DELIVERY_REQUEST_PATTERN = re.compile(
+    r"(?:"
     r"(?:给我|给出|提供|交付|提交|发我|send me|give me|provide|deliver|submit).{0,16}"
-    r"(?:pdf|md|markdown|txt|json|csv|yaml|yml|docx?|xlsx?|pptx?|文件|文档|file|document)",
+    r"(?:excel|xls|xlsx|表格|spreadsheet|pdf|md|markdown|txt|json|csv|yaml|yml|docx?|xlsx?|pptx?|文件|文档|file|document)"
+    r"|"
+    r"(?:excel|xls|xlsx|表格|spreadsheet|pdf|md|markdown|txt|json|csv|yaml|yml|docx?|xlsx?|pptx?|文件|文档|file|document).{0,16}"
+    r"(?:给我|给出|提供|交付|提交|发我|send me|give me|provide|deliver|submit)"
+    r")",
     re.IGNORECASE,
 )
 _REQUESTED_FORMAT_PATTERN = re.compile(
@@ -98,21 +116,12 @@ _REQUESTED_FORMAT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _WORKSPACE_PATH_PATTERN = re.compile(r"(/workspace/[^\s'\"`<>]+)")
-_EXPLICIT_FILENAME_PATTERN = re.compile(
-    r"(?<![a-z0-9_])[a-z0-9._-]+\.(?:md|markdown|txt|json|csv|yaml|yml|pdf|docx?|xlsx?|pptx?|py|js|ts|tsx|jsx|sh|sql|html|css)(?![a-z0-9_])",
-    re.IGNORECASE,
-)
-_FILE_WRITE_INTENT_PATTERN = re.compile(
-    r"(?:保存|写入|输出到|导出|存为|save(?:\s+(?:as|to))?|write(?:\s+(?:to|into))?|export(?:\s+(?:as|to))?)",
-    re.IGNORECASE,
-)
 _TEXT_FILE_FORMATS = {"md", "txt", "json", "csv", "yml"}
 _FORMAT_ALIASES = {
     "markdown": "md",
     "yaml": "yml",
 }
 _FILE_WRITE_TOOL_NAMES = {"write_file", "append_file", "edit_file"}
-_FILE_DELIVERY_TOOL_NAMES = {"write_file", "append_file"}
 
 
 def _get_env_int(key: str, default: int) -> int:
@@ -802,17 +811,13 @@ class BaseAgent:
         time_block = self._render_system_time_prompt_block(time_context)
         return f"{base_prompt}\n\n{time_block}"
 
-    def _build_runtime_tool_registry(self, allow_file_write_tools: bool) -> Dict[str, Any]:
-        """Build per-request tool registry constrained by policy."""
-        if allow_file_write_tools:
-            return dict(self.tools_by_name)
+    def _build_runtime_tool_registry(self) -> Dict[str, Any]:
+        """Build per-request tool registry.
 
-        filtered = {
-            name: tool
-            for name, tool in self.tools_by_name.items()
-            if name not in _FILE_DELIVERY_TOOL_NAMES
-        }
-        return filtered
+        File tools are always available; safety is enforced inside each tool
+        (workspace path boundaries, sandbox, and runtime limits).
+        """
+        return dict(self.tools_by_name)
 
     def _build_runtime_llm(self, runtime_tools_by_name: Dict[str, Any]) -> Any:
         """Build per-request LLM binding using runtime-filtered tools."""
@@ -872,29 +877,6 @@ class BaseAgent:
             return True
 
         return bool(_FILE_DELIVERY_REQUEST_PATTERN.search(text))
-
-    def _allows_file_write_tools(self, task_description: str) -> bool:
-        """Determine whether write/append file tools are explicitly requested."""
-        text = str(task_description or "").strip()
-        if not text:
-            return False
-
-        if self._requires_file_delivery(text):
-            return True
-
-        lowered = text.lower()
-        if "/workspace/" in lowered:
-            return True
-
-        if _EXPLICIT_FILENAME_PATTERN.search(lowered):
-            return True
-
-        if _FILE_WRITE_INTENT_PATTERN.search(text):
-            has_file_target = any(keyword in lowered for keyword in _FILE_DELIVERY_TARGET_KEYWORDS)
-            if has_file_target:
-                return True
-
-        return False
 
     @staticmethod
     def _normalize_requested_file_format(format_name: str) -> str:
@@ -1160,7 +1142,43 @@ class BaseAgent:
             code_chars = len(code_value) if isinstance(code_value, str) else 0
             timeout = arguments.get("timeout")
             timeout_text = f", timeout={timeout}s" if timeout is not None else ""
+            workspace_paths: List[str] = []
+            if isinstance(code_value, str):
+                workspace_paths = list(dict.fromkeys(_WORKSPACE_PATH_PATTERN.findall(code_value)))
+
+            if workspace_paths:
+                shown_paths = workspace_paths[:2]
+                more_count = len(workspace_paths) - len(shown_paths)
+                shown_text = ", ".join(shown_paths)
+                more_text = f", +{more_count} more" if more_count > 0 else ""
+                return (
+                    f"code_chars={code_chars}{timeout_text}, "
+                    f"workspace_paths=[{shown_text}{more_text}]"
+                )
+
             return f"code_chars={code_chars}{timeout_text}"
+
+        if normalized_tool == "bash":
+            command_value = arguments.get("command")
+            if not isinstance(command_value, str):
+                maybe_positional = arguments.get("__arg1")
+                if isinstance(maybe_positional, str):
+                    command_value = maybe_positional
+            command_preview = self._truncate_stream_preview(command_value, max_chars=180)
+
+            summary_parts = [f"command={command_preview or '<empty>'}"]
+            if "pty" in arguments:
+                summary_parts.append(f"pty={bool(arguments.get('pty'))}")
+            if "background" in arguments:
+                summary_parts.append(f"background={bool(arguments.get('background'))}")
+            if arguments.get("workdir"):
+                summary_parts.append(f"workdir={arguments.get('workdir')}")
+            return ", ".join(summary_parts)
+
+        if normalized_tool == "list_files":
+            path = str(arguments.get("path") or "/workspace")
+            recursive = bool(arguments.get("recursive", False))
+            return f"path={path}, recursive={recursive}"
 
         keys = ", ".join(sorted(str(key) for key in arguments.keys())[:8])
         return f"keys=[{keys}]"
@@ -1172,12 +1190,31 @@ class BaseAgent:
         if isinstance(result, dict):
             status = str(result.get("status") or "").strip()
             success = result.get("success")
-            keys = ", ".join(sorted(str(key) for key in result.keys())[:8])
+            summary_parts: List[str] = []
             if status:
-                return f"status={status}, keys=[{keys}]"
-            if success is not None:
-                return f"success={bool(success)}, keys=[{keys}]"
-            return f"keys=[{keys}]"
+                summary_parts.append(f"status={status}")
+            elif success is not None:
+                summary_parts.append(f"success={bool(success)}")
+
+            preview_source: Any = None
+            for key in ("message", "error", "output", "stdout", "stderr", "result"):
+                candidate = result.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    preview_source = candidate
+                    break
+
+            preview = self._truncate_stream_preview(preview_source, max_chars=200)
+            if preview:
+                summary_parts.append(f"preview={preview}")
+                return ", ".join(summary_parts)
+
+            keys = ", ".join(sorted(str(key) for key in result.keys())[:8])
+            summary_parts.append(f"keys=[{keys}]")
+            return ", ".join(summary_parts)
+
+        if normalized_tool == "bash":
+            preview = self._truncate_stream_preview(result, max_chars=220)
+            return preview or "命令执行成功（无标准输出）"
 
         if normalized_tool in _FILE_WRITE_TOOL_NAMES:
             preview = self._truncate_stream_preview(result, max_chars=260)
@@ -1624,18 +1661,12 @@ class BaseAgent:
                 file_delivery_guard_required = self._requires_file_delivery(
                     resolved_task_intent_text
                 )
-                allow_file_write_tools = self._allows_file_write_tools(resolved_task_intent_text)
                 requested_file_formats = self._extract_requested_file_formats(
                     resolved_task_intent_text
                 )
-                runtime_tools_by_name = self._build_runtime_tool_registry(allow_file_write_tools)
+                runtime_tools_by_name = self._build_runtime_tool_registry()
                 runtime_tools = list(runtime_tools_by_name.values())
                 runtime_llm_with_tools = self._build_runtime_llm(runtime_tools_by_name)
-                if not allow_file_write_tools:
-                    logger.info(
-                        "[TOOL-LOOP] File delivery tools disabled for this task",
-                        extra={"agent_id": str(self.config.agent_id)},
-                    )
 
                 human_content = message_content if message_content is not None else user_message
                 messages = self._build_messages_with_history(
@@ -1656,7 +1687,6 @@ class BaseAgent:
                     extra={
                         "agent_id": str(self.config.agent_id),
                         "has_tools": len(runtime_tools_by_name) > 0,
-                        "file_write_tools_enabled": allow_file_write_tools,
                     },
                 )
 
@@ -1812,30 +1842,6 @@ class BaseAgent:
                                 tool_name, tool_args
                             )
                             tool = runtime_tools_by_name.get(tool_name)
-                            if tool_name in _FILE_DELIVERY_TOOL_NAMES and not allow_file_write_tools:
-                                policy_error = (
-                                    "用户未明确要求保存/导出文件；请直接在对话中给出内容。"
-                                )
-                                tool_results.append(
-                                    {
-                                        "tool": tool_name,
-                                        "args": tool_args,
-                                        "error": policy_error,
-                                    }
-                                )
-                                self._emit_stream_chunk(
-                                    stream_callback=stream_callback,
-                                    content=f"❌ **策略限制**: {policy_error}\n",
-                                    content_type="tool_error",
-                                )
-                                logger.warning(
-                                    "[TOOL-LOOP] Blocked unsolicited file write tool call",
-                                    extra={
-                                        "agent_id": str(self.config.agent_id),
-                                        "tool_name": tool_name,
-                                    },
-                                )
-                                continue
 
                             if tool:
                                 # Send "calling tool" message BEFORE execution
@@ -1995,7 +2001,7 @@ class BaseAgent:
 
                         if file_delivery_guard_required and not file_delivery_satisfied:
                             logger.warning(
-                                "[TOOL-LOOP] File delivery incomplete at conversation end",
+                                "[TOOL-LOOP] File delivery not fully verified at conversation end",
                                 extra={
                                     "agent_id": str(self.config.agent_id),
                                     "round": iteration,
@@ -2005,14 +2011,10 @@ class BaseAgent:
                             self._emit_stream_chunk(
                                 stream_callback=stream_callback,
                                 content=(
-                                    "未检测到符合要求的文件交付，当前回复不能视为已完成保存。"
-                                    "请继续调用工具完成文件落盘。"
+                                    "未检测到明确的落盘成功信号。请核对最终文件路径，必要时继续调用工具完成保存。"
                                 ),
                                 content_type="warning",
                             )
-                            messages.append(AIMessage(content=round_output))
-                            final_output = "文件交付未完成：未检测到符合要求的落盘文件。"
-                            break
 
                         logger.info(
                             f"[TOOL-LOOP] No tool calls in round {iteration}, conversation complete",
@@ -2803,7 +2805,6 @@ class BaseAgent:
         tool_calls: List[ToolCall],
         state: ConversationState,
         stream_callback: Optional[callable] = None,
-        allow_file_write_tools: bool = True,
         tool_registry: Optional[Dict[str, Any]] = None,
     ) -> List[ToolResult]:
         """Execute tools with error handling and recovery.
@@ -2860,47 +2861,6 @@ class BaseAgent:
                     extra={
                         "agent_id": str(self.config.agent_id),
                         "tool_name": tool_name,
-                    },
-                )
-                continue
-
-            if tool_name in _FILE_DELIVERY_TOOL_NAMES and not allow_file_write_tools:
-                error_msg = (
-                    "用户未明确要求保存/导出文件；请直接在对话中给出内容，"
-                    "仅当用户明确要求文件交付时才调用写文件工具。"
-                )
-
-                results.append(
-                    ToolResult(
-                        tool_name=tool_name,
-                        status="error",
-                        error=error_msg,
-                        error_type="policy_violation",
-                        retry_count=retry_count,
-                    )
-                )
-                state.retry_counts[retry_key] = retry_count + 1
-
-                if stream_callback:
-                    stream_callback((f"❌ **策略限制**: {error_msg}\n", "tool_error"))
-
-                state.tool_calls_made.append(
-                    ToolCallRecord(
-                        round_number=state.round_number,
-                        tool_name=tool_name,
-                        arguments=tool_call.arguments,
-                        status="execution_error",
-                        error=error_msg,
-                        retry_number=retry_count,
-                    )
-                )
-
-                logger.warning(
-                    "[RECOVERY] Blocked unsolicited file write tool call",
-                    extra={
-                        "agent_id": str(self.config.agent_id),
-                        "tool_name": tool_name,
-                        "task_requires_file_delivery": False,
                     },
                 )
                 continue
@@ -3293,16 +3253,10 @@ class BaseAgent:
             task_intent_text=task_intent_text,
         )
         file_delivery_guard_required = self._requires_file_delivery(resolved_task_intent_text)
-        allow_file_write_tools = self._allows_file_write_tools(resolved_task_intent_text)
         requested_file_formats = self._extract_requested_file_formats(resolved_task_intent_text)
-        runtime_tools_by_name = self._build_runtime_tool_registry(allow_file_write_tools)
+        runtime_tools_by_name = self._build_runtime_tool_registry()
         runtime_tools = list(runtime_tools_by_name.values())
         runtime_llm_with_tools = self._build_runtime_llm(runtime_tools_by_name)
-        if not allow_file_write_tools:
-            logger.info(
-                "[RECOVERY] File delivery tools disabled for this task",
-                extra={"agent_id": str(self.config.agent_id)},
-            )
         file_delivery_guard_prompted = False
 
         # Prepare system prompt and initial messages
@@ -3364,7 +3318,6 @@ class BaseAgent:
                     if runtime_policy
                     else LoopMode.RECOVERY_MULTI_TURN.value
                 ),
-                "file_write_tools_enabled": allow_file_write_tools,
             },
         )
 
@@ -3751,7 +3704,7 @@ class BaseAgent:
 
                 if file_delivery_guard_required and not file_delivery_satisfied:
                     logger.warning(
-                        "[RECOVERY] File delivery incomplete at conversation end",
+                        "[RECOVERY] File delivery not fully verified at conversation end",
                         extra={
                             "agent_id": str(self.config.agent_id),
                             "round": state.round_number,
@@ -3761,15 +3714,10 @@ class BaseAgent:
                     if stream_callback:
                         stream_callback(
                             (
-                                "\n\n⚠️ 未检测到符合要求的文件交付，当前回复不能视为已完成保存。\n",
+                                "\n\n⚠️ 未检测到明确的落盘成功信号。请核对最终文件路径，必要时继续调用工具完成保存。\n",
                                 "warning",
                             )
                         )
-                    round_output = "文件交付未完成：未检测到符合要求的落盘文件。"
-                    state.is_terminated = True
-                    state.termination_reason = "file_delivery_incomplete"
-                    send_round_stats()
-                    break
 
                 logger.info(
                     f"[RECOVERY] No tool calls in round {state.round_number}, conversation complete",
@@ -3785,7 +3733,6 @@ class BaseAgent:
                 tool_calls,
                 state,
                 stream_callback,
-                allow_file_write_tools=allow_file_write_tools,
                 tool_registry=runtime_tools_by_name,
             )
 
@@ -3956,20 +3903,6 @@ class BaseAgent:
                     "Consider breaking it into smaller steps",
                     "Check if there's an infinite loop",
                     "Try a simpler approach",
-                ],
-            )
-        elif failed_result.error_type == "policy_violation":
-            return ErrorFeedback(
-                error_type="Policy Constraint",
-                error_message=failed_result.error or "Unrequested file write is not allowed",
-                malformed_input=None,
-                expected_format="",
-                retry_count=retry_count,
-                max_retries=self.config.max_execution_retries,
-                suggestions=[
-                    "User did not explicitly ask for file delivery",
-                    "Respond directly in chat with the requested content",
-                    "Only call write_file/append_file after explicit save/export request",
                 ],
             )
         else:
@@ -4150,33 +4083,14 @@ Always be professional, accurate, and helpful."""
 
                 base_prompt += tools_prompt
 
-        runtime_tool_names = {
-            str(getattr(tool, "name", "")).strip()
-            for tool in (runtime_tools or [])
-            if getattr(tool, "name", None)
-        }
-        if available_tools is None:
-            file_delivery_tools_enabled = True
-        else:
-            file_delivery_tools_enabled = all(
-                name in runtime_tool_names for name in _FILE_DELIVERY_TOOL_NAMES
-            )
-
         file_tools_lines = [
             "- **read_file**: Read file contents. Supports `offset` (start line, 1-based) and `limit` (max lines) for large files.",
             "- **edit_file**: Replace exact string in a file (`old_string` -> `new_string`). The old_string must match exactly.",
+            "- **write_file**: Create or overwrite a file. Creates parent directories automatically.",
+            "- **append_file**: Append additional content to an existing file (or create it if missing).",
             "- **list_files**: List files in a directory. Supports `recursive=true`.",
         ]
-        if file_delivery_tools_enabled:
-            file_tools_lines.insert(
-                2,
-                "- **write_file**: Create or overwrite a file. Creates parent directories automatically.",
-            )
-            file_tools_lines.insert(
-                3,
-                "- **append_file**: Append additional content to an existing file (or create it if missing).",
-            )
-            file_delivery_policy = """
+        file_delivery_policy = """
 **When users ask for deliverables as files/documents** (for example "整理成md文档", "save as markdown"):
 1. You MUST use `write_file` to save the deliverable under `/workspace` (prefer `/workspace/output/...`).
 2. Prefer a single target file and update it incrementally across rounds (create first, then continue writing).
@@ -4184,16 +4098,6 @@ Always be professional, accurate, and helpful."""
 4. Do NOT use `code_execution` as the final file-delivery step for plain text documents.
 5. In your final response, report the exact saved file path(s).
 6. Never claim a file was saved unless the tool call succeeded.
-"""
-        else:
-            file_tools_lines.append(
-                "- **write_file / append_file**: Temporarily disabled for this request unless user explicitly asks for file delivery."
-            )
-            file_delivery_policy = """
-**Current file-delivery policy for this request**:
-- User did not explicitly request saved-file delivery.
-- `write_file`/`append_file` are disabled in this round.
-- Provide the final content directly in chat.
 """
 
         file_tools_section = "\n".join(file_tools_lines)
@@ -4208,8 +4112,8 @@ Files persist throughout the conversation session.
 {file_tools_section}
 
 **Default behavior**:
-- If the user did NOT explicitly ask for file delivery, respond directly in chat.
-- Do NOT proactively call `write_file`/`append_file` for ordinary Q&A or content generation.
+- For ordinary Q&A or short content, respond directly in chat.
+- Use file tools when the user asks for deliverable files or when file output materially improves usability.
 
 {file_delivery_policy}
 

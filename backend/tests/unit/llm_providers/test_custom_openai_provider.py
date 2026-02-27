@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+import httpx
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
@@ -176,3 +177,17 @@ def test_stream_handles_non_sse_json_body(monkeypatch):
     chunks = list(llm.stream([HumanMessage(content="hello")]))
     assert chunks
     assert any(chunk.content == "plain json response" for chunk in chunks)
+
+
+def test_stream_timeout_uses_longer_read_deadline():
+    llm = CustomOpenAIChat(
+        base_url="https://example.com/v1",
+        model="qwen3.5-flash",
+        timeout=30,
+    )
+
+    timeout = llm._build_stream_timeout()
+
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.connect == 30
+    assert timeout.read == 120
