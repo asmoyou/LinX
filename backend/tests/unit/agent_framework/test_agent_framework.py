@@ -361,6 +361,8 @@ class TestBaseAgent:
         assert agent._requires_file_delivery("写一份天津的旅游攻略，给我pdf文档") is True
         assert agent._requires_file_delivery("把以上题目整到excel文件给我") is True
         assert agent._requires_file_delivery("出100道题，整理出excel给我") is True
+        assert agent._requires_file_delivery("把这个文档转成pdf给我") is True
+        assert agent._requires_file_delivery("请转换为docx文件") is True
         assert agent._requires_file_delivery("Please save this guide as a markdown file.") is True
         assert agent._requires_file_delivery("Generate this as a markdown document.") is True
         assert agent._requires_file_delivery("Deliver this as a markdown document.") is True
@@ -658,6 +660,62 @@ class TestBaseAgent:
         assert stream_call_count["count"] == 3
         write_tool.ainvoke.assert_awaited_once()
         assert "/workspace/output/fuzhou.md" in result["output"]
+
+    def test_recovery_tool_failure_guard_forces_followup_retry_round(self):
+        """If last round failed tool execution, next no-tool response should not terminate immediately."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.tools = []
+
+        bash_tool = Mock()
+        bash_tool.ainvoke = AsyncMock(
+            side_effect=[
+                "❌ Command failed (exit code 127)\n\nError:\n/bin/sh: apt-get: command not found",
+                "ok",
+            ]
+        )
+        agent.tools_by_name = {"bash": bash_tool}
+
+        stream_call_count = {"count": 0}
+
+        def _fake_stream(_messages):
+            stream_call_count["count"] += 1
+            current_round = stream_call_count["count"]
+            if current_round == 1:
+                yield SimpleNamespace(
+                    content='{"tool":"bash","command":"apt-get install -y texlive"}',
+                    additional_kwargs={},
+                )
+            elif current_round == 2:
+                yield SimpleNamespace(content="我无法继续执行。", additional_kwargs={})
+            elif current_round == 3:
+                yield SimpleNamespace(
+                    content='{"tool":"bash","command":"python3 -m pip install -q fpdf2"}',
+                    additional_kwargs={},
+                )
+            else:
+                yield SimpleNamespace(content="已完成处理。", additional_kwargs={})
+
+        agent.llm = Mock()
+        agent.llm.stream = _fake_stream
+
+        result = agent.execute_task(
+            task_description="请完成环境修复并汇报处理结果",
+            stream_callback=lambda *_args, **_kwargs: None,
+        )
+
+        assert result["success"] is True
+        assert stream_call_count["count"] == 4
+        assert bash_tool.ainvoke.await_count == 2
 
     def test_auto_multi_turn_file_delivery_guard_uses_task_intent_text(self):
         """Attachment context should not trigger file-delivery guard when user didn't request file output."""

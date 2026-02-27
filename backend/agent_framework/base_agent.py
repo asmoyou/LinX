@@ -59,12 +59,20 @@ _FILE_DELIVERY_ACTION_KEYWORDS = (
     "做到",
     "弄成",
     "弄到",
+    "转成",
+    "转为",
+    "转换",
+    "转换成",
+    "转换为",
     "生成文件",
     "save",
     "export",
     "create",
     "generate",
     "produce",
+    "convert",
+    "convert to",
+    "convert into",
     "deliver",
     "deliverable",
     "submit",
@@ -97,7 +105,7 @@ _FILE_DELIVERY_TARGET_KEYWORDS = (
     "file",
 )
 _FILE_DELIVERY_FORCE_PATTERN = re.compile(
-    r"(?:整理成|保存为|保存成|生成(?:为|成)?|交付|提交|save as|save to|generate as|generate to|deliver as|deliver to|submit as|submit to|export as|export to).{0,16}"
+    r"(?:整理成|保存为|保存成|生成(?:为|成)?|交付|提交|转(?:成|为)?|转换(?:成|为)?|save as|save to|generate as|generate to|deliver as|deliver to|submit as|submit to|export as|export to|convert to|convert into).{0,16}"
     r"(?:excel|xls|xlsx|表格|spreadsheet|pdf|md|markdown|txt|json|csv|yaml|yml|docx?|xlsx?|pptx?|文件|文档|file|document)",
     re.IGNORECASE,
 )
@@ -922,6 +930,71 @@ class BaseAgent:
         return str(value or "").strip().lower()
 
     @staticmethod
+    def _extract_tool_record_round_number(record: Any) -> int:
+        """Extract round number from dict/dataclass tool call records."""
+        value: Any = 0
+        if isinstance(record, dict):
+            value = record.get("round_number")
+            if value is None:
+                value = record.get("round")
+        else:
+            value = getattr(record, "round_number", None)
+            if value is None:
+                value = getattr(record, "round", None)
+
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _extract_tool_record_error(record: Any) -> str:
+        """Extract error text from dict/dataclass tool call records."""
+        value: Any = None
+        if isinstance(record, dict):
+            value = record.get("error")
+            if value is None:
+                value = record.get("message")
+        else:
+            value = getattr(record, "error", None)
+            if value is None:
+                value = getattr(record, "message", None)
+        return str(value or "").strip()
+
+    @staticmethod
+    def _is_failed_tool_status(status: str) -> bool:
+        """Check whether normalized status means tool failure."""
+        return status in {
+            "error",
+            "execution_error",
+            "timeout",
+            "failed",
+            "failure",
+            "tool_error",
+            "runtime_error",
+        }
+
+    def _find_latest_failed_tool_record(self, tool_call_records: List[Any]) -> Optional[Any]:
+        """Return the latest failed tool call record, if any."""
+        for record in reversed(tool_call_records):
+            status = self._extract_tool_record_status(record)
+            if self._is_failed_tool_status(status):
+                return record
+            if not status and self._extract_tool_record_error(record):
+                return record
+        return None
+
+    def _latest_successful_tool_round(self, tool_call_records: List[Any]) -> int:
+        """Return the latest round index with successful tool execution."""
+        latest_round = 0
+        for record in tool_call_records:
+            status = self._extract_tool_record_status(record)
+            if status and status not in {"success", "ok", "completed"}:
+                continue
+            latest_round = max(latest_round, self._extract_tool_record_round_number(record))
+        return latest_round
+
+    @staticmethod
     def _extract_workspace_paths_from_text(text: Any) -> List[str]:
         """Extract /workspace paths from free-form text/code snippets."""
         raw = str(text or "")
@@ -1071,6 +1144,30 @@ class BaseAgent:
             + "\n"
             + f"建议路径：{suggested_path}\n"
             + "完成后仅简要回复保存路径与状态，不要只输出正文。"
+        )
+
+    def _build_execution_recovery_guard_feedback(self, failed_record: Any) -> str:
+        """Build corrective prompt when previous tool attempt failed but model stopped tool usage."""
+        tool_name = self._extract_tool_record_name(failed_record) or "unknown_tool"
+        error_message = self._extract_tool_record_error(failed_record) or "Unknown tool error"
+        error_preview = self._truncate_stream_preview(error_message, max_chars=300)
+        suggestions = self._build_execution_error_suggestions(
+            ToolResult(
+                tool_name=tool_name,
+                status="error",
+                error=error_message,
+                error_type="execution_error",
+            )
+        )
+        suggestion_lines = "\n".join(f"- {item}" for item in suggestions[:3])
+
+        return (
+            "你上一轮工具执行失败，任务尚未完成，不能在此直接结束。\n"
+            f"失败工具：{tool_name}\n"
+            f"错误摘要：{error_preview}\n"
+            "请立刻继续调用工具修复并重试（优先最小改动）。\n"
+            + ("修复建议：\n" + suggestion_lines + "\n" if suggestion_lines else "")
+            + "完成后再给最终答案，并明确提供产出结果或文件路径。"
         )
 
     @staticmethod
@@ -1873,9 +1970,12 @@ class BaseAgent:
 
                                     tool_calls_made.append(
                                         {
+                                            "tool_name": tool_name,
                                             "name": tool_name,
                                             "args": tool_args,
                                             "result": str(result),
+                                            "status": "success",
+                                            "round_number": iteration,
                                         }
                                     )
                                     tool_results.append(
@@ -1914,6 +2014,16 @@ class BaseAgent:
                                             "tool": tool_name,
                                             "args": tool_args,
                                             "error": str(tool_error),
+                                        }
+                                    )
+                                    tool_calls_made.append(
+                                        {
+                                            "tool_name": tool_name,
+                                            "name": tool_name,
+                                            "args": tool_args,
+                                            "error": str(tool_error),
+                                            "status": "execution_error",
+                                            "round_number": iteration,
                                         }
                                     )
                             else:
@@ -1969,13 +2079,17 @@ class BaseAgent:
                         )
                         if (
                             file_delivery_guard_required
-                            and not file_delivery_guard_prompted
                             and iteration < max_iterations
                             and not file_delivery_satisfied
                         ):
+                            guard_message = (
+                                "[TOOL-LOOP] File-delivery guard triggered; requesting file save step"
+                                if not file_delivery_guard_prompted
+                                else "[TOOL-LOOP] File-delivery still not satisfied; requesting another save attempt"
+                            )
                             file_delivery_guard_prompted = True
                             logger.info(
-                                "[TOOL-LOOP] File-delivery guard triggered; requesting file save step",
+                                guard_message,
                                 extra={
                                     "agent_id": str(self.config.agent_id),
                                     "round": iteration,
@@ -1994,6 +2108,45 @@ class BaseAgent:
                                 HumanMessage(
                                     content=self._build_file_delivery_guard_feedback(
                                         requested_file_formats
+                                    )
+                                )
+                            )
+                            continue
+
+                        latest_failed_record = self._find_latest_failed_tool_record(tool_calls_made)
+                        latest_failed_round = (
+                            self._extract_tool_record_round_number(latest_failed_record)
+                            if latest_failed_record is not None
+                            else 0
+                        )
+                        latest_success_round = self._latest_successful_tool_round(tool_calls_made)
+                        if (
+                            iteration < max_iterations
+                            and latest_failed_record is not None
+                            and latest_failed_round == iteration - 1
+                            and latest_success_round < latest_failed_round
+                        ):
+                            logger.info(
+                                "[TOOL-LOOP] Previous round ended with unresolved tool failure; forcing retry",
+                                extra={
+                                    "agent_id": str(self.config.agent_id),
+                                    "round": iteration,
+                                    "failed_round": latest_failed_round,
+                                    "failed_tool": self._extract_tool_record_name(
+                                        latest_failed_record
+                                    ),
+                                },
+                            )
+                            self._emit_stream_chunk(
+                                stream_callback=stream_callback,
+                                content="上一轮工具执行失败且任务未完成，正在继续尝试修复。",
+                                content_type="info",
+                            )
+                            messages.append(AIMessage(content=round_output))
+                            messages.append(
+                                HumanMessage(
+                                    content=self._build_execution_recovery_guard_feedback(
+                                        latest_failed_record
                                     )
                                 )
                             )
@@ -3707,6 +3860,46 @@ class BaseAgent:
                     send_round_stats()
                     continue
 
+                latest_failed_record = self._find_latest_failed_tool_record(state.tool_calls_made)
+                latest_failed_round = (
+                    self._extract_tool_record_round_number(latest_failed_record)
+                    if latest_failed_record is not None
+                    else 0
+                )
+                latest_success_round = self._latest_successful_tool_round(state.tool_calls_made)
+                if (
+                    state.round_number < state.max_rounds
+                    and latest_failed_record is not None
+                    and latest_failed_round == state.round_number - 1
+                    and latest_success_round < latest_failed_round
+                ):
+                    logger.info(
+                        "[RECOVERY] Previous round ended with unresolved tool failure; forcing retry",
+                        extra={
+                            "agent_id": str(self.config.agent_id),
+                            "round": state.round_number,
+                            "failed_round": latest_failed_round,
+                            "failed_tool": self._extract_tool_record_name(latest_failed_record),
+                        },
+                    )
+                    if stream_callback:
+                        stream_callback(
+                            (
+                                "\n\n🔁 上一轮工具执行失败且任务未完成，正在继续尝试修复。\n",
+                                "info",
+                            )
+                        )
+                    messages.append(AIMessage(content=round_output))
+                    messages.append(
+                        HumanMessage(
+                            content=self._build_execution_recovery_guard_feedback(
+                                latest_failed_record
+                            )
+                        )
+                    )
+                    send_round_stats()
+                    continue
+
                 if file_delivery_guard_required and not file_delivery_satisfied:
                     logger.warning(
                         "[RECOVERY] File delivery not fully verified at conversation end",
@@ -3864,6 +4057,13 @@ class BaseAgent:
                 "Prefer pip for Python packages: run `python3 -m pip install <package>` first",
                 "Do not use apt-get in this runtime unless command availability is confirmed",
                 "After dependency install, retry the original command with minimal changes",
+            ]
+
+        if "pdflatex not found" in error_text:
+            return [
+                "Do not rely on pandoc default pdflatex in this runtime",
+                "Prefer pure-Python PDF generation (fpdf2/reportlab) via code_execution",
+                "If dependencies are missing, install with `python3 -m pip install <package>` first",
             ]
 
         if "modulenotfounderror" in error_text or "no module named" in error_text:
