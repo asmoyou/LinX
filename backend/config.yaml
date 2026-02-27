@@ -505,8 +505,8 @@ memory:
     fact_extraction:
       enabled: true
       model_enabled: true
-      provider: aliyun-bl
-      model: qwen3.5-flash-2026-02-23
+      provider: vllm
+      model: Qwen3.5-35B-A3B-FP8
       timeout_seconds: 120
       max_facts: 10
       failure_backoff_seconds: 60
@@ -569,8 +569,8 @@ knowledge_base:
       。；！？.!?'
   parsing:
     method: auto
-    vision_model: qwen3.5-flash-2026-02-23
-    vision_provider: aliyun-bl
+    vision_model: Qwen3.5-35B-A3B-FP8
+    vision_provider: vllm
     vision_timeout_seconds: 120
     output_language: zh-CN
   embedding:
@@ -621,7 +621,7 @@ knowledge_base:
     - en
     - zh-CN
     cross_language_provider: vllm
-    cross_language_model: Qwen3-Next-80B-A3B-Instruct-AWQ-4bit
+    cross_language_model: Qwen3.5-35B-A3B-FP8
     cross_language_timeout_seconds: 4
     cross_language_failure_backoff_seconds: 60
     cross_language_max_expansions: 2
