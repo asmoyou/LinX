@@ -506,6 +506,39 @@ class TestBaseAgent:
             agent._extract_tool_runtime_error("Successfully wrote /workspace/output/a.md") is None
         )
 
+    def test_summarize_tool_arguments_for_stream_file_write(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        summary = agent._summarize_tool_arguments_for_stream(
+            "write_file",
+            {"file_path": "/workspace/output/fuzhou.md", "content": "hello"},
+        )
+
+        assert "file_path=/workspace/output/fuzhou.md" in summary
+        assert "content_chars=5" in summary
+
+    def test_summarize_tool_result_for_stream_truncates_large_text(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        summary = agent._summarize_tool_result_for_stream("code_execution", "x" * 600)
+
+        assert len(summary) <= 220
+        assert summary.endswith("...")
+
     def test_handle_execution_failures_returns_policy_feedback(self):
         config = AgentConfig(
             agent_id=uuid4(),

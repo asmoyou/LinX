@@ -1118,6 +1118,75 @@ class BaseAgent:
         return None
 
     @staticmethod
+    def _truncate_stream_preview(value: Any, max_chars: int = 220) -> str:
+        """Normalize and truncate stream-facing text previews."""
+        if value is None:
+            return ""
+
+        text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+        normalized = re.sub(r"\s+", " ", text).strip()
+        if len(normalized) <= max_chars:
+            return normalized
+        return normalized[: max(0, max_chars - 3)] + "..."
+
+    def _summarize_tool_arguments_for_stream(
+        self, tool_name: str, arguments: Optional[Dict[str, Any]]
+    ) -> str:
+        """Build compact argument summary for tool_call stream events."""
+        if not isinstance(arguments, dict) or not arguments:
+            return "(无)"
+
+        normalized_tool = str(tool_name or "").strip().lower()
+
+        if normalized_tool in {"write_file", "append_file"}:
+            file_path = str(arguments.get("file_path") or "").strip() or "<missing>"
+            content_value = arguments.get("content")
+            content_chars = len(content_value) if isinstance(content_value, str) else 0
+            return f"file_path={file_path}, content_chars={content_chars}"
+
+        if normalized_tool == "edit_file":
+            file_path = str(arguments.get("file_path") or "").strip() or "<missing>"
+            old_value = arguments.get("old_string")
+            new_value = arguments.get("new_string")
+            old_chars = len(old_value) if isinstance(old_value, str) else 0
+            new_chars = len(new_value) if isinstance(new_value, str) else 0
+            return (
+                f"file_path={file_path}, old_string_chars={old_chars}, "
+                f"new_string_chars={new_chars}"
+            )
+
+        if normalized_tool == "code_execution":
+            code_value = arguments.get("code")
+            code_chars = len(code_value) if isinstance(code_value, str) else 0
+            timeout = arguments.get("timeout")
+            timeout_text = f", timeout={timeout}s" if timeout is not None else ""
+            return f"code_chars={code_chars}{timeout_text}"
+
+        keys = ", ".join(sorted(str(key) for key in arguments.keys())[:8])
+        return f"keys=[{keys}]"
+
+    def _summarize_tool_result_for_stream(self, tool_name: str, result: Any) -> str:
+        """Build compact result summary for tool_result stream events."""
+        normalized_tool = str(tool_name or "").strip().lower()
+
+        if isinstance(result, dict):
+            status = str(result.get("status") or "").strip()
+            success = result.get("success")
+            keys = ", ".join(sorted(str(key) for key in result.keys())[:8])
+            if status:
+                return f"status={status}, keys=[{keys}]"
+            if success is not None:
+                return f"success={bool(success)}, keys=[{keys}]"
+            return f"keys=[{keys}]"
+
+        if normalized_tool in _FILE_WRITE_TOOL_NAMES:
+            preview = self._truncate_stream_preview(result, max_chars=260)
+            return preview or "(空结果)"
+
+        preview = self._truncate_stream_preview(result, max_chars=220)
+        return preview or "(空结果)"
+
+    @staticmethod
     def _merge_stream_message(accumulated: Any, chunk: Any) -> Any:
         """Best-effort merge of streamed chunks into a final message object."""
         if accumulated is None:
@@ -1739,6 +1808,9 @@ class BaseAgent:
                         for tc in parsed_calls:
                             tool_name = tc.tool_name
                             tool_args = tc.arguments
+                            args_summary = self._summarize_tool_arguments_for_stream(
+                                tool_name, tool_args
+                            )
                             tool = runtime_tools_by_name.get(tool_name)
                             if tool_name in _FILE_DELIVERY_TOOL_NAMES and not allow_file_write_tools:
                                 policy_error = (
@@ -1769,7 +1841,10 @@ class BaseAgent:
                                 # Send "calling tool" message BEFORE execution
                                 self._emit_stream_chunk(
                                     stream_callback=stream_callback,
-                                    content=f"\n\n🔧 **调用工具: {tool_name}**\n参数: {tool_args}\n",
+                                    content=(
+                                        f"\n\n🔧 **调用工具: {tool_name}**\n"
+                                        f"参数摘要: {args_summary}\n"
+                                    ),
                                     content_type="tool_call",
                                 )
 
@@ -1778,7 +1853,8 @@ class BaseAgent:
                                     extra={
                                         "agent_id": str(self.config.agent_id),
                                         "tool_name": tool_name,
-                                        "tool_args": str(tool_args),
+                                        "tool_args_summary": args_summary,
+                                        "tool_args_chars": len(str(tool_args or "")),
                                     },
                                 )
 
@@ -1805,9 +1881,12 @@ class BaseAgent:
                                     )
 
                                     # Send tool execution result to frontend
+                                    result_summary = self._summarize_tool_result_for_stream(
+                                        tool_name, result
+                                    )
                                     self._emit_stream_chunk(
                                         stream_callback=stream_callback,
-                                        content=f"✅ **执行结果**: {result}\n",
+                                        content=f"✅ **执行结果**: {result_summary}\n",
                                         content_type="tool_result",
                                     )
 
@@ -2827,12 +2906,16 @@ class BaseAgent:
                 continue
 
             try:
+                args_summary = self._summarize_tool_arguments_for_stream(
+                    tool_name, tool_call.arguments
+                )
                 # Send "calling tool" message
                 if stream_callback:
                     retry_indicator = f" (重试 {retry_count})" if retry_count > 0 else ""
                     stream_callback(
                         (
-                            f"\n\n🔧 **调用工具: {tool_name}{retry_indicator}**\n参数: {tool_call.arguments}\n",
+                            f"\n\n🔧 **调用工具: {tool_name}{retry_indicator}**\n"
+                            f"参数摘要: {args_summary}\n",
                             "tool_call",
                         )
                     )
@@ -2842,7 +2925,8 @@ class BaseAgent:
                     extra={
                         "agent_id": str(self.config.agent_id),
                         "tool_name": tool_name,
-                        "tool_args": str(tool_call.arguments),
+                        "tool_args_summary": args_summary,
+                        "tool_args_chars": len(str(tool_call.arguments or "")),
                         "retry_count": retry_count,
                     },
                 )
@@ -2871,7 +2955,8 @@ class BaseAgent:
 
                 # Send success message
                 if stream_callback:
-                    stream_callback((f"✅ **执行结果**: {result}\n", "tool_result"))
+                    result_summary = self._summarize_tool_result_for_stream(tool_name, result)
+                    stream_callback((f"✅ **执行结果**: {result_summary}\n", "tool_result"))
 
                 # Record success
                 state.tool_calls_made.append(

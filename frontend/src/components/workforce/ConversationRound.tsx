@@ -51,6 +51,7 @@ const ConversationRoundComponentBase: React.FC<ConversationRoundProps> = ({
 
   const markdownComponents = useMemo(() => createMarkdownComponents(), []);
   const remarkPlugins = useMemo(() => [remarkGfm], []);
+  const hasRenderableContent = Boolean(round.content && round.content.trim().length > 0);
 
   return (
     <div className="space-y-4">
@@ -210,7 +211,7 @@ const ConversationRoundComponentBase: React.FC<ConversationRoundProps> = ({
       </div>
 
       {/* Main Response Content */}
-      {round.content && (
+      {hasRenderableContent && (
         <div className="relative group">
           <div className={`rounded-[32px] rounded-tl-none px-6 py-6 bg-white dark:bg-zinc-900 border ${
             isStreaming 

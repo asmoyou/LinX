@@ -171,7 +171,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
   }): boolean =>
     Boolean(
       round.thinking ||
-        round.content ||
+        (round.content && round.content.trim().length > 0) ||
         round.statusMessages.length > 0 ||
         round.retryAttempts.length > 0 ||
         round.errorFeedback.length > 0
@@ -936,7 +936,16 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
             streamingDataRef.current.currentRound.thinking += chunk.content;
             scheduleStreamingStateSync();
           } else if (chunk.type === 'content') {
-            streamingDataRef.current.currentRound.content += chunk.content;
+            const chunkText = String(chunk.content ?? '');
+            const currentContent = streamingDataRef.current.currentRound.content;
+            const isLeadingWhitespaceOnly =
+              chunkText.trim().length === 0 && currentContent.trim().length === 0;
+
+            if (isLeadingWhitespaceOnly) {
+              return;
+            }
+
+            streamingDataRef.current.currentRound.content += chunkText;
             scheduleStreamingStateSync();
           } else if (chunk.type === 'round_stats') {
             const roundStats = {
