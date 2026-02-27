@@ -2,6 +2,7 @@
 
 from agent_framework.tools.file_tools import (
     AppendFileTool,
+    WriteFileTool,
     clear_workspace_root,
     create_file_tools,
     get_workspace_root,
@@ -51,3 +52,25 @@ def test_clear_workspace_root_prevents_stale_path_writes(tmp_path) -> None:
     tool = AppendFileTool()
     result = tool._run("/workspace/output/draft.md", "hello")
     assert "Workspace root not set" in result
+
+
+def test_write_file_tool_rejects_fake_docx_binary(tmp_path) -> None:
+    """write_file should reject office/pdf extensions that need binary generation."""
+    set_workspace_root(tmp_path)
+    tool = WriteFileTool()
+
+    result = tool._run("/workspace/output/report.docx", "plain text pretending to be docx")
+
+    assert "cannot create a real binary .docx file" in result
+    assert not (tmp_path / "output" / "report.docx").exists()
+
+
+def test_append_file_tool_rejects_fake_pdf_binary(tmp_path) -> None:
+    """append_file should reject office/pdf extensions that need binary generation."""
+    set_workspace_root(tmp_path)
+    tool = AppendFileTool()
+
+    result = tool._run("/workspace/output/report.pdf", "more plain text")
+
+    assert "cannot create a real binary .pdf file" in result
+    assert not (tmp_path / "output" / "report.pdf").exists()

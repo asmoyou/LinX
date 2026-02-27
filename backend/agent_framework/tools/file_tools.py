@@ -26,6 +26,16 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
+_BINARY_DELIVERY_EXTENSIONS = {
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+}
+
 
 # ---------------------------------------------------------------------------
 # Shared workspace root – set by BaseAgent before each task execution
@@ -172,6 +182,20 @@ def _validate_syntax(file_path: Path, content: str) -> Tuple[bool, Optional[str]
 
     # No validation for other file types
     return True, None
+
+
+def _validate_text_tool_target(tool_name: str, file_path: str, resolved: Path) -> Optional[str]:
+    """Ensure text file tools are not used to fake binary office/pdf outputs."""
+    suffix = resolved.suffix.lower()
+    if suffix not in _BINARY_DELIVERY_EXTENSIONS:
+        return None
+
+    return (
+        f"Error: {tool_name} cannot create a real binary {suffix} file at {file_path}. "
+        "Use code_execution with an appropriate package to generate this format "
+        "(for example: python-docx/python-pptx/openpyxl/reportlab), "
+        "then save the produced file."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +372,10 @@ Example:
         try:
             resolved = _resolve_path(file_path)
 
+            target_error = _validate_text_tool_target(self.name, file_path, resolved)
+            if target_error:
+                return target_error
+
             # Validate syntax before writing
             is_valid, error_msg = _validate_syntax(resolved, content)
             if not is_valid:
@@ -404,6 +432,10 @@ Example:
     ) -> str:
         try:
             resolved = _resolve_path(file_path)
+
+            target_error = _validate_text_tool_target(self.name, file_path, resolved)
+            if target_error:
+                return target_error
 
             # Create parent directories if needed
             resolved.parent.mkdir(parents=True, exist_ok=True)

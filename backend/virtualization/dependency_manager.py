@@ -421,14 +421,26 @@ cat > /tmp/requirements.txt <<'EOF'
 EOF
 
 # Install with pip (pip -> pip3 -> python -m pip)
+PIP_REQUIREMENTS_ARGS="--disable-pip-version-check --retries 6 --timeout 120 -r /tmp/requirements.txt"
+
+install_with_pip() {{
+  local pip_base_cmd="$1"
+  if eval "$pip_base_cmd install $PIP_REQUIREMENTS_ARGS"; then
+    return 0
+  fi
+
+  echo "Primary pip install failed, retrying with explicit PyPI hosts..."
+  eval "$pip_base_cmd install $PIP_REQUIREMENTS_ARGS --index-url https://pypi.org/simple --trusted-host pypi.org --trusted-host files.pythonhosted.org"
+}}
+
 if command -v pip >/dev/null 2>&1; then
-  pip install --disable-pip-version-check -r /tmp/requirements.txt
+  install_with_pip "pip"
 elif command -v pip3 >/dev/null 2>&1; then
-  pip3 install --disable-pip-version-check -r /tmp/requirements.txt
+  install_with_pip "pip3"
 elif command -v python3 >/dev/null 2>&1; then
-  python3 -m pip install --disable-pip-version-check -r /tmp/requirements.txt
+  install_with_pip "python3 -m pip"
 else
-  python -m pip install --disable-pip-version-check -r /tmp/requirements.txt
+  install_with_pip "python -m pip"
 fi
 
 echo "Python dependencies installed successfully"

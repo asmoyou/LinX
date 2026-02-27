@@ -11,6 +11,7 @@ References:
 
 import asyncio
 import logging
+import os
 import shlex
 import time
 from dataclasses import dataclass, field
@@ -540,6 +541,20 @@ class CodeExecutionSandbox:
                 volume_mounts[str(pip_cache_dir)] = "/root/.cache/pip"
                 environment["PIP_CACHE_DIR"] = "/root/.cache/pip"
                 environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+                environment["PIP_DEFAULT_TIMEOUT"] = "120"
+                environment["PIP_RETRIES"] = "6"
+
+                # Respect host pip mirror/proxy settings when provided.
+                for env_key in (
+                    "PIP_INDEX_URL",
+                    "PIP_EXTRA_INDEX_URL",
+                    "PIP_TRUSTED_HOST",
+                    "PIP_CERT",
+                    "PIP_CLIENT_CERT",
+                ):
+                    env_value = os.getenv(env_key)
+                    if env_value:
+                        environment[env_key] = env_value
             except Exception as cache_error:
                 self.logger.warning(
                     "Failed to configure pip cache mount for code execution sandbox",

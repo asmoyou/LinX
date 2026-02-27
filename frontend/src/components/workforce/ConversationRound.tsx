@@ -7,12 +7,10 @@ import {
   PlayCircle,
   Clock,
   Layout,
-  FileText,
-  FolderOpen,
   Download,
   Loader2,
 } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConversationRound } from '@/types/streaming';
 import { RetryIndicator } from './RetryIndicator';
@@ -36,6 +34,113 @@ interface ConversationRoundProps {
   downloadingArtifactPath?: string | null;
 }
 
+const WORKSPACE_FILE_LINK_PREFIX = 'workspace-file:';
+const WORKSPACE_FILE_HASH_PREFIX = '#workspace-file=';
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildPathVariants(path: string): string[] {
+  const normalized = String(path || '').trim();
+  if (!normalized) return [];
+
+  const variants: string[] = [normalized];
+  if (normalized.startsWith('/workspace/')) {
+    const relative = normalized.slice('/workspace/'.length);
+    if (relative) {
+      variants.push(relative);
+      variants.push(`./${relative}`);
+    }
+  }
+  return [...new Set(variants)];
+}
+
+function buildWorkspaceHref(path: string): string {
+  const normalized = String(path || '').trim();
+  if (!normalized) return '';
+
+  return normalized
+    .split('/')
+    .map((segment, index) => (index === 0 ? segment : encodeURIComponent(segment)))
+    .join('/');
+}
+
+function decodeWorkspacePath(path: string): string {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+}
+
+function resolveWorkspaceLinkPath(href: string): string | null {
+  const raw = String(href || '').trim();
+  if (!raw) return null;
+
+  if (raw.startsWith(WORKSPACE_FILE_LINK_PREFIX)) {
+    return decodeWorkspacePath(raw.slice(WORKSPACE_FILE_LINK_PREFIX.length));
+  }
+
+  if (raw.startsWith(WORKSPACE_FILE_HASH_PREFIX)) {
+    return decodeWorkspacePath(raw.slice(WORKSPACE_FILE_HASH_PREFIX.length));
+  }
+
+  const normalized = raw.startsWith('workspace/') ? `/${raw}` : raw;
+  if (normalized.startsWith('/workspace/')) {
+    return decodeWorkspacePath(normalized);
+  }
+
+  return null;
+}
+
+function workspaceAwareUrlTransform(url: string): string {
+  if (url.startsWith(WORKSPACE_FILE_LINK_PREFIX)) {
+    return url;
+  }
+  return defaultUrlTransform(url);
+}
+
+function replaceOutsideCodeFences(content: string, pattern: RegExp, replacement: string): string {
+  const segments = content.split(/(```[\s\S]*?```)/g);
+  return segments
+    .map((segment, index) => (index % 2 === 1 ? segment : segment.replace(pattern, replacement)))
+    .join('');
+}
+
+function enrichContentWithWorkspaceLinks(
+  content: string,
+  artifacts: ConversationRoundArtifact[]
+): string {
+  let enriched = String(content || '');
+  if (!enriched || artifacts.length === 0) return enriched;
+
+  const candidates = artifacts
+    .map((artifact) => String(artifact.path || '').trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+
+  for (const artifactPath of candidates) {
+    const pathVariants = buildPathVariants(artifactPath).sort((a, b) => b.length - a.length);
+    for (const variant of pathVariants) {
+      const escapedVariant = escapeRegExp(variant);
+      const linkTarget = buildWorkspaceHref(artifactPath);
+      const inlineCodePattern = new RegExp(`\\x60(${escapedVariant})\\x60`, 'g');
+      const inlineCodeReplacement = `[$1](${linkTarget})`;
+      enriched = replaceOutsideCodeFences(enriched, inlineCodePattern, inlineCodeReplacement);
+
+      const pattern = new RegExp(
+        `(^|[\\s"'(（【])(${escapedVariant})(?=$|[\\s"')\\]}>，。；;!?])`,
+        'g'
+      );
+      const replacement = `$1[$2](${linkTarget})`;
+      enriched = replaceOutsideCodeFences(enriched, pattern, replacement);
+    }
+  }
+
+  return enriched;
+}
+
 const ConversationRoundComponentBase: React.FC<ConversationRoundProps> = ({
   round,
   isLatest = false,
@@ -56,9 +161,73 @@ const ConversationRoundComponentBase: React.FC<ConversationRoundProps> = ({
   }, [defaultCollapsed, round.roundNumber]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const markdownComponents = useMemo(() => createMarkdownComponents(), []);
+  const markdownComponents = useMemo(() => {
+    const baseComponents = createMarkdownComponents() as Record<string, any>;
+    return {
+      ...baseComponents,
+      a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
+        const link = String(href || '');
+        const artifactPath = resolveWorkspaceLinkPath(link);
+        if (!artifactPath) {
+          return (
+            <a
+              href={link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-indigo-600 dark:text-indigo-400 underline decoration-indigo-300 hover:decoration-indigo-500 transition-colors"
+            >
+              {children}
+            </a>
+          );
+        }
+        const isDownloading = downloadingArtifactPath === artifactPath;
+
+        return (
+          <span className="inline-flex items-center gap-1 align-middle">
+            <button
+              type="button"
+              onClick={() =>
+                onOpenArtifact ? onOpenArtifact(artifactPath) : onDownloadArtifact?.(artifactPath)
+              }
+              className="inline-flex items-center gap-1 rounded-md border border-emerald-200 dark:border-emerald-800 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-colors"
+            >
+              {children}
+            </button>
+            {onDownloadArtifact && (
+              <button
+                type="button"
+                onClick={() => onDownloadArtifact(artifactPath)}
+                disabled={isDownloading}
+                className="inline-flex items-center justify-center rounded-md border border-emerald-200 dark:border-emerald-800 p-1 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 disabled:opacity-60 transition-colors"
+                title={isDownloading ? 'Downloading' : 'Download'}
+              >
+                {isDownloading ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Download className="w-3 h-3" />
+                )}
+              </button>
+            )}
+          </span>
+        );
+      },
+    };
+  }, [downloadingArtifactPath, onDownloadArtifact, onOpenArtifact]);
   const remarkPlugins = useMemo(() => [remarkGfm], []);
+  const statusMarkdownComponents = useMemo(() => {
+    const baseComponents = markdownComponents as Record<string, any>;
+    return {
+      ...baseComponents,
+      p: ({ children }: { children?: React.ReactNode }) => (
+        <span className="whitespace-pre-wrap break-words">{children}</span>
+      ),
+    };
+  }, [markdownComponents]);
   const hasRenderableContent = Boolean(round.content && round.content.trim().length > 0);
+  const enrichedContent = useMemo(
+    () => enrichContentWithWorkspaceLinks(round.content, artifacts),
+    [artifacts, round.content]
+  );
   const latestStatusType = round.statusMessages[round.statusMessages.length - 1]?.type;
   const progressHint =
     latestStatusType === 'tool_call'
@@ -154,17 +323,23 @@ const ConversationRoundComponentBase: React.FC<ConversationRoundProps> = ({
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-4">
-                            <span
+                            <div
                               className={`text-[13px] font-medium leading-relaxed ${
                                 status.type === 'error' || status.type === 'tool_error'
                                   ? 'text-rose-600 dark:text-rose-400'
                                   : status.type === 'tool_call'
                                   ? 'text-indigo-600 dark:text-indigo-400 font-bold'
                                   : 'text-zinc-600 dark:text-zinc-300'
-                              } whitespace-pre-wrap break-words`}
+                              }`}
                             >
-                              {status.content}
-                            </span>
+                              <ReactMarkdown
+                                remarkPlugins={remarkPlugins}
+                                components={statusMarkdownComponents}
+                                urlTransform={workspaceAwareUrlTransform}
+                              >
+                                {status.content}
+                              </ReactMarkdown>
+                            </div>
                             {status.duration !== undefined && (
                               <span className="text-[10px] font-black font-mono text-zinc-400 dark:text-zinc-600 tabular-nums">
                                 {status.duration.toFixed(2)}s
@@ -238,72 +413,6 @@ const ConversationRoundComponentBase: React.FC<ConversationRoundProps> = ({
         </div>
       )}
 
-      {artifacts.length > 0 && (
-        <div className="rounded-[20px] border border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/40 dark:bg-emerald-950/20 px-4 py-4 space-y-2">
-          <p className="text-[11px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300">
-            File Outputs
-          </p>
-          {artifacts.map((artifact) => {
-            const fileName = artifact.path.split('/').filter(Boolean).pop() || artifact.path;
-            const isDownloading = downloadingArtifactPath === artifact.path;
-            return (
-              <div
-                key={artifact.path}
-                className="rounded-xl bg-white/90 dark:bg-zinc-900/70 border border-emerald-100 dark:border-emerald-900/30 px-3 py-2.5 flex items-center gap-3"
-              >
-                <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-semibold text-zinc-800 dark:text-zinc-200 truncate">
-                    {fileName}
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
-                      {artifact.path}
-                    </p>
-                    <span
-                      className={`text-[10px] font-bold uppercase tracking-wide ${
-                        artifact.confirmed
-                          ? 'text-emerald-600 dark:text-emerald-400'
-                          : 'text-amber-600 dark:text-amber-400'
-                      }`}
-                    >
-                      {artifact.confirmed ? 'saved' : 'pending'}
-                    </span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {onOpenArtifact && (
-                    <button
-                      type="button"
-                      onClick={() => onOpenArtifact(artifact.path)}
-                      className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
-                    >
-                      <FolderOpen className="w-3.5 h-3.5" />
-                      Open
-                    </button>
-                  )}
-                  {onDownloadArtifact && (
-                    <button
-                      type="button"
-                      onClick={() => onDownloadArtifact(artifact.path)}
-                      disabled={isDownloading}
-                      className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-60 transition-colors"
-                    >
-                      {isDownloading ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Download className="w-3.5 h-3.5" />
-                      )}
-                      {isDownloading ? 'Downloading' : 'Download'}
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       {/* Main Response Content */}
       {hasRenderableContent && (
         <div className="relative group">
@@ -330,8 +439,12 @@ const ConversationRoundComponentBase: React.FC<ConversationRoundProps> = ({
             )}
 
             <div className="markdown-content prose dark:prose-invert max-w-none">
-              <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
-                {round.content}
+              <ReactMarkdown
+                remarkPlugins={remarkPlugins}
+                components={markdownComponents}
+                urlTransform={workspaceAwareUrlTransform}
+              >
+                {enrichedContent}
               </ReactMarkdown>
             </div>
 

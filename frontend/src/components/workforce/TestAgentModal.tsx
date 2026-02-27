@@ -60,7 +60,7 @@ const WORKSPACE_PATH_PATTERN = /\/workspace\/[^\s,)\]}>"'`]+/gi;
 const FILE_PATH_KV_PATTERN = /file_path=([^\s,)\]}>"'`]+)/gi;
 const FILE_ACTION_PATH_PATTERN = /(?:wrote|appended to|edited)\s+([^\s,)\]}>"'`]+)/gi;
 const RELATIVE_FILE_PATH_PATTERN =
-  /(?:^|[\s"'`([{（【])((?:\.\/)?[^\s"'`<>(){}\[\]]+\.(?:md|markdown|txt|json|csv|ya?ml|pdf|docx?|xlsx?|pptx?|html?))(?=$|[\s"'`)\]}>，。；;!?]))/gi;
+  /(?:^|[\s"'`(（【])((?:\.\/)?[^\s"'`<>(){}\[\]]+\.(?:md|markdown|txt|json|csv|ya?ml|pdf|docx?|xlsx?|pptx?|html?))(?=$|[\s"'`)\]}>，。；;!?])/gi;
 
 interface VirtualizedHistoryItemProps {
   index: number;
@@ -175,10 +175,7 @@ function extractWorkspacePathsFromText(text: string): string[] {
 }
 
 function extractRoundArtifacts(round: ConversationRound): ConversationRoundArtifact[] {
-  const combinedText = [round.content, ...round.statusMessages.map((status) => status.content)]
-    .filter((segment) => typeof segment === 'string' && segment.trim().length > 0)
-    .join('\n');
-  const paths = extractWorkspacePathsFromText(combinedText);
+  const paths = extractWorkspacePathsFromText(round.content || '');
   return paths.sort((a, b) => a.localeCompare(b)).map((path) => ({ path, confirmed: true }));
 }
 

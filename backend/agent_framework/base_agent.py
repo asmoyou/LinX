@@ -3674,22 +3674,27 @@ class BaseAgent:
                 )
                 if (
                     file_delivery_guard_required
-                    and not file_delivery_guard_prompted
                     and state.round_number < state.max_rounds
                     and not file_delivery_satisfied
                 ):
+                    guard_message = (
+                        "[RECOVERY] File-delivery guard triggered; requesting file save step"
+                        if not file_delivery_guard_prompted
+                        else "[RECOVERY] File-delivery still not satisfied; requesting another save attempt"
+                    )
                     file_delivery_guard_prompted = True
                     logger.info(
-                        "[RECOVERY] File-delivery guard triggered; requesting file save step",
+                        guard_message,
                         extra={
                             "agent_id": str(self.config.agent_id),
                             "round": state.round_number,
+                            "requested_formats": sorted(requested_file_formats),
                         },
                     )
                     if stream_callback:
                         stream_callback(
                             (
-                                "\n\n📁 检测到用户要求文件交付，但尚未成功写入文件；正在追加一次保存步骤。\n",
+                                "\n\n📁 检测到用户要求文件交付，但尚未满足目标格式；正在追加一次保存步骤。\n",
                                 "info",
                             )
                         )
@@ -4120,7 +4125,7 @@ Always be professional, accurate, and helpful."""
         ]
         file_delivery_policy = """
 **When users ask for deliverables as files/documents** (for example "整理成md文档", "save as markdown"):
-1. You MUST use `write_file` to save the deliverable under `/workspace` (prefer `/workspace/output/...`).
+1. You MUST use `write_file` to save the deliverable under `/workspace` (prefer `/workspace/output/...`). Default target path MUST be `/workspace/output/...`; only write to another location when the user explicitly specifies that exact path.
 2. Prefer a single target file and update it incrementally across rounds (create first, then continue writing).
 3. Only split into multiple files when explicitly requested by the user or when one file is clearly impractical.
 4. Do NOT use `code_execution` as the final file-delivery step for plain text documents.
