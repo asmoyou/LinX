@@ -1135,7 +1135,7 @@ async def test_skill(
                     allowed_memory=agent_info.allowed_memory or [],
                     llm_model=agent_info.llm_model or "llama3.2:latest",
                     temperature=agent_info.temperature or 0.7,
-                    max_iterations=10,
+                    max_iterations=20,
                     system_prompt=agent_info.system_prompt,
                 )
 

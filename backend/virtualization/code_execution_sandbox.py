@@ -11,6 +11,7 @@ References:
 
 import asyncio
 import logging
+import shlex
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -218,10 +219,19 @@ class CodeExecutionSandbox:
 
         sandbox_id = None
         owns_sandbox = False
+        dependencies = set()
+        dependencies_installed = False
+        dependency_image_to_reuse: Optional[str] = None
+        dependency_state: Optional[str] = None
+        existing_sandbox_id = str(context.get("existing_sandbox_id") or "").strip()
+        network_enabled = bool(context.get("network_access", True))
+        workspace_root_value = context.get("workspace_root")
+        workspace_root = (
+            str(workspace_root_value).strip() if workspace_root_value is not None else None
+        )
 
         try:
             # 2. Detect and manage dependencies
-            dependencies_installed = False
             if self.dependency_manager:
                 dependencies = self.dependency_manager.get_dependencies(
                     code=code,
@@ -238,14 +248,44 @@ class CodeExecutionSandbox:
                         },
                     )
 
-                    # Check if dependencies are cached
-                    if self.dependency_manager.is_cached(dependencies):
-                        self.logger.info("Using cached dependencies")
-                        cached_image = self.dependency_manager.get_cached_image(dependencies)
-                        # TODO: Use cached image when creating sandbox
-                    else:
-                        self.logger.info("Dependencies not cached, will install")
+                    if existing_sandbox_id:
                         dependencies_installed = True
+                        dependency_state = "existing_sandbox_check_required"
+                    else:
+                        cached_image = self.dependency_manager.get_cached_image(dependencies)
+                        if cached_image and self._dependency_image_available(cached_image):
+                            dependency_image_to_reuse = cached_image
+                            dependency_state = "cached_image_reused"
+                            self.logger.info(
+                                "Using cached dependency image",
+                                extra={
+                                    "execution_id": execution_id,
+                                    "image": cached_image,
+                                },
+                            )
+                        else:
+                            dependencies_installed = True
+                            if cached_image:
+                                dependency_state = "cached_image_missing"
+                                self.logger.warning(
+                                    "Cached dependency image missing locally, reinstalling",
+                                    extra={
+                                        "execution_id": execution_id,
+                                        "image": cached_image,
+                                    },
+                                )
+                            elif self.dependency_manager.is_cached(dependencies):
+                                dependency_state = "metadata_cached_image_absent"
+                                self.logger.info(
+                                    "Dependency metadata cached without reusable image, reinstalling",
+                                    extra={"execution_id": execution_id},
+                                )
+                            else:
+                                dependency_state = "not_cached"
+                                self.logger.info(
+                                    "Dependencies not cached, will install",
+                                    extra={"execution_id": execution_id},
+                                )
 
             runtime_environment: Dict[str, str] = {}
             raw_environment = context.get("environment")
@@ -257,12 +297,6 @@ class CodeExecutionSandbox:
                     runtime_environment[env_key] = str(value)
 
             # 3. Resolve sandbox environment (reuse session sandbox when provided)
-            existing_sandbox_id = str(context.get("existing_sandbox_id") or "").strip()
-            network_enabled = bool(context.get("network_access", True))
-            workspace_root_value = context.get("workspace_root")
-            workspace_root = (
-                str(workspace_root_value).strip() if workspace_root_value is not None else None
-            )
             if existing_sandbox_id:
                 sandbox_id = existing_sandbox_id
                 sandbox_status = self.container_manager.get_container_status(sandbox_id)
@@ -276,11 +310,27 @@ class CodeExecutionSandbox:
                     "Reusing existing sandbox container",
                     extra={"execution_id": execution_id, "sandbox_id": sandbox_id},
                 )
+
+                if dependencies_installed and dependencies and self.dependency_manager:
+                    if self._dependencies_available_in_container(sandbox_id, dependencies, language):
+                        dependencies_installed = False
+                        dependency_state = "existing_sandbox_deps_present"
+                        self.logger.info(
+                            "Dependencies already available in existing sandbox",
+                            extra={"execution_id": execution_id, "sandbox_id": sandbox_id},
+                        )
+                    else:
+                        dependency_state = "existing_sandbox_install_required"
+                        self.logger.info(
+                            "Dependencies missing in existing sandbox, installing",
+                            extra={"execution_id": execution_id, "sandbox_id": sandbox_id},
+                        )
             else:
                 sandbox_id = await self._create_sandbox(
                     execution_id,
                     network_enabled=network_enabled,
                     workspace_root=workspace_root or None,
+                    base_image=dependency_image_to_reuse,
                 )
                 owns_sandbox = True
 
@@ -299,11 +349,16 @@ class CodeExecutionSandbox:
                         environment=runtime_environment or None,
                     )
 
-                    # Cache the dependencies
+                    image_tag = self._cache_dependency_image(
+                        sandbox_id=sandbox_id,
+                        dependencies=dependencies,
+                        language=language,
+                    )
                     self.dependency_manager.cache_dependencies(
                         dependencies=dependencies,
-                        image_tag=None,  # TODO: Create and cache Docker image
+                        image_tag=image_tag,
                     )
+                    dependency_state = "installed_and_cached"
 
             # 5. Inject code and context into sandbox
             code_file, execution_workdir = await self._inject_code(
@@ -347,6 +402,8 @@ class CodeExecutionSandbox:
                     "success": success,
                     "execution_time": execution_time,
                     "sandbox_id": sandbox_id,
+                    "dependency_state": dependency_state,
+                    "dependency_image": dependency_image_to_reuse,
                 },
             )
 
@@ -444,6 +501,7 @@ class CodeExecutionSandbox:
         *,
         network_enabled: bool = False,
         workspace_root: Optional[str] = None,
+        base_image: Optional[str] = None,
     ) -> str:
         """Create isolated sandbox environment.
 
@@ -459,6 +517,7 @@ class CodeExecutionSandbox:
         temp_agent_id = UUID(execution_id)
 
         volume_mounts: Dict[str, str] = {}
+        environment: Dict[str, str] = {}
         if workspace_root:
             try:
                 host_workspace = Path(workspace_root).expanduser().resolve()
@@ -474,14 +533,32 @@ class CodeExecutionSandbox:
                     },
                 )
 
+        if self.dependency_manager:
+            try:
+                pip_cache_dir = (self.dependency_manager.cache_dir / "pip_cache").resolve()
+                pip_cache_dir.mkdir(parents=True, exist_ok=True)
+                volume_mounts[str(pip_cache_dir)] = "/root/.cache/pip"
+                environment["PIP_CACHE_DIR"] = "/root/.cache/pip"
+                environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+            except Exception as cache_error:
+                self.logger.warning(
+                    "Failed to configure pip cache mount for code execution sandbox",
+                    extra={
+                        "execution_id": execution_id,
+                        "error": str(cache_error),
+                    },
+                )
+
         config = ContainerConfig(
             agent_id=temp_agent_id,
             name=f"code-exec-{execution_id[:8]}",
             sandbox_type=self.sandbox_type,
+            image=base_image or "python:3.11-bookworm",
             resource_limits=self.resource_limits,
             network_disabled=not network_enabled,
             network_mode="bridge" if network_enabled else "none",
             volume_mounts=volume_mounts,
+            environment=environment,
         )
 
         container_id = self.container_manager.create_container(
@@ -501,6 +578,100 @@ class CodeExecutionSandbox:
         )
 
         return container_id
+
+    def _dependency_image_available(self, image_tag: str) -> bool:
+        """Check whether a cached dependency image exists locally."""
+        if not image_tag:
+            return False
+
+        if not self.container_manager.docker_available or not self.container_manager.docker_client:
+            return False
+
+        try:
+            self.container_manager.docker_client.images.get(image_tag)
+            return True
+        except Exception:
+            return False
+
+    def _dependencies_available_in_container(
+        self,
+        sandbox_id: str,
+        dependencies: set,
+        language: str,
+    ) -> bool:
+        """Check whether dependencies are already installed in an existing sandbox."""
+        normalized_language = (language or "").strip().lower()
+        if normalized_language not in {"python", "py"}:
+            return False
+
+        package_names = sorted(
+            {str(dep.name).strip() for dep in dependencies if getattr(dep, "name", None)}
+        )
+        if not package_names:
+            return True
+
+        command = "python3 -m pip show " + " ".join(shlex.quote(pkg) for pkg in package_names)
+        command += " >/dev/null 2>&1"
+
+        try:
+            exit_code, _, _ = self.container_manager.exec_in_container(
+                container_id=sandbox_id,
+                command=command,
+            )
+            return exit_code == 0
+        except Exception as dependency_check_error:
+            self.logger.debug(
+                "Failed to check existing sandbox dependencies",
+                extra={
+                    "sandbox_id": sandbox_id,
+                    "error": str(dependency_check_error),
+                },
+            )
+            return False
+
+    def _cache_dependency_image(
+        self,
+        *,
+        sandbox_id: str,
+        dependencies: set,
+        language: str,
+    ) -> Optional[str]:
+        """Commit current sandbox state to a reusable dependency image."""
+        if not self.dependency_manager or not dependencies:
+            return None
+        if not self.container_manager.docker_available or not self.container_manager.docker_client:
+            return None
+
+        container_info = self.container_manager.containers.get(sandbox_id) or {}
+        docker_container = container_info.get("docker_container")
+        if docker_container is None:
+            return None
+
+        image_tag = self.dependency_manager.build_dependency_image_tag(dependencies, language)
+        repository, _, tag = image_tag.partition(":")
+        if not repository or not tag:
+            return None
+
+        try:
+            docker_container.commit(repository=repository, tag=tag)
+            self.logger.info(
+                "Cached dependency image created",
+                extra={
+                    "sandbox_id": sandbox_id,
+                    "image_tag": image_tag,
+                },
+            )
+            return image_tag
+        except Exception as commit_error:
+            self.logger.warning(
+                "Failed to cache dependency image",
+                extra={
+                    "sandbox_id": sandbox_id,
+                    "image_tag": image_tag,
+                    "error": str(commit_error),
+                },
+            )
+            return None
 
     async def _inject_code(
         self,

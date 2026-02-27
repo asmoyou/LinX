@@ -56,8 +56,11 @@ const AUTO_SCROLL_THRESHOLD_PX = 120;
 const HISTORY_MESSAGE_GAP_PX = 32;
 const HISTORY_MESSAGE_ESTIMATED_HEIGHT_PX = 320;
 const HISTORY_OVERSCAN_PX = 900;
-const WORKSPACE_PATH_PATTERN = /\/workspace\/[^\s,)\]}>"'`]+/g;
-const FILE_TOOL_SUCCESS_PATTERN = /successfully\s+(wrote|appended|edited)|status=success|success=true/i;
+const WORKSPACE_PATH_PATTERN = /\/workspace\/[^\s,)\]}>"'`]+/gi;
+const FILE_PATH_KV_PATTERN = /file_path=([^\s,)\]}>"'`]+)/gi;
+const FILE_ACTION_PATH_PATTERN = /(?:wrote|appended to|edited)\s+([^\s,)\]}>"'`]+)/gi;
+const RELATIVE_FILE_PATH_PATTERN =
+  /(?:^|[\s"'`([{（【])((?:\.\/)?[^\s"'`<>(){}\[\]]+\.(?:md|markdown|txt|json|csv|ya?ml|pdf|docx?|xlsx?|pptx?|html?))(?=$|[\s"'`)\]}>，。；;!?]))/gi;
 
 interface VirtualizedHistoryItemProps {
   index: number;
@@ -109,27 +112,59 @@ function downloadBlob(blob: Blob, fileName: string): void {
 
 function normalizeWorkspaceFilePath(rawPath: string): string {
   let normalized = String(rawPath || '').trim().replace(/\\/g, '/');
-  normalized = normalized.replace(/^[("'`]+/, '');
-  normalized = normalized.replace(/[)"'`.,:;!?]+$/, '');
+  normalized = normalized.replace(/^[\s("'`[{（【]+/, '');
+  normalized = normalized.replace(/[\s)"'`.,:;!?}\]）】]+$/, '');
+  if (!normalized) return '';
+  if (/^(?:https?:|data:|file:)/i.test(normalized)) return '';
 
   const workspaceIndex = normalized.indexOf('/workspace/');
   if (workspaceIndex >= 0) {
     normalized = normalized.slice(workspaceIndex);
   }
 
-  if (!normalized.startsWith('/workspace/')) {
-    return '';
+  if (normalized.startsWith('workspace/')) {
+    normalized = `/${normalized}`;
   }
 
-  return normalized;
+  if (!normalized.startsWith('/workspace/')) {
+    if (normalized.startsWith('./')) {
+      normalized = normalized.slice(2);
+    }
+    if (normalized.startsWith('/')) return '';
+    normalized = `/workspace/${normalized}`;
+  }
+
+  if (normalized.includes('..')) return '';
+  return normalized.startsWith('/workspace/') ? normalized : '';
 }
 
 function extractWorkspacePathsFromText(text: string): string[] {
   const source = String(text || '');
-  const matches = source.match(WORKSPACE_PATH_PATTERN) || [];
   const unique = new Set<string>();
+  const candidatePaths: string[] = [];
 
-  matches.forEach((rawPath) => {
+  const absoluteMatches = source.match(WORKSPACE_PATH_PATTERN) || [];
+  candidatePaths.push(...absoluteMatches);
+
+  for (const match of source.matchAll(FILE_PATH_KV_PATTERN)) {
+    if (match[1]) {
+      candidatePaths.push(match[1]);
+    }
+  }
+
+  for (const match of source.matchAll(FILE_ACTION_PATH_PATTERN)) {
+    if (match[1]) {
+      candidatePaths.push(match[1]);
+    }
+  }
+
+  for (const match of source.matchAll(RELATIVE_FILE_PATH_PATTERN)) {
+    if (match[1]) {
+      candidatePaths.push(match[1]);
+    }
+  }
+
+  candidatePaths.forEach((rawPath) => {
     const normalized = normalizeWorkspaceFilePath(rawPath);
     if (!normalized) return;
     if (normalized.startsWith('/workspace/input/')) return;
@@ -139,46 +174,12 @@ function extractWorkspacePathsFromText(text: string): string[] {
   return [...unique];
 }
 
-function inferFileToolName(content: string): 'write_file' | 'append_file' | 'edit_file' | null {
-  const lowered = String(content || '').toLowerCase();
-  if (lowered.includes('write_file') || lowered.includes('successfully wrote')) {
-    return 'write_file';
-  }
-  if (lowered.includes('append_file') || lowered.includes('successfully appended')) {
-    return 'append_file';
-  }
-  if (lowered.includes('edit_file') || lowered.includes('successfully edited')) {
-    return 'edit_file';
-  }
-  return null;
-}
-
 function extractRoundArtifacts(round: ConversationRound): ConversationRoundArtifact[] {
-  const byPath = new Map<string, ConversationRoundArtifact>();
-
-  round.statusMessages.forEach((status) => {
-    if (status.type !== 'tool_call' && status.type !== 'tool_result') return;
-
-    const toolName = inferFileToolName(status.content);
-    if (!toolName) return;
-
-    const paths = extractWorkspacePathsFromText(status.content);
-    if (paths.length === 0) return;
-
-    const confirmed = status.type === 'tool_result' && FILE_TOOL_SUCCESS_PATTERN.test(status.content);
-    paths.forEach((path) => {
-      const existing = byPath.get(path);
-      if (!existing) {
-        byPath.set(path, { path, confirmed });
-        return;
-      }
-      if (confirmed && !existing.confirmed) {
-        byPath.set(path, { ...existing, confirmed: true });
-      }
-    });
-  });
-
-  return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
+  const combinedText = [round.content, ...round.statusMessages.map((status) => status.content)]
+    .filter((segment) => typeof segment === 'string' && segment.trim().length > 0)
+    .join('\n');
+  const paths = extractWorkspacePathsFromText(combinedText);
+  return paths.sort((a, b) => a.localeCompare(b)).map((path) => ({ path, confirmed: true }));
 }
 
 export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, onClose }) => {

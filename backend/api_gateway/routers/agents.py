@@ -33,6 +33,7 @@ from shared.logging import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 AGENT_TEST_RUNTIME_CONTEXT_TAG = "agent_test_session"
+AGENT_TEST_MAX_ITERATIONS = 20
 
 
 def _resolve_agent_avatar(avatar_ref: Optional[str]) -> Optional[str]:
@@ -4721,7 +4722,7 @@ async def test_agent(
                         allowed_memory=agent_info.allowed_memory or [],
                         llm_model=agent_info.llm_model or "llama3.2:latest",
                         temperature=agent_info.temperature or 0.7,
-                        max_iterations=10,
+                        max_iterations=AGENT_TEST_MAX_ITERATIONS,
                         system_prompt=agent_info.system_prompt,
                     )
 
@@ -5567,7 +5568,7 @@ async def test_agent(
                     allowed_memory=agent_info.allowed_memory or [],
                     llm_model=agent_info.llm_model or "llama3.2:latest",
                     temperature=agent_info.temperature or 0.7,
-                    max_iterations=10,
+                    max_iterations=AGENT_TEST_MAX_ITERATIONS,
                     system_prompt=agent_info.system_prompt,
                 )
 

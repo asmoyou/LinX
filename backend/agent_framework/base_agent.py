@@ -3849,6 +3849,39 @@ class BaseAgent:
             },
         }
 
+    def _build_execution_error_suggestions(self, failed_result: ToolResult) -> List[str]:
+        """Generate targeted recovery hints for common tool execution failures."""
+        raw_error = failed_result.error or ""
+        error_text = raw_error.lower()
+
+        if "apt-get: command not found" in error_text:
+            return [
+                "Prefer pip for Python packages: run `python3 -m pip install <package>` first",
+                "Do not use apt-get in this runtime unless command availability is confirmed",
+                "After dependency install, retry the original command with minimal changes",
+            ]
+
+        if "modulenotfounderror" in error_text or "no module named" in error_text:
+            return [
+                "Install the missing module with pip first (`python3 -m pip install <package>`)",
+                "Retry the same command after installation; avoid unrelated rewrites",
+                "Use pip/pip3 fallback before trying OS-level package managers",
+            ]
+
+        if "can't open file" in error_text and "noto" in error_text:
+            return [
+                "Avoid hardcoded system font paths; use fonts available in runtime or bundled with project",
+                "For reportlab Chinese output, prefer built-in CJK strategies before absolute font paths",
+                "Retry PDF generation with a fallback font configuration",
+            ]
+
+        return [
+            "Check the error message for details",
+            "Verify the arguments are correct",
+            "Try a different approach",
+            "Consider using an alternative tool",
+        ]
+
     def _handle_execution_failures(
         self, tool_results: List[ToolResult], state: ConversationState
     ) -> Optional[ErrorFeedback]:
@@ -3895,7 +3928,7 @@ class BaseAgent:
                 error_type="Timeout Error",
                 error_message=failed_result.error or "Tool execution timed out",
                 malformed_input=None,
-                expected_format="",
+                expected_format='{"tool": "<same_tool>", "...": "retry_with_smaller_scope"}',
                 retry_count=retry_count,
                 max_retries=self.config.max_execution_retries,
                 suggestions=[
@@ -3910,15 +3943,10 @@ class BaseAgent:
                 error_type="Execution Error",
                 error_message=failed_result.error or "Tool execution failed",
                 malformed_input=None,
-                expected_format="",
+                expected_format='{"tool": "<same_tool>", "...": "corrected_arguments"}',
                 retry_count=retry_count,
                 max_retries=self.config.max_execution_retries,
-                suggestions=[
-                    "Check the error message for details",
-                    "Verify the arguments are correct",
-                    "Try a different approach",
-                    "Consider using an alternative tool",
-                ],
+                suggestions=self._build_execution_error_suggestions(failed_result),
             )
 
     def _parse_and_execute_tools_sync(self, output: str) -> str:
@@ -4099,6 +4127,13 @@ Always be professional, accurate, and helpful."""
 5. In your final response, report the exact saved file path(s).
 6. Never claim a file was saved unless the tool call succeeded.
 """
+        dependency_recovery_policy = """
+**Dependency/tool failure strategy**:
+1. If a Python dependency is missing, prefer `python3 -m pip install <package>` (or `pip/pip3`) first.
+2. Do NOT jump to OS package managers (`apt-get`, `yum`) unless you have explicitly confirmed they exist.
+3. After installing dependencies, retry the original command with minimal changes.
+4. For PDF/Office files and Chinese text, avoid hardcoded font paths; use runtime-available fonts or portable fallbacks.
+"""
 
         file_tools_section = "\n".join(file_tools_lines)
         workspace_prompt = f"""
@@ -4116,6 +4151,7 @@ Files persist throughout the conversation session.
 - Use file tools when the user asks for deliverable files or when file output materially improves usability.
 
 {file_delivery_policy}
+{dependency_recovery_policy}
 
 **You can also create/manipulate files through code blocks** (Python/Bash) that run in the same workspace.
 

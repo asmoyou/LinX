@@ -61,9 +61,11 @@ class DependencyDetector:
 
     PYTHON_IMPORT_PACKAGE_ALIASES = {
         "docx": "python-docx",
+        "pptx": "python-pptx",
         "cv2": "opencv-python",
         "yaml": "pyyaml",
         "pil": "pillow",
+        "fitz": "pymupdf",
         "jwt": "pyjwt",
         "dateutil": "python-dateutil",
     }
@@ -321,6 +323,16 @@ class DependencyManager:
                 return cache_entry.image_tag
         
         return None
+
+    def build_dependency_image_tag(
+        self,
+        dependencies: Set[DependencyInfo],
+        language: str,
+    ) -> str:
+        """Build deterministic Docker image tag for a dependency set."""
+        cache_key = self.get_cache_key(dependencies)
+        normalized_language = (language or "python").strip().lower()
+        return f"linx/code-exec-deps:{normalized_language}-{cache_key}"
     
     def cache_dependencies(
         self,
@@ -396,7 +408,8 @@ class DependencyManager:
             return ""
         
         requirements = [dep.to_requirement() for dep in python_deps]
-        
+        requirements.sort()
+
         script = f"""#!/bin/bash
 set -e
 
@@ -407,8 +420,16 @@ cat > /tmp/requirements.txt <<'EOF'
 {chr(10).join(requirements)}
 EOF
 
-# Install with pip
-pip install --no-cache-dir -r /tmp/requirements.txt
+# Install with pip (pip -> pip3 -> python -m pip)
+if command -v pip >/dev/null 2>&1; then
+  pip install --disable-pip-version-check -r /tmp/requirements.txt
+elif command -v pip3 >/dev/null 2>&1; then
+  pip3 install --disable-pip-version-check -r /tmp/requirements.txt
+elif command -v python3 >/dev/null 2>&1; then
+  python3 -m pip install --disable-pip-version-check -r /tmp/requirements.txt
+else
+  python -m pip install --disable-pip-version-check -r /tmp/requirements.txt
+fi
 
 echo "Python dependencies installed successfully"
 """

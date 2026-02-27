@@ -186,11 +186,11 @@ class CodeValidator:
                         if node.func.id in ["eval", "exec", "compile", "__import__"]:
                             issues.append(f"Dangerous function call: {node.func.id}")
 
-                # Check for file operations
+                # File IO is allowed inside sandbox; keep soft signal only.
                 if isinstance(node, ast.Call):
                     if isinstance(node.func, ast.Name):
                         if node.func.id in ["open", "file"]:
-                            issues.append(f"File operation detected: {node.func.id}")
+                            warnings.append(f"File operation detected: {node.func.id}")
 
                 # Check for attribute access to truly dangerous operations
                 if isinstance(node, ast.Attribute):

@@ -23,6 +23,7 @@ from virtualization.code_validator import (
     ValidationResult,
     get_code_validator,
 )
+from virtualization.dependency_manager import DependencyInfo
 from virtualization.resource_limits import ResourceLimits
 
 
@@ -80,14 +81,16 @@ os.system('rm -rf /')
         assert not result.safe
 
     def test_detect_file_operations(self):
-        """Test detecting file operations."""
+        """Test file operations are allowed with warnings in sandbox mode."""
         validator = CodeValidator()
 
         code_with_open = "f = open('file.txt', 'r')"
         result = validator.validate_code(code_with_open, "python")
 
-        assert not result.safe
-        assert any("file" in issue.lower() or "open" in issue.lower() for issue in result.issues)
+        assert result.safe
+        assert any(
+            "file operation detected" in warning.lower() for warning in (result.warnings or [])
+        )
 
     def test_detect_subprocess(self):
         """Test detecting subprocess imports."""
@@ -104,7 +107,7 @@ subprocess.run(['ls', '-la'])
         assert any("subprocess" in issue.lower() for issue in result.issues)
 
     def test_detect_network_access(self):
-        """Test detecting network access."""
+        """Network calls are governed by sandbox policy, not static validator."""
         validator = CodeValidator()
 
         code_with_socket = """
@@ -114,8 +117,7 @@ s = socket.socket()
 
         result = validator.validate_code(code_with_socket, "python")
 
-        assert not result.safe
-        assert any("socket" in issue.lower() for issue in result.issues)
+        assert result.safe
 
     def test_python_syntax_error(self):
         """Test detecting Python syntax errors."""
@@ -275,6 +277,57 @@ class TestCodeExecutionSandbox:
         config = kwargs["config"]
         assert config.network_disabled is False
         assert config.network_mode == "bridge"
+
+    @pytest.mark.asyncio
+    async def test_create_sandbox_uses_dependency_base_image(self):
+        """Dependency cached image should override sandbox base image."""
+        sandbox = CodeExecutionSandbox()
+        sandbox.container_manager = MagicMock()
+        sandbox.container_manager.create_container.return_value = "container-123"
+
+        execution_id = "12345678-1234-5678-1234-567812345678"
+        base_image = "linx/code-exec-deps:python-abc123"
+
+        await sandbox._create_sandbox(execution_id, base_image=base_image)
+
+        _, kwargs = sandbox.container_manager.create_container.call_args
+        config = kwargs["config"]
+        assert config.image == base_image
+        assert config.environment.get("PIP_CACHE_DIR") == "/root/.cache/pip"
+
+    def test_dependencies_available_in_container_checks_python_packages(self):
+        """Existing sandbox dependency check should rely on pip show exit code."""
+        sandbox = CodeExecutionSandbox()
+        sandbox.container_manager = MagicMock()
+        sandbox.container_manager.exec_in_container.return_value = (0, "", "")
+        deps = {DependencyInfo(name="requests", language="python")}
+
+        installed = sandbox._dependencies_available_in_container("sandbox-1", deps, "python")
+
+        assert installed is True
+        sandbox.container_manager.exec_in_container.assert_called_once()
+
+    def test_cache_dependency_image_commits_container(self):
+        """Installed dependencies should be snapshot as reusable Docker image."""
+        sandbox = CodeExecutionSandbox()
+        sandbox.container_manager = MagicMock()
+        sandbox.container_manager.docker_available = True
+        sandbox.container_manager.docker_client = MagicMock()
+        docker_container = MagicMock()
+        sandbox.container_manager.containers = {
+            "sandbox-1": {"docker_container": docker_container}
+        }
+        deps = {DependencyInfo(name="requests", language="python")}
+
+        image_tag = sandbox._cache_dependency_image(
+            sandbox_id="sandbox-1",
+            dependencies=deps,
+            language="python",
+        )
+
+        assert image_tag is not None
+        assert image_tag.startswith("linx/code-exec-deps:python-")
+        docker_container.commit.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_execute_code_reuses_existing_sandbox(self):

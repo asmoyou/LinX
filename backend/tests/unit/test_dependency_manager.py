@@ -337,6 +337,15 @@ import flask
         image_tag = self.manager.get_cached_image(deps)
         assert image_tag is None
 
+    def test_build_dependency_image_tag(self):
+        """Test deterministic dependency image tag generation."""
+        deps = {DependencyInfo(name="requests", language="python")}
+
+        image_tag = self.manager.build_dependency_image_tag(deps, "python")
+
+        assert image_tag.startswith("linx/code-exec-deps:python-")
+        assert len(image_tag.split("-", 1)[-1]) >= 8
+
     def test_generate_python_install_script(self):
         """Test generating Python install script."""
         deps = {
@@ -349,6 +358,7 @@ import flask
         assert "pip install" in script
         assert "requests==2.28.0" in script
         assert "flask" in script
+        assert "--no-cache-dir" not in script
 
     def test_generate_node_install_script(self):
         """Test generating Node.js install script."""
