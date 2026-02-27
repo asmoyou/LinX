@@ -191,3 +191,28 @@ def test_cross_language_timeout_enters_shared_backoff(monkeypatch):
 
     assert second == []
     assert called["count"] == 0
+
+
+def test_resolve_cross_language_model_falls_back_when_configured_model_is_stale():
+    """Configured stale model should fallback to provider-available chat model."""
+    search = _build_search()
+    search.cross_language_provider = "vllm"
+    search.cross_language_model = "Qwen3-Next-80B-A3B-Instruct-AWQ-4bit"
+
+    resolved = search._resolve_cross_language_model(
+        {"models": ["./Qwen3.5-35B-A3B-FP8", "bge-m3"]}
+    )
+
+    assert resolved == "./Qwen3.5-35B-A3B-FP8"
+
+
+def test_resolve_cross_language_model_supports_normalized_match():
+    """Configured model should match provider model with case/prefix normalization."""
+    search = _build_search()
+    search.cross_language_model = "Qwen3.5-35B-A3B-FP8"
+
+    resolved = search._resolve_cross_language_model(
+        {"models": ["./qwen3.5-35b-a3b-fp8", "bge-m3"]}
+    )
+
+    assert resolved == "./qwen3.5-35b-a3b-fp8"

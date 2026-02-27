@@ -435,9 +435,6 @@ class KnowledgeSearch:
 
     def _resolve_cross_language_model(self, provider_cfg: dict) -> str:
         """Resolve model name for cross-language expansion."""
-        if self.cross_language_model:
-            return self.cross_language_model
-
         provider_models = provider_cfg.get("models") or []
         if isinstance(provider_models, dict):
             provider_models = list(provider_models.values())
@@ -445,6 +442,51 @@ class KnowledgeSearch:
             provider_models = [provider_models]
 
         candidates = [str(m).strip() for m in provider_models if str(m).strip()]
+
+        configured_model = str(self.cross_language_model or "").strip()
+        if configured_model:
+            if not candidates:
+                return configured_model
+
+            if configured_model in candidates:
+                return configured_model
+
+            normalized_configured = self._normalize_model_name_for_match(configured_model)
+            for candidate in candidates:
+                if self._normalize_model_name_for_match(candidate) == normalized_configured:
+                    return candidate
+
+            fallback_model = self._select_cross_language_fallback_model(candidates)
+            if fallback_model:
+                logger.warning(
+                    "Configured cross-language model not found in provider model list; "
+                    "fallback to provider available model",
+                    extra={
+                        "provider": self.cross_language_provider,
+                        "configured_model": configured_model,
+                        "fallback_model": fallback_model,
+                    },
+                )
+                return fallback_model
+
+            return configured_model
+
+        if not candidates:
+            return ""
+
+        return self._select_cross_language_fallback_model(candidates)
+
+    @staticmethod
+    def _normalize_model_name_for_match(model_name: str) -> str:
+        """Normalize model identifier for loose comparison."""
+        normalized = (model_name or "").strip().lower()
+        if normalized.startswith("./"):
+            normalized = normalized[2:]
+        return normalized
+
+    @staticmethod
+    def _select_cross_language_fallback_model(candidates: List[str]) -> str:
+        """Select a likely chat-capable model from provider candidates."""
         if not candidates:
             return ""
 
