@@ -31,11 +31,11 @@
 - [x] 2.2.3: Implement `GET /api/departments/{id}/stats` - Department statistics (manager/admin)
 
 ### Task 2.3: Existing API Adaptations
-- [ ] 2.3.1: Add `department_id` to user registration/creation API request and response
+- [x] 2.3.1: Add `department_id` to user registration/creation API request and response
 - [ ] 2.3.2: Add `department_id` to agent creation/update API request and response
-- [ ] 2.3.3: Add `department_id` to knowledge upload API request and response
+- [x] 2.3.3: Add `department_id` to knowledge upload API request and response
 - [ ] 2.3.4: Add `department_id` query parameter to `GET /api/agents` for filtering
-- [ ] 2.3.5: Add `department_id` query parameter to `GET /api/knowledge` for filtering
+- [x] 2.3.5: Add `department_id` query parameter to `GET /api/knowledge` for filtering
 
 ## Phase 3: Access Control Adaptation (Backend)
 
@@ -52,7 +52,7 @@
 ### Task 3.3: Permission Middleware
 - [x] 3.3.1: Implement department-level permission check decorator/dependency (admin for CRUD, manager for own dept resources)
 - [ ] 3.3.2: Implement agent list filtering by department + access_level
-- [ ] 3.3.3: Implement knowledge list filtering by department + access_level
+- [x] 3.3.3: Implement knowledge list filtering by department + access_level
 
 ## Phase 4: Frontend Infrastructure
 
@@ -82,7 +82,7 @@
 
 ### Task 6.1: User Management Integration
 - [x] 6.1.1: Add department display to user profile section (ProfileSection.tsx, read-only)
-- [ ] 6.1.2: Show department column/badge in user list
+- [x] 6.1.2: Show department column/badge in user list
 
 ### Task 6.2: Agent Management Integration
 - [x] 6.2.1: Add DepartmentSelect to AddAgentModal.tsx and AgentConfigModal.tsx
@@ -100,7 +100,7 @@
 - [x] 7.1.2: Test _department_to_response helper function
 - [x] 7.1.3: Test _build_tree helper for hierarchical department views
 - [x] 7.1.4: Test DepartmentResponse model construction
-- [ ] 7.1.5: Test knowledge_filter team-level access with department_id matching
+- [x] 7.1.5: Test knowledge_filter team-level access with department_id matching
 - [ ] 7.1.6: Test data migration script (attributes.department -> department_id FK)
 - [ ] 7.1.7: Test department-level permission checks (admin CRUD, manager own dept)
 

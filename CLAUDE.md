@@ -278,7 +278,7 @@ project-root/
 │   ├── deployment/            # Deployment guides
 │   ├── developer/             # Developer guides
 │   └── user-guide/            # User documentation
-├── .kiro/specs/               # Feature specifications and tasks
+├── specs/                      # Feature specifications and tasks
 │   └── feature-name/
 │       ├── requirements.md
 │       ├── design.md
@@ -340,7 +340,7 @@ Tasks use markdown checkbox syntax:
 ### Task File Locations
 
 Spec task files are located at:
-- `.kiro/specs/{spec-name}/tasks.md`
+- `specs/{spec-name}/tasks.md`
 
 Always update the tasks.md file in the SAME spec directory as the work you're completing.
 
@@ -468,71 +468,91 @@ git commit -m "test(agents): add unit tests for agent lifecycle"
 3. Read the spec's `tasks.md` to find the specific task to work on
 4. After completing work, update `tasks.md` to mark tasks as complete
 
-The following features are currently in development. Reference their specs for detailed requirements and tasks:
+Spec files are located at `specs/{spec-name}/`.
 
-### Agent Error Recovery (58% complete)
+---
 
-Spec files:
-- `.kiro/specs/agent-error-recovery/requirements.md` - User stories, functional requirements, success metrics
-- `.kiro/specs/agent-error-recovery/design.md` - Architecture, data structures, algorithms, frontend integration
-- `.kiro/specs/agent-error-recovery/tasks.md` - 85 tasks, 49 completed
+### Mission System (96% complete)
+
+`specs/mission-system/` · 105/109 tasks
+
+Enables users to define high-level goals and have AI agent teams execute them through a structured lifecycle: requirements gathering → task planning → parallel execution → supervisor review → QA audit. Uses React Flow for DAG visualization.
+
+**Done**: All phases 1–10 (DB models, migrations, API, agent orchestration, task DAG, supervisor/QA roles, frontend), backend unit tests (repository, orchestrator, workspace, agent factory, API endpoints).
+
+**Remaining**: Frontend component tests (MissionCreateWizard, missionStore), API documentation.
+
+---
+
+### Department Management (88% complete)
+
+`specs/department-management/` · 60/68 tasks
+
+Enterprise department structure for organizing users, agents, and knowledge bases with hierarchical support and ABAC integration.
+
+**Done**: DB model + migrations, full CRUD API, ABAC adaptation, frontend (types/API/store/DepartmentSelect/page), Workforce/Knowledge/Profile integration, user API + knowledge upload/list with department_id, tests.
+
+**Remaining**: Agent creation API department_id (2.3.2), agent list filtering (2.3.4, 3.3.2), AgentDetailsModal department display (6.2.3), DepartmentSelect component tests (7.2.5), API docs (8.1.1).
+
+---
+
+### Agent Error Recovery (72% complete)
+
+`specs/agent-error-recovery/` · 49/68 tasks
 
 Multi-turn self-correction system for agent tool call errors. Core implementation in `backend/agent_framework/base_agent.py`.
 
-**Completed**: Core data structures, enhanced parsing, error feedback, tool execution recovery, main loop refactor, configuration, structured logging, frontend streaming integration
+**Done**: Data structures, parser, error feedback, tool execution recovery, main loop refactor, configuration, structured logging, frontend streaming integration (types + components + message handler), UI components (RetryIndicator, ErrorFeedbackDisplay, ConversationRound), unit/integration/property tests, error recovery guide.
 
-**Remaining**: Prometheus metrics (Phase 7.2), comprehensive tests (Phase 9), documentation (Phase 10), deployment (Phase 11)
+**Remaining**: Prometheus metrics (Phase 7.2, 4 tasks), error feedback generation test (9.1.2), real LLM test (9.2.4), API/code docs (Phase 10), deployment (Phase 11).
 
-### Code Execution Improvement (21% complete)
+---
 
-Spec files:
-- `.kiro/specs/code-execution-improvement/requirements.md` - User stories for real execution, PTY, background processes
-- `.kiro/specs/code-execution-improvement/design.md` - BashTool, SkillLoader, CodeValidator, DependencyManager architecture
-- `.kiro/specs/code-execution-improvement/tasks.md` - 120 tasks, 25 completed
+### Agent Test Chat Runtime Strategy (67% complete)
 
-Enhanced bash tool, process management, and real skill execution. Core files:
-- `backend/agent_framework/tools/bash_tool.py` - Enhanced bash with PTY
-- `backend/agent_framework/tools/process_manager.py` - Background process management
-- `backend/skill_library/skill_loader.py` - Real skill code extraction
-- `backend/virtualization/` - Sandbox, container manager, dependency manager
+`specs/agent-test-chat-runtime-strategy/` · 31/46 tasks
 
-**Completed**: Enhanced Bash Tool with PTY (Phase 1), Background Process Management (Phase 2), Skill Loader (Phase 3), Enhanced Sandbox (Phase 5)
+Unifies execution semantics between agent test chat and mission execution. Introduces `ExecutionProfile` contract and `RuntimePolicy` resolution so debugging behavior matches production. Contains supporting runbooks: `bug-report.md`, `rollout-runbook.md`, `runtime-profile-matrix.md`, `troubleshooting.md`.
 
-**Remaining**: Code Validator (Phase 4), File Segmentation (Phase 6), Code Generation Optimization (Phase 7), Testing (Phase 8), Documentation (Phase 9), Deployment (Phase 10)
+**Done**: Phases 0–2 (baseline stabilization, runtime contract foundation, unified runtime service), feature flags, test chat default enablement, all documentation and runbooks.
 
-### Agent Skills Redesign (Template Complete)
+**Remaining**: Regression/parity/performance tests (Phase 3), percentage rollout, shadow mode, dashboards, legacy path removal.
 
-Spec files:
-- `.kiro/specs/agent-skills-redesign/requirements.md` - Skill type issues, Moltbot format requirements
-- `.kiro/specs/agent-skills-redesign/design.md` - Agent Skills vs LangChain Tools architecture
-- `.kiro/specs/agent-skills-redesign/tasks.md` - Template restructuring tasks
-- `.kiro/specs/agent-skills-redesign/ANALYSIS.md` - Current analysis comparing Moltbot/Claude Code
+---
 
-Redesign of Agent Skills system. Key insight: Agent Skills = Instructions (SKILL.md) + Executable Code, not LangChain tools.
+### Digital Workforce Platform — Foundation Spec (58% complete)
 
-**Completed**: Template restructuring (Phase 0), analysis of Moltbot's 54 skills format
+`specs/digital-workforce-platform/` · 630/1087 tasks
 
-### Department Management (~80% complete)
+The master spec for the entire LinX platform. Core infrastructure phases (1–5, 7–9) are 100% complete. Phase 6 (Frontend) has core pages done with advanced UI features pending. Phase 10 (Production Readiness) is 87% done. Phases 11–19 (advanced features, optimization, final polish) are partially implemented in code but task tracking lags behind.
 
-Spec files:
-- `.kiro/specs/department-management/requirements.md` - 5 user stories for department CRUD, assignment, and access control
-- `.kiro/specs/department-management/design.md` - DB schema, API design, frontend architecture, migration strategy
-- `.kiro/specs/department-management/tasks.md` - 8 phases, ~55 tasks
+**Fully complete**: Infrastructure (Phase 1), Core Backend (Phase 2 core), Agent Framework (Phase 3), Task Management (Phase 4), Security & Monitoring (Phase 5), Deployment & Ops (Phase 7), Testing & QA (Phase 8), Advanced Features (Phase 9).
 
-Enterprise department management system for organizing users, agents, and knowledge bases into departments with hierarchical support.
+**In progress**: Dynamic Skills frontend (Phase 2.7.6-9), Frontend advanced UI (Phase 6.14+), Production launch (Phase 10.4), Code Execution monitoring (Phase 11.2), API enhancements (Phase 12).
 
-**Completed**: Department model with self-referencing FK (Phase 1), Alembic migrations with data migration (Phase 1), Full CRUD API with resource endpoints (Phase 2), ABAC/knowledge filter adaptation (Phase 3), Frontend infrastructure - types, API, store, DepartmentSelect (Phase 4), Department management page (Phase 5), Integration with Workforce/Knowledge/Profile pages (Phase 6), Backend + frontend tests (Phase 7), Tasks.md update (Phase 8)
+---
 
-**Remaining**: Backend API adaptations for existing endpoints (2.3), agent/knowledge list server-side filtering (3.3), additional test coverage, API documentation
+### Code Execution Improvement (56% complete)
 
-### Digital Workforce Platform (Foundation Spec)
+`specs/code-execution-improvement/` · 54/96 tasks
 
-Spec files:
-- `.kiro/specs/digital-workforce-platform/requirements.md` - Core platform requirements and glossary
-- `.kiro/specs/digital-workforce-platform/design.md` - Comprehensive 133KB architecture document
-- `.kiro/specs/digital-workforce-platform/tasks.md` - Full platform implementation tasks
+Enhanced bash execution with PTY support, background process management, real skill code extraction, and sandbox dependency isolation.
 
-Main platform specification covering agents, tasks, memory, knowledge base, and access control. This is the foundational spec for the entire LinX platform.
+**Done**: Enhanced Bash Tool with PTY (Phase 1), Background Process Management (Phase 2), Skill Loader (Phase 3), Code Validator with AST analysis (Phase 4, minus LangChain wrapper), Enhanced Sandbox with Docker caching (Phase 5), unit tests for bash/process/skill/validator (Phase 8.1).
+
+**Remaining**: Code validation LangChain tool wrapper (4.2), File Segmentation (Phase 6), Code Generation Optimization (Phase 7), integration/performance tests (Phase 8.2-8.3), Documentation (Phase 9), Deployment (Phase 10).
+
+Key files: `backend/agent_framework/tools/bash_tool.py`, `backend/agent_framework/tools/process_manager.py`, `backend/skill_library/skill_loader.py`, `backend/virtualization/`.
+
+---
+
+### Agent Skills Redesign (COMPLETE — 100%)
+
+`specs/agent-skills-redesign/` · 219/219 tasks
+
+Redesigned Agent Skills as instructions + executable code (SKILL.md format) rather than LangChain tools. Key insight: skills teach agents HOW to use tools. Template restructuring, parser, gating engine, package handler, API updates, frontend integration, and migration are all complete.
+
+Retained for reference: `ANALYSIS.md` — architectural comparison with Moltbot/Claude Code formats.
 
 ---
 
@@ -568,5 +588,5 @@ Before committing ANY code:
 - [ ] No commented-out code
 - [ ] No hardcoded secrets or credentials
 - [ ] Commit message follows conventional format
-- [ ] Related tasks.md updated (if working on a spec)
+- [ ] Related `specs/*/tasks.md` updated (if working on a spec)
 - [ ] Documentation in `docs/` (not in code directories)

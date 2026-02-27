@@ -119,11 +119,11 @@
 - [x] 10.4 Add `reactflow` and `@reactflow/core` to package.json dependencies
 
 ## Phase 11: Testing
-- [ ] 11.1 Unit tests for MissionRepository (CRUD, settings, counts)
-- [ ] 11.2 Unit tests for MissionOrchestrator (transitions, lifecycle, clarification)
-- [ ] 11.3 Unit tests for MissionWorkspaceManager (container lifecycle)
-- [ ] 11.4 Unit tests for AgentFactory (LLM creation, provider protocols)
-- [ ] 11.5 Integration tests for missions API endpoints
+- [x] 11.1 Unit tests for MissionRepository (CRUD, settings, counts)
+- [x] 11.2 Unit tests for MissionOrchestrator (transitions, lifecycle, clarification)
+- [x] 11.3 Unit tests for MissionWorkspaceManager (container lifecycle)
+- [x] 11.4 Unit tests for AgentFactory (LLM creation, provider protocols)
+- [x] 11.5 Integration tests for missions API endpoints
 - [ ] 11.6 Frontend component tests for MissionCreateWizard
 - [ ] 11.7 Frontend store tests for missionStore
 - [x] 11.A Add regression test for mission settings DB fallback behavior

@@ -1316,14 +1316,14 @@
 **References**: Design Section 5.6, 21.1
 **Description**: Implement on-the-fly skill creation for agents
 
-- [ ] 11.1.1 Create DynamicSkillGenerator class
-- [ ] 11.1.2 Implement LLM-based skill code generation
-- [ ] 11.1.3 Add code validation for generated skills
-- [ ] 11.1.4 Create skill testing framework in sandbox
-- [ ] 11.1.5 Implement skill interface extraction
-- [ ] 11.1.6 Add skill caching and reuse mechanism
-- [ ] 11.1.7 Implement semantic search for similar existing skills
-- [ ] 11.1.8 Create skill versioning for generated skills
+- [x] 11.1.1 Create DynamicSkillGenerator class
+- [x] 11.1.2 Implement LLM-based skill code generation
+- [x] 11.1.3 Add code validation for generated skills
+- [x] 11.1.4 Create skill testing framework in sandbox
+- [x] 11.1.5 Implement skill interface extraction
+- [x] 11.1.6 Add skill caching and reuse mechanism
+- [x] 11.1.7 Implement semantic search for similar existing skills
+- [x] 11.1.8 Create skill versioning for generated skills
 - [ ] 11.1.9 Add skill performance metrics tracking
 - [ ] 11.1.10 Implement skill optimization based on usage patterns
 
@@ -1344,10 +1344,10 @@
 **References**: Design Section 5.8
 **Description**: Optimize sandbox performance with pooling
 
-- [ ] 11.3.1 Create SandboxPool class
-- [ ] 11.3.2 Implement pre-warmed sandbox pool
-- [ ] 11.3.3 Add sandbox acquisition and release logic
-- [ ] 11.3.4 Create sandbox reset mechanism
+- [x] 11.3.1 Create SandboxPool class
+- [x] 11.3.2 Implement pre-warmed sandbox pool
+- [x] 11.3.3 Add sandbox acquisition and release logic
+- [x] 11.3.4 Create sandbox reset mechanism
 - [ ] 11.3.5 Implement pool size auto-adjustment
 - [ ] 11.3.6 Add compiled code caching
 - [ ] 11.3.7 Implement dependency pre-loading in sandbox images
@@ -1361,21 +1361,21 @@
 
 - [ ] 12.1.1 Implement GET /api/v1/tasks/{task_id}/tree endpoint
 - [ ] 12.1.2 Implement POST /api/v1/tasks/{task_id}/clarify endpoint
-- [ ] 12.1.3 Implement POST /api/v1/knowledge/search endpoint
+- [x] 12.1.3 Implement POST /api/v1/knowledge/search endpoint
 - [ ] 12.1.4 Implement GET /api/v1/agents/templates endpoint
 - [x] 12.1.5 Implement GET /api/v1/memory/agent/{agent_id} endpoint
 - [x] 12.1.6 Implement GET /api/v1/memory/company endpoint
 - [x] 12.1.7 Implement GET /api/v1/memory/user-context endpoint
 - [x] 12.1.8 Implement POST /api/v1/memory/share endpoint
-- [ ] 12.1.9 Implement GET /api/v1/skills endpoint
-- [ ] 12.1.10 Implement POST /api/v1/skills endpoint
+- [x] 12.1.9 Implement GET /api/v1/skills endpoint
+- [x] 12.1.10 Implement POST /api/v1/skills endpoint
 
 ### 12.2 WebSocket Real-Time Updates
 **References**: Requirements 13, Design Section 12.1
 **Description**: Implement comprehensive WebSocket support
 
-- [ ] 12.2.1 Create WebSocket connection manager
-- [ ] 12.2.2 Implement task status update broadcasts
+- [x] 12.2.1 Create WebSocket connection manager
+- [x] 12.2.2 Implement task status update broadcasts
 - [ ] 12.2.3 Add agent status update broadcasts
 - [ ] 12.2.4 Create system metrics broadcasts
 - [ ] 12.2.5 Implement user-specific event filtering
@@ -1388,12 +1388,12 @@
 **References**: Design Section 12.2
 **Description**: Implement comprehensive rate limiting
 
-- [ ] 12.3.1 Create rate limiter middleware
+- [x] 12.3.1 Create rate limiter middleware
 - [ ] 12.3.2 Implement per-endpoint rate limits
-- [ ] 12.3.3 Add per-user rate limits
-- [ ] 12.3.4 Create IP-based rate limiting
-- [ ] 12.3.5 Implement rate limit headers (X-RateLimit-*)
-- [ ] 12.3.6 Add rate limit exceeded error responses
+- [x] 12.3.3 Add per-user rate limits
+- [x] 12.3.4 Create IP-based rate limiting
+- [x] 12.3.5 Implement rate limit headers (X-RateLimit-*)
+- [x] 12.3.6 Add rate limit exceeded error responses
 - [ ] 12.3.7 Create rate limit monitoring and alerting
 - [ ] 12.3.8 Implement rate limit bypass for admin users
 
