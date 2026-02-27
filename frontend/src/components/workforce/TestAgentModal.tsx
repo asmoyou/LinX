@@ -27,7 +27,10 @@ import type {
   ErrorFeedback,
   AttachedFile,
 } from '@/types/streaming';
-import { ConversationRoundComponent } from './ConversationRound';
+import {
+  ConversationRoundComponent,
+  type ConversationRoundArtifact,
+} from './ConversationRound';
 import { SessionWorkspacePanel } from './SessionWorkspacePanel';
 import { createMarkdownComponents } from './CodeBlock';
 import { LayoutModal } from '@/components/LayoutModal';
@@ -53,6 +56,8 @@ const AUTO_SCROLL_THRESHOLD_PX = 120;
 const HISTORY_MESSAGE_GAP_PX = 32;
 const HISTORY_MESSAGE_ESTIMATED_HEIGHT_PX = 320;
 const HISTORY_OVERSCAN_PX = 900;
+const WORKSPACE_PATH_PATTERN = /\/workspace\/[^\s,)\]}>"'`]+/g;
+const FILE_TOOL_SUCCESS_PATTERN = /successfully\s+(wrote|appended|edited)|status=success|success=true/i;
 
 interface VirtualizedHistoryItemProps {
   index: number;
@@ -91,6 +96,91 @@ const VirtualizedHistoryItem: React.FC<VirtualizedHistoryItemProps> = ({
   );
 };
 
+function downloadBlob(blob: Blob, fileName: string): void {
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  window.URL.revokeObjectURL(url);
+}
+
+function normalizeWorkspaceFilePath(rawPath: string): string {
+  let normalized = String(rawPath || '').trim().replace(/\\/g, '/');
+  normalized = normalized.replace(/^[("'`]+/, '');
+  normalized = normalized.replace(/[)"'`.,:;!?]+$/, '');
+
+  const workspaceIndex = normalized.indexOf('/workspace/');
+  if (workspaceIndex >= 0) {
+    normalized = normalized.slice(workspaceIndex);
+  }
+
+  if (!normalized.startsWith('/workspace/')) {
+    return '';
+  }
+
+  return normalized;
+}
+
+function extractWorkspacePathsFromText(text: string): string[] {
+  const source = String(text || '');
+  const matches = source.match(WORKSPACE_PATH_PATTERN) || [];
+  const unique = new Set<string>();
+
+  matches.forEach((rawPath) => {
+    const normalized = normalizeWorkspaceFilePath(rawPath);
+    if (!normalized) return;
+    if (normalized.startsWith('/workspace/input/')) return;
+    unique.add(normalized);
+  });
+
+  return [...unique];
+}
+
+function inferFileToolName(content: string): 'write_file' | 'append_file' | 'edit_file' | null {
+  const lowered = String(content || '').toLowerCase();
+  if (lowered.includes('write_file') || lowered.includes('successfully wrote')) {
+    return 'write_file';
+  }
+  if (lowered.includes('append_file') || lowered.includes('successfully appended')) {
+    return 'append_file';
+  }
+  if (lowered.includes('edit_file') || lowered.includes('successfully edited')) {
+    return 'edit_file';
+  }
+  return null;
+}
+
+function extractRoundArtifacts(round: ConversationRound): ConversationRoundArtifact[] {
+  const byPath = new Map<string, ConversationRoundArtifact>();
+
+  round.statusMessages.forEach((status) => {
+    if (status.type !== 'tool_call' && status.type !== 'tool_result') return;
+
+    const toolName = inferFileToolName(status.content);
+    if (!toolName) return;
+
+    const paths = extractWorkspacePathsFromText(status.content);
+    if (paths.length === 0) return;
+
+    const confirmed = status.type === 'tool_result' && FILE_TOOL_SUCCESS_PATTERN.test(status.content);
+    paths.forEach((path) => {
+      const existing = byPath.get(path);
+      if (!existing) {
+        byPath.set(path, { path, confirmed });
+        return;
+      }
+      if (confirmed && !existing.confirmed) {
+        byPath.set(path, { ...existing, confirmed: true });
+      }
+    });
+  });
+
+  return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
+}
+
 export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, onClose }) => {
   const { t } = useTranslation();
   const createEmptyRoundData = () => ({
@@ -121,6 +211,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
   // Session state for persistent execution environment
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [showWorkspacePanel, setShowWorkspacePanel] = useState(false);
+  const [workspaceFocusPath, setWorkspaceFocusPath] = useState<string | null>(null);
+  const [downloadingArtifactPath, setDownloadingArtifactPath] = useState<string | null>(null);
   // Use ref to track sessionId for cleanup (avoids stale closure issues)
   const sessionIdRef = useRef<string | null>(null);
   // Use ref to track agentId for cleanup (agent may be null when modal closes)
@@ -495,6 +587,42 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     scrollMessagesToBottom,
   ]);
 
+  const handleOpenArtifactInWorkspace = useCallback((path: string) => {
+    const normalizedPath = normalizeWorkspaceFilePath(path);
+    if (!normalizedPath) return;
+    setWorkspaceFocusPath(normalizedPath);
+    setShowWorkspacePanel(true);
+  }, []);
+
+  const handleDownloadArtifact = useCallback(
+    async (path: string) => {
+      const normalizedPath = normalizeWorkspaceFilePath(path);
+      if (!normalizedPath) return;
+
+      if (!sessionId || !agent?.id) {
+        setError('No active session for downloading this file.');
+        return;
+      }
+
+      setDownloadingArtifactPath(normalizedPath);
+      try {
+        const blob = await agentsApi.downloadSessionWorkspaceFile(
+          agent.id,
+          sessionId,
+          normalizedPath
+        );
+        const filename = normalizedPath.split('/').filter(Boolean).pop() || 'artifact';
+        downloadBlob(blob, filename);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : 'Failed to download output file';
+        setError(message);
+      } finally {
+        setDownloadingArtifactPath(null);
+      }
+    },
+    [agent?.id, sessionId]
+  );
+
   const renderHistoryMessage = useCallback(
     (message: Message) => {
       if (message.role === 'user') {
@@ -576,6 +704,10 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
                     key={`${message.timestamp.getTime()}-${round.roundNumber}-${roundIdx}`}
                     round={round}
                     isLatest={roundIdx === message.rounds.length - 1}
+                    artifacts={extractRoundArtifacts(round)}
+                    onOpenArtifact={handleOpenArtifactInWorkspace}
+                    onDownloadArtifact={handleDownloadArtifact}
+                    downloadingArtifactPath={downloadingArtifactPath}
                     defaultCollapsed={
                       roundIdx < message.rounds.length - 1 ||
                       Boolean(round.content && round.content.trim().length > 0)
@@ -619,10 +751,16 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
         </div>
       );
     },
-    [agent?.name, markdownComponents, remarkPlugins]
+    [
+      agent?.name,
+      downloadingArtifactPath,
+      handleDownloadArtifact,
+      handleOpenArtifactInWorkspace,
+      markdownComponents,
+      remarkPlugins,
+    ]
   );
 
-  /* eslint-disable react-hooks/set-state-in-effect */
   // Focus input when modal opens
   useEffect(() => {
     if (isOpen) {
@@ -677,6 +815,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
       setCurrentRoundNumber(1);
       setSessionId(null);
       setShowWorkspacePanel(false);
+      setWorkspaceFocusPath(null);
+      setDownloadingArtifactPath(null);
       sessionIdRef.current = null;
       agentIdRef.current = null;
       setError(null);
@@ -688,9 +828,9 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
   useEffect(() => {
     if (!sessionId) {
       setShowWorkspacePanel(false);
+      setWorkspaceFocusPath(null);
     }
   }, [sessionId]);
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   if (!isOpen || !agent) return null;
 
@@ -783,6 +923,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
       },
     ]);
     setError(null);
+    setWorkspaceFocusPath(null);
+    setDownloadingArtifactPath(null);
   };
 
   const handleSendMessage = async () => {
@@ -1048,6 +1190,18 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     }
   };
 
+  const currentStreamingRound: ConversationRound = {
+    roundNumber: currentRoundNumber,
+    thinking: currentRoundData.thinking,
+    content: currentRoundData.content,
+    statusMessages: currentRoundData.statusMessages,
+    retryAttempts:
+      currentRoundData.retryAttempts.length > 0 ? currentRoundData.retryAttempts : undefined,
+    errorFeedback:
+      currentRoundData.errorFeedback.length > 0 ? currentRoundData.errorFeedback : undefined,
+    stats: currentRoundData.stats || undefined,
+  };
+
   return (
     <LayoutModal isOpen={isOpen} onClose={onClose} closeOnBackdropClick={false} closeOnEscape={true}>
       <div
@@ -1160,28 +1314,22 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
                             key={`stream-round-${round.roundNumber}-${idx}`}
                             round={round}
                             isLatest={false}
+                            artifacts={extractRoundArtifacts(round)}
+                            onOpenArtifact={handleOpenArtifactInWorkspace}
+                            onDownloadArtifact={handleDownloadArtifact}
+                            downloadingArtifactPath={downloadingArtifactPath}
                             defaultCollapsed={true}
                           />
                         ))}
 
                         <ConversationRoundComponent
-                          round={{
-                            roundNumber: currentRoundNumber,
-                            thinking: currentRoundData.thinking,
-                            content: currentRoundData.content,
-                            statusMessages: currentRoundData.statusMessages,
-                            retryAttempts:
-                              currentRoundData.retryAttempts.length > 0
-                                ? currentRoundData.retryAttempts
-                                : undefined,
-                            errorFeedback:
-                              currentRoundData.errorFeedback.length > 0
-                                ? currentRoundData.errorFeedback
-                                : undefined,
-                            stats: currentRoundData.stats || undefined,
-                          }}
+                          round={currentStreamingRound}
                           isLatest={true}
                           isStreaming={true}
+                          artifacts={extractRoundArtifacts(currentStreamingRound)}
+                          onOpenArtifact={handleOpenArtifactInWorkspace}
+                          onDownloadArtifact={handleDownloadArtifact}
+                          downloadingArtifactPath={downloadingArtifactPath}
                         />
                       </div>
                     </div>
@@ -1235,6 +1383,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
                 agentId={agent.id}
                 sessionId={sessionId}
                 isOpen={showWorkspacePanel}
+                focusPath={workspaceFocusPath}
                 onClose={() => setShowWorkspacePanel(false)}
               />
             </div>

@@ -18,6 +18,7 @@ interface SessionWorkspacePanelProps {
   sessionId: string | null;
   isOpen: boolean;
   onClose: () => void;
+  focusPath?: string | null;
 }
 
 type PreviewKind = 'empty' | 'loading' | 'text' | 'image' | 'pdf' | 'unsupported' | 'error';
@@ -82,6 +83,15 @@ function downloadBlob(blob: Blob, fileName: string): void {
 
 function splitPathSegments(path: string): string[] {
   return path.split('/').filter(Boolean);
+}
+
+function normalizeSessionWorkspacePath(path: string): string {
+  const raw = String(path || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!raw) return '';
+  if (raw.startsWith('workspace/')) {
+    return raw.slice('workspace/'.length);
+  }
+  return raw;
 }
 
 function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
@@ -200,6 +210,7 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
   sessionId,
   isOpen,
   onClose,
+  focusPath = null,
 }) => {
   const [files, setFiles] = useState<AgentSessionWorkspaceFile[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -328,6 +339,18 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
     setSelectedPath(firstFileNode.path);
     expandAncestors(firstFileNode.treePath);
   }, [expandAncestors, fileEntries, fileTree, resetPreview, selectedPath]);
+
+  useEffect(() => {
+    if (!focusPath || fileEntries.length === 0) return;
+    const normalizedFocusPath = normalizeSessionWorkspacePath(focusPath);
+    if (!normalizedFocusPath) return;
+
+    const targetNode = findFileNodeByPath(fileTree, normalizedFocusPath);
+    if (!targetNode) return;
+
+    setSelectedPath(targetNode.path);
+    expandAncestors(targetNode.treePath);
+  }, [expandAncestors, fileEntries.length, fileTree, focusPath]);
 
   const selectedFile = useMemo(
     () =>
