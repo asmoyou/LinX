@@ -492,7 +492,7 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="w-[360px] border-l border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/40 flex flex-col min-h-0">
+    <div className="w-full h-full border-l border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/40 flex flex-col min-h-0">
       <div className="px-3 py-2 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">Workspace Files</h3>

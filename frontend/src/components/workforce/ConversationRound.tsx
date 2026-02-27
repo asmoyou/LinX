@@ -23,7 +23,7 @@ interface ConversationRoundProps {
   defaultCollapsed?: boolean;
 }
 
-export const ConversationRoundComponent: React.FC<ConversationRoundProps> = ({
+const ConversationRoundComponentBase: React.FC<ConversationRoundProps> = ({
   round,
   isLatest = false,
   isStreaming = false,
@@ -50,6 +50,7 @@ export const ConversationRoundComponent: React.FC<ConversationRoundProps> = ({
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const markdownComponents = useMemo(() => createMarkdownComponents(), []);
+  const remarkPlugins = useMemo(() => [remarkGfm], []);
 
   return (
     <div className="space-y-4">
@@ -234,7 +235,7 @@ export const ConversationRoundComponent: React.FC<ConversationRoundProps> = ({
             )}
 
             <div className="markdown-content prose dark:prose-invert max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
                 {round.content}
               </ReactMarkdown>
             </div>
@@ -262,3 +263,19 @@ export const ConversationRoundComponent: React.FC<ConversationRoundProps> = ({
     </div>
   );
 };
+
+const areConversationRoundPropsEqual = (
+  prev: ConversationRoundProps,
+  next: ConversationRoundProps
+): boolean =>
+  prev.round === next.round &&
+  prev.isLatest === next.isLatest &&
+  prev.isStreaming === next.isStreaming &&
+  prev.defaultCollapsed === next.defaultCollapsed;
+
+export const ConversationRoundComponent = React.memo(
+  ConversationRoundComponentBase,
+  areConversationRoundPropsEqual
+);
+
+ConversationRoundComponent.displayName = 'ConversationRoundComponent';

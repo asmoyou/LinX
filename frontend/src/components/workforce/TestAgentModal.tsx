@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   X,
   Send,
@@ -48,6 +48,49 @@ interface Message {
   attachments?: AttachedFile[];
 }
 
+const STREAM_RENDER_THROTTLE_MS = 60;
+const AUTO_SCROLL_THRESHOLD_PX = 120;
+const HISTORY_MESSAGE_GAP_PX = 32;
+const HISTORY_MESSAGE_ESTIMATED_HEIGHT_PX = 320;
+const HISTORY_OVERSCAN_PX = 900;
+
+interface VirtualizedHistoryItemProps {
+  index: number;
+  onHeightChange: (index: number, height: number) => void;
+  children: React.ReactNode;
+}
+
+const VirtualizedHistoryItem: React.FC<VirtualizedHistoryItemProps> = ({
+  index,
+  onHeightChange,
+  children,
+}) => {
+  const itemRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const element = itemRef.current;
+    if (!element) return;
+
+    const updateHeight = () => {
+      onHeightChange(index, element.getBoundingClientRect().height);
+    };
+
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(element);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [index, onHeightChange]);
+
+  return (
+    <div ref={itemRef} style={{ paddingBottom: `${HISTORY_MESSAGE_GAP_PX}px` }}>
+      {children}
+    </div>
+  );
+};
+
 export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, onClose }) => {
   const { t } = useTranslation();
   const createEmptyRoundData = () => ({
@@ -65,6 +108,9 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [messagesScrollTop, setMessagesScrollTop] = useState(0);
+  const [messagesViewportHeight, setMessagesViewportHeight] = useState(0);
+  const [historyItemHeights, setHistoryItemHeights] = useState<Record<number, number>>({});
 
   // Current streaming state - tracks the current round being built
   const [currentRounds, setCurrentRounds] = useState<ConversationRound[]>([]);
@@ -92,11 +138,13 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     }
   }, [agent?.id]);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastStatusTimeRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const streamFlushTimerRef = useRef<number | null>(null);
+  const shouldAutoScrollRef = useRef(true);
 
   // Use refs to track streaming data for onComplete callback
   const streamingDataRef = useRef<{
@@ -108,6 +156,11 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     currentRound: createEmptyRoundData(),
     currentRoundNumber: 1,
   });
+
+  const resetHistoryVirtualizationMetrics = useCallback(() => {
+    setHistoryItemHeights({});
+    setMessagesScrollTop(0);
+  }, []);
 
   const hasRoundActivity = (round: {
     thinking: string;
@@ -131,11 +184,50 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     roundNumber,
     thinking: roundData.thinking,
     content: roundData.content,
-    statusMessages: roundData.statusMessages,
-    retryAttempts: roundData.retryAttempts.length > 0 ? roundData.retryAttempts : undefined,
-    errorFeedback: roundData.errorFeedback.length > 0 ? roundData.errorFeedback : undefined,
-    stats: roundData.stats || undefined,
+    statusMessages: [...roundData.statusMessages],
+    retryAttempts: roundData.retryAttempts.length > 0 ? [...roundData.retryAttempts] : undefined,
+    errorFeedback: roundData.errorFeedback.length > 0 ? [...roundData.errorFeedback] : undefined,
+    stats: roundData.stats ? { ...roundData.stats } : undefined,
   });
+
+  const buildCurrentRoundDataState = (roundData: ReturnType<typeof createEmptyRoundData>) => ({
+    thinking: roundData.thinking,
+    content: roundData.content,
+    statusMessages: [...roundData.statusMessages],
+    retryAttempts: [...roundData.retryAttempts],
+    errorFeedback: [...roundData.errorFeedback],
+    stats: roundData.stats ? { ...roundData.stats } : null,
+  });
+
+  const syncStreamingStateToView = useCallback(() => {
+    const { rounds, currentRound, currentRoundNumber } = streamingDataRef.current;
+    setCurrentRounds([...rounds]);
+    setCurrentRoundData(buildCurrentRoundDataState(currentRound));
+    setCurrentRoundNumber(currentRoundNumber);
+  }, []);
+
+  const scheduleStreamingStateSync = useCallback(
+    (immediate = false) => {
+      if (immediate) {
+        if (streamFlushTimerRef.current !== null) {
+          window.clearTimeout(streamFlushTimerRef.current);
+          streamFlushTimerRef.current = null;
+        }
+        syncStreamingStateToView();
+        return;
+      }
+
+      if (streamFlushTimerRef.current !== null) {
+        return;
+      }
+
+      streamFlushTimerRef.current = window.setTimeout(() => {
+        streamFlushTimerRef.current = null;
+        syncStreamingStateToView();
+      }, STREAM_RENDER_THROTTLE_MS);
+    },
+    [syncStreamingStateToView]
+  );
 
   const commitStreamingOutputToMessages = () => {
     const { rounds, currentRound, currentRoundNumber } = streamingDataRef.current;
@@ -165,6 +257,10 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
   };
 
   const resetStreamingState = () => {
+    if (streamFlushTimerRef.current !== null) {
+      window.clearTimeout(streamFlushTimerRef.current);
+      streamFlushTimerRef.current = null;
+    }
     setCurrentRounds([]);
     setCurrentRoundData(createEmptyRoundData());
     setCurrentRoundNumber(1);
@@ -240,14 +336,294 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
 
   // Memoize markdown components to prevent re-creation on each render
   const markdownComponents = useMemo(() => createMarkdownComponents(), []);
+  const remarkPlugins = useMemo(() => [remarkGfm], []);
 
-  // Auto-scroll to bottom when messages change
+  const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    container.scrollTo({ top: container.scrollHeight, behavior });
+  }, []);
+
+  const handleHistoryItemHeightChange = useCallback((index: number, height: number) => {
+    const normalized = Math.max(0, Math.round(height));
+    setHistoryItemHeights((prev) => {
+      if (prev[index] === normalized) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [index]: normalized,
+      };
+    });
+  }, []);
+
+  const getHistoryItemHeight = useCallback(
+    (index: number): number => historyItemHeights[index] ?? HISTORY_MESSAGE_ESTIMATED_HEIGHT_PX,
+    [historyItemHeights]
+  );
+
+  const historyVirtualization = useMemo(() => {
+    const itemCount = messages.length;
+    if (itemCount === 0) {
+      return {
+        startIndex: 0,
+        endIndex: -1,
+        topSpacerHeight: 0,
+        bottomSpacerHeight: 0,
+      };
+    }
+
+    const offsets: number[] = new Array(itemCount);
+    const heights: number[] = new Array(itemCount);
+    let totalHeight = 0;
+
+    for (let i = 0; i < itemCount; i += 1) {
+      offsets[i] = totalHeight;
+      const height = getHistoryItemHeight(i);
+      heights[i] = height;
+      totalHeight += height;
+    }
+
+    const viewportStart = Math.max(0, messagesScrollTop - HISTORY_OVERSCAN_PX);
+    const viewportEnd =
+      messagesScrollTop + Math.max(messagesViewportHeight, 1) + HISTORY_OVERSCAN_PX;
+
+    let startIndex = 0;
+    while (
+      startIndex < itemCount &&
+      offsets[startIndex] + heights[startIndex] < viewportStart
+    ) {
+      startIndex += 1;
+    }
+    startIndex = Math.min(startIndex, itemCount - 1);
+
+    let endIndex = startIndex;
+    while (endIndex < itemCount && offsets[endIndex] < viewportEnd) {
+      endIndex += 1;
+    }
+    endIndex = Math.max(startIndex, Math.min(itemCount - 1, endIndex));
+
+    const topSpacerHeight = offsets[startIndex] ?? 0;
+    const renderedEndOffset = offsets[endIndex] + heights[endIndex];
+    const bottomSpacerHeight = Math.max(0, totalHeight - renderedEndOffset);
+
+    return {
+      startIndex,
+      endIndex,
+      topSpacerHeight,
+      bottomSpacerHeight,
+    };
+  }, [getHistoryItemHeight, messages.length, messagesScrollTop, messagesViewportHeight]);
+
+  const visibleHistoryIndexes = useMemo(() => {
+    if (historyVirtualization.endIndex < historyVirtualization.startIndex) {
+      return [] as number[];
+    }
+
+    return Array.from(
+      { length: historyVirtualization.endIndex - historyVirtualization.startIndex + 1 },
+      (_, idx) => historyVirtualization.startIndex + idx
+    );
+  }, [historyVirtualization.endIndex, historyVirtualization.startIndex]);
+
+  const handleMessagesScroll = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    setMessagesScrollTop(container.scrollTop);
+    setMessagesViewportHeight(container.clientHeight);
+
+    const distanceFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    shouldAutoScrollRef.current = distanceFromBottom <= AUTO_SCROLL_THRESHOLD_PX;
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (streamFlushTimerRef.current !== null) {
+        window.clearTimeout(streamFlushTimerRef.current);
+        streamFlushTimerRef.current = null;
+      }
+    },
+    []
+  );
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, currentRounds, currentRoundData]);
+    const container = messagesContainerRef.current;
+    if (!container) return;
 
-  // Focus input when modal opens
+    const syncMetrics = () => {
+      setMessagesScrollTop(container.scrollTop);
+      setMessagesViewportHeight(container.clientHeight);
+    };
+
+    syncMetrics();
+    const observer = new ResizeObserver(syncMetrics);
+    observer.observe(container);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [isOpen, showWorkspacePanel, isFullscreen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    shouldAutoScrollRef.current = true;
+    const rafId = window.requestAnimationFrame(() => {
+      scrollMessagesToBottom('auto');
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [isOpen, scrollMessagesToBottom]);
+
+  useEffect(() => {
+    if (!shouldAutoScrollRef.current) {
+      return;
+    }
+
+    const behavior: ScrollBehavior = isStreaming ? 'auto' : 'smooth';
+    const rafId = window.requestAnimationFrame(() => {
+      scrollMessagesToBottom(behavior);
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [
+    messages,
+    currentRounds,
+    currentRoundData,
+    historyItemHeights,
+    isStreaming,
+    showWorkspacePanel,
+    scrollMessagesToBottom,
+  ]);
+
+  const renderHistoryMessage = useCallback(
+    (message: Message) => {
+      if (message.role === 'user') {
+        return (
+          <div className="flex justify-end group">
+            <div className="max-w-[80%] space-y-2">
+              <div className="relative">
+                <div className="rounded-[24px] rounded-tr-none px-5 py-3.5 bg-indigo-600 dark:bg-indigo-500 text-white shadow-xl shadow-indigo-500/10">
+                  <p className="text-sm font-medium whitespace-pre-wrap leading-relaxed">
+                    {message.content}
+                  </p>
+
+                  {message.attachments && message.attachments.length > 0 && (
+                    <div className="mt-3 grid grid-cols-1 gap-2">
+                      {message.attachments.map((attachment) => (
+                        <div
+                          key={attachment.id}
+                          className="flex items-center gap-3 p-2.5 bg-white/10 rounded-xl backdrop-blur-sm border border-white/10"
+                        >
+                          <div className="p-2 bg-white/20 rounded-lg">
+                            {attachment.type === 'image' ? (
+                              <ImageIcon className="w-4 h-4" />
+                            ) : (
+                              <FileText className="w-4 h-4" />
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[11px] font-bold truncate">{attachment.file.name}</p>
+                            <p className="text-[10px] opacity-70">
+                              {(attachment.file.size / 1024).toFixed(1)} KB
+                            </p>
+                          </div>
+                          {attachment.preview && (
+                            <img
+                              src={attachment.preview}
+                              alt=""
+                              className="w-10 h-10 object-cover rounded-lg border border-white/20"
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="absolute top-0 -right-2 w-4 h-4 text-indigo-600 dark:text-indigo-500 overflow-hidden">
+                  <div className="absolute top-0 right-0 w-4 h-4 bg-current rotate-45 transform origin-top-right rounded-sm" />
+                </div>
+              </div>
+              <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-600 uppercase tracking-widest text-right px-1">
+                {message.timestamp.toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </p>
+            </div>
+          </div>
+        );
+      }
+
+      if (message.role === 'system') {
+        return (
+          <div className="flex justify-center">
+            <div className="px-5 py-2 bg-zinc-100 dark:bg-zinc-900/50 rounded-full border border-zinc-200/50 dark:border-zinc-800/50">
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-500">
+                {message.content}
+              </p>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="flex justify-start">
+          <div className="max-w-[90%] space-y-4">
+            {message.rounds && message.rounds.length > 0 ? (
+              <div className="space-y-6">
+                {message.rounds.map((round, roundIdx) => (
+                  <ConversationRoundComponent
+                    key={`${message.timestamp.getTime()}-${round.roundNumber}-${roundIdx}`}
+                    round={round}
+                    isLatest={roundIdx === message.rounds.length - 1}
+                    defaultCollapsed={
+                      roundIdx < message.rounds.length - 1 ||
+                      Boolean(round.content && round.content.trim().length > 0)
+                    }
+                  />
+                ))}
+                <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-600 uppercase tracking-widest px-1">
+                  {message.timestamp.toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-[32px] rounded-tl-none px-6 py-5 bg-zinc-50 dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 shadow-sm relative">
+                <div className="absolute top-0 -left-2 w-4 h-4 text-zinc-50 dark:text-zinc-900 overflow-hidden">
+                  <div className="absolute top-0 left-0 w-4 h-4 bg-current -rotate-45 transform origin-top-left rounded-sm" />
+                </div>
+                <div className="markdown-content">
+                  <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
+                    {message.content}
+                  </ReactMarkdown>
+                </div>
+                <div className="mt-4 pt-4 border-t border-zinc-200/60 dark:border-zinc-800 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Bot className="w-3.5 h-3.5 text-indigo-500" />
+                    <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-600 uppercase tracking-widest">
+                      {agent?.name}
+                    </span>
+                  </div>
+                  <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-600 uppercase tracking-widest">
+                    {message.timestamp.toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    },
+    [agent?.name, markdownComponents, remarkPlugins]
+  );
+
   /* eslint-disable react-hooks/set-state-in-effect */
+  // Focus input when modal opens
   useEffect(() => {
     if (isOpen) {
       inputRef.current?.focus();
@@ -288,6 +664,11 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
       }
 
       // Reset all state
+      if (streamFlushTimerRef.current !== null) {
+        window.clearTimeout(streamFlushTimerRef.current);
+        streamFlushTimerRef.current = null;
+      }
+      resetHistoryVirtualizationMetrics();
       setMessages([]);
       setInputMessage('');
       setAttachedFiles([]);
@@ -302,7 +683,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
       setIsStreaming(false);
       setIsFullscreen(false);
     }
-  }, [isOpen]);
+  }, [isOpen, resetHistoryVirtualizationMetrics]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -393,6 +774,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
 
   const handleClearChat = () => {
     if (isStreaming) return;
+    resetHistoryVirtualizationMetrics();
     setMessages([
       {
         role: 'system',
@@ -418,6 +800,11 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     setAttachedFiles([]);
     setError(null);
     setIsStreaming(true);
+    shouldAutoScrollRef.current = true;
+    if (streamFlushTimerRef.current !== null) {
+      window.clearTimeout(streamFlushTimerRef.current);
+      streamFlushTimerRef.current = null;
+    }
 
     // Reset streaming state
     setCurrentRounds([]);
@@ -472,13 +859,11 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
                 );
 
                 streamingDataRef.current.rounds.push(completedRound);
-                setCurrentRounds([...streamingDataRef.current.rounds]);
               }
 
               streamingDataRef.current.currentRoundNumber = newRoundNumber;
               streamingDataRef.current.currentRound = createEmptyRoundData();
-              setCurrentRoundNumber(newRoundNumber);
-              setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+              scheduleStreamingStateSync(true);
             }
 
             const now = Date.now();
@@ -497,7 +882,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
             };
 
             streamingDataRef.current.currentRound.statusMessages.push(newStatus);
-            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            scheduleStreamingStateSync();
             lastStatusTimeRef.current = now;
           } else if (chunk.type === 'retry_attempt') {
             const retry: RetryAttempt = {
@@ -509,7 +894,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
             };
 
             streamingDataRef.current.currentRound.retryAttempts.push(retry);
-            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            scheduleStreamingStateSync();
           } else if (chunk.type === 'error_feedback') {
             const feedback: ErrorFeedback = {
               errorType: chunk.error_type,
@@ -521,7 +906,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
             };
 
             streamingDataRef.current.currentRound.errorFeedback.push(feedback);
-            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            scheduleStreamingStateSync();
           } else if (
             chunk.type === 'start' ||
             chunk.type === 'tool_call' ||
@@ -545,14 +930,14 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
             };
 
             streamingDataRef.current.currentRound.statusMessages.push(newStatus);
-            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            scheduleStreamingStateSync();
             lastStatusTimeRef.current = now;
           } else if (chunk.type === 'thinking') {
             streamingDataRef.current.currentRound.thinking += chunk.content;
-            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            scheduleStreamingStateSync();
           } else if (chunk.type === 'content') {
             streamingDataRef.current.currentRound.content += chunk.content;
-            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            scheduleStreamingStateSync();
           } else if (chunk.type === 'round_stats') {
             const roundStats = {
               timeToFirstToken: chunk.timeToFirstToken,
@@ -563,7 +948,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
               totalTime: chunk.totalTime,
             };
             streamingDataRef.current.currentRound.stats = roundStats;
-            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            scheduleStreamingStateSync();
           } else if (chunk.type === 'stats') {
             const stats = {
               timeToFirstToken: chunk.timeToFirstToken,
@@ -575,7 +960,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
             };
             if (!streamingDataRef.current.currentRound.stats) {
               streamingDataRef.current.currentRound.stats = stats;
-              setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+              scheduleStreamingStateSync();
             }
           } else if (chunk.type === 'error') {
             const now = Date.now();
@@ -593,17 +978,19 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
               duration: undefined,
             };
             streamingDataRef.current.currentRound.statusMessages.push(errorStatus);
-            setCurrentRoundData({ ...streamingDataRef.current.currentRound });
+            scheduleStreamingStateSync();
             lastStatusTimeRef.current = now;
             setError(chunk.content);
           }
         },
         (error) => {
           setError(error);
+          scheduleStreamingStateSync(true);
           commitStreamingOutputToMessages();
           resetStreamingState();
         },
         () => {
+          scheduleStreamingStateSync(true);
           commitStreamingOutputToMessages();
           resetStreamingState();
         },
@@ -615,6 +1002,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message');
+      scheduleStreamingStateSync(true);
       commitStreamingOutputToMessages();
       resetStreamingState();
     }
@@ -644,6 +1032,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
         duration: undefined,
       });
 
+      scheduleStreamingStateSync(true);
       commitStreamingOutputToMessages();
       resetStreamingState();
       setError(null);
@@ -653,7 +1042,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
   return (
     <LayoutModal isOpen={isOpen} onClose={onClose} closeOnBackdropClick={false} closeOnEscape={true}>
       <div
-        className={`w-full transition-all duration-500 ease-in-out my-auto flex flex-col modal-panel rounded-[32px] shadow-2xl overflow-hidden bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 ${
+        className={`w-full transition-[max-width,height] duration-500 ease-in-out flex flex-col modal-panel rounded-[32px] shadow-2xl overflow-hidden bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 ${
           isFullscreen ? 'max-w-[98vw] h-[95vh]' : 'max-w-5xl h-[85vh]'
         }`}
       >
@@ -719,236 +1108,128 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 flex bg-white dark:bg-zinc-950">
+        <div className="flex-1 min-h-0 flex overflow-hidden bg-white dark:bg-zinc-950">
           {/* Messages Area */}
-          <div className="flex-1 overflow-y-auto px-6 py-8 space-y-8 custom-scrollbar">
-            <AnimatePresence mode="popLayout">
-              {messages.map((message, index) => (
-                <motion.div
-                  key={`${message.timestamp.getTime()}-${index}`}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-                >
-                  {message.role === 'user' ? (
-                    <div className="flex justify-end group">
-                      <div className="max-w-[80%] space-y-2">
-                        <div className="relative">
-                          <div className="rounded-[24px] rounded-tr-none px-5 py-3.5 bg-indigo-600 dark:bg-indigo-500 text-white shadow-xl shadow-indigo-500/10">
-                            <p className="text-sm font-medium whitespace-pre-wrap leading-relaxed">
-                              {message.content}
-                            </p>
+          <div
+            ref={messagesContainerRef}
+            onScroll={handleMessagesScroll}
+            className="flex-1 min-w-0 overflow-y-auto px-6 py-8 custom-scrollbar"
+          >
+            <div className="flex flex-col">
+              <div style={{ height: `${historyVirtualization.topSpacerHeight}px` }} />
 
-                            {/* Attachments */}
-                            {message.attachments && message.attachments.length > 0 && (
-                              <div className="mt-3 grid grid-cols-1 gap-2">
-                                {message.attachments.map((attachment) => (
-                                  <div
-                                    key={attachment.id}
-                                    className="flex items-center gap-3 p-2.5 bg-white/10 rounded-xl backdrop-blur-sm border border-white/10"
-                                  >
-                                    <div className="p-2 bg-white/20 rounded-lg">
-                                      {attachment.type === 'image' ? (
-                                        <ImageIcon className="w-4 h-4" />
-                                      ) : (
-                                        <FileText className="w-4 h-4" />
-                                      )}
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                      <p className="text-[11px] font-bold truncate">
-                                        {attachment.file.name}
-                                      </p>
-                                      <p className="text-[10px] opacity-70">
-                                        {(attachment.file.size / 1024).toFixed(1)} KB
-                                      </p>
-                                    </div>
-                                    {attachment.preview && (
-                                      <img
-                                        src={attachment.preview}
-                                        alt=""
-                                        className="w-10 h-10 object-cover rounded-lg border border-white/20"
-                                      />
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                          {/* Triangle tail */}
-                          <div className="absolute top-0 -right-2 w-4 h-4 text-indigo-600 dark:text-indigo-500 overflow-hidden">
-                            <div className="absolute top-0 right-0 w-4 h-4 bg-current rotate-45 transform origin-top-right rounded-sm" />
-                          </div>
-                        </div>
-                        <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-600 uppercase tracking-widest text-right px-1">
-                          {message.timestamp.toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}
-                        </p>
-                      </div>
-                    </div>
-                  ) : message.role === 'system' ? (
-                    <div className="flex justify-center">
-                      <div className="px-5 py-2 bg-zinc-100 dark:bg-zinc-900/50 rounded-full border border-zinc-200/50 dark:border-zinc-800/50">
-                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-500">
-                          {message.content}
-                        </p>
-                      </div>
-                    </div>
-                  ) : (
+              {visibleHistoryIndexes.map((index) => {
+                const message = messages[index];
+                if (!message) return null;
+
+                return (
+                  <VirtualizedHistoryItem
+                    key={`${message.timestamp.getTime()}-${index}`}
+                    index={index}
+                    onHeightChange={handleHistoryItemHeightChange}
+                  >
+                    {renderHistoryMessage(message)}
+                  </VirtualizedHistoryItem>
+                );
+              })}
+
+              <div style={{ height: `${historyVirtualization.bottomSpacerHeight}px` }} />
+
+              {(isStreaming || error) && (
+                <div
+                  className="space-y-8"
+                  style={{
+                    paddingTop: messages.length > 0 ? `${HISTORY_MESSAGE_GAP_PX}px` : undefined,
+                  }}
+                >
+                  {/* Current streaming rounds */}
+                  {isStreaming && (currentRounds.length > 0 || hasRoundActivity(currentRoundData)) && (
                     <div className="flex justify-start">
-                      <div className="max-w-[90%] space-y-4">
-                        {message.rounds && message.rounds.length > 0 ? (
-                          <div className="space-y-6">
-                            {message.rounds.map((round, roundIdx) => (
-                              <ConversationRoundComponent
-                                key={`${message.timestamp.getTime()}-${round.roundNumber}-${roundIdx}`}
-                                round={round}
-                                isLatest={roundIdx === message.rounds!.length - 1}
-                                defaultCollapsed={
-                                  roundIdx < message.rounds!.length - 1 ||
-                                  Boolean(round.content && round.content.trim().length > 0)
-                                }
-                              />
-                            ))}
-                            <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-600 uppercase tracking-widest px-1">
-                              {message.timestamp.toLocaleTimeString([], {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
-                            </p>
-                          </div>
-                        ) : (
-                          <div className="rounded-[32px] rounded-tl-none px-6 py-5 bg-zinc-50 dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 shadow-sm relative">
-                            <div className="absolute top-0 -left-2 w-4 h-4 text-zinc-50 dark:text-zinc-900 overflow-hidden">
-                              <div className="absolute top-0 left-0 w-4 h-4 bg-current -rotate-45 transform origin-top-left rounded-sm" />
-                            </div>
-                            <div className="markdown-content">
-                              <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
-                                components={markdownComponents}
-                              >
-                                {message.content}
-                              </ReactMarkdown>
-                            </div>
-                            <div className="mt-4 pt-4 border-t border-zinc-200/60 dark:border-zinc-800 flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <Bot className="w-3.5 h-3.5 text-indigo-500" />
-                                <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-600 uppercase tracking-widest">
-                                  {agent.name}
-                                </span>
-                              </div>
-                              <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-600 uppercase tracking-widest">
-                                {message.timestamp.toLocaleTimeString([], {
-                                  hour: '2-digit',
-                                  minute: '2-digit',
-                                })}
-                              </p>
-                            </div>
-                          </div>
-                        )}
+                      <div className="max-w-[90%] space-y-6">
+                        {currentRounds.map((round, idx) => (
+                          <ConversationRoundComponent
+                            key={`stream-round-${round.roundNumber}-${idx}`}
+                            round={round}
+                            isLatest={false}
+                            defaultCollapsed={true}
+                          />
+                        ))}
+
+                        <ConversationRoundComponent
+                          round={{
+                            roundNumber: currentRoundNumber,
+                            thinking: currentRoundData.thinking,
+                            content: currentRoundData.content,
+                            statusMessages: currentRoundData.statusMessages,
+                            retryAttempts:
+                              currentRoundData.retryAttempts.length > 0
+                                ? currentRoundData.retryAttempts
+                                : undefined,
+                            errorFeedback:
+                              currentRoundData.errorFeedback.length > 0
+                                ? currentRoundData.errorFeedback
+                                : undefined,
+                            stats: currentRoundData.stats || undefined,
+                          }}
+                          isLatest={true}
+                          isStreaming={true}
+                        />
                       </div>
                     </div>
                   )}
-                </motion.div>
-              ))}
-            </AnimatePresence>
 
-            {/* Current streaming rounds */}
-            {isStreaming && (currentRounds.length > 0 || hasRoundActivity(currentRoundData)) && (
-              <div className="flex justify-start">
-                <div className="max-w-[90%] space-y-6">
-                  {currentRounds.map((round, idx) => (
-                    <ConversationRoundComponent
-                      key={`stream-round-${round.roundNumber}-${idx}`}
-                      round={round}
-                      isLatest={false}
-                      defaultCollapsed={true}
-                    />
-                  ))}
+                  {/* Typing Indicator */}
+                  {isStreaming && !hasRoundActivity(currentRoundData) && (
+                    <div className="flex justify-start">
+                      <div className="px-5 py-3 rounded-2xl rounded-tl-none bg-zinc-50 dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800">
+                        <div className="flex gap-1.5">
+                          {[0, 1, 2].map((i) => (
+                            <motion.div
+                              key={i}
+                              className="w-1.5 h-1.5 rounded-full bg-indigo-400 dark:bg-indigo-600"
+                              animate={{ opacity: [0.3, 1, 0.3], y: [0, -4, 0] }}
+                              transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.15 }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
-                  <ConversationRoundComponent
-                    round={{
-                      roundNumber: currentRoundNumber,
-                      thinking: currentRoundData.thinking,
-                      content: currentRoundData.content,
-                      statusMessages: currentRoundData.statusMessages,
-                      retryAttempts:
-                        currentRoundData.retryAttempts.length > 0
-                          ? currentRoundData.retryAttempts
-                          : undefined,
-                      errorFeedback:
-                        currentRoundData.errorFeedback.length > 0
-                          ? currentRoundData.errorFeedback
-                          : undefined,
-                      stats: currentRoundData.stats || undefined,
-                    }}
-                    isLatest={true}
-                    isStreaming={true}
-                  />
+                  {/* Error Message */}
+                  {error && (
+                    <div className="flex justify-center">
+                      <div className="max-w-[80%] rounded-2xl p-4 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 flex items-start gap-3 shadow-xl shadow-rose-500/5">
+                        <div className="p-2 rounded-xl bg-rose-100 dark:bg-rose-900/50 text-rose-600 dark:text-rose-400">
+                          <AlertCircle className="w-5 h-5" />
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-sm font-black text-rose-900 dark:text-rose-200 uppercase tracking-tight">
+                            System Error
+                          </p>
+                          <p className="text-xs text-rose-700 dark:text-rose-400 mt-1 font-medium leading-relaxed">
+                            {error}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
-
-            {/* Typing Indicator */}
-            {isStreaming && !hasRoundActivity(currentRoundData) && (
-              <div className="flex justify-start">
-                <div className="px-5 py-3 rounded-2xl rounded-tl-none bg-zinc-50 dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800">
-                  <div className="flex gap-1.5">
-                    {[0, 1, 2].map((i) => (
-                      <motion.div
-                        key={i}
-                        className="w-1.5 h-1.5 rounded-full bg-indigo-400 dark:bg-indigo-600"
-                        animate={{ opacity: [0.3, 1, 0.3], y: [0, -4, 0] }}
-                        transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.15 }}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Error Message */}
-            {error && (
-              <div className="flex justify-center">
-                <div className="max-w-[80%] rounded-2xl p-4 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 flex items-start gap-3 shadow-xl shadow-rose-500/5">
-                  <div className="p-2 rounded-xl bg-rose-100 dark:bg-rose-900/50 text-rose-600 dark:text-rose-400">
-                    <AlertCircle className="w-5 h-5" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-black text-rose-900 dark:text-rose-200 uppercase tracking-tight">
-                      System Error
-                    </p>
-                    <p className="text-xs text-rose-700 dark:text-rose-400 mt-1 font-medium leading-relaxed">
-                      {error}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div ref={messagesEndRef} />
+              )}
+            </div>
           </div>
 
           {/* Workspace Panel Container */}
-          <AnimatePresence>
-            {showWorkspacePanel && (
-              <motion.div
-                initial={{ opacity: 0, x: 300, width: 0 }}
-                animate={{ opacity: 1, x: 0, width: 400 }}
-                exit={{ opacity: 0, x: 300, width: 0 }}
-                transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-                className="border-l border-zinc-100 dark:border-zinc-800"
-              >
-                <SessionWorkspacePanel
-                  agentId={agent.id}
-                  sessionId={sessionId}
-                  isOpen={showWorkspacePanel}
-                  onClose={() => setShowWorkspacePanel(false)}
-                />
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {showWorkspacePanel && (
+            <div className="w-[400px] shrink-0 border-l border-zinc-100 dark:border-zinc-800">
+              <SessionWorkspacePanel
+                agentId={agent.id}
+                sessionId={sessionId}
+                isOpen={showWorkspacePanel}
+                onClose={() => setShowWorkspacePanel(false)}
+              />
+            </div>
+          )}
         </div>
 
         {/* Input Area */}
