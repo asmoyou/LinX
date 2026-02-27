@@ -569,8 +569,8 @@ knowledge_base:
       。；！？.!?'
   parsing:
     method: auto
-    vision_model: qwen3-vl:30b
-    vision_provider: ollama
+    vision_model: qwen3.5-flash-2026-02-23
+    vision_provider: aliyun-bl
     vision_timeout_seconds: 120
     output_language: zh-CN
   embedding:

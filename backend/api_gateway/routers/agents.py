@@ -4353,10 +4353,20 @@ def _build_attachment_workspace_context(file_refs: List["FileReference"]) -> str
     if not lines:
         return ""
 
+    has_extracted_documents = any(
+        file_ref.type == "document" and bool(file_ref.extracted_text)
+        for file_ref in file_refs
+    )
+    usage_hint = (
+        "Prefer the extracted document text above when available; only read raw files for missing details."
+        if has_extracted_documents
+        else "Use these paths when reading original uploaded files."
+    )
+
     return (
         "\n\nAttached files are available in workspace:\n"
         + "\n".join(lines)
-        + "\nUse these paths when reading original uploaded files."
+        + f"\n{usage_hint}"
     )
 
 
@@ -4523,7 +4533,7 @@ async def test_agent(
                                 "Extracted attachment text for agent test",
                                 extra={
                                     "agent_id": agent_id,
-                                    "filename": file_name,
+                                    "attachment_name": file_name,
                                     "file_type": file_type,
                                     "chars": len(extracted_text),
                                 },
@@ -5208,7 +5218,8 @@ async def test_agent(
                                 user_role=current_user.role,
                                 task_description=task_description_override,
                                 additional_context={
-                                    "execution_context_tag": AGENT_TEST_RUNTIME_CONTEXT_TAG
+                                    "execution_context_tag": AGENT_TEST_RUNTIME_CONTEXT_TAG,
+                                    "task_intent_text": message,
                                 },
                             )
                             if use_unified_runtime:
@@ -5233,6 +5244,7 @@ async def test_agent(
                                     session_workdir=conversation_session.workdir,
                                     container_id=conversation_session.sandbox_id,
                                     message_content=content_override,
+                                    task_intent_text=message,
                                 )
 
                             if not result.get("success", False):
@@ -5649,7 +5661,10 @@ async def test_agent(
                     user_id=UUID(current_user.user_id),
                     user_role=current_user.role,
                     task_description=message_with_attachments,
-                    additional_context={"execution_context_tag": AGENT_TEST_RUNTIME_CONTEXT_TAG},
+                    additional_context={
+                        "execution_context_tag": AGENT_TEST_RUNTIME_CONTEXT_TAG,
+                        "task_intent_text": message,
+                    },
                 )
 
                 executor = get_agent_executor()

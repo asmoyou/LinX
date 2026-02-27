@@ -259,6 +259,7 @@ class TestBaseAgent:
         assert captured["kwargs"]["execution_profile"] == ExecutionProfile.MISSION_TASK
         assert runtime_policy.loop_mode == LoopMode.RECOVERY_MULTI_TURN
         assert captured["kwargs"]["stream_callback"] is None
+        assert captured["kwargs"]["task_intent_text"] == "Handle this mission task"
 
     def test_normalize_conversation_history_filters_invalid_entries(self):
         """History normalization should keep only valid user/assistant text messages."""
@@ -587,6 +588,57 @@ class TestBaseAgent:
         assert stream_call_count["count"] == 3
         write_tool.ainvoke.assert_awaited_once()
         assert "/workspace/output/fuzhou.md" in result["output"]
+
+    def test_auto_multi_turn_file_delivery_guard_uses_task_intent_text(self):
+        """Attachment context should not trigger file-delivery guard when user didn't request file output."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.tools = []
+
+        stream_call_count = {"count": 0}
+
+        def _fake_stream(_messages):
+            stream_call_count["count"] += 1
+            yield SimpleNamespace(content="这是文档总结。", additional_kwargs={})
+
+        agent.llm = Mock()
+        agent.llm.stream = _fake_stream
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.MISSION_CONTROL,
+            loop_mode=LoopMode.AUTO_MULTI_TURN,
+            max_rounds=5,
+            enable_error_recovery=False,
+            stream_output=True,
+        )
+        polluted_task_description = (
+            "请总结这份方案。\n\n"
+            "Attached files context:\n"
+            "[Document: sample.pdf]\n"
+            "该方案会自动生成健康评估报告。\n\n"
+            "Attached files are available in workspace:\n"
+            "- sample.pdf: /workspace/input/sample.pdf"
+        )
+
+        result = agent.execute_task(
+            task_description=polluted_task_description,
+            context={"task_intent_text": "请总结这份方案。"},
+            runtime_policy=runtime_policy,
+            stream_callback=lambda *_args, **_kwargs: None,
+        )
+
+        assert result["success"] is True
+        assert stream_call_count["count"] == 1
+        assert result["output"] == "这是文档总结。"
 
     def test_should_use_native_tool_fast_path_with_mixed_skills_for_direct_expression(self):
         """Direct calculator-like prompts should prefer native tool-calling even with agent skills loaded."""
