@@ -650,6 +650,16 @@ class TestBaseAgent:
 
         agent.llm = Mock()
         agent.llm.stream = _fake_stream
+        agent.llm.invoke = Mock(
+            side_effect=[
+                SimpleNamespace(
+                    content='{"is_complete": false, "confidence": 0.2, "reason": "文件尚未落盘", "next_action": "调用工具写入文件"}'
+                ),
+                SimpleNamespace(
+                    content='{"is_complete": true, "confidence": 0.95, "reason": "文件已保存", "next_action": ""}'
+                ),
+            ]
+        )
 
         result = agent.execute_task(
             task_description="写一篇福州旅游攻略，整理成md文档给我",
@@ -707,6 +717,16 @@ class TestBaseAgent:
 
         agent.llm = Mock()
         agent.llm.stream = _fake_stream
+        agent.llm.invoke = Mock(
+            side_effect=[
+                SimpleNamespace(
+                    content='{"is_complete": false, "confidence": 0.1, "reason": "仍需执行修复步骤", "next_action": "继续调用工具"}'
+                ),
+                SimpleNamespace(
+                    content='{"is_complete": true, "confidence": 0.9, "reason": "步骤已完成", "next_action": ""}'
+                ),
+            ]
+        )
 
         result = agent.execute_task(
             task_description="请完成环境修复并汇报处理结果",
@@ -740,6 +760,11 @@ class TestBaseAgent:
 
         agent.llm = Mock()
         agent.llm.stream = _fake_stream
+        agent.llm.invoke = Mock(
+            return_value=SimpleNamespace(
+                content='{"is_complete": true, "confidence": 0.92, "reason": "总结已完成", "next_action": ""}'
+            )
+        )
 
         runtime_policy = RuntimePolicy(
             profile=ExecutionProfile.MISSION_CONTROL,

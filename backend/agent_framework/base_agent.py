@@ -994,6 +994,224 @@ class BaseAgent:
             latest_round = max(latest_round, self._extract_tool_record_round_number(record))
         return latest_round
 
+    def _summarize_recent_tool_activity(self, tool_call_records: List[Any], limit: int = 8) -> str:
+        """Summarize recent tool activity for autonomous completion checks."""
+        if not tool_call_records:
+            return "No tool activity."
+
+        lines: List[str] = []
+        for record in tool_call_records[-max(1, limit) :]:
+            tool_name = self._extract_tool_record_name(record) or "unknown_tool"
+            status = self._extract_tool_record_status(record) or "unknown"
+            round_number = self._extract_tool_record_round_number(record)
+            if self._is_failed_tool_status(status):
+                error_preview = self._truncate_stream_preview(
+                    self._extract_tool_record_error(record), max_chars=120
+                )
+                lines.append(
+                    f"- round={round_number} tool={tool_name} status={status} error={error_preview}"
+                )
+            else:
+                lines.append(f"- round={round_number} tool={tool_name} status={status}")
+        return "\n".join(lines)
+
+    def _extract_first_json_object(self, text: Any) -> Optional[Dict[str, Any]]:
+        """Extract first JSON object from arbitrary text payload."""
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+
+        # Direct JSON first.
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # JSON fenced blocks / inline objects.
+        for candidate, _, _ in self._extract_balanced_json_objects(raw):
+            try:
+                parsed = json.loads(candidate)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+
+    @staticmethod
+    def _parse_bool_like(value: Any) -> Optional[bool]:
+        """Parse bool-like values from model outputs."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "yes", "y", "1", "complete", "completed"}:
+                return True
+            if lowered in {"false", "no", "n", "0", "incomplete", "not_complete"}:
+                return False
+        return None
+
+    def _build_autonomy_continue_feedback(self, decision: Dict[str, Any]) -> str:
+        """Build generic follow-up instruction when autonomous self-check says incomplete."""
+        reason = self._truncate_stream_preview(decision.get("reason"), max_chars=220) or "Task not complete yet"
+        next_action = self._truncate_stream_preview(
+            decision.get("next_action"), max_chars=220
+        ) or "Decide and execute the most effective next step."
+        return (
+            "任务尚未完成，请继续自主推进，不要在当前轮次结束。\n"
+            f"自检原因：{reason}\n"
+            f"建议下一步：{next_action}\n"
+            "请自行判断并执行下一步（必要时调用工具），仅在任务完全完成后再给最终答复。"
+        )
+
+    def _assess_autonomous_completion(
+        self,
+        *,
+        task_intent_text: str,
+        latest_output: str,
+        tool_call_records: List[Any],
+        round_number: int,
+        max_rounds: int,
+        requested_file_formats: Optional[Set[str]] = None,
+    ) -> Dict[str, Any]:
+        """Use model self-reflection to decide whether task is truly complete."""
+        requested_formats = sorted(requested_file_formats or set())
+        requested_formats_text = ", ".join(requested_formats) if requested_formats else "none"
+
+        def _fallback_decision(reason: str) -> Dict[str, Any]:
+            """Fallback when evaluator output is unavailable."""
+            if requested_file_formats and not self._has_successful_requested_format_call(
+                tool_call_records, requested_file_formats
+            ):
+                return {
+                    "should_stop": False,
+                    "confidence": 0.25,
+                    "reason": f"{reason}; file deliverable not yet verified",
+                    "next_action": "Continue and finish required file delivery.",
+                }
+
+            latest_failed_record = self._find_latest_failed_tool_record(tool_call_records)
+            if latest_failed_record is not None:
+                failed_round = self._extract_tool_record_round_number(latest_failed_record)
+                latest_success_round = self._latest_successful_tool_round(tool_call_records)
+                if latest_success_round < failed_round:
+                    return {
+                        "should_stop": False,
+                        "confidence": 0.25,
+                        "reason": f"{reason}; unresolved tool failure still exists",
+                        "next_action": "Continue and resolve the failed step.",
+                    }
+
+            lowered_output = str(latest_output or "").strip().lower()
+            if not lowered_output:
+                return {
+                    "should_stop": False,
+                    "confidence": 0.2,
+                    "reason": f"{reason}; latest output is empty",
+                    "next_action": "Continue with a concrete next step.",
+                }
+
+            incomplete_markers = (
+                "无法",
+                "不能",
+                "未完成",
+                "继续",
+                "失败",
+                "i can't",
+                "cannot",
+                "unable",
+                "not complete",
+                "need to",
+            )
+            if any(marker in lowered_output for marker in incomplete_markers):
+                return {
+                    "should_stop": False,
+                    "confidence": 0.3,
+                    "reason": f"{reason}; latest output indicates incomplete state",
+                    "next_action": "Continue autonomous execution.",
+                }
+
+            return {
+                "should_stop": True,
+                "confidence": 0.55,
+                "reason": f"{reason}; fallback judged output as complete",
+                "next_action": "",
+            }
+
+        if not self.llm or not hasattr(self.llm, "invoke"):
+            return _fallback_decision("Completion evaluator unavailable")
+
+        objective = self._truncate_text_for_context(str(task_intent_text or ""), 900)
+        output_preview = self._truncate_text_for_context(str(latest_output or ""), 1200)
+        tool_activity = self._truncate_text_for_context(
+            self._summarize_recent_tool_activity(tool_call_records, limit=8),
+            900,
+        )
+
+        evaluator_messages = [
+            SystemMessage(
+                content=(
+                    "You are a strict task-completion evaluator. "
+                    "Return JSON only: "
+                    '{"is_complete": boolean, "confidence": number, "reason": string, "next_action": string}. '
+                    "If uncertain, set is_complete=false."
+                )
+            ),
+            HumanMessage(
+                content=(
+                    "User objective:\n"
+                    f"{objective}\n\n"
+                    "Latest assistant output:\n"
+                    f"{output_preview}\n\n"
+                    "Recent tool activity:\n"
+                    f"{tool_activity}\n\n"
+                    f"Requested file formats: {requested_formats_text}\n"
+                    f"Round: {round_number}/{max_rounds}"
+                )
+            ),
+        ]
+
+        try:
+            result = self.llm.invoke(evaluator_messages)
+            result_text = getattr(result, "content", result)
+            parsed = self._extract_first_json_object(result_text)
+            if not isinstance(parsed, dict):
+                return _fallback_decision("Completion evaluator returned non-JSON payload")
+
+            complete_value = self._parse_bool_like(parsed.get("is_complete"))
+            is_complete = bool(complete_value) if complete_value is not None else False
+
+            try:
+                confidence = float(parsed.get("confidence", 0.0))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            confidence = max(0.0, min(confidence, 1.0))
+
+            reason = str(parsed.get("reason") or "").strip() or "Completion not confirmed"
+            next_action = (
+                str(parsed.get("next_action") or "").strip()
+                or "Continue autonomously and execute the next best step."
+            )
+
+            # Require moderate confidence to stop; otherwise keep iterating.
+            should_stop = bool(is_complete and confidence >= 0.65)
+            return {
+                "should_stop": should_stop,
+                "confidence": confidence,
+                "reason": reason,
+                "next_action": next_action,
+            }
+        except Exception as eval_error:
+            logger.warning(
+                "Autonomous completion assessment failed: %s",
+                eval_error,
+                extra={"agent_id": str(self.config.agent_id)},
+            )
+            return _fallback_decision("Completion evaluator call failed")
+
     @staticmethod
     def _extract_workspace_paths_from_text(text: Any) -> List[str]:
         """Extract /workspace paths from free-form text/code snippets."""
@@ -1755,9 +1973,6 @@ class BaseAgent:
 
             # Multi-round mode (policy-driven, callback optional for transport).
             if loop_mode == LoopMode.AUTO_MULTI_TURN:
-                file_delivery_guard_required = self._requires_file_delivery(
-                    resolved_task_intent_text
-                )
                 requested_file_formats = self._extract_requested_file_formats(
                     resolved_task_intent_text
                 )
@@ -1777,7 +1992,7 @@ class BaseAgent:
                 max_iterations = max(1, int(resolved_policy.max_rounds or 20))
                 iteration = 0
                 final_output = ""
-                file_delivery_guard_prompted = False
+                conversation_completed = False
 
                 logger.info(
                     f"[TOOL-LOOP] Starting multi-round conversation (max {max_iterations} iterations)",
@@ -2073,110 +2288,80 @@ class BaseAgent:
                             logger.warning(f"[TOOL-LOOP] Tool calls found but none executed")
                             break
                     else:
-                        # No tool calls in this round - this is the final answer
-                        file_delivery_satisfied = self._has_successful_requested_format_call(
-                            tool_calls_made, requested_file_formats
-                        )
-                        if (
-                            file_delivery_guard_required
-                            and iteration < max_iterations
-                            and not file_delivery_satisfied
-                        ):
-                            guard_message = (
-                                "[TOOL-LOOP] File-delivery guard triggered; requesting file save step"
-                                if not file_delivery_guard_prompted
-                                else "[TOOL-LOOP] File-delivery still not satisfied; requesting another save attempt"
-                            )
-                            file_delivery_guard_prompted = True
+                        # No tool calls in this round - use autonomous self-check, do not stop blindly.
+                        if iteration >= max_iterations:
                             logger.info(
-                                guard_message,
+                                "[TOOL-LOOP] Max round reached; accepting current output as final",
+                                extra={"agent_id": str(self.config.agent_id), "round": iteration},
+                            )
+                            messages.append(AIMessage(content=round_output))
+                            final_output = round_output
+                            conversation_completed = True
+                            break
+
+                        completion_decision = self._assess_autonomous_completion(
+                            task_intent_text=resolved_task_intent_text,
+                            latest_output=round_output,
+                            tool_call_records=tool_calls_made,
+                            round_number=iteration,
+                            max_rounds=max_iterations,
+                            requested_file_formats=requested_file_formats,
+                        )
+                        should_stop = bool(completion_decision.get("should_stop"))
+
+                        if iteration < max_iterations and not should_stop:
+                            logger.info(
+                                "[TOOL-LOOP] Autonomous completion check: incomplete, continue iterating",
                                 extra={
                                     "agent_id": str(self.config.agent_id),
                                     "round": iteration,
+                                    "confidence": completion_decision.get("confidence", 0.0),
+                                    "reason": completion_decision.get("reason", ""),
                                 },
                             )
                             self._emit_stream_chunk(
                                 stream_callback=stream_callback,
-                                content=(
-                                    "检测到用户要求文件交付，但尚未成功写入文件；"
-                                    "正在追加一次保存步骤。"
-                                ),
+                                content="任务尚未确认完成，继续自主执行下一步。",
                                 content_type="info",
                             )
                             messages.append(AIMessage(content=round_output))
                             messages.append(
                                 HumanMessage(
-                                    content=self._build_file_delivery_guard_feedback(
-                                        requested_file_formats
+                                    content=self._build_autonomy_continue_feedback(
+                                        completion_decision
                                     )
                                 )
                             )
                             continue
-
-                        latest_failed_record = self._find_latest_failed_tool_record(tool_calls_made)
-                        latest_failed_round = (
-                            self._extract_tool_record_round_number(latest_failed_record)
-                            if latest_failed_record is not None
-                            else 0
-                        )
-                        latest_success_round = self._latest_successful_tool_round(tool_calls_made)
-                        if (
-                            iteration < max_iterations
-                            and latest_failed_record is not None
-                            and latest_failed_round == iteration - 1
-                            and latest_success_round < latest_failed_round
-                        ):
-                            logger.info(
-                                "[TOOL-LOOP] Previous round ended with unresolved tool failure; forcing retry",
-                                extra={
-                                    "agent_id": str(self.config.agent_id),
-                                    "round": iteration,
-                                    "failed_round": latest_failed_round,
-                                    "failed_tool": self._extract_tool_record_name(
-                                        latest_failed_record
-                                    ),
-                                },
-                            )
-                            self._emit_stream_chunk(
-                                stream_callback=stream_callback,
-                                content="上一轮工具执行失败且任务未完成，正在继续尝试修复。",
-                                content_type="info",
-                            )
-                            messages.append(AIMessage(content=round_output))
-                            messages.append(
-                                HumanMessage(
-                                    content=self._build_execution_recovery_guard_feedback(
-                                        latest_failed_record
-                                    )
-                                )
-                            )
-                            continue
-
-                        if file_delivery_guard_required and not file_delivery_satisfied:
-                            logger.warning(
-                                "[TOOL-LOOP] File delivery not fully verified at conversation end",
-                                extra={
-                                    "agent_id": str(self.config.agent_id),
-                                    "round": iteration,
-                                    "requested_formats": sorted(requested_file_formats),
-                                },
-                            )
-                            self._emit_stream_chunk(
-                                stream_callback=stream_callback,
-                                content=(
-                                    "未检测到明确的落盘成功信号。请核对最终文件路径，必要时继续调用工具完成保存。"
-                                ),
-                                content_type="warning",
-                            )
 
                         logger.info(
-                            f"[TOOL-LOOP] No tool calls in round {iteration}, conversation complete",
-                            extra={"agent_id": str(self.config.agent_id)},
+                            "[TOOL-LOOP] Autonomous completion check: task complete, stopping loop",
+                            extra={
+                                "agent_id": str(self.config.agent_id),
+                                "round": iteration,
+                                "confidence": completion_decision.get("confidence", 0.0),
+                            },
                         )
-
                         messages.append(AIMessage(content=round_output))
                         final_output = round_output
+                        conversation_completed = True
                         break
+
+                if not conversation_completed and iteration >= max_iterations:
+                    logger.warning(
+                        "[TOOL-LOOP] Max rounds reached before autonomous completion",
+                        extra={
+                            "agent_id": str(self.config.agent_id),
+                            "rounds": iteration,
+                            "max_rounds": max_iterations,
+                        },
+                    )
+                    self._emit_stream_chunk(
+                        stream_callback=stream_callback,
+                        content=f"\n\n⚠️ 已达到最大对话轮数 ({max_iterations})，任务未确认完成。\n",
+                        content_type="warning",
+                    )
+                    final_output = final_output or "Max rounds reached before completion"
 
                 logger.info(
                     f"[TOOL-LOOP] Conversation completed after {iteration} rounds",
@@ -2197,7 +2382,7 @@ class BaseAgent:
                 )
 
                 return {
-                    "success": True,
+                    "success": conversation_completed,
                     "output": final_output or "Conversation completed",
                     "messages": messages,
                     "tool_calls": tool_calls_made,
@@ -3398,19 +3583,22 @@ class BaseAgent:
         """
         import asyncio
 
-        # Initialize conversation state
-        state = ConversationState(max_rounds=self.config.max_iterations)
+        # Initialize conversation state (policy override first, then agent default)
+        resolved_max_rounds = int(
+            (runtime_policy.max_rounds if runtime_policy else None)
+            or self.config.max_iterations
+            or 20
+        )
+        state = ConversationState(max_rounds=max(1, resolved_max_rounds))
         resolved_task_intent_text = self._resolve_task_intent_text(
             task_description=task_description,
             context=context,
             task_intent_text=task_intent_text,
         )
-        file_delivery_guard_required = self._requires_file_delivery(resolved_task_intent_text)
         requested_file_formats = self._extract_requested_file_formats(resolved_task_intent_text)
         runtime_tools_by_name = self._build_runtime_tool_registry()
         runtime_tools = list(runtime_tools_by_name.values())
         runtime_llm_with_tools = self._build_runtime_llm(runtime_tools_by_name)
-        file_delivery_guard_prompted = False
 
         # Prepare system prompt and initial messages
         user_message = task_description
@@ -3820,106 +4008,61 @@ class BaseAgent:
                     send_round_stats()
                     break
 
-            # 5. No tool calls = final answer
+            # 5. No tool calls -> run autonomous completion check (no hard stop by default)
             if not tool_calls:
-                file_delivery_satisfied = self._has_successful_requested_format_call(
-                    state.tool_calls_made, requested_file_formats
-                )
-                if (
-                    file_delivery_guard_required
-                    and state.round_number < state.max_rounds
-                    and not file_delivery_satisfied
-                ):
-                    guard_message = (
-                        "[RECOVERY] File-delivery guard triggered; requesting file save step"
-                        if not file_delivery_guard_prompted
-                        else "[RECOVERY] File-delivery still not satisfied; requesting another save attempt"
-                    )
-                    file_delivery_guard_prompted = True
+                if state.round_number >= state.max_rounds:
                     logger.info(
-                        guard_message,
+                        "[RECOVERY] Max round reached; accepting current output as final",
+                        extra={"agent_id": str(self.config.agent_id), "round": state.round_number},
+                    )
+                    state.is_terminated = True
+                    state.termination_reason = "final_answer_provided"
+                    send_round_stats()
+                    break
+
+                completion_decision = self._assess_autonomous_completion(
+                    task_intent_text=resolved_task_intent_text,
+                    latest_output=round_output,
+                    tool_call_records=state.tool_calls_made,
+                    round_number=state.round_number,
+                    max_rounds=state.max_rounds,
+                    requested_file_formats=requested_file_formats,
+                )
+                should_stop = bool(completion_decision.get("should_stop"))
+
+                if state.round_number < state.max_rounds and not should_stop:
+                    logger.info(
+                        "[RECOVERY] Autonomous completion check: incomplete, continue iterating",
                         extra={
                             "agent_id": str(self.config.agent_id),
                             "round": state.round_number,
-                            "requested_formats": sorted(requested_file_formats),
+                            "confidence": completion_decision.get("confidence", 0.0),
+                            "reason": completion_decision.get("reason", ""),
                         },
                     )
                     if stream_callback:
                         stream_callback(
                             (
-                                "\n\n📁 检测到用户要求文件交付，但尚未满足目标格式；正在追加一次保存步骤。\n",
+                                "\n\n🔁 当前任务尚未确认完成，继续自主执行下一步。\n",
                                 "info",
                             )
                         )
                     messages.append(AIMessage(content=round_output))
                     messages.append(
                         HumanMessage(
-                            content=self._build_file_delivery_guard_feedback(requested_file_formats)
+                            content=self._build_autonomy_continue_feedback(completion_decision)
                         )
                     )
                     send_round_stats()
                     continue
-
-                latest_failed_record = self._find_latest_failed_tool_record(state.tool_calls_made)
-                latest_failed_round = (
-                    self._extract_tool_record_round_number(latest_failed_record)
-                    if latest_failed_record is not None
-                    else 0
-                )
-                latest_success_round = self._latest_successful_tool_round(state.tool_calls_made)
-                if (
-                    state.round_number < state.max_rounds
-                    and latest_failed_record is not None
-                    and latest_failed_round == state.round_number - 1
-                    and latest_success_round < latest_failed_round
-                ):
-                    logger.info(
-                        "[RECOVERY] Previous round ended with unresolved tool failure; forcing retry",
-                        extra={
-                            "agent_id": str(self.config.agent_id),
-                            "round": state.round_number,
-                            "failed_round": latest_failed_round,
-                            "failed_tool": self._extract_tool_record_name(latest_failed_record),
-                        },
-                    )
-                    if stream_callback:
-                        stream_callback(
-                            (
-                                "\n\n🔁 上一轮工具执行失败且任务未完成，正在继续尝试修复。\n",
-                                "info",
-                            )
-                        )
-                    messages.append(AIMessage(content=round_output))
-                    messages.append(
-                        HumanMessage(
-                            content=self._build_execution_recovery_guard_feedback(
-                                latest_failed_record
-                            )
-                        )
-                    )
-                    send_round_stats()
-                    continue
-
-                if file_delivery_guard_required and not file_delivery_satisfied:
-                    logger.warning(
-                        "[RECOVERY] File delivery not fully verified at conversation end",
-                        extra={
-                            "agent_id": str(self.config.agent_id),
-                            "round": state.round_number,
-                            "requested_formats": sorted(requested_file_formats),
-                        },
-                    )
-                    if stream_callback:
-                        stream_callback(
-                            (
-                                "\n\n⚠️ 未检测到明确的落盘成功信号。请核对最终文件路径，必要时继续调用工具完成保存。\n",
-                                "warning",
-                            )
-                        )
 
                 logger.info(
-                    f"[RECOVERY] No tool calls in round {state.round_number}, conversation complete",
-                    extra={"agent_id": str(self.config.agent_id)},
+                    "[RECOVERY] Autonomous completion check: task complete, stopping loop",
+                    extra={
+                        "agent_id": str(self.config.agent_id),
+                        "round": state.round_number,
+                        "confidence": completion_decision.get("confidence", 0.0),
+                    },
                 )
                 state.is_terminated = True
                 state.termination_reason = "final_answer_provided"
@@ -3991,8 +4134,8 @@ class BaseAgent:
             messages.append(AIMessage(content=round_output))
             messages.append(HumanMessage(content=self._format_tool_results(tool_results)))
 
-        # Handle max rounds reached
-        if state.round_number >= state.max_rounds:
+        # Handle max rounds reached (only when loop exits without an earlier terminal decision)
+        if not state.is_terminated and state.round_number >= state.max_rounds:
             logger.warning(
                 f"[RECOVERY] Max rounds reached ({state.max_rounds})",
                 extra={"agent_id": str(self.config.agent_id)},
@@ -4048,43 +4191,50 @@ class BaseAgent:
         }
 
     def _build_execution_error_suggestions(self, failed_result: ToolResult) -> List[str]:
-        """Generate targeted recovery hints for common tool execution failures."""
+        """Generate generic recovery hints for execution failures."""
         raw_error = failed_result.error or ""
         error_text = raw_error.lower()
 
-        if "apt-get: command not found" in error_text:
+        if "command not found" in error_text:
             return [
-                "Prefer pip for Python packages: run `python3 -m pip install <package>` first",
-                "Do not use apt-get in this runtime unless command availability is confirmed",
-                "After dependency install, retry the original command with minimal changes",
-            ]
-
-        if "pdflatex not found" in error_text:
-            return [
-                "Do not rely on pandoc default pdflatex in this runtime",
-                "Prefer pure-Python PDF generation (fpdf2/reportlab) via code_execution",
-                "If dependencies are missing, install with `python3 -m pip install <package>` first",
+                "Verify command availability in current runtime before retrying",
+                "Prefer runtime-native dependency installation paths (for Python, use pip first)",
+                "Retry the original step after minimal environment adjustments",
             ]
 
         if "modulenotfounderror" in error_text or "no module named" in error_text:
             return [
-                "Install the missing module with pip first (`python3 -m pip install <package>`)",
-                "Retry the same command after installation; avoid unrelated rewrites",
-                "Use pip/pip3 fallback before trying OS-level package managers",
+                "Install missing runtime dependencies first",
+                "Retry the original operation after dependency installation",
+                "Avoid unrelated rewrites until dependency issues are resolved",
             ]
 
-        if "can't open file" in error_text and "noto" in error_text:
+        if "file not found" in error_text or "no such file" in error_text or "can't open file" in error_text:
             return [
-                "Avoid hardcoded system font paths; use fonts available in runtime or bundled with project",
-                "For reportlab Chinese output, prefer built-in CJK strategies before absolute font paths",
-                "Retry PDF generation with a fallback font configuration",
+                "Re-check file paths and ensure required files are created before use",
+                "List workspace files and validate expected input/output locations",
+                "Retry with corrected paths using minimal command changes",
+            ]
+
+        if "permission denied" in error_text:
+            return [
+                "Avoid protected system locations and use workspace-scoped paths",
+                "Adjust operation to the current sandbox permission model",
+                "Retry with least-privilege compatible commands",
+            ]
+
+        if "timeout" in error_text:
+            return [
+                "Reduce task scope per execution step and retry incrementally",
+                "Split heavy operations into smaller deterministic steps",
+                "Re-run the failed step with a tighter, minimal command",
             ]
 
         return [
-            "Check the error message for details",
-            "Verify the arguments are correct",
-            "Try a different approach",
-            "Consider using an alternative tool",
+            "Read the exact error and identify the immediate blocker",
+            "Verify tool arguments, file paths, and environment assumptions",
+            "Apply a minimal fix, then retry the same step",
+            "Only switch approach if the current path is provably blocked",
         ]
 
     def _handle_execution_failures(
