@@ -71,6 +71,7 @@ from agent_framework.inter_agent_communication import (
 )
 from agent_framework.runtime_policy import (
     ExecutionProfile,
+    FileDeliveryGuardMode,
     LoopMode,
     RuntimeExecutionRequest,
     RuntimePolicy,
@@ -128,6 +129,7 @@ __all__ = [
     "get_communicator",
     # Runtime policy
     "ExecutionProfile",
+    "FileDeliveryGuardMode",
     "LoopMode",
     "RuntimePolicy",
     "RuntimeExecutionRequest",

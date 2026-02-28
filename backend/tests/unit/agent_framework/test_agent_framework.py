@@ -29,7 +29,12 @@ from agent_framework.base_agent import (
     ToolResult,
 )
 from agent_framework.capability_matcher import CapabilityMatch, CapabilityMatcher
-from agent_framework.runtime_policy import ExecutionProfile, LoopMode, RuntimePolicy
+from agent_framework.runtime_policy import (
+    ExecutionProfile,
+    FileDeliveryGuardMode,
+    LoopMode,
+    RuntimePolicy,
+)
 from memory_system.memory_interface import MemoryItem, MemoryType
 from memory_system.memory_repository import MemoryRecordData
 
@@ -369,6 +374,8 @@ class TestBaseAgent:
         assert (
             agent._requires_file_delivery("请写一篇福州旅游攻略，使用 markdown 格式输出") is False
         )
+        assert agent._requires_file_delivery("请直接回复，不要保存文件。") is False
+        assert agent._requires_file_delivery("No need to save a file, respond in chat.") is False
 
     def test_requested_file_formats_and_delivery_match(self):
         config = AgentConfig(
@@ -403,6 +410,97 @@ class TestBaseAgent:
             }
         ]
         assert agent._has_successful_requested_format_call(pdf_records, {"pdf"}) is True
+
+    def test_recovery_json_format_reply_does_not_force_file_write(self):
+        """JSON text-format replies should not trigger file-delivery guard without explicit file intent."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.tools = []
+        agent.tools_by_name = {}
+
+        stream_call_count = {"count": 0}
+
+        def _fake_stream(_messages):
+            stream_call_count["count"] += 1
+            if stream_call_count["count"] > 1:
+                raise AssertionError("unexpected extra round")
+            yield SimpleNamespace(
+                content="已完成分析。按 JSON 格式字段返回：score=96，risk_level=low。",
+                additional_kwargs={},
+            )
+
+        agent.llm = Mock()
+        agent.llm.stream = _fake_stream
+        agent.llm.invoke = Mock(side_effect=AssertionError("llm.invoke should not be called"))
+
+        result = agent.execute_task(
+            task_description="请分析这组数据，并以 JSON 格式直接回复，不要保存文件。",
+            stream_callback=lambda *_args, **_kwargs: None,
+        )
+
+        assert result["success"] is True
+        assert stream_call_count["count"] == 1
+        assert "score=96" in result["output"]
+
+    def test_assess_autonomous_completion_file_guard_soft_mode_advises_only(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        decision = agent._assess_autonomous_completion(
+            task_intent_text="写一篇攻略并交付 md 文件",
+            latest_output="这是攻略正文。",
+            tool_call_records=[],
+            round_number=1,
+            max_rounds=5,
+            file_delivery_required=True,
+            file_delivery_guard_mode=FileDeliveryGuardMode.SOFT,
+            requested_file_formats={"md"},
+            finish_reason="",
+        )
+
+        assert decision["should_stop"] is True
+        assert "advisory_message" in decision
+        assert "soft" in str(decision.get("reason", "")).lower()
+
+    def test_assess_autonomous_completion_file_guard_strict_forces_followup(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        decision = agent._assess_autonomous_completion(
+            task_intent_text="写一篇攻略并交付 md 文件",
+            latest_output="这是攻略正文。",
+            tool_call_records=[],
+            round_number=1,
+            max_rounds=5,
+            file_delivery_required=True,
+            file_delivery_guard_mode=FileDeliveryGuardMode.STRICT,
+            requested_file_formats={"md"},
+            finish_reason="",
+        )
+
+        assert decision["should_stop"] is False
+        assert "file deliverable" in str(decision.get("reason", "")).lower()
 
     def test_runtime_tool_registry_keeps_file_tools_available(self):
         config = AgentConfig(
@@ -660,9 +758,17 @@ class TestBaseAgent:
                 ),
             ]
         )
+        strict_policy = RuntimePolicy(
+            profile=ExecutionProfile.DEBUG_CHAT,
+            loop_mode=LoopMode.RECOVERY_MULTI_TURN,
+            max_rounds=20,
+            enable_error_recovery=True,
+            file_delivery_guard_mode=FileDeliveryGuardMode.STRICT,
+        )
 
         result = agent.execute_task(
             task_description="写一篇福州旅游攻略，整理成md文档给我",
+            runtime_policy=strict_policy,
             stream_callback=lambda *_args, **_kwargs: None,
         )
 

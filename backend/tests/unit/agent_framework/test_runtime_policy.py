@@ -2,6 +2,7 @@
 
 from agent_framework.runtime_policy import (
     ExecutionProfile,
+    FileDeliveryGuardMode,
     LoopMode,
     RuntimePolicyRegistry,
     parse_execution_profile,
@@ -20,15 +21,30 @@ def test_registry_resolves_debug_chat_to_recovery_mode():
     assert policy.profile == ExecutionProfile.DEBUG_CHAT
     assert policy.loop_mode == LoopMode.RECOVERY_MULTI_TURN
     assert policy.stream_output is True
+    assert policy.file_delivery_guard_mode == FileDeliveryGuardMode.SOFT
+
+
+def test_registry_resolves_mission_task_to_strict_file_guard():
+    registry = RuntimePolicyRegistry()
+    policy = registry.resolve(ExecutionProfile.MISSION_TASK)
+
+    assert policy.profile == ExecutionProfile.MISSION_TASK
+    assert policy.file_delivery_guard_mode == FileDeliveryGuardMode.STRICT
 
 
 def test_registry_applies_safe_override_fields():
     registry = RuntimePolicyRegistry()
     policy = registry.resolve(
         ExecutionProfile.MISSION_TASK,
-        overrides={"loop_mode": "single_turn", "max_rounds": 1, "unsupported": "ignored"},
+        overrides={
+            "loop_mode": "single_turn",
+            "max_rounds": 1,
+            "file_delivery_guard_mode": "strict",
+            "unsupported": "ignored",
+        },
     )
 
     assert policy.profile == ExecutionProfile.MISSION_TASK
     assert policy.loop_mode == LoopMode.SINGLE_TURN
     assert policy.max_rounds == 1
+    assert policy.file_delivery_guard_mode == FileDeliveryGuardMode.STRICT

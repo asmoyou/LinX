@@ -27,6 +27,7 @@ from langgraph.graph import MessagesState, StateGraph, START, END
 from agent_framework.code_block_executor import CodeBlockExecutor, get_code_block_executor
 from agent_framework.runtime_policy import (
     ExecutionProfile,
+    FileDeliveryGuardMode,
     LoopMode,
     RuntimePolicy,
     get_runtime_policy_registry,
@@ -117,6 +118,16 @@ _FILE_DELIVERY_REQUEST_PATTERN = re.compile(
     r"(?:excel|xls|xlsx|表格|spreadsheet|pdf|md|markdown|txt|json|csv|yaml|yml|docx?|xlsx?|pptx?|文件|文档|file|document).{0,16}"
     r"(?:给我|给出|提供|交付|提交|发我|send me|give me|provide|deliver|submit)"
     r")",
+    re.IGNORECASE,
+)
+_FILE_DELIVERY_NEGATION_PATTERN = re.compile(
+    r"(?:不要|别|无需|不用|不必|不需要).{0,6}"
+    r"(?:保存|存为|存成|写入|生成|导出|输出|交付|提交|转换|转成|转为|文件|文档|pdf|md|markdown|txt|json|csv|yaml|yml|docx?|xlsx?|pptx?)"
+    r"|(?:直接|仅|只).{0,8}(?:回复|返回|输出).{0,8}(?:不要|别|无需|不用|不必|不需要).{0,8}(?:文件|文档)"
+    r"|(?:do\s*not|don't|no\s+need\s+to|without).{0,24}"
+    r"(?:save|export|generate|write).{0,12}(?:file|document)?"
+    r"|(?:reply|respond).{0,12}(?:directly|in\s+chat).{0,20}"
+    r"(?:without|do\s*not|don't).{0,20}(?:file|save|export)",
     re.IGNORECASE,
 )
 _REQUESTED_FORMAT_PATTERN = re.compile(
@@ -875,6 +886,9 @@ class BaseAgent:
         if not text:
             return False
 
+        if _FILE_DELIVERY_NEGATION_PATTERN.search(text):
+            return False
+
         lowered = text.lower()
         has_action = any(keyword in lowered for keyword in _FILE_DELIVERY_ACTION_KEYWORDS)
         has_target = any(keyword in lowered for keyword in _FILE_DELIVERY_TARGET_KEYWORDS)
@@ -885,6 +899,23 @@ class BaseAgent:
             return True
 
         return bool(_FILE_DELIVERY_REQUEST_PATTERN.search(text))
+
+    @staticmethod
+    def _resolve_file_delivery_guard_mode(
+        runtime_policy: Optional[RuntimePolicy],
+    ) -> FileDeliveryGuardMode:
+        """Resolve file-delivery guard mode from runtime policy with safe fallback."""
+        raw_mode = (
+            getattr(runtime_policy, "file_delivery_guard_mode", FileDeliveryGuardMode.SOFT)
+            if runtime_policy is not None
+            else FileDeliveryGuardMode.SOFT
+        )
+        if isinstance(raw_mode, FileDeliveryGuardMode):
+            return raw_mode
+        try:
+            return FileDeliveryGuardMode(str(raw_mode).strip().lower())
+        except ValueError:
+            return FileDeliveryGuardMode.SOFT
 
     @staticmethod
     def _normalize_requested_file_format(format_name: str) -> str:
@@ -1090,6 +1121,8 @@ class BaseAgent:
         tool_call_records: List[Any],
         round_number: int,
         max_rounds: int,
+        file_delivery_required: bool = False,
+        file_delivery_guard_mode: FileDeliveryGuardMode = FileDeliveryGuardMode.SOFT,
         requested_file_formats: Optional[Set[str]] = None,
         finish_reason: str = "",
     ) -> Dict[str, Any]:
@@ -1133,16 +1166,41 @@ class BaseAgent:
                 ),
             }
 
-        if requested_file_formats and not self._has_successful_requested_format_call(
-            tool_call_records, requested_file_formats
-        ):
-            return {
-                "should_stop": False,
-                "confidence": 0.1,
-                "reason": "file deliverable not yet verified",
-                "next_action": "Continue and complete requested file delivery.",
-                "feedback_prompt": self._build_file_delivery_guard_feedback(requested_file_formats),
-            }
+        if file_delivery_required:
+            missing_file_delivery = False
+            if requested_file_formats and not self._has_successful_requested_format_call(
+                tool_call_records, requested_file_formats
+            ):
+                missing_file_delivery = True
+
+            if not requested_file_formats and not self._has_successful_file_write_call(
+                tool_call_records
+            ):
+                missing_file_delivery = True
+
+            if missing_file_delivery:
+                if file_delivery_guard_mode == FileDeliveryGuardMode.STRICT:
+                    return {
+                        "should_stop": False,
+                        "confidence": 0.1,
+                        "reason": "file deliverable not yet verified",
+                        "next_action": "Continue and complete requested file delivery.",
+                        "feedback_prompt": self._build_file_delivery_guard_feedback(
+                            requested_file_formats
+                        ),
+                    }
+
+                if file_delivery_guard_mode == FileDeliveryGuardMode.SOFT:
+                    return {
+                        "should_stop": True,
+                        "confidence": 0.65,
+                        "reason": "file deliverable not yet verified (soft mode advisory)",
+                        "next_action": "",
+                        "feedback_prompt": "",
+                        "advisory_message": self._build_file_delivery_soft_advisory(
+                            requested_file_formats
+                        ),
+                    }
 
         latest_failed_record = self._find_latest_failed_tool_record(tool_call_records)
         if latest_failed_record is not None:
@@ -1348,6 +1406,27 @@ class BaseAgent:
             + "\n"
             + f"建议路径：{suggested_path}\n"
             + "完成后仅简要回复保存路径与状态，不要只输出正文。"
+        )
+
+    def _build_file_delivery_soft_advisory(
+        self, requested_formats: Optional[Set[str]] = None
+    ) -> str:
+        """Build lightweight advisory when soft guard detects missing file delivery."""
+        normalized_formats = {
+            self._normalize_requested_file_format(fmt)
+            for fmt in (requested_formats or set())
+            if fmt
+        }
+        format_hint = (
+            f"目标格式: {', '.join(sorted(normalized_formats))}。"
+            if normalized_formats
+            else "目标格式未明确。"
+        )
+        return (
+            "检测到请求可能包含文件交付，但尚未验证已落盘。"
+            + format_hint
+            + "当前策略为 soft：不会强制继续轮次。"
+            + "若你确实需要文件，请明确要求“保存为文件”并指定格式或路径。"
         )
 
     def _build_execution_recovery_guard_feedback(self, failed_record: Any) -> str:
@@ -1633,6 +1712,7 @@ class BaseAgent:
             max_rounds=int(self.config.max_iterations or 20),
             enable_error_recovery=bool(self.config.enable_error_recovery),
             stream_output=bool(stream_callback),
+            file_delivery_guard_mode=FileDeliveryGuardMode.SOFT,
         )
 
     @staticmethod
@@ -1959,8 +2039,15 @@ class BaseAgent:
 
             # Multi-round mode (policy-driven, callback optional for transport).
             if loop_mode == LoopMode.AUTO_MULTI_TURN:
-                requested_file_formats = self._extract_requested_file_formats(
-                    resolved_task_intent_text
+                file_delivery_guard_mode = self._resolve_file_delivery_guard_mode(resolved_policy)
+                file_delivery_required = (
+                    file_delivery_guard_mode != FileDeliveryGuardMode.OFF
+                    and self._requires_file_delivery(resolved_task_intent_text)
+                )
+                requested_file_formats = (
+                    self._extract_requested_file_formats(resolved_task_intent_text)
+                    if file_delivery_required
+                    else set()
                 )
                 runtime_tools_by_name = self._build_runtime_tool_registry()
                 runtime_tools = list(runtime_tools_by_name.values())
@@ -2301,6 +2388,8 @@ class BaseAgent:
                             tool_call_records=tool_calls_made,
                             round_number=iteration,
                             max_rounds=max_iterations,
+                            file_delivery_required=file_delivery_required,
+                            file_delivery_guard_mode=file_delivery_guard_mode,
                             requested_file_formats=requested_file_formats,
                             finish_reason=round_finish_reason,
                         )
@@ -2343,6 +2432,24 @@ class BaseAgent:
                                 "finish_reason": round_finish_reason or "unknown",
                             },
                         )
+                        advisory_message = str(
+                            completion_decision.get("advisory_message") or ""
+                        ).strip()
+                        if advisory_message:
+                            logger.warning(
+                                "[TOOL-LOOP] File-delivery soft advisory",
+                                extra={
+                                    "agent_id": str(self.config.agent_id),
+                                    "round": iteration,
+                                    "file_delivery_guard_mode": file_delivery_guard_mode.value,
+                                    "advisory_message": advisory_message,
+                                },
+                            )
+                            self._emit_stream_chunk(
+                                stream_callback=stream_callback,
+                                content=f"\n\n⚠️ {advisory_message}\n",
+                                content_type="warning",
+                            )
                         messages.append(AIMessage(content=round_output))
                         final_output = round_output
                         conversation_completed = True
@@ -2432,6 +2539,7 @@ class BaseAgent:
                             include_context=resolved_policy.include_context,
                             include_memory=resolved_policy.include_memory,
                             stream_output=resolved_policy.stream_output,
+                            file_delivery_guard_mode=resolved_policy.file_delivery_guard_mode,
                         )
                         self.status = AgentStatus.ACTIVE
                         return self.execute_task(
@@ -3592,7 +3700,16 @@ class BaseAgent:
             context=context,
             task_intent_text=task_intent_text,
         )
-        requested_file_formats = self._extract_requested_file_formats(resolved_task_intent_text)
+        file_delivery_guard_mode = self._resolve_file_delivery_guard_mode(runtime_policy)
+        file_delivery_required = (
+            file_delivery_guard_mode != FileDeliveryGuardMode.OFF
+            and self._requires_file_delivery(resolved_task_intent_text)
+        )
+        requested_file_formats = (
+            self._extract_requested_file_formats(resolved_task_intent_text)
+            if file_delivery_required
+            else set()
+        )
         runtime_tools_by_name = self._build_runtime_tool_registry()
         runtime_tools = list(runtime_tools_by_name.values())
         runtime_llm_with_tools = self._build_runtime_llm(runtime_tools_by_name)
@@ -3656,6 +3773,7 @@ class BaseAgent:
                     if runtime_policy
                     else LoopMode.RECOVERY_MULTI_TURN.value
                 ),
+                "file_delivery_guard_mode": file_delivery_guard_mode.value,
             },
         )
 
@@ -4034,6 +4152,8 @@ class BaseAgent:
                     tool_call_records=state.tool_calls_made,
                     round_number=state.round_number,
                     max_rounds=state.max_rounds,
+                    file_delivery_required=file_delivery_required,
+                    file_delivery_guard_mode=file_delivery_guard_mode,
                     requested_file_formats=requested_file_formats,
                     finish_reason=round_finish_reason,
                 )
@@ -4079,6 +4199,19 @@ class BaseAgent:
                         "finish_reason": round_finish_reason or "unknown",
                     },
                 )
+                advisory_message = str(completion_decision.get("advisory_message") or "").strip()
+                if advisory_message:
+                    logger.warning(
+                        "[RECOVERY] File-delivery soft advisory",
+                        extra={
+                            "agent_id": str(self.config.agent_id),
+                            "round": state.round_number,
+                            "file_delivery_guard_mode": file_delivery_guard_mode.value,
+                            "advisory_message": advisory_message,
+                        },
+                    )
+                    if stream_callback:
+                        stream_callback((f"\n\n⚠️ {advisory_message}\n", "warning"))
                 state.is_terminated = True
                 state.termination_reason = "final_answer_provided"
                 send_round_stats()

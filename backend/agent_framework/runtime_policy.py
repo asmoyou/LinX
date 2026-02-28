@@ -16,6 +16,14 @@ class LoopMode(str, Enum):
     RECOVERY_MULTI_TURN = "recovery_multi_turn"
 
 
+class FileDeliveryGuardMode(str, Enum):
+    """File deliverable guard strictness for autonomous loops."""
+
+    OFF = "off"
+    SOFT = "soft"
+    STRICT = "strict"
+
+
 class ExecutionProfile(str, Enum):
     """High-level runtime profile for agent execution."""
 
@@ -38,6 +46,7 @@ class RuntimePolicy:
     include_context: bool = True
     include_memory: bool = True
     stream_output: bool = False
+    file_delivery_guard_mode: FileDeliveryGuardMode = FileDeliveryGuardMode.SOFT
 
 
 @dataclass(frozen=True)
@@ -74,6 +83,7 @@ class RuntimePolicyRegistry:
                 include_context=True,
                 include_memory=True,
                 stream_output=True,
+                file_delivery_guard_mode=FileDeliveryGuardMode.SOFT,
             ),
             ExecutionProfile.MISSION_TASK: RuntimePolicy(
                 profile=ExecutionProfile.MISSION_TASK,
@@ -85,6 +95,7 @@ class RuntimePolicyRegistry:
                 include_context=True,
                 include_memory=True,
                 stream_output=False,
+                file_delivery_guard_mode=FileDeliveryGuardMode.STRICT,
             ),
             ExecutionProfile.MISSION_CONTROL: RuntimePolicy(
                 profile=ExecutionProfile.MISSION_CONTROL,
@@ -96,6 +107,7 @@ class RuntimePolicyRegistry:
                 include_context=True,
                 include_memory=True,
                 stream_output=False,
+                file_delivery_guard_mode=FileDeliveryGuardMode.SOFT,
             ),
             ExecutionProfile.LEGACY: RuntimePolicy(
                 profile=ExecutionProfile.LEGACY,
@@ -107,6 +119,7 @@ class RuntimePolicyRegistry:
                 include_context=True,
                 include_memory=True,
                 stream_output=False,
+                file_delivery_guard_mode=FileDeliveryGuardMode.SOFT,
             ),
         }
 
@@ -131,12 +144,17 @@ class RuntimePolicyRegistry:
             "max_retries",
             "timeout_seconds",
             "stream_output",
+            "file_delivery_guard_mode",
         ):
             if key in overrides:
                 safe[key] = overrides[key]
 
         if "loop_mode" in safe:
             safe["loop_mode"] = LoopMode(str(safe["loop_mode"]))
+        if "file_delivery_guard_mode" in safe:
+            safe["file_delivery_guard_mode"] = FileDeliveryGuardMode(
+                str(safe["file_delivery_guard_mode"]).strip().lower()
+            )
 
         return RuntimePolicy(
             profile=base.profile,
@@ -150,6 +168,9 @@ class RuntimePolicyRegistry:
             include_context=base.include_context,
             include_memory=base.include_memory,
             stream_output=bool(safe.get("stream_output", base.stream_output)),
+            file_delivery_guard_mode=safe.get(
+                "file_delivery_guard_mode", base.file_delivery_guard_mode
+            ),
         )
 
 
