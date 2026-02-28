@@ -5293,6 +5293,7 @@ async def test_agent(
                     exec_thread.start()
 
                     # Stream tokens as they arrive
+                    segment_output_completed = False
                     while True:
                         try:
                             # Wait for token with timeout without blocking the event loop
@@ -5300,6 +5301,7 @@ async def test_agent(
 
                             if token_data is None:
                                 # Execution complete
+                                segment_output_completed = True
                                 break
 
                             # token_data can be either a string (old format) or tuple (token, type)
@@ -5338,6 +5340,18 @@ async def test_agent(
                                 break
                             # No token yet, continue waiting
                             continue
+
+                    if segment_output_completed:
+                        yield (
+                            "data: "
+                            + json.dumps(
+                                {
+                                    "type": "info",
+                                    "content": "模型输出已结束，正在进行结果收尾与状态校验...",
+                                }
+                            )
+                            + "\n\n"
+                        )
 
                     # Wait for thread to complete (should already be done)
                     await asyncio.to_thread(exec_thread.join, 5)

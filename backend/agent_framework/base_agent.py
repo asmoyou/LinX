@@ -1015,44 +1015,59 @@ class BaseAgent:
                 lines.append(f"- round={round_number} tool={tool_name} status={status}")
         return "\n".join(lines)
 
-    def _extract_first_json_object(self, text: Any) -> Optional[Dict[str, Any]]:
-        """Extract first JSON object from arbitrary text payload."""
-        raw = str(text or "").strip()
-        if not raw:
-            return None
-
-        # Direct JSON first.
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return parsed
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-        # JSON fenced blocks / inline objects.
-        for candidate, _, _ in self._extract_balanced_json_objects(raw):
-            try:
-                parsed = json.loads(candidate)
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if isinstance(parsed, dict):
-                return parsed
-        return None
-
     @staticmethod
-    def _parse_bool_like(value: Any) -> Optional[bool]:
-        """Parse bool-like values from model outputs."""
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            lowered = value.strip().lower()
-            if lowered in {"true", "yes", "y", "1", "complete", "completed"}:
-                return True
-            if lowered in {"false", "no", "n", "0", "incomplete", "not_complete"}:
-                return False
-        return None
+    def _normalize_finish_reason(value: Any) -> str:
+        """Normalize heterogeneous provider finish/stop reason labels."""
+        normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if not normalized:
+            return ""
+
+        aliases = {
+            "end_turn": "stop",
+            "eot": "stop",
+            "tool_call": "tool_calls",
+            "function_call": "tool_calls",
+            "max_tokens": "length",
+            "token_limit": "length",
+        }
+        return aliases.get(normalized, normalized)
+
+    def _extract_finish_reason(self, payload: Any) -> str:
+        """Extract normalized finish reason from model response/chunk metadata."""
+        if payload is None:
+            return ""
+
+        candidate_dicts: List[Dict[str, Any]] = []
+
+        if isinstance(payload, dict):
+            candidate_dicts.append(payload)
+
+        for attr in ("response_metadata", "additional_kwargs", "generation_info"):
+            value = getattr(payload, attr, None)
+            if isinstance(value, dict):
+                candidate_dicts.append(value)
+
+        def _walk(node: Dict[str, Any], depth: int = 0) -> str:
+            if depth > 2:
+                return ""
+            for key, value in node.items():
+                lowered_key = str(key).strip().lower()
+                if lowered_key in {"finish_reason", "stop_reason", "finishreason", "stopreason"}:
+                    normalized = self._normalize_finish_reason(value)
+                    if normalized:
+                        return normalized
+                if isinstance(value, dict):
+                    found = _walk(value, depth + 1)
+                    if found:
+                        return found
+            return ""
+
+        for node in candidate_dicts:
+            found_reason = _walk(node)
+            if found_reason:
+                return found_reason
+
+        return ""
 
     def _build_autonomy_continue_feedback(self, decision: Dict[str, Any]) -> str:
         """Build generic follow-up instruction when autonomous self-check says incomplete."""
@@ -1076,141 +1091,112 @@ class BaseAgent:
         round_number: int,
         max_rounds: int,
         requested_file_formats: Optional[Set[str]] = None,
+        finish_reason: str = "",
     ) -> Dict[str, Any]:
-        """Use model self-reflection to decide whether task is truly complete."""
-        requested_formats = sorted(requested_file_formats or set())
-        requested_formats_text = ", ".join(requested_formats) if requested_formats else "none"
+        """Deterministic state-machine decision for autonomous continue vs stop."""
+        _ = task_intent_text  # Keep API stable while using output/tools as primary signals.
+        normalized_finish_reason = self._normalize_finish_reason(finish_reason)
 
-        def _fallback_decision(reason: str) -> Dict[str, Any]:
-            """Fallback when evaluator output is unavailable."""
-            if requested_file_formats and not self._has_successful_requested_format_call(
-                tool_call_records, requested_file_formats
-            ):
-                return {
-                    "should_stop": False,
-                    "confidence": 0.25,
-                    "reason": f"{reason}; file deliverable not yet verified",
-                    "next_action": "Continue and finish required file delivery.",
-                }
-
-            latest_failed_record = self._find_latest_failed_tool_record(tool_call_records)
-            if latest_failed_record is not None:
-                failed_round = self._extract_tool_record_round_number(latest_failed_record)
-                latest_success_round = self._latest_successful_tool_round(tool_call_records)
-                if latest_success_round < failed_round:
-                    return {
-                        "should_stop": False,
-                        "confidence": 0.25,
-                        "reason": f"{reason}; unresolved tool failure still exists",
-                        "next_action": "Continue and resolve the failed step.",
-                    }
-
-            lowered_output = str(latest_output or "").strip().lower()
-            if not lowered_output:
-                return {
-                    "should_stop": False,
-                    "confidence": 0.2,
-                    "reason": f"{reason}; latest output is empty",
-                    "next_action": "Continue with a concrete next step.",
-                }
-
-            incomplete_markers = (
-                "无法",
-                "不能",
-                "未完成",
-                "继续",
-                "失败",
-                "i can't",
-                "cannot",
-                "unable",
-                "not complete",
-                "need to",
-            )
-            if any(marker in lowered_output for marker in incomplete_markers):
-                return {
-                    "should_stop": False,
-                    "confidence": 0.3,
-                    "reason": f"{reason}; latest output indicates incomplete state",
-                    "next_action": "Continue autonomous execution.",
-                }
-
+        # Hard cap: stop when max rounds reached.
+        if round_number >= max_rounds:
             return {
                 "should_stop": True,
-                "confidence": 0.55,
-                "reason": f"{reason}; fallback judged output as complete",
+                "confidence": 0.99,
+                "reason": "max rounds reached",
                 "next_action": "",
+                "feedback_prompt": "",
             }
 
-        if not self.llm or not hasattr(self.llm, "invoke"):
-            return _fallback_decision("Completion evaluator unavailable")
-
-        objective = self._truncate_text_for_context(str(task_intent_text or ""), 900)
-        output_preview = self._truncate_text_for_context(str(latest_output or ""), 1200)
-        tool_activity = self._truncate_text_for_context(
-            self._summarize_recent_tool_activity(tool_call_records, limit=8),
-            900,
-        )
-
-        evaluator_messages = [
-            SystemMessage(
-                content=(
-                    "You are a strict task-completion evaluator. "
-                    "Return JSON only: "
-                    '{"is_complete": boolean, "confidence": number, "reason": string, "next_action": string}. '
-                    "If uncertain, set is_complete=false."
-                )
-            ),
-            HumanMessage(
-                content=(
-                    "User objective:\n"
-                    f"{objective}\n\n"
-                    "Latest assistant output:\n"
-                    f"{output_preview}\n\n"
-                    "Recent tool activity:\n"
-                    f"{tool_activity}\n\n"
-                    f"Requested file formats: {requested_formats_text}\n"
-                    f"Round: {round_number}/{max_rounds}"
-                )
-            ),
-        ]
-
-        try:
-            result = self.llm.invoke(evaluator_messages)
-            result_text = getattr(result, "content", result)
-            parsed = self._extract_first_json_object(result_text)
-            if not isinstance(parsed, dict):
-                return _fallback_decision("Completion evaluator returned non-JSON payload")
-
-            complete_value = self._parse_bool_like(parsed.get("is_complete"))
-            is_complete = bool(complete_value) if complete_value is not None else False
-
-            try:
-                confidence = float(parsed.get("confidence", 0.0))
-            except (TypeError, ValueError):
-                confidence = 0.0
-            confidence = max(0.0, min(confidence, 1.0))
-
-            reason = str(parsed.get("reason") or "").strip() or "Completion not confirmed"
-            next_action = (
-                str(parsed.get("next_action") or "").strip()
-                or "Continue autonomously and execute the next best step."
-            )
-
-            # Require moderate confidence to stop; otherwise keep iterating.
-            should_stop = bool(is_complete and confidence >= 0.65)
+        # Provider hinted truncation: continue to let model finish.
+        if normalized_finish_reason == "length":
             return {
-                "should_stop": should_stop,
-                "confidence": confidence,
-                "reason": reason,
-                "next_action": next_action,
+                "should_stop": False,
+                "confidence": 0.05,
+                "reason": "model output reached token limit",
+                "next_action": "Continue from previous partial answer and finish remaining work.",
+                "feedback_prompt": (
+                    "上一轮输出因长度限制被截断。请直接续写并完成剩余步骤，"
+                    "必要时继续调用工具，直到任务完成再停止。"
+                ),
             }
-        except Exception as eval_error:
-            logger.warning(
-                "Autonomous completion assessment failed: %s",
-                eval_error,
-                extra={"agent_id": str(self.config.agent_id)},
-            )
-            return _fallback_decision("Completion evaluator call failed")
+
+        # Provider hinted tool-calling turn but parser got no executable call in this branch.
+        if normalized_finish_reason == "tool_calls":
+            return {
+                "should_stop": False,
+                "confidence": 0.05,
+                "reason": "model signaled tool call turn",
+                "next_action": "Continue by emitting valid tool calls or proceed with executable next step.",
+                "feedback_prompt": (
+                    "你上一轮进入了工具调用回合，但当前未形成可执行的工具调用。"
+                    "请继续并输出可执行的工具调用，或立即执行下一步。"
+                ),
+            }
+
+        if requested_file_formats and not self._has_successful_requested_format_call(
+            tool_call_records, requested_file_formats
+        ):
+            return {
+                "should_stop": False,
+                "confidence": 0.1,
+                "reason": "file deliverable not yet verified",
+                "next_action": "Continue and complete requested file delivery.",
+                "feedback_prompt": self._build_file_delivery_guard_feedback(requested_file_formats),
+            }
+
+        latest_failed_record = self._find_latest_failed_tool_record(tool_call_records)
+        if latest_failed_record is not None:
+            failed_round = self._extract_tool_record_round_number(latest_failed_record)
+            latest_success_round = self._latest_successful_tool_round(tool_call_records)
+            if latest_success_round < failed_round:
+                return {
+                    "should_stop": False,
+                    "confidence": 0.1,
+                    "reason": "unresolved tool failure still exists",
+                    "next_action": "Continue and resolve the failed step before final answer.",
+                    "feedback_prompt": self._build_execution_recovery_guard_feedback(
+                        latest_failed_record
+                    ),
+                }
+
+        lowered_output = str(latest_output or "").strip().lower()
+        if not lowered_output:
+            return {
+                "should_stop": False,
+                "confidence": 0.05,
+                "reason": "latest output is empty",
+                "next_action": "Continue with a concrete executable step.",
+                "feedback_prompt": "",
+            }
+
+        incomplete_markers = (
+            "无法",
+            "不能",
+            "未完成",
+            "继续",
+            "失败",
+            "i can't",
+            "cannot",
+            "unable",
+            "not complete",
+            "need to",
+        )
+        if any(marker in lowered_output for marker in incomplete_markers):
+            return {
+                "should_stop": False,
+                "confidence": 0.2,
+                "reason": "latest output indicates incomplete state",
+                "next_action": "Continue autonomous execution until deliverables are complete.",
+                "feedback_prompt": "",
+            }
+
+        return {
+            "should_stop": True,
+            "confidence": 0.85,
+            "reason": "no pending execution signals detected",
+            "next_action": "",
+            "feedback_prompt": "",
+        }
 
     @staticmethod
     def _extract_workspace_paths_from_text(text: Any) -> List[str]:
@@ -2013,6 +1999,7 @@ class BaseAgent:
                     # Stream LLM response for this round
                     round_output = ""
                     round_thinking = ""
+                    round_finish_reason = ""
                     chunk_count = 0
                     streamed_content_chars = 0
                     stream_failed = False
@@ -2026,6 +2013,8 @@ class BaseAgent:
                             merged_stream_message = self._merge_stream_message(
                                 merged_stream_message, chunk
                             )
+                            if not round_finish_reason:
+                                round_finish_reason = self._extract_finish_reason(chunk)
                             if hasattr(chunk, "content") and chunk.content:
                                 # Check for content_type in additional_kwargs
                                 content_type = "content"  # default
@@ -2053,6 +2042,8 @@ class BaseAgent:
                             merged_stream_message,
                             available_tools=runtime_tools_by_name,
                         )
+                        if not round_finish_reason:
+                            round_finish_reason = self._extract_finish_reason(merged_stream_message)
 
                         # If no chunks were received, mark streaming as failed
                         if chunk_count == 0 and not native_tool_calls:
@@ -2096,6 +2087,8 @@ class BaseAgent:
                             result,
                             available_tools=runtime_tools_by_name,
                         )
+                        if not round_finish_reason:
+                            round_finish_reason = self._extract_finish_reason(result)
 
                         if not round_output:
                             if native_tool_calls:
@@ -2116,7 +2109,10 @@ class BaseAgent:
                         )
 
                     logger.info(
-                        f"[TOOL-LOOP] Round {iteration} LLM output: thinking={len(round_thinking)} chars, content={len(round_output)} chars",
+                        f"[TOOL-LOOP] Round {iteration} LLM output: "
+                        f"thinking={len(round_thinking)} chars, "
+                        f"content={len(round_output)} chars, "
+                        f"finish_reason={round_finish_reason or 'unknown'}",
                         extra={"agent_id": str(self.config.agent_id)},
                     )
 
@@ -2288,7 +2284,7 @@ class BaseAgent:
                             logger.warning(f"[TOOL-LOOP] Tool calls found but none executed")
                             break
                     else:
-                        # No tool calls in this round - use autonomous self-check, do not stop blindly.
+                        # No tool calls in this round - use deterministic state machine.
                         if iteration >= max_iterations:
                             logger.info(
                                 "[TOOL-LOOP] Max round reached; accepting current output as final",
@@ -2306,17 +2302,19 @@ class BaseAgent:
                             round_number=iteration,
                             max_rounds=max_iterations,
                             requested_file_formats=requested_file_formats,
+                            finish_reason=round_finish_reason,
                         )
                         should_stop = bool(completion_decision.get("should_stop"))
 
                         if iteration < max_iterations and not should_stop:
                             logger.info(
-                                "[TOOL-LOOP] Autonomous completion check: incomplete, continue iterating",
+                                "[TOOL-LOOP] State-machine check: incomplete, continue iterating",
                                 extra={
                                     "agent_id": str(self.config.agent_id),
                                     "round": iteration,
                                     "confidence": completion_decision.get("confidence", 0.0),
                                     "reason": completion_decision.get("reason", ""),
+                                    "finish_reason": round_finish_reason or "unknown",
                                 },
                             )
                             self._emit_stream_chunk(
@@ -2325,21 +2323,24 @@ class BaseAgent:
                                 content_type="info",
                             )
                             messages.append(AIMessage(content=round_output))
+                            continue_feedback = (
+                                str(completion_decision.get("feedback_prompt") or "").strip()
+                                or self._build_autonomy_continue_feedback(completion_decision)
+                            )
                             messages.append(
                                 HumanMessage(
-                                    content=self._build_autonomy_continue_feedback(
-                                        completion_decision
-                                    )
+                                    content=continue_feedback
                                 )
                             )
                             continue
 
                         logger.info(
-                            "[TOOL-LOOP] Autonomous completion check: task complete, stopping loop",
+                            "[TOOL-LOOP] State-machine check: task complete, stopping loop",
                             extra={
                                 "agent_id": str(self.config.agent_id),
                                 "round": iteration,
                                 "confidence": completion_decision.get("confidence", 0.0),
+                                "finish_reason": round_finish_reason or "unknown",
                             },
                         )
                         messages.append(AIMessage(content=round_output))
@@ -3708,6 +3709,7 @@ class BaseAgent:
             # 1. Get LLM response
             round_output = ""
             round_thinking = ""
+            round_finish_reason = ""
             round_usage = None  # Track usage from LLM response
             streamed_content_chars = 0
             used_non_stream_fallback = False
@@ -3718,6 +3720,8 @@ class BaseAgent:
             try:
                 for chunk in llm_for_round.stream(messages):
                     merged_stream_message = self._merge_stream_message(merged_stream_message, chunk)
+                    if not round_finish_reason:
+                        round_finish_reason = self._extract_finish_reason(chunk)
                     # Check for usage info in the chunk
                     # LangChain's stream() returns AIMessageChunk objects
                     # The final chunk contains response_metadata with usage info
@@ -3763,6 +3767,8 @@ class BaseAgent:
                     merged_stream_message,
                     available_tools=runtime_tools_by_name,
                 )
+                if not round_finish_reason:
+                    round_finish_reason = self._extract_finish_reason(merged_stream_message)
             except Exception as e:
                 if self._handle_native_tool_http_rejection(
                     e, runtime_path="recovery_stream_http_fallback"
@@ -3806,6 +3812,8 @@ class BaseAgent:
                     result,
                     available_tools=runtime_tools_by_name,
                 )
+                if not round_finish_reason:
+                    round_finish_reason = self._extract_finish_reason(result)
                 if not round_output and native_tool_calls:
                     round_output = ""
 
@@ -3818,7 +3826,11 @@ class BaseAgent:
                 stream_callback((round_output, "content"))
 
             logger.info(
-                f"[RECOVERY] Round {state.round_number} output: thinking={len(round_thinking)} chars, content={len(round_output)} chars, usage={round_usage}",
+                f"[RECOVERY] Round {state.round_number} output: "
+                f"thinking={len(round_thinking)} chars, "
+                f"content={len(round_output)} chars, "
+                f"finish_reason={round_finish_reason or 'unknown'}, "
+                f"usage={round_usage}",
                 extra={"agent_id": str(self.config.agent_id)},
             )
 
@@ -4004,7 +4016,7 @@ class BaseAgent:
                     send_round_stats()
                     break
 
-            # 5. No tool calls -> run autonomous completion check (no hard stop by default)
+            # 5. No tool calls -> run deterministic state-machine completion check
             if not tool_calls:
                 if state.round_number >= state.max_rounds:
                     logger.info(
@@ -4023,17 +4035,19 @@ class BaseAgent:
                     round_number=state.round_number,
                     max_rounds=state.max_rounds,
                     requested_file_formats=requested_file_formats,
+                    finish_reason=round_finish_reason,
                 )
                 should_stop = bool(completion_decision.get("should_stop"))
 
                 if state.round_number < state.max_rounds and not should_stop:
                     logger.info(
-                        "[RECOVERY] Autonomous completion check: incomplete, continue iterating",
+                        "[RECOVERY] State-machine check: incomplete, continue iterating",
                         extra={
                             "agent_id": str(self.config.agent_id),
                             "round": state.round_number,
                             "confidence": completion_decision.get("confidence", 0.0),
                             "reason": completion_decision.get("reason", ""),
+                            "finish_reason": round_finish_reason or "unknown",
                         },
                     )
                     if stream_callback:
@@ -4044,20 +4058,25 @@ class BaseAgent:
                             )
                         )
                     messages.append(AIMessage(content=round_output))
+                    continue_feedback = (
+                        str(completion_decision.get("feedback_prompt") or "").strip()
+                        or self._build_autonomy_continue_feedback(completion_decision)
+                    )
                     messages.append(
                         HumanMessage(
-                            content=self._build_autonomy_continue_feedback(completion_decision)
+                            content=continue_feedback
                         )
                     )
                     send_round_stats()
                     continue
 
                 logger.info(
-                    "[RECOVERY] Autonomous completion check: task complete, stopping loop",
+                    "[RECOVERY] State-machine check: task complete, stopping loop",
                     extra={
                         "agent_id": str(self.config.agent_id),
                         "round": state.round_number,
                         "confidence": completion_decision.get("confidence", 0.0),
+                        "finish_reason": round_finish_reason or "unknown",
                     },
                 )
                 state.is_terminated = True

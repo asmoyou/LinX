@@ -737,6 +737,81 @@ class TestBaseAgent:
         assert stream_call_count["count"] == 4
         assert bash_tool.ainvoke.await_count == 2
 
+    def test_recovery_no_tool_completion_does_not_trigger_secondary_llm_eval_call(self):
+        """No-tool completion should stop via deterministic state machine, without extra llm.invoke."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.tools = []
+        agent.tools_by_name = {}
+
+        stream_call_count = {"count": 0}
+
+        def _fake_stream(_messages):
+            stream_call_count["count"] += 1
+            yield SimpleNamespace(content="处理已完成。", additional_kwargs={})
+
+        agent.llm = Mock()
+        agent.llm.stream = _fake_stream
+        agent.llm.invoke = Mock(side_effect=AssertionError("llm.invoke should not be called"))
+
+        result = agent.execute_task(
+            task_description="请直接给出总结结果",
+            stream_callback=lambda *_args, **_kwargs: None,
+        )
+
+        assert result["success"] is True
+        assert result["output"] == "处理已完成。"
+        assert stream_call_count["count"] == 1
+
+    def test_recovery_finish_reason_length_forces_followup_round(self):
+        """When provider reports finish_reason=length, loop should continue to next round."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.tools = []
+        agent.tools_by_name = {}
+
+        stream_call_count = {"count": 0}
+
+        def _fake_stream(_messages):
+            stream_call_count["count"] += 1
+            if stream_call_count["count"] == 1:
+                yield SimpleNamespace(
+                    content="这是被截断的输出片段。",
+                    additional_kwargs={},
+                    response_metadata={"finish_reason": "length"},
+                )
+            else:
+                yield SimpleNamespace(content="这是补全后的最终结果。", additional_kwargs={})
+
+        agent.llm = Mock()
+        agent.llm.stream = _fake_stream
+        agent.llm.invoke = Mock(side_effect=AssertionError("llm.invoke should not be called"))
+
+        result = agent.execute_task(
+            task_description="输出完整报告",
+            stream_callback=lambda *_args, **_kwargs: None,
+        )
+
+        assert result["success"] is True
+        assert result["output"] == "这是补全后的最终结果。"
+        assert stream_call_count["count"] == 2
+
     def test_auto_multi_turn_file_delivery_guard_uses_task_intent_text(self):
         """Attachment context should not trigger file-delivery guard when user didn't request file output."""
         config = AgentConfig(
