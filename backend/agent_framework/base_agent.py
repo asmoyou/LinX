@@ -3583,12 +3583,8 @@ class BaseAgent:
         """
         import asyncio
 
-        # Initialize conversation state (policy override first, then agent default)
-        resolved_max_rounds = int(
-            (runtime_policy.max_rounds if runtime_policy else None)
-            or self.config.max_iterations
-            or 20
-        )
+        # Initialize conversation state (single source: runtime policy max_rounds)
+        resolved_max_rounds = int((runtime_policy.max_rounds if runtime_policy else None) or 20)
         state = ConversationState(max_rounds=max(1, resolved_max_rounds))
         resolved_task_intent_text = self._resolve_task_intent_text(
             task_description=task_description,
