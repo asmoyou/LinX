@@ -203,12 +203,6 @@ export const agentsApi = {
     files?: File[],
     signal?: AbortSignal,  // AbortSignal support
     sessionId?: string,    // Session ID for persistent execution environment
-    segmentedOutput?: {
-      enabled: boolean;
-      targetItems?: number;
-      segmentItemLimit?: number;
-      maxOutputSegments?: number;
-    }
   ): Promise<void> => {
     try {
       // Get token from auth store (same way apiClient does)
@@ -236,18 +230,6 @@ export const agentsApi = {
       const params = new URLSearchParams();
       if (sessionId) {
         params.set('session_id', sessionId);
-      }
-      if (segmentedOutput?.enabled) {
-        params.set('segmented_output', 'true');
-        if (segmentedOutput.targetItems) {
-          params.set('segmented_target_items', String(segmentedOutput.targetItems));
-        }
-        if (segmentedOutput.segmentItemLimit) {
-          params.set('segment_item_limit', String(segmentedOutput.segmentItemLimit));
-        }
-        if (segmentedOutput.maxOutputSegments) {
-          params.set('max_output_segments', String(segmentedOutput.maxOutputSegments));
-        }
       }
       const query = params.toString();
       if (query) {

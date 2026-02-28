@@ -363,67 +363,6 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     };
   };
 
-  const extractTargetItemCount = (prompt: string): number | null => {
-    const strictMatches = [
-      ...prompt.matchAll(
-        /(\d{2,5})\s*(?:道|题|个|条|questions?|question|items?|item|problems?|problem)\b/gi
-      ),
-    ];
-    let matches = strictMatches;
-    if (!matches.length) {
-      const hasActionIntent = /(出|生成|给我|制作|写|整理|generate|create|produce|write|list)/i.test(
-        prompt
-      );
-      const hasQuestionIntent = /(题|题目|问题|question|questions|quiz|exercise|exercises|problem|problems)/i.test(
-        prompt
-      );
-      if (hasActionIntent && hasQuestionIntent) {
-        matches = [...prompt.matchAll(/\b(\d{2,5})\b/g)];
-      }
-    }
-    if (!matches.length) return null;
-
-    let maxCandidate = 0;
-    for (const match of matches) {
-      const value = Number(match[1]);
-      if (Number.isFinite(value) && value > maxCandidate) {
-        maxCandidate = value;
-      }
-    }
-
-    if (maxCandidate < 120 || maxCandidate > 10000) {
-      return null;
-    }
-    return maxCandidate;
-  };
-
-  const buildSegmentedOutputOptions = (
-    prompt: string
-  ): {
-    enabled: boolean;
-    targetItems?: number;
-    segmentItemLimit?: number;
-    maxOutputSegments?: number;
-  } => {
-    const targetItems = extractTargetItemCount(prompt);
-    const hasQuestionIntent = /(题|题目|问题|question|questions|quiz|exercise|exercises)/i.test(
-      prompt
-    );
-
-    if (!targetItems || !hasQuestionIntent) {
-      return { enabled: false };
-    }
-
-    const segmentItemLimit = Math.min(80, targetItems);
-    const maxOutputSegments = Math.max(1, Math.ceil(targetItems / segmentItemLimit));
-    return {
-      enabled: true,
-      targetItems,
-      segmentItemLimit,
-      maxOutputSegments: Math.min(maxOutputSegments, 20),
-    };
-  };
-
   // Memoize markdown components to prevent re-creation on each render
   const markdownComponents = useMemo(() => createMarkdownComponents(), []);
   const remarkPlugins = useMemo(() => [remarkGfm], []);
@@ -968,7 +907,6 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
 
     try {
       const filesToUpload = attachedFiles.map((af) => af.file);
-      const segmentedOutput = buildSegmentedOutputOptions(userMessage.content);
 
       await agentsApi.testAgent(
         agent.id,
@@ -1143,8 +1081,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
         history,
         filesToUpload.length > 0 ? filesToUpload : undefined,
         abortControllerRef.current?.signal,
-        sessionId || undefined,
-        segmentedOutput
+        sessionId || undefined
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message');

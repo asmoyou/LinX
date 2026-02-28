@@ -528,60 +528,6 @@ def _sanitize_history_messages(raw_history: Any) -> List[Dict[str, str]]:
     return sanitized
 
 
-def _build_output_segment_ranges(
-    target_items: int,
-    segment_item_limit: int,
-    max_output_segments: int,
-) -> List[Tuple[int, int]]:
-    """Build inclusive item ranges for segmented output generation."""
-    if target_items <= 0 or segment_item_limit <= 0 or max_output_segments <= 0:
-        return []
-
-    ranges: List[Tuple[int, int]] = []
-    start = 1
-    while start <= target_items and len(ranges) < max_output_segments:
-        end = min(start + segment_item_limit - 1, target_items)
-        ranges.append((start, end))
-        start = end + 1
-    return ranges
-
-
-def _build_segmented_user_prompt(
-    base_message: str,
-    *,
-    segment_index: int,
-    total_segments: int,
-    start_item: int,
-    end_item: int,
-    target_items: int,
-) -> str:
-    """Build prompt for one segment in a long-form output task."""
-    batch_header = (
-        f"当前只输出第 {segment_index}/{total_segments} 段，"
-        f"编号范围 {start_item}-{end_item}（总目标 {target_items}）。"
-    )
-
-    if segment_index == 1:
-        return (
-            f"{base_message}\n\n"
-            "请使用分段输出模式完成该任务。\n"
-            f"{batch_header}\n"
-            "要求：\n"
-            "1. 仅输出本段范围内的内容，编号连续。\n"
-            "2. 不要输出下一段，也不要重复内容。\n"
-            "3. 输出完本段后立即结束。\n"
-        )
-
-    return (
-        "继续上一任务，基于之前已输出的结果继续生成。\n"
-        f"{batch_header}\n"
-        "要求：\n"
-        "1. 不要重复之前段落。\n"
-        "2. 仅输出本段范围内容。\n"
-        "3. 输出完本段后立即结束。\n"
-    )
-
-
 def _extract_token_usage_from_metadata(metadata: Dict[str, Any]) -> Tuple[int, int]:
     """Extract input/output token usage from provider metadata."""
     if not isinstance(metadata, dict):
@@ -607,47 +553,6 @@ def _extract_token_usage_from_metadata(metadata: Dict[str, Any]) -> Tuple[int, i
     return 0, 0
 
 
-_LONG_OUTPUT_TASK_KEYWORDS = (
-    "题",
-    "题目",
-    "question",
-    "questions",
-    "quiz",
-    "exercise",
-    "exercises",
-    "problem",
-    "problems",
-    "worksheet",
-    "worksheets",
-    "item",
-    "items",
-)
-_LONG_OUTPUT_ACTION_KEYWORDS = (
-    "出",
-    "生成",
-    "给我",
-    "制作",
-    "写",
-    "列出",
-    "整理",
-    "generate",
-    "create",
-    "produce",
-    "give",
-    "write",
-    "list",
-)
-_ITEM_COUNT_PATTERN = re.compile(
-    r"(?P<count>\d{2,5})\s*(?:道|题|个|条|questions?|question|items?|item|problems?|problem)\b",
-    re.IGNORECASE,
-)
-_ACTION_COUNT_PATTERN = re.compile(
-    r"(?:出|生成|给我|制作|写|列出|整理|generate|create|produce|give|write|list)"
-    r".{0,12}?(?P<count>\d{2,5})",
-    re.IGNORECASE,
-)
-_BARE_COUNT_PATTERN = re.compile(r"\b(?P<count>\d{2,5})\b")
-_TRUNCATION_FINISH_REASONS = {"length", "max_tokens", "token_limit"}
 _WORKSPACE_INLINE_PREVIEW_EXTENSIONS = {
     ".txt",
     ".md",
@@ -669,74 +574,6 @@ _WORKSPACE_INLINE_PREVIEW_EXTENSIONS = {
     ".sql",
     ".log",
 }
-
-
-def _extract_itemized_target_count(task_text: str) -> Optional[int]:
-    """Infer long-output target count from prompt text (e.g., 300 questions)."""
-    text = str(task_text or "").strip()
-    if not text:
-        return None
-
-    lowered = text.lower()
-    if not any(keyword in lowered for keyword in _LONG_OUTPUT_TASK_KEYWORDS):
-        return None
-
-    candidates: List[int] = []
-
-    for pattern in (_ITEM_COUNT_PATTERN, _ACTION_COUNT_PATTERN):
-        for match in pattern.finditer(text):
-            raw_count = match.groupdict().get("count")
-            if not raw_count:
-                continue
-            try:
-                value = int(raw_count)
-            except ValueError:
-                continue
-            if 50 <= value <= 10000:
-                candidates.append(value)
-
-    if not candidates and any(keyword in lowered for keyword in _LONG_OUTPUT_ACTION_KEYWORDS):
-        for match in _BARE_COUNT_PATTERN.finditer(text):
-            raw_count = match.groupdict().get("count")
-            if not raw_count:
-                continue
-            try:
-                value = int(raw_count)
-            except ValueError:
-                continue
-            # Fallback must stay conservative to avoid treating years like 2024 as item counts.
-            if 120 <= value <= 10000:
-                candidates.append(value)
-
-    if not candidates:
-        return None
-    return max(candidates)
-
-
-def _is_output_truncated_from_metadata(metadata: Dict[str, Any]) -> bool:
-    """Detect whether provider metadata indicates output truncation."""
-    if not isinstance(metadata, dict):
-        return False
-
-    reasons: List[str] = []
-
-    finish_reason = metadata.get("finish_reason") or metadata.get("stop_reason")
-    if isinstance(finish_reason, str) and finish_reason.strip():
-        reasons.append(finish_reason.strip().lower())
-
-    choices = metadata.get("choices")
-    if isinstance(choices, list):
-        for choice in choices:
-            if not isinstance(choice, dict):
-                continue
-            choice_finish_reason = choice.get("finish_reason") or choice.get("stop_reason")
-            if isinstance(choice_finish_reason, str) and choice_finish_reason.strip():
-                reasons.append(choice_finish_reason.strip().lower())
-
-    for reason in reasons:
-        if reason in _TRUNCATION_FINISH_REASONS:
-            return True
-    return False
 
 
 def _resolve_safe_workspace_path(workdir: Path, requested_path: str = "") -> Tuple[Path, str]:
@@ -4400,28 +4237,6 @@ async def test_agent(
     history: Optional[str] = Body(None, embed=True),  # JSON string of conversation history
     files: List[UploadFile] = File(default=[]),
     stream: bool = Query(default=True),  # Query parameter to enable/disable streaming
-    segmented_output: bool = Query(
-        default=False,
-        description="Enable segmented output loop for large itemized tasks.",
-    ),
-    segment_item_limit: int = Query(
-        default=80,
-        ge=20,
-        le=500,
-        description="Maximum items per output segment when segmented output is enabled.",
-    ),
-    max_output_segments: int = Query(
-        default=20,
-        ge=1,
-        le=50,
-        description="Hard cap for segmented output rounds in a single request.",
-    ),
-    segmented_target_items: Optional[int] = Query(
-        default=None,
-        ge=1,
-        le=10000,
-        description="Target item count for segmented generation (e.g., 1000 questions).",
-    ),
     session_id: Optional[str] = Query(
         None, description="Session ID for persistent execution environment"
     ),
@@ -5029,374 +4844,186 @@ async def test_agent(
                 yield f"data: {json.dumps({'type': 'info', 'content': 'Generating response...'})}\n\n"
                 logger.debug("[STREAM] Sent status: type='info', content='Generating response...'")
 
-                # Optional multi-pass segmented generation for very large itemized tasks.
-                detected_target_items = _extract_itemized_target_count(message)
-                target_items_for_segmentation = (
-                    int(segmented_target_items)
-                    if segmented_target_items and segmented_target_items > 0
-                    else detected_target_items
-                )
-                auto_segment_by_target = bool(
-                    target_items_for_segmentation and target_items_for_segmentation >= 120
-                )
-                segmenting_requested = bool(segmented_output or auto_segment_by_target)
-                effective_segment_item_limit = int(segment_item_limit)
-                effective_max_output_segments = int(max_output_segments)
-                # Auto mode uses safer chunk size to reduce model truncation risk.
-                if auto_segment_by_target and not segmented_output:
-                    effective_segment_item_limit = min(effective_segment_item_limit, 80)
-                    if target_items_for_segmentation and effective_segment_item_limit > 0:
-                        required_segments = (
-                            int(target_items_for_segmentation) + effective_segment_item_limit - 1
-                        ) // effective_segment_item_limit
-                        effective_max_output_segments = min(
-                            50, max(effective_max_output_segments, required_segments)
-                        )
-
-                segment_ranges: List[Tuple[int, int]] = []
-                segmented_mode_enabled = bool(
-                    segmenting_requested
-                    and target_items_for_segmentation
-                    and target_items_for_segmentation > 0
-                )
-                if segmented_mode_enabled:
-                    segment_ranges = _build_output_segment_ranges(
-                        target_items=int(target_items_for_segmentation),
-                        segment_item_limit=effective_segment_item_limit,
-                        max_output_segments=effective_max_output_segments,
-                    )
-                    # Enable only when multiple segments are actually needed.
-                    segmented_mode_enabled = len(segment_ranges) > 1
-
-                if segmented_mode_enabled and model_supports_vision and has_image_attachments:
-                    segmented_mode_enabled = False
-                    segment_ranges = []
-                    yield (
-                        "data: "
-                        + json.dumps(
-                            {
-                                "type": "info",
-                                "content": (
-                                    "Segmented output is disabled for vision+image requests; "
-                                    "falling back to single-pass generation."
-                                ),
-                            }
-                        )
-                        + "\n\n"
-                    )
-
-                if segmenting_requested and not segmented_mode_enabled:
-                    if target_items_for_segmentation and target_items_for_segmentation > 0:
-                        yield (
-                            "data: "
-                            + json.dumps(
-                                {
-                                    "type": "info",
-                                    "content": (
-                                        "Segmented output requested but not needed "
-                                        f"(target={target_items_for_segmentation}, "
-                                        f"per_segment={effective_segment_item_limit})."
-                                    ),
-                                }
-                            )
-                            + "\n\n"
-                        )
-                    else:
-                        yield (
-                            "data: "
-                            + json.dumps(
-                                {
-                                    "type": "info",
-                                    "content": (
-                                        "Segmented output requested without segmented_target_items; "
-                                        "falling back to single-pass generation."
-                                    ),
-                                }
-                            )
-                            + "\n\n"
-                        )
-
-                if segmented_mode_enabled and segment_ranges:
-                    planned_items = segment_ranges[-1][1]
-                    yield (
-                        "data: "
-                        + json.dumps(
-                            {
-                                "type": "info",
-                                "content": (
-                                    "Segmented output enabled: "
-                                    f"{len(segment_ranges)} segments, up to {effective_segment_item_limit} "
-                                    f"items/segment, target={target_items_for_segmentation}."
-                                ),
-                            }
-                        )
-                        + "\n\n"
-                    )
-                    if (
-                        target_items_for_segmentation
-                        and planned_items < target_items_for_segmentation
-                    ):
-                        yield (
-                            "data: "
-                            + json.dumps(
-                                {
-                                    "type": "info",
-                                    "content": (
-                                        "Segment planning reached max_output_segments before target completion: "
-                                        f"planned up to item {planned_items}/{target_items_for_segmentation}."
-                                    ),
-                                }
-                            )
-                            + "\n\n"
-                        )
-
-                final_output_segments: List[str] = []
                 execution_messages: List[Any] = []
                 response_metadata_list: List[Dict[str, Any]] = []
                 run_error: Optional[str] = None
-                conversation_history_for_run = list(parsed_history)
+                token_queue = queue.Queue()
+                error_holder = [None]
+                segment_response = [""]
+                segment_response_metadata = [{}]
+                segment_execution_messages = [[]]
 
-                total_segments = len(segment_ranges) if segmented_mode_enabled else 1
-                for segment_idx in range(total_segments):
-                    token_queue = queue.Queue()
-                    error_holder = [None]
-                    segment_response = [""]
-                    segment_response_metadata = [{}]
-                    segment_execution_messages = [[]]
+                def stream_callback(token_data):
+                    """Callback for streaming tokens from agent."""
+                    nonlocal first_token_time, last_token_time
+                    if first_token_time is None:
+                        first_token_time = time.time()
+                    last_token_time = time.time()
+                    token_queue.put(token_data)
 
-                    if segmented_mode_enabled:
-                        start_item, end_item = segment_ranges[segment_idx]
-                        if segment_idx > 0:
-                            yield (
-                                "data: "
-                                + json.dumps(
-                                    {
-                                        "type": "info",
-                                        "content": (
-                                            f"Continuing segmented output: "
-                                            f"segment {segment_idx + 1}/{total_segments}, "
-                                            f"items {start_item}-{end_item}."
-                                        ),
-                                    }
-                                )
-                                + "\n\n"
-                            )
-                        task_description_for_run = _build_segmented_user_prompt(
-                            user_message,
-                            segment_index=segment_idx + 1,
-                            total_segments=total_segments,
-                            start_item=start_item,
-                            end_item=end_item,
-                            target_items=int(target_items_for_segmentation or end_item),
+                def execute_agent(
+                    task_description_override: str,
+                    history_override: List[Dict[str, str]],
+                    content_override: Optional[Any],
+                ):
+                    """Execute agent in a separate thread."""
+                    try:
+                        run_exec_context = ExecutionContext(
+                            agent_id=UUID(agent_id),
+                            user_id=UUID(current_user.user_id),
+                            user_role=current_user.role,
+                            task_description=task_description_override,
+                            additional_context={
+                                "execution_context_tag": AGENT_TEST_RUNTIME_CONTEXT_TAG,
+                                "task_intent_text": message,
+                            },
                         )
-                    else:
-                        task_description_for_run = user_message
-
-                    message_content_for_run = (
-                        multimodal_content
-                        if (segment_idx == 0 or not segmented_mode_enabled)
-                        else None
-                    )
-
-                    def stream_callback(token_data):
-                        """Callback for streaming tokens from agent."""
-                        nonlocal first_token_time, last_token_time
-                        if first_token_time is None:
-                            first_token_time = time.time()
-                        last_token_time = time.time()
-                        token_queue.put(token_data)
-
-                    def execute_agent(
-                        task_description_override: str,
-                        history_override: List[Dict[str, str]],
-                        content_override: Optional[Any],
-                    ):
-                        """Execute agent in a separate thread."""
-                        try:
-                            run_exec_context = ExecutionContext(
-                                agent_id=UUID(agent_id),
-                                user_id=UUID(current_user.user_id),
-                                user_role=current_user.role,
+                        if use_unified_runtime:
+                            result = executor.execute(
+                                agent,
+                                run_exec_context,
+                                conversation_history=history_override or None,
+                                execution_profile=ExecutionProfile.DEBUG_CHAT,
+                                stream_callback=stream_callback,
+                                session_workdir=conversation_session.workdir,
+                                container_id=conversation_session.sandbox_id,
+                                message_content=content_override,
+                                prebuilt_execution_context=context,
+                            )
+                        else:
+                            # Legacy fallback path.
+                            result = agent.execute_task(
                                 task_description=task_description_override,
-                                additional_context={
-                                    "execution_context_tag": AGENT_TEST_RUNTIME_CONTEXT_TAG,
-                                    "task_intent_text": message,
-                                },
+                                context=context,
+                                conversation_history=history_override or None,
+                                stream_callback=stream_callback,
+                                session_workdir=conversation_session.workdir,
+                                container_id=conversation_session.sandbox_id,
+                                message_content=content_override,
+                                task_intent_text=message,
                             )
-                            if use_unified_runtime:
-                                result = executor.execute(
-                                    agent,
-                                    run_exec_context,
-                                    conversation_history=history_override or None,
-                                    execution_profile=ExecutionProfile.DEBUG_CHAT,
-                                    stream_callback=stream_callback,
-                                    session_workdir=conversation_session.workdir,
-                                    container_id=conversation_session.sandbox_id,
-                                    message_content=content_override,
-                                    prebuilt_execution_context=context,
-                                )
-                            else:
-                                # Legacy fallback path.
-                                result = agent.execute_task(
-                                    task_description=task_description_override,
-                                    context=context,
-                                    conversation_history=history_override or None,
-                                    stream_callback=stream_callback,
-                                    session_workdir=conversation_session.workdir,
-                                    container_id=conversation_session.sandbox_id,
-                                    message_content=content_override,
-                                    task_intent_text=message,
-                                )
 
-                            if not result.get("success", False):
-                                failure_error = str(
-                                    result.get("error")
-                                    or "Unknown agent execution error"
-                                )
-                                failure_output = result.get("output")
-                                segment_response[0] = (
-                                    str(failure_output) if failure_output is not None else ""
-                                )
-                                segment_execution_messages[0] = result.get("messages") or []
-                                error_holder[0] = failure_error
-                                token_queue.put(None)
-                                return
-
-                            # Store final response
-                            segment_response[0] = result.get("output", "")
+                        if not result.get("success", False):
+                            failure_error = str(
+                                result.get("error") or "Unknown agent execution error"
+                            )
+                            failure_output = result.get("output")
+                            segment_response[0] = (
+                                str(failure_output) if failure_output is not None else ""
+                            )
                             segment_execution_messages[0] = result.get("messages") or []
-
-                            # Get metadata if available
-                            if segment_execution_messages[0]:
-                                for msg in reversed(segment_execution_messages[0]):
-                                    if hasattr(msg, "response_metadata") and msg.response_metadata:
-                                        segment_response_metadata[0] = msg.response_metadata
-                                        break
-
-                            # Signal completion
+                            error_holder[0] = failure_error
                             token_queue.put(None)
+                            return
 
-                        except Exception as e:
-                            logger.error(f"Agent execution error: {e}", exc_info=True)
-                            error_holder[0] = str(e)
-                            token_queue.put(None)
+                        # Store final response
+                        segment_response[0] = result.get("output", "")
+                        segment_execution_messages[0] = result.get("messages") or []
 
-                    # Start agent execution in background thread
-                    exec_thread = threading.Thread(
-                        target=execute_agent,
-                        args=(
-                            task_description_for_run,
-                            conversation_history_for_run,
-                            message_content_for_run,
-                        ),
+                        # Get metadata if available
+                        if segment_execution_messages[0]:
+                            for msg in reversed(segment_execution_messages[0]):
+                                if hasattr(msg, "response_metadata") and msg.response_metadata:
+                                    segment_response_metadata[0] = msg.response_metadata
+                                    break
+
+                        # Signal completion
+                        token_queue.put(None)
+
+                    except Exception as e:
+                        logger.error(f"Agent execution error: {e}", exc_info=True)
+                        error_holder[0] = str(e)
+                        token_queue.put(None)
+
+                # Start agent execution in background thread
+                exec_thread = threading.Thread(
+                    target=execute_agent,
+                    args=(
+                        user_message,
+                        list(parsed_history),
+                        multimodal_content,
+                    ),
+                )
+                exec_thread.start()
+
+                # Stream tokens as they arrive
+                segment_output_completed = False
+                while True:
+                    try:
+                        # Wait for token with timeout without blocking the event loop
+                        token_data = await asyncio.to_thread(token_queue.get, True, 0.1)
+
+                        if token_data is None:
+                            # Execution complete
+                            segment_output_completed = True
+                            break
+
+                        # token_data can be either a string (old format) or tuple (token, type)
+                        if isinstance(token_data, tuple):
+                            token, content_type = token_data
+                        else:
+                            token = token_data
+                            content_type = "content"
+
+                        # Debug: Log what we're sending
+                        logger.debug(
+                            f"[STREAM] Sending to frontend: type='{content_type}', length={len(str(token))}"
+                        )
+
+                        # Handle round_stats specially - the token is already JSON
+                        if content_type == "round_stats":
+                            try:
+                                stats_data = json.loads(token)
+                                stats_data["type"] = "round_stats"
+                                yield f"data: {json.dumps(stats_data)}\n\n"
+                            except json.JSONDecodeError:
+                                logger.warning(f"[STREAM] Invalid round_stats JSON: {token}")
+                        else:
+                            # Send token to client with type information
+                            yield (
+                                f"data: {json.dumps({'type': content_type, 'content': token})}\n\n"
+                            )
+
+                    except queue.Empty:
+                        # Check if thread is still alive
+                        if not exec_thread.is_alive():
+                            # Thread finished but no None signal - something went wrong
+                            logger.warning(
+                                "[STREAM] Thread finished without sending completion signal"
+                            )
+                            break
+                        # No token yet, continue waiting
+                        continue
+
+                if segment_output_completed:
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "info",
+                                "content": "模型输出已结束，正在进行结果收尾与状态校验...",
+                            }
+                        )
+                        + "\n\n"
                     )
-                    exec_thread.start()
 
-                    # Stream tokens as they arrive
-                    segment_output_completed = False
-                    while True:
-                        try:
-                            # Wait for token with timeout without blocking the event loop
-                            token_data = await asyncio.to_thread(token_queue.get, True, 0.1)
+                # Wait for thread to complete (should already be done)
+                await asyncio.to_thread(exec_thread.join, 5)
 
-                            if token_data is None:
-                                # Execution complete
-                                segment_output_completed = True
-                                break
+                # Check if there was an error
+                if error_holder[0]:
+                    run_error = error_holder[0]
+                    logger.error(f"[STREAM] Agent execution error: {run_error}")
 
-                            # token_data can be either a string (old format) or tuple (token, type)
-                            if isinstance(token_data, tuple):
-                                token, content_type = token_data
-                            else:
-                                token = token_data
-                                content_type = "content"
+                final_response_text = (segment_response[0] if segment_response[0] is not None else "").strip()
 
-                            # Debug: Log what we're sending
-                            logger.debug(
-                                f"[STREAM] Sending to frontend: type='{content_type}', length={len(str(token))}"
-                            )
+                if isinstance(segment_response_metadata[0], dict):
+                    response_metadata_list.append(segment_response_metadata[0])
+                else:
+                    response_metadata_list.append({})
 
-                            # Handle round_stats specially - the token is already JSON
-                            if content_type == "round_stats":
-                                try:
-                                    stats_data = json.loads(token)
-                                    stats_data["type"] = "round_stats"
-                                    yield f"data: {json.dumps(stats_data)}\n\n"
-                                except json.JSONDecodeError:
-                                    logger.warning(f"[STREAM] Invalid round_stats JSON: {token}")
-                            else:
-                                # Send token to client with type information
-                                yield (
-                                    f"data: {json.dumps({'type': content_type, 'content': token})}\n\n"
-                                )
-
-                        except queue.Empty:
-                            # Check if thread is still alive
-                            if not exec_thread.is_alive():
-                                # Thread finished but no None signal - something went wrong
-                                logger.warning(
-                                    "[STREAM] Thread finished without sending completion signal"
-                                )
-                                break
-                            # No token yet, continue waiting
-                            continue
-
-                    if segment_output_completed:
-                        yield (
-                            "data: "
-                            + json.dumps(
-                                {
-                                    "type": "info",
-                                    "content": "模型输出已结束，正在进行结果收尾与状态校验...",
-                                }
-                            )
-                            + "\n\n"
-                        )
-
-                    # Wait for thread to complete (should already be done)
-                    await asyncio.to_thread(exec_thread.join, 5)
-
-                    # Check if there was an error
-                    if error_holder[0]:
-                        run_error = error_holder[0]
-                        logger.error(f"[STREAM] Agent execution error: {run_error}")
-                        break
-
-                    current_output = segment_response[0] if segment_response[0] is not None else ""
-                    final_output_segments.append(current_output)
-
-                    if isinstance(segment_response_metadata[0], dict):
-                        response_metadata_list.append(segment_response_metadata[0])
-                    else:
-                        response_metadata_list.append({})
-
-                    if isinstance(segment_execution_messages[0], list):
-                        execution_messages.extend(segment_execution_messages[0])
-
-                    if segmented_mode_enabled:
-                        conversation_history_for_run = _sanitize_history_messages(
-                            [
-                                *conversation_history_for_run,
-                                {"role": "user", "content": task_description_for_run},
-                                {"role": "assistant", "content": current_output},
-                            ]
-                        )
-
-                # Final merged response for metrics and memory.
-                final_response_text = "\n\n".join(
-                    segment for segment in final_output_segments if segment
-                ).strip()
-                output_truncated = any(
-                    _is_output_truncated_from_metadata(metadata)
-                    for metadata in response_metadata_list
-                )
-                segment_plan_incomplete = bool(
-                    segmented_mode_enabled
-                    and target_items_for_segmentation
-                    and segment_ranges
-                    and segment_ranges[-1][1] < target_items_for_segmentation
-                )
-                partially_completed = bool(output_truncated or segment_plan_incomplete)
+                if isinstance(segment_execution_messages[0], list):
+                    execution_messages.extend(segment_execution_messages[0])
 
                 # Surface execution error if any.
                 if run_error:
@@ -5499,26 +5126,11 @@ async def test_agent(
                         "totalTime": round(end_time - start_time, 2),
                     }
                     yield f"data: {json.dumps(stats)}\n\n"
-                    if partially_completed:
-                        partial_reason_parts: List[str] = []
-                        if output_truncated:
-                            partial_reason_parts.append("model output hit token limit")
-                        if segment_plan_incomplete:
-                            partial_reason_parts.append("segment cap reached before target count")
-                        partial_reason = (
-                            ", ".join(partial_reason_parts) or "partial output detected"
-                        )
-                        done_payload = {
-                            "type": "done",
-                            "content": f"Agent execution partially completed ({partial_reason}).",
-                            "partial": True,
-                        }
-                    else:
-                        done_payload = {
-                            "type": "done",
-                            "content": "Agent execution completed",
-                            "partial": False,
-                        }
+                    done_payload = {
+                        "type": "done",
+                        "content": "Agent execution completed",
+                        "partial": False,
+                    }
                     yield f"data: {json.dumps(done_payload)}\n\n"
 
                     # Buffer turn-level memory candidates; flush once on session end.
