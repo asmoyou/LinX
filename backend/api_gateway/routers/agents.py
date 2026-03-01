@@ -206,6 +206,15 @@ def _trim_process_text(text: Optional[str], max_chars: int = 120) -> str:
     return normalized[: max_chars - 3] + "..."
 
 
+def _sanitize_transcription_text(text: Optional[str]) -> str:
+    """Remove control tokens and normalize whitespace in ASR output."""
+    raw = str(text or "")
+    # Strip FunASR/SenseVoice control tags like <|zh|><|HAPPY|><|Speech|>.
+    cleaned = re.sub(r"<\|[^|>]+?\|>", " ", raw)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
 def _short_id(value: Optional[str], keep: int = 8) -> str:
     """Shorten long ids for process logs."""
     if not value:
@@ -3823,6 +3832,17 @@ _ATTACHMENT_MAX_CHARS_TOTAL = 12000
 _ATTACHMENT_MAX_TEXT_BYTES = 2 * 1024 * 1024
 _ATTACHMENT_WORKSPACE_DIR = "input"
 _ATTACHMENT_DEFAULT_FILENAME = "attachment.bin"
+_SPEECH_INPUT_MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
+_SPEECH_INPUT_AUDIO_EXTENSIONS = {
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".flac",
+    ".webm",
+    ".ogg",
+    ".aac",
+    ".mp4",
+}
 
 _MINIO_DOCUMENT_EXTENSIONS = {
     "pdf",
@@ -4228,6 +4248,95 @@ class FileReference(BaseModel):
     extracted_text: Optional[str] = None  # Extracted text for document-like files
     extraction_error: Optional[str] = None  # Extraction failure reason, if any
     workspace_path: Optional[str] = None  # Session workspace path (e.g., input/report.pdf)
+
+
+class SpeechTranscriptionResponse(BaseModel):
+    """Voice input transcription response."""
+
+    text: str
+    language: Optional[str] = None
+    duration: Optional[float] = None
+    processing_time: Optional[float] = None
+
+
+@router.post("/transcribe", response_model=SpeechTranscriptionResponse)
+async def transcribe_voice_input(
+    file: UploadFile = File(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Transcribe one audio file to text for test-chat voice input."""
+    _ = current_user  # Auth guard only.
+
+    filename = file.filename or "voice_input.wav"
+    suffix = Path(filename).suffix.lower()
+    normalized_content_type = _normalize_attachment_content_type(file.content_type)
+    effective_content_type = _infer_effective_content_type(filename, normalized_content_type)
+
+    if (
+        not effective_content_type.startswith("audio/")
+        and suffix not in _SPEECH_INPUT_AUDIO_EXTENSIONS
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only audio files are supported for voice transcription.",
+        )
+
+    file_data = await file.read()
+    if not file_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded audio file is empty.",
+        )
+
+    if len(file_data) > _SPEECH_INPUT_MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                "Audio file is too large. "
+                f"Maximum allowed size is {_SPEECH_INPUT_MAX_FILE_SIZE_BYTES // (1024 * 1024)}MB."
+            ),
+        )
+
+    temp_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".wav") as temp_file:
+            temp_file.write(file_data)
+            temp_path = Path(temp_file.name)
+
+        def _transcribe_audio(path: Path):
+            from knowledge_base.audio_processor import get_audio_processor
+
+            return get_audio_processor().transcribe(path)
+
+        transcription = await asyncio.to_thread(_transcribe_audio, temp_path)
+        text = _sanitize_transcription_text(transcription.text)
+        if not text:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Speech transcription returned empty text.",
+            )
+
+        return SpeechTranscriptionResponse(
+            text=text,
+            language=transcription.language,
+            duration=transcription.duration,
+            processing_time=transcription.processing_time,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Voice input transcription failed",
+            extra={"filename": filename, "content_type": effective_content_type},
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Speech transcription failed: {_trim_process_text(str(exc), max_chars=220)}",
+        )
+    finally:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
 
 
 @router.post("/{agent_id}/test")

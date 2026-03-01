@@ -79,6 +79,13 @@ export interface AgentMetrics {
   lastActivityAt?: string | null;
 }
 
+export interface VoiceTranscriptionResponse {
+  text: string;
+  language?: string | null;
+  duration?: number | null;
+  processing_time?: number | null;
+}
+
 /**
  * Agents API
  */
@@ -326,6 +333,26 @@ export const agentsApi = {
       if (onError) onError(errorMessage);
       throw error;
     }
+  },
+
+  /**
+   * Transcribe one recorded audio clip for voice input in test chat.
+   */
+  transcribeVoiceInput: async (file: File): Promise<VoiceTranscriptionResponse> => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await apiClient.post<VoiceTranscriptionResponse>(
+      '/agents/transcribe',
+      formData,
+      {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      }
+    );
+
+    return response.data;
   },
   
   /**

@@ -15,6 +15,9 @@ import {
   Cpu,
   History,
   Zap,
+  Mic,
+  Square,
+  Loader2,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -194,6 +197,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
   const [inputMessage, setInputMessage] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const [isTranscribingVoice, setIsTranscribingVoice] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [messagesScrollTop, setMessagesScrollTop] = useState(0);
@@ -231,6 +236,9 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
   const lastStatusTimeRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamFlushTimerRef = useRef<number | null>(null);
@@ -695,6 +703,177 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     ]
   );
 
+  const releaseVoiceRecordingResources = useCallback(() => {
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+    }
+    mediaRecorderRef.current = null;
+    recordingChunksRef.current = [];
+    setIsRecordingVoice(false);
+  }, []);
+
+  const cancelVoiceRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder) {
+      recorder.ondataavailable = null;
+      recorder.onerror = null;
+      recorder.onstop = null;
+      if (recorder.state !== 'inactive') {
+        recorder.stop();
+      }
+    }
+    releaseVoiceRecordingResources();
+  }, [releaseVoiceRecordingResources]);
+
+  const resolveVoiceFileExtension = useCallback((mimeType: string): string => {
+    const normalized = String(mimeType || '').toLowerCase();
+    if (normalized.includes('wav')) return 'wav';
+    if (normalized.includes('mp4') || normalized.includes('m4a')) return 'm4a';
+    if (normalized.includes('flac')) return 'flac';
+    if (normalized.includes('ogg')) return 'ogg';
+    if (normalized.includes('aac')) return 'aac';
+    if (normalized.includes('mpeg') || normalized.includes('mp3')) return 'mp3';
+    return 'webm';
+  }, []);
+
+  const transcribeVoiceBlob = useCallback(
+    async (audioBlob: Blob, mimeType: string) => {
+      if (!audioBlob.size) {
+        setError(t('agent.voiceInputEmpty'));
+        return;
+      }
+
+      setIsTranscribingVoice(true);
+      setError(null);
+      try {
+        const extension = resolveVoiceFileExtension(mimeType);
+        const timestamp = Date.now();
+        const audioFile = new File([audioBlob], `voice-input-${timestamp}.${extension}`, {
+          type: mimeType || `audio/${extension}`,
+        });
+
+        const response = await agentsApi.transcribeVoiceInput(audioFile);
+        const transcript = String(response.text || '').trim();
+
+        if (!transcript) {
+          setError(t('agent.voiceInputEmpty'));
+          return;
+        }
+
+        setInputMessage((prev) => {
+          if (!prev.trim()) {
+            return transcript;
+          }
+          return `${prev}${/\s$/.test(prev) ? '' : ' '}${transcript}`;
+        });
+        inputRef.current?.focus();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t('agent.voiceInputFailed'));
+      } finally {
+        setIsTranscribingVoice(false);
+      }
+    },
+    [resolveVoiceFileExtension, t]
+  );
+
+  const startVoiceRecording = useCallback(async () => {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setError(t('agent.voiceInputUnsupported'));
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+
+      const preferredMimeTypes = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/ogg;codecs=opus',
+        'audio/ogg',
+      ];
+
+      const selectedMimeType = preferredMimeTypes.find((type) =>
+        MediaRecorder.isTypeSupported(type)
+      );
+
+      const recorder = selectedMimeType
+        ? new MediaRecorder(stream, { mimeType: selectedMimeType })
+        : new MediaRecorder(stream);
+
+      mediaRecorderRef.current = recorder;
+      recordingChunksRef.current = [];
+
+      recorder.ondataavailable = (event: BlobEvent) => {
+        if (event.data && event.data.size > 0) {
+          recordingChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = () => {
+        setError(t('agent.voiceInputFailed'));
+        cancelVoiceRecording();
+      };
+
+      recorder.onstop = () => {
+        const finalMimeType = recorder.mimeType || selectedMimeType || 'audio/webm';
+        const chunks = [...recordingChunksRef.current];
+        releaseVoiceRecordingResources();
+        void transcribeVoiceBlob(new Blob(chunks, { type: finalMimeType }), finalMimeType);
+      };
+
+      recorder.start();
+      setError(null);
+      setIsRecordingVoice(true);
+    } catch (err) {
+      const isPermissionDenied =
+        err instanceof DOMException &&
+        (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError');
+
+      setError(
+        isPermissionDenied
+          ? t('agent.voiceInputPermissionDenied')
+          : err instanceof Error
+            ? err.message
+            : t('agent.voiceInputFailed')
+      );
+      cancelVoiceRecording();
+    }
+  }, [cancelVoiceRecording, releaseVoiceRecordingResources, t, transcribeVoiceBlob]);
+
+  const handleVoiceInput = useCallback(async () => {
+    if (isStreaming || isTranscribingVoice) return;
+
+    const recorder = mediaRecorderRef.current;
+    if (isRecordingVoice && recorder && recorder.state !== 'inactive') {
+      recorder.stop();
+      return;
+    }
+
+    await startVoiceRecording();
+  }, [isRecordingVoice, isStreaming, isTranscribingVoice, startVoiceRecording]);
+
+  useEffect(
+    () => () => {
+      const recorder = mediaRecorderRef.current;
+      if (recorder) {
+        recorder.ondataavailable = null;
+        recorder.onerror = null;
+        recorder.onstop = null;
+        if (recorder.state !== 'inactive') {
+          recorder.stop();
+        }
+      }
+      if (recordingStreamRef.current) {
+        recordingStreamRef.current.getTracks().forEach((track) => track.stop());
+        recordingStreamRef.current = null;
+      }
+    },
+    []
+  );
+
   // Focus input when modal opens
   useEffect(() => {
     if (isOpen) {
@@ -719,6 +898,9 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
         abortControllerRef.current.abort();
         abortControllerRef.current = null;
       }
+
+      cancelVoiceRecording();
+      setIsTranscribingVoice(false);
 
       // End the session to clean up resources (best-effort)
       const currentSessionId = sessionIdRef.current;
@@ -757,7 +939,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
       setIsStreaming(false);
       setIsFullscreen(false);
     }
-  }, [isOpen, resetHistoryVirtualizationMetrics]);
+  }, [cancelVoiceRecording, isOpen, resetHistoryVirtualizationMetrics]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -862,7 +1044,9 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
   };
 
   const handleSendMessage = async () => {
-    if ((!inputMessage.trim() && attachedFiles.length === 0) || isStreaming) return;
+    if ((!inputMessage.trim() && attachedFiles.length === 0) || isStreaming || isRecordingVoice) {
+      return;
+    }
 
     const userMessage: Message = {
       role: 'user',
@@ -1410,7 +1594,11 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
                 onChange={(e) => setInputMessage(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={
-                  isStreaming ? t('agent.thinking') : t('agent.messagePlaceholder')
+                  isStreaming
+                    ? t('agent.thinking')
+                    : isTranscribingVoice
+                      ? t('agent.voiceInputProcessing')
+                      : t('agent.messagePlaceholder')
                 }
                 disabled={isStreaming}
                 rows={1}
@@ -1419,6 +1607,27 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
 
               {/* Action Buttons */}
               <div className="flex items-center gap-2 pl-2 border-l border-zinc-100 dark:border-zinc-700">
+                <button
+                  onClick={() => {
+                    void handleVoiceInput();
+                  }}
+                  disabled={isStreaming || isTranscribingVoice}
+                  title={isRecordingVoice ? t('agent.voiceInputStop') : t('agent.voiceInputStart')}
+                  className={`p-3 rounded-2xl transition-all disabled:opacity-30 active:scale-90 ${
+                    isRecordingVoice
+                      ? 'bg-rose-50 text-rose-600 dark:bg-rose-900/30 dark:text-rose-400'
+                      : 'hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-500 dark:text-zinc-400'
+                  }`}
+                >
+                  {isTranscribingVoice ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : isRecordingVoice ? (
+                    <Square className="w-5 h-5 fill-current" />
+                  ) : (
+                    <Mic className="w-5 h-5" />
+                  )}
+                </button>
+
                 {isStreaming ? (
                   <button
                     onClick={handleAbortStreaming}
@@ -1429,7 +1638,11 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
                 ) : (
                   <button
                     onClick={handleSendMessage}
-                    disabled={!inputMessage.trim() && attachedFiles.length === 0}
+                    disabled={
+                      (!inputMessage.trim() && attachedFiles.length === 0) ||
+                      isRecordingVoice ||
+                      isTranscribingVoice
+                    }
                     className="p-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl transition-all shadow-lg shadow-indigo-500/20 disabled:opacity-30 disabled:shadow-none active:scale-90"
                   >
                     <Send className="w-5 h-5" />
