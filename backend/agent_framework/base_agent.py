@@ -1871,7 +1871,7 @@ class BaseAgent:
             # Propagate session/runtime settings to code_execution tool.
             session_sandbox_id = str(container_id).strip() if container_id else None
             for tool in self.tools:
-                if getattr(tool, "name", "") != "code_execution":
+                if getattr(tool, "name", "") not in {"code_execution", "bash"}:
                     continue
                 try:
                     if hasattr(tool, "set_execution_context"):

@@ -1,0 +1,57 @@
+# Dockerfile for sandbox runtime image used by code execution containers.
+# This image is intentionally feature-rich to reduce runtime dependency installs.
+
+FROM python:3.11-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    file \
+    fonts-dejavu-core \
+    fonts-liberation \
+    fonts-noto-cjk \
+    ghostscript \
+    git \
+    imagemagick \
+    jq \
+    libreoffice \
+    libreoffice-calc \
+    libreoffice-impress \
+    libreoffice-writer \
+    nodejs \
+    npm \
+    pandoc \
+    p7zip-full \
+    poppler-utils \
+    tesseract-ocr \
+    unoconv \
+    unzip \
+    wget \
+    zip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    python -m pip install --no-cache-dir \
+    beautifulsoup4 \
+    lxml \
+    markdown \
+    openpyxl \
+    pandas \
+    pdfplumber \
+    Pillow \
+    pypdf \
+    python-docx \
+    python-pptx \
+    reportlab \
+    xlrd
+
+RUN npm config set fund false && \
+    npm config set audit false
+
+# Keep compatibility with ContainerManager command override (/bin/sleep infinity).
+CMD ["/bin/bash"]

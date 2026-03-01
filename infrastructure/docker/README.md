@@ -82,6 +82,26 @@ docker build -f infrastructure/docker/Dockerfile.document-processor -t dwp-docum
 docker build -f infrastructure/docker/Dockerfile.funasr-service -t dwp-funasr-service:latest .
 ```
 
+### 6. Dockerfile.sandbox-runtime
+**Purpose**: Feature-rich base image for agent sandbox/code execution containers
+
+**Features**:
+- Preinstalled office and document tooling (`libreoffice`, `unoconv`, `pandoc`)
+- PDF and OCR utilities (`poppler-utils`, `ghostscript`, `tesseract-ocr`)
+- Common archive and CLI tools (`zip`, `unzip`, `p7zip`, `jq`, `file`)
+- Frontend runtime tooling (`node`, `npm`, `npx`)
+- Preinstalled Python document stack (`reportlab`, `pypdf`, `pdfplumber`, `python-docx`, `openpyxl`, `python-pptx`)
+
+**Build**:
+```bash
+docker build -f infrastructure/docker/Dockerfile.sandbox-runtime -t linx/sandbox-runtime:py311-office .
+```
+
+**Usage**:
+```bash
+export LINX_SANDBOX_PYTHON_IMAGE=linx/sandbox-runtime:py311-office
+```
+
 ## Image Optimization
 
 All Dockerfiles use multi-stage builds to minimize image size:

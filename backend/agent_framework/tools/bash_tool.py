@@ -16,6 +16,7 @@ import os
 import pty
 import re
 import select
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass, replace
@@ -25,6 +26,8 @@ from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
 
 from langchain_core.tools import Tool
+
+from virtualization.container_manager import ContainerStatus, get_container_manager
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +79,18 @@ class EnhancedBashTool:
         """
         self.process_manager = process_manager
         self.logger = logging.getLogger(__name__)
+        self._container_manager = get_container_manager()
+        self.session_sandbox_id: Optional[str] = None
+        self.network_access: bool = True
+
+    def set_execution_context(self, sandbox_id: Optional[str]) -> None:
+        """Set session sandbox container context for command execution."""
+        normalized = str(sandbox_id).strip() if sandbox_id else ""
+        self.session_sandbox_id = normalized or None
+
+    def set_network_access(self, enabled: bool) -> None:
+        """Set sandbox network policy flag (informational for bash commands)."""
+        self.network_access = bool(enabled)
 
     def _get_workspace_root(self) -> Optional[Path]:
         """Return current session workspace root when available."""
@@ -130,6 +145,133 @@ class EnhancedBashTool:
         resolved_workdir = self._resolve_workdir(config.workdir, workspace_root)
         resolved_command = self._rewrite_workspace_paths(config.command, workspace_root)
         return replace(config, command=resolved_command, workdir=resolved_workdir)
+
+    def _prepare_container_config(self, config: BashToolConfig) -> BashToolConfig:
+        """Apply container-aware defaults and path normalization."""
+        workspace_root = self._get_workspace_root()
+
+        resolved_workdir = "/workspace"
+        if config.workdir:
+            candidate = config.workdir.strip()
+            if candidate.startswith("/workspace"):
+                resolved_workdir = candidate
+            else:
+                candidate_path = Path(candidate).expanduser()
+                if workspace_root and candidate_path.is_absolute():
+                    try:
+                        rel = candidate_path.resolve().relative_to(workspace_root.resolve())
+                        resolved_workdir = f"/workspace/{rel.as_posix()}" if rel.as_posix() != "." else "/workspace"
+                    except Exception:
+                        resolved_workdir = candidate
+                elif candidate_path.is_absolute():
+                    resolved_workdir = candidate
+                else:
+                    resolved_workdir = f"/workspace/{candidate_path.as_posix()}"
+
+        resolved_command = config.command
+        if workspace_root:
+            host_workspace = str(workspace_root.resolve())
+            if host_workspace in resolved_command:
+                resolved_command = resolved_command.replace(host_workspace, "/workspace")
+
+        return replace(config, command=resolved_command, workdir=resolved_workdir)
+
+    def _should_execute_in_sandbox(self, config: BashToolConfig) -> bool:
+        """Whether command should be executed in current session sandbox."""
+        return bool(self.session_sandbox_id) and not config.elevated
+
+    def _ensure_sandbox_running(self) -> Optional[str]:
+        """Ensure session sandbox exists and is running."""
+        sandbox_id = self.session_sandbox_id
+        if not sandbox_id:
+            return None
+
+        status = self._container_manager.get_container_status(sandbox_id)
+        if status is None:
+            self.logger.warning("Session sandbox not found", extra={"sandbox_id": sandbox_id})
+            return None
+
+        if status != ContainerStatus.RUNNING:
+            started = self._container_manager.start_container(sandbox_id)
+            if not started:
+                self.logger.error("Failed to start session sandbox", extra={"sandbox_id": sandbox_id})
+                return None
+        return sandbox_id
+
+    def _execute_in_sandbox(self, config: BashToolConfig) -> BashResult:
+        """Execute bash command inside session sandbox container."""
+        sandbox_id = self._ensure_sandbox_running()
+        if not sandbox_id:
+            return BashResult(
+                success=False,
+                stdout="",
+                stderr="Session sandbox is unavailable",
+                exit_code=-1,
+                error_message="Session sandbox unavailable",
+            )
+
+        container_config = self._prepare_container_config(config)
+        self.logger.info(
+            "Executing bash command (sandbox mode)",
+            extra={
+                "sandbox_id": sandbox_id,
+                "command": container_config.command[:100],
+                "workdir": container_config.workdir,
+            },
+        )
+        if container_config.background:
+            return BashResult(
+                success=False,
+                stdout="",
+                stderr=(
+                    "Background execution in sandbox is not supported yet. "
+                    "Run the command in foreground mode."
+                ),
+                exit_code=-1,
+                error_message="Sandbox background execution not supported",
+            )
+
+        command = container_config.command
+        if container_config.timeout:
+            timeout_seconds = max(1, int(container_config.timeout))
+            command = (
+                f"timeout {timeout_seconds}s /bin/sh -lc "
+                f"{shlex.quote(container_config.command)}"
+            )
+
+        env = dict(container_config.env or {})
+        if container_config.pty:
+            # Hint interactive-capable CLIs to preserve colorized output.
+            env.setdefault("TERM", "xterm-256color")
+
+        try:
+            exit_code, stdout, stderr = self._container_manager.exec_in_container(
+                container_id=sandbox_id,
+                command=command,
+                workdir=container_config.workdir,
+                environment=env or None,
+            )
+            return BashResult(
+                success=exit_code == 0,
+                stdout=stdout or "",
+                stderr=stderr or "",
+                exit_code=exit_code,
+            )
+        except Exception as e:
+            self.logger.error(
+                "Sandbox bash execution failed",
+                extra={
+                    "sandbox_id": sandbox_id,
+                    "error": str(e),
+                },
+            )
+            return BashResult(
+                success=False,
+                stdout="",
+                stderr=str(e),
+                exit_code=-1,
+                error_message=str(e),
+            )
     
     def execute(self, config: BashToolConfig) -> BashResult:
         """Execute bash command with enhanced features.
@@ -141,15 +283,18 @@ class EnhancedBashTool:
             BashResult with execution details
         """
         start_time = time.time()
-        resolved_config = self._prepare_config(config)
         
         try:
-            if resolved_config.background:
-                result = self._execute_background(resolved_config)
-            elif resolved_config.pty:
-                result = self._execute_pty(resolved_config)
+            if self._should_execute_in_sandbox(config):
+                result = self._execute_in_sandbox(config)
             else:
-                result = self._execute_normal(resolved_config)
+                resolved_config = self._prepare_config(config)
+                if resolved_config.background:
+                    result = self._execute_background(resolved_config)
+                elif resolved_config.pty:
+                    result = self._execute_pty(resolved_config)
+                else:
+                    result = self._execute_normal(resolved_config)
             
             result.execution_time = time.time() - start_time
             return result
@@ -514,7 +659,7 @@ def create_bash_tool(agent_id: UUID, user_id: UUID, process_manager=None) -> Too
                 error_output += f"Output:\n{result.stdout}"
             return error_output
     
-    return Tool(
+    tool = Tool(
         name="bash",
         description=(
             "Execute bash commands. "
@@ -524,3 +669,8 @@ def create_bash_tool(agent_id: UUID, user_id: UUID, process_manager=None) -> Too
         ),
         func=bash_execute
     )
+
+    # Expose runtime hooks so BaseAgent can propagate session/container context.
+    object.__setattr__(tool, "set_execution_context", bash_executor.set_execution_context)
+    object.__setattr__(tool, "set_network_access", bash_executor.set_network_access)
+    return tool

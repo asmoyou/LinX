@@ -43,6 +43,11 @@ RUNTIME_ARTIFACT_NAME_PATTERNS = (
 RUNTIME_ARTIFACT_EXACT_NAMES = {
     "runtime_requirements.txt",
 }
+DEFAULT_MISSION_SANDBOX_IMAGE = (
+    os.getenv("LINX_MISSION_SANDBOX_IMAGE")
+    or os.getenv("LINX_SANDBOX_PYTHON_IMAGE")
+    or "python:3.11-bookworm"
+)
 
 
 @dataclass
@@ -754,7 +759,7 @@ class MissionWorkspaceManager:
 
         Key differences from per-agent containers:
         - read_only_root is False (agents install packages)
-        - Base image is python:3.11-bookworm
+        - Base image comes from mission config or sandbox image env
         - /tmp uses tmpfs for ephemeral temporary files
         - /workspace is bind-mounted to a dedicated host mission workspace
         - 24-hour max lifetime (enforced externally)
@@ -774,7 +779,7 @@ class MissionWorkspaceManager:
 
         config = ContainerConfig(
             name=f"mission-{str(mission_id).replace('-', '')[:12]}",
-            image=mission_config.get("image", "python:3.11-bookworm"),
+            image=mission_config.get("image", DEFAULT_MISSION_SANDBOX_IMAGE),
             read_only_root=False,
             network_disabled=not network_enabled,
             network_mode="bridge" if network_enabled else "isolated-network",

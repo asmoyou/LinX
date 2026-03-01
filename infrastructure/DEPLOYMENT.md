@@ -205,6 +205,10 @@ SANDBOX_MODE=auto
 SANDBOX_CPU_LIMIT=0.5
 SANDBOX_MEMORY_LIMIT=512M
 SANDBOX_TIMEOUT=30
+
+# Optional: override sandbox runtime image (prebuilt, tool-rich)
+# Example: linx/sandbox-runtime:py311-office
+LINX_SANDBOX_PYTHON_IMAGE=python:3.11-bookworm
 ```
 
 ## Service Architecture

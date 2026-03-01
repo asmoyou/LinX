@@ -29,6 +29,13 @@ from virtualization.sandbox_selector import SandboxType, get_sandbox_selector
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SANDBOX_PYTHON_IMAGE = (
+    os.getenv("LINX_SANDBOX_PYTHON_IMAGE", "python:3.11-bookworm").strip()
+    or "python:3.11-bookworm"
+)
+DEFAULT_INTERNAL_PIP_CACHE_DIR = "/tmp/linx_pip_cache"
+DEFAULT_INTERNAL_PYTHON_DEPS_DIR = "/opt/linx_python_deps"
+
 
 class ExecutionStatus(Enum):
     """Execution status states."""
@@ -128,6 +135,7 @@ class CodeExecutionSandbox:
 
         self.config = self.sandbox_selector.get_sandbox_config(self.sandbox_type)
         self.resource_limits = resource_limits or get_default_limits("code_execution")
+        self.sandbox_python_image = DEFAULT_SANDBOX_PYTHON_IMAGE
 
         self.logger.info(
             "CodeExecutionSandbox initialized",
@@ -138,6 +146,7 @@ class CodeExecutionSandbox:
                 "memory_mb": self.resource_limits.memory_mb,
                 "timeout_seconds": self.resource_limits.execution_timeout_seconds,
                 "dependency_management": enable_dependency_management,
+                "sandbox_python_image": self.sandbox_python_image,
             },
         )
 
@@ -299,10 +308,10 @@ class CodeExecutionSandbox:
 
             if self.dependency_manager:
                 dep_target = str(
-                    runtime_environment.get("PIP_TARGET", "/tmp/linx_python_deps")
+                    runtime_environment.get("PIP_TARGET", DEFAULT_INTERNAL_PYTHON_DEPS_DIR)
                 ).strip()
                 if not dep_target:
-                    dep_target = "/tmp/linx_python_deps"
+                    dep_target = DEFAULT_INTERNAL_PYTHON_DEPS_DIR
 
                 runtime_environment.setdefault("PIP_TARGET", dep_target)
                 runtime_environment.setdefault("PIP_USER", "0")
@@ -556,44 +565,35 @@ class CodeExecutionSandbox:
                 )
 
         if self.dependency_manager:
-            try:
-                pip_cache_dir = (self.dependency_manager.cache_dir / "pip_cache").resolve()
-                pip_cache_dir.mkdir(parents=True, exist_ok=True)
-                volume_mounts[str(pip_cache_dir)] = "/root/.cache/pip"
-                environment["PIP_CACHE_DIR"] = "/root/.cache/pip"
-                environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
-                environment["PIP_DEFAULT_TIMEOUT"] = "120"
-                environment["PIP_RETRIES"] = "6"
-                environment["PIP_TARGET"] = "/tmp/linx_python_deps"
-                environment["PYTHONPATH"] = "/tmp/linx_python_deps"
-                environment["PYTHONNOUSERSITE"] = "1"
-                environment["PIP_USER"] = "0"
+            environment["PIP_CACHE_DIR"] = DEFAULT_INTERNAL_PIP_CACHE_DIR
+            environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+            environment["PIP_DEFAULT_TIMEOUT"] = "120"
+            environment["PIP_RETRIES"] = "6"
+            environment["PIP_TARGET"] = DEFAULT_INTERNAL_PYTHON_DEPS_DIR
+            environment["PYTHONPATH"] = DEFAULT_INTERNAL_PYTHON_DEPS_DIR
+            environment["PYTHONNOUSERSITE"] = "1"
+            environment["PIP_USER"] = "0"
 
-                # Respect host pip mirror/proxy settings when provided.
-                for env_key in (
-                    "PIP_INDEX_URL",
-                    "PIP_EXTRA_INDEX_URL",
-                    "PIP_TRUSTED_HOST",
-                    "PIP_CERT",
-                    "PIP_CLIENT_CERT",
-                ):
-                    env_value = os.getenv(env_key)
-                    if env_value:
-                        environment[env_key] = env_value
-            except Exception as cache_error:
-                self.logger.warning(
-                    "Failed to configure pip cache mount for code execution sandbox",
-                    extra={
-                        "execution_id": execution_id,
-                        "error": str(cache_error),
-                    },
-                )
+            # Respect host pip mirror/proxy settings when provided.
+            for env_key in (
+                "PIP_INDEX_URL",
+                "PIP_EXTRA_INDEX_URL",
+                "PIP_TRUSTED_HOST",
+                "PIP_CERT",
+                "PIP_CLIENT_CERT",
+            ):
+                env_value = os.getenv(env_key)
+                if env_value:
+                    environment[env_key] = env_value
 
         config = ContainerConfig(
             agent_id=temp_agent_id,
             name=f"code-exec-{execution_id[:8]}",
             sandbox_type=self.sandbox_type,
-            image=base_image or "python:3.11-bookworm",
+            image=base_image or self.sandbox_python_image,
+            # Keep filesystem writable so dependency installs persist into committed
+            # dependency-cache images.
+            read_only_root=False,
             resource_limits=self.resource_limits,
             network_disabled=not network_enabled,
             network_mode="bridge" if network_enabled else "none",

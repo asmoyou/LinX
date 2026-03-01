@@ -420,8 +420,8 @@ cat > /tmp/requirements.txt <<'EOF'
 {chr(10).join(requirements)}
 EOF
 
-# Install to writable target so read-only site-packages does not break pip installs
-DEP_TARGET="${{PIP_TARGET:-/tmp/linx_python_deps}}"
+# Install to writable target so container-local dependency caching remains isolated
+DEP_TARGET="${{PIP_TARGET:-/opt/linx_python_deps}}"
 mkdir -p "$DEP_TARGET"
 
 # Install with pip (pip -> pip3 -> python -m pip)

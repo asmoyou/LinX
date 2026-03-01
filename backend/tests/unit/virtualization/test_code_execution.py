@@ -293,10 +293,11 @@ class TestCodeExecutionSandbox:
         _, kwargs = sandbox.container_manager.create_container.call_args
         config = kwargs["config"]
         assert config.image == base_image
-        assert config.environment.get("PIP_CACHE_DIR") == "/root/.cache/pip"
-        assert config.environment.get("PIP_TARGET") == "/tmp/linx_python_deps"
-        assert config.environment.get("PYTHONPATH") == "/tmp/linx_python_deps"
+        assert config.environment.get("PIP_CACHE_DIR") == "/tmp/linx_pip_cache"
+        assert config.environment.get("PIP_TARGET") == "/opt/linx_python_deps"
+        assert config.environment.get("PYTHONPATH") == "/opt/linx_python_deps"
         assert config.environment.get("PYTHONNOUSERSITE") == "1"
+        assert config.read_only_root is False
 
     def test_dependencies_available_in_container_checks_python_packages(self):
         """Existing sandbox dependency check should rely on pip show exit code."""
@@ -423,10 +424,10 @@ class TestCodeExecutionSandbox:
         )
 
         assert result.success is True
-        assert captured_environment.get("PIP_TARGET") == "/tmp/linx_python_deps"
+        assert captured_environment.get("PIP_TARGET") == "/opt/linx_python_deps"
         assert captured_environment.get("PIP_USER") == "0"
         assert captured_environment.get("PYTHONNOUSERSITE") == "1"
-        assert captured_environment.get("PYTHONPATH", "").startswith("/tmp/linx_python_deps")
+        assert captured_environment.get("PYTHONPATH", "").startswith("/opt/linx_python_deps")
 
     @pytest.mark.asyncio
     async def test_execute_safe_code(self):

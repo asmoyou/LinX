@@ -10,6 +10,7 @@ Tests cover:
 import pytest
 import time
 from pathlib import Path
+from unittest.mock import Mock
 from agent_framework.tools.bash_tool import (
     BashToolConfig,
     BashResult,
@@ -19,6 +20,7 @@ from agent_framework.tools.bash_tool import (
 from agent_framework.tools.file_tools import clear_workspace_root, set_workspace_root
 from agent_framework.tools.process_manager import ProcessManager
 from uuid import uuid4
+from virtualization.container_manager import ContainerStatus
 
 
 @pytest.fixture(autouse=True)
@@ -271,6 +273,67 @@ class TestEnhancedBashTool:
             mock_process_manager.captured_config.command
         )
 
+    def test_sandbox_execution_uses_container_exec(self, tmp_path: Path):
+        """When sandbox context is set, command should execute in container."""
+        set_workspace_root(tmp_path)
+
+        tool = EnhancedBashTool()
+        fake_manager = Mock()
+        fake_manager.get_container_status.return_value = ContainerStatus.RUNNING
+        fake_manager.exec_in_container.return_value = (0, "sandbox-ok\n", "")
+        tool._container_manager = fake_manager
+        tool.set_execution_context("sandbox-123")
+
+        result = tool.execute(
+            BashToolConfig(
+                command="cat /workspace/output/file.txt",
+                workdir="/workspace/output",
+            )
+        )
+
+        assert result.success is True
+        assert "sandbox-ok" in result.stdout
+        fake_manager.exec_in_container.assert_called_once()
+        _, kwargs = fake_manager.exec_in_container.call_args
+        assert kwargs["container_id"] == "sandbox-123"
+        assert kwargs["workdir"] == "/workspace/output"
+        assert "/workspace/output/file.txt" in kwargs["command"]
+        assert str(tmp_path) not in kwargs["command"]
+
+    def test_sandbox_execution_maps_host_workspace_path_to_container(self, tmp_path: Path):
+        """Host absolute workspace paths should be rewritten to /workspace in sandbox."""
+        set_workspace_root(tmp_path)
+        host_file = tmp_path / "output" / "file.txt"
+
+        tool = EnhancedBashTool()
+        fake_manager = Mock()
+        fake_manager.get_container_status.return_value = ContainerStatus.RUNNING
+        fake_manager.exec_in_container.return_value = (0, "ok\n", "")
+        tool._container_manager = fake_manager
+        tool.set_execution_context("sandbox-123")
+
+        result = tool.execute(BashToolConfig(command=f"cat {host_file}"))
+
+        assert result.success is True
+        _, kwargs = fake_manager.exec_in_container.call_args
+        assert "/workspace/output/file.txt" in kwargs["command"]
+        assert str(host_file) not in kwargs["command"]
+
+    def test_sandbox_background_execution_is_not_supported(self):
+        """Sandbox mode should reject background host-process execution path."""
+        tool = EnhancedBashTool(process_manager=ProcessManager())
+        fake_manager = Mock()
+        fake_manager.get_container_status.return_value = ContainerStatus.RUNNING
+        tool._container_manager = fake_manager
+        tool.set_execution_context("sandbox-123")
+
+        result = tool.execute(
+            BashToolConfig(command="sleep 1", background=True)
+        )
+
+        assert result.success is False
+        assert "not supported" in result.stderr.lower()
+
 
 class TestCreateBashTool:
     """Test create_bash_tool function."""
@@ -295,6 +358,15 @@ class TestCreateBashTool:
         
         assert tool.name == "bash"
         assert "Execute bash commands" in tool.description
+
+    def test_tool_exposes_execution_context_hooks(self):
+        """Created tool should expose runtime context hooks for BaseAgent."""
+        agent_id = uuid4()
+        user_id = uuid4()
+        tool = create_bash_tool(agent_id, user_id)
+
+        assert hasattr(tool, "set_execution_context")
+        assert hasattr(tool, "set_network_access")
     
     def test_tool_execution_normal(self):
         """Test tool execution in normal mode."""

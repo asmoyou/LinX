@@ -10,6 +10,7 @@ References:
 
 import json
 import logging
+import os
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -25,6 +26,10 @@ from virtualization.resource_limits import ResourceLimits, ResourceUsage, get_de
 from virtualization.sandbox_selector import SandboxType, get_sandbox_selector
 
 logger = logging.getLogger(__name__)
+DEFAULT_SANDBOX_PYTHON_IMAGE = (
+    os.getenv("LINX_SANDBOX_PYTHON_IMAGE", "python:3.11-bookworm").strip()
+    or "python:3.11-bookworm"
+)
 
 
 class ContainerStatus(Enum):
@@ -48,7 +53,7 @@ class ContainerConfig:
 
     # Sandbox configuration
     sandbox_type: SandboxType = SandboxType.DOCKER_ENHANCED
-    image: str = "python:3.11-slim"  # Default to Python image with common tools
+    image: str = DEFAULT_SANDBOX_PYTHON_IMAGE
 
     # Resource limits
     resource_limits: ResourceLimits = field(default_factory=lambda: get_default_limits())
@@ -220,7 +225,7 @@ class ContainerManager:
                 docker_config = config.to_docker_config()
 
                 # Auto-pull image if not available locally
-                image_name = docker_config.get("image", "python:3.11-bookworm")
+                image_name = docker_config.get("image", DEFAULT_SANDBOX_PYTHON_IMAGE)
                 try:
                     self.docker_client.images.get(image_name)
                 except Exception:

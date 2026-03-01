@@ -359,7 +359,7 @@ import flask
         assert "requests==2.28.0" in script
         assert "flask" in script
         assert "--target $DEP_TARGET" in script
-        assert "DEP_TARGET=\"${PIP_TARGET:-/tmp/linx_python_deps}\"" in script
+        assert "DEP_TARGET=\"${PIP_TARGET:-/opt/linx_python_deps}\"" in script
         assert "--no-cache-dir" not in script
 
     def test_generate_node_install_script(self):

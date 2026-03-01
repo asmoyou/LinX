@@ -17,6 +17,7 @@ References:
 
 import asyncio
 import logging
+import os
 import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -26,6 +27,13 @@ from typing import Dict, Optional
 from uuid import UUID, uuid4
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SESSION_SANDBOX_IMAGE = (
+    os.getenv("LINX_SANDBOX_PYTHON_IMAGE", "python:3.11-bookworm").strip()
+    or "python:3.11-bookworm"
+)
+DEFAULT_INTERNAL_PIP_CACHE_DIR = "/tmp/linx_pip_cache"
+DEFAULT_INTERNAL_PYTHON_DEPS_DIR = "/opt/linx_python_deps"
 
 SessionEndCallback = Callable[["ConversationSession", str], Optional[Awaitable[None]]]
 
@@ -551,10 +559,6 @@ class SessionManager:
                 logger.warning("Docker not available for sandbox creation")
                 return None
 
-            # Ensure pip cache directory exists on host
-            pip_cache_dir = self.base_workdir / "pip_cache"
-            pip_cache_dir.mkdir(parents=True, exist_ok=True)
-
             # Container path for session workdir
             container_workdir = "/workspace"
             session_suffix = session_workdir.name.removeprefix("session_")
@@ -565,21 +569,26 @@ class SessionManager:
                 agent_id=agent_id,
                 name=container_name,
                 sandbox_type=container_manager.default_sandbox,
-                image="python:3.11-bookworm",  # Full Python image with curl, wget, git, gcc etc.
+                image=DEFAULT_SESSION_SANDBOX_IMAGE,
                 read_only_root=False,  # Need writable filesystem for pip install
                 tmpfs_mounts={
                     "/tmp": "size=200M,mode=1777",  # Larger tmp for code execution
                     "/output": "size=50M,mode=1777",
                 },
-                # Mount shared pip cache and session workdir
+                # Mount session workspace for user-visible files.
                 volume_mounts={
-                    str(pip_cache_dir): "/root/.cache/pip",
                     str(session_workdir): container_workdir,  # Mount workdir at /workspace
                 },
-                # Set pip to use the cache directory
+                # Keep dependency and pip cache fully inside the container.
                 environment={
-                    "PIP_CACHE_DIR": "/root/.cache/pip",
+                    "PIP_CACHE_DIR": DEFAULT_INTERNAL_PIP_CACHE_DIR,
                     "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+                    "PIP_DEFAULT_TIMEOUT": "120",
+                    "PIP_RETRIES": "6",
+                    "PIP_TARGET": DEFAULT_INTERNAL_PYTHON_DEPS_DIR,
+                    "PYTHONPATH": DEFAULT_INTERNAL_PYTHON_DEPS_DIR,
+                    "PYTHONNOUSERSITE": "1",
+                    "PIP_USER": "0",
                 },
                 network_disabled=False,  # Allow network for pip install etc.
                 network_mode="bridge",  # Use default bridge network
