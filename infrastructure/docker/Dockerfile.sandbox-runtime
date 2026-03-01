@@ -21,8 +21,12 @@ RUN set -eux; \
             fontconfig \
             fonts-dejavu-core \
             fonts-liberation \
+            fonts-arphic-ukai \
+            fonts-arphic-uming \
             fonts-noto-cjk \
             fonts-noto-cjk-extra \
+            fonts-wqy-microhei \
+            fonts-wqy-zenhei \
             ghostscript \
             git \
             imagemagick \
@@ -53,12 +57,120 @@ RUN set -eux; \
 
 RUN set -eux; \
     mkdir -p /usr/share/fonts/truetype/noto; \
-    if [ -f /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc ]; then \
-        ln -sf /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc /usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf; \
-    fi; \
-    if [ -f /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc ]; then \
-        ln -sf /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc /usr/share/fonts/truetype/noto/NotoSansSC-Bold.ttf; \
-    fi; \
+    link_font() { \
+        target="$1"; shift; \
+        for candidate in "$@"; do \
+            if [ -f "$candidate" ]; then \
+                ln -sf "$candidate" "$target"; \
+                return 0; \
+            fi; \
+        done; \
+        return 0; \
+    }; \
+    link_font /usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
+        /usr/share/fonts/truetype/wqy/wqy-microhei.ttc \
+        /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc; \
+    link_font /usr/share/fonts/truetype/noto/NotoSansSC-Bold.ttf \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc \
+        /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc; \
+    link_font /usr/share/fonts/truetype/noto/NotoSerifSC-Regular.ttf \
+        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc \
+        /usr/share/fonts/truetype/arphic/uming.ttc; \
+    link_font /usr/share/fonts/truetype/noto/SimHei.ttf \
+        /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc; \
+    link_font /usr/share/fonts/truetype/noto/SimSun.ttf \
+        /usr/share/fonts/truetype/arphic/uming.ttc \
+        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc; \
+    link_font /usr/share/fonts/truetype/noto/NSimSun.ttf \
+        /usr/share/fonts/truetype/arphic/uming.ttc \
+        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc; \
+    link_font /usr/share/fonts/truetype/noto/FangSong.ttf \
+        /usr/share/fonts/truetype/arphic/uming.ttc \
+        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc; \
+    link_font /usr/share/fonts/truetype/noto/KaiTi.ttf \
+        /usr/share/fonts/truetype/arphic/ukai.ttc \
+        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc; \
+    link_font /usr/share/fonts/truetype/noto/msyh.ttc \
+        /usr/share/fonts/truetype/wqy/wqy-microhei.ttc \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc; \
+    link_font /usr/share/fonts/truetype/noto/msyhbd.ttc \
+        /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc; \
+    link_font /usr/share/fonts/truetype/noto/msjh.ttc \
+        /usr/share/fonts/truetype/wqy/wqy-microhei.ttc \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc; \
+    link_font /usr/share/fonts/truetype/noto/PingFangSC-Regular.ttf \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc; \
+    cat > /etc/fonts/local.conf <<'EOF'; \
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <alias>
+    <family>SimHei</family>
+    <prefer>
+      <family>Noto Sans CJK SC</family>
+      <family>WenQuanYi Zen Hei</family>
+      <family>WenQuanYi Micro Hei</family>
+    </prefer>
+  </alias>
+  <alias>
+    <family>Microsoft YaHei</family>
+    <prefer>
+      <family>WenQuanYi Micro Hei</family>
+      <family>Noto Sans CJK SC</family>
+    </prefer>
+  </alias>
+  <alias>
+    <family>PingFang SC</family>
+    <prefer>
+      <family>Noto Sans CJK SC</family>
+      <family>WenQuanYi Micro Hei</family>
+    </prefer>
+  </alias>
+  <alias>
+    <family>Source Han Sans SC</family>
+    <prefer>
+      <family>Noto Sans CJK SC</family>
+    </prefer>
+  </alias>
+  <alias>
+    <family>SimSun</family>
+    <prefer>
+      <family>Noto Serif CJK SC</family>
+      <family>AR PL UMing CN</family>
+    </prefer>
+  </alias>
+  <alias>
+    <family>NSimSun</family>
+    <prefer>
+      <family>Noto Serif CJK SC</family>
+      <family>AR PL UMing CN</family>
+    </prefer>
+  </alias>
+  <alias>
+    <family>FangSong</family>
+    <prefer>
+      <family>Noto Serif CJK SC</family>
+      <family>AR PL UMing CN</family>
+    </prefer>
+  </alias>
+  <alias>
+    <family>KaiTi</family>
+    <prefer>
+      <family>AR PL UKai CN</family>
+      <family>Noto Serif CJK SC</family>
+    </prefer>
+  </alias>
+  <alias>
+    <family>Source Han Serif SC</family>
+    <prefer>
+      <family>Noto Serif CJK SC</family>
+    </prefer>
+  </alias>
+</fontconfig>
+EOF
     if command -v fc-cache >/dev/null 2>&1; then \
         fc-cache -f; \
     fi

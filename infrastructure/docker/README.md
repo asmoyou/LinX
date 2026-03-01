@@ -88,7 +88,7 @@ docker build -f infrastructure/docker/Dockerfile.funasr-service -t dwp-funasr-se
 **Features**:
 - Preinstalled office and document tooling (`libreoffice`, `unoconv`, `pandoc`)
 - PDF and OCR utilities (`poppler-utils`, `ghostscript`, `tesseract-ocr`)
-- Chinese font support (`fonts-noto-cjk`, `fonts-noto-cjk-extra`) with compatibility alias for `NotoSansSC-Regular.ttf`
+- Chinese font support (`fonts-noto-cjk`, `fonts-noto-cjk-extra`, `fonts-wqy-*`, `fonts-arphic-*`) with compatibility aliases (for example `NotoSansSC`, `SimHei`, `SimSun`, `Microsoft YaHei`) and Fontconfig family mapping
 - Common archive and CLI tools (`zip`, `unzip`, `p7zip`, `jq`, `file`)
 - Frontend runtime tooling (`node` 24.x, `npm`, `npx`)
 - Preinstalled Python stack for files/data/web (`requests`, `numpy`, `pandas`, `openpyxl`, `sqlalchemy`, `python-dotenv`, `PyYAML`, `plotly`, `beautifulsoup4`, `lxml`, `reportlab`, `pypdf`, `pdfplumber`, `python-docx`, `python-pptx`)
