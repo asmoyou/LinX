@@ -490,10 +490,14 @@ async def test_execute_agent_task_without_container_passes_execution_context():
     args, kwargs = agent.calls[0]
     assert args == ()
     assert kwargs["task_description"] == "ping"
-    assert kwargs["context"] == {
-        "agent_memories": ["prior context"],
-        "execution_context_tag": "mission_run",
-    }
+    assert kwargs["context"]["agent_memories"] == ["prior context"]
+    assert kwargs["context"]["execution_context_tag"] == "mission_run"
+    runtime_capabilities = kwargs["context"]["runtime_capabilities"]
+    assert runtime_capabilities["sandbox_enabled"] is False
+    assert runtime_capabilities["sandbox_backend"] == "host_subprocess"
+    assert runtime_capabilities["workspace_root_virtual"] == "/workspace"
+    assert runtime_capabilities["network_access"] is True
+    assert runtime_capabilities["ui_mode"] == "none"
     assert exec_context == {"agent_memories": ["prior context"]}
     assert kwargs["execution_profile"] == ExecutionProfile.MISSION_CONTROL
 

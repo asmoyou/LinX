@@ -317,6 +317,54 @@ class TestBaseAgent:
         assert "Default behavior" in prompt
         assert "Use file tools when the user asks for deliverable files" in prompt
 
+    def test_create_system_prompt_renders_runtime_environment_block(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        prompt = agent._create_system_prompt(
+            runtime_capabilities={
+                "sandbox_enabled": True,
+                "sandbox_backend": "docker_enhanced",
+                "network_access": False,
+                "workspace_root_virtual": "/workspace",
+                "writable_roots": ["/workspace"],
+                "ui_mode": "none",
+                "session_persistent": True,
+                "host_fallback_allowed": False,
+            }
+        )
+
+        assert "## Runtime Environment (Authoritative)" in prompt
+        assert "- Sandbox: enabled (docker_enhanced)" in prompt
+        assert "- UI mode: none" in prompt
+        assert "- Code execution network access: disabled" in prompt
+        assert "- Host fallback: blocked" in prompt
+
+    def test_resolve_runtime_capabilities_uses_authoritative_runtime_flags(self):
+        resolved = BaseAgent._resolve_runtime_capabilities(
+            context={
+                "runtime_capabilities": {
+                    "sandbox_enabled": True,
+                    "sandbox_backend": "firecracker",
+                    "network_access": False,
+                }
+            },
+            session_workdir=None,
+            container_id=None,
+            code_execution_network_access=True,
+        )
+
+        assert resolved["sandbox_enabled"] is False
+        assert resolved["sandbox_backend"] == "host_subprocess"
+        assert resolved["network_access"] is True
+        assert resolved["workspace_root_virtual"] == "/workspace"
+
     def test_build_system_time_context_contains_utc_and_local_timestamps(self):
         config = AgentConfig(
             agent_id=uuid4(),

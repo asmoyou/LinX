@@ -24,6 +24,10 @@ from agent_framework.runtime_policy import (
     ExecutionProfile,
     is_mission_task_unified_runtime_enabled,
 )
+from agent_framework.runtime_capabilities import (
+    apply_authoritative_runtime_overrides,
+    build_runtime_capabilities_snapshot,
+)
 from mission_system.agent_factory import create_mission_agent
 from mission_system.agent_factory import create_registered_mission_agent
 from mission_system.agent_roles import (
@@ -2200,6 +2204,22 @@ class MissionOrchestrator:
             request_context.setdefault("execution_context_tag", MISSION_RUNTIME_CONTEXT_TAG)
         else:
             request_context = {"execution_context_tag": MISSION_RUNTIME_CONTEXT_TAG}
+        request_context["runtime_capabilities"] = apply_authoritative_runtime_overrides(
+            request_context.get("runtime_capabilities"),
+            defaults=build_runtime_capabilities_snapshot(
+                sandbox_enabled=bool(str(container_id or "").strip()),
+                sandbox_backend="docker" if container_id else "host_subprocess",
+                workspace_root_virtual="/workspace",
+                writable_roots=["/workspace"],
+                ui_mode="none",
+                network_access=(
+                    True if code_execution_network_access is None else bool(code_execution_network_access)
+                ),
+                session_persistent=bool(session_workdir),
+                source="mission_orchestrator",
+            ),
+            preserve_sandbox_backend_when_enabled=True,
+        )
         request = RuntimeAdapterRequest(
             agent=agent,
             task_description=prompt,

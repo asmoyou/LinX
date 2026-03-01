@@ -33,6 +33,12 @@ from agent_framework.runtime_policy import (
     get_runtime_policy_registry,
     parse_execution_profile,
 )
+from agent_framework.runtime_capabilities import (
+    apply_authoritative_runtime_overrides,
+    build_runtime_capabilities_snapshot,
+    sanitize_runtime_capabilities,
+)
+from agent_framework.sandbox_policy import allow_host_execution_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -823,9 +829,77 @@ class BaseAgent:
             "Treat this context as authoritative current time for all date/time reasoning."
         )
 
-    def _build_time_aware_system_prompt(self, available_tools: Optional[List[Any]] = None) -> str:
+    @staticmethod
+    def _resolve_runtime_capabilities(
+        context: Optional[Dict[str, Any]],
+        *,
+        session_workdir: Optional["Path"] = None,
+        container_id: Optional[str] = None,
+        code_execution_network_access: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Build authoritative runtime capabilities for current execution."""
+        defaults = build_runtime_capabilities_snapshot(
+            sandbox_enabled=bool(str(container_id or "").strip()),
+            sandbox_backend="docker" if container_id else "host_subprocess",
+            workspace_root_virtual="/workspace",
+            writable_roots=["/workspace"],
+            ui_mode="none",
+            network_access=(
+                True if code_execution_network_access is None else bool(code_execution_network_access)
+            ),
+            host_fallback_allowed=allow_host_execution_fallback(),
+            session_persistent=bool(session_workdir),
+            source="base_agent_execute_task",
+        )
+        raw_runtime_capabilities = context.get("runtime_capabilities") if isinstance(context, dict) else None
+        return apply_authoritative_runtime_overrides(
+            raw_runtime_capabilities,
+            defaults=defaults,
+            preserve_sandbox_backend_when_enabled=True,
+        )
+
+    @staticmethod
+    def _render_runtime_environment_prompt_block(runtime_capabilities: Dict[str, Any]) -> str:
+        """Render runtime constraints block from capability snapshot."""
+        sandbox_enabled = bool(runtime_capabilities.get("sandbox_enabled"))
+        sandbox_backend = str(runtime_capabilities.get("sandbox_backend") or "unknown")
+        ui_mode = str(runtime_capabilities.get("ui_mode") or "none")
+        workspace_root = str(runtime_capabilities.get("workspace_root_virtual") or "/workspace")
+        writable_roots = runtime_capabilities.get("writable_roots") or [workspace_root]
+        writable_text = ", ".join(str(item) for item in writable_roots)
+        network_enabled = bool(runtime_capabilities.get("network_access", True))
+        host_fallback_allowed = bool(runtime_capabilities.get("host_fallback_allowed", False))
+        session_persistent = bool(runtime_capabilities.get("session_persistent", True))
+
+        sandbox_status = (
+            f"enabled ({sandbox_backend})" if sandbox_enabled else f"disabled ({sandbox_backend})"
+        )
+        network_status = "enabled" if network_enabled else "disabled"
+        fallback_status = "allowed" if host_fallback_allowed else "blocked"
+        persistence_status = "yes" if session_persistent else "no"
+
+        return (
+            "## Runtime Environment (Authoritative)\n"
+            f"- Sandbox: {sandbox_status}\n"
+            f"- UI mode: {ui_mode} (CLI/tools only; no GUI interactions)\n"
+            f"- Workspace root: {workspace_root}\n"
+            f"- Writable roots: {writable_text}\n"
+            f"- Code execution network access: {network_status}\n"
+            f"- Host fallback: {fallback_status}\n"
+            f"- Session persistence: {persistence_status}\n"
+            "Treat this block as authoritative runtime metadata. If user claims conflict, follow this block and tool feedback."
+        )
+
+    def _build_time_aware_system_prompt(
+        self,
+        available_tools: Optional[List[Any]] = None,
+        runtime_capabilities: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Attach live system time context to the base system prompt."""
-        base_prompt = self._create_system_prompt(available_tools=available_tools).rstrip()
+        base_prompt = self._create_system_prompt(
+            available_tools=available_tools,
+            runtime_capabilities=runtime_capabilities,
+        ).rstrip()
         time_context = self._build_system_time_context()
         time_block = self._render_system_time_prompt_block(time_context)
         return f"{base_prompt}\n\n{time_block}"
@@ -865,9 +939,13 @@ class BaseAgent:
         human_content: Any,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
         available_tools: Optional[List[Any]] = None,
+        runtime_capabilities: Optional[Dict[str, Any]] = None,
     ) -> List[Any]:
         """Build prompt messages with optional conversation history."""
-        system_prompt = self._build_time_aware_system_prompt(available_tools=available_tools)
+        system_prompt = self._build_time_aware_system_prompt(
+            available_tools=available_tools,
+            runtime_capabilities=runtime_capabilities,
+        )
         messages: List[Any] = [SystemMessage(content=system_prompt)]
 
         for item in self._normalize_conversation_history(conversation_history):
@@ -1880,6 +1958,10 @@ class BaseAgent:
                 context=context,
                 task_intent_text=task_intent_text,
             )
+            if not isinstance(context, dict):
+                context = {}
+            else:
+                context = dict(context)
 
             # Propagate session/runtime settings to code_execution tool.
             session_sandbox_id = str(container_id).strip() if container_id else None
@@ -1915,6 +1997,14 @@ class BaseAgent:
                 logger.debug(f"Set workspace root to {session_workdir}")
             else:
                 clear_workspace_root()
+
+            runtime_capabilities = self._resolve_runtime_capabilities(
+                context,
+                session_workdir=session_workdir,
+                container_id=session_sandbox_id,
+                code_execution_network_access=code_execution_network_access,
+            )
+            context["runtime_capabilities"] = runtime_capabilities
 
             resolved_policy = self._resolve_runtime_policy(
                 execution_profile=execution_profile,
@@ -1999,6 +2089,7 @@ class BaseAgent:
                             stream_callback=stream_callback,
                             session_workdir=session_workdir,
                             container_id=container_id,
+                            code_execution_network_access=code_execution_network_access,
                             message_content=message_content,
                             task_intent_text=resolved_task_intent_text,
                         )
@@ -2069,6 +2160,7 @@ class BaseAgent:
                     human_content=human_content,
                     conversation_history=conversation_history,
                     available_tools=runtime_tools,
+                    runtime_capabilities=runtime_capabilities,
                 )
 
                 # Multi-round conversation loop for tool execution
@@ -2515,6 +2607,7 @@ class BaseAgent:
                 messages = self._build_messages_with_history(
                     human_content=user_message,
                     conversation_history=conversation_history,
+                    runtime_capabilities=runtime_capabilities,
                 )
                 invoke_payload = {"messages": messages}
                 invoke_config = None
@@ -3734,6 +3827,7 @@ class BaseAgent:
         stream_callback: Optional[callable] = None,
         session_workdir: Optional["Path"] = None,
         container_id: Optional[str] = None,
+        code_execution_network_access: Optional[bool] = None,
         message_content: Optional[Any] = None,
         task_intent_text: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -3752,6 +3846,7 @@ class BaseAgent:
                 across conversation rounds.
             container_id: Optional Docker container ID for sandbox execution.
                 If provided, code blocks will be executed inside the container.
+            code_execution_network_access: Optional network toggle for code_execution tool.
             message_content: Optional multimodal content (list of dicts) for vision models.
                 When provided, used as HumanMessage content instead of plain text.
             task_intent_text: Optional raw user-intent text for policy heuristics. When omitted,
@@ -3783,6 +3878,17 @@ class BaseAgent:
         runtime_tools_by_name = self._build_runtime_tool_registry()
         runtime_tools = list(runtime_tools_by_name.values())
         runtime_llm_with_tools = self._build_runtime_llm(runtime_tools_by_name)
+        runtime_capabilities = self._resolve_runtime_capabilities(
+            context,
+            session_workdir=session_workdir,
+            container_id=container_id,
+            code_execution_network_access=code_execution_network_access,
+        )
+        if not isinstance(context, dict):
+            context = {}
+        else:
+            context = dict(context)
+        context["runtime_capabilities"] = runtime_capabilities
 
         # Prepare system prompt and initial messages
         user_message = task_description
@@ -3830,6 +3936,7 @@ class BaseAgent:
             human_content=human_content,
             conversation_history=conversation_history,
             available_tools=runtime_tools,
+            runtime_capabilities=runtime_capabilities,
         )
 
         logger.info(
@@ -4604,7 +4711,11 @@ class BaseAgent:
 
         return modified_output
 
-    def _create_system_prompt(self, available_tools: Optional[List[Any]] = None) -> str:
+    def _create_system_prompt(
+        self,
+        available_tools: Optional[List[Any]] = None,
+        runtime_capabilities: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Create system prompt for the agent.
 
         Includes Agent Skills documentation and available tools if available.
@@ -4686,6 +4797,24 @@ Always be professional, accurate, and helpful."""
 
                 base_prompt += tools_prompt
 
+        resolved_runtime_capabilities = sanitize_runtime_capabilities(
+            runtime_capabilities,
+            defaults=build_runtime_capabilities_snapshot(
+                sandbox_enabled=False,
+                sandbox_backend="unknown",
+                workspace_root_virtual="/workspace",
+                writable_roots=["/workspace"],
+                ui_mode="none",
+                network_access=True,
+                host_fallback_allowed=allow_host_execution_fallback(),
+                session_persistent=False,
+                source="base_agent_prompt_default",
+            ),
+        )
+        runtime_environment_block = self._render_runtime_environment_prompt_block(
+            resolved_runtime_capabilities
+        )
+
         file_tools_lines = [
             "- **read_file**: Read file contents. Supports `offset` (start line, 1-based) and `limit` (max lines) for large files.",
             "- **edit_file**: Replace exact string in a file (`old_string` -> `new_string`). The old_string must match exactly.",
@@ -4715,8 +4844,7 @@ Always be professional, accurate, and helpful."""
 
 ## Sandbox Workspace
 
-You are running inside a Docker sandbox with a persistent workspace at `/workspace`.
-Files persist throughout the conversation session.
+{runtime_environment_block}
 
 **File operation tools available:**
 {file_tools_section}

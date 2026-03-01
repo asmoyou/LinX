@@ -19,6 +19,10 @@ from agent_framework.agent_memory_interface import (
     get_agent_memory_interface,
 )
 from agent_framework.base_agent import BaseAgent
+from agent_framework.runtime_capabilities import (
+    apply_authoritative_runtime_overrides,
+    build_runtime_capabilities_snapshot,
+)
 from agent_framework.runtime_policy import ExecutionProfile, RuntimePolicy
 from agent_framework.runtime_service import RuntimeAdapterRequest, get_unified_agent_runtime_service
 from memory_system.memory_interface import MemoryType, SearchQuery
@@ -983,6 +987,26 @@ class AgentExecutor:
 
             if context.additional_context:
                 exec_context.update(context.additional_context)
+
+            runtime_capabilities = apply_authoritative_runtime_overrides(
+                exec_context.get("runtime_capabilities"),
+                defaults=build_runtime_capabilities_snapshot(
+                    sandbox_enabled=bool(str(container_id or "").strip()),
+                    sandbox_backend="docker" if container_id else "host_subprocess",
+                    workspace_root_virtual="/workspace",
+                    writable_roots=["/workspace"],
+                    ui_mode="none",
+                    network_access=(
+                        True
+                        if code_execution_network_access is None
+                        else bool(code_execution_network_access)
+                    ),
+                    session_persistent=bool(session_workdir),
+                    source="agent_executor",
+                ),
+                preserve_sandbox_backend_when_enabled=True,
+            )
+            exec_context["runtime_capabilities"] = runtime_capabilities
 
             runtime_service = get_unified_agent_runtime_service()
             result = runtime_service.execute(
