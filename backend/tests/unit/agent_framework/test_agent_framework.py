@@ -502,6 +502,49 @@ class TestBaseAgent:
         assert decision["should_stop"] is False
         assert "file deliverable" in str(decision.get("reason", "")).lower()
 
+    def test_assess_autonomous_completion_does_not_misclassify_polite_followup(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        decision = agent._assess_autonomous_completion(
+            task_intent_text="查询天气",
+            latest_output="福州今天多云，气温 18-25°C。若你需要，我可以继续查询未来三天天气。",
+            tool_call_records=[],
+            round_number=3,
+            max_rounds=6,
+            finish_reason="",
+        )
+
+        assert decision["should_stop"] is True
+
+    def test_assess_autonomous_completion_detects_explicit_incomplete_signal(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        decision = agent._assess_autonomous_completion(
+            task_intent_text="查询天气",
+            latest_output="任务还未完成，我需要继续调用工具获取剩余信息。",
+            tool_call_records=[],
+            round_number=3,
+            max_rounds=6,
+            finish_reason="",
+        )
+
+        assert decision["should_stop"] is False
+        assert "incomplete" in str(decision.get("reason", "")).lower()
+
     def test_runtime_tool_registry_keeps_file_tools_available(self):
         config = AgentConfig(
             agent_id=uuid4(),

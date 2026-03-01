@@ -234,9 +234,18 @@ export default function SkillCardV2({
                   </span>
                 )}
               </div>
-              <p className="text-sm text-muted-foreground line-clamp-2 break-words">
-                {skill.description}
-              </p>
+              <div className="relative group/description">
+                <p className="text-sm text-muted-foreground line-clamp-2 break-words">
+                  {skill.description}
+                </p>
+                {skill.description && (
+                  <div className="absolute top-full left-0 right-0 z-30 mt-2 opacity-0 translate-y-1 pointer-events-none transition-all duration-150 group-hover/description:opacity-100 group-hover/description:translate-y-0">
+                    <div className="max-h-44 overflow-y-auto rounded-lg border border-border/60 bg-background/95 p-3 text-xs leading-5 text-foreground shadow-2xl backdrop-blur-sm">
+                      {skill.description}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

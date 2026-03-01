@@ -1227,19 +1227,17 @@ class BaseAgent:
                 "feedback_prompt": "",
             }
 
-        incomplete_markers = (
-            "无法",
-            "不能",
-            "未完成",
-            "继续",
-            "失败",
-            "i can't",
-            "cannot",
-            "unable",
-            "not complete",
-            "need to",
+        incomplete_patterns = (
+            r"(任务|当前任务|工作).{0,8}(未完成|尚未完成|还未完成|还没完成)",
+            r"(我|当前).{0,8}(需要|还需).{0,8}(继续|下一步|进一步)",
+            r"(将|会).{0,6}(继续|下一步).{0,10}(执行|处理|调用)",
+            r"(请|先).{0,4}(继续|稍等)",
+            r"i\s+(still\s+)?need\s+to",
+            r"not\s+complete",
+            r"incomplete",
+            r"(unable\s+to|cannot|can't)",
         )
-        if any(marker in lowered_output for marker in incomplete_markers):
+        if any(re.search(pattern, lowered_output) for pattern in incomplete_patterns):
             return {
                 "should_stop": False,
                 "confidence": 0.2,
@@ -4556,6 +4554,8 @@ When solving problems:
 2. Use available tools when needed
 3. Provide clear and helpful responses
 4. If you need more information, ask clarifying questions
+5. For key parameters (e.g., city, date, person, account), prioritize values explicitly given in the current user message
+6. If a required parameter is missing, ask for clarification instead of guessing from old memory/context
 
 Always be professional, accurate, and helpful."""
 
