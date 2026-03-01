@@ -27,7 +27,7 @@ class CodeExecutionInput(BaseModel):
     code: str = Field(
         description=(
             "Code to execute. Prefer complete, self-contained snippets for "
-            "python/javascript/typescript/bash."
+            "python/javascript/typescript."
         )
     )
     language: str = Field(
@@ -35,7 +35,7 @@ class CodeExecutionInput(BaseModel):
         description=(
             "Programming language. Supported values: "
             "python (py), javascript (js, node, nodejs), "
-            "typescript (ts), bash (sh, shell)."
+            "typescript (ts)."
         ),
     )
 
@@ -51,7 +51,7 @@ class CodeExecutionTool(BaseTool):
     description: str = """Execute code in a secure sandbox environment.
     
 Use this tool when you need to:
-- Run Python/JavaScript/TypeScript/Bash code to accomplish a task
+- Run Python/JavaScript/TypeScript code to accomplish a task
 - Execute scripts from Agent Skills
 - Perform calculations or data processing
 - Test code snippets
@@ -65,7 +65,7 @@ The code will run in an isolated environment with:
   - `python`: Python runtime in sandbox image
   - `javascript`: Node.js runtime in sandbox image
   - `typescript`: Node.js + ts-node runtime in sandbox image
-  - `bash`: /bin/bash in sandbox image
+- For shell commands, use the dedicated `bash` tool
 
 Input should be valid code as a string and a supported language.
 The tool returns the output (stdout) or any errors.
@@ -85,6 +85,7 @@ print(f"Square root of 16 is {result}")
     # Agent context
     agent_id: UUID
     user_id: UUID
+    supported_languages: tuple[str, ...] = ("python", "javascript", "typescript")
     
     # Pydantic config to allow arbitrary types
     model_config = {"arbitrary_types_allowed": True}
@@ -129,8 +130,6 @@ print(f"Square root of 16 is {result}")
             "nodejs": "javascript",
             "js": "javascript",
             "ts": "typescript",
-            "sh": "bash",
-            "shell": "bash",
         }
         return aliases.get(normalized, normalized)
 
@@ -202,6 +201,13 @@ print(f"Square root of 16 is {result}")
             Formatted result string
         """
         normalized_language = self._normalize_language(language)
+        if normalized_language not in self.supported_languages:
+            return (
+                "Code execution failed:\n"
+                f"Unsupported language for code_execution: {language}. "
+                "Supported languages: python, javascript, typescript. "
+                "For shell commands, use the bash tool."
+            )
 
         logger.info(
             f"Executing code for agent {self.agent_id}",

@@ -14,13 +14,14 @@ def test_code_execution_input_language_description_mentions_js_ts() -> None:
 
     assert "javascript" in description
     assert "typescript" in description
-    assert "bash" in description
+    assert "bash" not in description
 
 
 def test_code_execution_tool_description_mentions_supported_languages() -> None:
     description = str(CodeExecutionTool.model_fields["description"].default or "").lower()
 
-    assert "python/javascript/typescript/bash" in description
+    assert "python/javascript/typescript" in description
+    assert "for shell commands, use the dedicated `bash` tool" in description
     assert "node.js" in description
     assert "ts-node" in description
 
@@ -52,3 +53,13 @@ async def test_code_execution_tool_normalizes_node_alias_before_sandbox_call(mon
 
     assert captured["language"] == "javascript"
     assert "Code executed successfully" in output
+
+
+@pytest.mark.asyncio
+async def test_code_execution_tool_rejects_shell_language() -> None:
+    tool = CodeExecutionTool(agent_id=uuid4(), user_id=uuid4())
+
+    output = await tool._execute_code("echo hello", "bash")
+
+    assert "Unsupported language for code_execution" in output
+    assert "use the bash tool" in output
