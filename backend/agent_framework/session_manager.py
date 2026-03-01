@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Dict, Optional
 from uuid import UUID, uuid4
 
+from agent_framework.sandbox_policy import allow_host_execution_fallback
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_SESSION_SANDBOX_IMAGE = (
@@ -157,6 +159,7 @@ class SessionManager:
         self.cleanup_interval_seconds = cleanup_interval_seconds
         self.max_sessions_per_user = max_sessions_per_user
         self.use_sandbox_by_default = use_sandbox_by_default
+        self.allow_host_execution_fallback = allow_host_execution_fallback()
 
         # Session storage: session_id -> ConversationSession
         self._sessions: Dict[str, ConversationSession] = {}
@@ -182,6 +185,7 @@ class SessionManager:
                 "default_ttl_minutes": default_ttl_minutes,
                 "max_sessions_per_user": max_sessions_per_user,
                 "use_sandbox_by_default": use_sandbox_by_default,
+                "allow_host_execution_fallback": self.allow_host_execution_fallback,
                 "docker_available": self._docker_available,
             },
         )
@@ -475,13 +479,30 @@ class SessionManager:
 
         # Optionally acquire sandbox (only if Docker is available)
         sandbox_id = None
+        if not use_sandbox and not self.allow_host_execution_fallback:
+            raise RuntimeError(
+                "Host execution fallback is disabled by sandbox isolation policy; "
+                "session must run in a sandbox."
+            )
+
         if use_sandbox:
             if not self._docker_available:
-                logger.info(
-                    f"Docker not available, session {session_id} will use subprocess execution",
-                    extra={"session_id": session_id},
+                message = (
+                    "Docker not available for required sandbox session "
+                    f"(session_id={session_id})"
                 )
-                use_sandbox = False
+                if self.allow_host_execution_fallback:
+                    logger.info(
+                        f"{message}; falling back to subprocess execution",
+                        extra={"session_id": session_id},
+                    )
+                    use_sandbox = False
+                else:
+                    logger.error(
+                        f"{message}; host fallback is disabled",
+                        extra={"session_id": session_id},
+                    )
+                    raise RuntimeError(message)
             else:
                 try:
                     sandbox_id = await self._acquire_sandbox(agent_id, workdir)
@@ -491,13 +512,21 @@ class SessionManager:
                             extra={"session_id": session_id, "sandbox_id": sandbox_id},
                         )
                     else:
-                        logger.warning(
-                            f"Failed to acquire sandbox for session {session_id}, using subprocess"
-                        )
-                        use_sandbox = False
+                        message = f"Failed to acquire sandbox for session {session_id}"
+                        if self.allow_host_execution_fallback:
+                            logger.warning(f"{message}, using subprocess")
+                            use_sandbox = False
+                        else:
+                            logger.error(f"{message}; host fallback is disabled")
+                            raise RuntimeError(message)
                 except Exception as e:
-                    logger.warning(f"Failed to acquire sandbox, using subprocess: {e}")
-                    use_sandbox = False
+                    message = f"Failed to acquire sandbox: {e}"
+                    if self.allow_host_execution_fallback:
+                        logger.warning(f"{message}; using subprocess")
+                        use_sandbox = False
+                    else:
+                        logger.error(f"{message}; host fallback is disabled")
+                        raise RuntimeError(message) from e
 
         # Create session
         session = ConversationSession(

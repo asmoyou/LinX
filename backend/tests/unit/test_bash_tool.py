@@ -334,6 +334,15 @@ class TestEnhancedBashTool:
         assert result.success is False
         assert "not supported" in result.stderr.lower()
 
+    def test_host_execution_is_blocked_when_fallback_disabled(self):
+        """Without sandbox context, strict isolation should reject host execution."""
+        tool = EnhancedBashTool(allow_host_fallback=False)
+
+        result = tool.execute(BashToolConfig(command="echo 'blocked'"))
+
+        assert result.success is False
+        assert "disabled" in result.stderr.lower()
+
 
 class TestCreateBashTool:
     """Test create_bash_tool function."""

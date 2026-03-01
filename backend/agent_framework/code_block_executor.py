@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
+from agent_framework.sandbox_policy import allow_host_execution_fallback
+
 logger = logging.getLogger(__name__)
 
 
@@ -113,7 +115,8 @@ class CodeBlockExecutor:
         sandbox=None,
         use_sandbox: bool = False,
         default_timeout: int = 60,
-        base_workdir: Optional[str] = None
+        base_workdir: Optional[str] = None,
+        allow_host_fallback: Optional[bool] = None,
     ):
         """Initialize code block executor.
 
@@ -122,6 +125,7 @@ class CodeBlockExecutor:
             use_sandbox: Whether to use sandbox for execution
             default_timeout: Default timeout in seconds
             base_workdir: Base directory for code execution (default: /tmp/agent_code)
+            allow_host_fallback: Optional override for host subprocess fallback policy
         """
         self.sandbox = sandbox
         self.use_sandbox = use_sandbox
@@ -129,6 +133,10 @@ class CodeBlockExecutor:
         self.base_workdir = Path(base_workdir or "/tmp/agent_code")
         self.base_workdir.mkdir(parents=True, exist_ok=True)
         self.logger = logging.getLogger(__name__)
+        if allow_host_fallback is None:
+            self.allow_host_fallback = allow_host_execution_fallback()
+        else:
+            self.allow_host_fallback = bool(allow_host_fallback)
 
         # Container manager for Docker execution (lazy loaded)
         self._container_manager = None
@@ -584,22 +592,34 @@ class CodeBlockExecutor:
                 result = await self._execute_in_container(
                     container_id, block.language, script_path, env, timeout, workdir
                 )
-            elif block.language == 'python':
-                result = await self._execute_python_file(
-                    script_path, None, env, timeout, workdir
-                )
-            elif block.language == 'bash':
-                result = await self._execute_bash_file(
-                    script_path, None, env, timeout, workdir
-                )
             else:
-                result = ExecutionResult(
-                    success=False,
-                    output="",
-                    error=f"Unsupported language: {block.language}",
-                    exit_code=-1,
-                    language=block.language
-                )
+                if not self.allow_host_fallback:
+                    result = ExecutionResult(
+                        success=False,
+                        output="",
+                        error=(
+                            "Host code-block execution is disabled by sandbox isolation policy. "
+                            "No container is available for this run."
+                        ),
+                        exit_code=-1,
+                        language=block.language,
+                    )
+                elif block.language == 'python':
+                    result = await self._execute_python_file(
+                        script_path, None, env, timeout, workdir
+                    )
+                elif block.language == 'bash':
+                    result = await self._execute_bash_file(
+                        script_path, None, env, timeout, workdir
+                    )
+                else:
+                    result = ExecutionResult(
+                        success=False,
+                        output="",
+                        error=f"Unsupported language: {block.language}",
+                        exit_code=-1,
+                        language=block.language
+                    )
 
             result.execution_time = time.time() - start_time
             result.language = block.language
@@ -661,6 +681,21 @@ class CodeBlockExecutor:
 
         container_manager = self._get_container_manager()
         if container_manager is None or not container_manager.docker_available:
+            if not self.allow_host_fallback:
+                self.logger.error(
+                    "[CODE_BLOCK] Docker unavailable and host fallback disabled",
+                    extra={"container_id": container_id},
+                )
+                return ExecutionResult(
+                    success=False,
+                    output="",
+                    error=(
+                        "Docker is unavailable for code-block execution and host fallback "
+                        "is disabled by sandbox isolation policy."
+                    ),
+                    exit_code=-1,
+                    language=language,
+                )
             self.logger.warning(
                 "[CODE_BLOCK] Docker not available, falling back to subprocess",
                 extra={"container_id": container_id}

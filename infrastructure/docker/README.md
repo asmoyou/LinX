@@ -100,6 +100,9 @@ docker build -f infrastructure/docker/Dockerfile.sandbox-runtime -t linx/sandbox
 **Usage**:
 ```bash
 export LINX_SANDBOX_PYTHON_IMAGE=linx/sandbox-runtime:py311-office
+# Enforce fail-closed isolation (recommended)
+export LINX_ENFORCE_SANDBOX_ISOLATION=true
+export LINX_ALLOW_HOST_EXECUTION_FALLBACK=false
 ```
 
 ## Image Optimization

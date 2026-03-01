@@ -17,6 +17,7 @@ from collections import OrderedDict
 
 from langchain_core.tools import tool as langchain_tool
 
+from agent_framework.sandbox_policy import allow_host_execution_fallback
 from skill_library.skill_types import SkillType, StorageType
 from database.models import Skill
 
@@ -402,6 +403,12 @@ class SkillExecutionEngine:
                 __import__(dep.replace('-', '_'))
                 logger.debug(f"Dependency {dep} already installed")
             except ImportError:
+                if not allow_host_execution_fallback():
+                    raise ValueError(
+                        "Host dependency installation is disabled by sandbox isolation policy. "
+                        f"Missing dependency: {dep}. Install it in sandbox/base image, or set "
+                        "LINX_ALLOW_HOST_EXECUTION_FALLBACK=1 for emergency compatibility."
+                    )
                 # Install the package
                 logger.info(f"Installing dependency: {dep}")
                 try:

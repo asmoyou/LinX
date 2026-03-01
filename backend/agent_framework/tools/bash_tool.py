@@ -27,6 +27,7 @@ from uuid import UUID, uuid4
 
 from langchain_core.tools import Tool
 
+from agent_framework.sandbox_policy import allow_host_execution_fallback
 from virtualization.container_manager import ContainerStatus, get_container_manager
 
 logger = logging.getLogger(__name__)
@@ -71,17 +72,22 @@ class EnhancedBashTool:
     - Timeout protection
     """
     
-    def __init__(self, process_manager=None):
+    def __init__(self, process_manager=None, allow_host_fallback: Optional[bool] = None):
         """Initialize enhanced bash tool.
         
         Args:
             process_manager: Optional ProcessManager for background processes
+            allow_host_fallback: Optional override for host subprocess fallback policy
         """
         self.process_manager = process_manager
         self.logger = logging.getLogger(__name__)
         self._container_manager = get_container_manager()
         self.session_sandbox_id: Optional[str] = None
         self.network_access: bool = True
+        if allow_host_fallback is None:
+            self.allow_host_fallback = allow_host_execution_fallback()
+        else:
+            self.allow_host_fallback = bool(allow_host_fallback)
 
     def set_execution_context(self, sandbox_id: Optional[str]) -> None:
         """Set session sandbox container context for command execution."""
@@ -288,6 +294,27 @@ class EnhancedBashTool:
             if self._should_execute_in_sandbox(config):
                 result = self._execute_in_sandbox(config)
             else:
+                if not self.allow_host_fallback:
+                    message = (
+                        "Host bash execution is disabled by sandbox isolation policy. "
+                        "No active session sandbox is available."
+                    )
+                    self.logger.error(
+                        message,
+                        extra={
+                            "command": config.command[:100],
+                            "sandbox_id": self.session_sandbox_id,
+                        },
+                    )
+                    result = BashResult(
+                        success=False,
+                        stdout="",
+                        stderr=message,
+                        exit_code=-1,
+                        error_message="Host execution fallback disabled",
+                    )
+                    result.execution_time = time.time() - start_time
+                    return result
                 resolved_config = self._prepare_config(config)
                 if resolved_config.background:
                     result = self._execute_background(resolved_config)

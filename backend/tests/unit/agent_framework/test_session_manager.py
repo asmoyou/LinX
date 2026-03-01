@@ -44,6 +44,24 @@ async def test_release_sandbox_fallback_cleanup(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_session_creation_fails_when_sandbox_required_and_docker_unavailable(
+    monkeypatch, tmp_path
+):
+    """Strict isolation should fail closed instead of falling back to host execution."""
+    monkeypatch.setenv("LINX_ALLOW_HOST_EXECUTION_FALLBACK", "0")
+    monkeypatch.setenv("LINX_ENFORCE_SANDBOX_ISOLATION", "1")
+    monkeypatch.setattr(SessionManager, "_check_docker_availability", lambda self: False)
+    manager = SessionManager(base_workdir=str(tmp_path), use_sandbox_by_default=True)
+
+    with pytest.raises(RuntimeError, match="Docker not available"):
+        await manager.get_or_create_session(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            session_id=None,
+        )
+
+
+@pytest.mark.asyncio
 async def test_release_sandbox_returns_false_when_all_cleanup_paths_fail(monkeypatch, tmp_path):
     """Release should fail loudly when both terminate and fallback fail."""
     monkeypatch.setattr(SessionManager, "_check_docker_availability", lambda self: False)

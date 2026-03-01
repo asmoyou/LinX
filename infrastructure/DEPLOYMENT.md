@@ -209,6 +209,12 @@ SANDBOX_TIMEOUT=30
 # Optional: override sandbox runtime image (prebuilt, tool-rich)
 # Example: linx/sandbox-runtime:py311-office
 LINX_SANDBOX_PYTHON_IMAGE=python:3.11-bookworm
+
+# Sandbox isolation policy (recommended)
+# true = deny host subprocess fallback when sandbox is unavailable
+LINX_ENFORCE_SANDBOX_ISOLATION=true
+# emergency override for compatibility only
+LINX_ALLOW_HOST_EXECUTION_FALLBACK=false
 ```
 
 ## Service Architecture
