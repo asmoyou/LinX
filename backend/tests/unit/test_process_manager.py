@@ -78,6 +78,17 @@ class TestRingBuffer:
 
 class TestProcessManager:
     """Test ProcessManager class."""
+
+    def test_start_process_blocked_when_host_fallback_disabled(self, monkeypatch):
+        """Strict isolation should block host background process creation."""
+        monkeypatch.setenv("LINX_ENFORCE_SANDBOX_ISOLATION", "1")
+        monkeypatch.setenv("LINX_ALLOW_HOST_EXECUTION_FALLBACK", "0")
+
+        manager = ProcessManager()
+        config = BashToolConfig(command="echo 'test'")
+
+        with pytest.raises(RuntimeError, match="disabled by sandbox isolation policy"):
+            manager.start_process(config)
     
     def test_start_process_simple(self):
         """Test starting a simple process."""

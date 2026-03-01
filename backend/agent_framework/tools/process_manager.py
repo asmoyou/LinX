@@ -20,6 +20,8 @@ from enum import Enum
 from typing import Dict, List, Optional
 from uuid import uuid4
 
+from agent_framework.sandbox_policy import allow_host_execution_fallback
+
 logger = logging.getLogger(__name__)
 
 
@@ -142,6 +144,11 @@ class ProcessManager:
         Raises:
             RuntimeError: If max processes exceeded
         """
+        if not allow_host_execution_fallback():
+            raise RuntimeError(
+                "Host background process execution is disabled by sandbox isolation policy."
+            )
+
         with self.lock:
             # Check process limit
             active_count = sum(
