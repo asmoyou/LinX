@@ -13,6 +13,11 @@ type ApiErrorPayload = {
   detail?: string;
 };
 
+type RefreshResponsePayload = {
+  access_token?: string;
+  token?: string;
+};
+
 /**
  * API Client Configuration
  */
@@ -148,11 +153,16 @@ apiClient.interceptors.response.use(
           throw new Error('No refresh token available');
         }
 
-        const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {
+        const response = await axios.post<RefreshResponsePayload>(`${API_BASE_URL}/auth/refresh`, {
           refresh_token: refreshToken,
         });
 
-        const { token } = response.data;
+        // Backend refresh API returns access_token; keep token fallback for compatibility.
+        const token = response.data.access_token || response.data.token;
+        if (!token) {
+          throw new Error('Refresh response missing access token');
+        }
+
         useAuthStore.getState().setToken(token);
 
         // Notify all queued requests
