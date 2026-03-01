@@ -2354,7 +2354,11 @@ class BaseAgent:
 
                             # Check if we just read skill documentation - if so, encourage using it
                             if any(tr.get("tool") == "read_skill" for tr in tool_results):
-                                tool_results_text += "\n你已经获得了技能文档。如果需要执行技能中的脚本或命令，请使用 code_execution 工具。如果已经有足够信息，可以直接回答用户。"
+                                tool_results_text += (
+                                    "\n你已经获得了技能文档。若要执行技能中的脚本/命令，请优先使用 bash 工具。"
+                                    "code_execution 仅用于运行纯 Python 代码，不要在其中用 subprocess 调外部脚本。"
+                                    "如果信息已足够，可以直接回答用户。"
+                                )
                             else:
                                 tool_results_text += "\n请根据以上工具执行结果，给出最终回答。如果还需要更多信息或执行其他操作，可以继续调用工具。"
 
@@ -3646,7 +3650,11 @@ class BaseAgent:
 
         # Check if we just read skill documentation
         if any(tr.tool_name == "read_skill" and tr.status == "success" for tr in tool_results):
-            result_text += "\n你已经获得了技能文档。如果需要执行技能中的脚本或命令，请使用 code_execution 工具。如果已经有足够信息，可以直接回答用户。"
+            result_text += (
+                "\n你已经获得了技能文档。若要执行技能中的脚本/命令，请优先使用 bash 工具。"
+                "code_execution 仅用于运行纯 Python 代码，不要在其中用 subprocess 调外部脚本。"
+                "如果信息已足够，可以直接回答用户。"
+            )
         else:
             result_text += "\n请根据以上工具执行结果，给出最终回答。如果还需要更多信息或执行其他操作，可以继续调用工具。"
 
