@@ -89,17 +89,17 @@ docker build -f infrastructure/docker/Dockerfile.funasr-service -t dwp-funasr-se
 - Preinstalled office and document tooling (`libreoffice`, `unoconv`, `pandoc`)
 - PDF and OCR utilities (`poppler-utils`, `ghostscript`, `tesseract-ocr`)
 - Common archive and CLI tools (`zip`, `unzip`, `p7zip`, `jq`, `file`)
-- Frontend runtime tooling (`node`, `npm`, `npx`)
+- Frontend runtime tooling (`node` 24.x, `npm`, `npx`)
 - Preinstalled Python document stack (`reportlab`, `pypdf`, `pdfplumber`, `python-docx`, `openpyxl`, `python-pptx`)
 
 **Build**:
 ```bash
-docker build -f infrastructure/docker/Dockerfile.sandbox-runtime -t linx/sandbox-runtime:py311-office .
+docker build -f infrastructure/docker/Dockerfile.sandbox-runtime -t linx/sandbox-runtime:py312-office .
 ```
 
 **Usage**:
 ```bash
-export LINX_SANDBOX_PYTHON_IMAGE=linx/sandbox-runtime:py311-office
+export LINX_SANDBOX_PYTHON_IMAGE=linx/sandbox-runtime:py312-office
 # Enforce fail-closed isolation (recommended)
 export LINX_ENFORCE_SANDBOX_ISOLATION=true
 export LINX_ALLOW_HOST_EXECUTION_FALLBACK=false

@@ -1,39 +1,75 @@
 # Dockerfile for sandbox runtime image used by code execution containers.
 # This image is intentionally feature-rich to reduce runtime dependency installs.
 
-FROM python:3.11-bookworm
+FROM python:3.12-bookworm
+
+ARG NODE_MAJOR=24
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    curl \
-    file \
-    fonts-dejavu-core \
-    fonts-liberation \
-    fonts-noto-cjk \
-    ghostscript \
-    git \
-    imagemagick \
-    jq \
-    libreoffice \
-    libreoffice-calc \
-    libreoffice-impress \
-    libreoffice-writer \
-    nodejs \
-    npm \
-    pandoc \
-    p7zip-full \
-    poppler-utils \
-    tesseract-ocr \
-    unoconv \
-    unzip \
-    wget \
-    zip \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    for attempt in 1 2 3 4 5; do \
+        apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 update; \
+        if apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 install -y --no-install-recommends --fix-missing \
+            build-essential \
+            ca-certificates \
+            curl \
+            file \
+            fonts-dejavu-core \
+            fonts-liberation \
+            fonts-noto-cjk \
+            ghostscript \
+            git \
+            imagemagick \
+            jq \
+            libreoffice \
+            libreoffice-calc \
+            libreoffice-impress \
+            libreoffice-writer \
+            pandoc \
+            p7zip-full \
+            poppler-utils \
+            tesseract-ocr \
+            unoconv \
+            unzip \
+            wget \
+            xz-utils \
+            zip; then \
+            break; \
+        fi; \
+        if [ "${attempt}" -eq 5 ]; then \
+            exit 1; \
+        fi; \
+        apt-get -f install -y || true; \
+        rm -rf /var/lib/apt/lists/*; \
+        sleep 5; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) node_arch="x64" ;; \
+        arm64) node_arch="arm64" ;; \
+        *) echo "Unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    node_version="$(curl -fsSL https://nodejs.org/dist/index.json | jq -r --arg major "${NODE_MAJOR}" '[.[] | select((.version | ltrimstr("v") | split(".")[0]) == $major) | .version][0]')"; \
+    test "${node_version}" != "null"; \
+    node_base_url="https://nodejs.org/dist/${node_version}"; \
+    node_tarball="$(curl -fsSL "${node_base_url}/SHASUMS256.txt" | awk '{print $2}' | grep -E "linux-${node_arch}\\.tar\\.(xz|gz)\$" | head -n1)"; \
+    test -n "${node_tarball}"; \
+    curl -fsSLO "${node_base_url}/${node_tarball}"; \
+    curl -fsSLO "${node_base_url}/SHASUMS256.txt"; \
+    grep " ${node_tarball}\$" SHASUMS256.txt | sha256sum -c -; \
+    case "${node_tarball}" in \
+        *.tar.xz) tar -xJf "${node_tarball}" -C /usr/local --strip-components=1 --no-same-owner ;; \
+        *.tar.gz) tar -xzf "${node_tarball}" -C /usr/local --strip-components=1 --no-same-owner ;; \
+        *) echo "Unsupported Node archive format: ${node_tarball}" >&2; exit 1 ;; \
+    esac; \
+    rm -f "${node_tarball}" SHASUMS256.txt; \
+    node --version; npm --version; npx --version
 
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     python -m pip install --no-cache-dir \

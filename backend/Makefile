@@ -86,14 +86,17 @@ security-check:
 
 # Development
 run:
+	set -a; [ -f ../.env ] && . ../.env; set +a; \
 	python -m uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000
 
 run-debug:
+	set -a; [ -f ../.env ] && . ../.env; set +a; \
 	python -m uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000 --log-level debug
 
 run-log:
 	@echo "Starting backend with logs written to backend.log..."
 	@echo "Use 'tail -f backend.log' in another terminal to monitor"
+	set -a; [ -f ../.env ] && . ../.env; set +a; \
 	python -m uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000 --log-level debug >> backend.log 2>&1
 
 restart: clean stop run
