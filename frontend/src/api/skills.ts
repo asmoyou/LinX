@@ -53,7 +53,7 @@ export interface Skill {
 
 export interface CreateSkillRequest {
   name: string;
-  description: string;
+  description?: string;
   skill_type?: string;
   code?: string;
   config?: Record<string, any>;
@@ -134,7 +134,9 @@ export const skillsApi = {
     // Always use multipart/form-data for consistency
     const formData = new FormData();
     formData.append('name', data.name);
-    formData.append('description', data.description);
+    if (typeof data.description === 'string' && data.description.trim()) {
+      formData.append('description', data.description.trim());
+    }
     if (data.skill_type) formData.append('skill_type', data.skill_type);
     if (data.version) formData.append('version', data.version);
     if (data.package_file) formData.append('package_file', data.package_file);

@@ -5182,6 +5182,30 @@ async def test_agent(
         else:
             # Non-streaming response - execute and return complete result
             try:
+                # Session management for persistent execution environment
+                from agent_framework.session_manager import get_session_manager
+
+                session_mgr = get_session_manager()
+                conversation_session, _ = await session_mgr.get_or_create_session(
+                    agent_id=UUID(agent_id),
+                    user_id=UUID(current_user.user_id),
+                    session_id=session_id,
+                )
+
+                if file_refs:
+                    _materialize_attachment_files_to_workspace(
+                        conversation_session.workdir,
+                        file_refs,
+                        attachment_payloads,
+                    )
+
+                attachment_workspace_context = _build_attachment_workspace_context(file_refs)
+                user_message = (
+                    f"{message_with_attachments}{attachment_workspace_context}"
+                    if attachment_workspace_context
+                    else message_with_attachments
+                )
+
                 # Create agent config
                 config = AgentConfig(
                     agent_id=UUID(agent_id),
@@ -5287,7 +5311,7 @@ async def test_agent(
                     agent_id=UUID(agent_id),
                     user_id=UUID(current_user.user_id),
                     user_role=current_user.role,
-                    task_description=message_with_attachments,
+                    task_description=user_message,
                     additional_context={
                         "execution_context_tag": AGENT_TEST_RUNTIME_CONTEXT_TAG,
                         "task_intent_text": message,
@@ -5304,6 +5328,8 @@ async def test_agent(
                     executor.execute,
                     agent,
                     exec_context,
+                    session_workdir=conversation_session.workdir,
+                    container_id=conversation_session.sandbox_id,
                     **execute_kwargs,
                 )
 

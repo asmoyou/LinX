@@ -235,7 +235,7 @@ class CreateSkillRequest(BaseModel):
     """Request to create a new skill."""
 
     name: str = Field(..., min_length=1, max_length=100)
-    description: str = Field(..., min_length=1, max_length=500)
+    description: Optional[str] = Field(None, min_length=1, max_length=500)
     skill_type: Optional[str] = Field(default="langchain_tool")
     code: Optional[str] = Field(default=None)
     interface_definition: Optional[InterfaceDefinition] = None
@@ -621,7 +621,7 @@ async def get_skill(
 @router.post("", response_model=SkillResponse, status_code=201)
 async def create_skill(
     name: str = Form(...),
-    description: str = Form(...),
+    description: Optional[str] = Form(None),
     skill_type: str = Form(default="langchain_tool"),
     version: str = Form(default="1.0.0"),
     package_file: Optional[UploadFile] = File(None),
@@ -733,10 +733,20 @@ async def create_skill(
                 homepage_str = parsed.metadata.homepage
                 skill_metadata_dict = asdict(parsed.metadata)
                 gating_status_dict = asdict(gating_result)
+                parsed_description = parsed.metadata.description.strip()
+                if description and description.strip() and description.strip() != parsed_description:
+                    logger.info(
+                        "Ignoring form description for agent_skill and using SKILL.md description",
+                        extra={
+                            "skill_name": name,
+                            "form_description": description.strip(),
+                            "skill_md_description": parsed_description,
+                        },
+                    )
                 
                 skill = registry.register_skill(
                     name=name,
-                    description=description,
+                    description=parsed_description,
                     interface_definition={
                         "inputs": {},
                         "outputs": {"result": "string"},
@@ -789,6 +799,11 @@ async def create_skill(
                     status_code=400,
                     detail="Code required for langchain_tool"
                 )
+            if not description or not description.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Description required for langchain_tool",
+                )
             
             # Parse interface from code
             interface_def = parse_langchain_tool(code)
@@ -804,7 +819,7 @@ async def create_skill(
             
             skill = registry.register_skill(
                 name=name,
-                description=description,
+                description=description.strip(),
                 interface_definition=interface_def,
                 dependencies=deps_list,
                 version=version,
@@ -2199,7 +2214,6 @@ async def update_skill_file_content(
         import zipfile
         import tarfile
         from pathlib import Path
-        import shutil
         
         minio_client = get_minio_client()
         
@@ -2241,6 +2255,39 @@ async def update_skill_file_content(
                     
                     # Write new content
                     file_full_path.write_text(content, encoding='utf-8')
+
+                    parsed_skill_md_payload: Optional[Dict[str, Any]] = None
+                    if Path(file_path).name.lower() == "skill.md":
+                        parser = SkillMdParser()
+                        try:
+                            parsed = parser.parse(content)
+                        except ValueError as e:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Invalid SKILL.md: {str(e)}",
+                            )
+
+                        validation_errors = parser.validate(parsed)
+                        if validation_errors:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    "SKILL.md validation failed: "
+                                    f"{', '.join(validation_errors)}"
+                                ),
+                            )
+
+                        from dataclasses import asdict
+
+                        gating = GatingEngine()
+                        gating_result = gating.check_eligibility(parsed.metadata)
+                        parsed_skill_md_payload = {
+                            "description": parsed.metadata.description.strip(),
+                            "skill_md_content": content,
+                            "homepage": parsed.metadata.homepage,
+                            "skill_metadata": asdict(parsed.metadata),
+                            "gating_status": asdict(gating_result),
+                        }
                     
                     # Re-package
                     with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_upload:
@@ -2283,6 +2330,12 @@ async def update_skill_file_content(
                             
                             if db_skill:
                                 db_skill.storage_path = new_storage_path
+                                if parsed_skill_md_payload:
+                                    db_skill.description = parsed_skill_md_payload["description"]
+                                    db_skill.skill_md_content = parsed_skill_md_payload["skill_md_content"]
+                                    db_skill.homepage = parsed_skill_md_payload["homepage"]
+                                    db_skill.skill_metadata = parsed_skill_md_payload["skill_metadata"]
+                                    db_skill.gating_status = parsed_skill_md_payload["gating_status"]
                                 session.commit()
                         
                         logger.info(
@@ -2431,6 +2484,7 @@ async def update_skill_package(
                 
                 if db_skill:
                     db_skill.storage_path = new_storage_path
+                    db_skill.description = parsed.metadata.description.strip()
                     db_skill.skill_md_content = skill_md_content
                     db_skill.homepage = parsed.metadata.homepage
                     db_skill.skill_metadata = skill_metadata_dict

@@ -150,7 +150,6 @@ class TestCreateAgentSkillWithPackage:
         data = {
             'name': 'Weather Forecast',
             'skill_type': 'agent_skill',
-            'description': 'Get weather forecast',
             'is_active': 'true'
         }
         
@@ -167,6 +166,7 @@ class TestCreateAgentSkillWithPackage:
         result = response.json()
         assert result['name'] == 'Weather Forecast'
         assert result['skill_type'] == 'agent_skill'
+        assert result['description'] == 'Get weather forecast for any location'
         assert result['skill_md_content'] is not None
         assert result['homepage'] == 'https://example.com/weather'
         assert result['metadata'] is not None

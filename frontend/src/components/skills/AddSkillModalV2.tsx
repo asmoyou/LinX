@@ -103,14 +103,27 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
       });
       return;
     }
+
+    if (skillType === 'langchain_tool' && !formData.description.trim()) {
+      toast.error(t('skills.descriptionRequired', 'Description is required'), {
+        duration: 4000,
+      });
+      return;
+    }
     
     setIsSubmitting(true);
     
     try {
       const submitData: any = {
-        ...formData,
+        name: formData.name,
         skill_type: skillType,
       };
+
+      if (skillType === 'langchain_tool') {
+        submitData.description = formData.description.trim();
+        submitData.code = formData.code;
+        submitData.dependencies = formData.dependencies;
+      }
 
       // For agent skills, include file upload (required)
       if (skillType === 'agent_skill' && uploadedFile) {
@@ -226,19 +239,21 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
                   />
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
-                    {t('skills.description')} *
-                  </label>
-                  <textarea
-                    value={formData.description}
-                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    className="w-full px-4 py-2.5 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 resize-none"
-                    placeholder={t('skills.description')}
-                    rows={2}
-                    required
-                  />
-                </div>
+                {skillType === 'langchain_tool' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
+                      {t('skills.description')} *
+                    </label>
+                    <textarea
+                      value={formData.description}
+                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 resize-none"
+                      placeholder={t('skills.description')}
+                      rows={2}
+                      required
+                    />
+                  </div>
+                )}
 
                 {/* Code Editor for LangChain Tool */}
                 {skillType === 'langchain_tool' && (
@@ -329,6 +344,12 @@ def my_tool(param: str) -> str:
                 {/* File Upload for Agent Skill (Package Only) */}
                 {skillType === 'agent_skill' && (
                   <div>
+                    <div className="mb-3 text-sm text-gray-700 dark:text-gray-300">
+                      {t(
+                        'skills.agentSkillDescriptionFromSkillMd',
+                        'Description will be parsed from SKILL.md automatically.'
+                      )}
+                    </div>
                     <div className="flex items-center justify-between mb-3">
                       <label className="block text-sm font-medium text-gray-800 dark:text-white">
                         {t('skills.uploadProjectPackage')} *
