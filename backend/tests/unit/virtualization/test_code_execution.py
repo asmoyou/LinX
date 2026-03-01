@@ -311,6 +311,49 @@ class TestCodeExecutionSandbox:
         assert installed is True
         sandbox.container_manager.exec_in_container.assert_called_once()
 
+    def test_dependencies_available_in_container_checks_javascript_packages(self):
+        """JavaScript dependency check should use Node require.resolve."""
+        sandbox = CodeExecutionSandbox()
+        sandbox.container_manager = MagicMock()
+        sandbox.container_manager.exec_in_container.return_value = (0, "", "")
+        deps = {DependencyInfo(name="axios", language="javascript")}
+
+        installed = sandbox._dependencies_available_in_container("sandbox-1", deps, "javascript")
+
+        assert installed is True
+        _, kwargs = sandbox.container_manager.exec_in_container.call_args
+        assert kwargs["container_id"] == "sandbox-1"
+        assert "node -e" in kwargs["command"]
+        assert "require.resolve" in kwargs["command"]
+
+    @pytest.mark.asyncio
+    async def test_run_code_normalizes_node_alias_to_javascript_runtime(self):
+        """`node` alias should execute using Node.js interpreter."""
+        sandbox = CodeExecutionSandbox()
+        sandbox.container_manager = MagicMock()
+        sandbox.container_manager.exec_in_container.return_value = (0, "ok", "")
+
+        result = await sandbox._run_code("sandbox-1", "node")
+
+        assert result["error"] == ""
+        _, kwargs = sandbox.container_manager.exec_in_container.call_args
+        assert kwargs["command"].startswith("node ")
+        assert kwargs["command"].endswith("/tmp/code.js")
+
+    @pytest.mark.asyncio
+    async def test_run_code_supports_typescript_runtime_command(self):
+        """TypeScript should execute through ts-node with .ts code target."""
+        sandbox = CodeExecutionSandbox()
+        sandbox.container_manager = MagicMock()
+        sandbox.container_manager.exec_in_container.return_value = (0, "ok", "")
+
+        result = await sandbox._run_code("sandbox-1", "ts")
+
+        assert result["error"] == ""
+        _, kwargs = sandbox.container_manager.exec_in_container.call_args
+        assert kwargs["command"].startswith("ts-node ")
+        assert kwargs["command"].endswith("/tmp/code.ts")
+
     def test_cache_dependency_image_commits_container(self):
         """Installed dependencies should be snapshot as reusable Docker image."""
         sandbox = CodeExecutionSandbox()

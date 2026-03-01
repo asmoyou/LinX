@@ -2461,7 +2461,9 @@ class BaseAgent:
                             if any(tr.get("tool") == "read_skill" for tr in tool_results):
                                 tool_results_text += (
                                     "\n你已经获得了技能文档。若要执行技能中的脚本/命令，请优先使用 bash 工具。"
-                                    "code_execution 仅用于运行纯 Python 代码，不要在其中用 subprocess 调外部脚本。"
+                                    "code_execution 用于运行 Python/JavaScript/TypeScript 代码；"
+                                    "shell 命令请使用 bash 工具。不要在 code_execution 中用 subprocess 或 "
+                                    "child_process 调外部脚本。"
                                     "如果信息已足够，可以直接回答用户。"
                                 )
                             else:
@@ -3809,7 +3811,9 @@ class BaseAgent:
         if any(tr.tool_name == "read_skill" and tr.status == "success" for tr in tool_results):
             result_text += (
                 "\n你已经获得了技能文档。若要执行技能中的脚本/命令，请优先使用 bash 工具。"
-                "code_execution 仅用于运行纯 Python 代码，不要在其中用 subprocess 调外部脚本。"
+                "code_execution 用于运行 Python/JavaScript/TypeScript 代码；"
+                "shell 命令请使用 bash 工具。不要在 code_execution 中用 subprocess 或 "
+                "child_process 调外部脚本。"
                 "如果信息已足够，可以直接回答用户。"
             )
         else:
@@ -4772,7 +4776,10 @@ Always be professional, accurate, and helpful."""
                     tools_prompt += "```\n\n"
                     tools_prompt += "Example for code_execution:\n"
                     tools_prompt += "```json\n"
-                    tools_prompt += '{"tool": "code_execution", "code": "print(\'Hello World\')"}\n'
+                    tools_prompt += (
+                        '{"tool": "code_execution", "code": "print(\'Hello World\')", '
+                        '"language": "python"}\n'
+                    )
                     tools_prompt += "```\n\n"
                     tools_prompt += "**DO NOT** just write about using the tool - you MUST use the exact JSON format above!\n\n"
                 else:
@@ -4792,7 +4799,10 @@ Always be professional, accurate, and helpful."""
                     tools_prompt += "```\n\n"
                     tools_prompt += "Example for code_execution:\n"
                     tools_prompt += "```json\n"
-                    tools_prompt += '{"tool": "code_execution", "code": "import requests; print(requests.get(\'https://api.example.com\').text)"}\n'
+                    tools_prompt += (
+                        '{"tool": "code_execution", "code": "console.log(\'Hello from Node.js\')", '
+                        '"language": "javascript"}\n'
+                    )
                     tools_prompt += "```\n\n"
 
                 base_prompt += tools_prompt

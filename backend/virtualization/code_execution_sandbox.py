@@ -10,6 +10,7 @@ References:
 """
 
 import asyncio
+import json
 import logging
 import os
 import shlex
@@ -107,6 +108,30 @@ class MemoryExceededException(Exception):
 class CodeExecutionSandbox:
     """Secure sandbox for executing agent-generated code."""
 
+    @staticmethod
+    def _normalize_language(language: str) -> str:
+        """Normalize language aliases across validation/dependency/run stages."""
+        normalized = str(language or "python").strip().lower()
+        aliases = {
+            "py": "python",
+            "python3": "python",
+            "js": "javascript",
+            "node": "javascript",
+            "nodejs": "javascript",
+            "ts": "typescript",
+            "sh": "bash",
+            "shell": "bash",
+        }
+        return aliases.get(normalized, normalized)
+
+    @staticmethod
+    def _validation_language(language: str) -> str:
+        """Map runtime language to validator-supported language."""
+        normalized = CodeExecutionSandbox._normalize_language(language)
+        if normalized == "typescript":
+            return "javascript"
+        return normalized
+
     def __init__(
         self,
         sandbox_type: str = "auto",
@@ -178,6 +203,8 @@ class CodeExecutionSandbox:
         """
         execution_id = str(uuid4())
         started_at = datetime.utcnow()
+        normalized_language = self._normalize_language(language)
+        validation_language = self._validation_language(normalized_language)
 
         if context is None:
             context = {}
@@ -189,7 +216,7 @@ class CodeExecutionSandbox:
             "Starting code execution",
             extra={
                 "execution_id": execution_id,
-                "language": language,
+                "language": normalized_language,
                 "code_length": len(code),
                 "timeout": timeout,
                 "has_explicit_deps": bool(explicit_dependencies),
@@ -197,7 +224,7 @@ class CodeExecutionSandbox:
         )
 
         # 1. Validate code (static analysis)
-        validation_result = self.code_validator.validate_code(code, language)
+        validation_result = self.code_validator.validate_code(code, validation_language)
 
         if not validation_result.safe:
             self.logger.warning(
@@ -246,7 +273,7 @@ class CodeExecutionSandbox:
             if self.dependency_manager:
                 dependencies = self.dependency_manager.get_dependencies(
                     code=code,
-                    language=language,
+                    language=normalized_language,
                     explicit_deps=explicit_dependencies,
                 )
 
@@ -349,7 +376,7 @@ class CodeExecutionSandbox:
 
                 if dependencies_installed and dependencies and self.dependency_manager:
                     if self._dependencies_available_in_container(
-                        sandbox_id, dependencies, language
+                        sandbox_id, dependencies, normalized_language
                     ):
                         dependencies_installed = False
                         dependency_state = "existing_sandbox_deps_present"
@@ -376,7 +403,7 @@ class CodeExecutionSandbox:
             if dependencies_installed and self.dependency_manager and dependencies:
                 install_script = self.dependency_manager.generate_install_script(
                     dependencies=dependencies,
-                    language=language,
+                    language=normalized_language,
                 )
 
                 if install_script:
@@ -390,7 +417,7 @@ class CodeExecutionSandbox:
                     image_tag = self._cache_dependency_image(
                         sandbox_id=sandbox_id,
                         dependencies=dependencies,
-                        language=language,
+                        language=normalized_language,
                     )
                     self.dependency_manager.cache_dependencies(
                         dependencies=dependencies,
@@ -401,7 +428,7 @@ class CodeExecutionSandbox:
 
             # 5. Inject code and context into sandbox
             code_file, execution_workdir = await self._inject_code(
-                sandbox_id, code, context, language
+                sandbox_id, code, context, normalized_language
             )
 
             # 6. Execute with resource limits and timeout
@@ -410,7 +437,7 @@ class CodeExecutionSandbox:
             result = await asyncio.wait_for(
                 self._run_code(
                     sandbox_id,
-                    language,
+                    normalized_language,
                     code_file=code_file,
                     workdir=execution_workdir,
                     environment=runtime_environment or None,
@@ -670,9 +697,7 @@ class CodeExecutionSandbox:
         language: str,
     ) -> bool:
         """Check whether dependencies are already installed in an existing sandbox."""
-        normalized_language = (language or "").strip().lower()
-        if normalized_language not in {"python", "py"}:
-            return False
+        normalized_language = self._normalize_language(language)
 
         package_names = sorted(
             {str(dep.name).strip() for dep in dependencies if getattr(dep, "name", None)}
@@ -680,8 +705,21 @@ class CodeExecutionSandbox:
         if not package_names:
             return True
 
-        command = "python3 -m pip show " + " ".join(shlex.quote(pkg) for pkg in package_names)
-        command += " >/dev/null 2>&1"
+        if normalized_language == "python":
+            command = "python3 -m pip show " + " ".join(shlex.quote(pkg) for pkg in package_names)
+            command += " >/dev/null 2>&1"
+        elif normalized_language in {"javascript", "typescript"}:
+            resolver_script = (
+                "const pkgs = "
+                + json.dumps(package_names)
+                + ";let missing=[];"
+                + "for (const pkg of pkgs) {"
+                + "try { require.resolve(pkg); } catch (_err) { missing.push(pkg); }}"
+                + "if (missing.length) { process.stderr.write(missing.join(',')); process.exit(1); }"
+            )
+            command = f"node -e {shlex.quote(resolver_script)}"
+        else:
+            return False
 
         try:
             exit_code, _, _ = self.container_manager.exec_in_container(
@@ -777,7 +815,7 @@ class CodeExecutionSandbox:
             "sh": ".sh",
         }
 
-        ext = extensions.get(language.lower(), ".txt")
+        ext = extensions.get(self._normalize_language(language), ".txt")
         execution_workdir = "/workspace" if context.get("workspace_root") else "/tmp"
         code_file = f"{execution_workdir}/code{ext}"
         context_file = f"{execution_workdir}/context.json"
@@ -918,27 +956,19 @@ class CodeExecutionSandbox:
             Dictionary with execution results
         """
         # Map language to interpreter and file
-        language = language.lower()
+        language = self._normalize_language(language)
 
         interpreters = {
             "python": "python3",
-            "py": "python3",
             "javascript": "node",
-            "js": "node",
             "typescript": "ts-node",
-            "ts": "ts-node",
             "bash": "/bin/bash",
-            "sh": "/bin/bash",
         }
         default_code_files = {
             "python": "/tmp/code.py",
-            "py": "/tmp/code.py",
             "javascript": "/tmp/code.js",
-            "js": "/tmp/code.js",
             "typescript": "/tmp/code.ts",
-            "ts": "/tmp/code.ts",
             "bash": "/tmp/code.sh",
-            "sh": "/tmp/code.sh",
         }
 
         if language not in interpreters:

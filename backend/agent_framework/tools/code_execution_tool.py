@@ -25,26 +25,33 @@ class CodeExecutionInput(BaseModel):
     """Input schema for code execution tool."""
     
     code: str = Field(
-        description="Python code to execute. Should be complete and self-contained."
+        description=(
+            "Code to execute. Prefer complete, self-contained snippets for "
+            "python/javascript/typescript/bash."
+        )
     )
     language: str = Field(
         default="python",
-        description="Programming language (currently only 'python' is supported)"
+        description=(
+            "Programming language. Supported values: "
+            "python (py), javascript (js, node, nodejs), "
+            "typescript (ts), bash (sh, shell)."
+        ),
     )
 
 
 class CodeExecutionTool(BaseTool):
     """Tool for executing code in a secure sandbox.
     
-    This tool allows agents to execute Python code safely in an isolated environment.
+    This tool allows agents to execute code safely in an isolated environment.
     The code runs with resource limits and security restrictions.
     """
     
     name: str = "code_execution"
-    description: str = """Execute Python code in a secure sandbox environment.
+    description: str = """Execute code in a secure sandbox environment.
     
 Use this tool when you need to:
-- Run Python code to accomplish a task
+- Run Python/JavaScript/TypeScript/Bash code to accomplish a task
 - Execute scripts from Agent Skills
 - Perform calculations or data processing
 - Test code snippets
@@ -54,8 +61,13 @@ The code will run in an isolated environment with:
 - Network enabled by default (can be disabled by runtime policy)
 - File system restrictions
 - Security validation
+- Runtime prerequisites depend on language:
+  - `python`: Python runtime in sandbox image
+  - `javascript`: Node.js runtime in sandbox image
+  - `typescript`: Node.js + ts-node runtime in sandbox image
+  - `bash`: /bin/bash in sandbox image
 
-Input should be valid Python code as a string.
+Input should be valid code as a string and a supported language.
 The tool returns the output (stdout) or any errors.
 
 Example usage:
@@ -106,6 +118,22 @@ print(f"Square root of 16 is {result}")
             object.__setattr__(self, '_sandbox', get_code_execution_sandbox())
         return self._sandbox
 
+    @staticmethod
+    def _normalize_language(language: str) -> str:
+        """Normalize user-provided language aliases."""
+        normalized = str(language or "python").strip().lower()
+        aliases = {
+            "py": "python",
+            "python3": "python",
+            "node": "javascript",
+            "nodejs": "javascript",
+            "js": "javascript",
+            "ts": "typescript",
+            "sh": "bash",
+            "shell": "bash",
+        }
+        return aliases.get(normalized, normalized)
+
     def set_network_access(self, enabled: bool) -> None:
         """Set whether tool sandbox execution may use network."""
         self.network_access = bool(enabled)
@@ -124,7 +152,7 @@ print(f"Square root of 16 is {result}")
         """Execute code synchronously.
         
         Args:
-            code: Python code to execute
+            code: Code to execute
             language: Programming language (default: python)
             run_manager: Callback manager
         
@@ -154,7 +182,7 @@ print(f"Square root of 16 is {result}")
         """Execute code asynchronously.
         
         Args:
-            code: Python code to execute
+            code: Code to execute
             language: Programming language (default: python)
             run_manager: Callback manager
         
@@ -173,12 +201,14 @@ print(f"Square root of 16 is {result}")
         Returns:
             Formatted result string
         """
+        normalized_language = self._normalize_language(language)
+
         logger.info(
             f"Executing code for agent {self.agent_id}",
             extra={
                 "agent_id": str(self.agent_id),
                 "code_length": len(code),
-                "language": language,
+                "language": normalized_language,
                 "network_access": bool(self.network_access),
             }
         )
@@ -205,7 +235,7 @@ print(f"Square root of 16 is {result}")
             # Execute in sandbox with user environment variables
             result = await self.sandbox.execute_code(
                 code=code,
-                language=language,
+                language=normalized_language,
                 context={
                     "agent_id": str(self.agent_id),
                     "user_id": str(self.user_id),
