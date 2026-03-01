@@ -198,7 +198,7 @@ export default function SkillCardV2({
       : '-';
 
   return (
-    <div className="glass-panel group relative rounded-2xl overflow-hidden p-6 hover:-translate-y-1 transition-all duration-300 flex flex-col h-full shadow-xl hover:shadow-2xl">
+    <div className="glass-panel group relative rounded-2xl overflow-visible p-6 hover:-translate-y-1 transition-all duration-300 flex flex-col h-full shadow-xl hover:shadow-2xl">
       {/* Gradient overlay on hover */}
       <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
       
@@ -234,12 +234,18 @@ export default function SkillCardV2({
                   </span>
                 )}
               </div>
-              <p
-                className="text-sm text-muted-foreground line-clamp-2 break-words cursor-help"
-                title={skill.description || ''}
-              >
-                {skill.description}
-              </p>
+              <div className="relative group/description">
+                <p className="text-sm text-muted-foreground line-clamp-2 break-words cursor-help">
+                  {skill.description}
+                </p>
+                {skill.description && (
+                  <div className="absolute top-full left-0 right-0 z-30 mt-2 opacity-0 translate-y-1 pointer-events-none transition-all duration-150 group-hover/description:opacity-100 group-hover/description:translate-y-0">
+                    <div className="max-h-44 overflow-y-auto rounded-lg border border-border/60 bg-background/95 p-3 text-xs leading-5 text-foreground shadow-2xl backdrop-blur-sm">
+                      {skill.description}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
