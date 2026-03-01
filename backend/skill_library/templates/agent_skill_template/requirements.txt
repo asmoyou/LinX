@@ -3,6 +3,9 @@
 # HTTP requests
 requests>=2.31.0
 
+# Chinese -> English transliteration (used when provider rejects Chinese location names)
+pypinyin>=0.54.0
+
 # Optional: For enhanced functionality
 # python-dateutil>=2.8.2  # Date parsing
 # pytz>=2023.3            # Timezone support

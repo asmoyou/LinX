@@ -1,9 +1,9 @@
 ---
 # NOTE: 'name' must contain only alphanumeric characters, underscores, and hyphens
 # Use snake_case or kebab-case (e.g., weather_forecast or weather-forecast)
-name: weather_forecast
+name: weather-search
 emoji: 🌤️
-version: 1.0.0
+version: 1.1.0
 author: LinX Team
 homepage: https://github.com/yourusername/weather-skill
 description: Get weather forecast and current conditions for any location worldwide
@@ -39,54 +39,76 @@ The main entry point is `scripts/weather_helper.py`.
 
 ## Execution Contract (MANDATORY)
 
-Always follow this sequence to avoid retries:
+Always follow this sequence to avoid retries and wrong locations:
 
-1. Validate CLI shape first:
+1. Normalize location first (before any command):
+- Chinese place names must be converted to English for this provider.
+- For China, always include `--country CN`.
+- Use specific location context for common ambiguous places:
+  - `福州` -> `Fuzhou City,Fujian`
+  - `仓山区` -> `Cangshan,Fuzhou`
+
+2. Validate CLI shape first:
 
 ```bash
 python3 {baseDir}/scripts/weather_helper.py --help
 python3 {baseDir}/scripts/weather_helper.py current --help
 ```
 
-2. Use one of these exact command forms:
+3. Use one of these exact command forms:
 
 ```bash
 # Current weather by city (preferred)
-python3 {baseDir}/scripts/weather_helper.py current --location "Fuzhou,CN"
+python3 {baseDir}/scripts/weather_helper.py current --location "Fuzhou City,Fujian" --country CN
 
 # Current weather by coordinates
 python3 {baseDir}/scripts/weather_helper.py current --lat 26.0745 --lon 119.2965
 
 # Forecast (1-5 days)
-python3 {baseDir}/scripts/weather_helper.py forecast --location "London,GB" --days 5
+python3 {baseDir}/scripts/weather_helper.py forecast --location "London" --country GB --days 5
+
+# Resolve/inspect location candidates before weather call (recommended for ambiguous names)
+python3 {baseDir}/scripts/weather_helper.py resolve --location "Fuzhou City,Fujian" --country CN
 ```
 
-3. Do not call the script without a subcommand:
-- Wrong: `python3 weather_helper.py --city 福州`
-- Wrong: `python3 weather_helper.py current 福州` (use `--location` form in prompts)
+4. Use long options explicitly:
+- Always use `--location` and `--country`.
+- Do not use short option `-c` in prompts/examples.
+- `-c` has legacy compatibility behavior and can be misinterpreted.
 
-4. If location input is non-English text (e.g. Chinese), prefer:
-- `City,CountryCode` in Latin script (example: `Fuzhou,CN`), or
-- direct coordinates with `--lat/--lon`.
+5. Do not call the script without a subcommand in your plan:
+- Wrong: `python3 weather_helper.py --city 福州`
+- Wrong: `python3 weather_helper.py 福州`
+
+6. Chinese input conversion examples:
+- `福州` -> `Fuzhou City,Fujian` (+ `--country CN`)
+- `仓山区` -> `Cangshan,Fuzhou` (+ `--country CN`)
+- If district-level query is ambiguous, run `resolve` first or use `--lat/--lon`.
 
 ## Usage Examples
 
 ### Get Current Weather
 
 ```bash
-python3 {baseDir}/scripts/weather_helper.py current --location "Seattle,US"
+python3 {baseDir}/scripts/weather_helper.py current --location "Seattle" --country US
 ```
 
 ### Get 5-Day Forecast
 
 ```bash
-python3 {baseDir}/scripts/weather_helper.py forecast --location "London,GB" --days 5
+python3 {baseDir}/scripts/weather_helper.py forecast --location "London" --country GB --days 5
 ```
 
 ### Get Weather by Coordinates
 
 ```bash
 python3 {baseDir}/scripts/weather_helper.py current --lat 37.7749 --lon -122.4194
+```
+
+### Resolve Location Candidates (Before Querying)
+
+```bash
+python3 {baseDir}/scripts/weather_helper.py resolve --location "Cangshan,Fuzhou" --country CN
 ```
 
 ### Direct API Call (Fallback)
@@ -104,7 +126,8 @@ You can test this skill with natural language queries like:
 - "Is it going to rain in Tokyo tomorrow?"
 - "What's the temperature in New York right now?"
 
-When the query contains non-Latin city names, normalize to `City,CountryCode` before command execution.
+When the query contains Chinese location names, normalize to English (or pinyin) before command execution.
+Then include country code explicitly (for China, `--country CN`).
 
 ## Package Contents
 
@@ -145,11 +168,14 @@ Common errors and solutions:
 
 - **CLI argument error (exit code 2)**:
   - Run `python3 {baseDir}/scripts/weather_helper.py current --help`
-  - Then retry with `current --location "<City,CountryCode>"`
+  - Then retry with `current --location "<CityEnglish[,State]>" --country <Code>`
 - **401 Unauthorized**: Check that `WEATHER_API_KEY` is set correctly
 - **404 Not Found**:
-  - First retry with `City,CountryCode` (example: `Fuzhou,CN`)
+  - First retry with English place name + `--country` (example: `Fuzhou City,Fujian` + `--country CN`)
   - If still failing, use `--lat/--lon`
+- **Ambiguous location query**:
+  - Run `resolve` to inspect candidates
+  - Add `--country`/`--state`, or switch to coordinates
 - **429 Too Many Requests**: You've exceeded the API rate limit
 - **ModuleNotFoundError**: Install dependencies with `pip install -r requirements.txt`
 
