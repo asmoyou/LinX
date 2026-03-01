@@ -986,8 +986,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
             chunk.type === 'start' ||
             chunk.type === 'tool_call' ||
             chunk.type === 'tool_result' ||
-            chunk.type === 'tool_error' ||
-            chunk.type === 'done'
+            chunk.type === 'tool_error'
           ) {
             const now = Date.now();
             const duration = (now - lastStatusTimeRef.current) / 1000;
@@ -1007,6 +1006,31 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
             streamingDataRef.current.currentRound.statusMessages.push(newStatus);
             scheduleStreamingStateSync();
             lastStatusTimeRef.current = now;
+          } else if (chunk.type === 'done') {
+            const now = Date.now();
+            const duration = (now - lastStatusTimeRef.current) / 1000;
+
+            if (streamingDataRef.current.currentRound.statusMessages.length > 0) {
+              const lastIndex = streamingDataRef.current.currentRound.statusMessages.length - 1;
+              streamingDataRef.current.currentRound.statusMessages[lastIndex].duration = duration;
+            }
+
+            streamingDataRef.current.currentRound.statusMessages.push({
+              content: chunk.content,
+              type: 'done',
+              timestamp: new Date(),
+              duration: undefined,
+            });
+
+            // Backend may keep SSE open briefly after sending done; stop UI waiting immediately.
+            const activeController = abortControllerRef.current;
+            if (activeController) {
+              activeController.abort();
+            }
+
+            commitStreamingOutputToMessages();
+            resetStreamingState();
+            return;
           } else if (chunk.type === 'thinking') {
             streamingDataRef.current.currentRound.thinking += chunk.content;
             scheduleStreamingStateSync();

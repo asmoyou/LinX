@@ -621,7 +621,30 @@ class ContainerManager:
         if container_id not in self.containers:
             return None
 
-        status_str = self.containers[container_id]["status"]
+        container_info = self.containers[container_id]
+
+        if self.docker_available and container_info.get("docker_container") is not None:
+            docker_container = container_info["docker_container"]
+            try:
+                docker_container.reload()
+                docker_status = str(getattr(docker_container, "status", "")).lower()
+                if docker_status == "running":
+                    container_info["status"] = ContainerStatus.RUNNING.value
+                elif docker_status in {"exited", "dead"}:
+                    container_info["status"] = ContainerStatus.STOPPED.value
+            except NotFound:
+                container_info["status"] = ContainerStatus.TERMINATED.value
+                self.logger.warning(
+                    "Container missing in Docker, marking as terminated",
+                    extra={"container_id": container_id},
+                )
+            except DockerException as e:
+                self.logger.warning(
+                    "Failed to refresh container status from Docker",
+                    extra={"container_id": container_id, "error": str(e)},
+                )
+
+        status_str = container_info["status"]
         return ContainerStatus(status_str)
 
     def get_container_stats(self, container_id: str) -> Optional[ResourceUsage]:
@@ -715,12 +738,14 @@ class ContainerManager:
         if container_id not in self.containers:
             raise RuntimeError(f"Container {container_id} not found")
 
-        container_info = self.containers[container_id]
-
-        if container_info["status"] != ContainerStatus.RUNNING.value:
+        container_status = self.get_container_status(container_id)
+        if container_status != ContainerStatus.RUNNING:
             raise RuntimeError(
-                f"Container {container_id} is not running (status: {container_info['status']})"
+                f"Container {container_id} is not running "
+                f"(status: {container_status.value if container_status else 'unknown'})"
             )
+
+        container_info = self.containers[container_id]
 
         if not self.docker_available:
             # Simulation mode
@@ -770,6 +795,13 @@ class ContainerManager:
 
             return (exit_code, stdout, stderr)
 
+        except NotFound as e:
+            self.containers[container_id]["status"] = ContainerStatus.TERMINATED.value
+            self.logger.error(
+                "Container missing during command execution",
+                extra={"container_id": container_id, "error": str(e)},
+            )
+            raise RuntimeError(f"Container {container_id} no longer exists in Docker")
         except DockerException as e:
             self.logger.error(
                 f"Failed to execute command in container: {e}",

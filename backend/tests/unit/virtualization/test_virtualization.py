@@ -371,6 +371,60 @@ class TestContainerManager:
         status_none = manager.get_container_status("nonexistent")
         assert status_none is None
 
+    def test_get_container_status_marks_terminated_when_missing_in_docker(self):
+        """Missing Docker container should be marked as terminated."""
+        manager = ContainerManager()
+        manager.docker_available = True
+
+        docker_container = Mock()
+        docker_container.reload.side_effect = NotFound("No such container")
+        docker_container.status = "running"
+
+        container_id = "sandbox-missing-1"
+        manager.containers[container_id] = {
+            "id": container_id,
+            "docker_id": "docker-missing-1",
+            "docker_container": docker_container,
+            "agent_id": str(uuid4()),
+            "status": ContainerStatus.RUNNING.value,
+            "config": ContainerConfig(),
+            "created_at": None,
+            "started_at": None,
+            "stopped_at": None,
+        }
+
+        status = manager.get_container_status(container_id)
+
+        assert status == ContainerStatus.TERMINATED
+        assert manager.containers[container_id]["status"] == ContainerStatus.TERMINATED.value
+
+    def test_exec_in_container_marks_terminated_when_missing_in_docker(self):
+        """Exec should fail fast and mark status when Docker reports missing container."""
+        manager = ContainerManager()
+        manager.docker_available = True
+
+        docker_container = Mock()
+        docker_container.status = "running"
+        docker_container.exec_run.side_effect = NotFound("No such container")
+
+        container_id = "sandbox-missing-2"
+        manager.containers[container_id] = {
+            "id": container_id,
+            "docker_id": "docker-missing-2",
+            "docker_container": docker_container,
+            "agent_id": str(uuid4()),
+            "status": ContainerStatus.RUNNING.value,
+            "config": ContainerConfig(),
+            "created_at": None,
+            "started_at": None,
+            "stopped_at": None,
+        }
+
+        with pytest.raises(RuntimeError, match="no longer exists"):
+            manager.exec_in_container(container_id, "echo hello")
+
+        assert manager.containers[container_id]["status"] == ContainerStatus.TERMINATED.value
+
     def test_get_container_stats(self):
         """Test getting container statistics."""
         manager = ContainerManager()

@@ -4429,6 +4429,9 @@ async def test_agent(
 
         async def generate_stream():
             """Generate SSE stream for agent execution with real streaming."""
+            conversation_session = None
+            token_queue = None
+            exec_thread = None
             try:
                 # Track timing and tokens
                 import time
@@ -4930,7 +4933,7 @@ async def test_agent(
                         # Signal completion
                         token_queue.put(None)
 
-                    except Exception as e:
+                    except BaseException as e:
                         logger.error(f"Agent execution error: {e}", exc_info=True)
                         error_holder[0] = str(e)
                         token_queue.put(None)
@@ -5159,9 +5162,26 @@ async def test_agent(
                 )
 
             except asyncio.CancelledError:
+                if token_queue is not None:
+                    try:
+                        token_queue.put_nowait(None)
+                    except Exception:
+                        pass
+                if exec_thread is not None and exec_thread.is_alive():
+                    exec_thread.join(timeout=1.0)
+                    if exec_thread.is_alive():
+                        logger.warning(
+                            "Agent execution thread still running after stream cancellation",
+                            extra={"agent_id": agent_id},
+                        )
                 logger.info(
                     "Agent test stream cancelled by client",
-                    extra={"agent_id": agent_id, "session_id": conversation_session.session_id},
+                    extra={
+                        "agent_id": agent_id,
+                        "session_id": (
+                            conversation_session.session_id if conversation_session else "unknown"
+                        ),
+                    },
                 )
                 return
             except Exception as e:
