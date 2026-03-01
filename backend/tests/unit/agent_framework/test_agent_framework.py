@@ -5,6 +5,7 @@ References:
 - Design Section 4: Agent Framework Design
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -13,6 +14,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.tools import Tool
 from langgraph.errors import GraphRecursionError
 
 from agent_framework.agent_executor import AgentExecutor, ExecutionContext
@@ -26,6 +28,7 @@ from agent_framework.base_agent import (
     AgentStatus,
     BaseAgent,
     ConversationState,
+    ToolCall,
     ToolResult,
 )
 from agent_framework.capability_matcher import CapabilityMatch, CapabilityMatcher
@@ -747,6 +750,107 @@ class TestBaseAgent:
 
         assert feedback is not None
         assert feedback.error_type == "Execution Error"
+
+    def test_recovery_bash_timeout_injected_for_single_input_tool(self):
+        """Bash timeout cap should be applied without breaking single-input Tool invocation."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+            tool_timeout_seconds=3.0,
+        )
+        agent = BaseAgent(config=config)
+        state = ConversationState(round_number=1)
+
+        def bash_execute(
+            command: str,
+            pty: bool = False,
+            workdir: str | None = None,
+            background: bool = False,
+            timeout: int | None = None,
+        ) -> str:
+            return (
+                f"command={command};pty={pty};workdir={workdir};"
+                f"background={background};timeout={timeout}"
+            )
+
+        bash_tool = Tool(
+            name="bash",
+            description="test bash tool",
+            func=bash_execute,
+        )
+        agent.tools_by_name = {"bash": bash_tool}
+
+        results = asyncio.run(
+            agent._execute_tools_with_recovery(
+                [
+                    ToolCall(
+                        tool_name="bash",
+                        arguments={"command": "python3 -m http.server 8080"},
+                        raw_json="{}",
+                    )
+                ],
+                state,
+            )
+        )
+
+        assert results[0].status == "success"
+        assert "timeout=3" in str(results[0].result)
+        assert state.tool_calls_made[0].arguments["timeout"] == 3
+
+    def test_recovery_bash_arg1_is_normalized_to_command_for_single_input_tool(self):
+        """When parser emits __arg1 for bash, recovery should normalize it to command."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+            tool_timeout_seconds=3.0,
+        )
+        agent = BaseAgent(config=config)
+        state = ConversationState(round_number=1)
+
+        def bash_execute(
+            command: str,
+            pty: bool = False,
+            workdir: str | None = None,
+            background: bool = False,
+            timeout: int | None = None,
+        ) -> str:
+            return (
+                f"command={command};pty={pty};workdir={workdir};"
+                f"background={background};timeout={timeout}"
+            )
+
+        bash_tool = Tool(
+            name="bash",
+            description="test bash tool",
+            func=bash_execute,
+        )
+        agent.tools_by_name = {"bash": bash_tool}
+
+        results = asyncio.run(
+            agent._execute_tools_with_recovery(
+                [
+                    ToolCall(
+                        tool_name="bash",
+                        arguments={"__arg1": "python3 -m http.server 8080"},
+                        raw_json="{}",
+                    )
+                ],
+                state,
+            )
+        )
+
+        assert results[0].status == "success"
+        assert "command=python3 -m http.server 8080" in str(results[0].result)
+        assert "timeout=3" in str(results[0].result)
+        assert state.tool_calls_made[0].arguments["command"] == "python3 -m http.server 8080"
+        assert "__arg1" not in state.tool_calls_made[0].arguments
+        assert state.tool_calls_made[0].arguments["timeout"] == 3
 
     def test_recovery_file_delivery_guard_triggers_extra_write_round(self):
         """When file intent exists and no file write occurred, recovery loop should add one save round."""

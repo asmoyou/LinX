@@ -1602,6 +1602,19 @@ class BaseAgent:
         return preview or "(空结果)"
 
     @staticmethod
+    def _is_simple_langchain_tool_instance(tool: Any) -> bool:
+        """Detect LangChain single-input Tool (no structured args schema)."""
+        if tool is None:
+            return False
+        tool_type = type(tool)
+        return (
+            getattr(tool_type, "__name__", "") == "Tool"
+            and str(getattr(tool_type, "__module__", "")).startswith("langchain_core.tools")
+            and callable(getattr(tool, "func", None))
+            and getattr(tool, "args_schema", None) is None
+        )
+
+    @staticmethod
     def _merge_stream_message(accumulated: Any, chunk: Any) -> Any:
         """Best-effort merge of streamed chunks into a final message object."""
         if accumulated is None:
@@ -2617,6 +2630,18 @@ class BaseAgent:
                 "error": str(e),
                 "output": None,
             }
+        except BaseException as e:
+            # asyncio.CancelledError inherits BaseException (not Exception) in Python 3.12.
+            # Without this guard, a cancelled run can leak BUSY status and block later runs.
+            self.status = AgentStatus.ERROR
+            logger.error(f"Task execution interrupted: {e}", exc_info=True)
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
+            return {
+                "success": False,
+                "error": str(e),
+                "output": None,
+            }
 
     def terminate(self) -> None:
         """Terminate the agent."""
@@ -3270,10 +3295,12 @@ class BaseAgent:
 
         results = []
         runtime_tool_registry = tool_registry if tool_registry is not None else self.tools_by_name
+        tool_timeout_cap = max(1, int(self.config.tool_timeout_seconds))
 
         for tool_call in tool_calls:
             tool_name = tool_call.tool_name
             tool = runtime_tool_registry.get(tool_name)
+            tool_arguments = tool_call.arguments
 
             # Check retry count for this specific tool
             retry_key = f"tool_{tool_name}"
@@ -3315,8 +3342,36 @@ class BaseAgent:
                 continue
 
             try:
+                # Keep bash command-level timeout aligned with recovery timeout.
+                # Otherwise, asyncio.wait_for can time out while the underlying sync tool
+                # thread keeps running (e.g. long-lived servers), which blocks asyncio.run
+                # teardown and leaves stream completion pending.
+                if tool_name == "bash" and isinstance(tool_call.arguments, dict):
+                    tool_arguments = dict(tool_call.arguments)
+                    # Parse fallback positional payload produced by JSON tool-call parsing.
+                    # Example: {"tool":"bash","__arg1":"ls -la"}
+                    positional_command = tool_arguments.pop("__arg1", None)
+                    current_command = tool_arguments.get("command")
+                    if (
+                        (not isinstance(current_command, str) or not current_command.strip())
+                        and isinstance(positional_command, str)
+                        and positional_command.strip()
+                    ):
+                        tool_arguments["command"] = positional_command
+
+                    requested_timeout = tool_arguments.get("timeout")
+                    try:
+                        normalized_timeout = (
+                            int(requested_timeout) if requested_timeout is not None else tool_timeout_cap
+                        )
+                    except (TypeError, ValueError):
+                        normalized_timeout = tool_timeout_cap
+                    if normalized_timeout <= 0 or normalized_timeout > tool_timeout_cap:
+                        normalized_timeout = tool_timeout_cap
+                    tool_arguments["timeout"] = normalized_timeout
+
                 args_summary = self._summarize_tool_arguments_for_stream(
-                    tool_name, tool_call.arguments
+                    tool_name, tool_arguments
                 )
                 # Send "calling tool" message
                 if stream_callback:
@@ -3335,15 +3390,24 @@ class BaseAgent:
                         "agent_id": str(self.config.agent_id),
                         "tool_name": tool_name,
                         "tool_args_summary": args_summary,
-                        "tool_args_chars": len(str(tool_call.arguments or "")),
+                        "tool_args_chars": len(str(tool_arguments or "")),
                         "retry_count": retry_count,
                     },
                 )
 
                 # Execute tool with timeout
-                result = await asyncio.wait_for(
-                    tool.ainvoke(tool_call.arguments), timeout=self.config.tool_timeout_seconds
-                )
+                if tool_name == "bash" and self._is_simple_langchain_tool_instance(tool):
+                    # Single-input Tool cannot accept extra keys via ainvoke();
+                    # call func directly so timeout/pty/workdir/background kwargs remain valid.
+                    timeout_window_seconds = float(tool_timeout_cap) + 1.0
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(tool.func, **tool_arguments),
+                        timeout=timeout_window_seconds,
+                    )
+                else:
+                    result = await asyncio.wait_for(
+                        tool.ainvoke(tool_arguments), timeout=self.config.tool_timeout_seconds
+                    )
 
                 runtime_error = self._extract_tool_runtime_error(result)
                 if runtime_error:
@@ -3372,7 +3436,7 @@ class BaseAgent:
                     ToolCallRecord(
                         round_number=state.round_number,
                         tool_name=tool_name,
-                        arguments=tool_call.arguments,
+                        arguments=tool_arguments,
                         status="success",
                         result=result,
                         retry_number=retry_count,
@@ -3412,7 +3476,7 @@ class BaseAgent:
                     ToolCallRecord(
                         round_number=state.round_number,
                         tool_name=tool_name,
-                        arguments=tool_call.arguments,
+                        arguments=tool_arguments,
                         status="timeout",
                         error=error_msg,
                         retry_number=retry_count,
@@ -3454,7 +3518,7 @@ class BaseAgent:
                     ToolCallRecord(
                         round_number=state.round_number,
                         tool_name=tool_name,
-                        arguments=tool_call.arguments,
+                        arguments=tool_arguments,
                         status="execution_error",
                         error=error_msg,
                         retry_number=retry_count,
