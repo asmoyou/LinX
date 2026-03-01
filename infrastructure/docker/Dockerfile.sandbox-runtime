@@ -18,9 +18,11 @@ RUN set -eux; \
             ca-certificates \
             curl \
             file \
+            fontconfig \
             fonts-dejavu-core \
             fonts-liberation \
             fonts-noto-cjk \
+            fonts-noto-cjk-extra \
             ghostscript \
             git \
             imagemagick \
@@ -50,6 +52,18 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
+    mkdir -p /usr/share/fonts/truetype/noto; \
+    if [ -f /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc ]; then \
+        ln -sf /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc /usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf; \
+    fi; \
+    if [ -f /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc ]; then \
+        ln -sf /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc /usr/share/fonts/truetype/noto/NotoSansSC-Bold.ttf; \
+    fi; \
+    if command -v fc-cache >/dev/null 2>&1; then \
+        fc-cache -f; \
+    fi
+
+RUN set -eux; \
     case "$(dpkg --print-architecture)" in \
         amd64) node_arch="x64" ;; \
         arm64) node_arch="arm64" ;; \
@@ -76,14 +90,20 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     beautifulsoup4 \
     lxml \
     markdown \
+    numpy \
     openpyxl \
     pandas \
     pdfplumber \
     Pillow \
+    plotly \
     pypdf \
     python-docx \
+    python-dotenv \
     python-pptx \
+    PyYAML \
     reportlab \
+    requests \
+    sqlalchemy \
     xlrd
 
 RUN npm config set fund false && \

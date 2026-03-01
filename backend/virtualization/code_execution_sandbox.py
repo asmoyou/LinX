@@ -30,8 +30,7 @@ from virtualization.sandbox_selector import SandboxType, get_sandbox_selector
 logger = logging.getLogger(__name__)
 
 DEFAULT_SANDBOX_PYTHON_IMAGE = (
-    os.getenv("LINX_SANDBOX_PYTHON_IMAGE", "python:3.11-bookworm").strip()
-    or "python:3.11-bookworm"
+    os.getenv("LINX_SANDBOX_PYTHON_IMAGE", "python:3.11-bookworm").strip() or "python:3.11-bookworm"
 )
 DEFAULT_INTERNAL_PIP_CACHE_DIR = "/tmp/linx_pip_cache"
 DEFAULT_INTERNAL_PYTHON_DEPS_DIR = "/opt/linx_python_deps"
@@ -136,6 +135,7 @@ class CodeExecutionSandbox:
         self.config = self.sandbox_selector.get_sandbox_config(self.sandbox_type)
         self.resource_limits = resource_limits or get_default_limits("code_execution")
         self.sandbox_python_image = DEFAULT_SANDBOX_PYTHON_IMAGE
+        self.dependency_cache_scope = self._resolve_dependency_cache_scope()
 
         self.logger.info(
             "CodeExecutionSandbox initialized",
@@ -147,6 +147,7 @@ class CodeExecutionSandbox:
                 "timeout_seconds": self.resource_limits.execution_timeout_seconds,
                 "dependency_management": enable_dependency_management,
                 "sandbox_python_image": self.sandbox_python_image,
+                "dependency_cache_scope": self.dependency_cache_scope,
             },
         )
 
@@ -262,7 +263,10 @@ class CodeExecutionSandbox:
                         dependencies_installed = True
                         dependency_state = "existing_sandbox_check_required"
                     else:
-                        cached_image = self.dependency_manager.get_cached_image(dependencies)
+                        cached_image = self.dependency_manager.get_cached_image(
+                            dependencies,
+                            cache_scope=self.dependency_cache_scope,
+                        )
                         if cached_image and self._dependency_image_available(cached_image):
                             dependency_image_to_reuse = cached_image
                             dependency_state = "cached_image_reused"
@@ -284,7 +288,10 @@ class CodeExecutionSandbox:
                                         "image": cached_image,
                                     },
                                 )
-                            elif self.dependency_manager.is_cached(dependencies):
+                            elif self.dependency_manager.is_cached(
+                                dependencies,
+                                cache_scope=self.dependency_cache_scope,
+                            ):
                                 dependency_state = "metadata_cached_image_absent"
                                 self.logger.info(
                                     "Dependency metadata cached without reusable image, reinstalling",
@@ -321,9 +328,7 @@ class CodeExecutionSandbox:
                 if existing_pythonpath:
                     path_entries = [entry for entry in existing_pythonpath.split(":") if entry]
                     if dep_target not in path_entries:
-                        runtime_environment["PYTHONPATH"] = (
-                            f"{dep_target}:{existing_pythonpath}"
-                        )
+                        runtime_environment["PYTHONPATH"] = f"{dep_target}:{existing_pythonpath}"
                 else:
                     runtime_environment["PYTHONPATH"] = dep_target
 
@@ -343,7 +348,9 @@ class CodeExecutionSandbox:
                 )
 
                 if dependencies_installed and dependencies and self.dependency_manager:
-                    if self._dependencies_available_in_container(sandbox_id, dependencies, language):
+                    if self._dependencies_available_in_container(
+                        sandbox_id, dependencies, language
+                    ):
                         dependencies_installed = False
                         dependency_state = "existing_sandbox_deps_present"
                         self.logger.info(
@@ -388,6 +395,7 @@ class CodeExecutionSandbox:
                     self.dependency_manager.cache_dependencies(
                         dependencies=dependencies,
                         image_tag=image_tag,
+                        cache_scope=self.dependency_cache_scope,
                     )
                     dependency_state = "installed_and_cached"
 
@@ -633,6 +641,28 @@ class CodeExecutionSandbox:
         except Exception:
             return False
 
+    def _resolve_dependency_cache_scope(self) -> str:
+        """Build a cache scope so dependency images are invalidated per base image."""
+        scope = self.sandbox_python_image
+        if not self.container_manager.docker_available or not self.container_manager.docker_client:
+            return scope
+
+        try:
+            image = self.container_manager.docker_client.images.get(self.sandbox_python_image)
+            image_id = str(getattr(image, "id", "")).strip()
+            if image_id:
+                return f"{self.sandbox_python_image}@{image_id}"
+        except Exception as image_error:
+            self.logger.debug(
+                "Failed to resolve sandbox image fingerprint for dependency cache",
+                extra={
+                    "sandbox_python_image": self.sandbox_python_image,
+                    "error": str(image_error),
+                },
+            )
+
+        return scope
+
     def _dependencies_available_in_container(
         self,
         sandbox_id: str,
@@ -687,7 +717,11 @@ class CodeExecutionSandbox:
         if docker_container is None:
             return None
 
-        image_tag = self.dependency_manager.build_dependency_image_tag(dependencies, language)
+        image_tag = self.dependency_manager.build_dependency_image_tag(
+            dependencies,
+            language,
+            cache_scope=self.dependency_cache_scope,
+        )
         repository, _, tag = image_tag.partition(":")
         if not repository or not tag:
             return None
