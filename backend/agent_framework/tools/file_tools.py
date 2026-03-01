@@ -262,7 +262,7 @@ Returns file contents with line numbers prefixed.
             return f"Error: {e}"
         except Exception as e:
             logger.error(f"ReadFile error: {e}", exc_info=True)
-            return f"Error reading file: {e}"
+            return f"Error: {e}"
 
 
 # ---------------------------------------------------------------------------

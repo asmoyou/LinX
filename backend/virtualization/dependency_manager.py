@@ -420,8 +420,12 @@ cat > /tmp/requirements.txt <<'EOF'
 {chr(10).join(requirements)}
 EOF
 
+# Install to writable target so read-only site-packages does not break pip installs
+DEP_TARGET="${{PIP_TARGET:-/tmp/linx_python_deps}}"
+mkdir -p "$DEP_TARGET"
+
 # Install with pip (pip -> pip3 -> python -m pip)
-PIP_REQUIREMENTS_ARGS="--disable-pip-version-check --retries 6 --timeout 120 -r /tmp/requirements.txt"
+PIP_REQUIREMENTS_ARGS="--disable-pip-version-check --retries 6 --timeout 120 --upgrade --target $DEP_TARGET -r /tmp/requirements.txt"
 
 install_with_pip() {{
   local pip_base_cmd="$1"
@@ -443,7 +447,7 @@ else
   install_with_pip "python -m pip"
 fi
 
-echo "Python dependencies installed successfully"
+echo "Python dependencies installed successfully into $DEP_TARGET"
 """
         return script
     

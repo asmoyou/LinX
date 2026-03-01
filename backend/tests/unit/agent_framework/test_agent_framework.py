@@ -648,6 +648,7 @@ class TestBaseAgent:
         agent = BaseAgent(config=config)
 
         assert agent._extract_tool_runtime_error("Error: File not found")
+        assert agent._extract_tool_runtime_error("Error reading file: workspace root missing")
         assert agent._extract_tool_runtime_error("Code execution failed:\nboom")
         assert agent._extract_tool_runtime_error("❌ Command failed (exit code 1)")
         assert agent._extract_tool_runtime_error({"success": False, "error": "boom"})

@@ -294,6 +294,9 @@ class TestCodeExecutionSandbox:
         config = kwargs["config"]
         assert config.image == base_image
         assert config.environment.get("PIP_CACHE_DIR") == "/root/.cache/pip"
+        assert config.environment.get("PIP_TARGET") == "/tmp/linx_python_deps"
+        assert config.environment.get("PYTHONPATH") == "/tmp/linx_python_deps"
+        assert config.environment.get("PYTHONNOUSERSITE") == "1"
 
     def test_dependencies_available_in_container_checks_python_packages(self):
         """Existing sandbox dependency check should rely on pip show exit code."""
@@ -367,6 +370,63 @@ class TestCodeExecutionSandbox:
         assert result.status == ExecutionStatus.COMPLETED
         sandbox._create_sandbox.assert_not_called()
         sandbox._destroy_sandbox.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_execute_code_injects_writable_python_dependency_env(self):
+        """Dependency installs should run with writable pip target and PYTHONPATH."""
+        sandbox = CodeExecutionSandbox()
+        sandbox.code_validator = MagicMock()
+        sandbox.code_validator.validate_code.return_value = ValidationResult(
+            safe=True,
+            issues=[],
+            warnings=[],
+        )
+
+        dep_manager = MagicMock()
+        dep_manager.get_dependencies.return_value = {
+            DependencyInfo(name="requests", language="python")
+        }
+        dep_manager.get_cached_image.return_value = None
+        dep_manager.is_cached.return_value = False
+        dep_manager.generate_install_script.return_value = "#!/bin/bash\necho deps\n"
+        sandbox.dependency_manager = dep_manager
+
+        async def _fake_create_sandbox(*args, **kwargs):
+            return "sandbox-1"
+
+        async def _fake_inject(*args, **kwargs):
+            return ("/tmp/code.py", "/tmp")
+
+        async def _fake_run(*args, **kwargs):
+            return {"output": "ok", "error": "", "return_value": None}
+
+        async def _fake_destroy(*args, **kwargs):
+            return None
+
+        captured_environment = {}
+
+        async def _fake_install(sandbox_id, install_script, environment=None):
+            if environment:
+                captured_environment.update(environment)
+
+        sandbox._create_sandbox = _fake_create_sandbox
+        sandbox._inject_code = _fake_inject
+        sandbox._run_code = _fake_run
+        sandbox._destroy_sandbox = _fake_destroy
+        sandbox._install_dependencies = _fake_install
+        sandbox._cache_dependency_image = MagicMock(return_value="img:python-deps")
+
+        result = await sandbox.execute_code(
+            code="import requests\nprint('ok')",
+            language="python",
+            context={},
+        )
+
+        assert result.success is True
+        assert captured_environment.get("PIP_TARGET") == "/tmp/linx_python_deps"
+        assert captured_environment.get("PIP_USER") == "0"
+        assert captured_environment.get("PYTHONNOUSERSITE") == "1"
+        assert captured_environment.get("PYTHONPATH", "").startswith("/tmp/linx_python_deps")
 
     @pytest.mark.asyncio
     async def test_execute_safe_code(self):

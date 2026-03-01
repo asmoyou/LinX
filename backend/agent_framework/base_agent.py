@@ -1466,7 +1466,7 @@ class BaseAgent:
             return None
 
         lowered = text.lower()
-        if lowered.startswith("error:"):
+        if re.match(r"^error(?:\s+[a-z0-9_./-]+){0,4}\s*:", lowered):
             return text
         if lowered.startswith("code execution failed:") or lowered.startswith(
             "code execution error:"

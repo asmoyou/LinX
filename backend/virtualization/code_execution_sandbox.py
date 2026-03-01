@@ -297,6 +297,27 @@ class CodeExecutionSandbox:
                         continue
                     runtime_environment[env_key] = str(value)
 
+            if self.dependency_manager:
+                dep_target = str(
+                    runtime_environment.get("PIP_TARGET", "/tmp/linx_python_deps")
+                ).strip()
+                if not dep_target:
+                    dep_target = "/tmp/linx_python_deps"
+
+                runtime_environment.setdefault("PIP_TARGET", dep_target)
+                runtime_environment.setdefault("PIP_USER", "0")
+                runtime_environment.setdefault("PYTHONNOUSERSITE", "1")
+
+                existing_pythonpath = str(runtime_environment.get("PYTHONPATH", "")).strip()
+                if existing_pythonpath:
+                    path_entries = [entry for entry in existing_pythonpath.split(":") if entry]
+                    if dep_target not in path_entries:
+                        runtime_environment["PYTHONPATH"] = (
+                            f"{dep_target}:{existing_pythonpath}"
+                        )
+                else:
+                    runtime_environment["PYTHONPATH"] = dep_target
+
             # 3. Resolve sandbox environment (reuse session sandbox when provided)
             if existing_sandbox_id:
                 sandbox_id = existing_sandbox_id
@@ -543,6 +564,10 @@ class CodeExecutionSandbox:
                 environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
                 environment["PIP_DEFAULT_TIMEOUT"] = "120"
                 environment["PIP_RETRIES"] = "6"
+                environment["PIP_TARGET"] = "/tmp/linx_python_deps"
+                environment["PYTHONPATH"] = "/tmp/linx_python_deps"
+                environment["PYTHONNOUSERSITE"] = "1"
+                environment["PIP_USER"] = "0"
 
                 # Respect host pip mirror/proxy settings when provided.
                 for env_key in (
