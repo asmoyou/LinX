@@ -92,7 +92,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     allowedKnowledge: [],
     allowedMemory: [],
     topK: 5,
-    similarityThreshold: 0.7,
+    similarityThreshold: 0.3,
   });
 
   // Initialize form data when agent changes
@@ -116,7 +116,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         allowedKnowledge: agent.allowedKnowledge || [],
         allowedMemory: normalizeMemoryScopes(agent.allowedMemory || []),
         topK: agent.topK || 5,
-        similarityThreshold: agent.similarityThreshold || 0.7,
+        similarityThreshold: agent.similarityThreshold ?? 0.3,
       });
       setAvatarPreview(agent.avatar || '');
       setSaveError(null);
@@ -975,14 +975,14 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               {/* Similarity Threshold */}
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.similarityThreshold', '相似度阈值')}: {(formData.similarityThreshold || 0.7).toFixed(2)}
+                  {t('agent.similarityThreshold', '知识库最小相关度')}: {(formData.similarityThreshold ?? 0.3).toFixed(2)}
                 </label>
                 <input
                   type="range"
                   min="0"
                   max="1"
                   step="0.05"
-                  value={formData.similarityThreshold || 0.7}
+                  value={formData.similarityThreshold ?? 0.3}
                   onChange={(e) => setFormData({ ...formData, similarityThreshold: parseFloat(e.target.value) })}
                   className="w-full"
                 />

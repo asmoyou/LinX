@@ -126,6 +126,9 @@ class MemorySystem(MemorySystemInterface):
         retrieval_config = memory_config.get("retrieval", {})
         if not isinstance(retrieval_config, dict):
             retrieval_config = {}
+        retrieval_milvus_cfg = retrieval_config.get("milvus", {})
+        if not isinstance(retrieval_milvus_cfg, dict):
+            retrieval_milvus_cfg = {}
         write_cfg = memory_config.get("write", {})
         if not isinstance(write_cfg, dict):
             write_cfg = {}
@@ -475,8 +478,20 @@ class MemorySystem(MemorySystemInterface):
             default=2.0,
             minimum=0.1,
         )
-        self._search_metric_type = _cfg_text(milvus_config.get("metric_type")) or "L2"
-        self._search_nprobe = _cfg_int(milvus_config.get("nprobe"), default=10)
+        self._search_metric_type = (
+            _cfg_text(
+                retrieval_milvus_cfg.get("metric_type"),
+                retrieval_config.get("milvus_metric_type"),
+                milvus_config.get("metric_type"),
+            )
+            or "L2"
+        )
+        self._search_nprobe = _cfg_int(
+            retrieval_milvus_cfg.get("nprobe"),
+            retrieval_config.get("milvus_nprobe"),
+            milvus_config.get("nprobe"),
+            default=10,
+        )
 
         logger.info(
             "Memory System initialized",

@@ -4845,7 +4845,7 @@ async def test_agent(
                         agent,
                         request_exec_context,
                         top_k=agent_info.top_k or 5,
-                        memory_min_similarity=agent_info.similarity_threshold,
+                        knowledge_min_relevance_score=agent_info.similarity_threshold,
                     )
 
                     for debug_message in _build_retrieval_process_messages(context_debug):
@@ -5055,7 +5055,6 @@ async def test_agent(
                                 session_workdir=conversation_session.workdir,
                                 container_id=conversation_session.sandbox_id,
                                 message_content=content_override,
-                                memory_min_similarity=agent_info.similarity_threshold,
                                 prebuilt_execution_context=context,
                             )
                         else:
@@ -5506,7 +5505,7 @@ async def test_agent(
                 executor = get_agent_executor()
                 execute_kwargs: Dict[str, Any] = {
                     "conversation_history": parsed_history or None,
-                    "memory_min_similarity": agent_info.similarity_threshold,
+                    "knowledge_min_relevance_score": agent_info.similarity_threshold,
                 }
                 if use_unified_runtime:
                     execute_kwargs["execution_profile"] = ExecutionProfile.DEBUG_CHAT

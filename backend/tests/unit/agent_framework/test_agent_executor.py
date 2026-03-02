@@ -258,6 +258,72 @@ def test_execution_context_uses_explicit_memory_similarity_threshold():
     assert memory_interface.retrieve_company_memory.call_args.kwargs["min_similarity"] == 0.64
 
 
+def test_execution_context_does_not_fallback_to_agent_similarity_threshold():
+    memory_interface = MagicMock()
+    memory_interface.retrieve_agent_memory.return_value = []
+    memory_interface.retrieve_company_memory.return_value = []
+    memory_interface.memory_system.retrieve_memories.return_value = []
+    executor = AgentExecutor(memory_interface=memory_interface)
+
+    agent = MagicMock()
+    agent.similarity_threshold = 0.92
+    agent.config = SimpleNamespace(
+        name="Test Agent",
+        access_level="team",
+        allowed_memory=["agent", "company", "user_context"],
+        allowed_knowledge=[],
+        similarity_threshold=0.88,
+    )
+    context = ExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        task_description="你知道我喜欢吃什么吗",
+    )
+
+    executor.build_execution_context_with_debug(
+        agent=agent,
+        context=context,
+        top_k=5,
+        memory_min_similarity=None,
+    )
+
+    assert memory_interface.retrieve_agent_memory.call_args.kwargs["min_similarity"] is None
+    assert memory_interface.retrieve_company_memory.call_args.kwargs["min_similarity"] is None
+    user_context_query = memory_interface.memory_system.retrieve_memories.call_args.args[0]
+    assert user_context_query.min_similarity is None
+
+
+def test_execute_forwards_knowledge_min_relevance_score_to_context_builder():
+    memory_interface = MagicMock()
+    executor = AgentExecutor(memory_interface=memory_interface)
+    mock_runtime_service = MagicMock()
+    mock_runtime_service.execute.return_value = {"success": True, "output": "ok"}
+
+    agent = MagicMock()
+    agent.config = SimpleNamespace(name="Test Agent")
+    context = ExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        task_description="知识库检索阈值测试",
+    )
+
+    with (
+        patch.object(executor, "build_execution_context", return_value={}) as build_context,
+        patch("agent_framework.agent_executor.get_unified_agent_runtime_service") as get_runtime,
+    ):
+        get_runtime.return_value = mock_runtime_service
+        result = executor.execute(
+            agent=agent,
+            context=context,
+            memory_min_similarity=None,
+            knowledge_min_relevance_score=0.73,
+            prebuilt_execution_context=None,
+        )
+
+    assert result["success"] is True
+    assert build_context.call_args.kwargs["knowledge_min_relevance_score"] == 0.73
+
+
 def test_prune_interaction_log_memories_drops_unpublished_agent_candidates():
     executor = _build_executor()
     memories = [

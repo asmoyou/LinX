@@ -960,7 +960,10 @@ class TestMemoryConfigPayload:
         assert payload["fact_extraction"]["sources"]["provider"] == "llm.default_provider"
         assert payload["runtime"]["collection_retry_attempts"] == 3
         assert payload["runtime"]["search_timeout_seconds"] == 2.0
+        assert payload["retrieval"]["similarity_threshold"] == 0.3
         assert payload["retrieval"]["strict_keyword_fallback"] is True
+        assert payload["retrieval"]["milvus"]["metric_type"] == "L2"
+        assert payload["retrieval"]["milvus"]["nprobe"] == 10
         assert payload["write"]["fail_closed_user_agent"] is True
         assert payload["observability"]["enable_quality_counters"] is True
 

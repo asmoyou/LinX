@@ -113,6 +113,7 @@ export type MemoryConfigRetrieval = {
   similarity_threshold?: number;
   similarity_weight?: number;
   recency_weight?: number;
+  strict_keyword_fallback?: boolean;
   enable_reranking?: boolean;
   rerank_provider?: string;
   rerank_model?: string;

@@ -473,7 +473,7 @@ _MEMORY_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
     },
     "retrieval": {
         "top_k": 10,
-        "similarity_threshold": 0.0,
+        "similarity_threshold": 0.3,
         "similarity_weight": 0.7,
         "recency_weight": 0.3,
         "strict_keyword_fallback": True,
@@ -485,6 +485,10 @@ _MEMORY_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "rerank_timeout_seconds": 8,
         "rerank_failure_backoff_seconds": 30,
         "rerank_doc_max_chars": 1200,
+        "milvus": {
+            "metric_type": "L2",
+            "nprobe": 10,
+        },
     },
     "write": {
         "fail_closed_user_agent": True,
@@ -494,10 +498,10 @@ _MEMORY_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "model_enabled": True,
         "provider": "",
         "model": "",
-        "timeout_seconds": 4,
-        "max_facts": 8,
-        "max_preference_facts": 8,
-        "max_agent_candidates": 4,
+        "timeout_seconds": 120,
+        "max_facts": 10,
+        "max_preference_facts": 10,
+        "max_agent_candidates": 6,
         "failure_backoff_seconds": 60,
     },
     "observability": {
@@ -3056,9 +3060,15 @@ async def update_memory_config(
                 **update_data.observability,
             }
         if update_data.runtime is not None:
+            runtime_cfg = memory_cfg.get("runtime", {})
+            if not isinstance(runtime_cfg, dict):
+                runtime_cfg = {}
             for key in _MEMORY_RUNTIME_KEYS:
                 if key in update_data.runtime:
+                    runtime_cfg[key] = update_data.runtime[key]
+                    # Backward compatibility for older readers.
                     memory_cfg[key] = update_data.runtime[key]
+            memory_cfg["runtime"] = runtime_cfg
 
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(raw_config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)

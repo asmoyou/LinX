@@ -615,16 +615,9 @@ class AgentExecutor:
         if top_k <= 0:
             top_k = 3
 
-        resolved_min_similarity = self._coerce_similarity_threshold(memory_min_similarity)
-        if resolved_min_similarity is None:
-            resolved_min_similarity = self._coerce_similarity_threshold(
-                getattr(agent, "similarity_threshold", None)
-            )
-        if resolved_min_similarity is None:
-            resolved_min_similarity = self._coerce_similarity_threshold(
-                getattr(getattr(agent, "config", None), "similarity_threshold", None)
-            )
-        memory_min_similarity = resolved_min_similarity
+        # Keep memory threshold opt-in only (Mem0-aligned): use explicit override
+        # from caller, otherwise let memory_system apply its own default threshold.
+        memory_min_similarity = self._coerce_similarity_threshold(memory_min_similarity)
 
         config = getattr(agent, "config", None)
         access_level = self._normalize_access_level(getattr(config, "access_level", None))
@@ -1126,6 +1119,7 @@ class AgentExecutor:
         code_execution_network_access: Optional[bool] = None,
         message_content: Optional[Any] = None,
         memory_min_similarity: Optional[float] = None,
+        knowledge_min_relevance_score: Optional[float] = None,
         prebuilt_execution_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute agent with given context.
@@ -1142,6 +1136,7 @@ class AgentExecutor:
             code_execution_network_access: Optional network policy for code execution.
             message_content: Optional multimodal content payload.
             memory_min_similarity: Optional memory recall threshold override.
+            knowledge_min_relevance_score: Optional knowledge retrieval relevance threshold override.
             prebuilt_execution_context: Optional execution context; skips retrieval if provided.
 
         Returns:
@@ -1160,6 +1155,7 @@ class AgentExecutor:
                     agent=agent,
                     context=context,
                     memory_min_similarity=memory_min_similarity,
+                    knowledge_min_relevance_score=knowledge_min_relevance_score,
                 )
 
             if context.additional_context:

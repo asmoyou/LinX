@@ -35,6 +35,7 @@ type MemoryConfigFormState = {
     similarity_threshold: number;
     similarity_weight: number;
     recency_weight: number;
+    strict_keyword_fallback: boolean;
     enable_reranking: boolean;
     rerank_provider: string;
     rerank_model: string;
@@ -77,6 +78,7 @@ const DEFAULT_FORM_STATE: MemoryConfigFormState = {
     similarity_threshold: 0.3,
     similarity_weight: 0.7,
     recency_weight: 0.3,
+    strict_keyword_fallback: true,
     enable_reranking: true,
     rerank_provider: "",
     rerank_model: "",
@@ -93,10 +95,10 @@ const DEFAULT_FORM_STATE: MemoryConfigFormState = {
     model_enabled: true,
     provider: "",
     model: "",
-    timeout_seconds: 4,
-    max_facts: 8,
-    max_preference_facts: 8,
-    max_agent_candidates: 4,
+    timeout_seconds: 120,
+    max_facts: 10,
+    max_preference_facts: 10,
+    max_agent_candidates: 6,
     failure_backoff_seconds: 60,
   },
   runtime: {
@@ -227,6 +229,10 @@ const toFormState = (config: MemoryConfig | null): MemoryConfigFormState => {
       similarity_threshold: asNumber(config.retrieval?.similarity_threshold, 0.3),
       similarity_weight: asNumber(config.retrieval?.similarity_weight, 0.7),
       recency_weight: asNumber(config.retrieval?.recency_weight, 0.3),
+      strict_keyword_fallback: asBoolean(
+        config.retrieval?.strict_keyword_fallback,
+        true,
+      ),
       enable_reranking: asBoolean(config.retrieval?.enable_reranking, true),
       rerank_provider: asString(config.retrieval?.rerank_provider, ""),
       rerank_model: asString(config.retrieval?.rerank_model, ""),
@@ -249,13 +255,13 @@ const toFormState = (config: MemoryConfig | null): MemoryConfigFormState => {
       model_enabled: true,
       provider: asString(config.fact_extraction?.provider, ""),
       model: asString(config.fact_extraction?.model, ""),
-      timeout_seconds: asNumber(config.fact_extraction?.timeout_seconds, 4),
-      max_facts: asNumber(config.fact_extraction?.max_facts, 8),
+      timeout_seconds: asNumber(config.fact_extraction?.timeout_seconds, 120),
+      max_facts: asNumber(config.fact_extraction?.max_facts, 10),
       max_preference_facts: asNumber(
         config.fact_extraction?.max_preference_facts,
-        asNumber(config.fact_extraction?.max_facts, 8),
+        asNumber(config.fact_extraction?.max_facts, 10),
       ),
-      max_agent_candidates: asNumber(config.fact_extraction?.max_agent_candidates, 4),
+      max_agent_candidates: asNumber(config.fact_extraction?.max_agent_candidates, 6),
       failure_backoff_seconds: asNumber(
         config.fact_extraction?.failure_backoff_seconds,
         60,
@@ -285,6 +291,7 @@ const toUpdatePayload = (
       similarity_threshold: Math.max(0, formState.retrieval.similarity_threshold),
       similarity_weight: clamp01(formState.retrieval.similarity_weight),
       recency_weight: clamp01(formState.retrieval.recency_weight),
+      strict_keyword_fallback: formState.retrieval.strict_keyword_fallback,
       enable_reranking: formState.retrieval.enable_reranking,
       rerank_provider: formState.retrieval.rerank_provider.trim(),
       rerank_model: formState.retrieval.rerank_model.trim(),
@@ -565,6 +572,10 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
         recency_weight: asNumber(
           recommendedRetrieval.recency_weight,
           prev.retrieval.recency_weight,
+        ),
+        strict_keyword_fallback: asBoolean(
+          recommendedRetrieval.strict_keyword_fallback,
+          prev.retrieval.strict_keyword_fallback,
         ),
         enable_reranking: asBoolean(
           recommendedRetrieval.enable_reranking,
@@ -1004,6 +1015,12 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                     }
                     className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                   />
+                  <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                    {t(
+                      "memory.config.topkHint",
+                      "Max candidate memories returned per query before post-filtering.",
+                    )}
+                  </span>
                 </label>
 
                 <label className="text-sm text-zinc-700 dark:text-zinc-300">
@@ -1029,60 +1046,94 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                     }
                     className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                   />
+                  <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                    {t(
+                      "memory.config.similarityThresholdHint",
+                      "Global floor for memory recall in agent runtime. Lower improves recall; higher improves precision.",
+                    )}
+                  </span>
                 </label>
 
-                <label className="text-sm text-zinc-700 dark:text-zinc-300">
-                  <span className="block mb-1">
-                    {t("memory.config.similarityWeight", "Similarity Weight")}
-                  </span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min={0}
-                    max={1}
-                    value={formState.retrieval.similarity_weight}
-                    onChange={(event) =>
-                      setFormState((prev) => ({
-                        ...prev,
-                        retrieval: {
-                          ...prev.retrieval,
-                          similarity_weight: asNumber(
-                            event.target.value,
-                            prev.retrieval.similarity_weight,
-                          ),
-                        },
-                      }))
-                    }
-                    className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
-                  />
-                </label>
+                {showAdvanced && (
+                  <>
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.similarityWeight", "Similarity Weight")}
+                      </span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min={0}
+                        max={1}
+                        value={formState.retrieval.similarity_weight}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              similarity_weight: asNumber(
+                                event.target.value,
+                                prev.retrieval.similarity_weight,
+                              ),
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      />
+                    </label>
 
-                <label className="text-sm text-zinc-700 dark:text-zinc-300">
-                  <span className="block mb-1">
-                    {t("memory.config.recencyWeight", "Recency Weight")}
-                  </span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min={0}
-                    max={1}
-                    value={formState.retrieval.recency_weight}
-                    onChange={(event) =>
-                      setFormState((prev) => ({
-                        ...prev,
-                        retrieval: {
-                          ...prev.retrieval,
-                          recency_weight: asNumber(
-                            event.target.value,
-                            prev.retrieval.recency_weight,
-                          ),
-                        },
-                      }))
-                    }
-                    className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
-                  />
-                </label>
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.recencyWeight", "Recency Weight")}
+                      </span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min={0}
+                        max={1}
+                        value={formState.retrieval.recency_weight}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              recency_weight: asNumber(
+                                event.target.value,
+                                prev.retrieval.recency_weight,
+                              ),
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      />
+                    </label>
+                  </>
+                )}
               </div>
+
+              <label className="mt-3 inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={formState.retrieval.strict_keyword_fallback}
+                  onChange={(event) =>
+                    setFormState((prev) => ({
+                      ...prev,
+                      retrieval: {
+                        ...prev.retrieval,
+                        strict_keyword_fallback: event.target.checked,
+                      },
+                    }))
+                  }
+                  className="rounded"
+                />
+                {t("memory.config.strictKeywordFallback", "Strict keyword fallback")}
+              </label>
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                {t(
+                  "memory.config.strictKeywordFallbackHint",
+                  "When semantic search misses, only return keyword matches with stronger lexical constraints.",
+                )}
+              </p>
 
               <label className="mt-3 inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
                 <input

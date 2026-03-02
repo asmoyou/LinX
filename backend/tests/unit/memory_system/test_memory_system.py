@@ -1084,6 +1084,34 @@ class TestMemoryRetrieval:
         assert memory_system._distance_to_similarity(orthogonal_distance) < 0.05
         assert memory_system._distance_to_similarity(0.2) > 0.9
 
+    def test_retrieval_milvus_config_overrides_database_milvus(self):
+        """Memory retrieval-specific Milvus config should override global Milvus defaults."""
+        mock_config = MagicMock()
+        mock_config.get_section.side_effect = lambda section: {
+            "memory": {
+                "retrieval": {
+                    "milvus": {
+                        "metric_type": "COSINE",
+                        "nprobe": 32,
+                    }
+                }
+            },
+            "knowledge_base": {},
+            "database.milvus": {
+                "metric_type": "L2",
+                "nprobe": 10,
+            },
+        }.get(section, {})
+
+        with patch("memory_system.memory_system.get_config", return_value=mock_config):
+            with patch("memory_system.memory_system.get_embedding_service", return_value=MockEmbeddingService()):
+                with patch("memory_system.memory_system.get_milvus_connection", return_value=Mock()):
+                    with patch("memory_system.memory_system.get_memory_repository", return_value=Mock()):
+                        system = MemorySystem()
+
+        assert system._search_metric_type == "COSINE"
+        assert system._search_nprobe == 32
+
 
 class TestMemoryClassification:
     """Tests for memory type classification."""
