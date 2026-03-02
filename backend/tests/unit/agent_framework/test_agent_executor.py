@@ -76,7 +76,7 @@ def test_format_memory_for_prompt_includes_timestamp_label():
     assert formatted.endswith("user.preference.output_format=markdown")
 
 
-def test_structured_user_preference_memory_requires_overlap_or_high_confidence():
+def test_structured_user_preference_memory_requires_min_score_floor():
     executor = _build_executor()
     memory = {
         "content": "user.preference.output_format=markdown",
@@ -128,7 +128,7 @@ def test_inactive_preference_memory_requires_history_cue():
     assert executor._is_context_memory_relevant(memory, "我之前喜欢什么饮料") is True
 
 
-def test_preference_memory_rejects_domain_mismatch():
+def test_preference_memory_no_longer_applies_domain_mismatch_gate():
     executor = _build_executor()
     memory = {
         "content": "user.preference.drink_preference_like=可乐",
@@ -140,7 +140,7 @@ def test_preference_memory_rejects_domain_mismatch():
         },
     }
 
-    assert executor._is_context_memory_relevant(memory, "我喜欢什么食物") is False
+    assert executor._is_context_memory_relevant(memory, "我喜欢什么食物") is True
     assert executor._is_context_memory_relevant(memory, "我喜欢什么饮料") is True
 
 
@@ -225,6 +225,17 @@ def test_context_relevance_uses_semantic_score_not_blended_business_score():
     }
 
     assert executor._is_context_memory_relevant(memory, "火药 安全 注意事项") is False
+
+
+def test_context_relevance_does_not_require_lexical_overlap_when_score_passes_floor():
+    executor = _build_executor()
+    memory = {
+        "content": "用户偏好: 更偏向清淡口味，常点粤菜",
+        "similarity_score": 0.36,
+        "metadata": {},
+    }
+
+    assert executor._is_context_memory_relevant(memory, "你知道我喜欢吃什么吗") is True
 
 
 def test_execution_context_uses_explicit_memory_similarity_threshold():

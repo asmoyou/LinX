@@ -508,7 +508,7 @@ class AgentExecutor:
         return str(content).strip().lower().startswith("user.preference.")
 
     def _is_context_memory_relevant(self, memory: Any, query_text: str) -> bool:
-        """Mem0-style relevance gate: rely on semantic score threshold, avoid heavy lexical heuristics."""
+        """Mem0-aligned gate: rely on retrieval score threshold; avoid extra lexical/domain gating."""
         content = self._extract_content(memory)
         if not content:
             return False
@@ -517,8 +517,6 @@ class AgentExecutor:
         search_method = str(metadata.get("search_method") or "").strip().lower()
         similarity = self._extract_semantic_similarity_score(memory)
         score = float(similarity) if similarity is not None else 0.0
-        query_terms = self._extract_query_terms(query_text)
-        overlap_count = self._count_query_term_overlap(content, query_terms)
         history_requested = self._query_requests_historical_context(query_text)
 
         signal_type = str(metadata.get("signal_type") or "").strip().lower()
@@ -528,24 +526,10 @@ class AgentExecutor:
         ):
             return False
 
-        if signal_type == "user_preference":
-            query_domain = self._infer_preference_domain_from_query(query_text)
-            memory_domain = self._infer_preference_domain_from_memory(memory)
-            if query_domain and memory_domain and query_domain != memory_domain:
-                return False
-
         base_floor = (
             self._keyword_similarity_floor if search_method == "keyword" else self._context_similarity_floor
         )
-        if score < base_floor:
-            return False
-
-        # Lightweight anti-drift check: low-confidence hits must share at least one query term.
-        low_confidence_floor = max(base_floor + 0.12, 0.5 if search_method == "keyword" else 0.45)
-        if score < low_confidence_floor and overlap_count == 0:
-            return False
-
-        return True
+        return score >= base_floor
 
     def _filter_context_memories(
         self,
