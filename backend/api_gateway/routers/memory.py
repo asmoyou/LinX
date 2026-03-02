@@ -438,7 +438,9 @@ class MemoryConfigResponse(BaseModel):
 
     embedding: dict
     retrieval: dict
+    write: dict
     fact_extraction: dict
+    observability: dict
     runtime: dict
     recommended: Optional[dict] = None
 
@@ -448,7 +450,9 @@ class MemoryConfigUpdateRequest(BaseModel):
 
     embedding: Optional[dict] = None
     retrieval: Optional[dict] = None
+    write: Optional[dict] = None
     fact_extraction: Optional[dict] = None
+    observability: Optional[dict] = None
     runtime: Optional[dict] = None
 
 
@@ -472,6 +476,7 @@ _MEMORY_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "similarity_threshold": 0.0,
         "similarity_weight": 0.7,
         "recency_weight": 0.3,
+        "strict_keyword_fallback": True,
         "enable_reranking": True,
         "rerank_weight": 0.75,
         "rerank_provider": "",
@@ -480,6 +485,9 @@ _MEMORY_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "rerank_timeout_seconds": 8,
         "rerank_failure_backoff_seconds": 30,
         "rerank_doc_max_chars": 1200,
+    },
+    "write": {
+        "fail_closed_user_agent": True,
     },
     "fact_extraction": {
         "enabled": True,
@@ -491,6 +499,9 @@ _MEMORY_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "max_preference_facts": 8,
         "max_agent_candidates": 4,
         "failure_backoff_seconds": 60,
+    },
+    "observability": {
+        "enable_quality_counters": True,
     },
     "runtime": {
         "collection_retry_attempts": 3,
@@ -572,6 +583,14 @@ def _build_memory_config_payload(
     runtime_cfg = (
         memory_section.get("runtime", {}) if isinstance(memory_section.get("runtime"), dict) else {}
     )
+    write_cfg = (
+        memory_section.get("write", {}) if isinstance(memory_section.get("write"), dict) else {}
+    )
+    observability_cfg = (
+        memory_section.get("observability", {})
+        if isinstance(memory_section.get("observability"), dict)
+        else {}
+    )
     enhanced_cfg = (
         memory_section.get("enhanced_memory", {})
         if isinstance(memory_section.get("enhanced_memory"), dict)
@@ -585,7 +604,11 @@ def _build_memory_config_payload(
 
     embedding_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["embedding"], embedding_cfg)
     retrieval_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["retrieval"], retrieval_cfg)
+    write_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["write"], write_cfg)
     fact_merged = _deep_merge(_MEMORY_RECOMMENDED_DEFAULTS["fact_extraction"], fact_cfg)
+    observability_merged = _deep_merge(
+        _MEMORY_RECOMMENDED_DEFAULTS["observability"], observability_cfg
+    )
     fact_default_cfg = _MEMORY_RECOMMENDED_DEFAULTS["fact_extraction"]
     max_facts = _coerce_positive_int(
         fact_merged.get("max_facts"),
@@ -701,7 +724,9 @@ def _build_memory_config_payload(
     return {
         "embedding": embedding_payload,
         "retrieval": retrieval_effective,
+        "write": write_merged,
         "fact_extraction": fact_extraction_payload,
+        "observability": observability_merged,
         "runtime": runtime_merged,
         "recommended": _MEMORY_RECOMMENDED_DEFAULTS,
     }
@@ -860,6 +885,22 @@ _MEMORY_QUERY_STOP_TERMS = {
 
 _MEMORY_CJK_QUESTION_TERMS = {"如何", "怎么", "怎样", "请问", "是谁", "什么"}
 _MEMORY_CJK_QUESTION_CHARS = {"如", "何", "怎", "样", "请", "问", "谁", "什", "么"}
+_KEYWORD_FALLBACK_MIN_RANK = 4.0
+_KEYWORD_FALLBACK_SCORE_DENOMINATOR = 6.0
+
+
+def _is_strict_keyword_fallback_enabled() -> bool:
+    """Whether strict keyword fallback semantics are enabled."""
+    try:
+        memory_cfg = get_config().get_section("memory")
+    except Exception:
+        return True
+    if not isinstance(memory_cfg, dict):
+        return True
+    retrieval_cfg = memory_cfg.get("retrieval", {})
+    if not isinstance(retrieval_cfg, dict):
+        return True
+    return bool(retrieval_cfg.get("strict_keyword_fallback", True))
 
 
 def _extract_memory_query_terms(query_text: str, *, max_terms: int = 16) -> List[str]:
@@ -892,7 +933,7 @@ def _extract_memory_query_terms(query_text: str, *, max_terms: int = 16) -> List
             if len(fragment) < n:
                 continue
             for idx in range(len(fragment) - n + 1):
-                gram = fragment[idx: idx + n]
+                gram = fragment[idx : idx + n]
                 if not gram or gram in _MEMORY_QUERY_STOP_TERMS:
                     continue
                 if any(question in gram for question in _MEMORY_CJK_QUESTION_TERMS):
@@ -910,9 +951,9 @@ def _extract_memory_query_terms(query_text: str, *, max_terms: int = 16) -> List
 def _keyword_min_term_hits(query_terms: List[str]) -> int:
     """Require more lexical agreement for longer queries to reduce noisy matches."""
     term_count = len([term for term in query_terms if len(str(term).strip()) >= 2])
-    if term_count <= 2:
+    if term_count <= 1:
         return 1
-    if term_count <= 6:
+    if term_count <= 4:
         return 2
     return 3
 
@@ -920,7 +961,7 @@ def _keyword_min_term_hits(query_terms: List[str]) -> int:
 def _keyword_rank_to_similarity(rank: float) -> float:
     """Normalize keyword rank to [0, 1] for API relevance display and threshold filtering."""
     safe_rank = max(float(rank or 0.0), 0.0)
-    return min(max(safe_rank / (safe_rank + 4.0), 0.0), 1.0)
+    return min(max(safe_rank / (safe_rank + _KEYWORD_FALLBACK_SCORE_DENOMINATOR), 0.0), 1.0)
 
 
 def _resolve_share_targets(agent_ids: List[str], user_ids: List[str]) -> Dict[str, List[str]]:
@@ -963,23 +1004,25 @@ def _resolve_share_targets(agent_ids: List[str], user_ids: List[str]) -> Dict[st
                 target_entity_ids.append(owner_user_id)
                 if owner_user_id not in entity_name_map:
                     entity_name_map[owner_user_id] = (
-                        _lookup_user_name(session, owner_user_id)
-                        or row.name
-                        or owner_user_id
+                        _lookup_user_name(session, owner_user_id) or row.name or owner_user_id
                     )
 
         for raw_user_id in normalized_user_ids:
             target_user_ids.append(raw_user_id)
             target_entity_ids.append(raw_user_id)
             if raw_user_id not in entity_name_map:
-                entity_name_map[raw_user_id] = _lookup_user_name(session, raw_user_id) or raw_user_id
+                entity_name_map[raw_user_id] = (
+                    _lookup_user_name(session, raw_user_id) or raw_user_id
+                )
 
     deduped_entity_ids = _dedupe_preserve_order(target_entity_ids)
 
     return {
         "target_user_ids": _dedupe_preserve_order(target_user_ids),
         "target_entity_ids": deduped_entity_ids,
-        "target_entity_names": [entity_name_map.get(entity_id, entity_id) for entity_id in deduped_entity_ids],
+        "target_entity_names": [
+            entity_name_map.get(entity_id, entity_id) for entity_id in deduped_entity_ids
+        ],
     }
 
 
@@ -996,8 +1039,7 @@ def _resolve_effective_user_id(
     requested_user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
 ) -> Optional[str]:
-    """Resolve user scope for search/list queries.
-    """
+    """Resolve user scope for search/list queries."""
     from memory_system.memory_interface import MemoryType
 
     requested = str(requested_user_id).strip() if requested_user_id else None
@@ -1249,16 +1291,10 @@ def _can_read_company_memory_item_sync(
         return True
 
     owner_user_id = str(
-        metadata.get("owner_user_id")
-        or item.get("userId")
-        or item.get("user_id")
-        or ""
+        metadata.get("owner_user_id") or item.get("userId") or item.get("user_id") or ""
     ).strip()
     owner_agent_id = str(
-        metadata.get("owner_agent_id")
-        or item.get("agentId")
-        or item.get("agent_id")
-        or ""
+        metadata.get("owner_agent_id") or item.get("agentId") or item.get("agent_id") or ""
     ).strip()
     resource_department_id = str(metadata.get("department_id") or "").strip() or None
     visibility = _resolve_memory_visibility(memory_type_value, metadata)
@@ -1352,16 +1388,10 @@ def _can_manage_memory_item_sync(item: Dict[str, Any], current_user: CurrentUser
     item_type = str(item.get("type") or "").strip().lower()
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     owner_user_id = str(
-        metadata.get("owner_user_id")
-        or item.get("userId")
-        or item.get("user_id")
-        or ""
+        metadata.get("owner_user_id") or item.get("userId") or item.get("user_id") or ""
     ).strip()
     owner_agent_id = str(
-        metadata.get("owner_agent_id")
-        or item.get("agentId")
-        or item.get("agent_id")
-        or ""
+        metadata.get("owner_agent_id") or item.get("agentId") or item.get("agent_id") or ""
     ).strip()
     if owner_user_id and owner_user_id == str(current_user.user_id):
         return True
@@ -1805,9 +1835,8 @@ def _apply_response_filters(
             content = str(item.get("content") or "").lower()
             summary = str(item.get("summary") or "").lower()
             item_tags = item.get("tags") or []
-            has_matching_tag = (
-                isinstance(item_tags, list)
-                and any(normalized_query in str(tag).lower() for tag in item_tags)
+            has_matching_tag = isinstance(item_tags, list) and any(
+                normalized_query in str(tag).lower() for tag in item_tags
             )
             if (
                 normalized_query not in content
@@ -1896,12 +1925,22 @@ def _retrieve_memories_sync(query):
     if items:
         return _items_to_responses(items)
 
-    try:
-        effective_min_similarity = max(float(query.min_similarity or 0.0), 0.0)
-    except (TypeError, ValueError):
-        effective_min_similarity = 0.0
+    if query.min_similarity is None:
+        try:
+            effective_min_similarity = max(
+                float(getattr(memory_system, "_default_similarity_threshold", 0.0)),
+                0.0,
+            )
+        except (TypeError, ValueError):
+            effective_min_similarity = 0.0
+    else:
+        try:
+            effective_min_similarity = max(float(query.min_similarity), 0.0)
+        except (TypeError, ValueError):
+            effective_min_similarity = 0.0
 
     query_terms = _extract_memory_query_terms(query.query_text)
+    strict_keyword_fallback = _is_strict_keyword_fallback_enabled()
     fallback_rows = repo.search_keywords(
         query.query_text,
         query_terms=query_terms,
@@ -1910,8 +1949,9 @@ def _retrieve_memories_sync(query):
         user_id=query.user_id,
         task_id=query.task_id,
         min_term_hits=_keyword_min_term_hits(query_terms),
-        min_rank=1.8,
+        min_rank=_KEYWORD_FALLBACK_MIN_RANK,
         limit=query.top_k or 10,
+        strict_semantics=strict_keyword_fallback,
     )
     fallback_items = []
     for row, keyword_rank, term_hits in fallback_rows:
@@ -1921,6 +1961,7 @@ def _retrieve_memories_sync(query):
         item = row.to_memory_item(similarity_score=score)
         item.metadata = dict(item.metadata or {})
         item.metadata["search_method"] = "keyword"
+        item.metadata["keyword_mode"] = "strict" if strict_keyword_fallback else "legacy"
         item.metadata["keyword_rank"] = round(float(keyword_rank), 4)
         item.metadata["keyword_term_hits"] = int(term_hits)
         fallback_items.append(item)
@@ -1966,7 +2007,11 @@ def _retrieve_shared_sync(current_user: CurrentUser):
         if str(item.get("type") or "").strip().lower() == "agent":
             continue
         owner_user_id = str(
-            ((item.get("metadata") or {}).get("owner_user_id") if isinstance(item.get("metadata"), dict) else "")
+            (
+                (item.get("metadata") or {}).get("owner_user_id")
+                if isinstance(item.get("metadata"), dict)
+                else ""
+            )
             or item.get("userId")
             or ""
         ).strip()
@@ -1974,9 +2019,13 @@ def _retrieve_shared_sync(current_user: CurrentUser):
             continue
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         visibility = _resolve_memory_visibility(str(item.get("type") or ""), metadata)
-        if visibility in {"explicit", "department", "department_tree", "public", "account"} or metadata.get(
-            "shared_with_user_ids"
-        ):
+        if visibility in {
+            "explicit",
+            "department",
+            "department_tree",
+            "public",
+            "account",
+        } or metadata.get("shared_with_user_ids"):
             shared.append(item)
     return shared
 
@@ -2062,7 +2111,9 @@ def _review_agent_candidate_sync(
     if not record:
         return None
 
-    memory_type = str(getattr(record.memory_type, "value", record.memory_type) or "").strip().lower()
+    memory_type = (
+        str(getattr(record.memory_type, "value", record.memory_type) or "").strip().lower()
+    )
     if memory_type != "agent":
         raise ValueError("Only agent memories support candidate review")
 
@@ -2619,6 +2670,7 @@ def _share_memory_sync(
 ):
     """Apply publish/share policy on a memory and upsert explicit ACL entries."""
     from memory_system.memory_interface import MemoryItem, MemoryType
+    from memory_system.memory_system import get_memory_system
 
     repo = _get_memory_repository()
     source_record = repo.get(memory_id)
@@ -2674,14 +2726,21 @@ def _share_memory_sync(
 
         # publish/promote: agent_working_memory -> team/org(company) memory
         # when scope goes beyond private.
-        if (
-            source_record.memory_type == MemoryType.AGENT
-            and normalized_scope in {"explicit", "department", "department_tree", "public", "account"}
-        ):
+        if source_record.memory_type == MemoryType.AGENT and normalized_scope in {
+            "explicit",
+            "department",
+            "department_tree",
+            "public",
+            "account",
+        }:
             owner_user_id = source_record.owner_user_id or source_record.user_id
             promoted_meta = dict(source_meta)
             promoted_meta["source_memory_id"] = source_record.id
             promoted_meta["publish_mode"] = "promote"
+            promoted_meta["policy_write_mode"] = "controlled"
+            promoted_meta["policy_write_path"] = "memory.share_promote"
+            # Force explicit add semantics for promote flow.
+            promoted_meta["memory_action"] = "ADD"
             promoted_memory = MemoryItem(
                 content=source_record.content,
                 memory_type=MemoryType.COMPANY,
@@ -2690,9 +2749,8 @@ def _share_memory_sync(
                 metadata=promoted_meta,
             )
             _enrich_memory_security_metadata_sync(promoted_memory)
-            created = repo.create(promoted_memory)
-            _sync_record_to_milvus_sync(created.id)
-            target_memory_id = int(created.id)
+            memory_system = get_memory_system()
+            target_memory_id = int(memory_system.store_memory(promoted_memory))
 
             # Keep backlink on source agent memory for traceability.
             source_meta["last_promoted_memory_id"] = target_memory_id
@@ -2747,7 +2805,11 @@ def _share_memory_sync(
                 AuditLog(
                     user_id=_parse_uuid(shared_by_user_id),
                     agent_id=_parse_uuid(item.agent_id),
-                    action="memory.publish" if source_record.memory_type == MemoryType.AGENT else "memory.share",
+                    action=(
+                        "memory.publish"
+                        if source_record.memory_type == MemoryType.AGENT
+                        else "memory.share"
+                    ),
                     resource_type="memory",
                     resource_id=None,
                     details={
@@ -2974,6 +3036,11 @@ async def update_memory_config(
                 **(memory_cfg.get("retrieval", {}) or {}),
                 **update_data.retrieval,
             }
+        if update_data.write is not None:
+            memory_cfg["write"] = {
+                **(memory_cfg.get("write", {}) or {}),
+                **update_data.write,
+            }
         if update_data.fact_extraction is not None:
             enhanced_cfg = memory_cfg.get("enhanced_memory", {})
             if not isinstance(enhanced_cfg, dict):
@@ -2983,6 +3050,11 @@ async def update_memory_config(
                 **update_data.fact_extraction,
             }
             memory_cfg["enhanced_memory"] = enhanced_cfg
+        if update_data.observability is not None:
+            memory_cfg["observability"] = {
+                **(memory_cfg.get("observability", {}) or {}),
+                **update_data.observability,
+            }
         if update_data.runtime is not None:
             for key in _MEMORY_RUNTIME_KEYS:
                 if key in update_data.runtime:
@@ -3276,7 +3348,7 @@ async def search_memories(
         memory_type=memory_type,
         user_id=effective_user_id,
         top_k=request.limit or 10,
-        min_similarity=request.min_score or 0.0,
+        min_similarity=request.min_score,
     )
 
     try:

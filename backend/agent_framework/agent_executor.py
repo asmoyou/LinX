@@ -26,6 +26,12 @@ from agent_framework.runtime_capabilities import (
 from agent_framework.runtime_policy import ExecutionProfile, RuntimePolicy
 from agent_framework.runtime_service import RuntimeAdapterRequest, get_unified_agent_runtime_service
 from memory_system.memory_interface import MemoryType, SearchQuery
+from shared.config import get_config
+
+try:
+    from shared.metrics import memory_retrieval_source_quality_total
+except Exception:  # pragma: no cover - metrics may be unavailable in minimal envs
+    memory_retrieval_source_quality_total = None
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +70,13 @@ _HISTORY_QUERY_CUES = {
     "follow up",
 }
 
+_PREFERENCE_DOMAIN_HINTS = {
+    "food": {"吃", "食物", "美食", "菜", "餐", "food", "meal", "dish", "cuisine"},
+    "drink": {"喝", "饮料", "饮品", "咖啡", "茶", "酒", "drink", "beverage"},
+    "hobby": {"爱好", "兴趣", "hobby", "interest"},
+    "activity": {"活动", "运动", "骑行", "骑车", "露营", "旅行", "旅游", "activity", "sport"},
+}
+
 
 @dataclass
 class ExecutionContext:
@@ -87,6 +100,35 @@ class AgentExecutor:
             memory_interface: AgentMemoryInterface instance
         """
         self.memory_interface = memory_interface or get_agent_memory_interface()
+        self._quality_metrics_enabled = True
+        self._context_similarity_floor = 0.0
+        self._keyword_similarity_floor = 0.4
+        try:
+            memory_cfg = get_config().get_section("memory")
+            if isinstance(memory_cfg, dict):
+                retrieval_cfg = memory_cfg.get("retrieval", {})
+                if isinstance(retrieval_cfg, dict):
+                    configured_floor = self._coerce_similarity_threshold(
+                        retrieval_cfg.get("similarity_threshold")
+                    )
+                    if configured_floor is not None:
+                        self._context_similarity_floor = configured_floor
+                    configured_keyword_floor = self._coerce_similarity_threshold(
+                        retrieval_cfg.get("keyword_similarity_floor")
+                    )
+                    if configured_keyword_floor is not None:
+                        self._keyword_similarity_floor = configured_keyword_floor
+                    self._keyword_similarity_floor = max(
+                        self._keyword_similarity_floor,
+                        self._context_similarity_floor,
+                    )
+                observability_cfg = memory_cfg.get("observability", {})
+                if isinstance(observability_cfg, dict):
+                    self._quality_metrics_enabled = bool(
+                        observability_cfg.get("enable_quality_counters", True)
+                    )
+        except Exception:
+            self._quality_metrics_enabled = True
         logger.info("AgentExecutor initialized")
 
     @staticmethod
@@ -106,6 +148,17 @@ class AgentExecutor:
             if isinstance(value, str) and value.strip():
                 values.append(value.strip())
         return values
+
+    @staticmethod
+    def _coerce_similarity_threshold(value: Any) -> Optional[float]:
+        """Normalize optional similarity threshold to [0, 1]."""
+        if value is None:
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return min(max(parsed, 0.0), 1.0)
 
     @staticmethod
     def _extract_content(value: Any) -> Optional[str]:
@@ -155,6 +208,19 @@ class AgentExecutor:
             return float(score) if score is not None else None
         except (TypeError, ValueError):
             return None
+
+    def _extract_semantic_similarity_score(self, value: Any) -> Optional[float]:
+        """Extract raw semantic similarity score independent of blended business ranking."""
+        metadata = self._extract_metadata(value)
+        semantic_score = metadata.get("_semantic_score")
+        if semantic_score is None:
+            semantic_score = metadata.get("semantic_score")
+        try:
+            if semantic_score is not None:
+                return float(semantic_score)
+        except (TypeError, ValueError):
+            pass
+        return self._extract_similarity_score(value)
 
     @staticmethod
     def _parse_datetime(value: Any) -> Optional[datetime]:
@@ -267,14 +333,15 @@ class AgentExecutor:
                 continue
 
             # For long CJK chunks, add compact n-grams to avoid relying on full-sentence match.
-            for n in (2, 3, 4):
+            # Skip 2-grams to reduce accidental overlap on high-frequency short fragments.
+            for n in (3, 4):
                 for i in range(0, len(chunk) - n + 1):
                     token = chunk[i : i + n]
                     if token in zh_stop_terms or token in seen:
                         continue
                     seen.add(token)
                     terms.append(token)
-                    if len(terms) >= 64:
+                    if len(terms) >= 48:
                         return terms
         return terms
 
@@ -284,6 +351,47 @@ class AgentExecutor:
         if not query:
             return False
         return any(cue in query for cue in _HISTORY_QUERY_CUES)
+
+    @staticmethod
+    def _infer_preference_domain_from_query(query_text: str) -> Optional[str]:
+        query = str(query_text or "").strip().lower()
+        if not query:
+            return None
+        for domain, hints in _PREFERENCE_DOMAIN_HINTS.items():
+            if any(hint in query for hint in hints):
+                return domain
+        return None
+
+    def _infer_preference_domain_from_memory(self, memory: Any) -> Optional[str]:
+        metadata = self._extract_metadata(memory)
+        parts: List[str] = []
+
+        for key in ("preference_key", "category"):
+            value = metadata.get(key)
+            if value is not None:
+                parts.append(str(value))
+
+        facts = metadata.get("facts")
+        if isinstance(facts, list):
+            for fact in facts:
+                if not isinstance(fact, dict):
+                    continue
+                for key in ("key", "category", "value"):
+                    value = fact.get(key)
+                    if value is not None:
+                        parts.append(str(value))
+
+        content = self._extract_content(memory)
+        if content:
+            parts.append(content)
+
+        merged = " ".join(parts).lower()
+        if not merged:
+            return None
+        for domain, hints in _PREFERENCE_DOMAIN_HINTS.items():
+            if domain in merged or any(hint in merged for hint in hints):
+                return domain
+        return None
 
     def _is_interaction_log_memory(self, memory: Any) -> bool:
         """Identify session-level interaction memories."""
@@ -373,13 +481,22 @@ class AgentExecutor:
                 overlap += 1
         return overlap
 
-    def _is_structured_user_preference_memory(self, memory: Any) -> bool:
-        """Detect compact user preference memories that should always be available."""
+    def _is_structured_user_preference_memory(
+        self,
+        memory: Any,
+        *,
+        allow_inactive: bool = False,
+    ) -> bool:
+        """Detect compact user preference memories."""
         metadata = self._extract_metadata(memory)
         active_flag = metadata.get("is_active")
-        if isinstance(active_flag, bool) and not active_flag:
+        if (not allow_inactive) and isinstance(active_flag, bool) and not active_flag:
             return False
-        if isinstance(active_flag, str) and active_flag.strip().lower() in {"false", "0", "no"}:
+        if (not allow_inactive) and isinstance(active_flag, str) and active_flag.strip().lower() in {
+            "false",
+            "0",
+            "no",
+        }:
             return False
         signal_type = str(metadata.get("signal_type") or "").strip().lower()
         if signal_type == "user_preference":
@@ -391,32 +508,44 @@ class AgentExecutor:
         return str(content).strip().lower().startswith("user.preference.")
 
     def _is_context_memory_relevant(self, memory: Any, query_text: str) -> bool:
-        """Guard memory injection with a lightweight topic-relevance check."""
-        if self._is_structured_user_preference_memory(memory):
-            return True
-
+        """Mem0-style relevance gate: rely on semantic score threshold, avoid heavy lexical heuristics."""
         content = self._extract_content(memory)
         if not content:
             return False
 
-        similarity = self._extract_similarity_score(memory)
+        metadata = self._extract_metadata(memory)
+        search_method = str(metadata.get("search_method") or "").strip().lower()
+        similarity = self._extract_semantic_similarity_score(memory)
         score = float(similarity) if similarity is not None else 0.0
-        # Keep only very high-confidence semantic matches without lexical overlap.
-        if score >= 0.86:
-            return True
-
         query_terms = self._extract_query_terms(query_text)
-        if not query_terms:
-            return score >= 0.72
-
         overlap_count = self._count_query_term_overlap(content, query_terms)
-        if overlap_count >= 2:
-            return True
-        if overlap_count >= 1 and score >= 0.4:
-            return True
+        history_requested = self._query_requests_historical_context(query_text)
 
-        # Avoid off-topic context bleed from loosely similar past conversations.
-        return False
+        signal_type = str(metadata.get("signal_type") or "").strip().lower()
+        if signal_type == "user_preference" and not self._is_structured_user_preference_memory(
+            memory,
+            allow_inactive=history_requested,
+        ):
+            return False
+
+        if signal_type == "user_preference":
+            query_domain = self._infer_preference_domain_from_query(query_text)
+            memory_domain = self._infer_preference_domain_from_memory(memory)
+            if query_domain and memory_domain and query_domain != memory_domain:
+                return False
+
+        base_floor = (
+            self._keyword_similarity_floor if search_method == "keyword" else self._context_similarity_floor
+        )
+        if score < base_floor:
+            return False
+
+        # Lightweight anti-drift check: low-confidence hits must share at least one query term.
+        low_confidence_floor = max(base_floor + 0.12, 0.5 if search_method == "keyword" else 0.45)
+        if score < low_confidence_floor and overlap_count == 0:
+            return False
+
+        return True
 
     def _filter_context_memories(
         self,
@@ -429,11 +558,39 @@ class AgentExecutor:
         kept: List[Any] = []
         filtered_out = 0
         for item in memories:
-            if self._is_context_memory_relevant(item, query_text):
+            is_relevant = self._is_context_memory_relevant(item, query_text)
+            self._record_retrieval_quality_metric(item, accepted=is_relevant)
+            if is_relevant:
                 kept.append(item)
             else:
                 filtered_out += 1
         return kept, filtered_out
+
+    @staticmethod
+    def _normalize_metric_label(value: Any, default: str = "unknown", max_length: int = 48) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+        if not normalized:
+            return default
+        return normalized[:max_length]
+
+    def _record_retrieval_quality_metric(self, memory: Any, *, accepted: bool) -> None:
+        if not self._quality_metrics_enabled or memory_retrieval_source_quality_total is None:
+            return
+
+        metadata = self._extract_metadata(memory)
+        memory_type_raw = self._extract_value(memory, "memory_type") or metadata.get("memory_type")
+        if hasattr(memory_type_raw, "value"):
+            memory_type_raw = memory_type_raw.value
+        source = str(metadata.get("search_method") or "semantic")
+        quality = "accepted" if accepted else "rejected"
+        try:
+            memory_retrieval_source_quality_total.labels(
+                memory_type=self._normalize_metric_label(memory_type_raw, default="unknown"),
+                source=self._normalize_metric_label(source, default="semantic"),
+                quality=quality,
+            ).inc()
+        except Exception:
+            logger.debug("Failed to increment retrieval quality metric", exc_info=True)
 
     @staticmethod
     def _trim_text(text: Optional[str], max_chars: int = 120) -> str:
@@ -450,6 +607,7 @@ class AgentExecutor:
         agent: BaseAgent,
         context: ExecutionContext,
         top_k: int,
+        memory_min_similarity: Optional[float],
         knowledge_min_relevance_score: Optional[float],
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
         """Internal context builder returning both context and debug data."""
@@ -457,9 +615,16 @@ class AgentExecutor:
         if top_k <= 0:
             top_k = 3
 
-        # Do not couple memory recall threshold with knowledge-base similarity threshold.
-        # Memory retrieval should rely on memory-system defaults and semantic rerank.
-        memory_min_similarity: Optional[float] = None
+        resolved_min_similarity = self._coerce_similarity_threshold(memory_min_similarity)
+        if resolved_min_similarity is None:
+            resolved_min_similarity = self._coerce_similarity_threshold(
+                getattr(agent, "similarity_threshold", None)
+            )
+        if resolved_min_similarity is None:
+            resolved_min_similarity = self._coerce_similarity_threshold(
+                getattr(getattr(agent, "config", None), "similarity_threshold", None)
+            )
+        memory_min_similarity = resolved_min_similarity
 
         config = getattr(agent, "config", None)
         access_level = self._normalize_access_level(getattr(config, "access_level", None))
@@ -897,7 +1062,9 @@ class AgentExecutor:
             self._trim_text(content) for content in exec_context["task_context_memories"][:3]
         ]
 
-        memory_postprocess_ms = round((time.perf_counter() - memory_postprocess_started) * 1000.0, 2)
+        memory_postprocess_ms = round(
+            (time.perf_counter() - memory_postprocess_started) * 1000.0, 2
+        )
         memory_debug["timing_ms"] = {
             "retrieval": round(memory_retrieval_ms, 2),
             "postprocess": memory_postprocess_ms,
@@ -916,6 +1083,7 @@ class AgentExecutor:
         agent: BaseAgent,
         context: ExecutionContext,
         top_k: int = 3,
+        memory_min_similarity: Optional[float] = None,
         knowledge_min_relevance_score: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Build memory and knowledge context for an execution."""
@@ -923,6 +1091,7 @@ class AgentExecutor:
             agent=agent,
             context=context,
             top_k=top_k,
+            memory_min_similarity=memory_min_similarity,
             knowledge_min_relevance_score=knowledge_min_relevance_score,
         )
         return exec_context
@@ -932,6 +1101,7 @@ class AgentExecutor:
         agent: BaseAgent,
         context: ExecutionContext,
         top_k: int = 3,
+        memory_min_similarity: Optional[float] = None,
         knowledge_min_relevance_score: Optional[float] = None,
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
         """Build execution context and include retrieval debug details."""
@@ -939,6 +1109,7 @@ class AgentExecutor:
             agent=agent,
             context=context,
             top_k=top_k,
+            memory_min_similarity=memory_min_similarity,
             knowledge_min_relevance_score=knowledge_min_relevance_score,
         )
 
@@ -954,6 +1125,7 @@ class AgentExecutor:
         container_id: Optional[str] = None,
         code_execution_network_access: Optional[bool] = None,
         message_content: Optional[Any] = None,
+        memory_min_similarity: Optional[float] = None,
         prebuilt_execution_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute agent with given context.
@@ -969,6 +1141,7 @@ class AgentExecutor:
             container_id: Optional sandbox container id for code execution.
             code_execution_network_access: Optional network policy for code execution.
             message_content: Optional multimodal content payload.
+            memory_min_similarity: Optional memory recall threshold override.
             prebuilt_execution_context: Optional execution context; skips retrieval if provided.
 
         Returns:
@@ -983,7 +1156,11 @@ class AgentExecutor:
             if prebuilt_execution_context is not None:
                 exec_context = dict(prebuilt_execution_context)
             else:
-                exec_context = self.build_execution_context(agent=agent, context=context)
+                exec_context = self.build_execution_context(
+                    agent=agent,
+                    context=context,
+                    memory_min_similarity=memory_min_similarity,
+                )
 
             if context.additional_context:
                 exec_context.update(context.additional_context)

@@ -21,13 +21,14 @@ from uuid import UUID
 import pytest
 
 from memory_system.embedding_service import OllamaEmbeddingService
+from memory_system.collections import CollectionName
 from memory_system.memory_interface import (
     MemoryItem,
     MemoryType,
     SearchQuery,
 )
 from memory_system.memory_repository import MemoryRecordData
-from memory_system.memory_system import MemorySystem
+from memory_system.memory_system import MemoryQualitySkipError, MemorySystem
 
 
 class MockEmbeddingService:
@@ -114,12 +115,14 @@ def mock_repository():
     )
     repo.update_record.return_value = _make_record_data(record_id=42, agent_id="agent123")
     repo.find_recent_by_content_hash.return_value = None
+    repo.get.return_value = None
     repo.get_by_milvus_id.return_value = None
     repo.clear_milvus_link.return_value = _make_record_data(record_id=42, agent_id="agent123")
     repo.evict_older_than.return_value = []
     repo.count_memories.return_value = 0
     repo.evict_oldest.return_value = []
     repo.evict_low_value.return_value = []
+    repo.soft_delete.return_value = True
     return repo
 
 
@@ -275,6 +278,33 @@ class TestMemoryStorage:
 
         assert call_order == ["db_create", "milvus_insert"]
 
+    def test_store_memory_fail_closed_auto_generated_user_context_does_not_persist(
+        self, memory_system, mock_repository
+    ):
+        """Fail-closed user-context writes should skip persistence when no facts are extracted."""
+        memory = MemoryItem(
+            content="这段对话没有稳定偏好",
+            memory_type=MemoryType.USER_CONTEXT,
+            user_id="user123",
+            metadata={"auto_generated": True, "source": "conversation"},
+        )
+        memory_system._fact_extraction_enabled = True
+        memory_system._fact_extraction_model_enabled = True
+        memory_system._fact_extraction_provider = "ollama"
+
+        with (
+            patch.object(memory_system, "_extract_heuristic_facts", return_value=[]),
+            patch.object(
+                memory_system,
+                "_extract_model_facts",
+                return_value=[],
+            ),
+        ):
+            with pytest.raises(MemoryQualitySkipError):
+                memory_system.store_memory(memory)
+
+        mock_repository.create.assert_not_called()
+
     def test_store_memory_returns_db_id(self, memory_system, mock_repository):
         """Test that store_memory returns PostgreSQL record ID."""
         mock_repository.create.return_value = _make_record_data(record_id=99, agent_id="agent123")
@@ -380,6 +410,134 @@ class TestMemoryStorage:
         assert memory.timestamp is not None
         assert isinstance(memory.timestamp, datetime)
 
+    def test_store_memory_explicit_none_action_skips_write(self, memory_system, mock_repository):
+        """Planner NONE action should skip persistence."""
+        memory = MemoryItem(
+            content="Task: cache refresh\nResult: done",
+            memory_type=MemoryType.AGENT,
+            agent_id="agent123",
+            user_id="user123",
+            metadata={"memory_action": "none"},
+        )
+
+        with patch.object(memory_system, "_prepare_memory_for_storage", return_value=memory):
+            with pytest.raises(MemoryQualitySkipError, match="Planner decided NONE"):
+                memory_system.store_memory(memory)
+
+        mock_repository.create.assert_not_called()
+        mock_repository.update_record.assert_not_called()
+        mock_repository.soft_delete.assert_not_called()
+
+    def test_store_memory_none_action_records_planner_and_blocked_metrics(
+        self, memory_system, mock_repository
+    ):
+        """Planner NONE should emit both planner action and blocked-write telemetry."""
+        memory = MemoryItem(
+            content="Task: cache refresh\nResult: done",
+            memory_type=MemoryType.AGENT,
+            agent_id="agent123",
+            user_id="user123",
+            metadata={"memory_action": "none"},
+        )
+        planner_inc = MagicMock()
+        blocked_inc = MagicMock()
+        planner_counter = MagicMock()
+        blocked_counter = MagicMock()
+        planner_counter.labels.return_value = planner_inc
+        blocked_counter.labels.return_value = blocked_inc
+
+        with (
+            patch(
+                "memory_system.memory_system.memory_planner_actions_total",
+                planner_counter,
+            ),
+            patch(
+                "memory_system.memory_system.memory_blocked_writes_total",
+                blocked_counter,
+            ),
+            patch.object(memory_system, "_prepare_memory_for_storage", return_value=memory),
+        ):
+            with pytest.raises(MemoryQualitySkipError, match="Planner decided NONE"):
+                memory_system.store_memory(memory)
+
+        planner_counter.labels.assert_called_once()
+        blocked_counter.labels.assert_called_once()
+        planner_kwargs = planner_counter.labels.call_args.kwargs
+        blocked_kwargs = blocked_counter.labels.call_args.kwargs
+        assert planner_kwargs["action"] == "none"
+        assert blocked_kwargs["reason"] == "planner_none"
+        planner_inc.inc.assert_called_once()
+        blocked_inc.inc.assert_called_once()
+
+    def test_store_memory_explicit_delete_action_soft_deletes_target(
+        self, memory_system, mock_repository
+    ):
+        """Planner DELETE action should soft-delete target and clean vector."""
+        existing = _make_record_data(
+            record_id=91,
+            milvus_id=501,
+            memory_type=MemoryType.AGENT,
+            content="interaction.note.latest = stale note",
+            agent_id="agent123",
+            user_id="user123",
+            vector_status="synced",
+        )
+        existing.metadata = {"facts": [], "fact_keys": []}
+        mock_repository.get.return_value = existing
+        mock_repository.update_record.return_value = existing
+        mock_repository.soft_delete.return_value = True
+
+        memory = MemoryItem(
+            content="delete the stale memory",
+            memory_type=MemoryType.AGENT,
+            agent_id="agent123",
+            user_id="user123",
+            metadata={"memory_action": "delete", "target_memory_id": 91},
+        )
+
+        with (
+            patch.object(memory_system, "_prepare_memory_for_storage", return_value=memory),
+            patch.object(
+                memory_system,
+                "delete_memory",
+                return_value=True,
+            ) as delete_memory_mock,
+        ):
+            result_id = memory_system.store_memory(memory)
+
+        assert result_id == 91
+        mock_repository.create.assert_not_called()
+        mock_repository.soft_delete.assert_called_once_with(91)
+        delete_memory_mock.assert_called_once_with(501, MemoryType.AGENT)
+        update_kwargs = mock_repository.update_record.call_args.kwargs
+        assert update_kwargs["mark_vector_pending"] is False
+        assert update_kwargs["metadata"]["decision_action"] == "DELETE"
+        assert update_kwargs["metadata"]["is_active"] is False
+
+    def test_store_memory_planner_failure_strict_mode_skips_write(
+        self, memory_system, mock_repository
+    ):
+        """Planner failure should fail closed for strict auto-generated memories."""
+        memory = MemoryItem(
+            content="User discussed: likes concise response style",
+            memory_type=MemoryType.USER_CONTEXT,
+            user_id="user123",
+            metadata={"auto_generated": True, "source": "conversation"},
+        )
+
+        with (
+            patch.object(memory_system, "_prepare_memory_for_storage", return_value=memory),
+            patch.object(
+                memory_system,
+                "_plan_memory_action",
+                side_effect=RuntimeError("planner unavailable"),
+            ),
+        ):
+            with pytest.raises(MemoryQualitySkipError, match="Planner failed in strict mode"):
+                memory_system.store_memory(memory)
+
+        mock_repository.create.assert_not_called()
+
     def test_store_memory_structures_auto_generated_user_context(
         self, memory_system, mock_repository
     ):
@@ -391,7 +549,20 @@ class TestMemoryStorage:
             metadata={"auto_generated": True, "source": "conversation"},
         )
 
-        memory_system.store_memory(memory)
+        with patch.object(
+            memory_system,
+            "_extract_model_facts",
+            return_value=[
+                {
+                    "key": "user.preference.ui_theme",
+                    "value": "dark mode",
+                    "category": "preference",
+                    "importance": 0.8,
+                    "confidence": 0.9,
+                }
+            ],
+        ):
+            memory_system.store_memory(memory)
 
         created_item = mock_repository.create.call_args[0][0]
         assert created_item.content
@@ -479,32 +650,35 @@ class TestMemoryStorage:
         memory_system._fact_extraction_model_enabled = True
         memory_system._fact_extraction_provider = "ollama"
 
-        with patch.object(
-            memory_system,
-            "_extract_heuristic_facts",
-            return_value=[
-                {
-                    "key": "user.topic.latest",
-                    "value": "喜欢黄焖鸡",
-                    "category": "user_context",
-                    "importance": 0.4,
-                    "confidence": 0.7,
-                    "source": "heuristic",
-                }
-            ],
-        ), patch.object(
-            memory_system,
-            "_extract_model_facts",
-            return_value=[
-                {
-                    "key": "user.preference.food",
-                    "value": "黄焖鸡",
-                    "category": "user_preference",
-                    "importance": 0.92,
-                    "confidence": 0.91,
-                    "source": "model",
-                }
-            ],
+        with (
+            patch.object(
+                memory_system,
+                "_extract_heuristic_facts",
+                return_value=[
+                    {
+                        "key": "user.topic.latest",
+                        "value": "喜欢黄焖鸡",
+                        "category": "user_context",
+                        "importance": 0.4,
+                        "confidence": 0.7,
+                        "source": "heuristic",
+                    }
+                ],
+            ),
+            patch.object(
+                memory_system,
+                "_extract_model_facts",
+                return_value=[
+                    {
+                        "key": "user.preference.food",
+                        "value": "黄焖鸡",
+                        "category": "user_preference",
+                        "importance": 0.92,
+                        "confidence": 0.91,
+                        "source": "model",
+                    }
+                ],
+            ),
         ):
             facts, _ = memory_system._collect_facts(memory)
 
@@ -512,7 +686,9 @@ class TestMemoryStorage:
         assert "user.preference.food" in fact_keys
         assert "user.topic.latest" not in fact_keys
 
-    def test_collect_facts_skips_fallback_for_user_context_when_model_mode_empty(self, memory_system):
+    def test_collect_facts_skips_fallback_for_user_context_when_model_mode_empty(
+        self, memory_system
+    ):
         """Model-first user_context extraction should not fabricate fallback facts when model returns none."""
         memory = MemoryItem(
             content="这轮只是确认一下",
@@ -523,16 +699,21 @@ class TestMemoryStorage:
         memory_system._fact_extraction_model_enabled = True
         memory_system._fact_extraction_provider = "ollama"
 
-        with patch.object(memory_system, "_extract_heuristic_facts", return_value=[]), patch.object(
-            memory_system,
-            "_extract_model_facts",
-            return_value=[],
+        with (
+            patch.object(memory_system, "_extract_heuristic_facts", return_value=[]),
+            patch.object(
+                memory_system,
+                "_extract_model_facts",
+                return_value=[],
+            ),
         ):
             facts, _ = memory_system._collect_facts(memory)
 
         assert facts == []
 
-    def test_collect_facts_skips_secondary_extraction_for_session_pre_extracted(self, memory_system):
+    def test_collect_facts_skips_secondary_extraction_for_session_pre_extracted(
+        self, memory_system
+    ):
         """Session pre-extracted memories should reuse seed facts without secondary extraction."""
         memory = MemoryItem(
             content="user.preference.food_preference_like=黄焖鸡",
@@ -554,15 +735,65 @@ class TestMemoryStorage:
             },
         )
 
-        with patch.object(memory_system, "_extract_heuristic_facts") as heuristic_mock, patch.object(
-            memory_system, "_extract_model_facts"
-        ) as model_mock:
+        with (
+            patch.object(memory_system, "_extract_heuristic_facts") as heuristic_mock,
+            patch.object(memory_system, "_extract_model_facts") as model_mock,
+        ):
             facts, _ = memory_system._collect_facts(memory)
 
         assert len(facts) == 1
         assert facts[0]["key"] == "user.preference.food_preference_like"
         heuristic_mock.assert_not_called()
         model_mock.assert_not_called()
+
+    def test_prepare_memory_fail_closed_skips_auto_generated_user_context_without_facts(
+        self, memory_system
+    ):
+        """Auto-generated user context should be skipped when no reliable facts are extracted."""
+        memory = MemoryItem(
+            content="这段对话没有稳定可复用偏好",
+            memory_type=MemoryType.USER_CONTEXT,
+            user_id="user123",
+            metadata={"auto_generated": True, "source": "conversation"},
+        )
+        memory_system._fact_extraction_enabled = True
+        memory_system._fact_extraction_model_enabled = True
+        memory_system._fact_extraction_provider = "ollama"
+
+        with (
+            patch.object(memory_system, "_extract_heuristic_facts", return_value=[]),
+            patch.object(
+                memory_system,
+                "_extract_model_facts",
+                return_value=[],
+            ),
+        ):
+            with pytest.raises(MemoryQualitySkipError):
+                memory_system._prepare_memory_for_storage(memory)
+
+    def test_prepare_memory_allows_manual_user_context_when_empty_facts(self, memory_system):
+        """Manual user-context writes should keep backward compatibility when fail-closed is auto-only."""
+        memory = MemoryItem(
+            content="请记住我偏好简洁回复",
+            memory_type=MemoryType.USER_CONTEXT,
+            user_id="user123",
+            metadata={"auto_generated": False, "source": "manual"},
+        )
+        memory_system._fact_extraction_enabled = True
+        memory_system._fact_extraction_model_enabled = True
+        memory_system._fact_extraction_provider = "ollama"
+
+        with (
+            patch.object(memory_system, "_extract_heuristic_facts", return_value=[]),
+            patch.object(
+                memory_system,
+                "_extract_model_facts",
+                return_value=[],
+            ),
+        ):
+            prepared = memory_system._prepare_memory_for_storage(memory)
+
+        assert prepared.content == "请记住我偏好简洁回复"
 
     def test_fact_grounding_rejects_unsupported_user_inference(self, memory_system):
         """Grounding helper should reject inferred values absent from source text."""
@@ -614,7 +845,20 @@ class TestMemoryStorage:
             user_id="user123",
         )
 
-        result_id = memory_system.store_memory(memory)
+        with patch.object(
+            memory_system,
+            "_extract_model_facts",
+            return_value=[
+                {
+                    "key": "interaction.task.latest",
+                    "value": "summarize q4 report",
+                    "category": "task",
+                    "importance": 0.8,
+                    "confidence": 0.9,
+                }
+            ],
+        ):
+            result_id = memory_system.store_memory(memory)
 
         assert result_id == 7
         mock_repository.create.assert_not_called()
@@ -784,6 +1028,27 @@ class TestMemoryRetrieval:
         ranked = memory_system._rank_results([low, high])
         assert ranked[0].content == "core memory"
 
+    def test_hit_to_memory_item_records_raw_semantic_score_in_metadata(self, memory_system):
+        """Raw semantic score should be preserved for downstream context gating."""
+        mock_hit = Mock()
+        mock_hit.id = 123
+        mock_hit.distance = 0.2
+        mock_hit.entity = {
+            "content": "semantic memory",
+            "timestamp": int(datetime.utcnow().timestamp() * 1000),
+            "metadata": {"source": "test"},
+            "agent_id": "agent123",
+        }
+
+        item = memory_system._hit_to_memory_item(mock_hit, CollectionName.AGENT_MEMORIES)
+
+        assert item is not None
+        assert item.metadata is not None
+        assert "_semantic_score" in item.metadata
+        assert item.metadata["_semantic_score"] == pytest.approx(
+            float(item.similarity_score), abs=1e-6
+        )
+
     def test_retrieve_memories_respects_explicit_zero_min_similarity(
         self, memory_system, mock_milvus_connection
     ):
@@ -810,6 +1075,14 @@ class TestMemoryRetrieval:
 
         assert default_results == []
         assert len(zero_threshold_results) == 1
+
+    def test_distance_to_similarity_calibrates_l2_as_semantic_similarity(self, memory_system):
+        """L2 scores should map orthogonal vectors to near-zero semantic similarity."""
+        memory_system._search_metric_type = "L2"
+
+        orthogonal_distance = 2**0.5
+        assert memory_system._distance_to_similarity(orthogonal_distance) < 0.05
+        assert memory_system._distance_to_similarity(0.2) > 0.9
 
 
 class TestMemoryClassification:

@@ -40,6 +40,7 @@ from agent_framework.runtime_policy import (
 )
 from memory_system.memory_interface import MemoryItem, MemoryType
 from memory_system.memory_repository import MemoryRecordData
+from memory_system.memory_system import MemoryQualitySkipError
 
 
 class TestBaseAgent:
@@ -1922,7 +1923,62 @@ class TestAgentMemoryInterface:
         assert results[0].similarity_score is not None
         assert results[0].similarity_score >= 0.3
         assert results[0].metadata["search_method"] == "keyword"
+        assert results[0].metadata["keyword_mode"] == "strict"
         mock_repo.search_keywords.assert_called_once()
+        assert mock_repo.search_keywords.call_args.kwargs["min_rank"] == 4.0
+        assert mock_repo.search_keywords.call_args.kwargs["strict_semantics"] is True
+
+    @patch("agent_framework.agent_memory_interface.get_memory_repository")
+    @patch("agent_framework.agent_memory_interface.get_config")
+    def test_retrieve_company_memory_keyword_fallback_legacy_mode_when_flag_disabled(
+        self, mock_get_config, mock_get_repository
+    ):
+        """Config flag should allow rollback to legacy keyword semantics."""
+        user_id = uuid4()
+
+        mock_config = Mock()
+        mock_config.get_section.return_value = {
+            "retrieval": {"strict_keyword_fallback": False},
+        }
+        mock_get_config.return_value = mock_config
+
+        mock_memory_system = Mock()
+        mock_memory_system.retrieve_memories.return_value = []
+        mock_memory_system._default_similarity_threshold = 0.3
+
+        row = MemoryRecordData(
+            id=10,
+            milvus_id=9002,
+            memory_type=MemoryType.COMPANY,
+            content="LinX是小白客开发的",
+            user_id=str(user_id),
+            agent_id=None,
+            task_id=None,
+            owner_user_id=str(user_id),
+            owner_agent_id=None,
+            department_id=None,
+            visibility="department_tree",
+            sensitivity="internal",
+            source_memory_id=None,
+            expires_at=None,
+            metadata={},
+        )
+
+        mock_repo = Mock()
+        mock_repo.get_by_milvus_ids.return_value = {}
+        mock_repo.search_keywords.return_value = [(row, 4.8, 2)]
+        mock_get_repository.return_value = mock_repo
+
+        interface = AgentMemoryInterface(memory_system=mock_memory_system)
+        results = interface.retrieve_company_memory(
+            user_id=user_id,
+            query="LinX是谁开发的",
+            top_k=5,
+        )
+
+        assert len(results) == 1
+        assert results[0].metadata["keyword_mode"] == "legacy"
+        assert mock_repo.search_keywords.call_args.kwargs["strict_semantics"] is False
 
     @patch("agent_framework.agent_memory_interface.get_memory_repository")
     def test_retrieve_company_memory_prefers_db_mapped_record(self, mock_get_repository):
@@ -1980,7 +2036,10 @@ class TestAgentMemoryInterface:
             user_id=uuid4(),
             agent_id=uuid4(),
             content="user.preference.output_format=markdown",
-            metadata={"source": "agent_test_preference_extractor", "signal_type": "user_preference"},
+            metadata={
+                "source": "agent_test_preference_extractor",
+                "signal_type": "user_preference",
+            },
         )
 
         stored_item = mock_memory_system.store_memory.call_args.args[0]
@@ -1988,6 +2047,21 @@ class TestAgentMemoryInterface:
         assert stored_item.metadata["source"] == "agent_test_preference_extractor"
         assert stored_item.metadata["auto_generated"] is True
         assert stored_item.metadata["signal_type"] == "user_preference"
+
+    def test_store_user_context_returns_empty_when_quality_gate_skips_write(self):
+        """Quality-gated skips should not raise at interface layer."""
+        mock_memory_system = Mock()
+        mock_memory_system.store_memory.side_effect = MemoryQualitySkipError("skip by quality gate")
+        interface = AgentMemoryInterface(memory_system=mock_memory_system)
+
+        memory_id = interface.store_user_context(
+            user_id=uuid4(),
+            agent_id=uuid4(),
+            content="User discussed: 随便聊聊",
+            metadata={"source": "conversation"},
+        )
+
+        assert memory_id == ""
 
 
 class TestAgentExecutor:

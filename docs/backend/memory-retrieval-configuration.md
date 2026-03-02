@@ -24,6 +24,10 @@ Memory retrieval now follows this flow:
    - combine rerank score with base score using `rerank_weight`
 6. Return top results.
 
+Keyword fallback behavior:
+- If semantic search misses, fallback uses `MemoryRepository.search_keywords`.
+- In strict mode, keyword fallback enforces boundary-aware term matching, phrase/coverage reweighting, and stronger quality gates.
+
 ## 3. Embedding Config Resolution
 
 Embedding config is resolved by **scope**.
@@ -78,3 +82,40 @@ Response includes:
 - `sources` (where each effective field came from)
 
 This is intended to avoid ambiguity in incident/debug scenarios.
+
+## 7. Rollout Feature Flags
+
+Use these flags under `memory.*` for staged rollout/rollback:
+
+- `memory.retrieval.strict_keyword_fallback` (default: `true`)
+  - `true`: strict keyword semantics with stronger overlap/quality gate.
+  - `false`: legacy keyword semantics (rollback path).
+
+- `memory.write.fail_closed_user_agent` (default: `true`)
+  - `true`: `agent`/`user_context` keep fail-closed behavior on empty extraction.
+  - `false`: relaxes that strict fail-closed policy for rollback.
+
+- `memory.observability.enable_quality_counters` (default: `true`)
+  - Enables quality telemetry counters:
+  - blocked writes
+  - planner actions
+  - retrieval source quality (accepted/rejected)
+
+## 8. Top-K Relevance Evaluation
+
+Run offline Top-K tracking on labeled cases:
+
+```bash
+cd backend
+.venv/bin/python scripts/evaluate_memory_retrieval_topk.py \
+  --dataset /path/to/memory_eval.jsonl \
+  --top-k 5 \
+  --output reports/memory_retrieval_topk_report.json
+```
+
+Dataset supports `expected_memory_ids` and/or `expected_keywords` per case.
+Report includes:
+- `top1_hit_rate`, `top3_hit_rate`, `topk_hit_rate`
+- `recall_at_k`
+- `top3_irrelevant_hit_rate`
+- retrieval source breakdown (`semantic`/`keyword`)

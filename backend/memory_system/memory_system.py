@@ -26,6 +26,11 @@ from pymilvus import Collection
 import requests
 
 from memory_system.collections import CollectionName
+from memory_system.memory_action_planner import (
+    MemoryAction,
+    MemoryActionDecision,
+    MemoryActionPlanner,
+)
 from memory_system.embedding_service import get_embedding_service
 from memory_system.memory_interface import (
     MemoryItem,
@@ -41,7 +46,17 @@ from memory_system.memory_repository import (
 from memory_system.milvus_connection import get_milvus_connection
 from shared.config import get_config
 
+try:
+    from shared.metrics import memory_blocked_writes_total, memory_planner_actions_total
+except Exception:  # pragma: no cover - metrics may be unavailable in minimal envs
+    memory_blocked_writes_total = None
+    memory_planner_actions_total = None
+
 logger = logging.getLogger(__name__)
+
+
+class MemoryQualitySkipError(ValueError):
+    """Raised when a memory write is intentionally skipped by quality gates."""
 
 
 class MemorySystem(MemorySystemInterface):
@@ -74,9 +89,7 @@ class MemorySystem(MemorySystemInterface):
             "agent.identity.",
             "interaction.",
         ),
-        MemoryType.USER_CONTEXT: (
-            "user.",
-        ),
+        MemoryType.USER_CONTEXT: ("user.",),
         MemoryType.COMPANY: (
             "company.",
             "organization.",
@@ -113,6 +126,12 @@ class MemorySystem(MemorySystemInterface):
         retrieval_config = memory_config.get("retrieval", {})
         if not isinstance(retrieval_config, dict):
             retrieval_config = {}
+        write_cfg = memory_config.get("write", {})
+        if not isinstance(write_cfg, dict):
+            write_cfg = {}
+        observability_cfg = memory_config.get("observability", {})
+        if not isinstance(observability_cfg, dict):
+            observability_cfg = {}
 
         kb_config = self._config.get_section("knowledge_base")
         kb_search_cfg = kb_config.get("search", {}) if isinstance(kb_config, dict) else {}
@@ -186,6 +205,8 @@ class MemorySystem(MemorySystemInterface):
             ),
             0.0,
         )
+        self._write_fail_closed_user_agent = bool(write_cfg.get("fail_closed_user_agent", True))
+        self._quality_metrics_enabled = bool(observability_cfg.get("enable_quality_counters", True))
 
         self._enable_reranking = bool(
             retrieval_config.get(
@@ -293,6 +314,9 @@ class MemorySystem(MemorySystemInterface):
         fact_cfg = enhanced_cfg.get("fact_extraction", {})
         if not isinstance(fact_cfg, dict):
             fact_cfg = {}
+        action_planner_cfg = enhanced_cfg.get("action_planner", {})
+        if not isinstance(action_planner_cfg, dict):
+            action_planner_cfg = {}
 
         self._enhanced_memory_enabled = bool(enhanced_cfg.get("enabled", True))
         self._exact_dedupe_window_minutes = _cfg_int(
@@ -390,7 +414,41 @@ class MemorySystem(MemorySystemInterface):
             default=60.0,
             minimum=1.0,
         )
+        self._fact_extraction_fail_closed_auto_generated = bool(
+            fact_cfg.get("fail_closed_auto_generated", True)
+        )
+        raw_fail_closed_types = fact_cfg.get(
+            "fail_closed_types",
+            ["agent", "user_context"],
+        )
+        fail_closed_type_values: set[str] = set()
+        if isinstance(raw_fail_closed_types, list):
+            for item in raw_fail_closed_types:
+                normalized = str(item or "").strip().lower()
+                if normalized:
+                    fail_closed_type_values.add(normalized)
+        self._fact_extraction_fail_closed_types = {
+            memory_type
+            for memory_type in MemoryType
+            if memory_type.value in fail_closed_type_values
+        }
+        if not self._write_fail_closed_user_agent:
+            self._fact_extraction_fail_closed_types = {
+                memory_type
+                for memory_type in self._fact_extraction_fail_closed_types
+                if memory_type not in {MemoryType.AGENT, MemoryType.USER_CONTEXT}
+            }
         self._fact_extract_fail_until = 0.0
+        self._action_planner_enabled = bool(action_planner_cfg.get("enabled", True))
+        self._action_planner_strict_fail_closed = bool(
+            action_planner_cfg.get("strict_fail_closed", True)
+        )
+        self._action_planner_allow_explicit_delete = bool(
+            action_planner_cfg.get("allow_explicit_delete", True)
+        )
+        self._action_planner = MemoryActionPlanner(
+            allow_delete=self._action_planner_allow_explicit_delete
+        )
 
         # Heuristic quality guards for noisy auto-generated conversational memories.
         self._low_value_min_chars = _cfg_int(
@@ -440,6 +498,10 @@ class MemorySystem(MemorySystemInterface):
                 "semantic_dedupe_threshold": self._semantic_dedupe_threshold,
                 "core_importance_threshold": self._core_importance_threshold,
                 "fact_extraction_model_enabled": self._fact_extraction_model_enabled,
+                "fact_extraction_fail_closed_auto_generated": self._fact_extraction_fail_closed_auto_generated,
+                "action_planner_enabled": self._action_planner_enabled,
+                "action_planner_strict_fail_closed": self._action_planner_strict_fail_closed,
+                "action_planner_allow_explicit_delete": self._action_planner_allow_explicit_delete,
             },
         )
 
@@ -1014,6 +1076,10 @@ class MemorySystem(MemorySystemInterface):
             and self._fact_extraction_provider
             and memory.memory_type in {MemoryType.AGENT, MemoryType.USER_CONTEXT}
         )
+        fail_closed_on_empty_facts = self._should_fail_closed_on_empty_facts(
+            memory,
+            prefer_model_only=prefer_model_only,
+        )
         incoming_facts = model_facts if prefer_model_only else (heuristic_facts + model_facts)
         merged_facts, conflicts = self._merge_fact_lists(
             normalized_seed,
@@ -1027,12 +1093,25 @@ class MemorySystem(MemorySystemInterface):
             MemoryType.COMPANY: "company.note.latest",
             MemoryType.TASK_CONTEXT: "task.note.latest",
         }
-        fallback_key = fallback_key_map.get(memory.memory_type, f"{memory.memory_type.value}.note.latest")
+        fallback_key = fallback_key_map.get(
+            memory.memory_type, f"{memory.memory_type.value}.note.latest"
+        )
 
         if not merged_facts and prefer_model_only:
+            if fail_closed_on_empty_facts:
+                return [], conflicts
+            # Non-strict fallback: model-first, then deterministic heuristic extraction.
+            heuristic_fallback = self._filter_facts_for_memory_type(
+                memory.memory_type,
+                heuristic_facts,
+            )
+            if heuristic_fallback:
+                return heuristic_fallback, conflicts
             return [], conflicts
 
         if not merged_facts:
+            if fail_closed_on_empty_facts:
+                return [], conflicts
             fallback_fact = self._normalize_fact(
                 {
                     "key": fallback_key,
@@ -1047,6 +1126,33 @@ class MemorySystem(MemorySystemInterface):
                 merged_facts = [fallback_fact]
 
         return merged_facts, conflicts
+
+    def _should_fail_closed_on_empty_facts(
+        self,
+        memory: MemoryItem,
+        *,
+        prefer_model_only: bool,
+    ) -> bool:
+        """Determine whether empty extraction should skip write for this memory."""
+        metadata = dict(memory.metadata or {})
+
+        explicit_override = metadata.get("fail_closed_extraction")
+        if explicit_override is not None:
+            return bool(explicit_override)
+
+        if bool(metadata.get("allow_low_quality_fallback")):
+            return False
+
+        if memory.memory_type not in self._fact_extraction_fail_closed_types:
+            return False
+
+        if self._is_pre_extracted_session_memory(memory):
+            return False
+
+        if not self._fact_extraction_fail_closed_auto_generated:
+            return prefer_model_only
+
+        return self._is_auto_generated_memory(memory)
 
     def _build_structured_content(self, facts: List[Dict[str, Any]]) -> str:
         lines = []
@@ -1119,6 +1225,14 @@ class MemorySystem(MemorySystemInterface):
         metadata = dict(memory.metadata or {})
         auto_generated = self._is_auto_generated_memory(memory)
         facts, new_conflicts = self._collect_facts(memory)
+        if (
+            not facts
+            and memory.memory_type in self._fact_extraction_fail_closed_types
+            and self._should_fail_closed_on_empty_facts(memory, prefer_model_only=True)
+        ):
+            raise MemoryQualitySkipError(
+                f"No reliable facts extracted for {memory.memory_type.value}; skipping write by quality gate."
+            )
         importance_score = self._derive_importance_score(
             memory, facts, auto_generated=auto_generated
         )
@@ -1411,6 +1525,15 @@ class MemorySystem(MemorySystemInterface):
                 "last_merge_similarity": round(float(similarity), 4),
             }
         )
+        for audit_key in (
+            "decision_action",
+            "decision_source",
+            "decision_confidence",
+            "decision_reason",
+            "decision_target_memory_id",
+        ):
+            if audit_key in incoming_meta:
+                merged_metadata[audit_key] = incoming_meta.get(audit_key)
         if merged_conflicts:
             merged_metadata["conflict_history"] = merged_conflicts
         if incoming.task_id and not merged_metadata.get("task_id"):
@@ -1444,6 +1567,266 @@ class MemorySystem(MemorySystemInterface):
             },
         )
         return int(existing.id)
+
+    def _coerce_requested_memory_action(self, metadata: Dict[str, Any]) -> Optional[MemoryAction]:
+        raw_action = str(metadata.get("memory_action") or "").strip().upper()
+        if not raw_action:
+            return None
+        alias_map = {
+            "NOOP": MemoryAction.NONE,
+            "SKIP": MemoryAction.NONE,
+        }
+        if raw_action in alias_map:
+            return alias_map[raw_action]
+        try:
+            return MemoryAction(raw_action)
+        except ValueError:
+            return None
+
+    def _is_record_scope_compatible(self, memory: MemoryItem, record: MemoryRecordData) -> bool:
+        if record.memory_type != memory.memory_type:
+            return False
+
+        if memory.memory_type == MemoryType.AGENT:
+            if memory.agent_id and record.agent_id != memory.agent_id:
+                return False
+            if memory.user_id and record.user_id and record.user_id != memory.user_id:
+                return False
+            return True
+
+        if memory.user_id and record.user_id and record.user_id != memory.user_id:
+            return False
+        if memory.task_id and record.task_id and record.task_id != memory.task_id:
+            return False
+        return True
+
+    def _resolve_explicit_action_target(
+        self,
+        memory: MemoryItem,
+        metadata: Dict[str, Any],
+    ) -> Optional[MemoryRecordData]:
+        for key in ("target_memory_id", "action_target_memory_id", "delete_memory_id"):
+            raw_target_id = metadata.get(key)
+            if raw_target_id is None:
+                continue
+            try:
+                target_memory_id = int(raw_target_id)
+            except (TypeError, ValueError):
+                continue
+            if target_memory_id <= 0:
+                continue
+            record = self._repository.get(target_memory_id)
+            if not record:
+                return None
+            if not self._is_record_scope_compatible(memory, record):
+                logger.warning(
+                    "Ignore explicit memory action target outside scope",
+                    extra={
+                        "target_memory_id": target_memory_id,
+                        "memory_type": memory.memory_type.value,
+                    },
+                )
+                return None
+            return record
+        return None
+
+    def _plan_memory_action(self, memory: MemoryItem) -> MemoryActionDecision:
+        metadata = dict(memory.metadata or {})
+        requested_action = self._coerce_requested_memory_action(metadata)
+        explicit_target = None
+        if requested_action in {MemoryAction.UPDATE, MemoryAction.DELETE}:
+            explicit_target = self._resolve_explicit_action_target(memory, metadata)
+
+        exact_duplicate = None
+        semantic_duplicate = None
+        if requested_action in {None, MemoryAction.UPDATE}:
+            exact_duplicate = self._find_exact_duplicate(memory)
+            if not exact_duplicate:
+                try:
+                    semantic_duplicate = self._find_semantic_duplicate(memory)
+                except Exception as dedup_err:
+                    logger.debug(
+                        "Semantic dedup lookup failed during planning: %s",
+                        dedup_err,
+                    )
+
+        return self._action_planner.plan(
+            requested_action=requested_action,
+            explicit_target=explicit_target,
+            exact_duplicate=exact_duplicate,
+            semantic_duplicate=semantic_duplicate,
+        )
+
+    def _apply_action_decision_metadata(
+        self,
+        memory: MemoryItem,
+        decision: MemoryActionDecision,
+    ) -> None:
+        metadata = dict(memory.metadata or {})
+        metadata["decision_action"] = decision.action.value
+        metadata["decision_source"] = decision.source or "planner"
+        metadata["decision_reason"] = str(decision.reason or "unspecified").strip() or "unspecified"
+        if decision.confidence is not None:
+            metadata["decision_confidence"] = round(
+                self._clamp_score(decision.confidence, default=0.0),
+                4,
+            )
+        if decision.existing_record:
+            metadata["decision_target_memory_id"] = int(decision.existing_record.id)
+        memory.metadata = metadata
+
+    @staticmethod
+    def _normalize_metric_label(value: Any, default: str = "unknown", max_length: int = 48) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+        if not normalized:
+            return default
+        return normalized[:max_length]
+
+    def _record_blocked_write_metric(self, memory_type: MemoryType, reason: str) -> None:
+        if not self._quality_metrics_enabled or memory_blocked_writes_total is None:
+            return
+        try:
+            memory_blocked_writes_total.labels(
+                memory_type=str(memory_type.value),
+                reason=self._normalize_metric_label(reason),
+            ).inc()
+        except Exception:
+            logger.debug("Failed to increment blocked-write metric", exc_info=True)
+
+    def _record_planner_action_metric(
+        self,
+        memory_type: MemoryType,
+        decision: MemoryActionDecision,
+    ) -> None:
+        if not self._quality_metrics_enabled or memory_planner_actions_total is None:
+            return
+        try:
+            memory_planner_actions_total.labels(
+                memory_type=str(memory_type.value),
+                action=self._normalize_metric_label(decision.action.value, default="unknown"),
+                source=self._normalize_metric_label(decision.source or "planner"),
+            ).inc()
+        except Exception:
+            logger.debug("Failed to increment planner-action metric", exc_info=True)
+
+    @staticmethod
+    def _classify_blocked_write_reason(error: MemoryQualitySkipError) -> str:
+        message = str(error).strip().lower()
+        if "no reliable facts extracted" in message:
+            return "empty_extraction_fail_closed"
+        if "planner decided none" in message:
+            return "planner_none"
+        if "planner failed in strict mode" in message:
+            return "planner_failure_fail_closed"
+        if "delete action missing target" in message:
+            return "delete_target_missing"
+        if "delete target not found" in message:
+            return "delete_target_not_found"
+        return "quality_gate_blocked"
+
+    def _should_fail_closed_on_planner_failure(self, memory: MemoryItem) -> bool:
+        if not self._action_planner_strict_fail_closed:
+            return False
+        return self._should_fail_closed_on_empty_facts(memory, prefer_model_only=True)
+
+    def _persist_new_memory(self, memory: MemoryItem) -> int:
+        self._maybe_run_retention_cleanup(memory)
+
+        # Enforce memory count limits before inserting
+        self._enforce_memory_limits(memory)
+
+        # Write to PostgreSQL (source of truth)
+        record = self._repository.create(memory)
+        db_id = record.id
+
+        # Best-effort Milvus vector sync
+        try:
+            milvus_id = self._insert_into_milvus(memory)
+            self._repository.mark_vector_synced(db_id, milvus_id)
+            logger.info(
+                "Stored memory: db_id=%s, milvus_id=%s, type=%s",
+                db_id,
+                milvus_id,
+                memory.memory_type.value,
+            )
+        except Exception as milvus_err:
+            self._repository.mark_vector_failed(db_id, str(milvus_err))
+            logger.warning(
+                "Milvus sync failed for memory db_id=%s (DB record preserved): %s",
+                db_id,
+                milvus_err,
+            )
+
+        return db_id
+
+    def _execute_delete_action(self, memory: MemoryItem, decision: MemoryActionDecision) -> int:
+        target = decision.existing_record
+        if not target:
+            raise MemoryQualitySkipError("Planner DELETE action missing target record")
+
+        now = datetime.utcnow()
+        target_metadata = dict(target.metadata or {})
+        target_metadata.update(
+            {
+                "is_active": False,
+                "deleted_at": now.isoformat(),
+                "decision_action": MemoryAction.DELETE.value,
+                "decision_source": decision.source or "planner",
+                "decision_reason": str(decision.reason or "explicit_delete"),
+                "decision_target_memory_id": int(target.id),
+            }
+        )
+        if decision.confidence is not None:
+            target_metadata["decision_confidence"] = round(
+                self._clamp_score(decision.confidence, default=0.0),
+                4,
+            )
+        if memory.metadata:
+            if memory.metadata.get("superseded_by") is not None:
+                target_metadata["superseded_by"] = memory.metadata.get("superseded_by")
+
+        self._repository.update_record(
+            target.id,
+            metadata=target_metadata,
+            timestamp=now,
+            mark_vector_pending=False,
+        )
+
+        deleted = self._repository.soft_delete(target.id)
+        if not deleted:
+            raise MemoryQualitySkipError(f"Delete target not found or already deleted: {target.id}")
+
+        if target.milvus_id is not None:
+            self.delete_memory(int(target.milvus_id), target.memory_type)
+
+        logger.info(
+            "Soft-deleted memory via planner action",
+            extra={
+                "memory_id": target.id,
+                "memory_type": target.memory_type.value,
+                "reason": decision.reason,
+            },
+        )
+        return int(target.id)
+
+    def _execute_memory_action(self, memory: MemoryItem, decision: MemoryActionDecision) -> int:
+        if decision.action == MemoryAction.NONE:
+            raise MemoryQualitySkipError(f"Planner decided NONE; skip write ({decision.reason})")
+
+        if decision.action == MemoryAction.DELETE:
+            return self._execute_delete_action(memory, decision)
+
+        if decision.action == MemoryAction.UPDATE:
+            if decision.existing_record:
+                return self._merge_into_existing_memory(
+                    existing=decision.existing_record,
+                    incoming=memory,
+                    similarity=float(decision.similarity or 1.0),
+                    reason=decision.merge_reason or decision.reason or "planner_update",
+                )
+            logger.warning("Planner UPDATE action missing target; fallback to ADD")
+
+        return self._persist_new_memory(memory)
 
     def _cleanup_records(self, records: List[Any]) -> None:
         for record in records:
@@ -1641,10 +2024,36 @@ class MemorySystem(MemorySystemInterface):
             if self._enhanced_memory_enabled:
                 try:
                     memory = self._prepare_memory_for_storage(memory)
+                except MemoryQualitySkipError:
+                    raise
                 except Exception as prep_err:
                     logger.warning(
-                        "Memory normalization failed; using original payload: %s", prep_err
+                        "Memory normalization failed; using original payload: %s",
+                        prep_err,
                     )
+
+                if self._action_planner_enabled:
+                    try:
+                        decision = self._plan_memory_action(memory)
+                    except Exception as planner_err:
+                        if self._should_fail_closed_on_planner_failure(memory):
+                            raise MemoryQualitySkipError(
+                                f"Planner failed in strict mode; skip write ({planner_err})"
+                            )
+                        logger.warning(
+                            "Memory planner failed; fallback to ADD action: %s",
+                            planner_err,
+                        )
+                        decision = MemoryActionDecision(
+                            action=MemoryAction.ADD,
+                            reason="planner_error_fallback_add",
+                            source="planner_fallback",
+                            confidence=0.4,
+                        )
+
+                    self._apply_action_decision_metadata(memory, decision)
+                    self._record_planner_action_metric(memory.memory_type, decision)
+                    return self._execute_memory_action(memory, decision)
 
                 duplicate_match = self._find_exact_duplicate(memory)
                 if not duplicate_match:
@@ -1652,7 +2061,8 @@ class MemorySystem(MemorySystemInterface):
                         duplicate_match = self._find_semantic_duplicate(memory)
                     except Exception as dedup_err:
                         logger.debug(
-                            "Semantic dedup lookup failed; continuing with insert: %s", dedup_err
+                            "Semantic dedup lookup failed; continuing with insert: %s",
+                            dedup_err,
                         )
                 if duplicate_match:
                     existing, similarity, reason = duplicate_match
@@ -1663,35 +2073,14 @@ class MemorySystem(MemorySystemInterface):
                         reason=reason,
                     )
 
-            self._maybe_run_retention_cleanup(memory)
+            return self._persist_new_memory(memory)
 
-            # Enforce memory count limits before inserting
-            self._enforce_memory_limits(memory)
-
-            # Write to PostgreSQL (source of truth)
-            record = self._repository.create(memory)
-            db_id = record.id
-
-            # Best-effort Milvus vector sync
-            try:
-                milvus_id = self._insert_into_milvus(memory)
-                self._repository.mark_vector_synced(db_id, milvus_id)
-                logger.info(
-                    "Stored memory: db_id=%s, milvus_id=%s, type=%s",
-                    db_id,
-                    milvus_id,
-                    memory.memory_type.value,
-                )
-            except Exception as milvus_err:
-                self._repository.mark_vector_failed(db_id, str(milvus_err))
-                logger.warning(
-                    "Milvus sync failed for memory db_id=%s (DB record preserved): %s",
-                    db_id,
-                    milvus_err,
-                )
-
-            return db_id
-
+        except MemoryQualitySkipError as skip_err:
+            self._record_blocked_write_metric(
+                memory.memory_type,
+                self._classify_blocked_write_reason(skip_err),
+            )
+            raise
         except ValueError:
             raise
         except Exception as e:
@@ -2038,12 +2427,16 @@ class MemorySystem(MemorySystemInterface):
             return 0.0
 
         if metric == "L2":
-            return 1.0 / (1.0 + max(raw_distance, 0.0))
+            # Embeddings are unit-normalized at ingestion/query time. For unit vectors:
+            #   ||a-b||^2 = 2 - 2*cos(theta)  =>  cos(theta) = 1 - ||a-b||^2 / 2
+            # Convert L2 distance to cosine-like semantic similarity so threshold semantics are stable.
+            bounded_l2 = min(max(raw_distance, 0.0), 2.0)
+            cosine_like = 1.0 - (bounded_l2 * bounded_l2) / 2.0
+            return max(min(cosine_like, 1.0), 0.0)
 
         # For IP/COSINE, Milvus returns score-like distances where larger is better.
         if metric in {"IP", "COSINE"}:
-            bounded = max(min(raw_distance, 1.0), -1.0)
-            return (bounded + 1.0) / 2.0
+            return max(min(raw_distance, 1.0), 0.0)
 
         return 1.0 / (1.0 + max(raw_distance, 0.0))
 
@@ -2064,7 +2457,9 @@ class MemorySystem(MemorySystemInterface):
             similarity_score = self._distance_to_similarity(hit.distance)
             content = hit.entity.get("content")
             timestamp_ms = hit.entity.get("timestamp")
-            metadata = hit.entity.get("metadata")
+            raw_metadata = hit.entity.get("metadata")
+            metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+            metadata["_semantic_score"] = round(float(similarity_score), 6)
 
             # Convert timestamp
             timestamp = datetime.fromtimestamp(timestamp_ms / 1000.0) if timestamp_ms else None
@@ -2247,6 +2642,11 @@ class MemorySystem(MemorySystemInterface):
                 continue
             candidate = candidates[doc_index]
             candidate.metadata = dict(candidate.metadata or {})
+            if "_semantic_score" not in candidate.metadata:
+                candidate.metadata["_semantic_score"] = round(
+                    float(candidate.similarity_score or 0.0),
+                    6,
+                )
             base_score = float(
                 candidate.metadata.get("_combined_score", candidate.similarity_score or 0.0)
             )

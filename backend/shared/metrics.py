@@ -214,6 +214,27 @@ memory_items_retrieved_total = Counter(
     registry=registry,
 )
 
+memory_blocked_writes_total = Counter(
+    "memory_blocked_writes_total",
+    "Total memory writes blocked by quality/policy gates",
+    ["memory_type", "reason"],
+    registry=registry,
+)
+
+memory_planner_actions_total = Counter(
+    "memory_planner_actions_total",
+    "Total memory action-planner decisions",
+    ["memory_type", "action", "source"],
+    registry=registry,
+)
+
+memory_retrieval_source_quality_total = Counter(
+    "memory_retrieval_source_quality_total",
+    "Memory retrieval source quality outcomes",
+    ["memory_type", "source", "quality"],
+    registry=registry,
+)
+
 # ============================================================================
 # Application Metrics - Knowledge Base
 # ============================================================================

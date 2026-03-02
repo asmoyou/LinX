@@ -465,6 +465,7 @@ memory:
   retrieval:
     top_k: 10
     similarity_threshold: 0.3
+    strict_keyword_fallback: true
     enable_reranking: true
     rerank_provider: llm-pool
     rerank_model: BAAI/bge-reranker-v2-m3
@@ -478,6 +479,10 @@ memory:
     milvus:
       metric_type: L2
       nprobe: 10
+  write:
+    fail_closed_user_agent: true
+  observability:
+    enable_quality_counters: true
   sharing:
     enable_automatic: true
     enable_explicit: true
@@ -507,11 +512,19 @@ memory:
       model_enabled: true
       provider: vllm
       model: Qwen3.5-35B-A3B-FP8
+      fail_closed_auto_generated: true
+      fail_closed_types:
+      - agent
+      - user_context
       timeout_seconds: 120
       max_facts: 10
       failure_backoff_seconds: 60
       max_preference_facts: 10
       max_agent_candidates: 6
+    action_planner:
+      enabled: true
+      strict_fail_closed: true
+      allow_explicit_delete: true
   cleanup_orphans:
     enabled: true
     run_on_startup: true

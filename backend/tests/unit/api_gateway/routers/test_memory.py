@@ -277,7 +277,9 @@ class TestSearchMemories:
         mock_repo.get_by_milvus_ids.return_value = {}
         mock_repo.search_keywords.return_value = [(memory_row, 4.6, 2)]
 
-        with patch("memory_system.memory_system.get_memory_system", return_value=mock_memory_system):
+        with patch(
+            "memory_system.memory_system.get_memory_system", return_value=mock_memory_system
+        ):
             with patch("api_gateway.routers.memory._get_memory_repository", return_value=mock_repo):
                 with patch(
                     "api_gateway.routers.memory._items_to_responses",
@@ -292,9 +294,12 @@ class TestSearchMemories:
         assert results[0]["relevanceScore"] is not None
         assert float(results[0]["relevanceScore"]) >= 0.3
         assert results[0]["metadata"]["search_method"] == "keyword"
+        assert results[0]["metadata"]["keyword_mode"] == "strict"
 
         call_kwargs = mock_repo.search_keywords.call_args.kwargs
         assert "linx" in call_kwargs.get("query_terms", [])
+        assert call_kwargs.get("min_rank") == 4.0
+        assert call_kwargs.get("strict_semantics") is True
 
     def test_retrieve_memories_keyword_fallback_respects_min_similarity(self):
         from api_gateway.routers import memory as memory_router
@@ -331,15 +336,132 @@ class TestSearchMemories:
         )
         mock_repo = MagicMock()
         mock_repo.get_by_milvus_ids.return_value = {}
-        # rank=1.8 -> similarity=1.8/(1.8+4)=0.31
+        # rank=1.8 -> similarity=1.8/(1.8+6)=0.23
         mock_repo.search_keywords.return_value = [(memory_row, 1.8, 1)]
 
-        with patch("memory_system.memory_system.get_memory_system", return_value=mock_memory_system):
+        with patch(
+            "memory_system.memory_system.get_memory_system", return_value=mock_memory_system
+        ):
             with patch("api_gateway.routers.memory._get_memory_repository", return_value=mock_repo):
                 with patch("api_gateway.routers.memory._items_to_responses", return_value=[]):
                     results = memory_router._retrieve_memories_sync(query)
 
         assert results == []
+
+    def test_retrieve_memories_keyword_fallback_uses_default_similarity_threshold_when_missing(
+        self,
+    ):
+        from api_gateway.routers import memory as memory_router
+
+        query = SearchQuery(
+            query_text="LinX是谁开发的",
+            memory_type=MemoryType.COMPANY,
+            top_k=10,
+            min_similarity=None,
+        )
+        mock_memory_system = MagicMock()
+        mock_memory_system.retrieve_memories.return_value = []
+        mock_memory_system._default_similarity_threshold = 0.4
+
+        memory_row = MemoryRecordData(
+            id=11,
+            milvus_id=711,
+            memory_type=MemoryType.COMPANY,
+            content="LinX是小白客开发的",
+            user_id="test-user-id",
+            agent_id=None,
+            task_id=None,
+            owner_user_id="test-user-id",
+            owner_agent_id=None,
+            department_id=None,
+            visibility="department_tree",
+            sensitivity="internal",
+            source_memory_id=None,
+            expires_at=None,
+            metadata={},
+            timestamp=datetime(2026, 1, 15, 12, 0, 0),
+            vector_status="synced",
+            vector_error=None,
+            vector_updated_at=None,
+        )
+        mock_repo = MagicMock()
+        mock_repo.get_by_milvus_ids.return_value = {}
+        # score=2.6/(2.6+6)=0.302 < default threshold 0.4
+        mock_repo.search_keywords.return_value = [(memory_row, 2.6, 2)]
+
+        with patch(
+            "memory_system.memory_system.get_memory_system", return_value=mock_memory_system
+        ):
+            with patch("api_gateway.routers.memory._get_memory_repository", return_value=mock_repo):
+                with patch(
+                    "api_gateway.routers.memory._items_to_responses",
+                    side_effect=lambda items: [
+                        memory_router._memory_item_to_response(item) for item in items
+                    ],
+                ):
+                    results = memory_router._retrieve_memories_sync(query)
+
+        assert results == []
+        call_kwargs = mock_repo.search_keywords.call_args.kwargs
+        assert call_kwargs.get("min_rank") == 4.0
+
+    def test_retrieve_memories_keyword_fallback_legacy_mode_when_flag_disabled(self):
+        from api_gateway.routers import memory as memory_router
+
+        query = SearchQuery(
+            query_text="LinX是谁开发的",
+            memory_type=MemoryType.COMPANY,
+            top_k=10,
+            min_similarity=0.3,
+        )
+        mock_memory_system = MagicMock()
+        mock_memory_system.retrieve_memories.return_value = []
+
+        memory_row = MemoryRecordData(
+            id=12,
+            milvus_id=712,
+            memory_type=MemoryType.COMPANY,
+            content="LinX是小白客开发的",
+            user_id="test-user-id",
+            agent_id=None,
+            task_id=None,
+            owner_user_id="test-user-id",
+            owner_agent_id=None,
+            department_id=None,
+            visibility="department_tree",
+            sensitivity="internal",
+            source_memory_id=None,
+            expires_at=None,
+            metadata={},
+            timestamp=datetime(2026, 1, 15, 12, 0, 0),
+            vector_status="synced",
+            vector_error=None,
+            vector_updated_at=None,
+        )
+        mock_repo = MagicMock()
+        mock_repo.get_by_milvus_ids.return_value = {}
+        mock_repo.search_keywords.return_value = [(memory_row, 4.8, 2)]
+
+        with patch(
+            "memory_system.memory_system.get_memory_system", return_value=mock_memory_system
+        ):
+            with patch("api_gateway.routers.memory._get_memory_repository", return_value=mock_repo):
+                with patch(
+                    "api_gateway.routers.memory._is_strict_keyword_fallback_enabled",
+                    return_value=False,
+                ):
+                    with patch(
+                        "api_gateway.routers.memory._items_to_responses",
+                        side_effect=lambda items: [
+                            memory_router._memory_item_to_response(item) for item in items
+                        ],
+                    ):
+                        results = memory_router._retrieve_memories_sync(query)
+
+        assert len(results) == 1
+        assert results[0]["metadata"]["keyword_mode"] == "legacy"
+        call_kwargs = mock_repo.search_keywords.call_args.kwargs
+        assert call_kwargs.get("strict_semantics") is False
 
 
 class TestShareMemory:
@@ -838,6 +960,9 @@ class TestMemoryConfigPayload:
         assert payload["fact_extraction"]["sources"]["provider"] == "llm.default_provider"
         assert payload["runtime"]["collection_retry_attempts"] == 3
         assert payload["runtime"]["search_timeout_seconds"] == 2.0
+        assert payload["retrieval"]["strict_keyword_fallback"] is True
+        assert payload["write"]["fail_closed_user_agent"] is True
+        assert payload["observability"]["enable_quality_counters"] is True
 
     def test_payload_falls_back_to_kb_rerank_when_memory_not_set(self):
         from api_gateway.routers.memory import _build_memory_config_payload
@@ -947,12 +1072,14 @@ class TestMemoryConfigEndpoints:
                 },
             },
             "retrieval": {"top_k": 10, "enable_reranking": True},
+            "write": {"fail_closed_user_agent": True},
             "fact_extraction": {
                 "enabled": True,
                 "model_enabled": False,
                 "provider": "ollama",
                 "model": "qwen3",
             },
+            "observability": {"enable_quality_counters": True},
             "runtime": {"search_timeout_seconds": 2.0},
             "recommended": {},
         }
@@ -965,7 +1092,9 @@ class TestMemoryConfigEndpoints:
 
         assert response.embedding["provider"] == "cfg-provider"
         assert response.retrieval["top_k"] == 10
+        assert response.write["fail_closed_user_agent"] is True
         assert response.fact_extraction["provider"] == "ollama"
+        assert response.observability["enable_quality_counters"] is True
         assert response.runtime["search_timeout_seconds"] == 2.0
 
     @pytest.mark.asyncio
@@ -1036,12 +1165,14 @@ class TestMemoryConfigEndpoints:
                 "enable_reranking": True,
                 "rerank_model": "new-rerank-model",
             },
+            "write": {"fail_closed_user_agent": True},
             "fact_extraction": {
                 "enabled": True,
                 "model_enabled": True,
                 "provider": "new-fact-provider",
                 "model": "new-fact-model",
             },
+            "observability": {"enable_quality_counters": True},
             "runtime": {"search_timeout_seconds": 4},
             "recommended": {},
         }
@@ -1065,6 +1196,8 @@ class TestMemoryConfigEndpoints:
                                         "provider": "new-fact-provider",
                                         "model": "new-fact-model",
                                     },
+                                    write={"fail_closed_user_agent": False},
+                                    observability={"enable_quality_counters": False},
                                     runtime={"search_timeout_seconds": 4},
                                 ),
                                 current_user=mock_admin_user,
@@ -1078,11 +1211,17 @@ class TestMemoryConfigEndpoints:
         assert dumped_config["memory"]["enhanced_memory"]["fact_extraction"]["provider"] == (
             "new-fact-provider"
         )
-        assert dumped_config["memory"]["enhanced_memory"]["fact_extraction"]["model_enabled"] is True
+        assert (
+            dumped_config["memory"]["enhanced_memory"]["fact_extraction"]["model_enabled"] is True
+        )
+        assert dumped_config["memory"]["write"]["fail_closed_user_agent"] is False
+        assert dumped_config["memory"]["observability"]["enable_quality_counters"] is False
         assert dumped_config["memory"]["search_timeout_seconds"] == 4
         assert response.embedding["provider"] == "new-provider"
         assert response.retrieval["top_k"] == 20
+        assert response.write["fail_closed_user_agent"] is True
         assert response.fact_extraction["provider"] == "new-fact-provider"
+        assert response.observability["enable_quality_counters"] is True
         assert response.runtime["search_timeout_seconds"] == 4
 
 
@@ -1373,7 +1512,9 @@ class TestAgentMemoryCandidateReview:
         with patch("api_gateway.routers.memory._get_memory_repository", return_value=mock_repo):
             with patch("database.connection.get_db_session", return_value=mock_session_ctx):
                 with patch("api_gateway.routers.memory._lookup_agent_name", return_value="Agent X"):
-                    with patch("api_gateway.routers.memory._lookup_user_name", return_value="User X"):
+                    with patch(
+                        "api_gateway.routers.memory._lookup_user_name", return_value="User X"
+                    ):
                         result = _review_agent_candidate_sync(
                             memory_id=77,
                             request=request,
@@ -1384,3 +1525,224 @@ class TestAgentMemoryCandidateReview:
         assert result["id"] == "77"
         assert result["metadata"]["review_status"] == "published"
         assert result["metadata"]["reviewed_by"] == "reviewer-1"
+
+
+class TestSharePublishWritePolicy:
+    """Test share/publish write path policy behavior."""
+
+    def test_share_sync_promote_uses_memory_system_store_memory(self):
+        from api_gateway.routers.memory import _share_memory_sync
+
+        now = datetime(2026, 3, 2, 12, 0, 0, tzinfo=timezone.utc)
+        owner_user_id = str(uuid4())
+        owner_agent_id = str(uuid4())
+        source_record = MemoryRecordData(
+            id=10,
+            milvus_id=110,
+            memory_type=MemoryType.AGENT,
+            content="interaction.note.latest = publish this",
+            user_id=owner_user_id,
+            agent_id=owner_agent_id,
+            task_id=None,
+            owner_user_id=owner_user_id,
+            owner_agent_id=owner_agent_id,
+            department_id="dep-a",
+            visibility="private",
+            sensitivity="internal",
+            source_memory_id=None,
+            expires_at=None,
+            metadata={"visibility": "private"},
+            timestamp=now,
+            vector_status="synced",
+            vector_error=None,
+            vector_updated_at=now,
+        )
+        promoted_record = MemoryRecordData(
+            id=777,
+            milvus_id=1777,
+            memory_type=MemoryType.COMPANY,
+            content=source_record.content,
+            user_id=owner_user_id,
+            agent_id=None,
+            task_id=None,
+            owner_user_id=owner_user_id,
+            owner_agent_id=owner_agent_id,
+            department_id="dep-a",
+            visibility="department_tree",
+            sensitivity="internal",
+            source_memory_id=10,
+            expires_at=None,
+            metadata={"publish_mode": "promote", "source_memory_id": 10},
+            timestamp=now,
+            vector_status="synced",
+            vector_error=None,
+            vector_updated_at=now,
+        )
+
+        mock_repo = MagicMock()
+
+        def _repo_get_side_effect(memory_id):
+            if int(memory_id) == 10:
+                return source_record
+            if int(memory_id) == 777:
+                return promoted_record
+            return None
+
+        mock_repo.get.side_effect = _repo_get_side_effect
+        mock_repo.get_by_milvus_id.return_value = None
+        mock_repo.list_shared_children.return_value = []
+        mock_repo.update_record.return_value = source_record
+        mock_repo.replace_acl_entries.return_value = 0
+
+        mock_memory_system = MagicMock()
+        mock_memory_system.store_memory.return_value = 777
+
+        mock_session = MagicMock()
+        mock_session_ctx = MagicMock()
+        mock_session_ctx.__enter__.return_value = mock_session
+        mock_session_ctx.__exit__.return_value = False
+
+        with patch("api_gateway.routers.memory._get_memory_repository", return_value=mock_repo):
+            with patch(
+                "memory_system.memory_system.get_memory_system", return_value=mock_memory_system
+            ):
+                with patch("api_gateway.routers.memory._enrich_memory_security_metadata_sync"):
+                    with patch(
+                        "api_gateway.routers.memory._resolve_share_targets",
+                        return_value={
+                            "target_user_ids": [],
+                            "target_entity_ids": [],
+                            "target_entity_names": [],
+                        },
+                    ):
+                        with patch(
+                            "database.connection.get_db_session", return_value=mock_session_ctx
+                        ):
+                            with patch(
+                                "api_gateway.routers.memory._lookup_agent_name", return_value="A"
+                            ):
+                                with patch(
+                                    "api_gateway.routers.memory._lookup_user_name", return_value="U"
+                                ):
+                                    result = _share_memory_sync(
+                                        memory_id=10,
+                                        type_str="agent",
+                                        user_ids=[],
+                                        agent_ids=[],
+                                        scope="department_tree",
+                                        expires_at=None,
+                                        reason=None,
+                                        shared_by_user_id=str(uuid4()),
+                                    )
+
+        assert result is not None
+        assert result["id"] == "777"
+        mock_repo.create.assert_not_called()
+        mock_memory_system.store_memory.assert_called_once()
+        promoted_item = mock_memory_system.store_memory.call_args.args[0]
+        assert promoted_item.memory_type == MemoryType.COMPANY
+        assert promoted_item.metadata["publish_mode"] == "promote"
+        assert promoted_item.metadata["source_memory_id"] == 10
+        assert promoted_item.metadata["policy_write_mode"] == "controlled"
+        assert promoted_item.metadata["policy_write_path"] == "memory.share_promote"
+        assert promoted_item.metadata["memory_action"] == "ADD"
+        update_kwargs = mock_repo.update_record.call_args.kwargs
+        assert update_kwargs["metadata"]["last_promoted_memory_id"] == 777
+
+    def test_share_sync_non_promote_still_updates_source_record(self):
+        from api_gateway.routers.memory import _share_memory_sync
+
+        now = datetime(2026, 3, 2, 12, 30, 0, tzinfo=timezone.utc)
+        owner_user_id = str(uuid4())
+        source_record = MemoryRecordData(
+            id=25,
+            milvus_id=225,
+            memory_type=MemoryType.COMPANY,
+            content="company.note.latest = shared memo",
+            user_id=owner_user_id,
+            agent_id=None,
+            task_id=None,
+            owner_user_id=owner_user_id,
+            owner_agent_id=None,
+            department_id="dep-a",
+            visibility="private",
+            sensitivity="internal",
+            source_memory_id=None,
+            expires_at=None,
+            metadata={"visibility": "private"},
+            timestamp=now,
+            vector_status="synced",
+            vector_error=None,
+            vector_updated_at=now,
+        )
+        updated_record = MemoryRecordData(
+            id=25,
+            milvus_id=225,
+            memory_type=MemoryType.COMPANY,
+            content=source_record.content,
+            user_id=owner_user_id,
+            agent_id=None,
+            task_id=None,
+            owner_user_id=owner_user_id,
+            owner_agent_id=None,
+            department_id="dep-a",
+            visibility="department_tree",
+            sensitivity="internal",
+            source_memory_id=None,
+            expires_at=None,
+            metadata={"visibility": "department_tree"},
+            timestamp=now,
+            vector_status="synced",
+            vector_error=None,
+            vector_updated_at=now,
+        )
+
+        mock_repo = MagicMock()
+        mock_repo.get.side_effect = lambda memory_id: (
+            updated_record if int(memory_id) == 25 else None
+        )
+        mock_repo.get_by_milvus_id.return_value = None
+        mock_repo.list_shared_children.return_value = []
+        mock_repo.update_record.return_value = updated_record
+        mock_repo.replace_acl_entries.return_value = 0
+
+        mock_memory_system = MagicMock()
+        mock_session = MagicMock()
+        mock_session_ctx = MagicMock()
+        mock_session_ctx.__enter__.return_value = mock_session
+        mock_session_ctx.__exit__.return_value = False
+
+        with patch("api_gateway.routers.memory._get_memory_repository", return_value=mock_repo):
+            with patch(
+                "memory_system.memory_system.get_memory_system", return_value=mock_memory_system
+            ):
+                with patch(
+                    "api_gateway.routers.memory._resolve_share_targets",
+                    return_value={
+                        "target_user_ids": [],
+                        "target_entity_ids": [],
+                        "target_entity_names": [],
+                    },
+                ):
+                    with patch("database.connection.get_db_session", return_value=mock_session_ctx):
+                        with patch(
+                            "api_gateway.routers.memory._lookup_agent_name", return_value=None
+                        ):
+                            with patch(
+                                "api_gateway.routers.memory._lookup_user_name", return_value="U"
+                            ):
+                                result = _share_memory_sync(
+                                    memory_id=25,
+                                    type_str="company",
+                                    user_ids=[],
+                                    agent_ids=[],
+                                    scope="department_tree",
+                                    expires_at=None,
+                                    reason=None,
+                                    shared_by_user_id=str(uuid4()),
+                                )
+
+        assert result is not None
+        assert result["id"] == "25"
+        mock_memory_system.store_memory.assert_not_called()
+        mock_repo.update_record.assert_called_once()

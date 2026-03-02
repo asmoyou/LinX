@@ -2619,6 +2619,7 @@ async def _flush_session_memories(
 
             if existing and str(existing.get("value") or "").strip() != signal_value:
                 memory_id = existing.get("memory_id")
+                previous_value = str(existing.get("value") or "").strip()
                 if memory_id:
                     old_meta = dict(existing.get("metadata") or {})
                     old_meta.update(
@@ -2628,7 +2629,61 @@ async def _flush_session_memories(
                             "superseded_by_value": signal_value,
                         }
                     )
-                    _upsert_existing_user_preference_metadata(int(memory_id), old_meta)
+                    delete_applied = False
+                    if previous_value:
+                        delete_seed_facts = old_meta.get("facts", [])
+                        if not isinstance(delete_seed_facts, list) or not delete_seed_facts:
+                            delete_seed_facts = _build_user_preference_seed_facts(
+                                {
+                                    "key": signal_key,
+                                    "value": previous_value,
+                                    "persistent": bool(old_meta.get("strong_signal")),
+                                    "confidence": max(
+                                        _coerce_confidence(old_meta.get("confidence"), default=0.0),
+                                        _coerce_confidence(signal.get("confidence"), default=0.0),
+                                    ),
+                                }
+                            )
+
+                        delete_result = mem_interface.store_user_context(
+                            user_id=session.user_id,
+                            agent_id=session.agent_id,
+                            content=f"user.preference.{signal_key}={previous_value}",
+                            metadata={
+                                **preference_metadata_base,
+                                "signal_type": _SESSION_MEMORY_USER_SIGNAL_TYPE,
+                                "preference_key": signal_key,
+                                "preference_value": previous_value,
+                                "evidence_count": max(
+                                    int(old_meta.get("evidence_count") or 0),
+                                    int(signal.get("evidence_count") or 0),
+                                ),
+                                "confidence": max(
+                                    _coerce_confidence(old_meta.get("confidence"), default=0.0),
+                                    _coerce_confidence(signal.get("confidence"), default=0.0),
+                                ),
+                                "reason": "superseded_by_new_value",
+                                "latest_turn_ts": signal.get("latest_ts")
+                                or old_meta.get("latest_turn_ts"),
+                                "strong_signal": bool(
+                                    signal.get("strong_signal") or old_meta.get("strong_signal")
+                                ),
+                                "explicit_source": bool(
+                                    signal.get("explicit_source") or old_meta.get("explicit_source")
+                                ),
+                                "is_active": False,
+                                "superseded_at": extracted_at,
+                                "superseded_by_value": signal_value,
+                                "memory_action": "DELETE",
+                                "target_memory_id": int(memory_id),
+                                "skip_secondary_fact_extraction": True,
+                                "facts": delete_seed_facts,
+                            },
+                        )
+                        delete_applied = bool(delete_result)
+
+                    if not delete_applied:
+                        _upsert_existing_user_preference_metadata(int(memory_id), old_meta)
 
             mem_interface.store_user_context(
                 user_id=session.user_id,
@@ -4789,8 +4844,8 @@ async def test_agent(
                         executor.build_execution_context_with_debug,
                         agent,
                         request_exec_context,
-                        agent_info.top_k or 5,
-                        agent_info.similarity_threshold,
+                        top_k=agent_info.top_k or 5,
+                        memory_min_similarity=agent_info.similarity_threshold,
                     )
 
                     for debug_message in _build_retrieval_process_messages(context_debug):
@@ -5000,6 +5055,7 @@ async def test_agent(
                                 session_workdir=conversation_session.workdir,
                                 container_id=conversation_session.sandbox_id,
                                 message_content=content_override,
+                                memory_min_similarity=agent_info.similarity_threshold,
                                 prebuilt_execution_context=context,
                             )
                         else:
@@ -5450,6 +5506,7 @@ async def test_agent(
                 executor = get_agent_executor()
                 execute_kwargs: Dict[str, Any] = {
                     "conversation_history": parsed_history or None,
+                    "memory_min_similarity": agent_info.similarity_threshold,
                 }
                 if use_unified_runtime:
                     execute_kwargs["execution_profile"] = ExecutionProfile.DEBUG_CHAT

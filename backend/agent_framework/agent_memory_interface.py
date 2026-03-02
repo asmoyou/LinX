@@ -13,7 +13,8 @@ from uuid import UUID
 
 from memory_system.memory_interface import MemoryItem, MemoryType, SearchQuery
 from memory_system.memory_repository import get_memory_repository
-from memory_system.memory_system import MemorySystem, get_memory_system
+from memory_system.memory_system import MemoryQualitySkipError, MemorySystem, get_memory_system
+from shared.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,8 @@ _MEMORY_QUERY_STOP_TERMS = {
 
 _MEMORY_CJK_QUESTION_TERMS = {"如何", "怎么", "怎样", "请问", "是谁", "什么"}
 _MEMORY_CJK_QUESTION_CHARS = {"如", "何", "怎", "样", "请", "问", "谁", "什", "么"}
+_KEYWORD_FALLBACK_MIN_RANK = 4.0
+_KEYWORD_FALLBACK_SCORE_DENOMINATOR = 6.0
 
 
 def _format_agent_memory_content(
@@ -151,11 +154,11 @@ class AgentMemoryInterface:
             if len(fragment) >= 2 and fragment not in _MEMORY_QUERY_STOP_TERMS:
                 terms.add(fragment)
 
-            for n in (2, 3):
+            for n in (3, 4):
                 if len(fragment) < n:
                     continue
                 for idx in range(len(fragment) - n + 1):
-                    gram = fragment[idx: idx + n]
+                    gram = fragment[idx : idx + n]
                     if not gram or gram in _MEMORY_QUERY_STOP_TERMS:
                         continue
                     if any(question in gram for question in _MEMORY_CJK_QUESTION_TERMS):
@@ -172,16 +175,29 @@ class AgentMemoryInterface:
     @staticmethod
     def _keyword_min_term_hits(query_terms: List[str]) -> int:
         term_count = len([term for term in query_terms if len(str(term).strip()) >= 2])
-        if term_count <= 2:
+        if term_count <= 1:
             return 1
-        if term_count <= 6:
+        if term_count <= 4:
             return 2
         return 3
 
     @staticmethod
     def _keyword_rank_to_similarity(rank: float) -> float:
         safe_rank = max(float(rank or 0.0), 0.0)
-        return min(max(safe_rank / (safe_rank + 4.0), 0.0), 1.0)
+        return min(max(safe_rank / (safe_rank + _KEYWORD_FALLBACK_SCORE_DENOMINATOR), 0.0), 1.0)
+
+    @staticmethod
+    def _is_strict_keyword_fallback_enabled() -> bool:
+        try:
+            memory_cfg = get_config().get_section("memory")
+        except Exception:
+            return True
+        if not isinstance(memory_cfg, dict):
+            return True
+        retrieval_cfg = memory_cfg.get("retrieval", {})
+        if not isinstance(retrieval_cfg, dict):
+            return True
+        return bool(retrieval_cfg.get("strict_keyword_fallback", True))
 
     def _retrieve_memories_with_db_alignment(self, search_query: SearchQuery) -> List[MemoryItem]:
         """Retrieve memories with DB mapping and strict keyword fallback when semantic misses."""
@@ -214,11 +230,7 @@ class AgentMemoryInterface:
                 if semantic_item.metadata:
                     db_item.metadata = db_item.metadata or {}
                     db_item.metadata.update(
-                        {
-                            k: v
-                            for k, v in semantic_item.metadata.items()
-                            if str(k).startswith("_")
-                        }
+                        {k: v for k, v in semantic_item.metadata.items() if str(k).startswith("_")}
                     )
                 items.append(db_item)
             else:
@@ -231,6 +243,7 @@ class AgentMemoryInterface:
             return items
 
         query_terms = self._extract_query_terms(search_query.query_text)
+        strict_keyword_fallback = self._is_strict_keyword_fallback_enabled()
         keyword_rows = repo.search_keywords(
             search_query.query_text,
             query_terms=query_terms,
@@ -239,8 +252,9 @@ class AgentMemoryInterface:
             user_id=search_query.user_id,
             task_id=search_query.task_id,
             min_term_hits=self._keyword_min_term_hits(query_terms),
-            min_rank=1.8,
+            min_rank=_KEYWORD_FALLBACK_MIN_RANK,
             limit=search_query.top_k or 10,
+            strict_semantics=strict_keyword_fallback,
         )
 
         effective_min_similarity = (
@@ -257,6 +271,7 @@ class AgentMemoryInterface:
             item = row.to_memory_item(similarity_score=score)
             item.metadata = dict(item.metadata or {})
             item.metadata["search_method"] = "keyword"
+            item.metadata["keyword_mode"] = "strict" if strict_keyword_fallback else "legacy"
             item.metadata["keyword_rank"] = round(float(rank), 4)
             item.metadata["keyword_term_hits"] = int(term_hits)
             fallback_items.append(item)
@@ -292,15 +307,23 @@ class AgentMemoryInterface:
         Returns:
             Memory ID
         """
+        meta = dict(metadata or {})
+        if bool(meta.get("auto_generated")):
+            meta.setdefault("fail_closed_extraction", True)
+
         memory_item = MemoryItem(
             content=content,
             memory_type=MemoryType.AGENT,
             agent_id=str(agent_id),
             user_id=str(user_id) if user_id else None,
-            metadata=metadata or {},
+            metadata=meta,
         )
 
-        memory_id = self.memory_system.store_memory(memory_item)
+        try:
+            memory_id = self.memory_system.store_memory(memory_item)
+        except MemoryQualitySkipError as exc:
+            logger.info("Agent memory skipped by quality gate: %s", exc)
+            return ""
         logger.info(f"Agent memory stored: {memory_id}")
         return str(memory_id)
 
@@ -437,6 +460,7 @@ class AgentMemoryInterface:
         meta = dict(metadata or {})
         meta.setdefault("auto_generated", True)
         meta.setdefault("source", "conversation")
+        meta.setdefault("fail_closed_extraction", True)
 
         memory_item = MemoryItem(
             content=content,
@@ -446,7 +470,11 @@ class AgentMemoryInterface:
             metadata=meta,
         )
 
-        memory_id = self.memory_system.store_memory(memory_item)
+        try:
+            memory_id = self.memory_system.store_memory(memory_item)
+        except MemoryQualitySkipError as exc:
+            logger.info("User context memory skipped by quality gate: %s", exc)
+            return ""
         logger.info(f"User context stored: {memory_id}")
         return str(memory_id)
 

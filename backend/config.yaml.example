@@ -714,6 +714,7 @@ memory:
   retrieval:
     top_k: 10
     similarity_threshold: 0.3
+    strict_keyword_fallback: true  # Enables stricter keyword fallback semantics with overlap gating
     enable_reranking: true
     rerank_provider: "llm-pool"  # Falls back to knowledge_base.search.rerank_provider when blank
     rerank_model: "BAAI/bge-reranker-v2-m3"  # Falls back to knowledge_base.search.rerank_model when blank
@@ -726,6 +727,14 @@ memory:
     # Ranking Weights
     similarity_weight: 0.7
     recency_weight: 0.3
+
+  # Write-policy feature flags
+  write:
+    fail_closed_user_agent: true  # If false, agent/user_context writes may bypass fail-closed empty extraction
+
+  # Memory quality observability switches
+  observability:
+    enable_quality_counters: true  # Emits blocked-write/planner-action/retrieval-quality counters
   
   # Memory Sharing
   sharing:

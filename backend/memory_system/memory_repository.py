@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import re
 from typing import Any, Dict, List, Optional, Tuple
+import unicodedata
 
 from sqlalchemy import case, desc, func, literal, or_
 
@@ -163,7 +165,9 @@ class MemoryRepository:
             else self._coerce_optional_int(normalized.get("source_memory_id"))
         )
         resolved_expires_at = (
-            expires_at if expires_at is not None else self._parse_datetime(normalized.get("expires_at"))
+            expires_at
+            if expires_at is not None
+            else self._parse_datetime(normalized.get("expires_at"))
         )
 
         normalized["owner_user_id"] = resolved_owner_user_id
@@ -202,6 +206,95 @@ class MemoryRepository:
     @staticmethod
     def _escape_like(term: str) -> str:
         return str(term or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    @staticmethod
+    def _normalize_keyword_text(text: str) -> str:
+        normalized = unicodedata.normalize("NFKC", str(text or "")).casefold()
+        return " ".join(normalized.split())
+
+    @staticmethod
+    def _is_cjk_text(text: str) -> bool:
+        return bool(re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]", str(text or "")))
+
+    @staticmethod
+    def _is_boundary_sensitive_term(term: str) -> bool:
+        return bool(re.fullmatch(r"[a-z0-9][a-z0-9._-]*", str(term or "")))
+
+    @classmethod
+    def _term_matches_content(cls, normalized_content: str, term: str) -> bool:
+        normalized_term = cls._normalize_keyword_text(term)
+        if len(normalized_term) < 2:
+            return False
+
+        if cls._is_cjk_text(normalized_term):
+            return normalized_term in normalized_content
+
+        if cls._is_boundary_sensitive_term(normalized_term):
+            pattern = rf"(?<![a-z0-9]){re.escape(normalized_term)}(?![a-z0-9])"
+            return bool(re.search(pattern, normalized_content))
+
+        return normalized_term in normalized_content
+
+    @classmethod
+    def _compute_keyword_match_features(
+        cls,
+        *,
+        content: str,
+        query_terms: List[str],
+        normalized_full_query: str,
+    ) -> Dict[str, Any]:
+        normalized_content = cls._normalize_keyword_text(content)
+        if not normalized_content:
+            return {
+                "strict_term_hits": 0,
+                "strong_term_hits": 0,
+                "coverage_ratio": 0.0,
+                "phrase_hit": False,
+            }
+
+        strict_term_hits = 0
+        strong_term_hits = 0
+        normalized_terms: List[str] = []
+        seen = set()
+        for raw_term in query_terms:
+            normalized_term = cls._normalize_keyword_text(raw_term)
+            if len(normalized_term) < 2:
+                continue
+            if normalized_term in seen:
+                continue
+            seen.add(normalized_term)
+            normalized_terms.append(normalized_term)
+            if cls._term_matches_content(normalized_content, normalized_term):
+                strict_term_hits += 1
+                if (cls._is_cjk_text(normalized_term) and len(normalized_term) >= 2) or (
+                    not cls._is_cjk_text(normalized_term) and len(normalized_term) >= 4
+                ):
+                    strong_term_hits += 1
+
+        total_terms = max(len(normalized_terms), 1)
+        coverage_ratio = min(max(strict_term_hits / total_terms, 0.0), 1.0)
+        phrase_hit = len(normalized_full_query) >= 2 and normalized_full_query in normalized_content
+        return {
+            "strict_term_hits": strict_term_hits,
+            "strong_term_hits": strong_term_hits,
+            "coverage_ratio": coverage_ratio,
+            "phrase_hit": phrase_hit,
+        }
+
+    @staticmethod
+    def _passes_keyword_quality_gate(
+        *,
+        strict_term_hits: int,
+        strong_term_hits: int,
+        phrase_hit: bool,
+        required_term_hits: int,
+        total_terms: int,
+    ) -> bool:
+        if strict_term_hits < required_term_hits:
+            return False
+        if total_terms >= 3 and not phrase_hit and strong_term_hits <= 0:
+            return False
+        return True
 
     @classmethod
     def _metadata_utility_score(cls, row: MemoryRecord) -> float:
@@ -244,7 +337,9 @@ class MemoryRepository:
             department_id=row.department_id,
             visibility=row.visibility or "account",
             sensitivity=row.sensitivity or "internal",
-            source_memory_id=int(row.source_memory_id) if row.source_memory_id is not None else None,
+            source_memory_id=(
+                int(row.source_memory_id) if row.source_memory_id is not None else None
+            ),
             expires_at=row.expires_at,
             metadata=metadata,
             timestamp=row.timestamp,
@@ -417,22 +512,23 @@ class MemoryRepository:
         min_term_hits: int = 1,
         min_rank: float = 1.0,
         limit: int = 10,
+        strict_semantics: bool = True,
     ) -> List[Tuple[MemoryRecordData, float, int]]:
-        """Keyword search with lightweight ranking for memory recall fallback."""
+        """Keyword search with stricter semantics and optional full-text signal."""
         normalized_terms: List[str] = []
         seen = set()
         for raw_term in query_terms or []:
-            term = str(raw_term or "").strip()
+            term = self._normalize_keyword_text(raw_term)
             if len(term) < 2:
                 continue
-            canonical = term.casefold()
+            canonical = term
             if canonical in seen:
                 continue
             seen.add(canonical)
             normalized_terms.append(term)
 
-        full_query = str(query_text or "").strip()
-        full_query_key = full_query.casefold()
+        full_query = self._normalize_keyword_text(query_text)
+        full_query_key = full_query
         if len(full_query) >= 2 and full_query_key not in seen:
             normalized_terms.insert(0, full_query)
 
@@ -456,6 +552,17 @@ class MemoryRepository:
             match_clauses = []
             score_expr = literal(0.0)
             term_hit_expr = literal(0)
+            fts_match_clause = None
+            fts_rank_expr = literal(0.0)
+            if len(full_query) >= 2:
+                tsvector_expr = func.to_tsvector("simple", MemoryRecord.content)
+                tsquery_expr = func.plainto_tsquery("simple", full_query)
+                fts_match_clause = tsvector_expr.op("@@")(tsquery_expr)
+                fts_rank_expr = case(
+                    (fts_match_clause, func.ts_rank_cd(tsvector_expr, tsquery_expr)),
+                    else_=0.0,
+                )
+
             for term in normalized_terms:
                 pattern = f"%{self._escape_like(term)}%"
                 clause = MemoryRecord.content.ilike(pattern, escape="\\")
@@ -469,20 +576,54 @@ class MemoryRepository:
 
             keyword_rank = score_expr.label("keyword_rank")
             keyword_term_hits = term_hit_expr.label("keyword_term_hits")
+            keyword_fts_rank = fts_rank_expr.label("keyword_fts_rank")
+            candidate_clauses = list(match_clauses)
+            if fts_match_clause is not None:
+                candidate_clauses.append(fts_match_clause)
             rows = (
-                query.filter(or_(*match_clauses))
-                .add_columns(keyword_rank, keyword_term_hits)
+                query.filter(or_(*candidate_clauses))
+                .add_columns(keyword_rank, keyword_term_hits, keyword_fts_rank)
                 .order_by(keyword_rank.desc(), desc(MemoryRecord.timestamp))
-                .limit(max(top_k * 5, top_k))
+                .limit(max(top_k * 8, top_k + 16))
                 .all()
             )
 
             ranked: List[Tuple[MemoryRecordData, float, int]] = []
-            for row, raw_rank, raw_term_hits in rows:
+            for row, raw_rank, raw_term_hits, raw_fts_rank in rows:
                 rank = float(raw_rank or 0.0)
                 term_hits = int(raw_term_hits or 0)
+                if strict_semantics:
+                    match_features = self._compute_keyword_match_features(
+                        content=row.content,
+                        query_terms=normalized_terms,
+                        normalized_full_query=full_query,
+                    )
+                    strict_term_hits = int(match_features["strict_term_hits"])
+                    strong_term_hits = int(match_features["strong_term_hits"])
+                    phrase_hit = bool(match_features["phrase_hit"])
+                    coverage_ratio = float(match_features["coverage_ratio"])
+
+                    if not self._passes_keyword_quality_gate(
+                        strict_term_hits=strict_term_hits,
+                        strong_term_hits=strong_term_hits,
+                        phrase_hit=phrase_hit,
+                        required_term_hits=required_term_hits,
+                        total_terms=len(normalized_terms),
+                    ):
+                        continue
+
+                    lexical_boost = (
+                        (2.2 if phrase_hit else 0.0)
+                        + (1.6 * coverage_ratio)
+                        + (0.4 * min(strong_term_hits, 3))
+                    )
+                    fts_rank = min(max(float(raw_fts_rank or 0.0), 0.0), 1.0)
+                    rank = rank + lexical_boost + (3.0 * fts_rank)
+                    term_hits = strict_term_hits
+
                 if rank < required_rank or term_hits < required_term_hits:
                     continue
+
                 ranked.append((self._to_data(row), rank, term_hits))
                 if len(ranked) >= top_k:
                     break
@@ -575,7 +716,11 @@ class MemoryRepository:
                 row_type = self._parse_memory_type(row.memory_type)
                 security = self._normalize_security_fields(
                     memory_type=row_type,
-                    metadata=incoming_metadata if incoming_metadata is not None else dict(row.memory_metadata or {}),
+                    metadata=(
+                        incoming_metadata
+                        if incoming_metadata is not None
+                        else dict(row.memory_metadata or {})
+                    ),
                     user_id=row.user_id,
                     agent_id=row.agent_id,
                     owner_user_id=row.owner_user_id,
@@ -927,7 +1072,9 @@ class MemoryRepository:
                     reason=entry.get("reason"),
                     expires_at=self._parse_datetime(entry.get("expires_at")),
                     created_by=created_by,
-                    acl_metadata=entry.get("metadata") if isinstance(entry.get("metadata"), dict) else None,
+                    acl_metadata=(
+                        entry.get("metadata") if isinstance(entry.get("metadata"), dict) else None
+                    ),
                     created_at=now,
                 )
                 session.add(acl)
