@@ -3313,12 +3313,24 @@ async def test_recover_stale_missions_after_restart_marks_orphaned_tasks(monkeyp
     mission_id = uuid4()
     emitted_events = []
     status_updates = []
+    workspace_cleanup_calls = []
+    mission_field_updates = []
 
     orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
     orchestrator._active_missions = {}
     orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
+    orchestrator._workspace = SimpleNamespace(
+        cleanup_workspace=lambda mission_id, container_id=None: workspace_cleanup_calls.append(
+            (mission_id, container_id)
+        )
+    )
 
-    mission_row = SimpleNamespace(mission_id=mission_id, status="executing", total_tasks=2)
+    mission_row = SimpleNamespace(
+        mission_id=mission_id,
+        status="executing",
+        total_tasks=2,
+        container_id="sandbox-stale-1",
+    )
     task_row = SimpleNamespace(
         mission_id=mission_id,
         status="in_progress",
@@ -3378,6 +3390,10 @@ async def test_recover_stale_missions_after_restart_marks_orphaned_tasks(monkeyp
             (mission_id, status, error_message)
         ),
     )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_fields",
+        lambda mission_id, **fields: mission_field_updates.append((mission_id, fields)),
+    )
 
     summary = await MissionOrchestrator.recover_stale_missions_after_restart(orchestrator)
 
@@ -3387,8 +3403,75 @@ async def test_recover_stale_missions_after_restart_marks_orphaned_tasks(monkeyp
     assert task_row.status == "failed"
     assert task_row.result["last_error_type"] == "ServiceRestartRecovery"
     assert status_updates and status_updates[0][1] == "failed"
+    assert workspace_cleanup_calls == [(mission_id, "sandbox-stale-1")]
+    assert mission_field_updates == [(mission_id, {"container_id": None})]
     assert any(
         event.get("event_type") == "MISSION_RECOVERED_FROM_STALE_STATE"
         and event.get("mission_id") == mission_id
         for event in emitted_events
     )
+
+
+@pytest.mark.asyncio
+async def test_recover_stale_missions_after_restart_cleans_terminal_workspace(monkeypatch):
+    mission_id = uuid4()
+    mission_field_updates = []
+    cleanup_calls = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._active_missions = {}
+    orchestrator._emitter = SimpleNamespace(emit=lambda **_kwargs: None)
+    orchestrator._workspace = SimpleNamespace(
+        cleanup_workspace=lambda mission_id, container_id=None: cleanup_calls.append(
+            (mission_id, container_id)
+        )
+    )
+
+    mission_row = SimpleNamespace(
+        mission_id=mission_id,
+        status="completed",
+        total_tasks=3,
+        container_id="terminal-container-1",
+    )
+
+    class _FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+    class _FakeSession:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def query(self, _model):
+            return _FakeQuery(self._rows)
+
+    class _FakeSessionContext:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def __enter__(self):
+            return _FakeSession(self._rows)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext([mission_row]),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_fields",
+        lambda mission_id, **fields: mission_field_updates.append((mission_id, fields)),
+    )
+
+    summary = await MissionOrchestrator.recover_stale_missions_after_restart(orchestrator)
+
+    assert summary["candidates"] == 0
+    assert summary["recovered"] == 0
+    assert summary["failed"] == 0
+    assert summary["terminal_cleaned"] == 1
+    assert cleanup_calls == [(mission_id, "terminal-container-1")]
+    assert mission_field_updates == [(mission_id, {"container_id": None})]

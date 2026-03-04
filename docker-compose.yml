@@ -166,6 +166,7 @@ services:
       - JWT_SECRET=${JWT_SECRET:-change_me_in_production}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LINX_SANDBOX_PYTHON_IMAGE=${LINX_SANDBOX_PYTHON_IMAGE:-linx/sandbox-runtime:py312-office}
+      - LINX_SANDBOX_TMPFS_SIZE=${LINX_SANDBOX_TMPFS_SIZE:-1G}
     volumes:
       - ./backend:/app
       - ./backend/config.yaml:/app/config.yaml:ro
@@ -209,6 +210,7 @@ services:
       - MILVUS_PORT=19530
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LINX_SANDBOX_PYTHON_IMAGE=${LINX_SANDBOX_PYTHON_IMAGE:-linx/sandbox-runtime:py312-office}
+      - LINX_SANDBOX_TMPFS_SIZE=${LINX_SANDBOX_TMPFS_SIZE:-1G}
     volumes:
       - ./backend:/app
       - ./backend/config.yaml:/app/config.yaml:ro
@@ -251,6 +253,7 @@ services:
       - MILVUS_PORT=19530
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LINX_SANDBOX_PYTHON_IMAGE=${LINX_SANDBOX_PYTHON_IMAGE:-linx/sandbox-runtime:py312-office}
+      - LINX_SANDBOX_TMPFS_SIZE=${LINX_SANDBOX_TMPFS_SIZE:-1G}
     volumes:
       - ./backend:/app
       - ./backend/config.yaml:/app/config.yaml:ro

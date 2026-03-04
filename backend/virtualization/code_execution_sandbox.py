@@ -33,8 +33,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_SANDBOX_PYTHON_IMAGE = (
     os.getenv("LINX_SANDBOX_PYTHON_IMAGE", "python:3.11-bookworm").strip() or "python:3.11-bookworm"
 )
-DEFAULT_INTERNAL_PIP_CACHE_DIR = "/tmp/linx_pip_cache"
+DEFAULT_SANDBOX_TMPFS_SIZE = (
+    os.getenv("LINX_SANDBOX_TMPFS_SIZE", "1G").strip() or "1G"
+)
+DEFAULT_INTERNAL_PIP_CACHE_DIR = "/opt/linx_pip_cache"
 DEFAULT_INTERNAL_PYTHON_DEPS_DIR = "/opt/linx_python_deps"
+DEFAULT_INTERNAL_DEP_WORKDIR = "/opt/linx_runtime"
 
 
 class ExecutionStatus(Enum):
@@ -294,7 +298,36 @@ class CodeExecutionSandbox:
                             dependencies,
                             cache_scope=self.dependency_cache_scope,
                         )
-                        if cached_image and self._dependency_image_available(cached_image):
+                        cached_image_available = bool(cached_image) and self._dependency_image_available(
+                            cached_image
+                        )
+
+                        # Metadata may be missing after process restarts; recover by deterministic tag.
+                        if not cached_image_available:
+                            deterministic_image = self.dependency_manager.build_dependency_image_tag(
+                                dependencies,
+                                normalized_language,
+                                cache_scope=self.dependency_cache_scope,
+                            )
+                            if deterministic_image and self._dependency_image_available(
+                                deterministic_image
+                            ):
+                                cached_image = deterministic_image
+                                cached_image_available = True
+                                self.dependency_manager.cache_dependencies(
+                                    dependencies=dependencies,
+                                    image_tag=deterministic_image,
+                                    cache_scope=self.dependency_cache_scope,
+                                )
+                                self.logger.info(
+                                    "Recovered dependency cache metadata from existing image",
+                                    extra={
+                                        "execution_id": execution_id,
+                                        "image": deterministic_image,
+                                    },
+                                )
+
+                        if cached_image_available:
                             dependency_image_to_reuse = cached_image
                             dependency_state = "cached_image_reused"
                             self.logger.info(
@@ -601,6 +634,7 @@ class CodeExecutionSandbox:
 
         if self.dependency_manager:
             environment["PIP_CACHE_DIR"] = DEFAULT_INTERNAL_PIP_CACHE_DIR
+            environment["LINX_DEP_WORKDIR"] = DEFAULT_INTERNAL_DEP_WORKDIR
             environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
             environment["PIP_DEFAULT_TIMEOUT"] = "120"
             environment["PIP_RETRIES"] = "6"
@@ -629,6 +663,10 @@ class CodeExecutionSandbox:
             # Keep filesystem writable so dependency installs persist into committed
             # dependency-cache images.
             read_only_root=False,
+            # Keep /tmp bounded for short-lived code execution runs.
+            tmpfs_mounts={
+                "/tmp": f"size={DEFAULT_SANDBOX_TMPFS_SIZE},mode=1777",
+            },
             resource_limits=self.resource_limits,
             network_disabled=not network_enabled,
             network_mode="bridge" if network_enabled else "none",
@@ -889,7 +927,11 @@ class CodeExecutionSandbox:
 
         try:
             # Write install script to container
-            script_path = "/tmp/install_deps.sh"
+            script_path = f"{DEFAULT_INTERNAL_DEP_WORKDIR}/install_deps.sh"
+            self.container_manager.exec_in_container(
+                container_id=sandbox_id,
+                command=f"mkdir -p {DEFAULT_INTERNAL_DEP_WORKDIR}",
+            )
             self.container_manager.write_file_to_container(
                 container_id=sandbox_id,
                 file_path=script_path,

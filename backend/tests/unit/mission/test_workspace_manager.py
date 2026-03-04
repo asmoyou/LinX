@@ -342,3 +342,43 @@ def test_create_workspace_does_not_create_legacy_outputs_alias():
         "/workspace/logs"
     ) in executed_commands
     assert all("/workspace/outputs" not in command for command in executed_commands)
+
+
+def test_cleanup_workspace_fallback_removes_host_dir_and_stale_container(monkeypatch, tmp_path):
+    mission_id = uuid4()
+    host_workspace = tmp_path / str(mission_id)
+    host_workspace.mkdir(parents=True, exist_ok=True)
+    (host_workspace / "artifact.txt").write_text("stale", encoding="utf-8")
+
+    class FakeContainerManager:
+        def terminate_container(self, _container_id):
+            return False
+
+    class FakeCleanupManager:
+        def __init__(self):
+            self.cleaned = []
+
+        def cleanup_container_by_internal_id(self, container_id):
+            self.cleaned.append(container_id)
+            return True
+
+    fake_cleanup = FakeCleanupManager()
+
+    monkeypatch.setattr("mission_system.workspace_manager.MISSION_HOST_WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "mission_system.mission_repository.get_mission",
+        lambda _mission_id: type("MissionRow", (), {"container_id": "stale-container-1"})(),
+    )
+    monkeypatch.setattr(
+        "virtualization.container_manager.get_docker_cleanup_manager",
+        lambda: fake_cleanup,
+    )
+
+    manager = MissionWorkspaceManager.__new__(MissionWorkspaceManager)
+    manager._container_manager = FakeContainerManager()
+    manager._workspaces = {}
+
+    manager.cleanup_workspace(mission_id)
+
+    assert not host_workspace.exists()
+    assert fake_cleanup.cleaned == ["stale-container-1"]

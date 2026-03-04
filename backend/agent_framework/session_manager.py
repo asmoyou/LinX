@@ -34,8 +34,12 @@ DEFAULT_SESSION_SANDBOX_IMAGE = (
     os.getenv("LINX_SANDBOX_PYTHON_IMAGE", "python:3.11-bookworm").strip()
     or "python:3.11-bookworm"
 )
-DEFAULT_INTERNAL_PIP_CACHE_DIR = "/tmp/linx_pip_cache"
+DEFAULT_SANDBOX_TMPFS_SIZE = (
+    os.getenv("LINX_SANDBOX_TMPFS_SIZE", "1G").strip() or "1G"
+)
+DEFAULT_INTERNAL_PIP_CACHE_DIR = "/opt/linx_pip_cache"
 DEFAULT_INTERNAL_PYTHON_DEPS_DIR = "/opt/linx_python_deps"
+DEFAULT_INTERNAL_DEP_WORKDIR = "/opt/linx_runtime"
 
 SessionEndCallback = Callable[["ConversationSession", str], Optional[Awaitable[None]]]
 
@@ -566,7 +570,7 @@ class SessionManager:
         """Acquire a sandbox container for code execution.
 
         Creates a dedicated Docker container for the session with configuration
-        optimized for code execution (larger tmpfs, writable filesystem).
+        optimized for code execution (writable filesystem, bounded /tmp tmpfs).
 
         Args:
             agent_id: Agent ID requesting sandbox
@@ -600,9 +604,9 @@ class SessionManager:
                 sandbox_type=container_manager.default_sandbox,
                 image=DEFAULT_SESSION_SANDBOX_IMAGE,
                 read_only_root=False,  # Need writable filesystem for pip install
+                # Keep /tmp fast and bounded for short-lived session workloads.
                 tmpfs_mounts={
-                    "/tmp": "size=200M,mode=1777",  # Larger tmp for code execution
-                    "/output": "size=50M,mode=1777",
+                    "/tmp": f"size={DEFAULT_SANDBOX_TMPFS_SIZE},mode=1777",
                 },
                 # Mount session workspace for user-visible files.
                 volume_mounts={
@@ -611,6 +615,7 @@ class SessionManager:
                 # Keep dependency and pip cache fully inside the container.
                 environment={
                     "PIP_CACHE_DIR": DEFAULT_INTERNAL_PIP_CACHE_DIR,
+                    "LINX_DEP_WORKDIR": DEFAULT_INTERNAL_DEP_WORKDIR,
                     "PIP_DISABLE_PIP_VERSION_CHECK": "1",
                     "PIP_DEFAULT_TIMEOUT": "120",
                     "PIP_RETRIES": "6",

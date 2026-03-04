@@ -213,20 +213,27 @@ class MissionOrchestrator:
         from database.models import Task
 
         stale_statuses = {"executing", "reviewing", "qa"}
+        terminal_statuses = {"completed", "failed", "cancelled"}
         candidates: List[Dict[str, Any]] = []
+        terminal_cleanup_candidates: List[Dict[str, Any]] = []
         with get_db_session() as session:
-            rows = session.query(Mission).filter(Mission.status.in_(stale_statuses)).all()
+            rows = session.query(Mission).all()
             for row in rows:
-                candidates.append(
-                    {
-                        "mission_id": row.mission_id,
-                        "status": str(row.status or "").strip().lower(),
-                        "total_tasks": self._coerce_int(getattr(row, "total_tasks", 0), 0),
-                    }
-                )
+                status = str(row.status or "").strip().lower()
+                container_id = str(getattr(row, "container_id", "") or "").strip() or None
+                base_payload = {
+                    "mission_id": row.mission_id,
+                    "status": status,
+                    "total_tasks": self._coerce_int(getattr(row, "total_tasks", 0), 0),
+                    "container_id": container_id,
+                }
+                if status in stale_statuses:
+                    candidates.append(base_payload)
+                elif status in terminal_statuses and container_id:
+                    terminal_cleanup_candidates.append(base_payload)
 
-        if not candidates:
-            return {"candidates": 0, "recovered": 0, "failed": 0}
+        if not candidates and not terminal_cleanup_candidates:
+            return {"candidates": 0, "recovered": 0, "failed": 0, "terminal_cleaned": 0}
 
         recovered = 0
         failed = 0
@@ -285,6 +292,24 @@ class MissionOrchestrator:
                     },
                     message=error_message,
                 )
+                container_id = str(candidate.get("container_id") or "").strip() or None
+                workspace_manager = getattr(self, "_workspace", None)
+                if workspace_manager is not None:
+                    try:
+                        workspace_manager.cleanup_workspace(mission_id, container_id=container_id)
+                    except Exception:
+                        logger.exception(
+                            "Failed to cleanup stale mission workspace during restart recovery",
+                            extra={"mission_id": str(mission_id), "container_id": container_id},
+                        )
+                try:
+                    update_mission_fields(mission_id, container_id=None)
+                except Exception:
+                    logger.debug(
+                        "Failed to clear stale mission container ID after restart recovery",
+                        extra={"mission_id": str(mission_id)},
+                        exc_info=True,
+                    )
                 recovered += 1
             except Exception:
                 failed += 1
@@ -293,7 +318,38 @@ class MissionOrchestrator:
                     extra={"mission_id": str(mission_id), "previous_status": previous_status},
                 )
 
-        return {"candidates": len(candidates), "recovered": recovered, "failed": failed}
+        terminal_cleaned = 0
+        for candidate in terminal_cleanup_candidates:
+            mission_id = candidate["mission_id"]
+            if mission_id in self._active_missions:
+                continue
+
+            container_id = str(candidate.get("container_id") or "").strip() or None
+            workspace_manager = getattr(self, "_workspace", None)
+            if workspace_manager is not None:
+                try:
+                    workspace_manager.cleanup_workspace(mission_id, container_id=container_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to cleanup terminal mission workspace during restart recovery",
+                        extra={"mission_id": str(mission_id), "container_id": container_id},
+                    )
+            try:
+                update_mission_fields(mission_id, container_id=None)
+            except Exception:
+                logger.debug(
+                    "Failed to clear terminal mission container ID after restart recovery",
+                    extra={"mission_id": str(mission_id)},
+                    exc_info=True,
+                )
+            terminal_cleaned += 1
+
+        return {
+            "candidates": len(candidates),
+            "recovered": recovered,
+            "failed": failed,
+            "terminal_cleaned": terminal_cleaned,
+        }
 
     def provide_clarification(self, mission_id: UUID, response: str) -> None:
         """Supply a user clarification response for a blocked requirements phase."""

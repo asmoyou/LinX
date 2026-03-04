@@ -479,7 +479,11 @@ set -e
 echo "Installing Python dependencies..."
 
 # Create requirements file
-cat > /tmp/requirements.txt <<'EOF'
+DEP_WORKDIR="${{LINX_DEP_WORKDIR:-/opt/linx_runtime}}"
+mkdir -p "$DEP_WORKDIR"
+REQ_FILE="$DEP_WORKDIR/requirements.txt"
+
+cat > "$REQ_FILE" <<'EOF'
 {chr(10).join(requirements)}
 EOF
 
@@ -488,7 +492,7 @@ DEP_TARGET="${{PIP_TARGET:-/opt/linx_python_deps}}"
 mkdir -p "$DEP_TARGET"
 
 # Install with pip (pip -> pip3 -> python -m pip)
-PIP_REQUIREMENTS_ARGS="--disable-pip-version-check --retries 6 --timeout 120 --upgrade --target $DEP_TARGET -r /tmp/requirements.txt"
+PIP_REQUIREMENTS_ARGS="--disable-pip-version-check --retries 6 --timeout 120 --upgrade --target $DEP_TARGET -r $REQ_FILE"
 
 install_with_pip() {{
   local pip_base_cmd="$1"

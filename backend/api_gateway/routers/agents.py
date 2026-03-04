@@ -467,11 +467,6 @@ def _resolve_model_context_window(
 
 
 _HISTORY_ALLOWED_ROLES = {"user", "assistant"}
-_MAX_HISTORY_MESSAGES = 24
-_MAX_HISTORY_CONTENT_CHARS = 4000
-_MAX_HISTORY_MULTIMODAL_ITEMS = 8
-_MAX_HISTORY_IMAGE_ITEMS = 4
-_MAX_HISTORY_IMAGE_URL_CHARS = 2_000_000
 
 
 def _normalize_history_content(content: Any) -> Any:
@@ -482,7 +477,6 @@ def _normalize_history_content(content: Any) -> Any:
     if isinstance(content, list):
         text_parts: List[str] = []
         multimodal_items: List[Dict[str, Any]] = []
-        image_item_count = 0
         has_image_items = False
         ignored_item_types = {
             "thinking",
@@ -496,8 +490,6 @@ def _normalize_history_content(content: Any) -> Any:
             "error_feedback",
         }
         for item in content:
-            if len(multimodal_items) >= _MAX_HISTORY_MULTIMODAL_ITEMS:
-                break
             if isinstance(item, str) and item.strip():
                 text_value = item.strip()
                 text_parts.append(text_value)
@@ -508,9 +500,6 @@ def _normalize_history_content(content: Any) -> Any:
                 if item_type in ignored_item_types:
                     continue
                 if item_type == "image_url":
-                    if image_item_count >= _MAX_HISTORY_IMAGE_ITEMS:
-                        continue
-
                     image_url = item.get("image_url")
                     url_value: Optional[str] = None
                     if isinstance(image_url, dict):
@@ -522,7 +511,6 @@ def _normalize_history_content(content: Any) -> Any:
 
                     if (
                         url_value
-                        and len(url_value) <= _MAX_HISTORY_IMAGE_URL_CHARS
                         and (
                             url_value.startswith("data:image/")
                             or url_value.startswith("http://")
@@ -532,7 +520,6 @@ def _normalize_history_content(content: Any) -> Any:
                         multimodal_items.append(
                             {"type": "image_url", "image_url": {"url": url_value}}
                         )
-                        image_item_count += 1
                         has_image_items = True
                     continue
 
@@ -553,7 +540,7 @@ def _normalize_history_content(content: Any) -> Any:
 
 
 def _sanitize_history_messages(raw_history: Any) -> List[Dict[str, Any]]:
-    """Sanitize history payload to avoid context pollution and token explosion."""
+    """Sanitize history payload while preserving multimodal context fidelity."""
     if not isinstance(raw_history, list):
         return []
 
@@ -571,16 +558,11 @@ def _sanitize_history_messages(raw_history: Any) -> List[Dict[str, Any]]:
             content = normalized_content
         else:
             content = str(normalized_content or "").strip()
-            if len(content) > _MAX_HISTORY_CONTENT_CHARS:
-                content = content[:_MAX_HISTORY_CONTENT_CHARS]
 
         if not content:
             continue
 
         sanitized.append({"role": role, "content": content})
-
-    if len(sanitized) > _MAX_HISTORY_MESSAGES:
-        sanitized = sanitized[-_MAX_HISTORY_MESSAGES:]
 
     return sanitized
 

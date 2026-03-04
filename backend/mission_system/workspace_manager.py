@@ -48,6 +48,9 @@ DEFAULT_MISSION_SANDBOX_IMAGE = (
     or os.getenv("LINX_SANDBOX_PYTHON_IMAGE")
     or "python:3.11-bookworm"
 )
+DEFAULT_SANDBOX_TMPFS_SIZE = (
+    os.getenv("LINX_SANDBOX_TMPFS_SIZE", "1G").strip() or "1G"
+)
 
 
 @dataclass
@@ -652,28 +655,64 @@ class MissionWorkspaceManager:
                 f"rm -f '{archive_path}' '{archive_path}.b64'",
             )
 
-    def cleanup_workspace(self, mission_id: UUID) -> None:
-        """Stop and remove the mission container. Idempotent.
+    def cleanup_workspace(self, mission_id: UUID, container_id: Optional[str] = None) -> None:
+        """Stop and remove mission workspace resources. Idempotent.
 
         Args:
             mission_id: Mission UUID.
+            container_id: Optional LinX internal container ID fallback.
         """
         workspace = self._workspaces.pop(mission_id, None)
-        if workspace is None:
-            return
+
+        resolved_container_id = str(container_id or "").strip() or None
+        resolved_host_workspace_path: Optional[str] = None
+
+        if workspace is not None:
+            if not resolved_container_id:
+                resolved_container_id = str(workspace.container_id or "").strip() or None
+            resolved_host_workspace_path = str(workspace.host_workspace_path or "").strip() or None
+
+        # Fallback: when process restarted, in-memory workspace state is gone.
+        # Recover container ID from DB record if available.
+        if not resolved_container_id:
+            try:
+                from mission_system.mission_repository import get_mission
+
+                mission = get_mission(mission_id)
+                db_container_id = str(getattr(mission, "container_id", "") or "").strip()
+                if db_container_id:
+                    resolved_container_id = db_container_id
+            except Exception:
+                logger.debug(
+                    "Failed to resolve fallback mission container ID during workspace cleanup",
+                    extra={"mission_id": str(mission_id)},
+                    exc_info=True,
+                )
 
         try:
-            self._container_manager.terminate_container(workspace.container_id)
-            if workspace.host_workspace_path:
-                try:
-                    shutil.rmtree(workspace.host_workspace_path, ignore_errors=True)
-                except Exception:
-                    logger.exception(
-                        "Error cleaning host workspace for mission %s", mission_id
+            if resolved_container_id:
+                removed = self._container_manager.terminate_container(resolved_container_id)
+                if not removed:
+                    from virtualization.container_manager import get_docker_cleanup_manager
+
+                    get_docker_cleanup_manager().cleanup_container_by_internal_id(
+                        resolved_container_id
                     )
-            logger.info("Workspace cleaned up for mission %s", mission_id)
         except Exception:
-            logger.exception("Error cleaning up workspace for mission %s", mission_id)
+            logger.exception("Error cleaning container for mission %s", mission_id)
+
+        host_workspace_path = (
+            Path(resolved_host_workspace_path)
+            if resolved_host_workspace_path
+            else MISSION_HOST_WORKSPACE_ROOT.expanduser() / str(mission_id)
+        )
+        try:
+            if host_workspace_path.exists():
+                shutil.rmtree(host_workspace_path, ignore_errors=True)
+        except Exception:
+            logger.exception("Error cleaning host workspace for mission %s", mission_id)
+
+        logger.info("Workspace cleaned up for mission %s", mission_id)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -784,7 +823,7 @@ class MissionWorkspaceManager:
             network_disabled=not network_enabled,
             network_mode="bridge" if network_enabled else "isolated-network",
             tmpfs_mounts={
-                "/tmp": "size=200M,mode=1777",
+                "/tmp": f"size={DEFAULT_SANDBOX_TMPFS_SIZE},mode=1777",
             },
             volume_mounts={
                 host_workspace_path: WORKSPACE_ROOT,

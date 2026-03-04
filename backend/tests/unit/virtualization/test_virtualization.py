@@ -139,7 +139,7 @@ class TestResourceLimits:
         invalid_memory = ResourceLimits(memory_mb=50)
         assert not invalid_memory.validate()
 
-        invalid_memory_high = ResourceLimits(memory_mb=10000)
+        invalid_memory_high = ResourceLimits(memory_mb=300000)
         assert not invalid_memory_high.validate()
 
     def test_resource_limits_to_docker_config(self):
@@ -162,19 +162,21 @@ class TestResourceLimits:
         assert config["limits"]["cpu"] == "2.0"
         assert config["limits"]["memory"] == "2048Mi"
 
-    def test_get_default_limits(self):
+    def test_get_default_limits(self, monkeypatch):
         """Test getting default limits by task type."""
+        monkeypatch.setenv("LINX_SANDBOX_MEMORY_MB", "1536")
+
         default = get_default_limits("default")
         assert default.cpu_cores == 0.5
-        assert default.memory_mb == 512
+        assert default.memory_mb == 1536
 
         data_processing = get_default_limits("data_processing")
         assert data_processing.cpu_cores == 1.0
-        assert data_processing.memory_mb == 1024
+        assert data_processing.memory_mb == 1536
 
         lightweight = get_default_limits("lightweight")
         assert lightweight.cpu_cores == 0.25
-        assert lightweight.memory_mb == 256
+        assert lightweight.memory_mb == 1536
 
 
 class TestResourceUsage:

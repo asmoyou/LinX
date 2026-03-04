@@ -8,10 +8,18 @@ References:
 """
 
 import logging
+import os
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+MIN_MEMORY_MB = 128
+MAX_MEMORY_MB = 262144
+DEFAULT_HOST_MEMORY_MB = 4096
+DEFAULT_DYNAMIC_MAX_MEMORY_MB = 65536
 
 
 @dataclass
@@ -92,7 +100,7 @@ class ResourceLimits:
             logger.error(f"Invalid CPU cores: {self.cpu_cores}")
             return False
 
-        if self.memory_mb < 128 or self.memory_mb > 4096:
+        if self.memory_mb < MIN_MEMORY_MB or self.memory_mb > MAX_MEMORY_MB:
             logger.error(f"Invalid memory limit: {self.memory_mb}MB")
             return False
 
@@ -101,6 +109,121 @@ class ResourceLimits:
             return False
 
         return True
+
+
+def _parse_positive_int_env(key: str) -> Optional[int]:
+    """Parse a positive integer from env or return None."""
+    raw_value = os.getenv(key)
+    if raw_value is None:
+        return None
+
+    try:
+        parsed = int(str(raw_value).strip())
+    except ValueError:
+        logger.warning("Invalid integer value for %s: %s", key, raw_value)
+        return None
+
+    if parsed <= 0:
+        logger.warning("Non-positive integer value for %s: %s", key, raw_value)
+        return None
+
+    return parsed
+
+
+def _read_linux_meminfo_mb() -> Optional[int]:
+    """Read total system memory from /proc/meminfo (Linux)."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as meminfo:
+            for line in meminfo:
+                if line.startswith("MemTotal:"):
+                    # Example: MemTotal:       16328856 kB
+                    fields = line.split()
+                    if len(fields) >= 2:
+                        kb = int(fields[1])
+                        if kb > 0:
+                            return max(1, kb // 1024)
+    except Exception:
+        return None
+    return None
+
+
+def _read_cgroup_memory_limit_mb() -> Optional[int]:
+    """Read cgroup memory limit so defaults respect container ceilings."""
+    cgroup_paths = (
+        "/sys/fs/cgroup/memory.max",  # cgroup v2
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",  # cgroup v1
+    )
+
+    for path in cgroup_paths:
+        try:
+            if not os.path.exists(path):
+                continue
+            raw_value = Path(path).read_text(encoding="utf-8").strip()
+            if not raw_value or raw_value == "max":
+                continue
+            value = int(raw_value)
+            # Some runtimes use very large sentinel values to represent "unlimited".
+            if value <= 0 or value >= (1 << 60):
+                continue
+            return max(1, value // (1024 * 1024))
+        except Exception:
+            continue
+    return None
+
+
+@lru_cache(maxsize=1)
+def _detect_available_memory_mb() -> int:
+    """Detect available memory budget from host/container context."""
+    env_override = _parse_positive_int_env("LINX_SANDBOX_HOST_MEMORY_MB")
+    if env_override:
+        return env_override
+
+    detected_total_mb: Optional[int] = _read_linux_meminfo_mb()
+
+    if detected_total_mb is None:
+        try:
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+            phys_pages = int(os.sysconf("SC_PHYS_PAGES"))
+            if page_size > 0 and phys_pages > 0:
+                detected_total_mb = (page_size * phys_pages) // (1024 * 1024)
+        except (ValueError, OSError, AttributeError):
+            detected_total_mb = None
+
+    if detected_total_mb is None or detected_total_mb <= 0:
+        detected_total_mb = DEFAULT_HOST_MEMORY_MB
+
+    cgroup_limit_mb = _read_cgroup_memory_limit_mb()
+    if cgroup_limit_mb and cgroup_limit_mb > 0:
+        detected_total_mb = min(detected_total_mb, cgroup_limit_mb)
+
+    return max(1, detected_total_mb)
+
+
+def _resolve_dynamic_memory_limit_mb(task_type: str, floor_mb: int) -> int:
+    """Resolve default memory cap from host capacity, task profile and env overrides."""
+    memory_override_mb = _parse_positive_int_env("LINX_SANDBOX_MEMORY_MB")
+    dynamic_max_mb = _parse_positive_int_env("LINX_SANDBOX_MAX_MEMORY_MB")
+    if dynamic_max_mb is None:
+        dynamic_max_mb = DEFAULT_DYNAMIC_MAX_MEMORY_MB
+    dynamic_max_mb = max(MIN_MEMORY_MB, min(dynamic_max_mb, MAX_MEMORY_MB))
+
+    if memory_override_mb is not None:
+        return max(MIN_MEMORY_MB, min(memory_override_mb, dynamic_max_mb))
+
+    total_mb = _detect_available_memory_mb()
+    ratio_by_task = {
+        "default": 0.25,
+        "data_processing": 0.35,
+        "code_execution": 0.30,
+        "ml_inference": 0.50,
+        "lightweight": 0.15,
+    }
+    ratio = ratio_by_task.get(task_type, ratio_by_task["default"])
+    dynamic_mb = int(total_mb * ratio)
+    resolved_mb = max(floor_mb, dynamic_mb)
+    resolved_mb = max(MIN_MEMORY_MB, min(resolved_mb, dynamic_max_mb))
+    # Align to 64MB to avoid noisy values from host probes.
+    return ((resolved_mb + 63) // 64) * 64
 
 
 @dataclass
@@ -193,35 +316,30 @@ def get_default_limits(task_type: str = "default") -> ResourceLimits:
     Returns:
         ResourceLimits instance with appropriate defaults
     """
-    limits_by_type = {
-        "default": ResourceLimits(
-            cpu_cores=0.5,
-            memory_mb=512,
-            execution_timeout_seconds=30,
-        ),
-        "data_processing": ResourceLimits(
-            cpu_cores=1.0,
-            memory_mb=1024,
-            execution_timeout_seconds=120,
-        ),
-        "code_execution": ResourceLimits(
-            cpu_cores=0.5,
-            memory_mb=512,
-            execution_timeout_seconds=30,
-        ),
-        "ml_inference": ResourceLimits(
-            cpu_cores=2.0,
-            memory_mb=2048,
-            execution_timeout_seconds=60,
-        ),
-        "lightweight": ResourceLimits(
-            cpu_cores=0.25,
-            memory_mb=256,
-            execution_timeout_seconds=15,
-        ),
+    task_profiles = {
+        "default": {"cpu_cores": 0.5, "memory_floor_mb": 512, "timeout_seconds": 30},
+        "data_processing": {
+            "cpu_cores": 1.0,
+            "memory_floor_mb": 1024,
+            "timeout_seconds": 120,
+        },
+        "code_execution": {
+            "cpu_cores": 0.5,
+            "memory_floor_mb": 1024,
+            "timeout_seconds": 30,
+        },
+        "ml_inference": {"cpu_cores": 2.0, "memory_floor_mb": 2048, "timeout_seconds": 60},
+        "lightweight": {"cpu_cores": 0.25, "memory_floor_mb": 256, "timeout_seconds": 15},
     }
 
-    return limits_by_type.get(task_type, limits_by_type["default"])
+    profile = task_profiles.get(task_type, task_profiles["default"])
+    memory_mb = _resolve_dynamic_memory_limit_mb(task_type, profile["memory_floor_mb"])
+    return ResourceLimits(
+        cpu_cores=profile["cpu_cores"],
+        memory_mb=memory_mb,
+        memory_swap_mb=memory_mb,
+        execution_timeout_seconds=profile["timeout_seconds"],
+    )
 
 
 def parse_resource_usage_from_docker_stats(stats: Dict[str, Any]) -> ResourceUsage:

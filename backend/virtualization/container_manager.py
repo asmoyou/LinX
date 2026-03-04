@@ -71,8 +71,8 @@ class ContainerConfig:
     # Filesystem configuration
     tmpfs_mounts: Dict[str, str] = field(
         default_factory=lambda: {
-            "/tmp": "size=50M,mode=1777",
-            "/output": "size=10M,mode=1777",
+            "/tmp": "mode=1777",
+            "/output": "mode=1777",
         }
     )
 
@@ -124,7 +124,6 @@ class ContainerConfig:
             "command": ["/bin/sleep", "infinity"],  # Keep container running
             "environment": self.environment,
             "read_only": self.read_only_root,
-            "tmpfs": self.tmpfs_mounts,
             "security_opt": security_opt,
             "cap_drop": self.drop_capabilities,
             "cap_add": self.add_capabilities,
@@ -132,6 +131,9 @@ class ContainerConfig:
             # Add resource limits directly
             **resource_config,
         }
+
+        if self.tmpfs_mounts:
+            config["tmpfs"] = self.tmpfs_mounts
 
         # Add volume mounts (persistent storage for pip cache, etc.)
         if self.volume_mounts:

@@ -121,6 +121,9 @@ async def test_acquire_sandbox_uses_unique_container_name(monkeypatch, tmp_path)
 
     assert sandbox_id == "sandbox-internal-id"
     assert created["config"].name == f"session-{agent_id.hex[:8]}-abc123def456"
+    assert created["config"].tmpfs_mounts == {"/tmp": "size=1G,mode=1777"}
+    assert created["config"].environment["PIP_CACHE_DIR"] == "/opt/linx_pip_cache"
+    assert created["config"].environment["LINX_DEP_WORKDIR"] == "/opt/linx_runtime"
 
 
 @pytest.mark.asyncio

@@ -107,6 +107,43 @@ def test_sanitize_history_messages_preserves_multimodal_image_items() -> None:
     }
 
 
+def test_sanitize_history_messages_keeps_all_image_items_without_capping() -> None:
+    raw_history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "请记住这些图"},
+                *[
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,image{i}"},
+                    }
+                    for i in range(6)
+                ],
+            ],
+        }
+    ]
+
+    sanitized = _sanitize_history_messages(raw_history)
+    assert len(sanitized) == 1
+    assert isinstance(sanitized[0]["content"], list)
+    image_items = [item for item in sanitized[0]["content"] if item.get("type") == "image_url"]
+    assert len(image_items) == 6
+    assert image_items[-1]["image_url"]["url"] == "data:image/png;base64,image5"
+
+
+def test_sanitize_history_messages_keeps_long_history_without_truncation() -> None:
+    raw_history = [
+        {"role": "user", "content": f"message-{idx}"}
+        for idx in range(30)
+    ]
+
+    sanitized = _sanitize_history_messages(raw_history)
+    assert len(sanitized) == 30
+    assert sanitized[0]["content"] == "message-0"
+    assert sanitized[-1]["content"] == "message-29"
+
+
 def test_infer_attachment_bucket_type_routes_unknown_to_artifacts() -> None:
     """Unsupported document extensions should avoid strict documents bucket validation."""
     assert _infer_attachment_bucket_type("photo.png", "image/png") == "images"

@@ -293,11 +293,13 @@ class TestCodeExecutionSandbox:
         _, kwargs = sandbox.container_manager.create_container.call_args
         config = kwargs["config"]
         assert config.image == base_image
-        assert config.environment.get("PIP_CACHE_DIR") == "/tmp/linx_pip_cache"
+        assert config.environment.get("PIP_CACHE_DIR") == "/opt/linx_pip_cache"
+        assert config.environment.get("LINX_DEP_WORKDIR") == "/opt/linx_runtime"
         assert config.environment.get("PIP_TARGET") == "/opt/linx_python_deps"
         assert config.environment.get("PYTHONPATH") == "/opt/linx_python_deps"
         assert config.environment.get("PYTHONNOUSERSITE") == "1"
         assert config.read_only_root is False
+        assert config.tmpfs_mounts == {"/tmp": "size=1G,mode=1777"}
 
     def test_dependencies_available_in_container_checks_python_packages(self):
         """Existing sandbox dependency check should rely on pip show exit code."""
@@ -471,6 +473,67 @@ class TestCodeExecutionSandbox:
         assert captured_environment.get("PIP_USER") == "0"
         assert captured_environment.get("PYTHONNOUSERSITE") == "1"
         assert captured_environment.get("PYTHONPATH", "").startswith("/opt/linx_python_deps")
+
+    @pytest.mark.asyncio
+    async def test_execute_code_recovers_cached_image_without_metadata(self):
+        """Deterministic dependency image tag should be reused even if metadata is missing."""
+        sandbox = CodeExecutionSandbox()
+        sandbox.code_validator = MagicMock()
+        sandbox.code_validator.validate_code.return_value = ValidationResult(
+            safe=True,
+            issues=[],
+            warnings=[],
+        )
+
+        dep_manager = MagicMock()
+        dependencies = {DependencyInfo(name="requests", language="python")}
+        dep_manager.get_dependencies.return_value = dependencies
+        dep_manager.get_cached_image.return_value = None
+        dep_manager.build_dependency_image_tag.return_value = "linx/code-exec-deps:python-deadbeef"
+        dep_manager.generate_install_script.return_value = "#!/bin/bash\necho deps\n"
+        sandbox.dependency_manager = dep_manager
+        sandbox._dependency_image_available = MagicMock(return_value=True)
+
+        captured_base_image = {}
+
+        async def _fake_create_sandbox(*args, **kwargs):
+            captured_base_image["value"] = kwargs.get("base_image")
+            return "sandbox-1"
+
+        async def _fake_inject(*args, **kwargs):
+            return ("/tmp/code.py", "/tmp")
+
+        async def _fake_run(*args, **kwargs):
+            return {"output": "ok", "error": "", "return_value": None}
+
+        async def _fake_destroy(*args, **kwargs):
+            return None
+
+        install_called = {"value": False}
+
+        async def _fake_install(*args, **kwargs):
+            install_called["value"] = True
+
+        sandbox._create_sandbox = _fake_create_sandbox
+        sandbox._inject_code = _fake_inject
+        sandbox._run_code = _fake_run
+        sandbox._destroy_sandbox = _fake_destroy
+        sandbox._install_dependencies = _fake_install
+
+        result = await sandbox.execute_code(
+            code="import requests\nprint('ok')",
+            language="python",
+            context={},
+        )
+
+        assert result.success is True
+        assert captured_base_image["value"] == "linx/code-exec-deps:python-deadbeef"
+        assert install_called["value"] is False
+        dep_manager.cache_dependencies.assert_called_once_with(
+            dependencies=dependencies,
+            image_tag="linx/code-exec-deps:python-deadbeef",
+            cache_scope=sandbox.dependency_cache_scope,
+        )
 
     @pytest.mark.asyncio
     async def test_execute_safe_code(self):
