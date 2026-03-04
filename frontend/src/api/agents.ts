@@ -206,7 +206,7 @@ export const agentsApi = {
     onChunk: (chunk: { type: string; content: string; [key: string]: any }) => void,
     onError?: (error: string) => void,
     onComplete?: () => void,
-    history?: Array<{ role: string; content: string }>,
+    history?: Array<{ role: string; content: any }>,
     files?: File[],
     signal?: AbortSignal,  // AbortSignal support
     sessionId?: string,    // Session ID for persistent execution environment

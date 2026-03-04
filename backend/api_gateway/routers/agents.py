@@ -469,15 +469,21 @@ def _resolve_model_context_window(
 _HISTORY_ALLOWED_ROLES = {"user", "assistant"}
 _MAX_HISTORY_MESSAGES = 24
 _MAX_HISTORY_CONTENT_CHARS = 4000
+_MAX_HISTORY_MULTIMODAL_ITEMS = 8
+_MAX_HISTORY_IMAGE_ITEMS = 4
+_MAX_HISTORY_IMAGE_URL_CHARS = 2_000_000
 
 
-def _normalize_history_content(content: Any) -> str:
-    """Normalize content payload into plain text."""
+def _normalize_history_content(content: Any) -> Any:
+    """Normalize history content payload into plain text or multimodal list."""
     if isinstance(content, str):
         return content
 
     if isinstance(content, list):
         text_parts: List[str] = []
+        multimodal_items: List[Dict[str, Any]] = []
+        image_item_count = 0
+        has_image_items = False
         ignored_item_types = {
             "thinking",
             "reasoning",
@@ -490,16 +496,54 @@ def _normalize_history_content(content: Any) -> str:
             "error_feedback",
         }
         for item in content:
+            if len(multimodal_items) >= _MAX_HISTORY_MULTIMODAL_ITEMS:
+                break
             if isinstance(item, str) and item.strip():
-                text_parts.append(item.strip())
+                text_value = item.strip()
+                text_parts.append(text_value)
+                multimodal_items.append({"type": "text", "text": text_value})
                 continue
             if isinstance(item, dict):
                 item_type = str(item.get("type") or "").strip().lower()
                 if item_type in ignored_item_types:
                     continue
+                if item_type == "image_url":
+                    if image_item_count >= _MAX_HISTORY_IMAGE_ITEMS:
+                        continue
+
+                    image_url = item.get("image_url")
+                    url_value: Optional[str] = None
+                    if isinstance(image_url, dict):
+                        raw_url = image_url.get("url")
+                        if isinstance(raw_url, str):
+                            url_value = raw_url.strip()
+                    elif isinstance(image_url, str):
+                        url_value = image_url.strip()
+
+                    if (
+                        url_value
+                        and len(url_value) <= _MAX_HISTORY_IMAGE_URL_CHARS
+                        and (
+                            url_value.startswith("data:image/")
+                            or url_value.startswith("http://")
+                            or url_value.startswith("https://")
+                        )
+                    ):
+                        multimodal_items.append(
+                            {"type": "image_url", "image_url": {"url": url_value}}
+                        )
+                        image_item_count += 1
+                        has_image_items = True
+                    continue
+
                 text = item.get("text") or item.get("content")
                 if isinstance(text, str) and text.strip():
-                    text_parts.append(text.strip())
+                    text_value = text.strip()
+                    text_parts.append(text_value)
+                    multimodal_items.append({"type": "text", "text": text_value})
+
+        if has_image_items and multimodal_items:
+            return multimodal_items
         return "\n".join(text_parts)
 
     if content is None:
@@ -508,12 +552,12 @@ def _normalize_history_content(content: Any) -> str:
     return str(content)
 
 
-def _sanitize_history_messages(raw_history: Any) -> List[Dict[str, str]]:
+def _sanitize_history_messages(raw_history: Any) -> List[Dict[str, Any]]:
     """Sanitize history payload to avoid context pollution and token explosion."""
     if not isinstance(raw_history, list):
         return []
 
-    sanitized: List[Dict[str, str]] = []
+    sanitized: List[Dict[str, Any]] = []
     for entry in raw_history:
         if not isinstance(entry, dict):
             continue
@@ -522,12 +566,16 @@ def _sanitize_history_messages(raw_history: Any) -> List[Dict[str, str]]:
         if role not in _HISTORY_ALLOWED_ROLES:
             continue
 
-        content = _normalize_history_content(entry.get("content")).strip()
+        normalized_content = _normalize_history_content(entry.get("content"))
+        if isinstance(normalized_content, list):
+            content = normalized_content
+        else:
+            content = str(normalized_content or "").strip()
+            if len(content) > _MAX_HISTORY_CONTENT_CHARS:
+                content = content[:_MAX_HISTORY_CONTENT_CHARS]
+
         if not content:
             continue
-
-        if len(content) > _MAX_HISTORY_CONTENT_CHARS:
-            content = content[:_MAX_HISTORY_CONTENT_CHARS]
 
         sanitized.append({"role": role, "content": content})
 
@@ -535,6 +583,35 @@ def _sanitize_history_messages(raw_history: Any) -> List[Dict[str, str]]:
         sanitized = sanitized[-_MAX_HISTORY_MESSAGES:]
 
     return sanitized
+
+
+def _infer_image_format(content_type: Optional[str], name: Optional[str] = None) -> str:
+    """Infer image format label for data URLs."""
+    normalized_type = str(content_type or "").strip().lower()
+    normalized_name = str(name or "").strip().lower()
+
+    if "png" in normalized_type or normalized_name.endswith(".png"):
+        return "png"
+    if "webp" in normalized_type or normalized_name.endswith(".webp"):
+        return "webp"
+    if "gif" in normalized_type or normalized_name.endswith(".gif"):
+        return "gif"
+    if (
+        "bmp" in normalized_type
+        or normalized_name.endswith(".bmp")
+        or normalized_name.endswith(".dib")
+    ):
+        return "bmp"
+    if (
+        "tif" in normalized_type
+        or "tiff" in normalized_type
+        or normalized_name.endswith(".tif")
+        or normalized_name.endswith(".tiff")
+    ):
+        return "tiff"
+    return "jpeg"
+
+
 
 
 def _extract_token_usage_from_metadata(metadata: Dict[str, Any]) -> Tuple[int, int]:
@@ -4313,7 +4390,7 @@ class TestAgentRequest(BaseModel):
     """Test agent request."""
 
     message: str = Field(..., min_length=1, max_length=5000)
-    history: Optional[List[Dict[str, str]]] = Field(
+    history: Optional[List[Dict[str, Any]]] = Field(
         default=None, description="Conversation history with role and content"
     )
 
@@ -4488,7 +4565,7 @@ async def test_agent(
         use_unified_runtime = is_agent_test_chat_unified_runtime_enabled()
 
         # Parse and sanitize history from JSON string.
-        parsed_history: List[Dict[str, str]] = []
+        parsed_history: List[Dict[str, Any]] = []
         if history:
             try:
                 raw_history = json.loads(history)
@@ -4977,8 +5054,9 @@ async def test_agent(
 
                 # Build message content based on model capabilities
                 multimodal_content = None  # Will be passed to agent for vision models
-                has_image_attachments = any(file_ref.type == "image" for file_ref in file_refs)
-                if model_supports_vision and has_image_attachments:
+                current_image_refs = [file_ref for file_ref in file_refs if file_ref.type == "image"]
+                has_image_payload = bool(current_image_refs)
+                if model_supports_vision and has_image_payload:
                     # For vision models, use multimodal content format
                     multimodal_content = []
                     vision_preference_hint = (
@@ -4997,46 +5075,56 @@ async def test_agent(
 
                     # Add image content
                     minio_client = get_minio_client()
-                    for file_ref in file_refs:
-                        if file_ref.type == "image":
-                            try:
-                                # Download image from MinIO
-                                bucket_name, object_key = file_ref.path.split("/", 1)
-                                image_stream, metadata = minio_client.download_file(
-                                    bucket_name, object_key
-                                )
+                    for file_ref in current_image_refs:
+                        try:
+                            # Download image from MinIO
+                            bucket_name, object_key = file_ref.path.split("/", 1)
+                            image_stream, _metadata = minio_client.download_file(
+                                bucket_name, object_key
+                            )
 
-                                # Read image data
-                                image_data = image_stream.read()
+                            # Read image data
+                            image_data = image_stream.read()
 
-                                # Convert to base64
-                                image_base64 = base64.b64encode(image_data).decode("utf-8")
+                            # Convert to base64
+                            image_base64 = base64.b64encode(image_data).decode("utf-8")
+                            image_format = _infer_image_format(file_ref.content_type, file_ref.name)
 
-                                # Determine image format from content type
-                                image_format = "jpeg"  # default
-                                if file_ref.content_type:
-                                    if "png" in file_ref.content_type:
-                                        image_format = "png"
-                                    elif "webp" in file_ref.content_type:
-                                        image_format = "webp"
-                                    elif "gif" in file_ref.content_type:
-                                        image_format = "gif"
+                            # Add image to message content
+                            multimodal_content.append(
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/{image_format};base64,{image_base64}"
+                                    },
+                                }
+                            )
 
-                                # Add image to message content
-                                multimodal_content.append(
+                            yield (
+                                "data: "
+                                + json.dumps(
                                     {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/{image_format};base64,{image_base64}"
-                                        },
+                                        "type": "info",
+                                        "content": (
+                                            f"Image {file_ref.name} added to message for vision model"
+                                        ),
                                     }
                                 )
+                                + "\n\n"
+                            )
 
-                                yield f"data: {json.dumps({'type': 'info', 'content': f'Image {file_ref.name} added to message for vision model'})}\n\n"
-
-                            except Exception as img_error:
-                                logger.error(f"Failed to load image {file_ref.name}: {img_error}")
-                                yield f"data: {json.dumps({'type': 'info', 'content': f'Failed to load image {file_ref.name}'})}\n\n"
+                        except Exception as img_error:
+                            logger.error(f"Failed to load image {file_ref.name}: {img_error}")
+                            yield (
+                                "data: "
+                                + json.dumps(
+                                    {
+                                        "type": "info",
+                                        "content": f"Failed to load image {file_ref.name}",
+                                    }
+                                )
+                                + "\n\n"
+                            )
 
                     logger.info(
                         f"Built multimodal content with {len(multimodal_content)} parts "
@@ -5066,7 +5154,7 @@ async def test_agent(
 
                 def execute_agent(
                     task_description_override: str,
-                    history_override: List[Dict[str, str]],
+                    history_override: List[Dict[str, Any]],
                     content_override: Optional[Any],
                 ):
                     """Execute agent in a separate thread."""

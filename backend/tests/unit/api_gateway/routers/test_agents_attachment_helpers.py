@@ -28,6 +28,7 @@ from api_gateway.routers.agents import (
     _normalize_llm_user_preference_signals,
     _extract_token_usage_from_metadata,
     _extract_user_preference_signals,
+    _sanitize_history_messages,
     _list_session_workspace_entries,
     _resolve_safe_workspace_path,
     _extract_attachment_text,
@@ -78,6 +79,32 @@ def test_get_cached_agent_evicts_non_active_entries() -> None:
         assert cache_key not in _agent_cache
     finally:
         _agent_cache.clear()
+
+
+def test_sanitize_history_messages_preserves_multimodal_image_items() -> None:
+    raw_history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "看下这张图里有什么"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,ZmFrZQ=="},
+                },
+            ],
+        },
+        {"role": "assistant", "content": "图里有一辆车"},
+    ]
+
+    sanitized = _sanitize_history_messages(raw_history)
+    assert len(sanitized) == 2
+    assert sanitized[0]["role"] == "user"
+    assert isinstance(sanitized[0]["content"], list)
+    assert sanitized[0]["content"][0] == {"type": "text", "text": "看下这张图里有什么"}
+    assert sanitized[0]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,ZmFrZQ=="},
+    }
 
 
 def test_infer_attachment_bucket_type_routes_unknown_to_artifacts() -> None:

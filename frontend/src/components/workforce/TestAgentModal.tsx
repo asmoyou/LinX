@@ -54,6 +54,15 @@ interface Message {
   attachments?: AttachedFile[];
 }
 
+type HistoryContentItem =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
+type HistoryPayloadMessage = {
+  role: 'user' | 'assistant';
+  content: string | HistoryContentItem[];
+};
+
 const STREAM_RENDER_THROTTLE_MS = 60;
 const AUTO_SCROLL_THRESHOLD_PX = 120;
 const HISTORY_MESSAGE_GAP_PX = 32;
@@ -1028,6 +1037,85 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     setAttachedFiles((prev) => prev.filter((f) => f.id !== fileId));
   };
 
+  const readImageAsDataUrl = (file: File): Promise<string | null> =>
+    new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const raw = typeof reader.result === 'string' ? reader.result : '';
+        if (raw.startsWith('data:image/')) {
+          resolve(raw);
+          return;
+        }
+        resolve(null);
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    });
+
+  const buildHistoryContent = async (
+    message: Message
+  ): Promise<string | HistoryContentItem[] | null> => {
+    const normalizedText = typeof message.content === 'string' ? message.content.trim() : '';
+    const imageAttachments = (message.attachments ?? []).filter((item) => item.type === 'image');
+
+    if (imageAttachments.length === 0) {
+      return normalizedText || null;
+    }
+
+    const multimodalItems: HistoryContentItem[] = [];
+    if (normalizedText) {
+      multimodalItems.push({ type: 'text', text: normalizedText });
+    }
+
+    for (const attachment of imageAttachments) {
+      let imageUrl =
+        typeof attachment.preview === 'string' && attachment.preview.startsWith('data:image/')
+          ? attachment.preview
+          : null;
+
+      if (!imageUrl) {
+        imageUrl = await readImageAsDataUrl(attachment.file);
+      }
+
+      if (!imageUrl) {
+        continue;
+      }
+
+      multimodalItems.push({
+        type: 'image_url',
+        image_url: { url: imageUrl },
+      });
+    }
+
+    if (multimodalItems.length === 0) {
+      return normalizedText || null;
+    }
+
+    return multimodalItems;
+  };
+
+  const buildConversationHistory = async (): Promise<HistoryPayloadMessage[]> => {
+    const history: HistoryPayloadMessage[] = [];
+
+    for (const message of messages) {
+      if (message.role === 'system') {
+        continue;
+      }
+
+      const content = await buildHistoryContent(message);
+      if (!content) {
+        continue;
+      }
+
+      history.push({
+        role: message.role,
+        content,
+      });
+    }
+
+    return history;
+  };
+
   const handleClearChat = () => {
     if (isStreaming) return;
     resetHistoryVirtualizationMetrics();
@@ -1082,12 +1170,9 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
       currentRoundNumber: 1,
     };
 
-    // Build conversation history (exclude system messages)
-    const history = messages
-      .filter(
-        (m) => m.role !== 'system' && typeof m.content === 'string' && m.content.trim().length > 0
-      )
-      .map((m) => ({ role: m.role, content: m.content.trim() }));
+    // Build conversation history (exclude system messages).
+    // Preserve image attachments in history as multimodal image_url items.
+    const history = await buildConversationHistory();
 
     try {
       const filesToUpload = attachedFiles.map((af) => af.file);

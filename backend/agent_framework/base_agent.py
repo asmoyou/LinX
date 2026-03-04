@@ -755,21 +755,55 @@ class BaseAgent:
             raise
 
     @staticmethod
-    def _normalize_history_content(content: Any) -> str:
-        """Normalize history content to plain text."""
+    def _normalize_history_content(content: Any) -> Any:
+        """Normalize history content to plain text or multimodal list."""
         if isinstance(content, str):
             return content
 
         if isinstance(content, list):
             text_parts: List[str] = []
+            multimodal_items: List[Dict[str, Any]] = []
+            has_image_items = False
             for item in content:
                 if isinstance(item, str) and item.strip():
-                    text_parts.append(item.strip())
+                    text_value = item.strip()
+                    text_parts.append(text_value)
+                    multimodal_items.append({"type": "text", "text": text_value})
                     continue
                 if isinstance(item, dict):
+                    item_type = str(item.get("type") or "").strip().lower()
+                    if item_type == "image_url":
+                        image_url = item.get("image_url")
+                        url_value: Optional[str] = None
+                        if isinstance(image_url, dict):
+                            raw_url = image_url.get("url")
+                            if isinstance(raw_url, str):
+                                url_value = raw_url.strip()
+                        elif isinstance(image_url, str):
+                            url_value = image_url.strip()
+
+                        if (
+                            url_value
+                            and (
+                                url_value.startswith("data:image/")
+                                or url_value.startswith("http://")
+                                or url_value.startswith("https://")
+                            )
+                        ):
+                            multimodal_items.append(
+                                {"type": "image_url", "image_url": {"url": url_value}}
+                            )
+                            has_image_items = True
+                        continue
+
                     text = item.get("text") or item.get("content")
                     if isinstance(text, str) and text.strip():
-                        text_parts.append(text.strip())
+                        text_value = text.strip()
+                        text_parts.append(text_value)
+                        multimodal_items.append({"type": "text", "text": text_value})
+
+            if has_image_items and multimodal_items:
+                return multimodal_items
             return "\n".join(text_parts)
 
         if content is None:
@@ -779,12 +813,12 @@ class BaseAgent:
 
     def _normalize_conversation_history(
         self, conversation_history: Optional[List[Dict[str, Any]]]
-    ) -> List[Dict[str, str]]:
+    ) -> List[Dict[str, Any]]:
         """Normalize optional conversation history into role/content pairs."""
         if not isinstance(conversation_history, list):
             return []
 
-        normalized: List[Dict[str, str]] = []
+        normalized: List[Dict[str, Any]] = []
         for entry in conversation_history:
             role = ""
             content_value: Any = None
@@ -804,7 +838,11 @@ class BaseAgent:
             if role not in {"user", "assistant"}:
                 continue
 
-            content = self._normalize_history_content(content_value).strip()
+            normalized_content = self._normalize_history_content(content_value)
+            if isinstance(normalized_content, list):
+                content = normalized_content
+            else:
+                content = str(normalized_content or "").strip()
             if not content:
                 continue
 

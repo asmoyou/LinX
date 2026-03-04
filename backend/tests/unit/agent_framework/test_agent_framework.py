@@ -332,6 +332,45 @@ class TestBaseAgent:
             {"role": "assistant", "content": "second"},
         ]
 
+    def test_normalize_conversation_history_preserves_multimodal_image_items(self):
+        """History normalization should retain multimodal image_url content for follow-up turns."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        normalized = agent._normalize_conversation_history(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "能看到什么"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,ZmFrZQ=="},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        assert normalized == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "能看到什么"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,ZmFrZQ=="},
+                    },
+                ],
+            }
+        ]
+
     def test_create_system_prompt_enforces_write_file_for_file_deliverables(self):
         """Workspace prompt should require write_file when user asks for file outputs."""
         config = AgentConfig(
