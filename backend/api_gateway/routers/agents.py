@@ -2958,6 +2958,24 @@ def cleanup_expired_cache():
         )
 
 
+def _get_cached_agent_status_value(agent: Any) -> str:
+    """Return normalized status for a cached agent instance."""
+    try:
+        raw_status = (
+            agent.get_status() if hasattr(agent, "get_status") else getattr(agent, "status", None)
+        )
+    except Exception as status_error:
+        logger.warning(f"Failed to inspect cached agent status: {status_error}")
+        return "unknown"
+
+    if raw_status is None:
+        return "unknown"
+
+    status_value = getattr(raw_status, "value", raw_status)
+    normalized = str(status_value).strip().lower()
+    return normalized or "unknown"
+
+
 def get_cached_agent(cache_key: str):
     """Get agent from cache if exists and not expired."""
     cleanup_expired_cache()  # Clean up on every access
@@ -2965,6 +2983,14 @@ def get_cached_agent(cache_key: str):
     if cache_key in _agent_cache:
         entry = _agent_cache[cache_key]
         if not entry.is_expired():
+            status_value = _get_cached_agent_status_value(entry.agent)
+            if status_value != "active":
+                del _agent_cache[cache_key]
+                logger.warning(
+                    "Evicted non-active cached agent before reuse",
+                    extra={"cache_key": cache_key, "agent_status": status_value},
+                )
+                return None, None
             entry.touch()  # Update last used time and access count
             logger.debug(
                 f"Cache hit: {cache_key} "
@@ -4596,6 +4622,7 @@ async def test_agent(
             conversation_session = None
             token_queue = None
             exec_thread = None
+            agent = None
             try:
                 # Track timing and tokens
                 import time
@@ -4954,10 +4981,19 @@ async def test_agent(
                 if model_supports_vision and has_image_attachments:
                     # For vision models, use multimodal content format
                     multimodal_content = []
+                    vision_preference_hint = (
+                        "\n\n[Vision handling hint]\n"
+                        "You can directly read attached images in this multimodal message. "
+                        "Prefer direct visual understanding first. "
+                        "Use OCR tools only when the user explicitly asks for OCR or when direct "
+                        "visual reading is clearly insufficient."
+                    )
 
                     # Add text content
                     if user_message:
-                        multimodal_content.append({"type": "text", "text": user_message})
+                        multimodal_content.append(
+                            {"type": "text", "text": f"{user_message}{vision_preference_hint}"}
+                        )
 
                     # Add image content
                     minio_client = get_minio_client()
@@ -5331,13 +5367,33 @@ async def test_agent(
                         token_queue.put_nowait(None)
                     except Exception:
                         pass
+                if agent is not None and hasattr(agent, "request_cancellation"):
+                    try:
+                        agent.request_cancellation("client stream cancelled")
+                    except Exception as cancel_error:
+                        logger.warning(
+                            "Failed to signal agent cancellation after stream disconnect: %s",
+                            cancel_error,
+                            extra={"agent_id": agent_id},
+                        )
+                thread_still_running = False
                 if exec_thread is not None and exec_thread.is_alive():
-                    exec_thread.join(timeout=1.0)
+                    exec_thread.join(timeout=5.0)
                     if exec_thread.is_alive():
+                        thread_still_running = True
                         logger.warning(
                             "Agent execution thread still running after stream cancellation",
                             extra={"agent_id": agent_id},
                         )
+                if thread_still_running:
+                    invalidated_count = invalidate_agent_cache(agent_id)
+                    logger.warning(
+                        "Invalidated cached agent entries after stream cancellation",
+                        extra={
+                            "agent_id": agent_id,
+                            "invalidated_entries": invalidated_count,
+                        },
+                    )
                 logger.info(
                     "Agent test stream cancelled by client",
                     extra={

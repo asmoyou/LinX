@@ -12,6 +12,8 @@ from fastapi import HTTPException
 from api_gateway.routers.agents import (
     FileReference,
     _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL,
+    _agent_cache,
+    _get_cached_agent_status_value,
     _build_agent_metrics_from_task_rows,
     _build_audit_log_entries,
     _build_task_log_entries,
@@ -32,6 +34,8 @@ from api_gateway.routers.agents import (
     _infer_attachment_bucket_type,
     _infer_attachment_type,
     _materialize_attachment_files_to_workspace,
+    cache_agent,
+    get_cached_agent,
 )
 
 
@@ -46,6 +50,34 @@ def test_infer_attachment_type_supports_common_documents() -> None:
     )
     assert _infer_attachment_type("sheet.xlsx", "application/octet-stream") == "document"
     assert _infer_attachment_type("notes.md", "text/markdown") == "document"
+
+
+def test_get_cached_agent_status_value_normalizes_agent_status() -> None:
+    class _FakeStatus:
+        value = "ACTIVE"
+
+    class _FakeAgent:
+        def get_status(self):  # noqa: ANN201
+            return _FakeStatus()
+
+    assert _get_cached_agent_status_value(_FakeAgent()) == "active"
+
+
+def test_get_cached_agent_evicts_non_active_entries() -> None:
+    class _BusyAgent:
+        def get_status(self):  # noqa: ANN201
+            return "busy"
+
+    cache_key = "v2_test-agent_provider_model_capabilities-hash"
+    _agent_cache.clear()
+    try:
+        cache_agent(cache_key, _BusyAgent(), llm=object(), ttl_minutes=30)
+        cached_agent, cached_llm = get_cached_agent(cache_key)
+        assert cached_agent is None
+        assert cached_llm is None
+        assert cache_key not in _agent_cache
+    finally:
+        _agent_cache.clear()
 
 
 def test_infer_attachment_bucket_type_routes_unknown_to_artifacts() -> None:

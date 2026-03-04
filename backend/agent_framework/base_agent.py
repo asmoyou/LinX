@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -182,6 +183,10 @@ class AgentStatus(Enum):
     BUSY = "busy"
     TERMINATED = "terminated"
     ERROR = "error"
+
+
+class AgentExecutionCancelled(RuntimeError):
+    """Raised when agent execution is cancelled by caller."""
 
 
 # ============================================================================
@@ -481,6 +486,9 @@ class BaseAgent:
         self.loaded_agent_skill_count = 0
         self.langchain_tool_skill_names: Set[str] = set()
         self.agent_skill_names: Set[str] = set()
+        self._cancel_requested = threading.Event()
+        self._cancel_reason = ""
+        self._cancel_lock = threading.Lock()
 
         logger.info(
             f"BaseAgent initialized: {config.name}",
@@ -1899,6 +1907,126 @@ class BaseAgent:
 
         return str(task_description or "")
 
+    def _iter_cancellation_targets(self) -> List[Any]:
+        """Collect LLM instances that may support cooperative cancellation."""
+        queue: List[Any] = [self.llm, getattr(self, "llm_with_tools", None)]
+        seen: Set[int] = set()
+        targets: List[Any] = []
+
+        while queue:
+            candidate = queue.pop()
+            if candidate is None:
+                continue
+            candidate_id = id(candidate)
+            if candidate_id in seen:
+                continue
+            seen.add(candidate_id)
+            targets.append(candidate)
+
+            candidate_dict = getattr(candidate, "__dict__", {})
+            for attr_name in ("bound", "runnable", "model"):
+                nested = None
+                if isinstance(candidate_dict, dict) and attr_name in candidate_dict:
+                    nested = candidate_dict.get(attr_name)
+                elif hasattr(type(candidate), attr_name):
+                    try:
+                        nested = getattr(candidate, attr_name)
+                    except Exception:
+                        nested = None
+
+                if nested is not None and nested is not candidate:
+                    queue.append(nested)
+
+        return targets
+
+    def _propagate_cancellation_to_llm(self, *, reason: str = "", reset: bool = False) -> None:
+        """Forward cancellation/reset signals to underlying LLM adapters."""
+        for target in self._iter_cancellation_targets():
+            if reset:
+                reset_methods = ("reset_cancellation", "clear_cancellation")
+                for method_name in reset_methods:
+                    method = getattr(target, method_name, None)
+                    if callable(method):
+                        try:
+                            method()
+                        except Exception as reset_error:
+                            logger.debug(
+                                "Failed to reset LLM cancellation state (%s): %s",
+                                method_name,
+                                reset_error,
+                            )
+                        break
+                continue
+
+            cancel_methods = (
+                "request_cancellation",
+                "cancel_active_requests",
+                "abort_active_requests",
+            )
+            for method_name in cancel_methods:
+                method = getattr(target, method_name, None)
+                if not callable(method):
+                    continue
+                try:
+                    method(reason=reason)
+                except TypeError:
+                    method()
+                except Exception as cancel_error:
+                    logger.debug(
+                        "Failed to propagate LLM cancellation (%s): %s",
+                        method_name,
+                        cancel_error,
+                    )
+                break
+
+    def _reset_cancellation_state(self) -> None:
+        """Reset cancellation marker at the beginning of an execution."""
+        with self._cancel_lock:
+            self._cancel_reason = ""
+            self._cancel_requested.clear()
+        self._propagate_cancellation_to_llm(reset=True)
+
+    def request_cancellation(self, reason: Optional[str] = None) -> None:
+        """Request cooperative cancellation for the current execution."""
+        cancel_reason = str(reason or "cancelled by caller").strip() or "cancelled by caller"
+        with self._cancel_lock:
+            self._cancel_reason = cancel_reason
+            self._cancel_requested.set()
+
+        self._propagate_cancellation_to_llm(reason=cancel_reason, reset=False)
+        logger.warning(
+            "Cancellation requested for agent execution",
+            extra={"agent_id": str(self.config.agent_id), "reason": cancel_reason},
+        )
+
+    def _is_cancellation_requested(self) -> bool:
+        return self._cancel_requested.is_set()
+
+    def _raise_if_cancelled(self) -> None:
+        if not self._is_cancellation_requested():
+            return
+        reason = self._cancel_reason or "cancelled by caller"
+        raise AgentExecutionCancelled(reason)
+
+    @staticmethod
+    def _looks_like_cancellation_error(error: BaseException) -> bool:
+        if isinstance(error, AgentExecutionCancelled):
+            return True
+
+        name = error.__class__.__name__.lower()
+        message = str(error).lower()
+        if "cancel" in name or "abort" in name:
+            return True
+
+        tokens = (
+            "cancel",
+            "aborted",
+            "client disconnected",
+            "stream cancelled",
+            "stream canceled",
+        )
+        return any(token in message for token in tokens)
+
     def execute_task(
         self,
         task_description: str,
@@ -1951,6 +2079,7 @@ class BaseAgent:
                 raise RuntimeError(f"Agent not active. Current status: {self.status.value}")
 
         try:
+            self._reset_cancellation_state()
             self.status = AgentStatus.BUSY
             logger.info(f"Agent executing task: {self.config.name}")
             resolved_task_intent_text = self._resolve_task_intent_text(
@@ -2179,6 +2308,7 @@ class BaseAgent:
                 )
 
                 while iteration < max_iterations:
+                    self._raise_if_cancelled()
                     iteration += 1
 
                     logger.info(
@@ -2200,6 +2330,7 @@ class BaseAgent:
 
                     try:
                         for chunk in llm_for_round.stream(messages):
+                            self._raise_if_cancelled()
                             merged_stream_message = self._merge_stream_message(
                                 merged_stream_message, chunk
                             )
@@ -2241,6 +2372,12 @@ class BaseAgent:
                             logger.warning("LLM streaming returned no chunks")
 
                     except Exception as stream_error:
+                        if self._is_cancellation_requested() or self._looks_like_cancellation_error(
+                            stream_error
+                        ):
+                            raise AgentExecutionCancelled(
+                                self._cancel_reason or "cancelled during LLM streaming"
+                            ) from stream_error
                         if self._handle_native_tool_http_rejection(
                             stream_error, runtime_path="auto_multi_stream_http_fallback"
                         ):
@@ -2251,10 +2388,17 @@ class BaseAgent:
 
                     # If streaming failed, fall back to non-streaming
                     if stream_failed:
+                        self._raise_if_cancelled()
                         logger.info("Falling back to non-streaming mode")
                         try:
                             result = llm_for_round.invoke(messages)
                         except Exception as invoke_error:
+                            if self._is_cancellation_requested() or self._looks_like_cancellation_error(
+                                invoke_error
+                            ):
+                                raise AgentExecutionCancelled(
+                                    self._cancel_reason or "cancelled during LLM invoke"
+                                ) from invoke_error
                             if self._handle_native_tool_http_rejection(
                                 invoke_error, runtime_path="auto_multi_invoke_http_fallback"
                             ):
@@ -2334,6 +2478,7 @@ class BaseAgent:
                         # Execute tools
                         tool_results = []
                         for tc in parsed_calls:
+                            self._raise_if_cancelled()
                             tool_name = tc.tool_name
                             tool_args = tc.arguments
                             args_summary = self._summarize_tool_arguments_for_stream(
@@ -2618,6 +2763,7 @@ class BaseAgent:
                     invoke_config = {"recursion_limit": 12}
 
                 try:
+                    self._raise_if_cancelled()
                     if invoke_config is not None:
                         result = self.agent.invoke(invoke_payload, config=invoke_config)
                     else:
@@ -2664,6 +2810,7 @@ class BaseAgent:
                             message_content=message_content,
                             task_intent_text=resolved_task_intent_text,
                         )
+                    self._raise_if_cancelled()
                     result = self.agent.invoke(invoke_payload)
                 except GraphRecursionError as recursion_error:
                     logger.warning(
@@ -2674,6 +2821,7 @@ class BaseAgent:
                             "reason": str(recursion_error),
                         },
                     )
+                    self._raise_if_cancelled()
                     fallback_response = self.llm.invoke(messages)
                     result = {"messages": [fallback_response]}
 
@@ -2717,6 +2865,21 @@ class BaseAgent:
                     "messages": messages,
                 }
 
+        except AgentExecutionCancelled as cancel_error:
+            self.status = AgentStatus.ACTIVE
+            logger.info(
+                "Task execution cancelled",
+                extra={
+                    "agent_id": str(self.config.agent_id),
+                    "reason": str(cancel_error),
+                },
+            )
+            return {
+                "success": False,
+                "error": str(cancel_error),
+                "output": None,
+                "cancelled": True,
+            }
         except Exception as e:
             self.status = AgentStatus.ERROR
             logger.error(f"Task execution failed: {e}", exc_info=True)
@@ -2728,6 +2891,22 @@ class BaseAgent:
         except BaseException as e:
             # asyncio.CancelledError inherits BaseException (not Exception) in Python 3.12.
             # Without this guard, a cancelled run can leak BUSY status and block later runs.
+            if self._looks_like_cancellation_error(e):
+                self.status = AgentStatus.ACTIVE
+                logger.info(
+                    "Task execution interrupted by cancellation",
+                    extra={
+                        "agent_id": str(self.config.agent_id),
+                        "reason": str(e),
+                    },
+                )
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "output": None,
+                    "cancelled": True,
+                }
+
             self.status = AgentStatus.ERROR
             logger.error(f"Task execution interrupted: {e}", exc_info=True)
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
@@ -2741,6 +2920,7 @@ class BaseAgent:
     def terminate(self) -> None:
         """Terminate the agent."""
         logger.info(f"Terminating agent: {self.config.name}")
+        self.request_cancellation("agent terminated")
         self.status = AgentStatus.TERMINATED
         self.agent = None
 
@@ -3958,8 +4138,15 @@ class BaseAgent:
             },
         )
 
+        self._raise_if_cancelled()
+
         # Main conversation loop
-        while state.round_number < state.max_rounds and not state.is_terminated:
+        while (
+            state.round_number < state.max_rounds
+            and not state.is_terminated
+            and not self._is_cancellation_requested()
+        ):
+            self._raise_if_cancelled()
             state.round_number += 1
 
             # Track per-round timing
@@ -4018,6 +4205,7 @@ class BaseAgent:
 
             try:
                 for chunk in llm_for_round.stream(messages):
+                    self._raise_if_cancelled()
                     merged_stream_message = self._merge_stream_message(merged_stream_message, chunk)
                     if not round_finish_reason:
                         round_finish_reason = self._extract_finish_reason(chunk)
@@ -4069,6 +4257,10 @@ class BaseAgent:
                 if not round_finish_reason:
                     round_finish_reason = self._extract_finish_reason(merged_stream_message)
             except Exception as e:
+                if self._is_cancellation_requested() or self._looks_like_cancellation_error(e):
+                    raise AgentExecutionCancelled(
+                        self._cancel_reason or "cancelled during recovery streaming"
+                    ) from e
                 if self._handle_native_tool_http_rejection(
                     e, runtime_path="recovery_stream_http_fallback"
                 ):
@@ -4077,8 +4269,15 @@ class BaseAgent:
                 logger.error(f"[RECOVERY] LLM streaming failed: {e}", exc_info=True)
                 # Try non-streaming fallback
                 try:
+                    self._raise_if_cancelled()
                     result = llm_for_round.invoke(messages)
                 except Exception as fallback_error:
+                    if self._is_cancellation_requested() or self._looks_like_cancellation_error(
+                        fallback_error
+                    ):
+                        raise AgentExecutionCancelled(
+                            self._cancel_reason or "cancelled during recovery invoke"
+                        ) from fallback_error
                     if self._handle_native_tool_http_rejection(
                         fallback_error, runtime_path="recovery_invoke_http_fallback"
                     ):
@@ -4487,6 +4686,8 @@ class BaseAgent:
                 "errors": len(state.errors),
             },
         )
+
+        self._raise_if_cancelled()
 
         success = state.termination_reason in ["final_answer_provided"]
         error_message: Optional[str] = None

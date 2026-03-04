@@ -4,8 +4,11 @@ This module provides a custom LLM wrapper for APIs that claim to be OpenAI-compa
 but return non-standard response formats. Supports both streaming and non-streaming modes.
 """
 
+import json
+import threading
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
+import httpx
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.messages.tool import ToolCallChunk
@@ -13,13 +16,15 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import Field
-import json
-import httpx
+from pydantic import Field, PrivateAttr
 
 from shared.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+class StreamCancelledError(RuntimeError):
+    """Raised when an active streaming call is cancelled by caller."""
 
 
 class CustomOpenAIChat(BaseChatModel):
@@ -49,6 +54,185 @@ class CustomOpenAIChat(BaseChatModel):
     )
     max_retries: int = Field(default=2, description="Maximum retry attempts")
     streaming: bool = Field(default=False, description="Enable streaming mode")
+    protocol_abort_enabled: bool = Field(
+        default=True,
+        description="Try protocol-level cancel endpoints when request IDs are available.",
+    )
+    protocol_abort_timeout: float = Field(
+        default=5.0,
+        description="Timeout in seconds for protocol-level cancel requests.",
+    )
+    _cancel_requested: threading.Event = PrivateAttr(default_factory=threading.Event)
+    _active_stream_response: Optional[httpx.Response] = PrivateAttr(default=None)
+    _active_request_id: Optional[str] = PrivateAttr(default=None)
+    _active_request_kind: Optional[str] = PrivateAttr(default=None)
+    _active_stream_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+
+    def reset_cancellation(self) -> None:
+        """Clear cancellation marker for a fresh run."""
+        with self._active_stream_lock:
+            self._cancel_requested.clear()
+            self._active_request_id = None
+            self._active_request_kind = None
+
+    def request_cancellation(self, reason: Optional[str] = None) -> None:
+        """Request cooperative cancellation for active or upcoming requests."""
+        self._cancel_requested.set()
+        self.cancel_active_requests(reason=reason)
+
+    def cancel_active_requests(self, reason: Optional[str] = None) -> None:
+        """Abort active streaming response immediately if one exists."""
+        response: Optional[httpx.Response]
+        request_id: Optional[str]
+        request_kind: Optional[str]
+        with self._active_stream_lock:
+            response = self._active_stream_response
+            request_id = self._active_request_id
+            request_kind = self._active_request_kind
+            self._active_stream_response = None
+            self._active_request_id = None
+            self._active_request_kind = None
+
+        if response is None:
+            self._abort_upstream_by_protocol(request_id, request_kind, reason=reason)
+            return
+
+        try:
+            response.close()
+            logger.warning(
+                "Cancelled active LLM streaming response",
+                extra={"reason": reason or "unspecified"},
+            )
+        except Exception as close_error:
+            logger.warning(
+                "Failed to close active LLM stream during cancellation: %s",
+                close_error,
+            )
+        finally:
+            self._abort_upstream_by_protocol(request_id, request_kind, reason=reason)
+
+    def _build_api_url(self, path: str) -> str:
+        """Build OpenAI-compatible URL with `/v1` fallback."""
+        normalized = path if path.startswith("/") else f"/{path}"
+        base = self.base_url.rstrip("/")
+        if base.endswith(normalized):
+            return base
+        if base.endswith("/v1"):
+            return f"{base}{normalized}"
+        return f"{base}/v1{normalized}"
+
+    @staticmethod
+    def _infer_request_kind(
+        payload: Dict[str, Any], request_id: str, fallback_kind: Optional[str] = None
+    ) -> Optional[str]:
+        """Infer whether request belongs to responses API or chat completions API."""
+        object_type = str(payload.get("object") or "").strip().lower()
+        if object_type.startswith("response"):
+            return "responses"
+        if object_type.startswith("chat.completion"):
+            return "chat.completions"
+        if request_id.startswith("resp_"):
+            return "responses"
+        if request_id.startswith("chatcmpl-"):
+            return "chat.completions"
+        return fallback_kind
+
+    def _track_active_request(self, payload: Dict[str, Any]) -> None:
+        """Track active upstream request ID for protocol-level cancellation."""
+        raw_request_id = payload.get("id")
+        if not isinstance(raw_request_id, str):
+            return
+        request_id = raw_request_id.strip()
+        if not request_id:
+            return
+
+        with self._active_stream_lock:
+            request_kind = self._infer_request_kind(
+                payload,
+                request_id,
+                fallback_kind=self._active_request_kind,
+            )
+            self._active_request_id = request_id
+            if request_kind:
+                self._active_request_kind = request_kind
+
+    def _build_protocol_abort_candidates(
+        self, request_id: str, request_kind: Optional[str]
+    ) -> List[str]:
+        """Build candidate cancel endpoints for OpenAI-compatible APIs."""
+        candidates: List[str] = []
+        normalized_kind = (request_kind or "").strip().lower()
+
+        if normalized_kind == "responses" or request_id.startswith("resp_"):
+            candidates.append(self._build_api_url(f"/responses/{request_id}/cancel"))
+
+        if normalized_kind == "chat.completions" and request_id.startswith("chatcmpl-"):
+            # Non-standard but supported by some OpenAI-compatible gateways.
+            candidates.append(self._build_api_url(f"/chat/completions/{request_id}/cancel"))
+
+        return candidates
+
+    def _abort_upstream_by_protocol(
+        self, request_id: Optional[str], request_kind: Optional[str], reason: Optional[str] = None
+    ) -> bool:
+        """Best-effort protocol-level cancellation using provider cancel endpoints."""
+        if not self.protocol_abort_enabled:
+            return False
+
+        normalized_request_id = str(request_id or "").strip()
+        if not normalized_request_id:
+            return False
+
+        candidates = self._build_protocol_abort_candidates(normalized_request_id, request_kind)
+        if not candidates:
+            return False
+
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        timeout_value = max(0.1, float(self.protocol_abort_timeout or 5.0))
+
+        for url in candidates:
+            try:
+                response = httpx.post(url, headers=headers, timeout=timeout_value)
+            except Exception as abort_error:
+                logger.debug("Protocol abort request failed: %s", abort_error)
+                continue
+
+            if 200 <= response.status_code < 300:
+                logger.warning(
+                    "Cancelled upstream request via protocol endpoint",
+                    extra={
+                        "request_id": normalized_request_id,
+                        "request_kind": request_kind or "unknown",
+                        "url": url,
+                        "reason": reason or "unspecified",
+                    },
+                )
+                return True
+
+            if response.status_code in (404, 405, 501):
+                logger.debug(
+                    "Protocol abort endpoint unsupported by upstream",
+                    extra={
+                        "request_id": normalized_request_id,
+                        "request_kind": request_kind or "unknown",
+                        "status_code": response.status_code,
+                    },
+                )
+                continue
+
+            logger.warning(
+                "Protocol abort endpoint returned unexpected status",
+                extra={
+                    "request_id": normalized_request_id,
+                    "request_kind": request_kind or "unknown",
+                    "status_code": response.status_code,
+                },
+            )
+
+        return False
 
     @property
     def _llm_type(self) -> str:
@@ -363,14 +547,7 @@ class CustomOpenAIChat(BaseChatModel):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         """Stream chat completion."""
-        # Prepare request URL - intelligently handle /v1 suffix
-        base = self.base_url.rstrip("/")
-        # If base_url already ends with /v1, just append /chat/completions
-        # Otherwise, append /v1/chat/completions
-        if base.endswith("/v1"):
-            url = f"{base}/chat/completions"
-        else:
-            url = f"{base}/v1/chat/completions"
+        url = self._build_api_url("/chat/completions")
 
         headers = {
             "Content-Type": "application/json",
@@ -394,6 +571,8 @@ class CustomOpenAIChat(BaseChatModel):
 
         # Make streaming request
         try:
+            if self._cancel_requested.is_set():
+                raise StreamCancelledError("LLM stream cancelled before request dispatch")
             emitted_chunks = False
             with httpx.stream(
                 "POST",
@@ -402,11 +581,15 @@ class CustomOpenAIChat(BaseChatModel):
                 headers=headers,
                 timeout=self._build_stream_timeout(),
             ) as response:
+                with self._active_stream_lock:
+                    self._active_stream_response = response
                 response.raise_for_status()
                 raw_json_lines: List[str] = []
 
                 # Process SSE stream
                 for line in response.iter_lines():
+                    if self._cancel_requested.is_set():
+                        raise StreamCancelledError("LLM stream cancelled by caller")
                     if not line or line.startswith(":"):
                         continue
 
@@ -423,6 +606,7 @@ class CustomOpenAIChat(BaseChatModel):
 
                     try:
                         chunk_data = json.loads(data_str)
+                        self._track_active_request(chunk_data)
                         chunk = self._build_stream_chunk_from_payload(chunk_data)
                         if chunk is not None:
                             emitted_chunks = True
@@ -437,6 +621,7 @@ class CustomOpenAIChat(BaseChatModel):
                     if merged_payload:
                         try:
                             chunk_data = json.loads(merged_payload)
+                            self._track_active_request(chunk_data)
                             chunk = self._build_stream_chunk_from_payload(chunk_data)
                             if chunk is not None:
                                 emitted_chunks = True
@@ -447,6 +632,8 @@ class CustomOpenAIChat(BaseChatModel):
                             )
 
                 if not emitted_chunks:
+                    if self._cancel_requested.is_set():
+                        raise StreamCancelledError("LLM stream cancelled by caller")
                     logger.warning(
                         "Streaming produced no parseable chunks, falling back to non-streaming invoke"
                     )
@@ -462,13 +649,20 @@ class CustomOpenAIChat(BaseChatModel):
                     fallback_chunk = self._build_stream_chunk_from_chat_result(fallback_result)
                     if fallback_chunk is not None:
                         yield fallback_chunk
-
+        except StreamCancelledError:
+            logger.info("Stopped LLM streaming due to cancellation request")
+            raise
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error during streaming: {e}")
             raise
         except Exception as e:
             logger.error(f"Error during streaming: {e}")
             raise
+        finally:
+            with self._active_stream_lock:
+                self._active_stream_response = None
+                self._active_request_id = None
+                self._active_request_kind = None
 
     def _generate(
         self,
@@ -478,14 +672,7 @@ class CustomOpenAIChat(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         """Generate chat completion."""
-        # Prepare request URL - intelligently handle /v1 suffix
-        base = self.base_url.rstrip("/")
-        # If base_url already ends with /v1, just append /chat/completions
-        # Otherwise, append /v1/chat/completions
-        if base.endswith("/v1"):
-            url = f"{base}/chat/completions"
-        else:
-            url = f"{base}/v1/chat/completions"
+        url = self._build_api_url("/chat/completions")
 
         headers = {
             "Content-Type": "application/json",
@@ -508,6 +695,8 @@ class CustomOpenAIChat(BaseChatModel):
 
         # Make request
         try:
+            if self._cancel_requested.is_set():
+                raise StreamCancelledError("LLM request cancelled before dispatch")
             response = httpx.post(
                 url,
                 json=data,
@@ -516,6 +705,7 @@ class CustomOpenAIChat(BaseChatModel):
             )
             response.raise_for_status()
             result = response.json()
+            self._track_active_request(result)
 
             # Handle custom response format
             if "output" in result:
@@ -570,7 +760,9 @@ class CustomOpenAIChat(BaseChatModel):
                 generations=[generation],
                 llm_output={"token_usage": token_usage, "model_name": self.model},
             )
-
+        except StreamCancelledError:
+            logger.info("Stopped non-streaming LLM request due to cancellation request")
+            raise
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error calling LLM API: {e}")
             raise
@@ -586,12 +778,7 @@ class CustomOpenAIChat(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         """Async generate chat completion."""
-        # Prepare request URL - intelligently handle /v1 suffix
-        base = self.base_url.rstrip("/")
-        if base.endswith("/v1"):
-            url = f"{base}/chat/completions"
-        else:
-            url = f"{base}/v1/chat/completions"
+        url = self._build_api_url("/chat/completions")
 
         headers = {
             "Content-Type": "application/json",
@@ -613,6 +800,8 @@ class CustomOpenAIChat(BaseChatModel):
 
         # Make async request
         try:
+            if self._cancel_requested.is_set():
+                raise StreamCancelledError("Async LLM request cancelled before dispatch")
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     url,
@@ -622,6 +811,7 @@ class CustomOpenAIChat(BaseChatModel):
                 )
                 response.raise_for_status()
                 result = response.json()
+            self._track_active_request(result)
 
             # Handle custom response format
             if "output" in result:
@@ -659,7 +849,9 @@ class CustomOpenAIChat(BaseChatModel):
                 generations=[generation],
                 llm_output={"token_usage": token_usage, "model_name": self.model},
             )
-
+        except StreamCancelledError:
+            logger.info("Stopped async LLM request due to cancellation request")
+            raise
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error calling LLM API: {e}")
             raise

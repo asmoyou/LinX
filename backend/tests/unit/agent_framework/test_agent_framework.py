@@ -233,6 +233,41 @@ class TestBaseAgent:
         assert sent_messages[2].content == "It is 你好."
         assert sent_messages[3].content == "What did I ask before this?"
 
+    def test_execute_task_cancellation_releases_busy_status_and_skips_fallback(self):
+        """Cancellation during streaming should exit as cancelled without fallback invoke."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.tools = []
+        agent.tools_by_name = {}
+
+        def _fake_stream(_messages):
+            yield SimpleNamespace(content="partial answer", additional_kwargs={})
+            agent.request_cancellation("client stream cancelled")
+            raise RuntimeError("stream cancelled by caller")
+
+        agent.llm = Mock()
+        agent.llm.stream = _fake_stream
+        agent.llm.invoke = Mock(side_effect=AssertionError("fallback invoke should not run"))
+
+        result = agent.execute_task(
+            task_description="hello",
+            stream_callback=lambda *_args, **_kwargs: None,
+        )
+
+        assert result["success"] is False
+        assert result["cancelled"] is True
+        assert agent.status == AgentStatus.ACTIVE
+        agent.llm.invoke.assert_not_called()
+
     def test_execute_task_profile_driven_recovery_without_stream_callback(self):
         """Mission profile should enter recovery loop without requiring stream callback."""
         config = AgentConfig(
