@@ -22,7 +22,7 @@ const parseFacts = (memory: Memory): MemoryFact[] => {
   if (!Array.isArray(raw)) {
     return [];
   }
-  return raw
+  const parsed = raw
     .filter((entry): entry is MemoryFact => {
       return (
         !!entry &&
@@ -38,6 +38,33 @@ const parseFacts = (memory: Memory): MemoryFact[] => {
       key: entry.key.trim(),
       value: entry.value.trim(),
     }));
+
+  const sopTitleValue = parsed.find((entry) => entry.key === "interaction.sop.title")?.value;
+  const shouldDropSopTopic = Boolean(
+    sopTitleValue &&
+      parsed.some(
+        (entry) => entry.key === "interaction.sop.topic" && entry.value === sopTitleValue,
+      ),
+  );
+
+  const uniqueFacts: MemoryFact[] = [];
+  const seenPairs = new Set<string>();
+  for (const entry of parsed) {
+    if (
+      shouldDropSopTopic &&
+      entry.key === "interaction.sop.topic" &&
+      entry.value === sopTitleValue
+    ) {
+      continue;
+    }
+    const signature = `${entry.key}\0${entry.value}`;
+    if (seenPairs.has(signature)) {
+      continue;
+    }
+    seenPairs.add(signature);
+    uniqueFacts.push(entry);
+  }
+  return uniqueFacts;
 };
 
 const parseStructuredContentLines = (

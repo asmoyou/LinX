@@ -13,6 +13,8 @@ from api_gateway.routers.agents import (
     FileReference,
     _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL,
     _agent_cache,
+    _build_agent_candidate_content,
+    _build_agent_candidate_seed_facts,
     _get_cached_agent_status_value,
     _build_agent_metrics_from_task_rows,
     _build_audit_log_entries,
@@ -532,6 +534,59 @@ def test_normalize_llm_agent_candidates_keeps_reusable_candidate() -> None:
     assert normalized[0]["candidate_type"] == "sop"
     assert normalized[0]["latest_ts"] == "2026-02-25T10:02:00+00:00"
     assert len(normalized[0]["steps"]) >= 3
+
+
+def test_normalize_llm_agent_candidates_keeps_distinct_topic_and_title() -> None:
+    turn_ts_map = {2: "2026-02-25T10:02:00+00:00"}
+    items = [
+        {
+            "candidate_type": "sop",
+            "topic": "本地美食攻略",
+            "title": "按人群偏好定制城市吃喝路线",
+            "summary": "先识别饮食禁忌，再按区域和预算输出可执行推荐。",
+            "steps": ["识别禁忌与预算", "按区域筛选候选店铺", "给出路线与替代选项"],
+            "confidence": 0.86,
+            "evidence_turns": [2],
+        }
+    ]
+
+    normalized = _normalize_llm_agent_candidates(
+        items,
+        agent_name="小新2号",
+        turn_ts_map=turn_ts_map,
+    )
+
+    assert len(normalized) == 1
+    assert normalized[0]["topic"] == "本地美食攻略"
+    assert normalized[0]["title"] == "按人群偏好定制城市吃喝路线"
+
+
+def test_agent_candidate_seed_facts_drop_duplicate_topic_title() -> None:
+    candidate = {
+        "topic": "基于用户兴趣定制本地美食攻略",
+        "title": "基于用户兴趣定制本地美食攻略",
+        "steps": ["收集口味偏好", "筛选候选商户", "按路线输出清单"],
+        "confidence": 0.85,
+    }
+
+    facts = _build_agent_candidate_seed_facts(candidate)
+    keys = [item["key"] for item in facts]
+
+    assert "interaction.sop.title" in keys
+    assert "interaction.sop.topic" not in keys
+
+
+def test_agent_candidate_content_drops_duplicate_topic_title() -> None:
+    candidate = {
+        "topic": "基于用户兴趣定制本地美食攻略",
+        "title": "基于用户兴趣定制本地美食攻略",
+        "steps": ["收集口味偏好", "筛选候选商户", "按路线输出清单"],
+    }
+
+    content = _build_agent_candidate_content(candidate)
+
+    assert "interaction.sop.title=基于用户兴趣定制本地美食攻略" in content
+    assert "interaction.sop.topic=基于用户兴趣定制本地美食攻略" not in content
 
 
 @pytest.mark.asyncio

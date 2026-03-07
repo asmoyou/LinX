@@ -1685,10 +1685,8 @@ def _normalize_llm_agent_candidates(
         if not isinstance(raw, dict):
             continue
 
-        title = _normalize_session_memory_text(
-            raw.get("title", "") or raw.get("topic", ""),
-            max_chars=72,
-        )
+        title = _normalize_session_memory_text(raw.get("title", ""), max_chars=72)
+        topic = _normalize_session_memory_text(raw.get("topic", ""), max_chars=72)
         summary = _normalize_session_memory_text(raw.get("summary", ""), max_chars=180)
         steps_raw = raw.get("steps")
         steps: List[str] = []
@@ -1717,7 +1715,7 @@ def _normalize_llm_agent_candidates(
         applicability = _normalize_session_memory_text(raw.get("applicability", ""), max_chars=140)
         avoid = _normalize_session_memory_text(raw.get("avoid", ""), max_chars=140)
 
-        topic_for_fingerprint = title or summary or "generic_sop"
+        topic_for_fingerprint = topic or title or summary or "generic_sop"
         fingerprint = _build_agent_candidate_fingerprint(topic_for_fingerprint, steps)
         if fingerprint in seen_fingerprints:
             continue
@@ -1741,8 +1739,8 @@ def _normalize_llm_agent_candidates(
         candidates.append(
             {
                 "candidate_type": candidate_type,
-                "topic": topic_for_fingerprint,
-                "title": title,
+                "topic": topic or None,
+                "title": title or None,
                 "summary": summary,
                 "steps": steps,
                 "applicability": applicability or None,
@@ -2388,12 +2386,14 @@ def _build_agent_candidate_content(candidate: Dict[str, Any]) -> str:
     step_text = " | ".join(steps)
 
     title = _normalize_session_memory_text(candidate.get("title", ""), max_chars=72)
+    topic = _normalize_session_memory_text(candidate.get("topic", ""), max_chars=72)
     summary = _normalize_session_memory_text(candidate.get("summary", ""), max_chars=180)
-    lines: List[str] = [
-        f"interaction.sop.topic={candidate.get('topic')}",
-        f"interaction.sop.title={title or candidate.get('topic')}",
-        f"interaction.sop.steps={step_text}",
-    ]
+    lines: List[str] = []
+    if title:
+        lines.append(f"interaction.sop.title={title}")
+    if topic and topic != title:
+        lines.append(f"interaction.sop.topic={topic}")
+    lines.append(f"interaction.sop.steps={step_text}")
     if summary:
         lines.append(f"interaction.sop.summary={summary}")
     applicability = _normalize_session_memory_text(candidate.get("applicability", ""), max_chars=120)
@@ -2412,6 +2412,8 @@ def _build_agent_candidate_seed_facts(candidate: Dict[str, Any]) -> List[Dict[st
     facts: List[Dict[str, Any]] = []
     confidence = _coerce_confidence(candidate.get("confidence"), default=0.72)
     importance = 0.78
+    topic = _normalize_session_memory_text(candidate.get("topic", ""), max_chars=72)
+    title = _normalize_session_memory_text(candidate.get("title", ""), max_chars=72)
 
     def _append_fact(key: str, value: Any, *, category: str) -> None:
         normalized_value = _normalize_session_memory_text(value, max_chars=260)
@@ -2428,8 +2430,9 @@ def _build_agent_candidate_seed_facts(candidate: Dict[str, Any]) -> List[Dict[st
             }
         )
 
-    _append_fact("interaction.sop.topic", candidate.get("topic"), category="interaction")
-    _append_fact("interaction.sop.title", candidate.get("title"), category="interaction")
+    _append_fact("interaction.sop.title", title, category="interaction")
+    if topic and topic != title:
+        _append_fact("interaction.sop.topic", topic, category="interaction")
     steps = candidate.get("steps")
     if isinstance(steps, list):
         steps_value = " | ".join(
@@ -2820,7 +2823,7 @@ async def _flush_session_memories(
                     **agent_candidate_metadata_base,
                     "signal_type": _SESSION_MEMORY_AGENT_SIGNAL_TYPE,
                     "candidate_type": candidate.get("candidate_type") or "sop",
-                    "candidate_title": candidate.get("title"),
+                    "candidate_title": candidate.get("title") or candidate.get("topic"),
                     "candidate_summary": candidate.get("summary"),
                     "candidate_applicability": candidate.get("applicability"),
                     "candidate_avoid": candidate.get("avoid"),
