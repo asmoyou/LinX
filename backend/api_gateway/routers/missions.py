@@ -15,9 +15,9 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
 from access_control.permissions import CurrentUser, get_current_user
@@ -35,9 +35,7 @@ RUN_BOUNDARY_EVENT_TYPES = {
 }
 CLARIFICATION_REQUEST_EVENT_TYPES = {"USER_CLARIFICATION_REQUESTED", "clarification_request"}
 CLARIFICATION_RESPONSE_EVENT_TYPES = {"clarification_response"}
-CLARIFICATION_EVENT_TYPES = (
-    CLARIFICATION_REQUEST_EVENT_TYPES | CLARIFICATION_RESPONSE_EVENT_TYPES
-)
+CLARIFICATION_EVENT_TYPES = CLARIFICATION_REQUEST_EVENT_TYPES | CLARIFICATION_RESPONSE_EVENT_TYPES
 RUNTIME_DELIVERABLE_PATTERNS = (
     re.compile(r"^code_[0-9a-f]{8}\.(?:py|sh|js|ts|tsx|jsx|bash|zsh|txt)$", re.IGNORECASE),
     re.compile(r"^requirements(?:\.[a-z0-9_-]+)?\.txt$", re.IGNORECASE),
@@ -132,8 +130,7 @@ class MissionResponse(BaseModel):
     latest_clarification_request: Optional[str] = None
     latest_clarification_requested_at: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AttachmentResponse(BaseModel):
@@ -145,8 +142,7 @@ class AttachmentResponse(BaseModel):
     file_size: Optional[int] = None
     uploaded_at: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MissionAgentResponse(BaseModel):
@@ -158,8 +154,7 @@ class MissionAgentResponse(BaseModel):
     is_temporary: bool
     assigned_at: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MissionEventResponse(BaseModel):
@@ -172,8 +167,7 @@ class MissionEventResponse(BaseModel):
     message: Optional[str] = None
     created_at: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ------------------------------------------------------------------
@@ -436,7 +430,11 @@ def _collect_mission_storage_objects(mission: Any) -> List[Tuple[str, str]]:
         if isinstance(history, list):
             snapshot_candidates.extend(history)
         for candidate in snapshot_candidates:
-            path = candidate if isinstance(candidate, str) else candidate.get("path") if isinstance(candidate, dict) else ""
+            path = (
+                candidate
+                if isinstance(candidate, str)
+                else candidate.get("path") if isinstance(candidate, dict) else ""
+            )
             parsed = _split_storage_path(str(path or ""))
             if parsed is not None:
                 objects.add(parsed)
@@ -579,10 +577,8 @@ async def create_mission(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Create a new mission in draft status."""
-    from mission_system.mission_repository import (
-        create_mission as repo_create,
-        get_mission_settings as repo_get_settings,
-    )
+    from mission_system.mission_repository import create_mission as repo_create
+    from mission_system.mission_repository import get_mission_settings as repo_get_settings
 
     # Merge user's saved settings as defaults, then override with request config
     user_settings = repo_get_settings(UUID(current_user.user_id))
@@ -669,8 +665,8 @@ async def list_missions(
     """List the current user's missions."""
     from mission_system.mission_repository import (
         count_missions,
-        list_missions as repo_list,
     )
+    from mission_system.mission_repository import list_missions as repo_list
 
     user_id = UUID(current_user.user_id)
     effective_status = status_filter or status
@@ -718,8 +714,9 @@ async def update_settings(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update the current user's mission settings defaults."""
-    from mission_system.mission_repository import upsert_mission_settings
     from sqlalchemy.exc import SQLAlchemyError
+
+    from mission_system.mission_repository import upsert_mission_settings
 
     try:
         data = request.model_dump(exclude_none=True)
@@ -769,8 +766,8 @@ async def update_mission(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update a draft mission."""
+    from mission_system.mission_repository import get_mission as repo_get
     from mission_system.mission_repository import (
-        get_mission as repo_get,
         update_mission_fields,
     )
 
@@ -792,12 +789,10 @@ async def delete_mission(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Delete a mission. Running missions are cancelled first, then deleted."""
-    from mission_system.workspace_manager import get_workspace_manager
-    from mission_system.mission_repository import (
-        delete_mission as repo_delete,
-        get_mission as repo_get,
-    )
+    from mission_system.mission_repository import delete_mission as repo_delete
+    from mission_system.mission_repository import get_mission as repo_get
     from mission_system.orchestrator import get_orchestrator
+    from mission_system.workspace_manager import get_workspace_manager
     from object_storage.minio_client import get_minio_client
     from virtualization.container_manager import get_docker_cleanup_manager
 
@@ -824,7 +819,9 @@ async def delete_mission(
     try:
         get_workspace_manager().cleanup_workspace(mission_id)
     except Exception:
-        logger.warning("Workspace cleanup failed before mission delete: %s", mission_id, exc_info=True)
+        logger.warning(
+            "Workspace cleanup failed before mission delete: %s", mission_id, exc_info=True
+        )
 
     if known_container_ids:
         cleanup_manager = get_docker_cleanup_manager()
@@ -878,8 +875,8 @@ async def upload_attachment(
 
     from mission_system.mission_repository import (
         add_attachment,
-        get_mission as repo_get,
     )
+    from mission_system.mission_repository import get_mission as repo_get
     from object_storage.minio_client import get_minio_client
 
     mission = repo_get(mission_id)
@@ -1012,8 +1009,8 @@ async def retry_mission(
 ):
     """Manually retry a failed/cancelled mission from a clean execution state."""
     from mission_system.event_emitter import get_event_emitter
+    from mission_system.mission_repository import get_mission as repo_get
     from mission_system.mission_repository import (
-        get_mission as repo_get,
         reset_failed_mission_for_retry,
     )
     from mission_system.orchestrator import get_orchestrator

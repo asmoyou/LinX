@@ -492,11 +492,16 @@ class AgentExecutor:
         active_flag = metadata.get("is_active")
         if (not allow_inactive) and isinstance(active_flag, bool) and not active_flag:
             return False
-        if (not allow_inactive) and isinstance(active_flag, str) and active_flag.strip().lower() in {
-            "false",
-            "0",
-            "no",
-        }:
+        if (
+            (not allow_inactive)
+            and isinstance(active_flag, str)
+            and active_flag.strip().lower()
+            in {
+                "false",
+                "0",
+                "no",
+            }
+        ):
             return False
         signal_type = str(metadata.get("signal_type") or "").strip().lower()
         if signal_type == "user_preference":
@@ -527,7 +532,9 @@ class AgentExecutor:
             return False
 
         base_floor = (
-            self._keyword_similarity_floor if search_method == "keyword" else self._context_similarity_floor
+            self._keyword_similarity_floor
+            if search_method == "keyword"
+            else self._context_similarity_floor
         )
         return score >= base_floor
 
@@ -730,15 +737,11 @@ class AgentExecutor:
         if "user_context" in memory_scopes:
             scope_started = time.perf_counter()
             try:
-                user_context_query = SearchQuery(
-                    query_text=context.task_description,
-                    memory_type=MemoryType.USER_CONTEXT,
-                    user_id=str(context.user_id),
+                user_context_memories = self.memory_interface.retrieve_user_context_memory(
+                    user_id=context.user_id,
+                    query=context.task_description,
                     top_k=top_k,
                     min_similarity=memory_min_similarity,
-                )
-                user_context_memories = self.memory_interface.memory_system.retrieve_memories(
-                    user_context_query
                 )
                 logger.debug(f"Retrieved {len(user_context_memories)} user-context memories")
             except Exception as mem_error:

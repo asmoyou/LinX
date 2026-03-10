@@ -39,6 +39,7 @@ redis = "^5.0.1"
 
 # Authentication and Security
 python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+PyJWT = "^2.8.0"
 passlib = {extras = ["bcrypt"], version = "^1.7.4"}
 bcrypt = "^4.1.2"
 cryptography = "^42.0.0"
@@ -200,7 +201,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q --strict-markers --cov=. --cov-report=term-missing --cov-report=html"
+addopts = "-ra -q --strict-markers --import-mode=importlib --cov=. --cov-report=term-missing --cov-report=html"
 testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]

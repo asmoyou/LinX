@@ -22,8 +22,7 @@ from sqlalchemy import (
     Text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 from sqlalchemy.types import UserDefinedType
 
@@ -452,6 +451,279 @@ class MemoryACL(Base):
         return (
             f"<MemoryACL(acl_id={self.acl_id}, memory_id={self.memory_id}, "
             f"effect={self.effect}, principal={self.principal_type}:{self.principal_id})>"
+        )
+
+
+class MemorySession(Base):
+    """Session-level ledger for conversation memory extraction and replay."""
+
+    __tablename__ = "memory_sessions"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    session_id = Column(String(255), nullable=False, unique=True, index=True)
+    agent_id = Column(String(255), nullable=False, index=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="completed", index=True)
+    end_reason = Column(String(64), nullable=True, index=True)
+    started_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    ended_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    session_metadata = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_memory_sessions_agent_status", "agent_id", "status"),
+        Index("idx_memory_sessions_user_started", "user_id", "started_at"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<MemorySession(id={self.id}, session_id={self.session_id}, "
+            f"agent_id={self.agent_id}, user_id={self.user_id})>"
+        )
+
+
+class MemorySessionEvent(Base):
+    """Structured event ledger for one conversation session."""
+
+    __tablename__ = "memory_session_events"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    memory_session_id = Column(
+        BigInteger,
+        ForeignKey("memory_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_index = Column(Integer, nullable=False)
+    event_kind = Column(String(32), nullable=False, index=True)
+    role = Column(String(32), nullable=True, index=True)
+    content = Column(Text, nullable=False)
+    event_timestamp = Column(DateTime(timezone=True), nullable=True, index=True)
+    payload = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_memory_session_events_session_order", "memory_session_id", "event_index"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<MemorySessionEvent(id={self.id}, memory_session_id={self.memory_session_id}, "
+            f"kind={self.event_kind}, index={self.event_index})>"
+        )
+
+
+class MemoryObservation(Base):
+    """Extracted observations derived from a session ledger."""
+
+    __tablename__ = "memory_observations"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    memory_session_id = Column(
+        BigInteger,
+        ForeignKey("memory_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    observation_key = Column(String(255), nullable=False, index=True)
+    observation_type = Column(String(64), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    summary = Column(Text, nullable=True)
+    details = Column(Text, nullable=True)
+    source_event_indexes = Column(JSONB, nullable=True)
+    confidence = Column(Float, nullable=False, default=0.7)
+    importance = Column(Float, nullable=False, default=0.5)
+    observation_metadata = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_memory_observations_session_type",
+            "memory_session_id",
+            "observation_type",
+        ),
+        Index(
+            "idx_memory_observations_type_key",
+            "observation_type",
+            "observation_key",
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<MemoryObservation(id={self.id}, memory_session_id={self.memory_session_id}, "
+            f"type={self.observation_type}, key={self.observation_key})>"
+        )
+
+
+class MemoryMaterialization(Base):
+    """Stable projection built from observations for retrieval and skill reuse."""
+
+    __tablename__ = "memory_materializations"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    owner_type = Column(String(32), nullable=False, index=True)
+    owner_id = Column(String(255), nullable=False, index=True)
+    materialization_type = Column(String(64), nullable=False, index=True)
+    materialization_key = Column(String(255), nullable=False)
+    title = Column(String(255), nullable=False)
+    summary = Column(Text, nullable=True)
+    details = Column(Text, nullable=True)
+    status = Column(String(32), nullable=False, default="active", index=True)
+    materialized_data = Column(JSONB, nullable=True)
+    source_session_id = Column(
+        BigInteger,
+        ForeignKey("memory_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_observation_id = Column(
+        BigInteger,
+        ForeignKey("memory_observations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_memory_materializations_owner_type",
+            "owner_type",
+            "owner_id",
+            "materialization_type",
+        ),
+        Index(
+            "ux_memory_materializations_owner_key",
+            "owner_type",
+            "owner_id",
+            "materialization_type",
+            "materialization_key",
+            unique=True,
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<MemoryMaterialization(id={self.id}, owner={self.owner_type}:{self.owner_id}, "
+            f"type={self.materialization_type}, key={self.materialization_key})>"
+        )
+
+
+class MemoryEntry(Base):
+    """Atomic memory entry derived from one or more observations."""
+
+    __tablename__ = "memory_entries"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    owner_type = Column(String(32), nullable=False, index=True)
+    owner_id = Column(String(255), nullable=False, index=True)
+    entry_type = Column(String(64), nullable=False, index=True)
+    entry_key = Column(String(255), nullable=False)
+    canonical_text = Column(Text, nullable=False)
+    summary = Column(Text, nullable=True)
+    details = Column(Text, nullable=True)
+    confidence = Column(Float, nullable=False, default=0.7)
+    importance = Column(Float, nullable=False, default=0.5)
+    status = Column(String(32), nullable=False, default="active", index=True)
+    entry_data = Column(JSONB, nullable=True)
+    source_session_id = Column(
+        BigInteger,
+        ForeignKey("memory_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_observation_id = Column(
+        BigInteger,
+        ForeignKey("memory_observations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_memory_entries_owner_type",
+            "owner_type",
+            "owner_id",
+            "entry_type",
+        ),
+        Index(
+            "ux_memory_entries_owner_key",
+            "owner_type",
+            "owner_id",
+            "entry_type",
+            "entry_key",
+            unique=True,
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<MemoryEntry(id={self.id}, owner={self.owner_type}:{self.owner_id}, "
+            f"type={self.entry_type}, key={self.entry_key})>"
+        )
+
+
+class MemoryLink(Base):
+    """Cross-layer lineage links between observations, entries, and materializations."""
+
+    __tablename__ = "memory_links"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    source_session_id = Column(
+        BigInteger,
+        ForeignKey("memory_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_kind = Column(String(32), nullable=False, index=True)
+    source_id = Column(BigInteger, nullable=False, index=True)
+    target_kind = Column(String(32), nullable=False, index=True)
+    target_id = Column(BigInteger, nullable=False, index=True)
+    link_type = Column(String(64), nullable=False, index=True)
+    link_data = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "idx_memory_links_source",
+            "source_kind",
+            "source_id",
+            "link_type",
+        ),
+        Index(
+            "idx_memory_links_target",
+            "target_kind",
+            "target_id",
+            "link_type",
+        ),
+        Index(
+            "ux_memory_links_identity",
+            "source_kind",
+            "source_id",
+            "target_kind",
+            "target_id",
+            "link_type",
+            unique=True,
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<MemoryLink(id={self.id}, source={self.source_kind}:{self.source_id}, "
+            f"target={self.target_kind}:{self.target_id}, type={self.link_type})>"
         )
 
 

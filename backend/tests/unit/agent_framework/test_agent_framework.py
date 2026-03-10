@@ -906,18 +906,19 @@ class TestBaseAgent:
         )
         agent.tools_by_name = {"bash": bash_tool}
 
-        results = asyncio.run(
-            agent._execute_tools_with_recovery(
-                [
-                    ToolCall(
-                        tool_name="bash",
-                        arguments={"command": "python3 -m http.server 8080"},
-                        raw_json="{}",
-                    )
-                ],
-                state,
+        with asyncio.Runner() as runner:
+            results = runner.run(
+                agent._execute_tools_with_recovery(
+                    [
+                        ToolCall(
+                            tool_name="bash",
+                            arguments={"command": "python3 -m http.server 8080"},
+                            raw_json="{}",
+                        )
+                    ],
+                    state,
+                )
             )
-        )
 
         assert results[0].status == "success"
         assert "timeout=3" in str(results[0].result)
@@ -955,18 +956,19 @@ class TestBaseAgent:
         )
         agent.tools_by_name = {"bash": bash_tool}
 
-        results = asyncio.run(
-            agent._execute_tools_with_recovery(
-                [
-                    ToolCall(
-                        tool_name="bash",
-                        arguments={"__arg1": "python3 -m http.server 8080"},
-                        raw_json="{}",
-                    )
-                ],
-                state,
+        with asyncio.Runner() as runner:
+            results = runner.run(
+                agent._execute_tools_with_recovery(
+                    [
+                        ToolCall(
+                            tool_name="bash",
+                            arguments={"__arg1": "python3 -m http.server 8080"},
+                            raw_json="{}",
+                        )
+                    ],
+                    state,
+                )
             )
-        )
 
         assert results[0].status == "success"
         assert "command=python3 -m http.server 8080" in str(results[0].result)
@@ -1888,8 +1890,15 @@ class TestAgentTools:
 class TestAgentMemoryInterface:
     """Test AgentMemoryInterface retrieval alignment behavior."""
 
+    @patch("memory_system.retrieval_gateway.get_memory_entry_retrieval_service")
+    @patch("memory_system.retrieval_gateway.get_materialization_retrieval_service")
     @patch("agent_framework.agent_memory_interface.get_memory_repository")
-    def test_retrieve_agent_memory_includes_user_scope(self, mock_get_repository):
+    def test_retrieve_agent_memory_includes_user_scope(
+        self,
+        mock_get_repository,
+        mock_get_materialization_service,
+        mock_get_entry_service,
+    ):
         """Agent memory retrieval should always include user scope in query."""
         agent_id = uuid4()
         user_id = uuid4()
@@ -1902,6 +1911,8 @@ class TestAgentMemoryInterface:
         mock_repo.get_by_milvus_ids.return_value = {}
         mock_repo.search_keywords.return_value = []
         mock_get_repository.return_value = mock_repo
+        mock_get_materialization_service.return_value.retrieve_agent_experience.return_value = []
+        mock_get_entry_service.return_value.retrieve_agent_skill_candidates.return_value = []
 
         interface = AgentMemoryInterface(memory_system=mock_memory_system)
         interface.retrieve_agent_memory(
@@ -1917,6 +1928,55 @@ class TestAgentMemoryInterface:
         assert called_query.min_similarity == 0.66
 
         mock_repo.search_keywords.assert_called_once()
+
+    @patch("memory_system.retrieval_gateway.get_memory_entry_retrieval_service")
+    @patch("memory_system.retrieval_gateway.get_materialization_retrieval_service")
+    @patch("agent_framework.agent_memory_interface.get_memory_repository")
+    def test_retrieve_agent_memory_merges_agent_experience_materializations(
+        self,
+        mock_get_repository,
+        mock_get_materialization_service,
+        mock_get_entry_service,
+    ):
+        agent_id = uuid4()
+        user_id = uuid4()
+
+        mock_memory_system = Mock()
+        mock_memory_system.retrieve_memories.return_value = []
+        mock_memory_system._default_similarity_threshold = 0.3
+
+        mock_repo = Mock()
+        mock_repo.get_by_milvus_ids.return_value = {}
+        mock_repo.search_keywords.return_value = []
+        mock_get_repository.return_value = mock_repo
+
+        materialization_service = Mock()
+        materialization_service.retrieve_agent_experience.return_value = [
+            MemoryItem(
+                content="agent.experience.goal=Stable PDF delivery",
+                memory_type=MemoryType.AGENT,
+                agent_id=str(agent_id),
+                similarity_score=0.81,
+                metadata={
+                    "materialization_type": "agent_experience",
+                    "materialization_key": "pdf_delivery",
+                },
+            )
+        ]
+        mock_get_materialization_service.return_value = materialization_service
+        mock_get_entry_service.return_value.retrieve_agent_skill_candidates.return_value = []
+
+        interface = AgentMemoryInterface(memory_system=mock_memory_system)
+        results = interface.retrieve_agent_memory(
+            agent_id=agent_id,
+            user_id=user_id,
+            query="How should I deliver a converted PDF reliably?",
+            top_k=3,
+        )
+
+        assert len(results) == 1
+        assert results[0].metadata["materialization_type"] == "agent_experience"
+        materialization_service.retrieve_agent_experience.assert_called_once()
 
     @patch("agent_framework.agent_memory_interface.get_memory_repository")
     def test_retrieve_company_memory_drops_unmapped_legacy_vectors(self, mock_get_repository):
@@ -2003,7 +2063,7 @@ class TestAgentMemoryInterface:
         assert mock_repo.search_keywords.call_args.kwargs["strict_semantics"] is True
 
     @patch("agent_framework.agent_memory_interface.get_memory_repository")
-    @patch("agent_framework.agent_memory_interface.get_config")
+    @patch("memory_system.retrieval_gateway.get_config")
     def test_retrieve_company_memory_keyword_fallback_legacy_mode_when_flag_disabled(
         self, mock_get_config, mock_get_repository
     ):
@@ -2100,6 +2160,54 @@ class TestAgentMemoryInterface:
         assert "plain" not in results[0].metadata
         mock_repo.search_keywords.assert_not_called()
 
+    @patch("memory_system.retrieval_gateway.get_memory_entry_retrieval_service")
+    @patch("memory_system.retrieval_gateway.get_materialization_retrieval_service")
+    @patch("agent_framework.agent_memory_interface.get_memory_repository")
+    def test_retrieve_user_context_memory_merges_materialized_profile(
+        self,
+        mock_get_repository,
+        mock_get_materialization_service,
+        mock_get_entry_service,
+    ):
+        user_id = uuid4()
+
+        mock_memory_system = Mock()
+        mock_memory_system.retrieve_memories.return_value = []
+        mock_memory_system._default_similarity_threshold = 0.3
+
+        mock_repo = Mock()
+        mock_repo.get_by_milvus_ids.return_value = {}
+        mock_repo.search_keywords.return_value = []
+        mock_get_repository.return_value = mock_repo
+
+        materialization_service = Mock()
+        materialization_service.retrieve_user_profile.return_value = [
+            MemoryItem(
+                content="user.preference.response_style=concise",
+                memory_type=MemoryType.USER_CONTEXT,
+                user_id=str(user_id),
+                similarity_score=0.74,
+                metadata={
+                    "materialization_type": "user_profile",
+                    "materialization_key": "response_style",
+                    "signal_type": "user_preference",
+                },
+            )
+        ]
+        mock_get_materialization_service.return_value = materialization_service
+        mock_get_entry_service.return_value.retrieve_user_facts.return_value = []
+
+        interface = AgentMemoryInterface(memory_system=mock_memory_system)
+        results = interface.retrieve_user_context_memory(
+            user_id=user_id,
+            query="Answer concisely",
+            top_k=3,
+        )
+
+        assert len(results) == 1
+        assert results[0].content == "user.preference.response_style=concise"
+        materialization_service.retrieve_user_profile.assert_called_once()
+
     def test_store_user_context_preserves_custom_source_metadata(self):
         """store_user_context should not overwrite explicit metadata source."""
         mock_memory_system = Mock()
@@ -2151,7 +2259,7 @@ class TestAgentExecutor:
         mock_memory.return_value.retrieve_company_memory.return_value = [
             Mock(content="Test task company note", similarity_score=0.88)
         ]
-        mock_memory.return_value.memory_system.retrieve_memories.return_value = [
+        mock_memory.return_value.retrieve_user_context_memory.return_value = [
             Mock(content="Test task user preference", similarity_score=0.93)
         ]
         mock_memory.return_value.store_agent_memory.return_value = "memory_id"
@@ -2192,6 +2300,7 @@ class TestAgentExecutor:
         """Executor should pass optional conversation history through to BaseAgent."""
         mock_memory.return_value.retrieve_agent_memory.return_value = []
         mock_memory.return_value.retrieve_company_memory.return_value = []
+        mock_memory.return_value.retrieve_user_context_memory.return_value = []
         mock_memory.return_value.memory_system.retrieve_memories.return_value = []
         mock_memory.return_value.store_agent_memory.return_value = "memory_id"
 
@@ -2231,12 +2340,21 @@ class TestAgentExecutor:
     ):
         """Executor should drop off-topic memories before prompt injection."""
         mock_memory.return_value.retrieve_agent_memory.return_value = [
-            Mock(content="品牌营销活动复盘", similarity_score=0.41),
+            Mock(
+                content="品牌营销活动复盘",
+                similarity_score=0.41,
+                metadata={"_semantic_score": 0.29},
+            ),
             Mock(content="火药相关安全风险讨论", similarity_score=0.86),
         ]
         mock_memory.return_value.retrieve_company_memory.return_value = [
-            Mock(content="季度营销方案执行细则", similarity_score=0.38)
+            Mock(
+                content="季度营销方案执行细则",
+                similarity_score=0.38,
+                metadata={"_semantic_score": 0.21},
+            )
         ]
+        mock_memory.return_value.retrieve_user_context_memory.return_value = []
         mock_memory.return_value.memory_system.retrieve_memories.return_value = []
 
         mock_agent = Mock()

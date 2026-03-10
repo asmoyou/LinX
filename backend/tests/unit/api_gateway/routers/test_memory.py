@@ -17,11 +17,11 @@ References:
 - Design Section 6: Memory System Design
 """
 
-import pytest
 from datetime import datetime, timezone
-from uuid import UUID, uuid4
 from unittest.mock import MagicMock, mock_open, patch
+from uuid import UUID, uuid4
 
+import pytest
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 
@@ -158,16 +158,18 @@ class TestCreateMemory:
 
     def test_create_memory_validation_empty_content(self):
         """Ensure empty content is rejected by Pydantic."""
-        from api_gateway.routers.memory import MemoryCreate
         from pydantic import ValidationError
+
+        from api_gateway.routers.memory import MemoryCreate
 
         with pytest.raises(ValidationError):
             MemoryCreate(type="company", content="")
 
     def test_create_memory_validation_invalid_type(self):
         """Ensure invalid type is rejected."""
-        from api_gateway.routers.memory import MemoryCreate
         from pydantic import ValidationError
+
+        from api_gateway.routers.memory import MemoryCreate
 
         with pytest.raises(ValidationError):
             MemoryCreate(type="invalid_type", content="Some content")
@@ -192,8 +194,9 @@ class TestSearchMemories:
 
     def test_search_validation_empty_query(self):
         """Ensure empty query is rejected."""
-        from api_gateway.routers.memory import MemorySearchRequest
         from pydantic import ValidationError
+
+        from api_gateway.routers.memory import MemorySearchRequest
 
         with pytest.raises(ValidationError):
             MemorySearchRequest(query="")
@@ -209,8 +212,9 @@ class TestSearchMemories:
 
     def test_search_validation_limit_bounds(self):
         """Test limit validation."""
-        from api_gateway.routers.memory import MemorySearchRequest
         from pydantic import ValidationError
+
+        from api_gateway.routers.memory import MemorySearchRequest
 
         with pytest.raises(ValidationError):
             MemorySearchRequest(query="test", limit=0)
@@ -220,8 +224,9 @@ class TestSearchMemories:
 
     def test_search_validation_min_score_bounds(self):
         """Test min_score validation."""
-        from api_gateway.routers.memory import MemorySearchRequest
         from pydantic import ValidationError
+
+        from api_gateway.routers.memory import MemorySearchRequest
 
         req = MemorySearchRequest(query="test", min_score=0.35)
         assert req.min_score == 0.35
@@ -462,6 +467,198 @@ class TestSearchMemories:
         assert results[0]["metadata"]["keyword_mode"] == "legacy"
         call_kwargs = mock_repo.search_keywords.call_args.kwargs
         assert call_kwargs.get("strict_semantics") is False
+
+    def test_retrieve_memories_sync_routes_user_context_search_through_scope_gateway(self):
+        from api_gateway.routers import memory as memory_router
+
+        query = SearchQuery(
+            query_text="answer concisely",
+            memory_type=MemoryType.USER_CONTEXT,
+            user_id="test-user-id",
+            top_k=5,
+            min_similarity=0.4,
+        )
+        memory_item = MemoryItem(
+            id=41,
+            content="user.preference.response_style=concise",
+            memory_type=MemoryType.USER_CONTEXT,
+            user_id="test-user-id",
+            timestamp=datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc),
+            metadata={"entry_type": "user_fact", "entry_key": "response_style"},
+            similarity_score=0.88,
+        )
+        mock_gateway = MagicMock()
+        mock_gateway.is_strict_keyword_fallback_enabled.return_value = True
+        mock_gateway.retrieve_user_context_scope.return_value = [memory_item]
+
+        with patch("memory_system.memory_system.get_memory_system", return_value=MagicMock()):
+            with patch(
+                "api_gateway.routers.memory._get_memory_repository",
+                return_value=MagicMock(),
+            ):
+                with patch(
+                    "api_gateway.routers.memory.get_memory_retrieval_gateway",
+                    return_value=mock_gateway,
+                ):
+                    with patch(
+                        "api_gateway.routers.memory._items_to_responses",
+                        side_effect=lambda items: [
+                            memory_router._memory_item_to_response(item) for item in items
+                        ],
+                    ):
+                        results = memory_router._retrieve_memories_sync(query)
+
+        assert len(results) == 1
+        assert results[0]["content"] == "user.preference.response_style=concise"
+        assert results[0]["metadata"]["entry_type"] == "user_fact"
+        mock_gateway.retrieve_user_context_scope.assert_called_once()
+        assert not mock_gateway.retrieve_memories.called
+
+    def test_retrieve_memories_sync_routes_agent_search_through_owned_agent_scope(self):
+        from api_gateway.routers import memory as memory_router
+
+        query = SearchQuery(
+            query_text="reliable pdf delivery",
+            memory_type=MemoryType.AGENT,
+            user_id="test-user-id",
+            top_k=5,
+            min_similarity=0.4,
+        )
+        memory_item = MemoryItem(
+            id=42,
+            content="agent.experience.goal=Stable PDF delivery path",
+            memory_type=MemoryType.AGENT,
+            agent_id="agent-1",
+            timestamp=datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc),
+            metadata={"entry_type": "agent_skill_candidate", "entry_key": "pdf_delivery"},
+            similarity_score=0.85,
+        )
+        mock_gateway = MagicMock()
+        mock_gateway.is_strict_keyword_fallback_enabled.return_value = True
+        mock_gateway.retrieve_owned_agent_scope.return_value = [memory_item]
+
+        with patch("memory_system.memory_system.get_memory_system", return_value=MagicMock()):
+            with patch(
+                "api_gateway.routers.memory._get_memory_repository",
+                return_value=MagicMock(),
+            ):
+                with patch(
+                    "api_gateway.routers.memory._list_owned_agent_ids_sync",
+                    return_value=["agent-1", "agent-2"],
+                ):
+                    with patch(
+                        "api_gateway.routers.memory.get_memory_retrieval_gateway",
+                        return_value=mock_gateway,
+                    ):
+                        with patch(
+                            "api_gateway.routers.memory._items_to_responses",
+                            side_effect=lambda items: [
+                                memory_router._memory_item_to_response(item) for item in items
+                            ],
+                        ):
+                            results = memory_router._retrieve_memories_sync(query)
+
+        assert len(results) == 1
+        assert results[0]["content"] == "agent.experience.goal=Stable PDF delivery path"
+        assert results[0]["metadata"]["entry_type"] == "agent_skill_candidate"
+        mock_gateway.retrieve_owned_agent_scope.assert_called_once()
+        call_kwargs = mock_gateway.retrieve_owned_agent_scope.call_args.kwargs
+        assert call_kwargs["owner_ids"] == ["agent-1", "agent-2"]
+        assert call_kwargs["user_id"] == "test-user-id"
+        assert not mock_gateway.retrieve_memories.called
+
+    def test_list_memory_materializations_sync_returns_user_profile_results(self):
+        from api_gateway.routers import memory as memory_router
+
+        materialized_items = [
+            MemoryItem(
+                id=301,
+                content="user.preference.response_style=concise",
+                memory_type=MemoryType.USER_CONTEXT,
+                user_id="test-user-id",
+                timestamp=datetime(2026, 3, 8, 12, 0, 0, tzinfo=timezone.utc),
+                metadata={
+                    "materialization_type": "user_profile",
+                    "materialization_key": "response_style",
+                    "signal_type": "user_preference",
+                },
+                similarity_score=0.84,
+            )
+        ]
+        mock_service = MagicMock()
+        mock_service.retrieve_user_profile.return_value = materialized_items
+
+        with patch(
+            "memory_system.retrieval_gateway.get_materialization_retrieval_service",
+            return_value=mock_service,
+        ):
+            with patch(
+                "api_gateway.routers.memory._items_to_responses",
+                side_effect=lambda items: [
+                    memory_router._memory_item_to_response(item) for item in items
+                ],
+            ):
+                results = memory_router._list_memory_materializations_sync(
+                    materialization_type="user_profile",
+                    owner_id="test-user-id",
+                    query_text="answer concisely",
+                    limit=5,
+                )
+
+        assert len(results) == 1
+        assert results[0]["type"] == "user_context"
+        assert results[0]["metadata"]["materialization_type"] == "user_profile"
+        assert results[0]["metadata"]["read_only"] is True
+        mock_service.retrieve_user_profile.assert_called_once()
+
+    def test_list_memory_materializations_sync_respects_min_score(self):
+        from api_gateway.routers import memory as memory_router
+
+        materialized_items = [
+            MemoryItem(
+                id=401,
+                content="agent.experience.goal=Stable PDF delivery path",
+                memory_type=MemoryType.AGENT,
+                agent_id="agent-123",
+                timestamp=datetime(2026, 3, 8, 12, 0, 0, tzinfo=timezone.utc),
+                metadata={"materialization_type": "agent_experience"},
+                similarity_score=0.91,
+            ),
+            MemoryItem(
+                id=402,
+                content="agent.experience.goal=Calendar booking path",
+                memory_type=MemoryType.AGENT,
+                agent_id="agent-123",
+                timestamp=datetime(2026, 3, 8, 12, 1, 0, tzinfo=timezone.utc),
+                metadata={"materialization_type": "agent_experience"},
+                similarity_score=0.42,
+            ),
+        ]
+        mock_service = MagicMock()
+        mock_service.retrieve_agent_experience.return_value = materialized_items
+
+        with patch(
+            "memory_system.retrieval_gateway.get_materialization_retrieval_service",
+            return_value=mock_service,
+        ):
+            with patch(
+                "api_gateway.routers.memory._items_to_responses",
+                side_effect=lambda items: [
+                    memory_router._memory_item_to_response(item) for item in items
+                ],
+            ):
+                results = memory_router._list_memory_materializations_sync(
+                    materialization_type="agent_experience",
+                    owner_id="agent-123",
+                    query_text="reliable pdf delivery",
+                    limit=5,
+                    min_score=0.8,
+                )
+
+        assert len(results) == 1
+        assert results[0]["content"] == "agent.experience.goal=Stable PDF delivery path"
+        assert results[0]["metadata"]["read_only"] is True
+        mock_service.retrieve_agent_experience.assert_called_once()
 
 
 class TestShareMemory:
@@ -774,6 +971,7 @@ class TestRouteRegistration:
             "/api/v1/memories/agent/{agent_id}",
             "/api/v1/memories/diagnostics/agent/{agent_id}",
             "/api/v1/memories/admin/backfill-agent-user-ids",
+            "/api/v1/memories/admin/maintain-materializations",
             "/api/v1/memories/{memory_id}",
             "/api/v1/memories/{memory_id}/share",
             "/api/v1/memories/{memory_id}/publish",
@@ -795,6 +993,7 @@ class TestRouteRegistration:
         assert "GET" in route_map.get("/api/v1/memories/type/{memory_type}/paged", set())
         assert "GET" in route_map.get("/api/v1/memories/diagnostics/agent/{agent_id}", set())
         assert "POST" in route_map.get("/api/v1/memories/admin/backfill-agent-user-ids", set())
+        assert "POST" in route_map.get("/api/v1/memories/admin/maintain-materializations", set())
         assert "GET" in route_map.get("/api/v1/memories/{memory_id}", set())
         assert "PUT" in route_map.get("/api/v1/memories/{memory_id}", set())
         assert "DELETE" in route_map.get("/api/v1/memories/{memory_id}", set())
@@ -1505,6 +1704,7 @@ class TestAgentMemoryCandidateReview:
         mock_repo.get.return_value = record
         mock_repo.get_by_milvus_id.return_value = None
         mock_repo.update_record.return_value = updated
+        mock_maintenance_service = MagicMock()
 
         mock_session = MagicMock()
         mock_session_ctx = MagicMock()
@@ -1518,16 +1718,114 @@ class TestAgentMemoryCandidateReview:
                     with patch(
                         "api_gateway.routers.memory._lookup_user_name", return_value="User X"
                     ):
-                        result = _review_agent_candidate_sync(
-                            memory_id=77,
-                            request=request,
-                            reviewer_user_id="reviewer-1",
-                        )
+                        with patch(
+                            "memory_system.materialization_maintenance_service.get_materialization_maintenance_service",
+                            return_value=mock_maintenance_service,
+                        ):
+                            result = _review_agent_candidate_sync(
+                                memory_id=77,
+                                request=request,
+                                reviewer_user_id="reviewer-1",
+                            )
 
         assert result is not None
         assert result["id"] == "77"
         assert result["metadata"]["review_status"] == "published"
         assert result["metadata"]["reviewed_by"] == "reviewer-1"
+        mock_maintenance_service.sync_agent_candidate_materialization.assert_called_once_with(
+            record=updated,
+            review_status="published",
+        )
+
+
+class TestMaterializationMaintenanceRouting:
+    """Test materialization maintenance routing helpers and endpoint."""
+
+    def test_list_memories_without_embedding_sync_uses_gateway_for_agent_wildcard(self):
+        from api_gateway.routers.memory import _list_memories_without_embedding_sync
+
+        query = SearchQuery(
+            query_text="*",
+            memory_type=MemoryType.AGENT,
+            user_id="user-123",
+            top_k=None,
+        )
+        mock_gateway = MagicMock()
+        mock_gateway.list_scope_memories.return_value = []
+
+        with patch(
+            "api_gateway.routers.memory.get_memory_retrieval_gateway",
+            return_value=mock_gateway,
+        ):
+            with patch(
+                "api_gateway.routers.memory._get_memory_repository",
+                return_value=MagicMock(),
+            ):
+                with patch(
+                    "api_gateway.routers.memory._list_owned_agent_ids_sync",
+                    return_value=["agent-1", "agent-2"],
+                ):
+                    with patch("api_gateway.routers.memory._items_to_responses", return_value=[]):
+                        results = _list_memories_without_embedding_sync(query)
+
+        assert results == []
+        mock_gateway.list_scope_memories.assert_called_once()
+        call_kwargs = mock_gateway.list_scope_memories.call_args.kwargs
+        assert call_kwargs["agent_materialization_owner_ids"] == ["agent-1", "agent-2"]
+
+    @pytest.mark.asyncio
+    async def test_maintain_materializations_forbidden_for_non_admin(self, mock_current_user):
+        from api_gateway.routers.memory import maintain_materializations
+
+        with pytest.raises(HTTPException) as exc_info:
+            await maintain_materializations(current_user=mock_current_user)
+
+        assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+
+    @pytest.mark.asyncio
+    async def test_maintain_materializations_invokes_service(self, mock_admin_user):
+        from api_gateway.routers.memory import maintain_materializations
+
+        mock_service = MagicMock()
+        mock_service.run_maintenance.return_value = object()
+        mock_service.to_dict.return_value = {
+            "backfill": {
+                "dry_run": False,
+                "scanned_user_context_rows": 4,
+                "user_profile_upserts": 2,
+            },
+            "consolidation": {
+                "dry_run": False,
+                "scanned_agent_experiences": 3,
+                "agent_duplicate_supersedes": 1,
+            },
+        }
+
+        with patch(
+            "memory_system.materialization_maintenance_service.get_materialization_maintenance_service",
+            return_value=mock_service,
+        ):
+            response = await maintain_materializations(
+                dry_run=False,
+                user_id="user-123",
+                agent_id="agent-123",
+                limit=25,
+                include_backfill=True,
+                include_consolidation=True,
+                current_user=mock_admin_user,
+            )
+
+        assert response.backfill.user_profile_upserts == 2
+        assert response.consolidation.agent_duplicate_supersedes == 1
+        assert response.requested_by["role"] == Role.ADMIN.value
+        mock_service.run_maintenance.assert_called_once_with(
+            dry_run=False,
+            user_id="user-123",
+            agent_id="agent-123",
+            limit=25,
+            include_backfill=True,
+            include_consolidation=True,
+        )
 
 
 class TestSharePublishWritePolicy:

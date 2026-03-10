@@ -215,6 +215,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.warning(f"Failed to initialize Milvus orphan cleanup manager: {e}")
 
+    # Start materialization maintenance manager
+    try:
+        from memory_system.materialization_maintenance_manager import (
+            initialize_materialization_maintenance_manager,
+        )
+
+        manager = await initialize_materialization_maintenance_manager()
+        if manager:
+            logger.info("Materialization maintenance manager initialized")
+        else:
+            logger.info("Materialization maintenance manager is disabled by config")
+    except Exception as e:
+        logger.warning(f"Failed to initialize materialization maintenance manager: {e}")
+
     # Start document processing worker
     try:
         from knowledge_base.document_processor_worker import start_worker
@@ -276,6 +290,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.info("Milvus orphan cleanup manager shutdown complete")
     except Exception as e:
         logger.error(f"Failed to shutdown Milvus orphan cleanup manager: {e}")
+
+    # Stop materialization maintenance manager
+    try:
+        from memory_system.materialization_maintenance_manager import (
+            shutdown_materialization_maintenance_manager,
+        )
+
+        await shutdown_materialization_maintenance_manager()
+        logger.info("Materialization maintenance manager shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown materialization maintenance manager: {e}")
 
     # Final Docker sandbox cleanup (catch anything SessionManager missed)
     try:

@@ -540,6 +540,17 @@ memory:
     - company_memories
     advisory_lock_id: 73012019
     use_advisory_lock: true
+  materialization_maintenance:
+    enabled: true
+    run_on_startup: true
+    startup_delay_seconds: 180
+    interval_seconds: 21600
+    dry_run: false
+    limit: 5000
+    include_backfill: true
+    include_consolidation: true
+    advisory_lock_id: 73012020
+    use_advisory_lock: true
   collection_retry_attempts: 3
   collection_retry_delay_seconds: 0.35
   search_timeout_seconds: 2

@@ -1,5 +1,6 @@
 """Integration tests for AgentExecutor memory context wiring."""
 
+from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
 
@@ -20,12 +21,14 @@ def _build_agent(*, access_level: str = "team", allowed_memory=None, allowed_kno
 def test_executor_injects_memory_context_into_agent_execution():
     """AgentExecutor should pass retrieved memory content into execution context."""
     memory_interface = Mock()
-    memory_interface.retrieve_agent_memory.return_value = [Mock(content="onboarding agent memory 1")]
-    memory_interface.retrieve_company_memory.return_value = [
-        Mock(content="onboarding company memory 1")
+    memory_interface.retrieve_agent_memory.return_value = [
+        SimpleNamespace(content="onboarding agent memory 1", similarity_score=0.91)
     ]
-    memory_interface.memory_system.retrieve_memories.return_value = [
-        Mock(content="onboarding user context 1")
+    memory_interface.retrieve_company_memory.return_value = [
+        SimpleNamespace(content="onboarding company memory 1", similarity_score=0.88)
+    ]
+    memory_interface.retrieve_user_context_memory.return_value = [
+        SimpleNamespace(content="onboarding user context 1", similarity_score=0.93)
     ]
     memory_interface.store_agent_memory.return_value = "memory-id"
 
@@ -52,7 +55,7 @@ def test_executor_continues_when_memory_lookup_fails():
     memory_interface = Mock()
     memory_interface.retrieve_agent_memory.side_effect = RuntimeError("milvus unavailable")
     memory_interface.retrieve_company_memory.return_value = []
-    memory_interface.memory_system.retrieve_memories.return_value = []
+    memory_interface.retrieve_user_context_memory.return_value = []
     memory_interface.store_agent_memory.return_value = "memory-id"
 
     agent = _build_agent(allowed_memory=["agent", "company", "user_context"])
@@ -73,10 +76,14 @@ def test_executor_continues_when_memory_lookup_fails():
 def test_executor_exposes_memory_debug_details():
     """Context builder should expose memory retrieval debug information."""
     memory_interface = Mock()
-    memory_interface.retrieve_agent_memory.return_value = [Mock(content="debug agent memory 1")]
-    memory_interface.retrieve_company_memory.return_value = [Mock(content="debug company memory 1")]
-    memory_interface.memory_system.retrieve_memories.return_value = [
-        Mock(content="debug user context 1")
+    memory_interface.retrieve_agent_memory.return_value = [
+        SimpleNamespace(content="debug agent memory 1", similarity_score=0.91)
+    ]
+    memory_interface.retrieve_company_memory.return_value = [
+        SimpleNamespace(content="debug company memory 1", similarity_score=0.89)
+    ]
+    memory_interface.retrieve_user_context_memory.return_value = [
+        SimpleNamespace(content="debug user context 1", similarity_score=0.92)
     ]
     memory_interface.store_agent_memory.return_value = "memory-id"
 
@@ -102,7 +109,7 @@ def test_executor_does_not_force_zero_threshold_fallback_for_company_memory():
     memory_interface = Mock()
     memory_interface.retrieve_agent_memory.return_value = []
     memory_interface.retrieve_company_memory.return_value = []
-    memory_interface.memory_system.retrieve_memories.return_value = []
+    memory_interface.retrieve_user_context_memory.return_value = []
     memory_interface.store_agent_memory.return_value = "memory-id"
 
     agent = _build_agent(allowed_memory=["company"])
@@ -126,13 +133,16 @@ def test_executor_injects_task_context_memories_when_task_scope_enabled():
     memory_interface = Mock()
     memory_interface.retrieve_agent_memory.return_value = []
     memory_interface.retrieve_company_memory.return_value = []
+    memory_interface.retrieve_user_context_memory.return_value = [
+        SimpleNamespace(content="continue previous user context 1", similarity_score=0.92)
+    ]
 
     def _retrieve_memories(query):
         memory_type = str(getattr(query.memory_type, "value", query.memory_type))
-        if memory_type == "user_context":
-            return [Mock(content="continue previous user context 1")]
         if memory_type == "task_context":
-            return [Mock(content="continue previous task context 1")]
+            return [
+                SimpleNamespace(content="continue previous task context 1", similarity_score=0.9)
+            ]
         return []
 
     memory_interface.memory_system.retrieve_memories.side_effect = _retrieve_memories
@@ -160,6 +170,7 @@ def test_executor_does_not_store_task_completion_as_agent_memory():
     memory_interface = Mock()
     memory_interface.retrieve_agent_memory.return_value = []
     memory_interface.retrieve_company_memory.return_value = []
+    memory_interface.retrieve_user_context_memory.return_value = []
     memory_interface.memory_system.retrieve_memories.return_value = []
     memory_interface.store_agent_memory.return_value = "memory-id"
 

@@ -20,6 +20,7 @@ def _build_memory_interface():
     memory_interface = Mock()
     memory_interface.retrieve_agent_memory.return_value = []
     memory_interface.retrieve_company_memory.return_value = []
+    memory_interface.retrieve_user_context_memory.return_value = []
     memory_interface.memory_system.retrieve_memories.return_value = []
     memory_interface.store_agent_memory.return_value = "memory-id"
     return memory_interface

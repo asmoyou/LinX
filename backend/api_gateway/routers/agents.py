@@ -5,8 +5,8 @@ References:
 - Task 2.1.7: Create agent endpoints
 """
 
-import base64
 import asyncio
+import base64
 import hashlib
 import io
 import json
@@ -27,6 +27,28 @@ from pydantic import BaseModel, Field
 from access_control.permissions import CurrentUser, get_current_user
 from agent_framework.access_policy import normalize_allowed_memory_scopes, resolve_memory_scopes
 from agent_framework.agent_registry import get_agent_registry
+from memory_system.legacy_memory_compat_service import get_legacy_memory_compatibility_writer
+from memory_system.session_memory_builder import (  # noqa: F401
+    build_agent_candidate_content as _build_agent_candidate_content,
+)
+from memory_system.session_memory_builder import (  # noqa: F401
+    build_agent_candidate_seed_facts as _build_agent_candidate_seed_facts,
+)
+from memory_system.session_memory_builder import (  # noqa: F401
+    build_user_preference_memory_content as _build_user_preference_memory_content,
+)
+from memory_system.session_memory_builder import (  # noqa: F401
+    build_user_preference_seed_facts as _build_user_preference_seed_facts,
+)
+from memory_system.session_memory_builder import (
+    dedupe_user_preference_signals as _dedupe_user_preference_signals,
+)
+from memory_system.session_memory_builder import (  # noqa: F401
+    split_user_preference_content as _split_user_preference_content,
+)
+from memory_system.session_observation_builder import (
+    _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL as _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL_SHARED,
+)
 from object_storage.minio_client import get_minio_client
 from shared.logging import get_logger
 
@@ -263,9 +285,10 @@ def _collect_agent_task_stats(agent_ids: List[UUID]) -> Dict[UUID, Dict[str, Any
     }
 
     try:
+        from sqlalchemy import func
+
         from database.connection import get_db_session
         from database.models import Task
-        from sqlalchemy import func
 
         with get_db_session() as session:
             rows = (
@@ -346,9 +369,7 @@ def _build_task_log_entries(task_rows: List[Tuple[Any, Any, Any, Any]]) -> List[
                 "level": (
                     "SUCCESS"
                     if normalized_status == "completed"
-                    else "ERROR"
-                    if normalized_status == "failed"
-                    else "INFO"
+                    else "ERROR" if normalized_status == "failed" else "INFO"
                 ),
                 "message": _format_agent_task_log_message(normalized_status, goal_text),
                 "source": "task",
@@ -370,10 +391,7 @@ def _build_audit_log_entries(audit_rows: List[Tuple[Any, Any, Any]]) -> List[Dic
         else:
             level = "INFO"
         message_action = str(
-            detail_map.get("action")
-            or detail_map.get("event_type")
-            or action
-            or "agent event"
+            detail_map.get("action") or detail_map.get("event_type") or action or "agent event"
         ).strip()
         message = message_action.replace("_", " ").capitalize() or "Agent event"
         reason = str(detail_map.get("reason") or "").strip()
@@ -509,13 +527,10 @@ def _normalize_history_content(content: Any) -> Any:
                     elif isinstance(image_url, str):
                         url_value = image_url.strip()
 
-                    if (
-                        url_value
-                        and (
-                            url_value.startswith("data:image/")
-                            or url_value.startswith("http://")
-                            or url_value.startswith("https://")
-                        )
+                    if url_value and (
+                        url_value.startswith("data:image/")
+                        or url_value.startswith("http://")
+                        or url_value.startswith("https://")
                     ):
                         multimodal_items.append(
                             {"type": "image_url", "image_url": {"url": url_value}}
@@ -592,8 +607,6 @@ def _infer_image_format(content_type: Optional[str], name: Optional[str] = None)
     ):
         return "tiff"
     return "jpeg"
-
-
 
 
 def _extract_token_usage_from_metadata(metadata: Dict[str, Any]) -> Tuple[int, int]:
@@ -895,7 +908,7 @@ _SESSION_MEMORY_LLM_MIN_AGENT_CONFIDENCE = 0.6
 _SESSION_MEMORY_LLM_PROMPT_MAX_CHARS = 14000
 _SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS = 4.0
 _SESSION_MEMORY_FAILURE_BACKOFF_SECONDS = 60.0
-_SESSION_MEMORY_EXTRACTION_FAIL_UNTIL: Dict[str, float] = {}
+_SESSION_MEMORY_EXTRACTION_FAIL_UNTIL = _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL_SHARED
 _PERSISTENT_PREFERENCE_CUES = (
     "以后",
     "下次",
@@ -1073,8 +1086,9 @@ def _parse_iso_datetime(value: Any) -> Optional[datetime]:
 
 
 def _extract_json_object_from_text(text: str) -> Optional[Dict[str, Any]]:
-    parsed, _ = _extract_json_object_from_text_with_meta(text)
-    return parsed
+    from memory_system.session_observation_builder import get_session_observation_builder
+
+    return get_session_observation_builder().extract_json_object_from_text(text)
 
 
 def _extract_json_object_from_text_with_meta(
@@ -1119,9 +1133,7 @@ def _extract_json_object_from_text_with_meta(
         try:
             parsed = json.loads(candidate)
         except Exception as e:
-            parse_errors.append(
-                f"{source}:{_normalize_session_memory_text(str(e), max_chars=96)}"
-            )
+            parse_errors.append(f"{source}:{_normalize_session_memory_text(str(e), max_chars=96)}")
             continue
 
         if isinstance(parsed, dict):
@@ -1237,7 +1249,7 @@ def _build_llm_memory_extraction_prompt(
 
     transcript = "\n\n".join(lines)
     if len(transcript) > _SESSION_MEMORY_LLM_PROMPT_MAX_CHARS:
-        transcript = transcript[-_SESSION_MEMORY_LLM_PROMPT_MAX_CHARS :]
+        transcript = transcript[-_SESSION_MEMORY_LLM_PROMPT_MAX_CHARS:]
 
     prompt = f"""
 你是“会话记忆抽取器”。你要从会话中提取高价值、可长期复用的记忆。输出必须是 JSON 对象，不要输出解释文字。
@@ -1246,7 +1258,7 @@ Agent 名称: {agent_name or "-"}
 
 抽取目标:
 1. user_preferences: 提取“用户画像事实”，不仅限于喜欢/不喜欢。
-2. agent_memory_candidates: 提取可跨场景复用的通用方法模板（后续人工审批）。
+2. agent_memory_candidates: 提取“做事成功路径经验 / 可沉淀为 skill 的方法模板”（后续人工审批）。
 
 user_preferences 可包含的画像要素（示例）:
 - 偏好/禁忌: food_preference_like, food_preference_avoid, communication_style_preference
@@ -1268,10 +1280,12 @@ user_preferences 可包含的画像要素（示例）:
 - 这类直接陈述建议 explicit_source=true，confidence >= 0.82。
 
 agent_memory_candidates 规则:
+- 重点提取“最终成功的做事路径”，尤其是经历过多次尝试后，最后真正走通的那条路径。
+- 目标是让 agent 下次遇到相似任务时，少走弯路，优先复用成功方法。
 - 必须可迁移、可复用：避免绑定具体人名/地名/商品名/单次任务细节。
-- 输出应简洁：summary 1-2 句，steps 2-4 步，每步一句动作。
-- 优先抽象为通用流程，如“澄清目标 -> 识别约束 -> 生成方案 -> 校验结果”。
-- 若只是本次答案内容而非方法模板，不要提取。
+- summary 说明“为什么这条路径有效”；steps 只保留成功路径上的关键动作，2-5 步即可。
+- avoid 用来总结应避免的弯路/失败尝试/不适用条件。
+- 如果本次对话没有形成可复用的成功方法，不要提取。
 
 输出 JSON Schema:
 {{
@@ -1288,12 +1302,12 @@ agent_memory_candidates 规则:
   ],
   "agent_memory_candidates": [
     {{
-      "candidate_type": "sop",
-      "title": "流程标题",
-      "summary": "通用方法总结",
+      "candidate_type": "successful_path",
+      "title": "成功路径标题",
+      "summary": "这条路径为什么有效",
       "steps": ["步骤1", "步骤2", "步骤3"],
       "applicability": "适用场景",
-      "avoid": "不适用或注意事项",
+      "avoid": "应避免的弯路/失败尝试/注意事项",
       "confidence": 0.0,
       "evidence_turns": [2]
     }}
@@ -1376,7 +1390,7 @@ def _build_llm_explicit_preference_recall_prompt(
 
     transcript = "\n\n".join(lines)
     if len(transcript) > _SESSION_MEMORY_LLM_PROMPT_MAX_CHARS:
-        transcript = transcript[-_SESSION_MEMORY_LLM_PROMPT_MAX_CHARS :]
+        transcript = transcript[-_SESSION_MEMORY_LLM_PROMPT_MAX_CHARS:]
 
     prompt = f"""
 你是“用户偏好补充抽取器”。你的目标是补充抽取用户明确陈述的稳定画像事实。
@@ -1509,79 +1523,14 @@ async def _call_llm_for_memory_json(
     model: Optional[str],
     timeout_seconds: float = _SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    base_kwargs = {
-        "prompt": prompt,
-        "provider": provider,
-        "model": model,
-        "temperature": 0.1,
-        "max_tokens": 1800,
-    }
+    from memory_system.session_observation_builder import get_session_observation_builder
 
-    async def _generate_and_parse(
-        *,
-        with_response_format: bool,
-        response_mode: str,
-        fallback_triggered: bool,
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        kwargs = dict(base_kwargs)
-        if with_response_format:
-            kwargs["response_format"] = {"type": "json_object"}
-        try:
-            response = await asyncio.wait_for(
-                llm_router.generate(**kwargs),
-                timeout=max(float(timeout_seconds), 0.5),
-            )
-        except asyncio.TimeoutError as timeout_error:
-            await _invalidate_timed_out_llm_provider(
-                llm_router=llm_router,
-                provider_name=provider,
-            )
-            raise TimeoutError(
-                f"session_memory_extraction_timeout_{max(float(timeout_seconds), 0.5):.1f}s"
-            ) from timeout_error
-        raw_content = str(getattr(response, "content", "") or "")
-        parsed_payload, parse_meta = _extract_json_object_from_text_with_meta(raw_content)
-        parse_meta.update(
-            {
-                "response_mode": response_mode,
-                "fallback_triggered": fallback_triggered,
-            }
-        )
-        return parsed_payload or {}, parse_meta
-
-    try:
-        parsed_payload, parse_meta = await _generate_and_parse(
-            with_response_format=True,
-            response_mode="json_object",
-            fallback_triggered=False,
-        )
-        if str(parse_meta.get("parse_status")) == "ok":
-            return parsed_payload, parse_meta
-        logger.info(
-            "Session memory extraction fallback to plain response mode after non-json response",
-            extra={
-                "provider": provider or "auto",
-                "model": model or "auto",
-                "parse_status": parse_meta.get("parse_status"),
-                "raw_content_chars": parse_meta.get("raw_content_chars"),
-            },
-        )
-    except Exception as first_error:
-        if not _is_response_format_not_supported_error(first_error):
-            raise
-        logger.info(
-            "Session memory extraction fallback to plain response mode",
-            extra={
-                "provider": provider or "auto",
-                "model": model or "auto",
-                "error": str(first_error),
-            },
-        )
-
-    return await _generate_and_parse(
-        with_response_format=False,
-        response_mode="plain_fallback",
-        fallback_triggered=True,
+    return await get_session_observation_builder().call_llm_for_memory_json(
+        llm_router=llm_router,
+        prompt=prompt,
+        provider=provider,
+        model=model,
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -1590,76 +1539,13 @@ def _normalize_llm_user_preference_signals(
     turn_ts_map: Dict[int, Optional[str]],
     max_items: int = _SESSION_MEMORY_MAX_PREFERENCE_FACTS,
 ) -> List[Dict[str, Any]]:
-    if not isinstance(raw_items, list):
-        return []
+    from memory_system.session_observation_builder import get_session_observation_builder
 
-    safe_max_items = max(int(max_items or 0), 1)
-    extracted: List[Dict[str, Any]] = []
-    for raw in raw_items:
-        if not isinstance(raw, dict):
-            continue
-        key = _normalize_memory_key(raw.get("key"))
-        value = _normalize_session_memory_text(raw.get("value", ""), max_chars=120)
-        if not key or not value:
-            continue
-
-        confidence = _coerce_confidence(raw.get("confidence"), default=0.72)
-        if confidence < _SESSION_MEMORY_LLM_MIN_PREFERENCE_CONFIDENCE:
-            continue
-
-        evidence_turns_raw = raw.get("evidence_turns")
-        evidence_turns: List[int] = []
-        if isinstance(evidence_turns_raw, list):
-            for item in evidence_turns_raw:
-                parsed = _to_positive_int(item)
-                if parsed and parsed not in evidence_turns:
-                    evidence_turns.append(parsed)
-
-        evidence_count = (
-            len(evidence_turns)
-            if evidence_turns
-            else (_to_positive_int(raw.get("evidence_count")) or 1)
-        )
-        is_persistent = bool(raw.get("persistent"))
-        explicit_source = bool(raw.get("explicit_source"))
-        # Allow single-turn direct preference statements if model gives strong confidence.
-        allow_single_turn = explicit_source or confidence >= 0.82
-        if not is_persistent and evidence_count < 2 and not allow_single_turn:
-            continue
-
-        latest_turn_ts: Optional[str] = None
-        for turn_idx in evidence_turns:
-            candidate_ts = turn_ts_map.get(turn_idx)
-            if not candidate_ts:
-                continue
-            if (latest_turn_ts is None) or str(candidate_ts) > str(latest_turn_ts):
-                latest_turn_ts = str(candidate_ts)
-
-        reason = _normalize_session_memory_text(raw.get("reason", ""), max_chars=200)
-        extracted.append(
-            {
-                "key": key,
-                "value": value,
-                "evidence_count": evidence_count,
-                "persistent": is_persistent,
-                "strong_signal": is_persistent,
-                "confidence": confidence,
-                "latest_ts": latest_turn_ts,
-                "reason": reason or None,
-                "explicit_source": explicit_source,
-            }
-        )
-
-    extracted.sort(
-        key=lambda item: (
-            int(bool(item.get("persistent"))),
-            float(item.get("confidence") or 0.0),
-            int(item.get("evidence_count") or 0),
-            str(item.get("latest_ts") or ""),
-        ),
-        reverse=True,
+    return get_session_observation_builder().normalize_llm_user_preference_signals(
+        raw_items,
+        turn_ts_map,
+        max_items=max_items,
     )
-    return extracted[:safe_max_items]
 
 
 def _build_agent_candidate_fingerprint(topic: str, steps: List[str]) -> str:
@@ -1674,87 +1560,14 @@ def _normalize_llm_agent_candidates(
     turn_ts_map: Dict[int, Optional[str]],
     max_items: int = _SESSION_MEMORY_MAX_AGENT_CANDIDATES,
 ) -> List[Dict[str, Any]]:
-    if not isinstance(raw_items, list):
-        return []
+    from memory_system.session_observation_builder import get_session_observation_builder
 
-    safe_max_items = max(int(max_items or 0), 1)
-    candidates: List[Dict[str, Any]] = []
-    seen_fingerprints: set[str] = set()
-
-    for raw in raw_items:
-        if not isinstance(raw, dict):
-            continue
-
-        title = _normalize_session_memory_text(raw.get("title", ""), max_chars=72)
-        topic = _normalize_session_memory_text(raw.get("topic", ""), max_chars=72)
-        summary = _normalize_session_memory_text(raw.get("summary", ""), max_chars=180)
-        steps_raw = raw.get("steps")
-        steps: List[str] = []
-        if isinstance(steps_raw, list):
-            for step in steps_raw:
-                normalized_step = _normalize_session_memory_text(step, max_chars=72)
-                if normalized_step and normalized_step not in steps:
-                    steps.append(normalized_step)
-        elif isinstance(steps_raw, str):
-            for chunk in re.split(r"[|\n]", steps_raw):
-                normalized_step = _normalize_session_memory_text(chunk, max_chars=72)
-                if normalized_step and normalized_step not in steps:
-                    steps.append(normalized_step)
-
-        if len(steps) > 4:
-            steps = steps[:4]
-
-        if len(steps) < 2 and len(summary) < 30:
-            continue
-
-        confidence = _coerce_confidence(raw.get("confidence"), default=0.7)
-        if confidence < _SESSION_MEMORY_LLM_MIN_AGENT_CONFIDENCE:
-            continue
-
-        candidate_type = _normalize_memory_key(raw.get("candidate_type"), max_chars=32) or "sop"
-        applicability = _normalize_session_memory_text(raw.get("applicability", ""), max_chars=140)
-        avoid = _normalize_session_memory_text(raw.get("avoid", ""), max_chars=140)
-
-        topic_for_fingerprint = topic or title or summary or "generic_sop"
-        fingerprint = _build_agent_candidate_fingerprint(topic_for_fingerprint, steps)
-        if fingerprint in seen_fingerprints:
-            continue
-        seen_fingerprints.add(fingerprint)
-
-        evidence_turns_raw = raw.get("evidence_turns")
-        evidence_turns: List[int] = []
-        if isinstance(evidence_turns_raw, list):
-            for item in evidence_turns_raw:
-                parsed = _to_positive_int(item)
-                if parsed and parsed not in evidence_turns:
-                    evidence_turns.append(parsed)
-        latest_turn_ts: Optional[str] = None
-        for turn_idx in evidence_turns:
-            candidate_ts = turn_ts_map.get(turn_idx)
-            if not candidate_ts:
-                continue
-            if (latest_turn_ts is None) or str(candidate_ts) > str(latest_turn_ts):
-                latest_turn_ts = str(candidate_ts)
-
-        candidates.append(
-            {
-                "candidate_type": candidate_type,
-                "topic": topic or None,
-                "title": title or None,
-                "summary": summary,
-                "steps": steps,
-                "applicability": applicability or None,
-                "avoid": avoid or None,
-                "confidence": confidence,
-                "fingerprint": fingerprint,
-                "agent_name": agent_name,
-                "latest_ts": latest_turn_ts,
-            }
-        )
-        if len(candidates) >= safe_max_items:
-            break
-
-    return candidates
+    return get_session_observation_builder().normalize_llm_agent_candidates(
+        raw_items,
+        agent_name=agent_name,
+        turn_ts_map=turn_ts_map,
+        max_items=max_items,
+    )
 
 
 async def _extract_session_memory_signals_with_llm(
@@ -1764,554 +1577,22 @@ async def _extract_session_memory_signals_with_llm(
     agent_name: str,
     session_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    if not turns:
-        return [], []
+    from memory_system.session_observation_builder import get_session_observation_builder
 
-    prompt, turn_ts_map = _build_llm_memory_extraction_prompt(turns, agent_name)
-
-    agent_provider_name: Optional[str] = None
-    agent_model_name: Optional[str] = None
-    configured_provider_name: Optional[str] = None
-    configured_model_name: Optional[str] = None
-    global_chat_model: Optional[str] = None
-    extraction_timeout_seconds = _SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS
-    failure_backoff_seconds = _SESSION_MEMORY_FAILURE_BACKOFF_SECONDS
-    max_preference_facts = _SESSION_MEMORY_MAX_PREFERENCE_FACTS
-    max_agent_candidates = _SESSION_MEMORY_MAX_AGENT_CANDIDATES
-    cfg: Any = None
-    try:
-        registry = get_agent_registry()
-        agent_info = registry.get_agent(agent_id)
-        if agent_info:
-            agent_provider_name = str(agent_info.llm_provider or "").strip() or None
-            agent_model_name = str(agent_info.llm_model or "").strip() or None
-    except Exception:
-        agent_provider_name = None
-        agent_model_name = None
-
-    try:
-        from shared.config import get_config
-
-        cfg = get_config()
-        configured_provider = cfg.get("memory.enhanced_memory.fact_extraction.provider")
-        configured_model = cfg.get("memory.enhanced_memory.fact_extraction.model")
-        configured_chat = cfg.get("llm.model_mapping.chat")
-        configured_timeout = cfg.get("memory.enhanced_memory.fact_extraction.timeout_seconds")
-        configured_failure_backoff = cfg.get(
-            "memory.enhanced_memory.fact_extraction.failure_backoff_seconds"
-        )
-        configured_max_facts = cfg.get("memory.enhanced_memory.fact_extraction.max_facts")
-        configured_max_preferences = cfg.get(
-            "memory.enhanced_memory.fact_extraction.max_preference_facts"
-        )
-        configured_max_candidates = cfg.get(
-            "memory.enhanced_memory.fact_extraction.max_agent_candidates"
-        )
-        configured_provider_name = str(configured_provider or "").strip() or None
-        configured_model_name = str(configured_model or "").strip() or None
-        global_chat_model = str(configured_chat).strip() if configured_chat else None
-        extraction_timeout_seconds = _coerce_positive_timeout_seconds(
-            configured_timeout,
-            default=_SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS,
-        )
-        failure_backoff_seconds = _coerce_positive_timeout_seconds(
-            configured_failure_backoff,
-            default=_SESSION_MEMORY_FAILURE_BACKOFF_SECONDS,
-        )
-        configured_max_facts_value = _to_positive_int(configured_max_facts)
-        max_preference_facts = (
-            _to_positive_int(configured_max_preferences)
-            or configured_max_facts_value
-            or _SESSION_MEMORY_MAX_PREFERENCE_FACTS
-        )
-        max_agent_candidates = (
-            _to_positive_int(configured_max_candidates)
-            or _SESSION_MEMORY_MAX_AGENT_CANDIDATES
-        )
-    except Exception:
-        cfg = None
-        configured_provider_name = None
-        configured_model_name = None
-        global_chat_model = None
-        extraction_timeout_seconds = _SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS
-        failure_backoff_seconds = _SESSION_MEMORY_FAILURE_BACKOFF_SECONDS
-        max_preference_facts = _SESSION_MEMORY_MAX_PREFERENCE_FACTS
-        max_agent_candidates = _SESSION_MEMORY_MAX_AGENT_CANDIDATES
-
-    backoff_key = f"{str(agent_id)}::{str(session_id or '')}"
-    current_monotonic = time.monotonic()
-    backoff_until = _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL.get(backoff_key, 0.0)
-    if current_monotonic < backoff_until:
-        logger.info(
-            "Session memory extraction skipped due to active failure backoff",
-            extra={
-                "agent_id": str(agent_id),
-                "session_id": session_id,
-                "remaining_backoff_seconds": round(backoff_until - current_monotonic, 3),
-                "failure_backoff_seconds": failure_backoff_seconds,
-            },
-        )
-        return [], []
-
-    def _activate_failure_backoff(reason: str) -> None:
-        if failure_backoff_seconds <= 0:
-            return
-        fail_until = time.monotonic() + max(float(failure_backoff_seconds), 0.5)
-        _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL[backoff_key] = fail_until
-        logger.info(
-            "Session memory extraction failure backoff activated",
-            extra={
-                "agent_id": str(agent_id),
-                "session_id": session_id,
-                "reason": reason,
-                "failure_backoff_seconds": failure_backoff_seconds,
-                "fail_until_monotonic": round(fail_until, 3),
-            },
-        )
-
-    primary_provider = configured_provider_name or agent_provider_name
-    primary_model = configured_model_name
-    if not primary_model and primary_provider:
-        primary_model = _resolve_provider_default_chat_model_from_config(cfg, primary_provider)
-    if not primary_model and primary_provider == agent_provider_name:
-        primary_model = agent_model_name
-    if not primary_model:
-        primary_model = global_chat_model
-
-    attempt_plan: List[Tuple[Optional[str], Optional[str]]] = []
-    if primary_provider or primary_model:
-        attempt_plan.append((primary_provider, primary_model))
-    if agent_provider_name or agent_model_name:
-        attempt_plan.append((agent_provider_name, agent_model_name))
-    if primary_model:
-        attempt_plan.append((None, primary_model))
-    attempt_plan.append((None, None))
-
-    attempts: List[Tuple[Optional[str], Optional[str]]] = []
-    for candidate in attempt_plan:
-        if candidate not in attempts:
-            attempts.append(candidate)
-    attempt_plan_summary = [
-        {"provider": provider_name or "auto", "model": model_name or "auto"}
-        for provider_name, model_name in attempts
-    ]
-    extraction_log_base = {
-        "agent_id": str(agent_id),
-        "session_id": session_id,
-    }
-    logger.info(
-        "Session memory extraction attempt plan",
-        extra={
-            **extraction_log_base,
-            "attempt_plan": attempt_plan_summary,
-            "attempt_timeout_seconds": extraction_timeout_seconds,
-            "failure_backoff_seconds": failure_backoff_seconds,
-            "max_preference_facts": max_preference_facts,
-            "max_agent_candidates": max_agent_candidates,
-        },
-    )
-
-    try:
-        from llm_providers.router import get_llm_provider
-
-        llm_router = get_llm_provider()
-    except Exception as e:
-        logger.warning(
-            "LLM-based session memory extraction failed",
-            extra={**extraction_log_base, "error": str(e)},
-        )
-        _activate_failure_backoff("llm_router_unavailable")
-        return [], []
-
-    async def _run_extraction_with_attempts(
-        extraction_prompt: str,
-        phase: str,
-    ) -> Tuple[Dict[str, Any], Optional[str], Optional[str], Optional[Exception], Dict[str, Any]]:
-        parsed_payload: Dict[str, Any] = {}
-        used_provider: Optional[str] = None
-        used_model: Optional[str] = None
-        last_error: Optional[Exception] = None
-        extraction_meta: Dict[str, Any] = {
-            "phase": phase,
-            "parse_status": "not_attempted",
-            "response_mode": None,
-            "fallback_triggered": False,
-            "raw_content_chars": 0,
-        }
-
-        for attempt_index, (attempt_provider, attempt_model) in enumerate(attempts, start=1):
-            try:
-                parsed_payload, extraction_meta = await _call_llm_for_memory_json(
-                    llm_router=llm_router,
-                    prompt=extraction_prompt,
-                    provider=attempt_provider,
-                    model=attempt_model,
-                    timeout_seconds=extraction_timeout_seconds,
-                )
-                extraction_meta = {
-                    **extraction_meta,
-                    "phase": phase,
-                    "attempt": attempt_index,
-                    "provider": attempt_provider or "auto",
-                    "model": attempt_model or "auto",
-                }
-                parse_status = str(extraction_meta.get("parse_status") or "")
-                if parse_status != "ok":
-                    last_error = ValueError(f"memory_json_{parse_status or 'unknown'}")
-                    logger.warning(
-                        "Session memory extraction response parse failed",
-                        extra={
-                            **extraction_log_base,
-                            "phase": phase,
-                            "attempt": attempt_index,
-                            "provider": attempt_provider or "auto",
-                            "model": attempt_model or "auto",
-                            "parse_status": parse_status or "unknown",
-                            "parse_source": extraction_meta.get("parse_source"),
-                            "json_root_type": extraction_meta.get("json_root_type"),
-                            "response_mode": extraction_meta.get("response_mode"),
-                            "raw_content_chars": extraction_meta.get("raw_content_chars"),
-                            "fallback_triggered": bool(
-                                extraction_meta.get("fallback_triggered")
-                            ),
-                            "parse_error": extraction_meta.get("parse_error"),
-                        },
-                    )
-                    continue
-                used_provider = attempt_provider
-                used_model = attempt_model
-                if primary_provider and attempt_provider != primary_provider:
-                    logger.info(
-                        "Session memory extraction fallback provider succeeded",
-                        extra={
-                            **extraction_log_base,
-                            "phase": phase,
-                            "original_provider": primary_provider,
-                            "attempt": attempt_index,
-                            "fallback_provider": attempt_provider or "auto",
-                        },
-                    )
-                break
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    "Session memory extraction attempt failed",
-                    extra={
-                        **extraction_log_base,
-                        "phase": phase,
-                        "attempt": attempt_index,
-                        "provider": attempt_provider or "auto",
-                        "model": attempt_model or "auto",
-                        "error": str(e),
-                    },
-                )
-
-        return parsed_payload, used_provider, used_model, last_error, extraction_meta
-
-    parsed, used_provider, used_model, last_error, primary_extraction_meta = (
-        await _run_extraction_with_attempts(
-        prompt,
-        "primary",
-        )
-    )
-    if last_error and not parsed:
-        logger.warning(
-            "LLM-based session memory extraction failed",
-            extra={
-                **extraction_log_base,
-                "error": str(last_error),
-                "phase": primary_extraction_meta.get("phase"),
-                "parse_status": primary_extraction_meta.get("parse_status"),
-                "response_mode": primary_extraction_meta.get("response_mode"),
-                "raw_content_chars": primary_extraction_meta.get("raw_content_chars"),
-                "attempt": primary_extraction_meta.get("attempt"),
-                "provider": primary_extraction_meta.get("provider"),
-                "model": primary_extraction_meta.get("model"),
-                "parse_error": primary_extraction_meta.get("parse_error"),
-            },
-        )
-        _activate_failure_backoff("all_attempts_failed")
-        return [], []
-
-    user_items = parsed.get("user_preferences")
-    candidate_items = parsed.get("agent_memory_candidates")
-    user_signals = _normalize_llm_user_preference_signals(
-        user_items,
-        turn_ts_map,
-        max_items=max_preference_facts,
-    )
-    agent_candidates = _normalize_llm_agent_candidates(
-        candidate_items,
+    return await get_session_observation_builder().extract_session_memory_signals_with_llm(
+        turns=turns,
+        agent_id=agent_id,
         agent_name=agent_name,
-        turn_ts_map=turn_ts_map,
-        max_items=max_agent_candidates,
+        session_id=session_id,
+        agent_registry_getter=get_agent_registry,
     )
-
-    secondary_raw_user_preferences = 0
-    secondary_normalized_user_preferences = 0
-    secondary_preference_pass_used = False
-    secondary_extraction_meta: Dict[str, Any] = {
-        "phase": "explicit_preference_recall",
-        "parse_status": "not_run",
-        "response_mode": None,
-        "fallback_triggered": False,
-        "raw_content_chars": 0,
-    }
-    if not user_signals:
-        secondary_preference_pass_used = True
-        recall_prompt, recall_turn_ts_map = _build_llm_explicit_preference_recall_prompt(turns)
-        (
-            recall_parsed,
-            recall_provider,
-            recall_model,
-            recall_error,
-            secondary_extraction_meta,
-        ) = await _run_extraction_with_attempts(recall_prompt, "explicit_preference_recall")
-        if recall_error and not recall_parsed:
-            logger.warning(
-                "LLM explicit-preference recall extraction failed",
-                extra={
-                    **extraction_log_base,
-                    "error": str(recall_error),
-                    "phase": secondary_extraction_meta.get("phase"),
-                    "parse_status": secondary_extraction_meta.get("parse_status"),
-                    "response_mode": secondary_extraction_meta.get("response_mode"),
-                    "raw_content_chars": secondary_extraction_meta.get("raw_content_chars"),
-                    "attempt": secondary_extraction_meta.get("attempt"),
-                    "provider": secondary_extraction_meta.get("provider"),
-                    "model": secondary_extraction_meta.get("model"),
-                    "parse_error": secondary_extraction_meta.get("parse_error"),
-                },
-            )
-        else:
-            recall_user_items = recall_parsed.get("user_preferences")
-            secondary_raw_user_preferences = (
-                len(recall_user_items) if isinstance(recall_user_items, list) else 0
-            )
-            recall_signals = _normalize_llm_user_preference_signals(
-                recall_user_items,
-                recall_turn_ts_map,
-                max_items=max_preference_facts,
-            )
-            secondary_normalized_user_preferences = len(recall_signals)
-            if recall_signals:
-                merged_by_key: Dict[str, Dict[str, Any]] = {
-                    str(item.get("key")): item for item in user_signals if item.get("key")
-                }
-                for signal in recall_signals:
-                    key = str(signal.get("key") or "").strip()
-                    if not key:
-                        continue
-                    existing = merged_by_key.get(key)
-                    if not existing:
-                        merged_by_key[key] = signal
-                        continue
-                    current_score = (
-                        int(bool(signal.get("persistent"))),
-                        int(bool(signal.get("explicit_source"))),
-                        float(signal.get("confidence") or 0.0),
-                        int(signal.get("evidence_count") or 0),
-                        str(signal.get("latest_ts") or ""),
-                    )
-                    existing_score = (
-                        int(bool(existing.get("persistent"))),
-                        int(bool(existing.get("explicit_source"))),
-                        float(existing.get("confidence") or 0.0),
-                        int(existing.get("evidence_count") or 0),
-                        str(existing.get("latest_ts") or ""),
-                    )
-                    if current_score >= existing_score:
-                        merged_by_key[key] = signal
-                user_signals = sorted(
-                    merged_by_key.values(),
-                    key=lambda item: (
-                        int(bool(item.get("persistent"))),
-                        int(bool(item.get("explicit_source"))),
-                        float(item.get("confidence") or 0.0),
-                        int(item.get("evidence_count") or 0),
-                        str(item.get("latest_ts") or ""),
-                    ),
-                    reverse=True,
-                )[:max_preference_facts]
-            if not used_provider and recall_provider:
-                used_provider = recall_provider
-            if not used_model and recall_model:
-                used_model = recall_model
-
-    primary_raw_user_preferences = len(user_items) if isinstance(user_items, list) else 0
-    primary_raw_agent_candidates = len(candidate_items) if isinstance(candidate_items, list) else 0
-    if (
-        str(primary_extraction_meta.get("parse_status")) == "ok"
-        and primary_raw_user_preferences == 0
-        and primary_raw_agent_candidates == 0
-    ):
-        logger.info(
-            "Session memory extraction primary response contained no extractable candidates",
-            extra={
-                **extraction_log_base,
-                "response_mode": primary_extraction_meta.get("response_mode"),
-                "parse_source": primary_extraction_meta.get("parse_source"),
-                "raw_content_chars": primary_extraction_meta.get("raw_content_chars"),
-                "parsed_top_level_keys": sorted(list(parsed.keys()))[:10],
-            },
-        )
-
-    logger.info(
-        "Session memory extraction completed",
-        extra={
-            **extraction_log_base,
-            "provider": used_provider or "auto",
-            "model": used_model or "auto",
-            "turn_count": len(turns),
-            "raw_user_preferences": primary_raw_user_preferences,
-            "raw_agent_candidates": primary_raw_agent_candidates,
-            "normalized_user_preferences": len(user_signals),
-            "normalized_agent_candidates": len(agent_candidates),
-            "secondary_preference_pass_used": secondary_preference_pass_used,
-            "secondary_raw_user_preferences": secondary_raw_user_preferences,
-            "secondary_normalized_user_preferences": secondary_normalized_user_preferences,
-            "primary_phase": primary_extraction_meta.get("phase"),
-            "primary_attempt": primary_extraction_meta.get("attempt"),
-            "primary_parse_status": primary_extraction_meta.get("parse_status"),
-            "primary_parse_source": primary_extraction_meta.get("parse_source"),
-            "primary_response_mode": primary_extraction_meta.get("response_mode"),
-            "primary_fallback_triggered": bool(
-                primary_extraction_meta.get("fallback_triggered")
-            ),
-            "primary_raw_content_chars": primary_extraction_meta.get("raw_content_chars"),
-            "secondary_phase": secondary_extraction_meta.get("phase"),
-            "secondary_attempt": secondary_extraction_meta.get("attempt"),
-            "secondary_parse_status": secondary_extraction_meta.get("parse_status"),
-            "secondary_parse_source": secondary_extraction_meta.get("parse_source"),
-            "secondary_response_mode": secondary_extraction_meta.get("response_mode"),
-            "secondary_fallback_triggered": bool(
-                secondary_extraction_meta.get("fallback_triggered")
-            ),
-            "secondary_raw_content_chars": secondary_extraction_meta.get("raw_content_chars"),
-        },
-    )
-    _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL.pop(backoff_key, None)
-    return user_signals, agent_candidates
 
 
 def _extract_user_preference_signals(turns: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     """Extract persistent/repeated user preference signals from session turns."""
-    selected_turns = turns[-_SESSION_MEMORY_MAX_TURNS_FOR_FLUSH:]
-    grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    from memory_system.session_observation_builder import get_session_observation_builder
 
-    for turn in selected_turns:
-        user_message = _normalize_session_memory_text(turn.get("user_message", ""))
-        if not user_message:
-            continue
-
-        persistent = _contains_persistent_preference_cue(user_message)
-        latest_ts = _parse_iso_datetime(turn.get("timestamp"))
-        detections: List[Tuple[str, str, bool]] = []
-
-        output_format = _detect_output_format_preference(user_message)
-        if output_format:
-            detections.append(("output_format", output_format, False))
-
-        language = _detect_language_preference(user_message)
-        if language:
-            detections.append(("language", language, False))
-
-        style = _detect_response_style_preference(user_message)
-        if style:
-            detections.append(("response_style", style, False))
-
-        food_preference = _detect_food_preference_signal(user_message)
-        if food_preference:
-            detections.append((food_preference[0], food_preference[1], True))
-
-        for preference_key, preference_value, strong_signal in detections:
-            bucket = grouped.setdefault(
-                (preference_key, preference_value),
-                {
-                    "count": 0,
-                    "persistent": False,
-                    "strong_signal": False,
-                    "latest_ts": None,
-                },
-            )
-            bucket["count"] += 1
-            bucket["persistent"] = bool(bucket["persistent"] or persistent)
-            bucket["strong_signal"] = bool(bucket["strong_signal"] or strong_signal)
-            if latest_ts and (
-                bucket["latest_ts"] is None or latest_ts > bucket["latest_ts"]
-            ):
-                bucket["latest_ts"] = latest_ts
-
-    extracted: List[Dict[str, Any]] = []
-    for (preference_key, preference_value), bucket in grouped.items():
-        evidence_count = int(bucket["count"])
-        is_persistent = bool(bucket["persistent"])
-        strong_signal = bool(bucket.get("strong_signal"))
-        if not is_persistent and not strong_signal and evidence_count < 2:
-            continue
-
-        latest_ts = bucket.get("latest_ts")
-        extracted.append(
-            {
-                "key": preference_key,
-                "value": preference_value,
-                "evidence_count": evidence_count,
-                "persistent": is_persistent,
-                "strong_signal": strong_signal,
-                "confidence": (
-                    0.92 if strong_signal else 0.88 if is_persistent else 0.68
-                ),
-                "latest_ts": latest_ts.isoformat() if isinstance(latest_ts, datetime) else None,
-            }
-        )
-
-    extracted.sort(
-        key=lambda item: (
-            int(bool(item.get("persistent")) or bool(item.get("strong_signal"))),
-            int(bool(item.get("strong_signal"))),
-            int(item.get("evidence_count") or 0),
-            str(item.get("latest_ts") or ""),
-        ),
-        reverse=True,
-    )
-    return extracted[:_SESSION_MEMORY_MAX_PREFERENCE_FACTS]
-
-
-def _build_user_preference_memory_content(signal: Dict[str, Any]) -> str:
-    return f"user.preference.{signal['key']}={signal['value']}"
-
-
-def _build_user_preference_seed_facts(signal: Dict[str, Any]) -> List[Dict[str, Any]]:
-    preference_key = _normalize_memory_key(signal.get("key"), max_chars=80)
-    preference_value = _normalize_session_memory_text(signal.get("value", ""), max_chars=120)
-    if not preference_key or not preference_value:
-        return []
-
-    confidence = _coerce_confidence(signal.get("confidence"), default=0.78)
-    importance = 0.9 if bool(signal.get("persistent")) else 0.74
-    return [
-        {
-            "key": f"user.preference.{preference_key}",
-            "value": preference_value,
-            "category": "user_preference",
-            "confidence": confidence,
-            "importance": importance,
-            "source": "session_llm",
-        }
-    ]
-
-
-def _split_user_preference_content(content: str) -> Tuple[Optional[str], Optional[str]]:
-    normalized = str(content or "").strip()
-    if not normalized.lower().startswith("user.preference.") or "=" not in normalized:
-        return None, None
-
-    left, right = normalized.split("=", 1)
-    key = left.replace("user.preference.", "", 1).strip()
-    value = right.strip()
-    if not key or not value:
-        return None, None
-    return key, value
+    return get_session_observation_builder().extract_user_preference_signals(turns)
 
 
 def _extract_step_lines(response: str) -> List[str]:
@@ -2328,189 +1609,23 @@ def _extract_agent_memory_candidates(
     turns: List[Dict[str, str]],
     agent_name: str,
 ) -> List[Dict[str, Any]]:
-    selected_turns = turns[-_SESSION_MEMORY_MAX_TURNS_FOR_FLUSH:]
-    candidates: List[Dict[str, Any]] = []
-    seen_fingerprints = set()
+    from memory_system.session_observation_builder import get_session_observation_builder
 
-    for turn in reversed(selected_turns):
-        raw_response_text = str(turn.get("agent_response") or "")
-        response_text = _normalize_session_memory_text(raw_response_text, max_chars=2400)
-        if len(response_text) < 40:
-            continue
-
-        step_lines = _extract_step_lines(raw_response_text)
-        if len(step_lines) < 3:
-            continue
-
-        topic = _normalize_session_memory_text(turn.get("user_message", ""), max_chars=96)
-        if not topic:
-            continue
-
-        step_lines = step_lines[:5]
-        fingerprint = _build_agent_candidate_fingerprint(topic, step_lines)
-        if fingerprint in seen_fingerprints:
-            continue
-        seen_fingerprints.add(fingerprint)
-
-        lowered_response = raw_response_text.lower()
-        has_sop_hint = any(cue in lowered_response for cue in _AGENT_SOP_HINT_CUES)
-        confidence = 0.76 if has_sop_hint else 0.64
-        turn_ts = _parse_iso_datetime(turn.get("timestamp"))
-
-        candidates.append(
-            {
-                "candidate_type": "sop",
-                "topic": topic,
-                "steps": step_lines,
-                "confidence": confidence,
-                "fingerprint": fingerprint,
-                "agent_name": agent_name,
-                "latest_ts": turn_ts.isoformat() if isinstance(turn_ts, datetime) else None,
-            }
-        )
-
-        if len(candidates) >= _SESSION_MEMORY_MAX_AGENT_CANDIDATES:
-            break
-
-    return candidates
-
-
-def _build_agent_candidate_content(candidate: Dict[str, Any]) -> str:
-    steps_raw = candidate.get("steps") or []
-    normalized_steps: List[str] = []
-    for step in steps_raw:
-        normalized_step = _normalize_session_memory_text(step, max_chars=72)
-        if normalized_step and normalized_step not in normalized_steps:
-            normalized_steps.append(normalized_step)
-    steps = normalized_steps[:4]
-    step_text = " | ".join(steps)
-
-    title = _normalize_session_memory_text(candidate.get("title", ""), max_chars=72)
-    topic = _normalize_session_memory_text(candidate.get("topic", ""), max_chars=72)
-    summary = _normalize_session_memory_text(candidate.get("summary", ""), max_chars=180)
-    lines: List[str] = []
-    if title:
-        lines.append(f"interaction.sop.title={title}")
-    if topic and topic != title:
-        lines.append(f"interaction.sop.topic={topic}")
-    lines.append(f"interaction.sop.steps={step_text}")
-    if summary:
-        lines.append(f"interaction.sop.summary={summary}")
-    applicability = _normalize_session_memory_text(candidate.get("applicability", ""), max_chars=120)
-    if applicability:
-        lines.append(f"interaction.sop.applicability={applicability}")
-    avoid = _normalize_session_memory_text(candidate.get("avoid", ""), max_chars=120)
-    if avoid:
-        lines.append(f"interaction.sop.avoid={avoid}")
-    agent_name = str(candidate.get("agent_name") or "").strip()
-    if agent_name:
-        lines.append(f"agent.identity.name={agent_name}")
-    return "\n".join(lines)
-
-
-def _build_agent_candidate_seed_facts(candidate: Dict[str, Any]) -> List[Dict[str, Any]]:
-    facts: List[Dict[str, Any]] = []
-    confidence = _coerce_confidence(candidate.get("confidence"), default=0.72)
-    importance = 0.78
-    topic = _normalize_session_memory_text(candidate.get("topic", ""), max_chars=72)
-    title = _normalize_session_memory_text(candidate.get("title", ""), max_chars=72)
-
-    def _append_fact(key: str, value: Any, *, category: str) -> None:
-        normalized_value = _normalize_session_memory_text(value, max_chars=260)
-        if not key or not normalized_value:
-            return
-        facts.append(
-            {
-                "key": key,
-                "value": normalized_value,
-                "category": category,
-                "confidence": confidence,
-                "importance": importance,
-                "source": "session_llm",
-            }
-        )
-
-    _append_fact("interaction.sop.title", title, category="interaction")
-    if topic and topic != title:
-        _append_fact("interaction.sop.topic", topic, category="interaction")
-    steps = candidate.get("steps")
-    if isinstance(steps, list):
-        steps_value = " | ".join(
-            _normalize_session_memory_text(step, max_chars=72) for step in steps if step
-        )
-        _append_fact("interaction.sop.steps", steps_value, category="interaction")
-    _append_fact("interaction.sop.summary", candidate.get("summary"), category="interaction")
-    _append_fact(
-        "interaction.sop.applicability",
-        candidate.get("applicability"),
-        category="interaction",
-    )
-    _append_fact("interaction.sop.avoid", candidate.get("avoid"), category="interaction")
-    _append_fact("agent.identity.name", candidate.get("agent_name"), category="agent")
-    return facts
+    return get_session_observation_builder().extract_agent_memory_candidates(turns, agent_name)
 
 
 def _load_existing_user_preference_map(user_id: str) -> Dict[str, Dict[str, Any]]:
     """Load latest user preference memory per key for dedupe/upsert."""
-    from memory_system.memory_interface import MemoryType
-    from memory_system.memory_repository import get_memory_repository
-
-    repo = get_memory_repository()
-    rows = repo.list_memories(
-        memory_type=MemoryType.USER_CONTEXT,
-        user_id=str(user_id),
-        limit=400,
-    )
-
-    latest_by_key: Dict[str, Dict[str, Any]] = {}
-    for row in rows:
-        metadata = dict(row.metadata or {})
-        signal_type = str(metadata.get("signal_type") or "").strip().lower()
-        if signal_type != _SESSION_MEMORY_USER_SIGNAL_TYPE:
-            continue
-
-        key = str(metadata.get("preference_key") or "").strip()
-        value = str(metadata.get("preference_value") or "").strip()
-        if (not key or not value) and row.content:
-            parsed_key, parsed_value = _split_user_preference_content(str(row.content))
-            key = key or str(parsed_key or "")
-            value = value or str(parsed_value or "")
-        if not key or not value:
-            continue
-
-        row_latest_ts = _parse_iso_datetime(metadata.get("latest_turn_ts")) or _parse_iso_datetime(
-            row.timestamp
-        )
-        existing = latest_by_key.get(key)
-        if existing:
-            existing_ts = _parse_iso_datetime(existing.get("latest_turn_ts")) or _parse_iso_datetime(
-                existing.get("timestamp")
-            )
-            if existing_ts and row_latest_ts and existing_ts >= row_latest_ts:
-                continue
-
-        latest_by_key[key] = {
-            "memory_id": int(row.id),
-            "value": value,
-            "metadata": metadata,
-            "latest_turn_ts": row_latest_ts.isoformat() if row_latest_ts else None,
-            "timestamp": row.timestamp.isoformat() if row.timestamp else None,
-        }
-
-    return latest_by_key
+    return get_legacy_memory_compatibility_writer().load_existing_user_preference_map(user_id)
 
 
 def _upsert_existing_user_preference_metadata(
     memory_id: int,
     metadata: Dict[str, Any],
 ) -> None:
-    from memory_system.memory_repository import get_memory_repository
-
-    repo = get_memory_repository()
-    repo.update_record(
+    get_legacy_memory_compatibility_writer().upsert_existing_user_preference_metadata(
         memory_id,
-        metadata=metadata,
-        mark_vector_pending=False,
+        metadata,
     )
 
 
@@ -2520,28 +1635,34 @@ def _load_existing_agent_candidate_fingerprints(
     user_id: str,
 ) -> set[str]:
     """Load known agent candidate fingerprints to avoid duplicate drafts."""
-    from memory_system.memory_interface import MemoryType
-    from memory_system.memory_repository import get_memory_repository
-
-    repo = get_memory_repository()
-    rows = repo.list_memories(
-        memory_type=MemoryType.AGENT,
-        agent_id=str(agent_id),
-        user_id=str(user_id),
-        limit=400,
+    return get_legacy_memory_compatibility_writer().load_existing_agent_candidate_fingerprints(
+        agent_id=agent_id,
+        user_id=user_id,
     )
 
-    fingerprints: set[str] = set()
-    for row in rows:
-        metadata = dict(row.metadata or {})
-        signal_type = str(metadata.get("signal_type") or "").strip().lower()
-        if signal_type != _SESSION_MEMORY_AGENT_SIGNAL_TYPE:
-            continue
-        fingerprint = str(metadata.get("candidate_fingerprint") or "").strip()
-        if fingerprint:
-            fingerprints.add(fingerprint)
 
-    return fingerprints
+def _persist_legacy_session_memories(
+    *,
+    mem_interface: Any,
+    session: "ConversationSession",
+    reason: str,
+    agent_name: str,
+    turn_count: int,
+    extracted_signals: List[Dict[str, Any]],
+    extracted_agent_candidates: List[Dict[str, Any]],
+):
+    return get_legacy_memory_compatibility_writer().persist_session_memories(
+        mem_interface=mem_interface,
+        session=session,
+        reason=reason,
+        agent_name=agent_name,
+        turn_count=turn_count,
+        extracted_signals=extracted_signals,
+        extracted_agent_candidates=extracted_agent_candidates,
+        load_existing_user_preference_map=_load_existing_user_preference_map,
+        load_existing_agent_candidate_fingerprints=_load_existing_agent_candidate_fingerprints,
+        upsert_existing_user_preference_metadata=_upsert_existing_user_preference_metadata,
+    )
 
 
 async def _flush_session_memories(
@@ -2578,30 +1699,27 @@ async def _flush_session_memories(
         agent_name=agent_name,
         session_id=session.session_id,
     )
-    deduped_signals_by_key: Dict[str, Dict[str, Any]] = {}
-    for signal in extracted_signals:
-        signal_key = str(signal.get("key") or "").strip()
-        signal_value = str(signal.get("value") or "").strip()
-        if not signal_key or not signal_value:
-            continue
-        existing_signal = deduped_signals_by_key.get(signal_key)
-        if not existing_signal:
-            deduped_signals_by_key[signal_key] = signal
-            continue
+    extracted_signals = _dedupe_user_preference_signals(extracted_signals)
+    try:
+        from memory_system.session_ledger_service import get_memory_session_ledger_service
 
-        current_score = (
-            int(bool(signal.get("persistent"))),
-            int(signal.get("evidence_count") or 0),
-            str(signal.get("latest_ts") or ""),
+        get_memory_session_ledger_service().persist_conversation_session(
+            session=session,
+            reason=reason,
+            turns=turns,
+            agent_name=agent_name,
+            extracted_signals=extracted_signals,
+            extracted_agent_candidates=extracted_agent_candidates,
         )
-        existing_score = (
-            int(bool(existing_signal.get("persistent"))),
-            int(existing_signal.get("evidence_count") or 0),
-            str(existing_signal.get("latest_ts") or ""),
+    except Exception as e:
+        logger.warning(
+            "Failed to persist session ledger snapshot during memory migration",
+            extra={
+                "session_id": session.session_id,
+                "reason": reason,
+                "error": str(e),
+            },
         )
-        if current_score >= existing_score:
-            deduped_signals_by_key[signal_key] = signal
-    extracted_signals = list(deduped_signals_by_key.values())
     if not extracted_signals and not extracted_agent_candidates:
         logger.info(
             "Skipped session memory persistence: no valuable memory signals extracted",
@@ -2609,259 +1727,27 @@ async def _flush_session_memories(
         )
         return
 
-    extracted_at = datetime.utcnow().isoformat() + "Z"
-    metadata_base = {
-        "source": "agent_test_preference_extractor",
-        "session_id": session.session_id,
-        "turn_count": turn_count,
-        "session_end_reason": reason,
-        "aggregated": True,
-        "agent_name": agent_name,
-        "extracted_at": extracted_at,
-    }
-
-    preference_metadata_base = {**metadata_base, "source": "agent_test_preference_extractor"}
-    agent_candidate_metadata_base = {
-        **metadata_base,
-        "source": "agent_test_agent_candidate_extractor",
-    }
-
-    try:
-        existing_preference_map = _load_existing_user_preference_map(str(session.user_id))
-    except Exception as e:
-        logger.warning(
-            "Failed to load existing user preference memories before upsert",
-            extra={"session_id": session.session_id, "error": str(e)},
-        )
-        existing_preference_map = {}
-
-    preference_created = 0
-    preference_updated = 0
-    preference_skipped = 0
-    for signal in extracted_signals:
-        try:
-            signal_key = str(signal.get("key") or "").strip()
-            signal_value = str(signal.get("value") or "").strip()
-            if not signal_key or not signal_value:
-                preference_skipped += 1
-                continue
-
-            existing = existing_preference_map.get(signal_key)
-            if existing and str(existing.get("value") or "").strip() == signal_value:
-                memory_id = existing.get("memory_id")
-                if memory_id:
-                    existing_meta = dict(existing.get("metadata") or {})
-                    existing_meta.update(
-                        {
-                            "evidence_count": max(
-                                int(existing_meta.get("evidence_count") or 0),
-                                int(signal.get("evidence_count") or 0),
-                            ),
-                            "confidence": max(
-                                float(existing_meta.get("confidence") or 0.0),
-                                float(signal.get("confidence") or 0.0),
-                            ),
-                            "latest_turn_ts": signal.get("latest_ts")
-                            or existing_meta.get("latest_turn_ts"),
-                            "updated_at_extracted": extracted_at,
-                            "is_active": True,
-                            "strong_signal": bool(
-                                signal.get("strong_signal") or existing_meta.get("strong_signal")
-                            ),
-                            "explicit_source": bool(
-                                signal.get("explicit_source") or existing_meta.get("explicit_source")
-                            ),
-                        }
-                    )
-                    _upsert_existing_user_preference_metadata(int(memory_id), existing_meta)
-                    preference_updated += 1
-                    continue
-                preference_skipped += 1
-                continue
-
-            if existing and str(existing.get("value") or "").strip() != signal_value:
-                memory_id = existing.get("memory_id")
-                previous_value = str(existing.get("value") or "").strip()
-                if memory_id:
-                    old_meta = dict(existing.get("metadata") or {})
-                    old_meta.update(
-                        {
-                            "is_active": False,
-                            "superseded_at": extracted_at,
-                            "superseded_by_value": signal_value,
-                        }
-                    )
-                    delete_applied = False
-                    if previous_value:
-                        delete_seed_facts = old_meta.get("facts", [])
-                        if not isinstance(delete_seed_facts, list) or not delete_seed_facts:
-                            delete_seed_facts = _build_user_preference_seed_facts(
-                                {
-                                    "key": signal_key,
-                                    "value": previous_value,
-                                    "persistent": bool(old_meta.get("strong_signal")),
-                                    "confidence": max(
-                                        _coerce_confidence(old_meta.get("confidence"), default=0.0),
-                                        _coerce_confidence(signal.get("confidence"), default=0.0),
-                                    ),
-                                }
-                            )
-
-                        delete_result = mem_interface.store_user_context(
-                            user_id=session.user_id,
-                            agent_id=session.agent_id,
-                            content=f"user.preference.{signal_key}={previous_value}",
-                            metadata={
-                                **preference_metadata_base,
-                                "signal_type": _SESSION_MEMORY_USER_SIGNAL_TYPE,
-                                "preference_key": signal_key,
-                                "preference_value": previous_value,
-                                "evidence_count": max(
-                                    int(old_meta.get("evidence_count") or 0),
-                                    int(signal.get("evidence_count") or 0),
-                                ),
-                                "confidence": max(
-                                    _coerce_confidence(old_meta.get("confidence"), default=0.0),
-                                    _coerce_confidence(signal.get("confidence"), default=0.0),
-                                ),
-                                "reason": "superseded_by_new_value",
-                                "latest_turn_ts": signal.get("latest_ts")
-                                or old_meta.get("latest_turn_ts"),
-                                "strong_signal": bool(
-                                    signal.get("strong_signal") or old_meta.get("strong_signal")
-                                ),
-                                "explicit_source": bool(
-                                    signal.get("explicit_source") or old_meta.get("explicit_source")
-                                ),
-                                "is_active": False,
-                                "superseded_at": extracted_at,
-                                "superseded_by_value": signal_value,
-                                "memory_action": "DELETE",
-                                "target_memory_id": int(memory_id),
-                                "skip_secondary_fact_extraction": True,
-                                "facts": delete_seed_facts,
-                            },
-                        )
-                        delete_applied = bool(delete_result)
-
-                    if not delete_applied:
-                        _upsert_existing_user_preference_metadata(int(memory_id), old_meta)
-
-            mem_interface.store_user_context(
-                user_id=session.user_id,
-                agent_id=session.agent_id,
-                content=_build_user_preference_memory_content(signal),
-                metadata={
-                    **preference_metadata_base,
-                    "signal_type": _SESSION_MEMORY_USER_SIGNAL_TYPE,
-                    "preference_key": signal_key,
-                    "preference_value": signal_value,
-                    "evidence_count": signal["evidence_count"],
-                    "confidence": signal["confidence"],
-                    "reason": signal.get("reason"),
-                    "latest_turn_ts": signal.get("latest_ts"),
-                    "strong_signal": bool(signal.get("strong_signal")),
-                    "explicit_source": bool(signal.get("explicit_source")),
-                    "is_active": True,
-                    "skip_secondary_fact_extraction": True,
-                    "facts": _build_user_preference_seed_facts(signal),
-                },
-            )
-            existing_preference_map[signal_key] = {
-                "memory_id": None,
-                "value": signal_value,
-                "metadata": {
-                    "signal_type": _SESSION_MEMORY_USER_SIGNAL_TYPE,
-                    "preference_key": signal_key,
-                    "preference_value": signal_value,
-                    "latest_turn_ts": signal.get("latest_ts"),
-                    "strong_signal": bool(signal.get("strong_signal")),
-                    "explicit_source": bool(signal.get("explicit_source")),
-                    "is_active": True,
-                },
-            }
-            preference_created += 1
-        except Exception as e:
-            logger.warning(
-                "Failed to store extracted user preference memory on session end",
-                extra={
-                    "session_id": session.session_id,
-                    "reason": reason,
-                    "error": str(e),
-                    "preference_key": signal.get("key"),
-                },
-            )
-
-    try:
-        existing_candidate_fingerprints = _load_existing_agent_candidate_fingerprints(
-            agent_id=str(session.agent_id),
-            user_id=str(session.user_id),
-        )
-    except Exception as e:
-        logger.warning(
-            "Failed to load existing agent candidate fingerprints",
-            extra={"session_id": session.session_id, "error": str(e)},
-        )
-        existing_candidate_fingerprints = set()
-    candidate_created = 0
-    candidate_skipped = 0
-    for candidate in extracted_agent_candidates:
-        fingerprint = str(candidate.get("fingerprint") or "").strip()
-        if not fingerprint:
-            candidate_skipped += 1
-            continue
-        if fingerprint in existing_candidate_fingerprints:
-            candidate_skipped += 1
-            continue
-
-        try:
-            mem_interface.store_agent_memory(
-                agent_id=session.agent_id,
-                user_id=session.user_id,
-                content=_build_agent_candidate_content(candidate),
-                metadata={
-                    **agent_candidate_metadata_base,
-                    "signal_type": _SESSION_MEMORY_AGENT_SIGNAL_TYPE,
-                    "candidate_type": candidate.get("candidate_type") or "sop",
-                    "candidate_title": candidate.get("title") or candidate.get("topic"),
-                    "candidate_summary": candidate.get("summary"),
-                    "candidate_applicability": candidate.get("applicability"),
-                    "candidate_avoid": candidate.get("avoid"),
-                    "candidate_fingerprint": fingerprint,
-                    "review_status": _SESSION_MEMORY_AGENT_REVIEW_PENDING,
-                    "review_required": True,
-                    "inject_policy": "only_published",
-                    "confidence": candidate.get("confidence"),
-                    "latest_turn_ts": candidate.get("latest_ts"),
-                    "is_active": True,
-                    "skip_secondary_fact_extraction": True,
-                    "facts": _build_agent_candidate_seed_facts(candidate),
-                },
-            )
-            existing_candidate_fingerprints.add(fingerprint)
-            candidate_created += 1
-        except Exception as e:
-            logger.warning(
-                "Failed to store extracted agent memory candidate on session end",
-                extra={
-                    "session_id": session.session_id,
-                    "reason": reason,
-                    "error": str(e),
-                    "candidate_type": candidate.get("candidate_type"),
-                },
-            )
+    persist_result = _persist_legacy_session_memories(
+        mem_interface=mem_interface,
+        session=session,
+        reason=reason,
+        agent_name=agent_name,
+        turn_count=turn_count,
+        extracted_signals=extracted_signals,
+        extracted_agent_candidates=extracted_agent_candidates,
+    )
 
     logger.info(
         "Stored extracted session memories",
         extra={
             "session_id": session.session_id,
             "reason": reason,
-            "preference_created": preference_created,
-            "preference_updated": preference_updated,
-            "preference_skipped": preference_skipped,
+            "preference_created": persist_result.preference_created,
+            "preference_updated": persist_result.preference_updated,
+            "preference_skipped": persist_result.preference_skipped,
             "preference_candidates": len(extracted_signals),
-            "agent_candidate_created": candidate_created,
-            "agent_candidate_skipped": candidate_skipped,
+            "agent_candidate_created": persist_result.candidate_created,
+            "agent_candidate_skipped": persist_result.candidate_skipped,
             "agent_candidate_candidates": len(extracted_agent_candidates),
         },
     )
@@ -3482,9 +2368,10 @@ async def get_agent_metrics(
     try:
         _, agent_uuid = _get_owned_agent_or_raise(agent_id, current_user)
 
+        from sqlalchemy import func
+
         from database.connection import get_db_session
         from database.models import Task
-        from sqlalchemy import func
 
         with get_db_session() as session:
             task_status_rows = (
@@ -3527,9 +2414,10 @@ async def get_agent_logs(
     try:
         _, agent_uuid = _get_owned_agent_or_raise(agent_id, current_user)
 
+        from sqlalchemy import and_, func, or_
+
         from database.connection import get_db_session
         from database.models import AuditLog, Task
-        from sqlalchemy import and_, func, or_
 
         with get_db_session() as session:
             task_rows = (
@@ -4355,8 +3243,7 @@ def _build_attachment_workspace_context(file_refs: List["FileReference"]) -> str
         return ""
 
     has_extracted_documents = any(
-        file_ref.type == "document" and bool(file_ref.extracted_text)
-        for file_ref in file_refs
+        file_ref.type == "document" and bool(file_ref.extracted_text) for file_ref in file_refs
     )
     usage_hint = (
         "Prefer the extracted document text above when available; only read raw files for missing details."
@@ -4364,11 +3251,7 @@ def _build_attachment_workspace_context(file_refs: List["FileReference"]) -> str
         else "Use these paths when reading original uploaded files."
     )
 
-    return (
-        "\n\nAttached files are available in workspace:\n"
-        + "\n".join(lines)
-        + f"\n{usage_hint}"
-    )
+    return "\n\nAttached files are available in workspace:\n" + "\n".join(lines) + f"\n{usage_hint}"
 
 
 class TestAgentRequest(BaseModel):
@@ -5039,7 +3922,9 @@ async def test_agent(
 
                 # Build message content based on model capabilities
                 multimodal_content = None  # Will be passed to agent for vision models
-                current_image_refs = [file_ref for file_ref in file_refs if file_ref.type == "image"]
+                current_image_refs = [
+                    file_ref for file_ref in file_refs if file_ref.type == "image"
+                ]
                 has_image_payload = bool(current_image_refs)
                 if model_supports_vision and has_image_payload:
                     # For vision models, use multimodal content format
@@ -5291,7 +4176,9 @@ async def test_agent(
                     run_error = error_holder[0]
                     logger.error(f"[STREAM] Agent execution error: {run_error}")
 
-                final_response_text = (segment_response[0] if segment_response[0] is not None else "").strip()
+                final_response_text = (
+                    segment_response[0] if segment_response[0] is not None else ""
+                ).strip()
 
                 if isinstance(segment_response_metadata[0], dict):
                     response_metadata_list.append(segment_response_metadata[0])
@@ -5870,6 +4757,7 @@ async def download_agent_session_workspace_file(
     """Download one file from an active agent-test session workspace."""
     try:
         from fastapi.responses import FileResponse
+
         from agent_framework.session_manager import get_session_manager
 
         session_mgr = get_session_manager()

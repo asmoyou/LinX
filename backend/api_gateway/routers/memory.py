@@ -12,9 +12,7 @@ References:
 
 import asyncio
 import logging
-import re
 import time
-import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID
@@ -23,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from access_control.permissions import CurrentUser, get_current_user
+from memory_system.retrieval_gateway import get_memory_retrieval_gateway
 from shared.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -35,6 +34,14 @@ _COLLECTION_RETRY_DELAY_SECONDS = 0.35
 
 class CollectionLoadingError(RuntimeError):
     """Raised when Milvus collection remains unavailable after retries."""
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_now_iso() -> str:
+    return _utc_now().isoformat().replace("+00:00", "Z")
 
 
 def _iter_exception_chain(exc: Exception):
@@ -156,6 +163,25 @@ def _get_memory_repository():
     return get_memory_repository()
 
 
+def _list_owned_agent_ids_sync(user_id: Optional[str]) -> List[str]:
+    """Resolve all agent ids owned by a user for wildcard agent-memory listing."""
+
+    if not user_id:
+        return []
+    try:
+        parsed_user_id = UUID(str(user_id))
+    except (TypeError, ValueError):
+        return []
+
+    from agent_framework.agent_registry import get_agent_registry
+
+    try:
+        agents = get_agent_registry().list_agents(owner_user_id=parsed_user_id)
+    except Exception:
+        return []
+    return [str(agent.agent_id) for agent in agents if getattr(agent, "agent_id", None)]
+
+
 def _sync_record_to_milvus_sync(memory_id: int):
     """Best-effort vector sync from PostgreSQL source-of-truth into Milvus index."""
     from memory_system.memory_interface import MemoryItem
@@ -240,9 +266,9 @@ def _list_memories_from_milvus_sync(query) -> List[dict]:
                 for row in rows:
                     timestamp_ms = row.get("timestamp")
                     timestamp = (
-                        datetime.fromtimestamp(timestamp_ms / 1000.0)
+                        datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
                         if timestamp_ms
-                        else datetime.utcnow()
+                        else _utc_now()
                     )
                     items.append(
                         MemoryItem(
@@ -275,9 +301,9 @@ def _list_memories_from_milvus_sync(query) -> List[dict]:
                 for row in rows:
                     timestamp_ms = row.get("timestamp")
                     timestamp = (
-                        datetime.fromtimestamp(timestamp_ms / 1000.0)
+                        datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
                         if timestamp_ms
-                        else datetime.utcnow()
+                        else _utc_now()
                     )
                     memory_type_str = row.get("memory_type", "company")
                     try:
@@ -306,13 +332,30 @@ def _list_memories_from_milvus_sync(query) -> List[dict]:
             "All target memory collections unavailable during wildcard list, returning empty result"
         )
 
-    items.sort(key=lambda x: x.timestamp or datetime.utcnow(), reverse=True)
+    items.sort(key=lambda x: x.timestamp or _utc_now(), reverse=True)
     top_k = query.top_k or 100
     return _items_to_responses(items[:top_k])
 
 
 def _list_memories_without_embedding_sync(query) -> List[dict]:
     """Wildcard list path with DB-first and Milvus fallback."""
+    from memory_system.memory_interface import MemoryType
+
+    if query.memory_type in {MemoryType.AGENT, MemoryType.USER_CONTEXT}:
+        try:
+            owner_agent_ids: Optional[List[str]] = None
+            if query.memory_type == MemoryType.AGENT and not query.agent_id and query.user_id:
+                owner_agent_ids = _list_owned_agent_ids_sync(query.user_id)
+            items = get_memory_retrieval_gateway().list_scope_memories(
+                search_query=query,
+                repository=_get_memory_repository(),
+                agent_materialization_owner_ids=owner_agent_ids,
+            )
+            return _items_to_responses(items)
+        except Exception as db_exc:
+            logger.warning(
+                "Scope wildcard list path failed, fallback to DB/Milvus legacy path: %s", db_exc
+            )
     try:
         return _list_memories_from_db_sync(query)
     except Exception as db_exc:
@@ -431,6 +474,41 @@ class MemoryIndexInspectResponse(BaseModel):
     embedding_dimension: Optional[int] = Field(None, alias="embeddingDimension")
     embedding_preview: Optional[List[float]] = Field(None, alias="embeddingPreview")
     milvus_error: Optional[str] = Field(None, alias="milvusError")
+
+
+class MaterializationMaintenanceSection(BaseModel):
+    """Summary block for one maintenance phase."""
+
+    dry_run: bool = True
+    scanned_user_context_rows: Optional[int] = None
+    scanned_agent_rows: Optional[int] = None
+    user_profile_candidates: Optional[int] = None
+    agent_experience_candidates: Optional[int] = None
+    user_entry_candidates: Optional[int] = None
+    agent_entry_candidates: Optional[int] = None
+    user_profile_upserts: Optional[int] = None
+    agent_experience_upserts: Optional[int] = None
+    user_entry_upserts: Optional[int] = None
+    agent_entry_upserts: Optional[int] = None
+    scanned_user_profiles: Optional[int] = None
+    scanned_agent_experiences: Optional[int] = None
+    scanned_user_entries: Optional[int] = None
+    scanned_agent_entries: Optional[int] = None
+    user_status_updates: Optional[int] = None
+    agent_status_updates: Optional[int] = None
+    user_entry_status_updates: Optional[int] = None
+    agent_entry_status_updates: Optional[int] = None
+    agent_duplicate_supersedes: Optional[int] = None
+    user_duplicate_entry_supersedes: Optional[int] = None
+    agent_duplicate_entry_supersedes: Optional[int] = None
+
+
+class MaterializationMaintenanceResponse(BaseModel):
+    """Admin maintenance response for materialization backfill/consolidation."""
+
+    backfill: MaterializationMaintenanceSection
+    consolidation: MaterializationMaintenanceSection
+    requested_by: Dict[str, str]
 
 
 class MemoryConfigResponse(BaseModel):
@@ -796,9 +874,7 @@ def _memory_item_to_response(
         "agentName": agent_name,
         "userId": item.user_id,
         "userName": user_name,
-        "createdAt": (
-            item.timestamp.isoformat() if item.timestamp else datetime.utcnow().isoformat()
-        ),
+        "createdAt": item.timestamp.isoformat() if item.timestamp else _utc_now().isoformat(),
         "tags": tags if isinstance(tags, list) else [],
         "relevanceScore": item.similarity_score,
         "metadata": meta if meta else None,
@@ -887,85 +963,29 @@ _MEMORY_QUERY_STOP_TERMS = {
     "on",
 }
 
-_MEMORY_CJK_QUESTION_TERMS = {"如何", "怎么", "怎样", "请问", "是谁", "什么"}
-_MEMORY_CJK_QUESTION_CHARS = {"如", "何", "怎", "样", "请", "问", "谁", "什", "么"}
-_KEYWORD_FALLBACK_MIN_RANK = 4.0
-_KEYWORD_FALLBACK_SCORE_DENOMINATOR = 6.0
-
 
 def _is_strict_keyword_fallback_enabled() -> bool:
     """Whether strict keyword fallback semantics are enabled."""
-    try:
-        memory_cfg = get_config().get_section("memory")
-    except Exception:
-        return True
-    if not isinstance(memory_cfg, dict):
-        return True
-    retrieval_cfg = memory_cfg.get("retrieval", {})
-    if not isinstance(retrieval_cfg, dict):
-        return True
-    return bool(retrieval_cfg.get("strict_keyword_fallback", True))
+    return get_memory_retrieval_gateway().is_strict_keyword_fallback_enabled()
 
 
 def _extract_memory_query_terms(query_text: str, *, max_terms: int = 16) -> List[str]:
     """Extract normalized query terms for keyword fallback retrieval."""
-    normalized = unicodedata.normalize("NFKC", str(query_text or "")).strip().lower()
-    if len(normalized) < 2:
-        return []
-
-    terms = set()
-
-    for token in re.findall(r"[a-z0-9][a-z0-9._-]{1,}", normalized):
-        if token not in _MEMORY_QUERY_STOP_TERMS:
-            terms.add(token)
-
-    split_terms = re.split(
-        r"[\s,，。！？!?;；:：/\\|()\[\]{}【】\"'“”‘’]+",
-        normalized,
+    return get_memory_retrieval_gateway().extract_query_terms(
+        query_text,
+        max_terms=max_terms,
+        cjk_ngram_sizes=(2, 3),
     )
-    for token in split_terms:
-        token = token.strip()
-        if len(token) >= 2 and token not in _MEMORY_QUERY_STOP_TERMS:
-            terms.add(token)
-
-    cjk_fragments = re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]+", normalized)
-    for fragment in cjk_fragments:
-        if len(fragment) >= 2 and fragment not in _MEMORY_QUERY_STOP_TERMS:
-            terms.add(fragment)
-
-        for n in (2, 3):
-            if len(fragment) < n:
-                continue
-            for idx in range(len(fragment) - n + 1):
-                gram = fragment[idx : idx + n]
-                if not gram or gram in _MEMORY_QUERY_STOP_TERMS:
-                    continue
-                if any(question in gram for question in _MEMORY_CJK_QUESTION_TERMS):
-                    continue
-                if gram[0] in _MEMORY_CJK_QUESTION_CHARS:
-                    continue
-                terms.add(gram)
-
-    if normalized not in _MEMORY_QUERY_STOP_TERMS and len(normalized) >= 2:
-        terms.add(normalized)
-
-    return sorted(terms, key=lambda item: (-len(item), item))[: max(int(max_terms), 1)]
 
 
 def _keyword_min_term_hits(query_terms: List[str]) -> int:
     """Require more lexical agreement for longer queries to reduce noisy matches."""
-    term_count = len([term for term in query_terms if len(str(term).strip()) >= 2])
-    if term_count <= 1:
-        return 1
-    if term_count <= 4:
-        return 2
-    return 3
+    return get_memory_retrieval_gateway().keyword_min_term_hits(query_terms)
 
 
 def _keyword_rank_to_similarity(rank: float) -> float:
     """Normalize keyword rank to [0, 1] for API relevance display and threshold filtering."""
-    safe_rank = max(float(rank or 0.0), 0.0)
-    return min(max(safe_rank / (safe_rank + _KEYWORD_FALLBACK_SCORE_DENOMINATOR), 0.0), 1.0)
+    return get_memory_retrieval_gateway().keyword_rank_to_similarity(rank)
 
 
 def _resolve_share_targets(agent_ids: List[str], user_ids: List[str]) -> Dict[str, List[str]]:
@@ -1875,113 +1895,85 @@ def _build_paginated_memory_response(
     )
 
 
+def _list_memory_materializations_sync(
+    *,
+    materialization_type: str,
+    owner_id: str,
+    query_text: str,
+    limit: int,
+    min_score: Optional[float] = None,
+) -> List[dict]:
+    """Read materialized memory views through the dedicated migration path."""
+    items = get_memory_retrieval_gateway().retrieve_materializations(
+        materialization_type=materialization_type,
+        owner_id=str(owner_id),
+        query_text=str(query_text or "*"),
+        top_k=max(int(limit), 1),
+        min_similarity=min_score,
+    )
+
+    return _items_to_responses(items)
+
+
 def _retrieve_memories_sync(query):
     """Retrieve memories synchronously (semantic first, then strict keyword fallback)."""
+    from memory_system.memory_interface import MemoryType
     from memory_system.memory_system import get_memory_system
 
     if query.query_text == "*":
         return _list_memories_without_embedding_sync(query)
 
-    repo = _get_memory_repository()
     memory_system = get_memory_system()
-    items = []
-    try:
-        semantic_items = memory_system.retrieve_memories(query)
-
-        # Map Milvus ids back to PostgreSQL records so API ids remain business ids.
-        milvus_ids = []
-        for semantic_item in semantic_items:
-            if semantic_item.id is None:
-                continue
-            try:
-                milvus_ids.append(int(semantic_item.id))
-            except (TypeError, ValueError):
-                continue
-
-        mapped_by_milvus = repo.get_by_milvus_ids(milvus_ids)
-        for semantic_item in semantic_items:
-            mapped = None
-            try:
-                mapped = mapped_by_milvus.get(int(semantic_item.id))
-            except (TypeError, ValueError):
-                mapped = None
-
-            if mapped:
-                # Enforce user isolation at source-of-truth layer.
-                if query.user_id and str(mapped.user_id or "") != str(query.user_id):
-                    continue
-                db_item = mapped.to_memory_item(similarity_score=semantic_item.similarity_score)
-                if semantic_item.metadata:
-                    db_item.metadata = db_item.metadata or {}
-                    # Preserve debug scores from ranking pipeline.
-                    db_item.metadata.update(
-                        {k: v for k, v in semantic_item.metadata.items() if str(k).startswith("_")}
-                    )
-                items.append(db_item)
-            else:
-                # Fail-closed for unmapped legacy vector rows when user scope is present.
-                if query.user_id:
-                    continue
-                items.append(semantic_item)
-    except Exception as exc:
-        logger.warning("Semantic memory search failed, attempting keyword fallback: %s", exc)
-
-    if items:
-        return _items_to_responses(items)
-
-    if query.min_similarity is None:
-        try:
-            effective_min_similarity = max(
-                float(getattr(memory_system, "_default_similarity_threshold", 0.0)),
-                0.0,
-            )
-        except (TypeError, ValueError):
-            effective_min_similarity = 0.0
-    else:
-        try:
-            effective_min_similarity = max(float(query.min_similarity), 0.0)
-        except (TypeError, ValueError):
-            effective_min_similarity = 0.0
-
-    query_terms = _extract_memory_query_terms(query.query_text)
+    repository = _get_memory_repository()
+    gateway = get_memory_retrieval_gateway()
     strict_keyword_fallback = _is_strict_keyword_fallback_enabled()
-    fallback_rows = repo.search_keywords(
-        query.query_text,
-        query_terms=query_terms,
-        memory_type=query.memory_type,
-        agent_id=query.agent_id,
-        user_id=query.user_id,
-        task_id=query.task_id,
-        min_term_hits=_keyword_min_term_hits(query_terms),
-        min_rank=_KEYWORD_FALLBACK_MIN_RANK,
-        limit=query.top_k or 10,
-        strict_semantics=strict_keyword_fallback,
-    )
-    fallback_items = []
-    for row, keyword_rank, term_hits in fallback_rows:
-        score = _keyword_rank_to_similarity(keyword_rank)
-        if score < effective_min_similarity:
-            continue
-        item = row.to_memory_item(similarity_score=score)
-        item.metadata = dict(item.metadata or {})
-        item.metadata["search_method"] = "keyword"
-        item.metadata["keyword_mode"] = "strict" if strict_keyword_fallback else "legacy"
-        item.metadata["keyword_rank"] = round(float(keyword_rank), 4)
-        item.metadata["keyword_term_hits"] = int(term_hits)
-        fallback_items.append(item)
 
-    if fallback_items:
-        logger.info(
-            "Memory keyword fallback matched results",
-            extra={
-                "query": query.query_text,
-                "result_count": len(fallback_items),
-                "term_count": len(query_terms),
-                "min_similarity": effective_min_similarity,
-            },
+    if query.memory_type == MemoryType.USER_CONTEXT and query.user_id:
+        items = gateway.retrieve_user_context_scope(
+            memory_system=memory_system,
+            repository=repository,
+            user_id=str(query.user_id),
+            query_text=query.query_text,
+            top_k=query.top_k or 10,
+            min_similarity=query.min_similarity,
+            strict_keyword_fallback=strict_keyword_fallback,
+            cjk_ngram_sizes=(2, 3),
         )
-
-    return _items_to_responses(fallback_items)
+    elif query.memory_type == MemoryType.AGENT and query.agent_id:
+        items = gateway.retrieve_agent_scope(
+            memory_system=memory_system,
+            repository=repository,
+            agent_id=str(query.agent_id),
+            user_id=str(query.user_id or ""),
+            query_text=query.query_text,
+            top_k=query.top_k or 10,
+            min_similarity=query.min_similarity,
+            strict_keyword_fallback=strict_keyword_fallback,
+            cjk_ngram_sizes=(2, 3),
+        )
+    elif query.memory_type == MemoryType.AGENT and query.user_id:
+        owner_ids = _list_owned_agent_ids_sync(str(query.user_id))
+        items = gateway.retrieve_owned_agent_scope(
+            memory_system=memory_system,
+            repository=repository,
+            owner_ids=owner_ids,
+            user_id=str(query.user_id),
+            query_text=query.query_text,
+            top_k=query.top_k or 10,
+            min_similarity=query.min_similarity,
+            strict_keyword_fallback=strict_keyword_fallback,
+            cjk_ngram_sizes=(2, 3),
+        )
+    else:
+        items = gateway.retrieve_memories(
+            search_query=query,
+            memory_system=memory_system,
+            repository=repository,
+            strict_keyword_fallback=strict_keyword_fallback,
+            cjk_ngram_sizes=(2, 3),
+            log_label="Memory",
+        )
+    return _items_to_responses(items)
 
 
 def _retrieve_shared_sync(current_user: CurrentUser):
@@ -2036,13 +2028,22 @@ def _retrieve_shared_sync(current_user: CurrentUser):
 
 def _list_memories_by_type_sync(memory_type, user_id: Optional[str]) -> List[dict]:
     """List all memories of one type from PostgreSQL source-of-truth."""
-    repo = _get_memory_repository()
-    rows = repo.list_memories(
+    from memory_system.memory_interface import SearchQuery
+
+    query = SearchQuery(
+        query_text="*",
         memory_type=memory_type,
         user_id=user_id,
-        limit=None,
+        top_k=None,
     )
-    items = [row.to_memory_item() for row in rows]
+    owner_agent_ids = (
+        _list_owned_agent_ids_sync(user_id) if str(memory_type.value) == "agent" else None
+    )
+    items = get_memory_retrieval_gateway().list_scope_memories(
+        search_query=query,
+        repository=_get_memory_repository(),
+        agent_materialization_owner_ids=owner_agent_ids,
+    )
     return _items_to_responses(items)
 
 
@@ -2130,7 +2131,7 @@ def _review_agent_candidate_sync(
     if action not in {"publish", "reject", "revise"}:
         raise ValueError("Unsupported review action")
 
-    now_iso = datetime.utcnow().isoformat() + "Z"
+    now_iso = _utc_now_iso()
     review_status = {
         "publish": "published",
         "reject": "rejected",
@@ -2177,6 +2178,21 @@ def _review_agent_candidate_sync(
         synced = _sync_record_to_milvus_sync(int(updated.id))
         final_record = synced or repo.get(int(updated.id)) or updated
 
+    try:
+        from memory_system.materialization_maintenance_service import (
+            get_materialization_maintenance_service,
+        )
+
+        get_materialization_maintenance_service().sync_agent_candidate_materialization(
+            record=final_record,
+            review_status=review_status,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to sync reviewed agent candidate into materialization",
+            extra={"memory_id": int(final_record.id), "error": str(exc)},
+        )
+
     item = final_record.to_memory_item()
     with get_db_session() as session:
         agent_name = _lookup_agent_name(session, item.agent_id)
@@ -2187,10 +2203,9 @@ def _review_agent_candidate_sync(
 
 def _store_memory_sync(memory_item):
     """Store memory via MemorySystem to apply normalization/dedup/merge policies."""
+    from database.connection import get_db_session
     from memory_system.memory_interface import MemoryType
     from memory_system.memory_system import get_memory_system
-
-    from database.connection import get_db_session
 
     if memory_item.memory_type == MemoryType.AGENT and not memory_item.agent_id:
         raise ValueError("agent_id required for agent memories")
@@ -2724,7 +2739,7 @@ def _share_memory_sync(
         source_meta["shared_with_user_ids"] = target_user_ids
         source_meta["shared_with_names"] = target_entity_names
         source_meta["share_reason"] = normalized_reason
-        source_meta["shared_updated_at"] = datetime.utcnow().isoformat()
+        source_meta["shared_updated_at"] = _utc_now().isoformat()
         source_meta["shared_updated_by"] = shared_by_user_id
         source_meta["expires_at"] = expires_dt.isoformat() if expires_dt else None
 
@@ -2749,7 +2764,7 @@ def _share_memory_sync(
                 content=source_record.content,
                 memory_type=MemoryType.COMPANY,
                 user_id=owner_user_id,
-                timestamp=datetime.utcnow(),
+                timestamp=_utc_now(),
                 metadata=promoted_meta,
             )
             _enrich_memory_security_metadata_sync(promoted_memory)
@@ -3097,6 +3112,58 @@ async def get_shared_memories(
 ):
     """Get memories shared with the current user."""
     results = await asyncio.to_thread(_retrieve_shared_sync, current_user)
+    return [MemoryResponse(**r) for r in results]
+
+
+@router.get("/materializations", response_model=List[MemoryResponse])
+async def list_memory_materializations(
+    view: str = Query(..., pattern=r"^(user_profile|agent_experience)$"),
+    agent_id: Optional[str] = Query(None),
+    user_id: Optional[str] = Query(None),
+    query_text: str = Query("*", alias="query"),
+    limit: int = Query(20, ge=1, le=100),
+    min_score: Optional[float] = Query(None, alias="minScore", ge=0.0, le=1.0),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Read materialized memory views produced by the session-ledger migration."""
+    from memory_system.memory_interface import MemoryType
+
+    if view == "agent_experience":
+        if not agent_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="agent_id is required for agent_experience",
+            )
+        await asyncio.to_thread(_require_agent_read_access_sync, agent_id, current_user)
+        owner_id = str(agent_id)
+    else:
+        owner_id = str(
+            _resolve_effective_user_id(
+                MemoryType.USER_CONTEXT,
+                current_user,
+                requested_user_id=user_id,
+            )
+            or current_user.user_id
+        )
+
+    try:
+        results = await asyncio.to_thread(
+            _list_memory_materializations_sync,
+            materialization_type=view,
+            owner_id=owner_id,
+            query_text=query_text,
+            limit=limit,
+            min_score=min_score,
+        )
+    except Exception as e:
+        logger.error("Failed to list memory materializations: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list memory materializations: {e}",
+        )
+
+    results = await asyncio.to_thread(_filter_agent_memory_access_sync, results, current_user)
+    results = await asyncio.to_thread(_filter_company_memory_access_sync, results, current_user)
     return [MemoryResponse(**r) for r in results]
 
 
@@ -3755,6 +3822,71 @@ async def backfill_agent_user_ids(
         "role": current_user.role,
     }
     return result
+
+
+@router.post(
+    "/admin/maintain-materializations",
+    response_model=MaterializationMaintenanceResponse,
+)
+async def maintain_materializations(
+    dry_run: bool = Query(True, description="If true, only report affected rows"),
+    user_id: Optional[str] = Query(
+        None,
+        description="Optional user scope for user_profile backfill/consolidation",
+    ),
+    agent_id: Optional[str] = Query(
+        None,
+        description="Optional agent scope for agent_experience backfill/consolidation",
+    ),
+    limit: Optional[int] = Query(
+        None,
+        ge=1,
+        le=50000,
+        description="Optional max legacy rows/materializations to scan in this run",
+    ),
+    include_backfill: bool = Query(
+        True, description="Whether to backfill from legacy memory_records"
+    ),
+    include_consolidation: bool = Query(
+        True,
+        description="Whether to run status-sync and duplicate consolidation",
+    ),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Admin maintenance endpoint for materialization backfill and consolidation."""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can run materialization maintenance",
+        )
+
+    from memory_system.materialization_maintenance_service import (
+        get_materialization_maintenance_service,
+    )
+
+    try:
+        result = await asyncio.to_thread(
+            get_materialization_maintenance_service().run_maintenance,
+            dry_run=dry_run,
+            user_id=user_id,
+            agent_id=agent_id,
+            limit=limit,
+            include_backfill=include_backfill,
+            include_consolidation=include_consolidation,
+        )
+    except Exception as exc:
+        logger.error("Materialization maintenance failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Materialization maintenance failed: {exc}",
+        ) from exc
+
+    payload = get_materialization_maintenance_service().to_dict(result)
+    payload["requested_by"] = {
+        "user_id": current_user.user_id,
+        "role": current_user.role,
+    }
+    return MaterializationMaintenanceResponse(**payload)
 
 
 def _find_orphan_vectors_sync(

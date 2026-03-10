@@ -5,11 +5,11 @@ Milvus remains a vector index. Business CRUD reads/writes must rely on this repo
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 import re
-from typing import Any, Dict, List, Optional, Tuple
 import unicodedata
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import case, desc, func, literal, or_
 
@@ -20,6 +20,10 @@ from memory_system.memory_interface import MemoryItem, MemoryType
 VECTOR_STATUS_PENDING = "pending"
 VECTOR_STATUS_SYNCED = "synced"
 VECTOR_STATUS_FAILED = "failed"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 @dataclass
@@ -41,7 +45,7 @@ class MemoryRecordData:
     source_memory_id: Optional[int] = None
     expires_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=_utc_now)
     vector_status: str = VECTOR_STATUS_PENDING
     vector_error: Optional[str] = None
     vector_updated_at: Optional[datetime] = None
@@ -372,7 +376,7 @@ class MemoryRepository:
 
     def create(self, memory_item: MemoryItem) -> MemoryRecordData:
         """Create a memory record in PostgreSQL with pending vector sync status."""
-        timestamp = memory_item.timestamp or datetime.utcnow()
+        timestamp = memory_item.timestamp or _utc_now()
         metadata = dict(memory_item.metadata or {})
         task_id = memory_item.task_id or metadata.get("task_id")
         security = self._normalize_security_fields(
@@ -771,7 +775,7 @@ class MemoryRepository:
             )
 
             if within_minutes and within_minutes > 0:
-                cutoff = datetime.utcnow() - timedelta(minutes=int(within_minutes))
+                cutoff = _utc_now() - timedelta(minutes=int(within_minutes))
                 query = query.filter(MemoryRecord.timestamp >= cutoff)
 
             row = query.order_by(desc(MemoryRecord.timestamp)).first()
@@ -804,7 +808,7 @@ class MemoryRepository:
             row.milvus_id = milvus_id
             row.vector_status = VECTOR_STATUS_SYNCED
             row.vector_error = None
-            row.vector_updated_at = datetime.utcnow()
+            row.vector_updated_at = _utc_now()
             session.flush()
             session.refresh(row)
             return self._to_data(row)
@@ -818,7 +822,7 @@ class MemoryRepository:
 
             row.vector_status = VECTOR_STATUS_FAILED
             row.vector_error = (error or "")[:2000] or None
-            row.vector_updated_at = datetime.utcnow()
+            row.vector_updated_at = _utc_now()
             session.flush()
             session.refresh(row)
             return self._to_data(row)
@@ -833,7 +837,7 @@ class MemoryRepository:
             row.milvus_id = None
             row.vector_status = VECTOR_STATUS_PENDING
             row.vector_error = None
-            row.vector_updated_at = datetime.utcnow()
+            row.vector_updated_at = _utc_now()
             session.flush()
             session.refresh(row)
             return self._to_data(row)
@@ -877,7 +881,7 @@ class MemoryRepository:
             for row in oldest_rows:
                 evicted.append(self._to_data(row))
                 row.is_deleted = True
-                row.updated_at = datetime.utcnow()
+                row.updated_at = _utc_now()
 
             return evicted
 
@@ -919,13 +923,13 @@ class MemoryRepository:
             non_core_rows.sort(
                 key=lambda row: (
                     self._metadata_utility_score(row),
-                    row.timestamp or datetime.utcnow(),
+                    row.timestamp or _utc_now(),
                 )
             )
             core_rows.sort(
                 key=lambda row: (
                     self._metadata_utility_score(row),
-                    row.timestamp or datetime.utcnow(),
+                    row.timestamp or _utc_now(),
                 )
             )
 
@@ -936,7 +940,7 @@ class MemoryRepository:
                     rows,
                     key=lambda row: (
                         self._metadata_utility_score(row),
-                        row.timestamp or datetime.utcnow(),
+                        row.timestamp or _utc_now(),
                     ),
                 )
             )
@@ -946,7 +950,7 @@ class MemoryRepository:
             for row in selected_rows:
                 evicted.append(self._to_data(row))
                 row.is_deleted = True
-                row.updated_at = datetime.utcnow()
+                row.updated_at = _utc_now()
 
             return evicted
 
@@ -986,7 +990,7 @@ class MemoryRepository:
             for row in selected_rows:
                 evicted.append(self._to_data(row))
                 row.is_deleted = True
-                row.updated_at = datetime.utcnow()
+                row.updated_at = _utc_now()
 
             return evicted
 
@@ -1003,7 +1007,7 @@ class MemoryRepository:
                 return False
 
             row.is_deleted = True
-            row.updated_at = datetime.utcnow()
+            row.updated_at = _utc_now()
             return True
 
     def purge_by_type(self, memory_type: MemoryType, *, agent_id: Optional[str] = None) -> int:
@@ -1020,7 +1024,7 @@ class MemoryRepository:
             rows = query.all()
             for row in rows:
                 row.is_deleted = True
-                row.updated_at = datetime.utcnow()
+                row.updated_at = _utc_now()
 
             return len(rows)
 
@@ -1044,7 +1048,7 @@ class MemoryRepository:
         created_by: Optional[str] = None,
     ) -> int:
         """Replace memory ACL entries for a record."""
-        now = datetime.utcnow()
+        now = _utc_now()
         with get_db_session() as session:
             (
                 session.query(MemoryACL)
@@ -1092,7 +1096,7 @@ class MemoryRepository:
         if not memory_ids:
             return {}
 
-        as_of = now or datetime.utcnow()
+        as_of = now or _utc_now()
         unique_ids = sorted({int(mid) for mid in memory_ids})
         with get_db_session() as session:
             rows = (

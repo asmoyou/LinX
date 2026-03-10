@@ -242,6 +242,7 @@ def test_execution_context_uses_explicit_memory_similarity_threshold():
     memory_interface = MagicMock()
     memory_interface.retrieve_agent_memory.return_value = []
     memory_interface.retrieve_company_memory.return_value = []
+    memory_interface.retrieve_user_context_memory.return_value = []
     memory_interface.memory_system.retrieve_memories.return_value = []
     executor = AgentExecutor(memory_interface=memory_interface)
 
@@ -267,12 +268,14 @@ def test_execution_context_uses_explicit_memory_similarity_threshold():
 
     assert memory_interface.retrieve_agent_memory.call_args.kwargs["min_similarity"] == 0.64
     assert memory_interface.retrieve_company_memory.call_args.kwargs["min_similarity"] == 0.64
+    assert memory_interface.retrieve_user_context_memory.call_args.kwargs["min_similarity"] == 0.64
 
 
 def test_execution_context_does_not_fallback_to_agent_similarity_threshold():
     memory_interface = MagicMock()
     memory_interface.retrieve_agent_memory.return_value = []
     memory_interface.retrieve_company_memory.return_value = []
+    memory_interface.retrieve_user_context_memory.return_value = []
     memory_interface.memory_system.retrieve_memories.return_value = []
     executor = AgentExecutor(memory_interface=memory_interface)
 
@@ -300,8 +303,7 @@ def test_execution_context_does_not_fallback_to_agent_similarity_threshold():
 
     assert memory_interface.retrieve_agent_memory.call_args.kwargs["min_similarity"] is None
     assert memory_interface.retrieve_company_memory.call_args.kwargs["min_similarity"] is None
-    user_context_query = memory_interface.memory_system.retrieve_memories.call_args.args[0]
-    assert user_context_query.min_similarity is None
+    assert memory_interface.retrieve_user_context_memory.call_args.kwargs["min_similarity"] is None
 
 
 def test_execute_forwards_knowledge_min_relevance_score_to_context_builder():

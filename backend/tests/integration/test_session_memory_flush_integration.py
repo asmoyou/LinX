@@ -42,6 +42,15 @@ class _MemoryInterfaceStub:
         return "agent-memory-id"
 
 
+class _SessionLedgerServiceStub:
+    def __init__(self):
+        self.calls = []
+
+    def persist_conversation_session(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"ok": True}
+
+
 def _build_session(tmp_path: Path) -> ConversationSession:
     session = ConversationSession(
         session_id="session-flush-test",
@@ -188,3 +197,40 @@ async def test_session_flush_falls_back_to_metadata_upsert_when_delete_action_no
     fallback_meta = upsert_mock.call_args.args[1]
     assert fallback_meta["is_active"] is False
     assert fallback_meta["superseded_by_value"] == "concise"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_session_flush_dual_writes_session_ledger_even_without_memory_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    session = _build_session(tmp_path)
+    mem_stub = _MemoryInterfaceStub()
+    ledger_stub = _SessionLedgerServiceStub()
+
+    async def _fake_extract_session_memory_signals_with_llm(*, turns, **kwargs):
+        assert turns
+        return [], []
+
+    monkeypatch.setattr(
+        agents_router,
+        "_extract_session_memory_signals_with_llm",
+        _fake_extract_session_memory_signals_with_llm,
+    )
+    monkeypatch.setattr(
+        "agent_framework.agent_memory_interface.get_agent_memory_interface",
+        lambda: mem_stub,
+    )
+    monkeypatch.setattr(
+        "memory_system.session_ledger_service.get_memory_session_ledger_service",
+        lambda: ledger_stub,
+    )
+
+    await agents_router._flush_session_memories(session, "session_end")
+
+    assert ledger_stub.calls
+    assert ledger_stub.calls[0]["reason"] == "session_end"
+    assert ledger_stub.calls[0]["turns"]
+    assert mem_stub.user_context_calls == []
+    assert mem_stub.agent_memory_calls == []
