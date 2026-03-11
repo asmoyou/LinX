@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 import psutil  # For system memory monitoring
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
 
 from access_control.permissions import CurrentUser, get_current_user
@@ -58,7 +58,9 @@ AGENT_TEST_RUNTIME_CONTEXT_TAG = "agent_test_session"
 AGENT_TEST_MAX_ITERATIONS = 20
 
 
-def _resolve_agent_avatar(avatar_ref: Optional[str]) -> Optional[str]:
+def _resolve_agent_avatar(
+    avatar_ref: Optional[str], request: Optional[Request] = None
+) -> Optional[str]:
     """
     Resolve agent avatar reference to a presigned URL.
 
@@ -71,38 +73,32 @@ def _resolve_agent_avatar(avatar_ref: Optional[str]) -> Optional[str]:
     if not avatar_ref:
         return None
 
-    # Check for minio reference format
-    if avatar_ref.startswith("minio:"):
-        try:
-            minio_client = get_minio_client()
-            return minio_client.resolve_avatar_url(avatar_ref)
-        except Exception as e:
-            logger.warning(f"Failed to resolve agent avatar URL: {e}")
-            return None
+    try:
+        minio_client = get_minio_client()
+        public_endpoint, public_secure = minio_client.resolve_public_endpoint(
+            origin_url=request.headers.get("origin") if request else None,
+            referer_url=request.headers.get("referer") if request else None,
+            forwarded_host=request.headers.get("x-forwarded-host") if request else None,
+        )
+        resolved = minio_client.resolve_avatar_url(
+            avatar_ref,
+            public_endpoint=public_endpoint,
+            public_secure=public_secure,
+        )
 
-    # Legacy: detect expired presigned MinIO URLs (localhost:9000/bucket/key?X-Amz-...)
-    # and auto-convert them to minio: references for fresh presigned URLs
-    if "X-Amz-" in avatar_ref and "localhost:9000/" in avatar_ref:
-        try:
-            from urllib.parse import urlparse
+        # Legacy: auto-convert stored presigned URLs to minio: references for future requests.
+        if not avatar_ref.startswith("minio:"):
+            parsed_reference = minio_client.parse_object_reference(avatar_ref)
+            if parsed_reference:
+                bucket_name, object_key = parsed_reference
+                _auto_fix_avatar_ref(
+                    avatar_ref, minio_client.create_avatar_reference(bucket_name, object_key)
+                )
 
-            parsed = urlparse(avatar_ref)
-            # path is like /images/agent-id/filename.webp
-            path_parts = parsed.path.lstrip("/").split("/", 1)
-            if len(path_parts) == 2:
-                bucket_name, object_key = path_parts
-                minio_ref = f"minio:{bucket_name}:{object_key}"
-                minio_client = get_minio_client()
-                url = minio_client.resolve_avatar_url(minio_ref)
-                if url:
-                    # Auto-fix the DB record in background
-                    _auto_fix_avatar_ref(avatar_ref, minio_ref)
-                    return url
-        except Exception as e:
-            logger.warning(f"Failed to convert legacy avatar URL: {e}")
-
-    # Legacy: already a URL, return as-is
-    return avatar_ref
+        return resolved
+    except Exception as e:
+        logger.warning(f"Failed to resolve agent avatar URL: {e}")
+        return avatar_ref if not avatar_ref.startswith("minio:") else None
 
 
 def _auto_fix_avatar_ref(old_ref: str, new_ref: str):
@@ -2181,7 +2177,9 @@ async def get_available_providers(
 
 @router.post("", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
 async def create_agent(
-    request: CreateAgentRequest, current_user: CurrentUser = Depends(get_current_user)
+    http_request: Request,
+    request: CreateAgentRequest,
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Create a new agent."""
     try:
@@ -2224,7 +2222,7 @@ async def create_agent(
             id=str(agent_info.agent_id),
             name=agent_info.name,
             type=agent_info.agent_type,
-            avatar=_resolve_agent_avatar(agent_info.avatar),
+            avatar=_resolve_agent_avatar(agent_info.avatar, http_request),
             status=agent_info.status,
             currentTask=None,
             tasksExecuted=0,
@@ -2257,7 +2255,10 @@ async def create_agent(
 
 
 @router.get("", response_model=List[AgentResponse])
-async def list_agents(current_user: CurrentUser = Depends(get_current_user)):
+async def list_agents(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """List user's agents."""
     try:
         registry = get_agent_registry()
@@ -2274,7 +2275,7 @@ async def list_agents(current_user: CurrentUser = Depends(get_current_user)):
                     id=str(agent.agent_id),
                     name=agent.name,
                     type=agent.agent_type,
-                    avatar=_resolve_agent_avatar(agent.avatar),
+                    avatar=_resolve_agent_avatar(agent.avatar, request),
                     status=agent.status,
                     currentTask=None,  # TODO: Get from task manager
                     tasksExecuted=task_stats["tasksExecuted"],
@@ -2311,7 +2312,11 @@ async def list_agents(current_user: CurrentUser = Depends(get_current_user)):
 
 
 @router.get("/{agent_id}", response_model=AgentResponse)
-async def get_agent(agent_id: str, current_user: CurrentUser = Depends(get_current_user)):
+async def get_agent(
+    agent_id: str,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """Get agent details."""
     try:
         agent, _ = _get_owned_agent_or_raise(agent_id, current_user)
@@ -2324,7 +2329,7 @@ async def get_agent(agent_id: str, current_user: CurrentUser = Depends(get_curre
             id=str(agent.agent_id),
             name=agent.name,
             type=agent.agent_type,
-            avatar=_resolve_agent_avatar(agent.avatar),
+            avatar=_resolve_agent_avatar(agent.avatar, request),
             status=agent.status,
             currentTask=None,
             tasksExecuted=task_stats["tasksExecuted"],
@@ -2461,7 +2466,8 @@ async def get_agent_logs(
 @router.put("/{agent_id}", response_model=AgentResponse)
 async def update_agent(
     agent_id: str,
-    request: UpdateAgentRequest,
+    request: Request,
+    payload: UpdateAgentRequest,
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update agent configuration."""
@@ -2484,28 +2490,28 @@ async def update_agent(
 
         # Update agent with all configuration fields
         validated_allowed_knowledge = (
-            _validate_allowed_knowledge(request.allowedKnowledge, current_user)
-            if request.allowedKnowledge is not None
+            _validate_allowed_knowledge(payload.allowedKnowledge, current_user)
+            if payload.allowedKnowledge is not None
             else None
         )
-        validated_allowed_memory = _validate_allowed_memory(request.allowedMemory)
+        validated_allowed_memory = _validate_allowed_memory(payload.allowedMemory)
         updated_agent = registry.update_agent(
             agent_id=UUID(agent_id),
-            name=request.name,
-            avatar=request.avatar,
-            capabilities=request.skills,
-            llm_provider=request.provider,
-            llm_model=request.model,
-            system_prompt=request.systemPrompt,
-            temperature=request.temperature,
-            max_tokens=request.maxTokens,
-            top_p=request.topP,
-            access_level=request.accessLevel,
+            name=payload.name,
+            avatar=payload.avatar,
+            capabilities=payload.skills,
+            llm_provider=payload.provider,
+            llm_model=payload.model,
+            system_prompt=payload.systemPrompt,
+            temperature=payload.temperature,
+            max_tokens=payload.maxTokens,
+            top_p=payload.topP,
+            access_level=payload.accessLevel,
             allowed_knowledge=validated_allowed_knowledge,
             allowed_memory=validated_allowed_memory,
-            top_k=request.topK,
-            similarity_threshold=request.similarityThreshold,
-            department_id=request.department_id,
+            top_k=payload.topK,
+            similarity_threshold=payload.similarityThreshold,
+            department_id=payload.department_id,
         )
 
         if not updated_agent:
@@ -2530,7 +2536,7 @@ async def update_agent(
             id=str(updated_agent.agent_id),
             name=updated_agent.name,
             type=updated_agent.agent_type,
-            avatar=_resolve_agent_avatar(updated_agent.avatar),
+            avatar=_resolve_agent_avatar(updated_agent.avatar, request),
             status=updated_agent.status,
             currentTask=None,
             tasksExecuted=task_stats["tasksExecuted"],
@@ -2567,6 +2573,7 @@ async def update_agent(
 @router.post("/{agent_id}/avatar", response_model=Dict[str, str])
 async def upload_agent_avatar(
     agent_id: str,
+    request: Request,
     file: UploadFile = File(...),
     current_user: CurrentUser = Depends(get_current_user),
 ):
@@ -2639,8 +2646,17 @@ async def upload_agent_avatar(
         # Generate presigned URL for immediate response (valid for 7 days)
         from datetime import timedelta
 
+        public_endpoint, public_secure = minio_client.resolve_public_endpoint(
+            origin_url=request.headers.get("origin"),
+            referer_url=request.headers.get("referer"),
+            forwarded_host=request.headers.get("x-forwarded-host"),
+        )
         avatar_url = minio_client.get_presigned_url(
-            bucket_name=bucket_name, object_key=object_key, expires=timedelta(days=7)
+            bucket_name=bucket_name,
+            object_key=object_key,
+            expires=timedelta(days=7),
+            public_endpoint=public_endpoint,
+            public_secure=public_secure,
         )
 
         # Update agent with avatar reference (store ref, not URL)
@@ -4894,7 +4910,8 @@ class UpdateAgentSkillsRequest(BaseModel):
 @router.put("/{agent_id}/skills", response_model=AgentResponse)
 async def update_agent_skills(
     agent_id: str,
-    request: UpdateAgentSkillsRequest,
+    request: Request,
+    payload: UpdateAgentSkillsRequest,
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update agent's configured skills.
@@ -4920,7 +4937,7 @@ async def update_agent_skills(
         from database.models import Skill
 
         with get_db_session() as session:
-            for skill_name in request.skill_names:
+            for skill_name in payload.skill_names:
                 skill = (
                     session.query(Skill)
                     .filter(Skill.name == skill_name, Skill.is_active == True)
@@ -4933,7 +4950,7 @@ async def update_agent_skills(
                     )
 
         # Update agent capabilities
-        updated_agent = registry.update_agent(agent_uuid, capabilities=request.skill_names)
+        updated_agent = registry.update_agent(agent_uuid, capabilities=payload.skill_names)
 
         if not updated_agent:
             raise HTTPException(status_code=404, detail="Agent not found")
@@ -4948,8 +4965,8 @@ async def update_agent_skills(
             f"Updated agent skills: {agent_id}",
             extra={
                 "agent_id": agent_id,
-                "skill_count": len(request.skill_names),
-                "skills": request.skill_names,
+                "skill_count": len(payload.skill_names),
+                "skills": payload.skill_names,
             },
         )
 
@@ -4962,7 +4979,7 @@ async def update_agent_skills(
             id=str(updated_agent.agent_id),
             name=updated_agent.name,
             type=updated_agent.agent_type,
-            avatar=_resolve_agent_avatar(updated_agent.avatar),
+            avatar=_resolve_agent_avatar(updated_agent.avatar, request),
             skills=_public_agent_skills(updated_agent.agent_type, updated_agent.capabilities),
             status=updated_agent.status,
             systemPrompt=updated_agent.system_prompt,

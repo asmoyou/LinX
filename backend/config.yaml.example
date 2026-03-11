@@ -131,6 +131,9 @@ database:
 storage:
   minio:
     endpoint: "localhost:9000"
+    # Optional browser-facing endpoint for presigned URLs.
+    # Set this to a LAN IP / public hostname when the backend uses localhost internally.
+    # public_endpoint: "192.168.0.29:9000"
     access_key: "${MINIO_ACCESS_KEY}"  # REQUIRED: Set in environment
     secret_key: "${MINIO_SECRET_KEY}"  # REQUIRED: Set in environment
     secure: false  # Set to true for HTTPS

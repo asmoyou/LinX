@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-def _resolve_user_avatar(attributes: dict) -> dict:
+def _resolve_user_avatar(attributes: dict, request: Request | None = None) -> dict:
     """
     Resolve avatar reference in user attributes to a presigned URL.
 
@@ -45,14 +45,42 @@ def _resolve_user_avatar(attributes: dict) -> dict:
             from object_storage.minio_client import get_minio_client
 
             minio_client = get_minio_client()
-            avatar_url = minio_client.resolve_avatar_url(avatar_ref)
+            public_endpoint, public_secure = minio_client.resolve_public_endpoint(
+                origin_url=request.headers.get("origin") if request else None,
+                referer_url=request.headers.get("referer") if request else None,
+                forwarded_host=request.headers.get("x-forwarded-host") if request else None,
+            )
+            avatar_url = minio_client.resolve_avatar_url(
+                avatar_ref,
+                public_endpoint=public_endpoint,
+                public_secure=public_secure,
+            )
             if avatar_url:
                 result["avatar_url"] = avatar_url
         except Exception as e:
             logger.warning(f"Failed to resolve avatar URL: {e}")
 
-    # Also handle legacy avatar_url (might be expired presigned URL)
-    # If there's no avatar_ref but there is avatar_url, keep it (backward compat)
+    # Refresh legacy avatar URLs when they still point at MinIO directly.
+    legacy_avatar_url = result.get("avatar_url")
+    if not avatar_ref and legacy_avatar_url:
+        try:
+            from object_storage.minio_client import get_minio_client
+
+            minio_client = get_minio_client()
+            public_endpoint, public_secure = minio_client.resolve_public_endpoint(
+                origin_url=request.headers.get("origin") if request else None,
+                referer_url=request.headers.get("referer") if request else None,
+                forwarded_host=request.headers.get("x-forwarded-host") if request else None,
+            )
+            refreshed_avatar_url = minio_client.resolve_avatar_url(
+                legacy_avatar_url,
+                public_endpoint=public_endpoint,
+                public_secure=public_secure,
+            )
+            if refreshed_avatar_url:
+                result["avatar_url"] = refreshed_avatar_url
+        except Exception as e:
+            logger.warning(f"Failed to refresh legacy avatar URL: {e}")
 
     return result
 
@@ -254,7 +282,10 @@ class DeleteAccountRequest(BaseModel):
 
 
 @router.get("/me", response_model=UserProfile)
-async def get_current_user_profile(current_user: CurrentUser = Depends(get_current_user)):
+async def get_current_user_profile(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """Get current user's profile."""
     try:
         from database.connection import get_db_session
@@ -271,7 +302,7 @@ async def get_current_user_profile(current_user: CurrentUser = Depends(get_curre
                 display_name = user.attributes.get("display_name")
 
             # Resolve avatar reference to presigned URL
-            resolved_attributes = _resolve_user_avatar(user.attributes)
+            resolved_attributes = _resolve_user_avatar(user.attributes, request)
 
             return UserProfile(
                 user_id=str(user.user_id),
@@ -297,7 +328,9 @@ async def get_current_user_profile(current_user: CurrentUser = Depends(get_curre
 
 @router.put("/me", response_model=UserProfile)
 async def update_current_user_profile(
-    request: UpdateProfileRequest, current_user: CurrentUser = Depends(get_current_user)
+    request: Request,
+    payload: UpdateProfileRequest,
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update current user's profile."""
     from database.connection import get_db_session
@@ -310,27 +343,27 @@ async def update_current_user_profile(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
         # Update email if provided
-        if request.email:
+        if payload.email:
             # Check if email is already taken by another user
             existing = (
                 session.query(User)
-                .filter(User.email == request.email, User.user_id != current_user.user_id)
+                .filter(User.email == payload.email, User.user_id != current_user.user_id)
                 .first()
             )
             if existing:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST, detail="Email already in use"
                 )
-            user.email = request.email
+            user.email = payload.email
 
         # Update display_name if provided
-        if request.display_name is not None:
+        if payload.display_name is not None:
             # Create new dict to trigger SQLAlchemy update
             if user.attributes is None:
-                user.attributes = {"display_name": request.display_name}
+                user.attributes = {"display_name": payload.display_name}
             else:
                 new_attributes = dict(user.attributes)
-                new_attributes["display_name"] = request.display_name
+                new_attributes["display_name"] = payload.display_name
                 user.attributes = new_attributes
 
             flag_modified(user, "attributes")
@@ -349,7 +382,7 @@ async def update_current_user_profile(
             display_name = user.attributes.get("display_name")
 
         # Resolve avatar reference to presigned URL
-        resolved_attributes = _resolve_user_avatar(user.attributes)
+        resolved_attributes = _resolve_user_avatar(user.attributes, request)
 
         return UserProfile(
             user_id=str(user.user_id),
@@ -535,7 +568,9 @@ async def update_user_preferences(
 
 @router.post("/me/avatar", status_code=status.HTTP_200_OK)
 async def upload_user_avatar(
-    file: UploadFile = File(...), current_user: CurrentUser = Depends(get_current_user)
+    request: Request,
+    file: UploadFile = File(...),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Upload user avatar image to MinIO."""
     from database.connection import get_db_session
@@ -583,8 +618,17 @@ async def upload_user_avatar(
         avatar_ref = minio_client.create_avatar_reference(bucket_name, object_key)
 
         # Generate presigned URL for immediate response (valid for 7 days)
+        public_endpoint, public_secure = minio_client.resolve_public_endpoint(
+            origin_url=request.headers.get("origin"),
+            referer_url=request.headers.get("referer"),
+            forwarded_host=request.headers.get("x-forwarded-host"),
+        )
         avatar_url = minio_client.get_presigned_url(
-            bucket_name=bucket_name, object_key=object_key, expires=timedelta(days=7)
+            bucket_name=bucket_name,
+            object_key=object_key,
+            expires=timedelta(days=7),
+            public_endpoint=public_endpoint,
+            public_secure=public_secure,
         )
 
         # Update user avatar reference in database (store ref, not URL)

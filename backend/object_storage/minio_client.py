@@ -7,10 +7,12 @@ functionality for the Digital Workforce Platform.
 
 import io
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 from minio import Minio
 from minio.commonconfig import ENABLED, CopySource
@@ -20,6 +22,7 @@ from minio.versioningconfig import VersioningConfig
 from shared.config import get_config
 
 logger = logging.getLogger(__name__)
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
 
 class MinIOClient:
@@ -45,13 +48,10 @@ class MinIOClient:
             self.config = config
 
         # Initialize MinIO client
-        self.client = Minio(
-            endpoint=self.config["endpoint"],
-            access_key=self.config["access_key"],
-            secret_key=self.config["secret_key"],
-            secure=self.config["secure"],
-            region=self.config.get("region", "us-east-1"),
+        normalized_endpoint, normalized_secure = self._normalize_endpoint_setting(
+            self.config["endpoint"], self.config["secure"]
         )
+        self.client = self._build_client(normalized_endpoint, normalized_secure)
 
         # Bucket names from configuration
         self.buckets = self.config["buckets"]
@@ -72,6 +72,119 @@ class MinIOClient:
         self.backup_retention_days = self.config["backup_retention_days"]
 
         logger.info(f"MinIO client initialized for endpoint: {self.config['endpoint']}")
+
+    def _build_client(self, endpoint: str, secure: bool) -> Minio:
+        """Build a MinIO client for the provided endpoint."""
+        return Minio(
+            endpoint=endpoint,
+            access_key=self.config["access_key"],
+            secret_key=self.config["secret_key"],
+            secure=secure,
+            region=self.config.get("region", "us-east-1"),
+        )
+
+    @staticmethod
+    def _normalize_endpoint_setting(endpoint: str, secure_default: bool) -> Tuple[str, bool]:
+        """Normalize endpoint strings with or without an explicit scheme."""
+        value = str(endpoint or "").strip().rstrip("/")
+        if not value:
+            raise ValueError("MinIO endpoint cannot be empty")
+
+        if "://" in value:
+            parsed = urlparse(value)
+            normalized_endpoint = parsed.netloc or parsed.path
+            secure = parsed.scheme.lower() == "https"
+            return normalized_endpoint, secure
+
+        return value, secure_default
+
+    @staticmethod
+    def _split_endpoint_host_port(endpoint: str) -> Tuple[Optional[str], Optional[int]]:
+        """Split endpoint string into hostname and port."""
+        parsed = urlparse(f"//{endpoint}")
+        return parsed.hostname, parsed.port
+
+    @classmethod
+    def _is_loopback_host(cls, hostname: Optional[str]) -> bool:
+        """Return True when the host is only reachable from the current machine."""
+        if not hostname:
+            return False
+        return hostname.lower() in _LOOPBACK_HOSTS
+
+    @staticmethod
+    def _extract_hostname(value: Optional[str]) -> Optional[str]:
+        """Extract hostname from Origin/Referer/X-Forwarded-Host style values."""
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+
+        candidate = raw.split(",", 1)[0].strip()
+        parsed = urlparse(candidate if "://" in candidate else f"//{candidate}")
+        return parsed.hostname
+
+    def _matches_configured_endpoint(self, netloc: str) -> bool:
+        """Check whether a URL host matches one of the configured MinIO endpoints."""
+        candidate_host, candidate_port = self._split_endpoint_host_port(netloc)
+        if not candidate_host:
+            return False
+
+        known_endpoint_values = [
+            self.config.get("endpoint"),
+            self.config.get("public_endpoint"),
+            os.getenv("MINIO_PUBLIC_ENDPOINT"),
+        ]
+
+        for endpoint_value in known_endpoint_values:
+            if not endpoint_value:
+                continue
+
+            normalized_endpoint, _ = self._normalize_endpoint_setting(
+                endpoint_value, self.config["secure"]
+            )
+            known_host, known_port = self._split_endpoint_host_port(normalized_endpoint)
+            if not known_host:
+                continue
+
+            if candidate_host == known_host and candidate_port == known_port:
+                return True
+
+        return False
+
+    def resolve_public_endpoint(
+        self,
+        origin_url: Optional[str] = None,
+        referer_url: Optional[str] = None,
+        forwarded_host: Optional[str] = None,
+    ) -> Tuple[str, bool]:
+        """
+        Resolve the endpoint browsers should use for presigned URLs.
+
+        Preference order:
+        1. Explicit public endpoint from config/env
+        2. Derived LAN/public hostname when backend uses loopback MinIO access
+        3. Fallback to the configured internal endpoint
+        """
+        configured_public_endpoint = self.config.get("public_endpoint") or os.getenv(
+            "MINIO_PUBLIC_ENDPOINT"
+        )
+        if configured_public_endpoint:
+            return self._normalize_endpoint_setting(
+                configured_public_endpoint, self.config["secure"]
+            )
+
+        endpoint, secure = self._normalize_endpoint_setting(
+            self.config["endpoint"], self.config["secure"]
+        )
+        endpoint_host, endpoint_port = self._split_endpoint_host_port(endpoint)
+        if not self._is_loopback_host(endpoint_host):
+            return endpoint, secure
+
+        for candidate in (forwarded_host, origin_url, referer_url):
+            public_host = self._extract_hostname(candidate)
+            if public_host and not self._is_loopback_host(public_host):
+                return (f"{public_host}:{endpoint_port}" if endpoint_port else public_host), secure
+
+        return endpoint, secure
 
     def initialize_buckets(self) -> None:
         """
@@ -552,7 +665,12 @@ class MinIOClient:
             raise
 
     def get_presigned_url(
-        self, bucket_name: str, object_key: str, expires: timedelta = timedelta(hours=1)
+        self,
+        bucket_name: str,
+        object_key: str,
+        expires: timedelta = timedelta(hours=1),
+        public_endpoint: Optional[str] = None,
+        public_secure: Optional[bool] = None,
     ) -> str:
         """
         Generate a presigned URL for temporary access to a file.
@@ -569,7 +687,21 @@ class MinIOClient:
             S3Error: If URL generation fails
         """
         try:
-            url = self.client.presigned_get_object(
+            endpoint_override = (
+                public_endpoint
+                or self.config.get("public_endpoint")
+                or os.getenv("MINIO_PUBLIC_ENDPOINT")
+            )
+            secure_default = public_secure if public_secure is not None else self.config["secure"]
+            client = self.client
+
+            if endpoint_override:
+                normalized_endpoint, normalized_secure = self._normalize_endpoint_setting(
+                    endpoint_override, secure_default
+                )
+                client = self._build_client(normalized_endpoint, normalized_secure)
+
+            url = client.presigned_get_object(
                 bucket_name=bucket_name, object_name=object_key, expires=expires
             )
 
@@ -582,6 +714,47 @@ class MinIOClient:
         except S3Error as e:
             logger.error(f"Error generating presigned URL for {bucket_name}/{object_key}: {e}")
             raise
+
+    def parse_object_reference(self, reference: Optional[str]) -> Optional[Tuple[str, str]]:
+        """
+        Parse a stored MinIO reference or legacy presigned URL into bucket/object_key.
+
+        Supported formats:
+        - minio:<bucket>:<object_key>
+        - Presigned/legacy MinIO URLs pointing at a configured endpoint
+        """
+        value = str(reference or "").strip()
+        if not value:
+            return None
+
+        if value.startswith("minio:"):
+            parts = value.split(":", 2)
+            if len(parts) != 3:
+                return None
+
+            _, bucket_name, object_key = parts
+            if bucket_name and object_key:
+                return bucket_name, object_key
+            return None
+
+        parsed = urlparse(value)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return None
+
+        path = parsed.path.lstrip("/")
+        if "/" not in path:
+            return None
+
+        bucket_name, object_key = path.split("/", 1)
+        if bucket_name not in self.buckets.values() or not object_key:
+            return None
+
+        query_keys = {key.lower() for key in parse_qs(parsed.query).keys()}
+        is_presigned = any(key.startswith("x-amz-") for key in query_keys)
+        if is_presigned or self._matches_configured_endpoint(parsed.netloc):
+            return bucket_name, object_key
+
+        return None
 
     def copy_object(
         self,
@@ -655,7 +828,11 @@ class MinIOClient:
         return f"minio:{bucket_name}:{object_key}"
 
     def resolve_avatar_url(
-        self, avatar_reference: str, expires: timedelta = timedelta(days=7)
+        self,
+        avatar_reference: str,
+        expires: timedelta = timedelta(days=7),
+        public_endpoint: Optional[str] = None,
+        public_secure: Optional[bool] = None,
     ) -> Optional[str]:
         """
         Resolve an avatar reference to a presigned URL.
@@ -673,16 +850,17 @@ class MinIOClient:
         if not avatar_reference:
             return None
 
-        # Check if it's a minio reference
-        if avatar_reference.startswith("minio:"):
+        parsed_reference = self.parse_object_reference(avatar_reference)
+        if parsed_reference:
             try:
-                parts = avatar_reference.split(":", 2)
-                if len(parts) != 3:
-                    logger.warning(f"Invalid avatar reference format: {avatar_reference}")
-                    return None
-
-                _, bucket_name, object_key = parts
-                return self.get_presigned_url(bucket_name, object_key, expires)
+                bucket_name, object_key = parsed_reference
+                return self.get_presigned_url(
+                    bucket_name,
+                    object_key,
+                    expires,
+                    public_endpoint=public_endpoint,
+                    public_secure=public_secure,
+                )
             except Exception as e:
                 logger.error(f"Failed to resolve avatar reference {avatar_reference}: {e}")
                 return None
