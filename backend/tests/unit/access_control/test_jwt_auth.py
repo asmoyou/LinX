@@ -21,6 +21,7 @@ from access_control.jwt_auth import (
     JWTTokenInvalidError,
     TokenData,
     TokenPair,
+    blacklist_session_id,
     blacklist_token,
     clear_blacklist,
     create_access_token,
@@ -93,6 +94,7 @@ class TestTokenGeneration:
         assert "exp" in payload
         assert "iat" in payload
         assert "jti" in payload
+        assert payload["session_id"] == payload["jti"]
 
     def test_create_access_token_with_custom_expiration(self, sample_user):
         """Test creating an access token with custom expiration."""
@@ -136,6 +138,7 @@ class TestTokenGeneration:
         assert "exp" in payload
         assert "iat" in payload
         assert "jti" in payload
+        assert payload["session_id"] == payload["jti"]
 
     def test_create_token_pair(self, sample_user):
         """Test creating both access and refresh tokens."""
@@ -162,6 +165,8 @@ class TestTokenGeneration:
 
         assert access_payload["token_type"] == "access"
         assert refresh_payload["token_type"] == "refresh"
+        assert access_payload["session_id"] == refresh_payload["session_id"]
+        assert access_payload["jti"] != refresh_payload["jti"]
 
 
 class TestTokenDecoding:
@@ -185,6 +190,7 @@ class TestTokenDecoding:
         assert token_data.exp is not None
         assert token_data.iat is not None
         assert token_data.jti is not None
+        assert token_data.session_id == token_data.jti
 
     def test_decode_expired_token(self, sample_user):
         """Test decoding an expired token."""
@@ -273,6 +279,8 @@ class TestTokenRefresh:
         assert token_data.username == sample_user["username"]
         assert token_data.role == sample_user["role"]
         assert token_data.token_type == "access"
+        refresh_data = decode_token(refresh_token)
+        assert token_data.session_id == refresh_data.session_id
 
     def test_refresh_with_access_token_fails(self, sample_user):
         """Test that refreshing with access token fails."""
@@ -325,6 +333,29 @@ class TestTokenBlacklist:
             decode_token(token)
 
         assert "revoked" in str(exc_info.value).lower()
+
+    def test_blacklist_session_id_revokes_all_tokens_in_session(self, sample_user):
+        """Test revoking a logical session invalidates refresh and access tokens."""
+        token_pair = create_token_pair(
+            user_id=sample_user["user_id"],
+            username=sample_user["username"],
+            role=sample_user["role"],
+        )
+        access_data = decode_token(token_pair.access_token)
+        refresh_data = decode_token(token_pair.refresh_token)
+
+        assert access_data.session_id == refresh_data.session_id
+
+        assert access_data.session_id is not None
+        blacklist_session_id(access_data.session_id)
+
+        with pytest.raises(JWTTokenInvalidError) as access_exc:
+            decode_token(token_pair.access_token)
+        with pytest.raises(JWTTokenInvalidError) as refresh_exc:
+            refresh_access_token(token_pair.refresh_token)
+
+        assert "session" in str(access_exc.value).lower()
+        assert "session" in str(refresh_exc.value).lower()
 
     def test_is_token_blacklisted(self, sample_user):
         """Test checking if token is blacklisted."""
@@ -450,12 +481,14 @@ class TestTokenDataModel:
             username="test_user",
             role="admin",
             token_type="access",
+            session_id="session-123",
         )
 
         assert token_data.user_id == "123e4567-e89b-12d3-a456-426614174000"
         assert token_data.username == "test_user"
         assert token_data.role == "admin"
         assert token_data.token_type == "access"
+        assert token_data.session_id == "session-123"
 
     def test_token_data_default_type(self):
         """Test TokenData default token type."""

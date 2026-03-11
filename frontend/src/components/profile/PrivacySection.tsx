@@ -6,14 +6,13 @@ import { GlassPanel } from '../GlassPanel';
 import { LayoutModal } from '../LayoutModal';
 import { ModalPanel } from '../ModalPanel';
 import { useNotificationStore } from '../../stores/notificationStore';
-import { useAuthStore } from '../../stores';
 import { usersApi, type PrivacySettings } from '@/api/users';
+import { clearClientSession } from '@/utils/clientSession';
 
 export const PrivacySection = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { addNotification } = useNotificationStore();
-  const { logout } = useAuthStore();
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
@@ -139,7 +138,7 @@ export const PrivacySection = () => {
         message: t('profileSettings.privacy.deletedMessage', 'Your account has been deleted'),
       });
 
-      logout();
+      clearClientSession();
       navigate('/login');
     } catch (error: any) {
       addNotification({

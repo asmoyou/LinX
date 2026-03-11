@@ -29,6 +29,7 @@ import { LayoutModal } from '@/components/LayoutModal';
 import { ModalPanel } from '@/components/ModalPanel';
 import { useMissionStore } from '@/stores/missionStore';
 import { selectLatestMissionRunEvents } from '@/utils/missionEvents';
+import { buildWebSocketUrl } from '@/utils/runtimeUrls';
 import type { Mission, MissionEvent, MissionStatus, MissionTask } from '@/types/mission';
 
 const nodeTypes = {
@@ -329,20 +330,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
 
   // WebSocket connection
   useEffect(() => {
-    const configuredWsBase = (import.meta.env.VITE_WS_URL as string | undefined)?.trim() || '';
-    const configuredApiBase = (import.meta.env.VITE_API_URL as string | undefined)?.trim() || '/api/v1';
-    const normalizedApiBase = configuredApiBase.startsWith('/')
-      ? configuredApiBase
-      : `/${configuredApiBase}`;
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const wsBase = configuredWsBase
-      ? configuredWsBase.replace(/\/$/, '')
-      : configuredApiBase.startsWith('http')
-        ? `${configuredApiBase.replace(/^http/, 'ws').replace(/\/$/, '')}/ws`
-        : import.meta.env.DEV
-          ? `${wsProtocol}://${window.location.hostname}:8000${normalizedApiBase}/ws`
-          : `${window.location.origin.replace(/^http/, 'ws')}${normalizedApiBase}/ws`;
-    const wsUrl = `${wsBase}/missions/${missionId}`;
+    const wsUrl = buildWebSocketUrl(`/missions/${missionId}`);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     ws.onopen = () => {

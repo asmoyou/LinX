@@ -12,7 +12,7 @@ References:
 import logging
 import uuid
 from functools import wraps
-from typing import Callable, List, Optional, Union
+from typing import Any, Callable, List, Optional, Union
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -45,13 +45,22 @@ class CurrentUser:
         username: User's username
         role: User's role for RBAC
         token_jti: JWT token ID for tracking
+        session_id: Logical login session identifier shared across token refreshes
     """
 
-    def __init__(self, user_id: str, username: str, role: str, token_jti: Optional[str] = None):
+    def __init__(
+        self,
+        user_id: str,
+        username: str,
+        role: str,
+        token_jti: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ):
         self.user_id = user_id
         self.username = username
         self.role = role
         self.token_jti = token_jti
+        self.session_id = session_id or token_jti
 
     def has_permission(
         self, resource_type: ResourceType, action: Action, scope: Optional[str] = None
@@ -116,6 +125,44 @@ class CurrentUser:
         }
 
 
+def _get_user_security_attributes(user_id: str) -> dict[str, Any]:
+    """Load security-related user attributes from persistent storage."""
+    from database.connection import get_db_session
+    from database.models import User
+
+    with get_db_session() as session:
+        user = session.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            raise JWTTokenInvalidError("User not found")
+
+        attributes = user.attributes
+        if isinstance(attributes, dict):
+            return attributes
+        return {}
+
+
+def ensure_session_not_revoked(user_id: str, session_id: Optional[str]) -> None:
+    """Reject tokens that belong to a persistently revoked login session."""
+    if not session_id:
+        return
+
+    try:
+        attributes = _get_user_security_attributes(user_id)
+    except JWTTokenInvalidError:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Failed to validate persistent session state",
+            extra={"user_id": user_id, "session_id": session_id, "error": str(exc)},
+            exc_info=True,
+        )
+        raise JWTTokenInvalidError("Unable to validate session state") from exc
+
+    revoked_session_ids = set(attributes.get("revoked_session_ids", []))
+    if session_id in revoked_session_ids:
+        raise JWTTokenInvalidError("Session has been revoked")
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> CurrentUser:
@@ -138,12 +185,14 @@ async def get_current_user(
     try:
         token = credentials.credentials
         token_data = decode_token(token)
+        ensure_session_not_revoked(token_data.user_id, token_data.session_id)
 
         current_user = CurrentUser(
             user_id=token_data.user_id,
             username=token_data.username,
             role=token_data.role,
             token_jti=token_data.jti,
+            session_id=token_data.session_id,
         )
 
         logger.debug(

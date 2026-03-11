@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 
-from access_control.jwt_auth import create_access_token
+from access_control.jwt_auth import JWTTokenInvalidError, create_access_token
 from access_control.permissions import (
     CurrentUser,
     PermissionDeniedError,
@@ -135,11 +135,13 @@ class TestGetCurrentUser:
         credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
         # Get current user
-        current_user = await get_current_user(credentials)
+        with patch("access_control.permissions.ensure_session_not_revoked") as mock_ensure:
+            current_user = await get_current_user(credentials)
 
         assert current_user.username == "john_doe"
         assert current_user.role == "user"
         assert str(current_user.user_id) == str(user_id)
+        mock_ensure.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_get_current_user_invalid_token(self):
@@ -148,6 +150,23 @@ class TestGetCurrentUser:
 
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(credentials)
+
+        assert exc_info.value.status_code == 401
+        assert "Invalid authentication credentials" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_get_current_user_revoked_session(self):
+        """Test that persistently revoked sessions are rejected."""
+        user_id = uuid.uuid4()
+        token = create_access_token(user_id, "john_doe", "user")
+        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+
+        with patch(
+            "access_control.permissions.ensure_session_not_revoked",
+            side_effect=JWTTokenInvalidError("Session has been revoked"),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_current_user(credentials)
 
         assert exc_info.value.status_code == 401
         assert "Invalid authentication credentials" in exc_info.value.detail

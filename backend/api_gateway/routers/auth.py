@@ -17,14 +17,16 @@ from pydantic import BaseModel, Field
 from access_control import (
     TokenPair,
     UserModel,
+    blacklist_session_id,
     blacklist_token,
     decode_token,
     create_token_pair,
     refresh_access_token,
+    verify_token,
     verify_password,
 )
 from access_control.audit_logger import log_authentication_event
-from access_control.permissions import CurrentUser, get_current_user
+from access_control.permissions import CurrentUser, ensure_session_not_revoked, get_current_user
 from access_control.registration import (
     DuplicateUserError,
 )
@@ -63,6 +65,22 @@ def _append_login_session(
     )
     sessions = sorted(sessions, key=lambda item: item.get("last_seen_at", ""), reverse=True)[:20]
     next_attrs["security_sessions"] = sessions
+    return next_attrs
+
+
+def _revoke_login_session(attributes: dict[str, Any] | None, session_id: str | None) -> dict[str, Any]:
+    """Remove a login session from active session metadata and mark it revoked."""
+    next_attrs: dict[str, Any] = dict(attributes or {})
+    if not session_id:
+        return next_attrs
+
+    sessions = list(next_attrs.get("security_sessions", []))
+    revoked_ids = set(next_attrs.get("revoked_session_ids", []))
+    next_attrs["security_sessions"] = [
+        item for item in sessions if item.get("session_id") != session_id
+    ]
+    revoked_ids.add(session_id)
+    next_attrs["revoked_session_ids"] = list(revoked_ids)[-200:]
     return next_attrs
 
 
@@ -186,7 +204,7 @@ async def login(payload: LoginRequest, http_request: Request):
                 user_id=str(user.user_id), username=user.username, role=user.role
             )
             token_data = decode_token(tokens.access_token)
-            session_id = token_data.jti
+            session_id = token_data.session_id or token_data.jti
 
             if session_id:
                 user.attributes = _append_login_session(
@@ -300,6 +318,8 @@ async def refresh(request: RefreshRequest):
         HTTPException: If refresh token is invalid or expired
     """
     try:
+        token_data = verify_token(request.refresh_token, expected_type="refresh")
+        ensure_session_not_revoked(token_data.user_id, token_data.session_id)
         new_access_token = refresh_access_token(request.refresh_token)
 
         # Get token expiration from config
@@ -337,6 +357,8 @@ async def logout(
         No content
     """
     from database.connection import get_db_session
+    from database.models import User
+    from sqlalchemy.orm.attributes import flag_modified
 
     # Best effort token blacklist (immediate invalidation for current process)
     auth_header = http_request.headers.get("authorization", "")
@@ -344,8 +366,15 @@ async def logout(
         token = auth_header[7:].strip()
         if token:
             blacklist_token(token)
+    if current_user.session_id:
+        blacklist_session_id(current_user.session_id)
 
     with get_db_session() as session:
+        user = session.query(User).filter(User.user_id == current_user.user_id).first()
+        if user:
+            user.attributes = _revoke_login_session(user.attributes, current_user.session_id)
+            flag_modified(user, "attributes")
+
         log_authentication_event(
             session=session,
             event_type="logout",

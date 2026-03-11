@@ -13,14 +13,14 @@
  */
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import {
-  WebSocketManager,
-  getWebSocketManager,
+import { WebSocketManager, getWebSocketManager } from '../services/websocket';
+import type {
   WebSocketStatus,
   WebSocketMessage,
   WebSocketMessageType,
   WebSocketEventHandler,
 } from '../services/websocket';
+import { buildWebSocketUrl } from '../utils/runtimeUrls';
 
 export interface UseWebSocketOptions {
   url?: string;
@@ -53,7 +53,7 @@ export interface UseWebSocketReturn {
  * @example
  * ```tsx
  * const { status, isConnected, send, on } = useWebSocket({
- *   url: 'ws://localhost:8000/ws/tasks',
+ *   url: buildWebSocketUrl('/tasks'),
  *   token: authToken,
  *   autoConnect: true,
  * });
@@ -68,7 +68,7 @@ export interface UseWebSocketReturn {
  */
 export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketReturn {
   const {
-    url = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/tasks',
+    url = buildWebSocketUrl('/tasks'),
     token,
     autoConnect = true,
     reconnect = true,
@@ -82,7 +82,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [lastHeartbeat, setLastHeartbeat] = useState(0);
   const wsManagerRef = useRef<WebSocketManager | null>(null);
-  const statusUpdateIntervalRef = useRef<ReturnType<typeof setInterval>>();
+  const statusUpdateIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Initialize WebSocket manager
   useEffect(() => {

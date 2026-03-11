@@ -80,12 +80,12 @@ class TestUserRegistrationLogin:
         update_response = api_client.put(
             "/api/v1/users/me",
             headers={"Authorization": f"Bearer {access_token}"},
-            json={"full_name": "Updated Test User"},
+            json={"display_name": "Updated Test User"},
         )
 
         assert update_response.status_code == 200
         update_data = update_response.json()
-        assert update_data["full_name"] == "Updated Test User"
+        assert update_data["display_name"] == "Updated Test User"
 
         # Step 5: Refresh access token
         refresh_response = api_client.post(
@@ -102,7 +102,7 @@ class TestUserRegistrationLogin:
             "/api/v1/auth/logout", headers={"Authorization": f"Bearer {access_token}"}
         )
 
-        assert logout_response.status_code == 200
+        assert logout_response.status_code == 204
 
         # Step 7: Verify token is invalidated
         verify_response = api_client.get(
@@ -110,6 +110,13 @@ class TestUserRegistrationLogin:
         )
 
         assert verify_response.status_code == 401  # Unauthorized
+
+        # Step 8: Verify refresh token is also invalidated
+        refresh_after_logout_response = api_client.post(
+            "/api/v1/auth/refresh", json={"refresh_token": refresh_token}
+        )
+
+        assert refresh_after_logout_response.status_code == 401
 
     def test_registration_with_duplicate_username(self, api_client, test_user_data):
         """Test that duplicate username registration fails."""

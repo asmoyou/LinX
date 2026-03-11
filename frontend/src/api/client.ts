@@ -2,6 +2,8 @@ import axios, { AxiosError } from 'axios';
 import type { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import { useAuthStore } from '../stores/authStore';
 import toast from 'react-hot-toast';
+import { getApiBaseUrl } from '../utils/runtimeUrls';
+import { clearClientSession } from '../utils/clientSession';
 
 export interface RequestConfigWithMeta extends AxiosRequestConfig {
   _retry?: boolean;
@@ -18,10 +20,26 @@ type RefreshResponsePayload = {
   token?: string;
 };
 
+const AUTH_ENDPOINTS_WITHOUT_REFRESH = ['/auth/login', '/auth/logout', '/auth/refresh', '/auth/register'];
+
+export const shouldAttemptTokenRefresh = (url?: string): boolean => {
+  if (!url) {
+    return true;
+  }
+
+  const normalizedUrl = url.toLowerCase();
+  return !AUTH_ENDPOINTS_WITHOUT_REFRESH.some((endpoint) => normalizedUrl.includes(endpoint));
+};
+
+const hasRefreshableSession = (): boolean => {
+  const { token, isAuthenticated } = useAuthStore.getState();
+  return Boolean(token && isAuthenticated);
+};
+
 /**
  * API Client Configuration
  */
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+const API_BASE_URL = getApiBaseUrl();
 const API_TIMEOUT = 120000; // 120 seconds (2 minutes) for long-running operations like skill testing
 
 /**
@@ -121,7 +139,7 @@ apiClient.interceptors.response.use(
     return response;
   },
   async (error: AxiosError) => {
-    const originalRequest = error.config as RequestConfigWithMeta;
+    const originalRequest = (error.config ?? {}) as RequestConfigWithMeta;
 
     // Log error in development
     if (import.meta.env.DEV) {
@@ -129,7 +147,12 @@ apiClient.interceptors.response.use(
     }
 
     // Handle 401 Unauthorized - Token expired
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    if (
+      error.response?.status === 401 &&
+      !originalRequest._retry &&
+      shouldAttemptTokenRefresh(originalRequest.url) &&
+      hasRefreshableSession()
+    ) {
       originalRequest._retry = true;
 
       // If already refreshing, queue this request
@@ -187,7 +210,7 @@ apiClient.interceptors.response.use(
         });
 
         // Logout and redirect
-        useAuthStore.getState().logout();
+        clearClientSession();
         
         // Use setTimeout to avoid navigation during error handling
         setTimeout(() => {

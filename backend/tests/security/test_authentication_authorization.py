@@ -14,6 +14,8 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 
+from access_control import clear_blacklist
+
 
 @pytest.fixture
 def api_client():
@@ -182,19 +184,26 @@ class TestAuthenticationSecurity:
         )
 
         token = login_response.json()["access_token"]
+        refresh_token = login_response.json()["refresh_token"]
 
         # Logout
         logout_response = api_client.post(
             "/api/v1/auth/logout", headers={"Authorization": f"Bearer {token}"}
         )
 
-        assert logout_response.status_code == 200
+        assert logout_response.status_code == 204
+        clear_blacklist()
 
         # Try to use token after logout
         response = api_client.get("/api/v1/users/me", headers={"Authorization": f"Bearer {token}"})
 
         # Should be rejected
         assert response.status_code == 401
+
+        refresh_response = api_client.post(
+            "/api/v1/auth/refresh", json={"refresh_token": refresh_token}
+        )
+        assert refresh_response.status_code == 401
 
 
 class TestAuthorizationSecurity:

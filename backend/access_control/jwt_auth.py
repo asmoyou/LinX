@@ -33,6 +33,7 @@ class TokenData(BaseModel):
         exp: Expiration timestamp
         iat: Issued at timestamp
         jti: JWT ID for token blacklist support
+        session_id: Shared logical session identifier across access/refresh tokens
     """
 
     user_id: str
@@ -42,6 +43,7 @@ class TokenData(BaseModel):
     exp: Optional[int] = None
     iat: Optional[int] = None
     jti: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class TokenPair(BaseModel):
@@ -80,6 +82,7 @@ class JWTTokenInvalidError(JWTAuthenticationError):
 
 # Token blacklist for logout support (in-memory for now, should use Redis in production)
 _token_blacklist: set = set()
+_session_blacklist: set = set()
 
 
 def get_jwt_config() -> Dict[str, Any]:
@@ -100,7 +103,11 @@ def get_jwt_config() -> Dict[str, Any]:
 
 
 def create_access_token(
-    user_id: uuid.UUID, username: str, role: str, expires_delta: Optional[timedelta] = None
+    user_id: uuid.UUID,
+    username: str,
+    role: str,
+    expires_delta: Optional[timedelta] = None,
+    session_id: Optional[str] = None,
 ) -> str:
     """Create a JWT access token.
 
@@ -133,6 +140,7 @@ def create_access_token(
     # Create token payload
     issued_at = datetime.utcnow()
     token_id = str(uuid.uuid4())
+    resolved_session_id = session_id or token_id
 
     payload = {
         "user_id": str(user_id),
@@ -142,6 +150,7 @@ def create_access_token(
         "exp": expire,
         "iat": issued_at,
         "jti": token_id,
+        "session_id": resolved_session_id,
     }
 
     # Encode token
@@ -155,6 +164,7 @@ def create_access_token(
             "role": role,
             "expires_at": expire.isoformat(),
             "jti": token_id,
+            "session_id": resolved_session_id,
         },
     )
 
@@ -162,7 +172,11 @@ def create_access_token(
 
 
 def create_refresh_token(
-    user_id: uuid.UUID, username: str, role: str, expires_delta: Optional[timedelta] = None
+    user_id: uuid.UUID,
+    username: str,
+    role: str,
+    expires_delta: Optional[timedelta] = None,
+    session_id: Optional[str] = None,
 ) -> str:
     """Create a JWT refresh token.
 
@@ -189,6 +203,7 @@ def create_refresh_token(
     # Create token payload
     issued_at = datetime.utcnow()
     token_id = str(uuid.uuid4())
+    resolved_session_id = session_id or token_id
 
     payload = {
         "user_id": str(user_id),
@@ -198,6 +213,7 @@ def create_refresh_token(
         "exp": expire,
         "iat": issued_at,
         "jti": token_id,
+        "session_id": resolved_session_id,
     }
 
     # Encode token
@@ -210,6 +226,7 @@ def create_refresh_token(
             "username": username,
             "expires_at": expire.isoformat(),
             "jti": token_id,
+            "session_id": resolved_session_id,
         },
     )
 
@@ -237,9 +254,10 @@ def create_token_pair(user_id: uuid.UUID, username: str, role: str) -> TokenPair
         'bearer'
     """
     config = get_jwt_config()
+    session_id = str(uuid.uuid4())
 
-    access_token = create_access_token(user_id, username, role)
-    refresh_token = create_refresh_token(user_id, username, role)
+    access_token = create_access_token(user_id, username, role, session_id=session_id)
+    refresh_token = create_refresh_token(user_id, username, role, session_id=session_id)
 
     expires_in = config["access_token_expire_hours"] * 3600  # Convert to seconds
 
@@ -273,9 +291,13 @@ def decode_token(token: str) -> TokenData:
 
         # Check if token is blacklisted
         token_id = payload.get("jti")
+        session_id = payload.get("session_id") or token_id
         if token_id and token_id in _token_blacklist:
             logger.warning("Attempted to use blacklisted token", extra={"jti": token_id})
             raise JWTTokenInvalidError("Token has been revoked")
+        if session_id and session_id in _session_blacklist:
+            logger.warning("Attempted to use revoked session", extra={"session_id": session_id})
+            raise JWTTokenInvalidError("Session has been revoked")
 
         # Extract token data
         token_data = TokenData(
@@ -286,6 +308,7 @@ def decode_token(token: str) -> TokenData:
             exp=payload.get("exp"),
             iat=payload.get("iat"),
             jti=token_id,
+            session_id=session_id,
         )
 
         logger.debug(
@@ -294,6 +317,7 @@ def decode_token(token: str) -> TokenData:
                 "user_id": token_data.user_id,
                 "username": token_data.username,
                 "token_type": token_data.token_type,
+                "session_id": token_data.session_id,
             },
         )
 
@@ -350,7 +374,10 @@ def refresh_access_token(refresh_token: str) -> str:
 
     # Create new access token with same user data
     new_access_token = create_access_token(
-        user_id=uuid.UUID(token_data.user_id), username=token_data.username, role=token_data.role
+        user_id=uuid.UUID(token_data.user_id),
+        username=token_data.username,
+        role=token_data.role,
+        session_id=token_data.session_id,
     )
 
     logger.info(
@@ -358,6 +385,7 @@ def refresh_access_token(refresh_token: str) -> str:
         extra={
             "user_id": token_data.user_id,
             "username": token_data.username,
+            "session_id": token_data.session_id,
         },
     )
 
@@ -410,6 +438,15 @@ def blacklist_token_jti(token_jti: str) -> None:
     logger.info("Token JTI blacklisted", extra={"jti": token_jti})
 
 
+def blacklist_session_id(session_id: str) -> None:
+    """Revoke all tokens that belong to the given logical session."""
+    if not session_id:
+        return
+
+    _session_blacklist.add(session_id)
+    logger.info("Session ID blacklisted", extra={"session_id": session_id})
+
+
 def is_token_blacklisted(token: str) -> bool:
     """Check if a token is blacklisted.
 
@@ -424,7 +461,11 @@ def is_token_blacklisted(token: str) -> bool:
         # Decode without checking blacklist to avoid recursion
         payload = jwt.decode(token, config["secret_key"], algorithms=[config["algorithm"]])
         token_id = payload.get("jti")
-        return token_id in _token_blacklist if token_id else False
+        session_id = payload.get("session_id") or token_id
+        return bool(
+            (token_id and token_id in _token_blacklist)
+            or (session_id and session_id in _session_blacklist)
+        )
     except (jwt.ExpiredSignatureError, JWTError):
         return False
 
@@ -435,8 +476,8 @@ def clear_blacklist() -> None:
     This is primarily for testing purposes. In production with Redis,
     tokens would expire naturally based on their TTL.
     """
-    global _token_blacklist
     _token_blacklist.clear()
+    _session_blacklist.clear()
     logger.info("Token blacklist cleared")
 
 

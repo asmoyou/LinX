@@ -55,6 +55,7 @@ export default defineConfig({
     },
   },
   server: {
+    host: '0.0.0.0',
     port: 3000,
     proxy: {
       '/api': {
@@ -63,6 +64,10 @@ export default defineConfig({
         ws: true,
       },
     },
+  },
+  preview: {
+    host: '0.0.0.0',
+    port: 3000,
   },
   build: {
     // Code splitting for better performance (6.9.5)

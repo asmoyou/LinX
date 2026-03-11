@@ -11,8 +11,9 @@ import { QuotaSection } from '../components/profile/QuotaSection';
 import { APIKeysSection } from '../components/profile/APIKeysSection';
 import { SessionsSection } from '../components/profile/SessionsSection';
 import { PrivacySection } from '../components/profile/PrivacySection';
-import { useAuthStore } from '../stores';
+import { authApi } from '../api';
 import { useNotificationStore } from '../stores/notificationStore';
+import { clearClientSession } from '../utils/clientSession';
 
 type TabType =
   | 'profile'
@@ -28,12 +29,17 @@ export const Profile = () => {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<TabType>('profile');
   const navigate = useNavigate();
-  const { logout } = useAuthStore();
   const { addNotification } = useNotificationStore();
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     if (confirm(t('profileSettings.logOutConfirm'))) {
-      logout();
+      try {
+        await authApi.logout();
+      } catch (error) {
+        console.warn('Server logout failed, clearing client session anyway.', error);
+      }
+
+      clearClientSession();
       addNotification({
         type: 'success',
         title: t('profileSettings.logOutSuccess'),
@@ -65,7 +71,7 @@ export const Profile = () => {
           <p className="text-zinc-600 dark:text-zinc-400">{t('profileSettings.subtitle')}</p>
         </div>
         <button
-          onClick={handleLogout}
+          onClick={() => void handleLogout()}
           className="flex items-center gap-2 px-4 py-2 bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/30 transition-colors border border-red-500/30"
         >
           <LogOut className="w-4 h-4" />

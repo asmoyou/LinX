@@ -111,6 +111,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             request.state.username = token_data.username
             request.state.user_role = token_data.role
             request.state.token_jti = token_data.jti
+            request.state.session_id = token_data.session_id
 
             logger.debug(
                 "Request authenticated",

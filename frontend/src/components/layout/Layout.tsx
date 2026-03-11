@@ -6,6 +6,7 @@ import { notificationsApi } from '@/api/notifications';
 import { useThemeStore } from '@/stores/themeStore';
 import { useMissionStore } from '@/stores/missionStore';
 import { useNotificationStore } from '@/stores/notificationStore';
+import { buildWebSocketUrl } from '@/utils/runtimeUrls';
 
 const NOTIFICATION_SYNC_EVENT_TYPES = new Set([
   'USER_CLARIFICATION_REQUESTED',
@@ -111,24 +112,7 @@ export const Layout: React.FC = () => {
     };
 
     const connect = () => {
-      const configuredWsBase =
-        (import.meta.env.VITE_WS_URL as string | undefined)?.trim() || '';
-      const configuredApiBase =
-        (import.meta.env.VITE_API_URL as string | undefined)?.trim() || '/api/v1';
-      const normalizedApiBase = configuredApiBase.startsWith('/')
-        ? configuredApiBase
-        : `/${configuredApiBase}`;
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-
-      const wsBase = configuredWsBase
-        ? configuredWsBase.replace(/\/$/, '')
-        : configuredApiBase.startsWith('http')
-          ? `${configuredApiBase.replace(/^http/, 'ws').replace(/\/$/, '')}/ws`
-          : import.meta.env.DEV
-            ? `${wsProtocol}://${window.location.hostname}:8000${normalizedApiBase}/ws`
-            : `${window.location.origin.replace(/^http/, 'ws')}${normalizedApiBase}/ws`;
-
-      const wsUrl = `${wsBase}/missions`;
+      const wsUrl = buildWebSocketUrl('/missions');
       websocket = new WebSocket(wsUrl);
       websocket.onopen = () => {
         setGlobalMissionWsConnected(true);

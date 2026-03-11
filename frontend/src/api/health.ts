@@ -1,4 +1,5 @@
 import { useAuthStore } from '../stores/authStore';
+import { getApiBaseUrl } from '../utils/runtimeUrls';
 
 export type HealthStatus = 'healthy' | 'unhealthy';
 export type HealthOverall = 'optimal' | 'degraded' | 'critical';
@@ -42,23 +43,7 @@ export interface SystemHealthResponse {
   timestamp: number;
 }
 
-const DEFAULT_API_BASE_URL = 'http://localhost:8000/api/v1';
-
-const normalizeApiBaseUrl = (): string => {
-  const raw = (import.meta.env.VITE_API_URL || DEFAULT_API_BASE_URL).trim();
-  if (!raw) {
-    return DEFAULT_API_BASE_URL;
-  }
-
-  const cleaned = raw.replace(/\/+$/, '');
-  if (cleaned.endsWith('/api/v1')) {
-    return cleaned;
-  }
-
-  return `${cleaned}/api/v1`;
-};
-
-const buildHealthUrl = (): string => `${normalizeApiBaseUrl()}/health`;
+const buildHealthUrl = (): string => `${getApiBaseUrl()}/health`;
 
 const buildHeaders = (): HeadersInit => {
   const token = useAuthStore.getState().token;

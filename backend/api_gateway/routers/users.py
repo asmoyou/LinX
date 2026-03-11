@@ -14,7 +14,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
 
-from access_control import blacklist_token_jti
+from access_control import blacklist_session_id, blacklist_token_jti
 from access_control.permissions import CurrentUser, get_current_user, require_role
 from access_control.rbac import Role
 from shared.logging import get_logger
@@ -78,7 +78,7 @@ def _touch_security_session(
     request: Request | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Upsert the current JWT session metadata into user attributes."""
-    session_id = current_user.token_jti
+    session_id = current_user.session_id
     if not session_id:
         return attributes, False
 
@@ -777,7 +777,7 @@ async def list_user_sessions(
                 ip_address=item.get("ip_address"),
                 created_at=item.get("created_at", item.get("last_seen_at", _utc_now_iso())),
                 last_seen_at=item.get("last_seen_at", item.get("created_at", _utc_now_iso())),
-                is_current=item.get("session_id") == current_user.token_jti,
+                is_current=item.get("session_id") == current_user.session_id,
             )
             for item in sessions
         ]
@@ -801,7 +801,7 @@ async def revoke_other_sessions(
 
         attrs = _as_attrs(user.attributes)
         sessions = list(attrs.get("security_sessions", []))
-        current_id = current_user.token_jti
+        current_id = current_user.session_id
         revoked_ids = set(attrs.get("revoked_session_ids", []))
 
         next_sessions: list[dict[str, Any]] = []
@@ -815,7 +815,7 @@ async def revoke_other_sessions(
                 next_sessions.append(item)
                 continue
 
-            blacklist_token_jti(session_id)
+            blacklist_session_id(session_id)
             revoked_ids.add(session_id)
             revoked_count += 1
 
@@ -842,7 +842,7 @@ async def revoke_user_session(
     from database.models import User
     from sqlalchemy.orm.attributes import flag_modified
 
-    if session_id == current_user.token_jti:
+    if session_id == current_user.session_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot revoke current session from this endpoint",
@@ -867,7 +867,7 @@ async def revoke_user_session(
         flag_modified(user, "attributes")
         session.commit()
 
-    blacklist_token_jti(session_id)
+    blacklist_session_id(session_id)
     logger.info("User session revoked", extra={"user_id": str(current_user.user_id), "session_id": session_id})
     return {"message": "Session revoked"}
 
@@ -1204,6 +1204,8 @@ async def delete_current_user_account(
 
     if current_user.token_jti:
         blacklist_token_jti(current_user.token_jti)
+    if current_user.session_id:
+        blacklist_session_id(current_user.session_id)
 
     logger.warning("User account deleted", extra={"user_id": str(current_user.user_id)})
     return {"message": "Account deleted"}
