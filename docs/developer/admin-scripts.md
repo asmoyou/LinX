@@ -4,36 +4,17 @@ This directory contains utility scripts for managing the LinX platform.
 
 ## Available Scripts
 
-### 1. Create Admin User (`create_admin.py`)
+### 1. First-Run Admin Initialization
 
-Creates a new admin user with elevated privileges.
+The first administrator account is created through the web setup flow when the
+platform detects that no admin account exists.
 
-**Usage:**
+**Flow:**
 
-```bash
-# Create admin with default credentials
-python scripts/create_admin.py
-
-# Create admin with custom credentials
-python scripts/create_admin.py \
-  --username myadmin \
-  --email myadmin@example.com \
-  --password "MySecurePass123!@#"
-```
-
-**Default Credentials:**
-- Username: `admin`
-- Email: `admin@linx.local`
-- Password: `Admin123!@#`
-- Role: `admin`
-
-**Admin Privileges:**
-- Max Agents: 100
-- Max Storage: 1000 GB
-- Max CPU Cores: 50
-- Max Memory: 100 GB
-
-⚠️ **Security Note**: Change the default password immediately after first login!
+1. Open the frontend when the platform has no admin account
+2. Complete the `/setup` initialization page
+3. The system creates the fixed first admin username `admin`
+4. Email, password, language, timezone, and theme are saved during setup
 
 ### 2. Promote User (`promote_user.py`)
 
@@ -48,23 +29,9 @@ python scripts/promote_user.py --username johndoe
 
 This will change the user's role from their current role to `admin`.
 
-## Current Admin Accounts
-
-After running the initialization scripts, you have:
-
-1. **superadmin**
-   - Email: superadmin@linx.local
-   - Password: Admin123!@#
-   - Role: admin
-
-2. **admin**
-   - Email: admin@linx.com
-   - Password: Admin123!@#
-   - Role: admin (promoted from user)
-
 ## Best Practices
 
-1. **Change Default Passwords**: Always change default passwords after first login
+1. **Protect Initial Setup Access**: Complete the first-run setup in a trusted environment
 2. **Use Strong Passwords**: Passwords must contain:
    - At least 8 characters
    - Uppercase letter
@@ -80,7 +47,7 @@ After running the initialization scripts, you have:
 ### "User already exists" Error
 
 If you get a duplicate user error, either:
-- Use a different username/email
+- Verify whether the platform has already been initialized
 - Use `promote_user.py` to promote the existing user
 
 ### "Database connection error"

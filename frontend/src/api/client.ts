@@ -20,7 +20,14 @@ type RefreshResponsePayload = {
   token?: string;
 };
 
-const AUTH_ENDPOINTS_WITHOUT_REFRESH = ['/auth/login', '/auth/logout', '/auth/refresh', '/auth/register'];
+const AUTH_ENDPOINTS_WITHOUT_REFRESH = [
+  '/auth/login',
+  '/auth/logout',
+  '/auth/refresh',
+  '/auth/register',
+  '/auth/setup/status',
+  '/auth/setup/initialize',
+];
 
 export const shouldAttemptTokenRefresh = (url?: string): boolean => {
   if (!url) {

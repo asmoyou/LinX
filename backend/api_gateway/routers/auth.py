@@ -9,14 +9,13 @@ References:
 """
 
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Literal, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from access_control import (
-    TokenPair,
-    UserModel,
     blacklist_session_id,
     blacklist_token,
     decode_token,
@@ -29,17 +28,26 @@ from access_control.audit_logger import log_authentication_event
 from access_control.permissions import CurrentUser, ensure_session_not_revoked, get_current_user
 from access_control.registration import (
     DuplicateUserError,
+    register_user_admin,
 )
 from access_control.registration import ValidationError as RegistrationValidationError
 from access_control.registration import (
     register_user_self,
 )
-from api_gateway.errors import ValidationError
+from shared.platform_settings import (
+    PLATFORM_BOOTSTRAP_SETTINGS_KEY,
+    get_platform_setting,
+    upsert_platform_setting,
+)
 from shared.logging import get_logger
 
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+DEFAULT_BOOTSTRAP_ADMIN_USERNAME = "admin"
+DEFAULT_PLATFORM_LANGUAGE = "zh"
+DEFAULT_PLATFORM_THEME = "system"
 
 
 def _append_login_session(
@@ -134,6 +142,76 @@ class RefreshResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int
+
+
+class SetupStatusResponse(BaseModel):
+    """Public platform setup state."""
+
+    requires_setup: bool
+    has_admin_account: bool
+    default_admin_username: str = DEFAULT_BOOTSTRAP_ADMIN_USERNAME
+    initialized_at: str | None = None
+    language: str | None = None
+    timezone: str | None = None
+
+
+class InitializePlatformRequest(BaseModel):
+    """First-run platform initialization request."""
+
+    email: str = Field(..., pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+    password: str = Field(..., min_length=8)
+    language: Literal["zh", "en"] = DEFAULT_PLATFORM_LANGUAGE
+    timezone: str = Field(..., min_length=1, max_length=100)
+    theme: Literal["light", "dark", "system"] = DEFAULT_PLATFORM_THEME
+
+
+def _has_admin_account(session) -> bool:
+    """Return whether at least one administrator exists."""
+    from database.models import User
+
+    return (
+        session.query(User.user_id)
+        .filter(User.role == "admin")
+        .first()
+        is not None
+    )
+
+
+def _validate_timezone_name(timezone_name: str) -> str:
+    """Validate an IANA timezone name."""
+    candidate = (timezone_name or "").strip()
+    if not candidate:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Timezone is required",
+        )
+
+    try:
+        ZoneInfo(candidate)
+    except ZoneInfoNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid timezone",
+        ) from exc
+
+    return candidate
+
+
+def _build_setup_status(session) -> SetupStatusResponse:
+    """Build the public platform setup status payload."""
+    has_admin_account = _has_admin_account(session)
+    bootstrap_settings = get_platform_setting(session, PLATFORM_BOOTSTRAP_SETTINGS_KEY) or {}
+
+    return SetupStatusResponse(
+        requires_setup=not has_admin_account,
+        has_admin_account=has_admin_account,
+        default_admin_username=bootstrap_settings.get(
+            "default_admin_username", DEFAULT_BOOTSTRAP_ADMIN_USERNAME
+        ),
+        initialized_at=bootstrap_settings.get("initialized_at"),
+        language=bootstrap_settings.get("language"),
+        timezone=bootstrap_settings.get("timezone"),
+    )
 
 
 @router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
@@ -249,6 +327,155 @@ async def login(payload: LoginRequest, http_request: Request):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Login failed. Please try again.",
         )
+
+
+@router.get("/setup/status", response_model=SetupStatusResponse, status_code=status.HTTP_200_OK)
+async def get_setup_status():
+    """Return whether the platform still needs first-run initialization."""
+    from database.connection import get_db_session
+
+    with get_db_session() as session:
+        return _build_setup_status(session)
+
+
+@router.post("/setup/initialize", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
+async def initialize_platform(request: InitializePlatformRequest, http_request: Request):
+    """Create the first administrator account and persist bootstrap settings."""
+    from database.connection import get_db_session
+    from database.models import User
+    from sqlalchemy.orm.attributes import flag_modified
+
+    timezone_name = _validate_timezone_name(request.timezone)
+    initialized_at = datetime.now(timezone.utc).isoformat()
+    attributes = {
+        "created_by": "setup_wizard",
+        "bootstrap": {
+            "source": "web_setup",
+            "initialized_at": initialized_at,
+        },
+        "preferences": {
+            "language": request.language,
+            "theme": request.theme,
+            "timezone": timezone_name,
+            "sidebar_collapsed": False,
+            "dashboard_layout": "default",
+            "notifications_enabled": True,
+            "sound_enabled": False,
+            "auto_refresh": True,
+            "refresh_interval": 30,
+        },
+    }
+
+    try:
+        with get_db_session() as session:
+            if _has_admin_account(session):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Platform has already been initialized",
+                )
+
+            registration = register_user_admin(
+                session=session,
+                username=DEFAULT_BOOTSTRAP_ADMIN_USERNAME,
+                email=request.email,
+                password=request.password,
+                role="admin",
+                attributes=attributes,
+                resource_quotas={
+                    "max_agents": 100,
+                    "max_storage_gb": 1000,
+                    "max_cpu_cores": 50,
+                    "max_memory_gb": 100,
+                },
+            )
+
+            upsert_platform_setting(
+                session=session,
+                key=PLATFORM_BOOTSTRAP_SETTINGS_KEY,
+                value={
+                    "initialized_at": initialized_at,
+                    "default_admin_username": DEFAULT_BOOTSTRAP_ADMIN_USERNAME,
+                    "admin_user_id": registration.user_id,
+                    "language": request.language,
+                    "timezone": timezone_name,
+                    "theme": request.theme,
+                },
+            )
+
+            user = (
+                session.query(User)
+                .filter(User.username == DEFAULT_BOOTSTRAP_ADMIN_USERNAME)
+                .first()
+            )
+            if user is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to create administrator account",
+                )
+
+            tokens = create_token_pair(
+                user_id=str(user.user_id),
+                username=user.username,
+                role=user.role,
+            )
+            token_data = decode_token(tokens.access_token)
+            session_id = token_data.session_id or token_data.jti
+            if session_id:
+                user.attributes = _append_login_session(
+                    user.attributes,
+                    session_id=session_id,
+                    user_agent=http_request.headers.get("user-agent"),
+                    ip_address=http_request.client.host if http_request.client else None,
+                )
+                flag_modified(user, "attributes")
+
+            log_authentication_event(
+                session=session,
+                event_type="login_success",
+                user_id=str(user.user_id),
+                username=user.username,
+                success=True,
+            )
+            session.commit()
+
+            logger.info(
+                "Platform initialized",
+                extra={
+                    "user_id": str(user.user_id),
+                    "username": user.username,
+                    "language": request.language,
+                    "timezone": timezone_name,
+                },
+            )
+
+            return LoginResponse(
+                access_token=tokens.access_token,
+                refresh_token=tokens.refresh_token,
+                token_type=tokens.token_type,
+                expires_in=tokens.expires_in,
+                user={
+                    "user_id": str(user.user_id),
+                    "username": user.username,
+                    "email": user.email,
+                    "role": user.role,
+                },
+            )
+
+    except HTTPException:
+        raise
+    except DuplicateUserError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except RegistrationValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        logger.error(f"Platform initialization error: {str(exc)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Platform initialization failed. Please try again.",
+        ) from exc
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)

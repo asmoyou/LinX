@@ -3,7 +3,6 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { UserPlus, Loader2, Moon, Sun, Eye, EyeOff } from 'lucide-react';
 import { authApi } from '../api';
-import { useAuthStore } from '../stores';
 import { useThemeStore } from '../stores/themeStore';
 import toast from 'react-hot-toast';
 import { LanguageSwitcher } from '../components/LanguageSwitcher';
@@ -12,7 +11,6 @@ import { ParticleBackground } from '../components/ParticleBackground';
 export default function Register() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { login } = useAuthStore();
   const { theme, setTheme, applyTheme } = useThemeStore();
   const [isDark, setIsDark] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -177,22 +175,19 @@ export default function Register() {
     setErrors({});
 
     try {
-      const response = await authApi.register({
+      await authApi.register({
         username: formData.username,
         email: formData.email,
         password: formData.password,
       });
 
-      // Store tokens
-      login(response.user, response.token);
-      localStorage.setItem('refresh_token', response.refresh_token);
-
       toast.success(t('register.success', 'Registration successful!'));
-      navigate('/dashboard');
+      navigate('/login');
     } catch (error: any) {
       console.error('Registration failed:', error);
       
-      const errorMessage = error.response?.data?.message || 
+      const errorMessage = error.response?.data?.detail ||
+        error.response?.data?.message || 
         t('register.errors.failed', 'Registration failed. Please try again.');
       
       toast.error(errorMessage);

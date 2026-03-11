@@ -21,6 +21,23 @@ export interface RegisterRequest {
   role?: string;
 }
 
+export interface SetupStatusResponse {
+  requires_setup: boolean;
+  has_admin_account: boolean;
+  default_admin_username: string;
+  initialized_at?: string | null;
+  language?: string | null;
+  timezone?: string | null;
+}
+
+export interface InitializePlatformRequest {
+  email: string;
+  password: string;
+  language: 'zh' | 'en';
+  timezone: string;
+  theme: 'light' | 'dark' | 'system';
+}
+
 export interface RefreshTokenRequest {
   refresh_token: string;
 }
@@ -99,5 +116,30 @@ export const authApi = {
   verifyToken: async (): Promise<{ valid: boolean }> => {
     const response = await apiClient.get<{ valid: boolean }>('/auth/verify');
     return response.data;
+  },
+
+  /**
+   * Check whether the platform still requires first-run setup
+   */
+  getSetupStatus: async (): Promise<SetupStatusResponse> => {
+    const response = await apiClient.get<SetupStatusResponse>('/auth/setup/status');
+    return response.data;
+  },
+
+  /**
+   * Initialize the platform by creating the first administrator account
+   */
+  initializePlatform: async (payload: InitializePlatformRequest): Promise<LoginResponse> => {
+    const response = await apiClient.post<LoginResponse>('/auth/setup/initialize', payload);
+    const data = response.data;
+
+    if (data.user && 'user_id' in data.user) {
+      data.user = {
+        ...data.user,
+        id: (data.user as any).user_id,
+      };
+    }
+
+    return data;
   },
 };

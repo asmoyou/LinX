@@ -1,6 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, useLocation, Navigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { Layout } from './components/layout/Layout';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { LoadingSpinner } from './components/LoadingSpinner';
@@ -9,6 +9,7 @@ import { useAuthStore } from './stores';
 import ErrorBoundary from './components/error/ErrorBoundary';
 import PageErrorBoundary from './components/error/PageErrorBoundary';
 import { useUserInitialization } from './hooks';
+import { authApi, type SetupStatusResponse } from './api';
 
 // Lazy load pages for better performance (6.9.6)
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
@@ -26,6 +27,7 @@ const Profile = lazy(() => import('./pages/Profile').then(m => ({ default: m.Pro
 const Notifications = lazy(() => import('./pages/Notifications').then(m => ({ default: m.Notifications })));
 const Login = lazy(() => import('./pages/Login'));
 const Register = lazy(() => import('./pages/Register'));
+const Setup = lazy(() => import('./pages/Setup'));
 
 // Loading fallback component
 const PageLoader = () => (
@@ -34,19 +36,46 @@ const PageLoader = () => (
   </div>
 );
 
-const AnimatedRoutes = () => {
+interface AnimatedRoutesProps {
+  setupStatus: SetupStatusResponse | null;
+  onSetupStatusRefresh: () => Promise<void>;
+}
+
+const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesProps) => {
   const location = useLocation();
   const { isAuthenticated } = useAuthStore();
+  const requiresSetup = setupStatus?.requires_setup ?? false;
+  const defaultAdminUsername = setupStatus?.default_admin_username ?? 'admin';
 
   return (
     <AnimatePresence mode="wait">
       <Routes location={location} key={location.pathname}>
+        <Route
+          path="/setup"
+          element={
+            isAuthenticated ? (
+              <Navigate to="/dashboard" replace />
+            ) : requiresSetup ? (
+              <Suspense fallback={<PageLoader />}>
+                <Setup
+                  defaultAdminUsername={defaultAdminUsername}
+                  onSetupComplete={onSetupStatusRefresh}
+                />
+              </Suspense>
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
+        />
+
         {/* Public routes */}
         <Route
           path="/login"
           element={
             isAuthenticated ? (
               <Navigate to="/dashboard" replace />
+            ) : requiresSetup ? (
+              <Navigate to="/setup" replace />
             ) : (
               <Suspense fallback={<PageLoader />}>
                 <Login />
@@ -59,6 +88,8 @@ const AnimatedRoutes = () => {
           element={
             isAuthenticated ? (
               <Navigate to="/dashboard" replace />
+            ) : requiresSetup ? (
+              <Navigate to="/setup" replace />
             ) : (
               <Suspense fallback={<PageLoader />}>
                 <Register />
@@ -71,9 +102,13 @@ const AnimatedRoutes = () => {
         <Route
           path="/"
           element={
-            <ProtectedRoute>
-              <Layout />
-            </ProtectedRoute>
+            requiresSetup && !isAuthenticated ? (
+              <Navigate to="/setup" replace />
+            ) : (
+              <ProtectedRoute>
+                <Layout />
+              </ProtectedRoute>
+            )
           }
         >
           <Route index element={<Navigate to="/dashboard" replace />} />
@@ -307,12 +342,43 @@ const AnimatedRoutes = () => {
 function App() {
   // Initialize user data when authenticated
   useUserInitialization();
+  const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(null);
+  const [isSetupStatusLoading, setIsSetupStatusLoading] = useState(true);
+
+  const refreshSetupStatus = useCallback(async () => {
+    setIsSetupStatusLoading(true);
+
+    try {
+      const nextStatus = await authApi.getSetupStatus();
+      setSetupStatus(nextStatus);
+    } catch (error) {
+      console.error('Failed to load setup status:', error);
+      setSetupStatus({
+        requires_setup: false,
+        has_admin_account: true,
+        default_admin_username: 'admin',
+      });
+    } finally {
+      setIsSetupStatusLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSetupStatus();
+  }, [refreshSetupStatus]);
 
   return (
     <ErrorBoundary>
       <Router>
         <Toast />
-        <AnimatedRoutes />
+        {isSetupStatusLoading ? (
+          <PageLoader />
+        ) : (
+          <AnimatedRoutes
+            setupStatus={setupStatus}
+            onSetupStatusRefresh={refreshSetupStatus}
+          />
+        )}
       </Router>
     </ErrorBoundary>
   );

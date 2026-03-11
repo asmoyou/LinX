@@ -7,6 +7,8 @@ describe('apiClient token refresh guard', () => {
     expect(shouldAttemptTokenRefresh('/auth/logout')).toBe(false);
     expect(shouldAttemptTokenRefresh('/auth/refresh')).toBe(false);
     expect(shouldAttemptTokenRefresh('/auth/register')).toBe(false);
+    expect(shouldAttemptTokenRefresh('/auth/setup/status')).toBe(false);
+    expect(shouldAttemptTokenRefresh('/auth/setup/initialize')).toBe(false);
     expect(shouldAttemptTokenRefresh('http://localhost:8000/api/v1/auth/login')).toBe(false);
   });
 

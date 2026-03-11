@@ -128,6 +128,22 @@ class User(Base):
         return f"<User(user_id={self.user_id}, username={self.username}, role={self.role})>"
 
 
+class PlatformSetting(Base):
+    """Platform-wide configuration stored in the database."""
+
+    __tablename__ = "platform_settings"
+
+    setting_key = Column(String(100), primary_key=True)
+    setting_value = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    def __repr__(self):
+        return f"<PlatformSetting(setting_key={self.setting_key})>"
+
+
 class Agent(Base):
     """Agents table.
 

@@ -131,7 +131,8 @@ export default function Login() {
     } catch (error: any) {
       console.error('Login failed:', error);
       
-      const errorMessage = error.response?.data?.message || 
+      const errorMessage = error.response?.data?.detail ||
+        error.response?.data?.message || 
         t('login.errors.failed', 'Login failed. Please check your credentials.');
       
       toast.error(errorMessage);

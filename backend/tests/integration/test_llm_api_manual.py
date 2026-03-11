@@ -121,7 +121,7 @@ def test_login_and_access():
         else:
             print(f"\n⚠️  Login failed (status {response.status_code})")
             print("This is expected if no admin user exists yet.")
-            print("You can create one with: python scripts/create_admin.py")
+            print("Initialize the platform through the frontend /setup flow first.")
             
     except Exception as e:
         print(f"\n❌ Test failed: {e}")
