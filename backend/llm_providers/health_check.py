@@ -4,16 +4,21 @@ LLM Provider Health Check Service
 Comprehensive health checking for LLM providers and models.
 Based on cherry-studio's robust testing architecture.
 
+Supports model-type-aware testing: chat, embedding, and rerank models
+are each tested with the appropriate API endpoint and payload.
+
 References:
 - cherry-studio: src/renderer/src/services/HealthCheckService.ts
 - cherry-studio: src/renderer/src/services/ApiService.ts
 """
 
 import asyncio
+import json
 import logging
+import re
 import time
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -64,12 +69,15 @@ async def check_model_with_single_key(
     model_id: str,
     api_key: Optional[str] = None,
     timeout: int = 15,
+    model_metadata: Optional[Dict[str, Any]] = None,
 ) -> ApiKeyStatus:
     """
     Check a single model with a single API key.
-    
-    Performs a minimal test request to verify connectivity.
-    
+
+    Detects model type (chat / embedding / rerank) and uses the appropriate
+    test endpoint so that non-chat models are not incorrectly tested against
+    /chat/completions.
+
     Args:
         provider_name: Provider name
         protocol: Provider protocol (ollama, openai_compatible)
@@ -77,41 +85,46 @@ async def check_model_with_single_key(
         model_id: Model to test
         api_key: API key (optional)
         timeout: Request timeout in seconds
-        
+        model_metadata: Optional per-model metadata dict (may contain "model_type")
+
     Returns:
         ApiKeyStatus with test results
     """
     key_masked = _mask_api_key(api_key) if api_key else "no-key"
     start_time = time.time()
-    
+
     try:
-        # Get protocol client
-        from llm_providers.models import ProviderProtocol
-        protocol_enum = ProviderProtocol(protocol)
-        client = get_protocol_client(protocol_enum)
-        
-        # Perform test based on protocol
-        if protocol == "ollama":
-            # Ollama: Test with minimal generation request
-            await _test_ollama_model(base_url, model_id, timeout)
+        # Resolve model type: DB metadata first, pattern detection fallback
+        model_type = _resolve_model_type(model_id, model_metadata)
+
+        logger.info(f"Testing {model_type} model: {model_id} on {provider_name}")
+
+        # Dispatch to the correct test method
+        if model_type == "embedding":
+            await _test_embedding_model(protocol, base_url, model_id, api_key, timeout)
+        elif model_type == "rerank":
+            await _test_rerank_model(protocol, base_url, model_id, api_key, timeout)
         else:
-            # OpenAI Compatible: Test with minimal chat completion
-            await _test_openai_compatible_model(base_url, model_id, api_key, timeout)
-        
+            # Chat / completion model
+            if protocol == "ollama":
+                await _test_ollama_model(base_url, model_id, timeout)
+            else:
+                await _test_openai_compatible_model(base_url, model_id, api_key, timeout)
+
         latency = (time.time() - start_time) * 1000  # Convert to milliseconds
-        
+
         logger.info(f"✓ Model {model_id} test passed (latency: {latency:.0f}ms)")
-        
+
         return ApiKeyStatus(
             key_masked=key_masked,
             status=HealthStatus.SUCCESS,
             latency=latency,
         )
-        
+
     except Exception as e:
         error_msg = str(e)
         logger.warning(f"✗ Model {model_id} test failed: {error_msg}")
-        
+
         return ApiKeyStatus(
             key_masked=key_masked,
             status=HealthStatus.FAILED,
@@ -213,6 +226,214 @@ async def _test_openai_compatible_model(
     raise Exception(last_error or "Failed to connect to model")
 
 
+def _detect_model_type(model_id: str) -> str:
+    """
+    Detect model type based on model ID patterns.
+
+    Returns: "embedding", "rerank", or "chat"
+    """
+    model_lower = model_id.lower()
+
+    # Rerank models (check first — some rerank models contain "embed")
+    rerank_patterns = [
+        r"rerank",
+        r"re-rank",
+        r"re-ranker",
+        r"re-ranking",
+    ]
+    for pattern in rerank_patterns:
+        if re.search(pattern, model_lower):
+            return "rerank"
+
+    # Embedding models
+    embedding_patterns = [
+        r"^text-embedding",
+        r"embed",
+        r"bge-(?!rerank)",
+        r"e5-",
+        r"llm2vec",
+        r"uae-",
+        r"gte-",
+        r"jina-clip",
+        r"jina-embeddings",
+        r"voyage-",
+        r"mxbai-embed",
+        r"doubao-embedding",
+    ]
+    for pattern in embedding_patterns:
+        if re.search(pattern, model_lower):
+            return "embedding"
+
+    return "chat"
+
+
+def _resolve_model_type(
+    model_id: str,
+    model_metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    """
+    Determine model type using metadata first, falling back to pattern detection.
+    """
+    if model_metadata:
+        meta_type = model_metadata.get("model_type", "")
+        if meta_type in ("embedding", "rerank"):
+            return meta_type
+    return _detect_model_type(model_id)
+
+
+async def _test_embedding_model(
+    protocol: str,
+    base_url: str,
+    model_id: str,
+    api_key: Optional[str],
+    timeout: int,
+) -> None:
+    """Test an embedding model by requesting a single embedding vector."""
+    import aiohttp
+
+    if protocol == "ollama":
+        url = f"{base_url.rstrip('/')}/api/embeddings"
+        payload = {"model": model_id, "prompt": "test"}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    raise Exception(f"Ollama embedding test failed: {response.status} - {text}")
+
+                data = await response.json()
+                embedding = data.get("embedding", [])
+                if not embedding:
+                    raise Exception("No embedding vector returned by Ollama")
+                return  # success
+    else:
+        # OpenAI-compatible embedding endpoint
+        base = base_url.rstrip("/")
+        urls_to_try = [
+            f"{base}/v1/embeddings",
+            f"{base}/embeddings",
+        ]
+
+        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        payload = {"model": model_id, "input": "test"}
+
+        last_error: Optional[str] = None
+        for url in urls_to_try:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        url,
+                        json=payload,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=timeout),
+                    ) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            # Accept any response with embedding-like data
+                            if _has_embedding_data(data):
+                                return  # success
+                            last_error = (
+                                "HTTP 200 but no embedding vector found in payload"
+                            )
+                        else:
+                            text = await response.text()
+                            last_error = f"HTTP {response.status}: {text[:200]}"
+            except Exception as e:
+                last_error = str(e)
+
+        raise Exception(last_error or "Embedding test failed")
+
+
+async def _test_rerank_model(
+    protocol: str,
+    base_url: str,
+    model_id: str,
+    api_key: Optional[str],
+    timeout: int,
+) -> None:
+    """Test a rerank model by sending a minimal rerank request."""
+    import aiohttp
+
+    base = base_url.rstrip("/")
+    urls_to_try = [
+        f"{base}/v1/rerank",
+        f"{base}/rerank",
+        f"{base}/api/rerank",
+    ]
+
+    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "model": model_id,
+        "query": "test query",
+        "documents": ["document one", "document two"],
+    }
+
+    last_error: Optional[str] = None
+    for url in urls_to_try:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if _has_rerank_data(data):
+                            return  # success
+                        last_error = "HTTP 200 but no rerank results found in payload"
+                    else:
+                        text = await response.text()
+                        last_error = f"HTTP {response.status}: {text[:200]}"
+        except Exception as e:
+            last_error = str(e)
+
+    raise Exception(last_error or "Rerank test failed")
+
+
+def _has_embedding_data(data: Any) -> bool:
+    """Check whether a response payload contains embedding vectors."""
+    if not isinstance(data, dict):
+        return False
+    # Ollama style
+    if isinstance(data.get("embedding"), list) and data["embedding"]:
+        return True
+    # OpenAI style
+    items = data.get("data")
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict) and isinstance(item.get("embedding"), list):
+                return True
+    # Alternative keys
+    for key in ("embeddings", "results"):
+        items = data.get(key)
+        if isinstance(items, list) and items:
+            return True
+    return False
+
+
+def _has_rerank_data(data: Any) -> bool:
+    """Check whether a response payload contains rerank results."""
+    if not isinstance(data, dict):
+        return False
+    for key in ("results", "data"):
+        value = data.get(key)
+        if isinstance(value, list) and value:
+            return True
+    return False
+
+
 async def check_model_with_multiple_keys(
     provider_name: str,
     protocol: str,
@@ -220,12 +441,13 @@ async def check_model_with_multiple_keys(
     model_id: str,
     api_keys: List[str],
     timeout: int = 15,
+    model_metadata: Optional[Dict[str, Any]] = None,
 ) -> List[ApiKeyStatus]:
     """
     Check a model with multiple API keys.
-    
+
     Tests all keys in parallel and returns results for each.
-    
+
     Args:
         provider_name: Provider name
         protocol: Provider protocol
@@ -233,14 +455,15 @@ async def check_model_with_multiple_keys(
         model_id: Model to test
         api_keys: List of API keys to test
         timeout: Request timeout in seconds
-        
+        model_metadata: Optional per-model metadata dict
+
     Returns:
         List of ApiKeyStatus results
     """
     if not api_keys:
         # No API key provided - test without key
         api_keys = [None]
-    
+
     # Test all keys in parallel
     tasks = [
         check_model_with_single_key(
@@ -250,10 +473,11 @@ async def check_model_with_multiple_keys(
             model_id=model_id,
             api_key=key,
             timeout=timeout,
+            model_metadata=model_metadata,
         )
         for key in api_keys
     ]
-    
+
     results = await asyncio.gather(*tasks, return_exceptions=False)
     return results
 
@@ -292,10 +516,11 @@ async def check_models_health(
     concurrent: bool = True,
     timeout: int = 15,
     on_model_checked: Optional[callable] = None,
+    model_metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[ModelHealthResult]:
     """
     Check health of multiple models.
-    
+
     Args:
         provider_name: Provider name
         protocol: Provider protocol
@@ -305,12 +530,14 @@ async def check_models_health(
         concurrent: Whether to test models concurrently
         timeout: Request timeout in seconds
         on_model_checked: Callback called after each model is checked
-        
+        model_metadata_map: Optional mapping of model_id → metadata dict
+
     Returns:
         List of ModelHealthResult
     """
     results: List[ModelHealthResult] = []
-    
+    metadata_map = model_metadata_map or {}
+
     async def check_one_model(model_id: str, index: int) -> ModelHealthResult:
         """Check a single model."""
         try:
@@ -322,6 +549,7 @@ async def check_models_health(
                 model_id=model_id,
                 api_keys=api_keys,
                 timeout=timeout,
+                model_metadata=metadata_map.get(model_id),
             )
             
             # Aggregate results
@@ -370,10 +598,11 @@ async def check_provider_health(
     api_keys: List[str],
     concurrent: bool = True,
     timeout: int = 15,
+    model_metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> ProviderHealthResult:
     """
     Check health of a provider and all its models.
-    
+
     Args:
         provider_name: Provider name
         protocol: Provider protocol
@@ -382,7 +611,8 @@ async def check_provider_health(
         api_keys: List of API keys to test
         concurrent: Whether to test models concurrently
         timeout: Request timeout in seconds
-        
+        model_metadata_map: Optional mapping of model_id → metadata dict
+
     Returns:
         ProviderHealthResult
     """
@@ -396,6 +626,7 @@ async def check_provider_health(
             api_keys=api_keys,
             concurrent=concurrent,
             timeout=timeout,
+            model_metadata_map=model_metadata_map,
         )
         
         # Aggregate provider status

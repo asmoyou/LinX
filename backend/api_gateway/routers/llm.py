@@ -359,7 +359,14 @@ async def test_generation(
         start_time = time.time()
         llm_router = get_llm_provider() if get_llm_provider is not None else None
 
-        if llm_router is not None:
+        # Detect model type early — embedding/rerank models must NOT be
+        # routed through llm_router.generate() which always hits the chat
+        # completions endpoint and would fail with a 500.
+        early_model_type = "chat"
+        if request.model:
+            early_model_type = _detect_model_type(request.model)
+
+        if llm_router is not None and early_model_type == "chat":
             try:
                 router_response = await _maybe_await(
                     llm_router.generate(
@@ -1417,6 +1424,7 @@ async def test_models(
 
         # Get API keys (use stored key if not provided)
         api_keys = request.api_keys
+        model_metadata_map = {}
         if not api_keys:
             try:
                 with get_db_session() as db:
@@ -1427,9 +1435,22 @@ async def test_models(
                             decrypted_key = db_manager._decrypt_api_key(provider.api_key_encrypted)
                             if decrypted_key:
                                 api_keys = [decrypted_key]
+                            # Collect per-model metadata for type-aware testing
+                            if provider.model_metadata:
+                                model_metadata_map = provider.model_metadata
                             break
             except Exception as e:
                 logger.warning(f"Failed to fetch stored API key: {e}")
+        else:
+            # Even if api_keys were provided, still fetch metadata for model type detection
+            try:
+                with get_db_session() as db:
+                    db_manager = ProviderDBManager(db)
+                    db_provider = db_manager.get_provider(request.provider_name)
+                    if db_provider and db_provider.model_metadata:
+                        model_metadata_map = db_provider.model_metadata
+            except Exception as e:
+                logger.warning(f"Failed to fetch model metadata: {e}")
 
         # Perform health check
         results = await check_models_health(
@@ -1440,6 +1461,7 @@ async def test_models(
             api_keys=api_keys or [],
             concurrent=request.concurrent,
             timeout=request.timeout,
+            model_metadata_map=model_metadata_map,
         )
 
         # Convert results to dict format

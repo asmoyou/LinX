@@ -89,8 +89,11 @@ class SkillProposalRepository:
             if payload is not None:
                 row.materialized_data = dict(payload)
             if published_skill_id is not None:
-                row.published_skill_id = UUID(str(published_skill_id)) if published_skill_id else None
+                row.published_skill_id = (
+                    UUID(str(published_skill_id)) if published_skill_id else None
+                )
             db.flush()
+            db.refresh(row)
             return row
 
 
