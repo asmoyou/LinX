@@ -140,10 +140,13 @@ class OpenAIProvider(BaseLLMProvider):
                 payload["max_tokens"] = max_tokens
                 payload["max_completion_tokens"] = max_tokens
 
-            payload.update(kwargs)
+            payload.update(self._normalize_request_payload(kwargs))
 
             try:
-                async with session.post(chat_url, json=payload) as response:
+                request_ctx = await self._resolve_request_context(
+                    session.post(chat_url, json=payload)
+                )
+                async with request_ctx as response:
                     response.raise_for_status()
                     data = await response.json()
                     
@@ -237,10 +240,13 @@ class OpenAIProvider(BaseLLMProvider):
             if max_tokens:
                 payload["max_tokens"] = max_tokens
 
-            payload.update(kwargs)
+            payload.update(self._normalize_request_payload(kwargs))
 
             try:
-                async with session.post(completion_url, json=payload) as response:
+                request_ctx = await self._resolve_request_context(
+                    session.post(completion_url, json=payload)
+                )
+                async with request_ctx as response:
                     response.raise_for_status()
                     data = await response.json()
 
@@ -286,7 +292,10 @@ class OpenAIProvider(BaseLLMProvider):
         }
 
         try:
-            async with session.post(embedding_url, json=payload) as response:
+            request_ctx = await self._resolve_request_context(
+                session.post(embedding_url, json=payload)
+            )
+            async with request_ctx as response:
                 response.raise_for_status()
                 data = await response.json()
 
@@ -326,10 +335,13 @@ class OpenAIProvider(BaseLLMProvider):
 
         # Strategy 1: Try to fetch from API
         try:
-            async with session.get(
-                models_url,
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as response:
+            request_ctx = await self._resolve_request_context(
+                session.get(
+                    models_url,
+                    timeout=aiohttp.ClientTimeout(total=5)
+                )
+            )
+            async with request_ctx as response:
                 if response.status == 200:
                     data = await response.json()
                     models = data.get("data", [])
@@ -385,10 +397,13 @@ class OpenAIProvider(BaseLLMProvider):
 
         # Strategy 1: Try /models endpoint
         try:
-            async with session.get(
-                models_url,
-                timeout=aiohttp.ClientTimeout(total=3)
-            ) as response:
+            request_ctx = await self._resolve_request_context(
+                session.get(
+                    models_url,
+                    timeout=aiohttp.ClientTimeout(total=3)
+                )
+            )
+            async with request_ctx as response:
                 if response.status == 200:
                     logger.debug(f"OpenAI health check passed via /models endpoint")
                     return True
@@ -417,11 +432,14 @@ class OpenAIProvider(BaseLLMProvider):
                     "max_completion_tokens": 1,
                 }
                 
-                async with session.post(
-                    chat_url,
-                    json=test_payload,
-                    timeout=aiohttp.ClientTimeout(total=3)
-                ) as response:
+                request_ctx = await self._resolve_request_context(
+                    session.post(
+                        chat_url,
+                        json=test_payload,
+                        timeout=aiohttp.ClientTimeout(total=3)
+                    )
+                )
+                async with request_ctx as response:
                     # 200 = success, 400/422 = bad request but server is up
                     if response.status in [200, 400, 422]:
                         logger.info(f"OpenAI health check passed via chat endpoint (status {response.status})")

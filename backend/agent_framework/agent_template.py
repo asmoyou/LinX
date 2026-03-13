@@ -140,7 +140,7 @@ class AgentTemplateManager:
             "Created agent template",
             extra={
                 "template_id": str(template.template_id),
-                "name": name,
+                "template_name": name,
                 "agent_type": agent_type,
                 "is_system_template": is_system_template,
             },

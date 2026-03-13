@@ -20,11 +20,17 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    # Rename metadata column to skill_metadata to avoid SQLAlchemy reserved word conflict
-    op.alter_column('skills', 'metadata', new_column_name='skill_metadata')
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {column["name"] for column in inspector.get_columns("skills")}
+    if "metadata" in columns and "skill_metadata" not in columns:
+        op.alter_column('skills', 'metadata', new_column_name='skill_metadata')
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    # Rename back to metadata
-    op.alter_column('skills', 'skill_metadata', new_column_name='metadata')
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {column["name"] for column in inspector.get_columns("skills")}
+    if "skill_metadata" in columns and "metadata" not in columns:
+        op.alter_column('skills', 'skill_metadata', new_column_name='metadata')

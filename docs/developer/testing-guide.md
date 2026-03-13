@@ -178,26 +178,29 @@ def test_role_removal():
 集成测试应该放在 `tests/integration/` 目录下：
 
 ```python
-# tests/integration/test_agent_memory_integration.py
+# tests/integration/test_agent_context_integration.py
 import pytest
-from agent_framework.base_agent import BaseAgent
-from memory_system.memory_interface import MemoryInterface
+from types import SimpleNamespace
+
+from agent_framework.runtime_context_service import RuntimeContextService
+
 
 @pytest.mark.asyncio
-async def test_agent_memory_integration():
-    """Test agent can store and retrieve memories."""
-    agent = BaseAgent(agent_id="test-agent")
-    memory = MemoryInterface()
-    
-    # Store memory
-    await agent.store_memory("Test memory content")
-    
-    # Retrieve memory
-    memories = await agent.retrieve_memories("Test")
-    
-    # Verify
-    assert len(memories) > 0
-    assert "Test memory content" in memories[0].content
+async def test_runtime_context_reads_user_memory_and_skills():
+    """Test runtime context assembles the reset-era context sources."""
+    service = RuntimeContextService()
+    service.retrieve_user_memory = lambda **_: [
+        SimpleNamespace(content="用户的配偶是王敏", memory_type="user_memory")
+    ]
+    service.retrieve_skills = lambda **_: [
+        SimpleNamespace(content="agent.experience.goal=Stable PDF delivery path", memory_type="skill_experience")
+    ]
+
+    user_memories = service.retrieve_user_memory(user_id="user-1", query="配偶", top_k=3)
+    skills = service.retrieve_skills(agent_id="agent-1", user_id="user-1", query="pdf", top_k=3)
+
+    assert user_memories[0].content == "用户的配偶是王敏"
+    assert skills[0].memory_type == "skill_experience"
 ```
 
 ## 测试最佳实践

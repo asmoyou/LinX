@@ -7,7 +7,7 @@ from agent_framework.runtime_policy import ExecutionProfile
 
 
 def _build_executor() -> AgentExecutor:
-    return AgentExecutor(memory_interface=MagicMock())
+    return AgentExecutor(context_service=MagicMock())
 
 
 def test_query_requests_historical_context_detects_follow_up_cues():
@@ -240,17 +240,15 @@ def test_context_relevance_does_not_require_lexical_overlap_when_score_passes_fl
 
 def test_execution_context_uses_explicit_memory_similarity_threshold():
     memory_interface = MagicMock()
-    memory_interface.retrieve_agent_memory.return_value = []
-    memory_interface.retrieve_company_memory.return_value = []
-    memory_interface.retrieve_user_context_memory.return_value = []
-    memory_interface.memory_system.retrieve_memories.return_value = []
-    executor = AgentExecutor(memory_interface=memory_interface)
+    memory_interface.retrieve_skills.return_value = []
+    memory_interface.retrieve_user_memory.return_value = []
+    executor = AgentExecutor(context_service=memory_interface)
 
     agent = MagicMock()
     agent.config = SimpleNamespace(
         name="Test Agent",
         access_level="team",
-        allowed_memory=["agent", "company", "user_context"],
+        allowed_memory=["skills", "user_memory"],
         allowed_knowledge=[],
     )
     context = ExecutionContext(
@@ -266,25 +264,22 @@ def test_execution_context_uses_explicit_memory_similarity_threshold():
         memory_min_similarity=0.64,
     )
 
-    assert memory_interface.retrieve_agent_memory.call_args.kwargs["min_similarity"] == 0.64
-    assert memory_interface.retrieve_company_memory.call_args.kwargs["min_similarity"] == 0.64
-    assert memory_interface.retrieve_user_context_memory.call_args.kwargs["min_similarity"] == 0.64
+    assert memory_interface.retrieve_skills.call_args.kwargs["min_similarity"] == 0.64
+    assert memory_interface.retrieve_user_memory.call_args.kwargs["min_similarity"] == 0.64
 
 
 def test_execution_context_does_not_fallback_to_agent_similarity_threshold():
     memory_interface = MagicMock()
-    memory_interface.retrieve_agent_memory.return_value = []
-    memory_interface.retrieve_company_memory.return_value = []
-    memory_interface.retrieve_user_context_memory.return_value = []
-    memory_interface.memory_system.retrieve_memories.return_value = []
-    executor = AgentExecutor(memory_interface=memory_interface)
+    memory_interface.retrieve_skills.return_value = []
+    memory_interface.retrieve_user_memory.return_value = []
+    executor = AgentExecutor(context_service=memory_interface)
 
     agent = MagicMock()
     agent.similarity_threshold = 0.92
     agent.config = SimpleNamespace(
         name="Test Agent",
         access_level="team",
-        allowed_memory=["agent", "company", "user_context"],
+        allowed_memory=["skills", "user_memory"],
         allowed_knowledge=[],
         similarity_threshold=0.88,
     )
@@ -301,14 +296,13 @@ def test_execution_context_does_not_fallback_to_agent_similarity_threshold():
         memory_min_similarity=None,
     )
 
-    assert memory_interface.retrieve_agent_memory.call_args.kwargs["min_similarity"] is None
-    assert memory_interface.retrieve_company_memory.call_args.kwargs["min_similarity"] is None
-    assert memory_interface.retrieve_user_context_memory.call_args.kwargs["min_similarity"] is None
+    assert memory_interface.retrieve_skills.call_args.kwargs["min_similarity"] is None
+    assert memory_interface.retrieve_user_memory.call_args.kwargs["min_similarity"] is None
 
 
 def test_execute_forwards_knowledge_min_relevance_score_to_context_builder():
     memory_interface = MagicMock()
-    executor = AgentExecutor(memory_interface=memory_interface)
+    executor = AgentExecutor(context_service=memory_interface)
     mock_runtime_service = MagicMock()
     mock_runtime_service.execute.return_value = {"success": True, "output": "ok"}
 
@@ -337,20 +331,20 @@ def test_execute_forwards_knowledge_min_relevance_score_to_context_builder():
     assert build_context.call_args.kwargs["knowledge_min_relevance_score"] == 0.73
 
 
-def test_prune_interaction_log_memories_drops_unpublished_agent_candidates():
+def test_prune_interaction_log_memories_drops_unpublished_skill_candidates():
     executor = _build_executor()
     memories = [
         {
             "content": "interaction.sop.topic=写旅游攻略\ninteraction.sop.steps=1.收集资料|2.整理路线|3.输出文档",
             "metadata": {
-                "signal_type": "agent_memory_candidate",
+                "signal_type": "skill_proposal",
                 "review_status": "pending",
             },
         },
         {
             "content": "interaction.sop.topic=写旅游攻略\ninteraction.sop.steps=1.收集资料|2.整理路线|3.输出文档",
             "metadata": {
-                "signal_type": "agent_memory_candidate",
+                "signal_type": "skill_proposal",
                 "review_status": "published",
             },
         },
@@ -368,7 +362,7 @@ def test_prune_interaction_log_memories_drops_unpublished_agent_candidates():
 
 def test_execute_does_not_persist_task_memory_for_debug_chat_profile():
     memory_interface = MagicMock()
-    executor = AgentExecutor(memory_interface=memory_interface)
+    executor = AgentExecutor(context_service=memory_interface)
     mock_runtime_service = MagicMock()
     mock_runtime_service.execute.return_value = {"success": True, "output": "ok"}
 
@@ -390,12 +384,12 @@ def test_execute_does_not_persist_task_memory_for_debug_chat_profile():
         )
 
     assert result["success"] is True
-    memory_interface.store_agent_memory.assert_not_called()
+    # no runtime context writes on execute
 
 
 def test_execute_does_not_persist_task_memory_for_non_debug_profile():
     memory_interface = MagicMock()
-    executor = AgentExecutor(memory_interface=memory_interface)
+    executor = AgentExecutor(context_service=memory_interface)
     mock_runtime_service = MagicMock()
     mock_runtime_service.execute.return_value = {"success": True, "output": "ok"}
 
@@ -417,4 +411,4 @@ def test_execute_does_not_persist_task_memory_for_non_debug_profile():
         )
 
     assert result["success"] is True
-    memory_interface.store_agent_memory.assert_not_called()
+    # no runtime context writes on execute

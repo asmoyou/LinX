@@ -89,10 +89,13 @@ class OllamaProvider(BaseLLMProvider):
             payload["images"] = images
 
         # Add any additional options
-        payload["options"].update(kwargs)
+        payload["options"].update(self._normalize_request_payload(kwargs))
 
         try:
-            async with session.post(f"{self.base_url}/api/generate", json=payload) as response:
+            request_ctx = await self._resolve_request_context(
+                session.post(f"{self.base_url}/api/generate", json=payload)
+            )
+            async with request_ctx as response:
                 response.raise_for_status()
                 data = await response.json()
                 
@@ -148,7 +151,10 @@ class OllamaProvider(BaseLLMProvider):
         }
 
         try:
-            async with session.post(f"{self.base_url}/api/embeddings", json=payload) as response:
+            request_ctx = await self._resolve_request_context(
+                session.post(f"{self.base_url}/api/embeddings", json=payload)
+            )
+            async with request_ctx as response:
                 response.raise_for_status()
                 data = await response.json()
 
@@ -178,7 +184,8 @@ class OllamaProvider(BaseLLMProvider):
         session = await self._get_session()
 
         try:
-            async with session.get(f"{self.base_url}/api/tags") as response:
+            request_ctx = await self._resolve_request_context(session.get(f"{self.base_url}/api/tags"))
+            async with request_ctx as response:
                 response.raise_for_status()
                 data = await response.json()
                 models = data.get("models", [])
@@ -200,7 +207,8 @@ class OllamaProvider(BaseLLMProvider):
         session = await self._get_session()
 
         try:
-            async with session.get(f"{self.base_url}/api/tags") as response:
+            request_ctx = await self._resolve_request_context(session.get(f"{self.base_url}/api/tags"))
+            async with request_ctx as response:
                 return response.status == 200
         except Exception as e:
             logger.warning(f"Ollama health check failed: {e}")

@@ -14,12 +14,13 @@ from api_gateway.routers import (
     dashboard,
     departments,
     knowledge,
-    memory,
     missions,
     monitoring,
     notifications,
     roles,
+    skill_proposals,
     skills,
+    user_memory,
     users,
 )
 
@@ -32,9 +33,10 @@ __all__ = [
     "agents",
     "dashboard",
     "knowledge",
-    "memory",
     "missions",
     "monitoring",
     "notifications",
     "skills",
+    "skill_proposals",
+    "user_memory",
 ]

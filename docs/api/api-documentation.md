@@ -461,10 +461,10 @@ Authorization: Bearer {access_token}
 
 ### Memory
 
-#### Get Agent Memory
+#### Get User Memory
 
 ```http
-GET /api/v1/memory/agent/{agent_id}
+GET /api/v1/user-memory?user_id={user_id}
 Authorization: Bearer {access_token}
 ```
 
@@ -472,31 +472,30 @@ Authorization: Bearer {access_token}
 - `limit`: Number of results
 - `offset`: Pagination offset
 
-#### Get Company Memory
+#### Get User Memory Profile
 
 ```http
-GET /api/v1/memory/company
+GET /api/v1/user-memory/profile?user_id={user_id}
 Authorization: Bearer {access_token}
 ```
 
-#### Get User Context
+#### Get Skill Proposals
 
 ```http
-GET /api/v1/memory/user-context
+GET /api/v1/skill-proposals?agent_id={agent_id}
 Authorization: Bearer {access_token}
 ```
 
-#### Share Memory
+#### Review Skill Proposal
 
 ```http
-POST /api/v1/memory/share
+POST /api/v1/skill-proposals/{memory_id}/review
 Authorization: Bearer {access_token}
 Content-Type: application/json
 
 {
-  "memory_id": "mem-123",
-  "target_agent_ids": ["agent-456", "agent-789"],
-  "note": "Relevant for your current task"
+  "action": "publish",
+  "note": "Proven successful path"
 }
 ```
 

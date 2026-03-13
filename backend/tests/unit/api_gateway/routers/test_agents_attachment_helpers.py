@@ -10,33 +10,33 @@ import pytest
 from fastapi import HTTPException
 
 from api_gateway.routers.agents import (
-    FileReference,
     _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL,
+    FileReference,
     _agent_cache,
     _build_agent_candidate_content,
     _build_agent_candidate_seed_facts,
-    _get_cached_agent_status_value,
     _build_agent_metrics_from_task_rows,
-    _build_audit_log_entries,
-    _build_task_log_entries,
     _build_attachment_prompt_context,
     _build_attachment_workspace_context,
+    _build_audit_log_entries,
     _build_download_content_disposition,
+    _build_task_log_entries,
     _call_llm_for_memory_json,
-    _extract_session_memory_signals_with_llm,
+    _extract_attachment_text,
     _extract_json_object_from_text,
-    _extract_agent_memory_candidates,
-    _normalize_llm_agent_candidates,
-    _normalize_llm_user_preference_signals,
+    _extract_session_memory_signals_with_llm,
+    _extract_skill_proposals,
     _extract_token_usage_from_metadata,
     _extract_user_preference_signals,
-    _sanitize_history_messages,
-    _list_session_workspace_entries,
-    _resolve_safe_workspace_path,
-    _extract_attachment_text,
+    _get_cached_agent_status_value,
     _infer_attachment_bucket_type,
     _infer_attachment_type,
+    _list_session_workspace_entries,
     _materialize_attachment_files_to_workspace,
+    _normalize_llm_agent_candidates,
+    _normalize_llm_user_preference_signals,
+    _resolve_safe_workspace_path,
+    _sanitize_history_messages,
     cache_agent,
     get_cached_agent,
 )
@@ -135,10 +135,7 @@ def test_sanitize_history_messages_keeps_all_image_items_without_capping() -> No
 
 
 def test_sanitize_history_messages_keeps_long_history_without_truncation() -> None:
-    raw_history = [
-        {"role": "user", "content": f"message-{idx}"}
-        for idx in range(30)
-    ]
+    raw_history = [{"role": "user", "content": f"message-{idx}"} for idx in range(30)]
 
     sanitized = _sanitize_history_messages(raw_history)
     assert len(sanitized) == 30
@@ -217,7 +214,9 @@ def test_build_attachment_prompt_context_limits_size_and_includes_fallback() -> 
     assert len(context) < 13000
 
 
-def test_materialize_attachment_files_to_workspace_writes_files_and_sets_paths(tmp_path: Path) -> None:
+def test_materialize_attachment_files_to_workspace_writes_files_and_sets_paths(
+    tmp_path: Path,
+) -> None:
     """Uploaded attachments should be copied into workspace and path-mapped for prompts."""
     refs = [
         FileReference(
@@ -455,6 +454,59 @@ def test_extract_user_preference_signals_keeps_explicit_food_avoid_signal() -> N
     )
 
 
+def test_extract_user_preference_signals_keeps_relationship_and_experience_facts() -> None:
+    turns = [
+        {
+            "user_message": "我老婆叫王敏，我做过电商运营，也擅长SQL。",
+            "agent_response": "收到",
+            "timestamp": "2026-03-11T09:00:00+00:00",
+        }
+    ]
+
+    signals = _extract_user_preference_signals(turns)
+    assert any(
+        item["key"] == "relationship_spouse"
+        and item["value"] == "王敏"
+        and item["fact_kind"] == "relationship"
+        and item["canonical_statement"] == "用户的配偶是王敏"
+        for item in signals
+    )
+    assert any(
+        item["key"].startswith("experience_background_")
+        and item["value"] == "电商运营"
+        and item["fact_kind"] == "experience"
+        for item in signals
+    )
+    assert any(
+        item["key"].startswith("skill_strength_")
+        and item["value"] == "SQL"
+        and item["fact_kind"] == "skill"
+        for item in signals
+    )
+
+
+def test_extract_user_preference_signals_keeps_timed_event_facts() -> None:
+    turns = [
+        {
+            "user_message": "2024年8月我搬到了杭州，后来开始学机器学习。",
+            "agent_response": "收到",
+            "timestamp": "2026-03-11T09:05:00+00:00",
+        }
+    ]
+
+    signals = _extract_user_preference_signals(turns)
+    assert any(
+        item["key"].startswith("important_event_")
+        and item["value"] == "搬到了杭州"
+        and item["fact_kind"] == "event"
+        and item["event_time"] == "2024年8月"
+        and item["canonical_statement"] == "在2024年8月，搬到了杭州"
+        and item["location"] == "杭州"
+        and item["topic"] == "迁居"
+        for item in signals
+    )
+
+
 def test_extract_json_object_from_text_supports_markdown_block() -> None:
     content = """
 说明如下：
@@ -510,6 +562,32 @@ def test_normalize_llm_user_preference_signals_keeps_single_turn_high_confidence
     assert normalized[0]["key"] == "food_preference_like"
     assert normalized[0]["value"] == "冒菜和可乐"
     assert normalized[0]["latest_ts"] == "2026-02-25T10:00:00+00:00"
+
+
+def test_normalize_llm_user_preference_signals_preserves_user_fact_atom_fields() -> None:
+    turn_ts_map = {1: "2026-02-25T10:00:00+00:00"}
+    items = [
+        {
+            "fact_kind": "relationship",
+            "key": "relationship_spouse",
+            "value": "王敏",
+            "canonical_statement": "用户的配偶是王敏",
+            "predicate": "spouse",
+            "object": "王敏",
+            "persons": ["王敏"],
+            "persistent": True,
+            "explicit_source": True,
+            "confidence": 0.95,
+            "evidence_turns": [1],
+        }
+    ]
+
+    normalized = _normalize_llm_user_preference_signals(items, turn_ts_map)
+    assert len(normalized) == 1
+    assert normalized[0]["fact_kind"] == "relationship"
+    assert normalized[0]["canonical_statement"] == "用户的配偶是王敏"
+    assert normalized[0]["predicate"] == "spouse"
+    assert normalized[0]["persons"] == ["王敏"]
 
 
 def test_normalize_llm_agent_candidates_keeps_reusable_candidate() -> None:
@@ -600,8 +678,8 @@ async def test_extract_session_memory_signals_prefers_memory_config_then_fallbac
     class FakeConfig:
         def get(self, key: str):  # noqa: ANN001
             values = {
-                "memory.enhanced_memory.fact_extraction.provider": "memory_provider",
-                "memory.enhanced_memory.fact_extraction.model": "memory-model",
+                "user_memory.extraction.provider": "memory_provider",
+                "user_memory.extraction.model": "memory-model",
                 "llm.model_mapping.chat": "fallback-chat-model",
                 "llm.providers.memory_provider.models": {"chat": "memory-model"},
             }
@@ -635,7 +713,7 @@ async def test_extract_session_memory_signals_prefers_memory_config_then_fallbac
                 content=(
                     '{"user_preferences":[{"key":"output_format","value":"markdown",'
                     '"persistent":true,"confidence":0.9,"evidence_turns":[1]}],'
-                    '"agent_memory_candidates":[]}'
+                    '"skill_proposals":[]}'
                 )
             )
 
@@ -694,17 +772,16 @@ async def test_extract_session_memory_signals_runs_secondary_preference_recall(
             **kwargs,
         ):
             self.calls.append({"prompt": prompt, "kwargs": kwargs})
-            if "用户偏好补充抽取器" in prompt:
+            if "用户事实补充抽取器" in prompt:
                 return SimpleNamespace(
                     content=(
-                        '{"user_preferences":[{"key":"food_preference_like",'
-                        '"value":"黄焖鸡","persistent":true,"explicit_source":true,'
+                        '{"user_facts":[{"fact_kind":"preference","key":"food_preference_like",'
+                        '"value":"黄焖鸡","canonical_statement":"用户喜欢吃黄焖鸡",'
+                        '"persistent":true,"explicit_source":true,'
                         '"confidence":0.9,"evidence_turns":[1]}]}'
                     )
                 )
-            return SimpleNamespace(
-                content='{"user_preferences":[],"agent_memory_candidates":[]}'
-            )
+            return SimpleNamespace(content='{"user_preferences":[],"skill_proposals":[]}')
 
     fake_router = FakeRouter()
 
@@ -725,8 +802,12 @@ async def test_extract_session_memory_signals_runs_secondary_preference_recall(
     )
 
     assert len(fake_router.calls) >= 2
-    assert all(call["kwargs"]["response_format"]["type"] == "json_object" for call in fake_router.calls)
-    assert any(item["key"] == "food_preference_like" and item["value"] == "黄焖鸡" for item in signals)
+    assert all(
+        call["kwargs"]["response_format"]["type"] == "json_object" for call in fake_router.calls
+    )
+    assert any(
+        item["key"] == "food_preference_like" and item["value"] == "黄焖鸡" for item in signals
+    )
     assert candidates == []
 
 
@@ -741,10 +822,10 @@ async def test_extract_session_memory_signals_uses_max_facts_and_agent_candidate
     class FakeConfig:
         def get(self, key: str):  # noqa: ANN001
             values = {
-                "memory.enhanced_memory.fact_extraction.provider": "memory_provider",
-                "memory.enhanced_memory.fact_extraction.model": "memory-model",
-                "memory.enhanced_memory.fact_extraction.max_facts": 2,
-                "memory.enhanced_memory.fact_extraction.max_agent_candidates": 2,
+                "user_memory.extraction.provider": "memory_provider",
+                "user_memory.extraction.model": "memory-model",
+                "user_memory.extraction.max_facts": 2,
+                "skill_learning.extraction.max_proposals": 2,
                 "llm.providers.memory_provider.models": {"chat": "memory-model"},
             }
             return values.get(key)
@@ -777,7 +858,7 @@ async def test_extract_session_memory_signals_uses_max_facts_and_agent_candidate
                                 "evidence_turns": [1],
                             },
                         ],
-                        "agent_memory_candidates": [
+                        "skill_proposals": [
                             {
                                 "candidate_type": "sop",
                                 "title": "流程A",
@@ -839,9 +920,9 @@ async def test_extract_session_memory_signals_applies_failure_backoff(
     class FakeConfig:
         def get(self, key: str):  # noqa: ANN001
             values = {
-                "memory.enhanced_memory.fact_extraction.provider": "memory_provider",
-                "memory.enhanced_memory.fact_extraction.model": "memory-model",
-                "memory.enhanced_memory.fact_extraction.failure_backoff_seconds": 10,
+                "user_memory.extraction.provider": "memory_provider",
+                "user_memory.extraction.model": "memory-model",
+                "user_memory.extraction.failure_backoff_seconds": 10,
                 "llm.providers.memory_provider.models": {"chat": "memory-model"},
             }
             return values.get(key)
@@ -910,7 +991,7 @@ async def test_call_llm_for_memory_json_falls_back_when_json_mode_returns_empty(
                 content=(
                     '{"user_preferences":[{"key":"food_preference_like","value":"黄焖鸡",'
                     '"persistent":true,"explicit_source":true,"confidence":0.9,'
-                    '"evidence_turns":[1]}],"agent_memory_candidates":[]}'
+                    '"evidence_turns":[1]}],"skill_proposals":[]}'
                 )
             )
 
@@ -936,7 +1017,7 @@ async def test_call_llm_for_memory_json_times_out() -> None:
     class SlowRouter:
         async def generate(self, **kwargs):  # noqa: ANN003
             await asyncio.sleep(0.7)
-            return SimpleNamespace(content='{"user_preferences":[],"agent_memory_candidates":[]}')
+            return SimpleNamespace(content='{"user_preferences":[],"skill_proposals":[]}')
 
     with pytest.raises(TimeoutError, match="session_memory_extraction_timeout_0.5s"):
         await _call_llm_for_memory_json(
@@ -956,7 +1037,7 @@ async def test_call_llm_for_memory_json_timeout_invalidates_provider_cache() -> 
 
         async def generate(self, **kwargs):  # noqa: ANN003
             await asyncio.sleep(0.7)
-            return SimpleNamespace(content='{"user_preferences":[],"agent_memory_candidates":[]}')
+            return SimpleNamespace(content='{"user_preferences":[],"skill_proposals":[]}')
 
         async def invalidate_provider(self, provider_name: str) -> bool:
             self.invalidated.append(provider_name)
@@ -975,7 +1056,7 @@ async def test_call_llm_for_memory_json_timeout_invalidates_provider_cache() -> 
     assert router.invalidated == ["aliyun-bl"]
 
 
-def test_extract_agent_memory_candidates_requires_step_structure() -> None:
+def test_extract_skill_proposals_requires_step_structure() -> None:
     """Only step-structured assistant outputs should become agent candidates."""
     turns = [
         {
@@ -986,14 +1067,14 @@ def test_extract_agent_memory_candidates_requires_step_structure() -> None:
         }
     ]
 
-    candidates = _extract_agent_memory_candidates(turns, "小新2号")
+    candidates = _extract_skill_proposals(turns, "小新2号")
     assert len(candidates) == 1
     assert candidates[0]["candidate_type"] == "sop"
     assert len(candidates[0]["steps"]) >= 3
 
 
-def test_extract_agent_memory_candidates_skips_non_step_reply() -> None:
-    """Generic short replies should not produce agent memory candidates."""
+def test_extract_skill_proposals_skips_non_step_reply() -> None:
+    """Generic short replies should not produce reusable skill proposals."""
     turns = [
         {
             "user_message": "你好",
@@ -1003,5 +1084,5 @@ def test_extract_agent_memory_candidates_skips_non_step_reply() -> None:
         }
     ]
 
-    candidates = _extract_agent_memory_candidates(turns, "小新2号")
+    candidates = _extract_skill_proposals(turns, "小新2号")
     assert candidates == []

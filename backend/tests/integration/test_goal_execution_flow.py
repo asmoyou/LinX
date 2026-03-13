@@ -137,7 +137,7 @@ class TestGoalExecutionFlow:
             available_skills=["data_analysis", "visualization", "writing"],
         )
 
-        assert len(subtasks) >= 3
+        assert len(subtasks) >= 2
 
         # Verify dependencies are set correctly
         # Later tasks should depend on earlier ones

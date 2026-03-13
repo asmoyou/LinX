@@ -1,143 +1,113 @@
-"""Agent Framework module for Digital Workforce Platform.
+"""Lazy exports for the agent framework package."""
 
-This module provides LangChain-based agent framework including:
-- BaseAgent class with LangChain integration
-- Agent lifecycle management (create, update, terminate)
-- Agent registry and capability matching
-- Agent status tracking
-- Agent memory access interface
-- Agent tool integration
-- Agent execution loop
-- Agent templates for common use cases
-- Inter-agent communication
+from importlib import import_module
 
-References:
-- Requirements 2, 12, 17, 21: Agent Framework, Lifecycle Management, Communication, and Templates
-- Design Section 4: Agent Framework Design
-- Design Section 15: Inter-Agent Communication
-"""
+_EXPORTS = {
+    "BaseAgent": ("agent_framework.base_agent", "BaseAgent"),
+    "AgentConfig": ("agent_framework.base_agent", "AgentConfig"),
+    "AgentStatus": ("agent_framework.base_agent", "AgentStatus"),
+    "AgentRegistry": ("agent_framework.agent_registry", "AgentRegistry"),
+    "AgentInfo": ("agent_framework.agent_registry", "AgentInfo"),
+    "get_agent_registry": ("agent_framework.agent_registry", "get_agent_registry"),
+    "AgentLifecycleManager": (
+        "agent_framework.agent_lifecycle",
+        "AgentLifecycleManager",
+    ),
+    "LifecyclePhase": ("agent_framework.agent_lifecycle", "LifecyclePhase"),
+    "get_lifecycle_manager": ("agent_framework.agent_lifecycle", "get_lifecycle_manager"),
+    "AgentStatusTracker": ("agent_framework.agent_status", "AgentStatusTracker"),
+    "StatusUpdate": ("agent_framework.agent_status", "StatusUpdate"),
+    "get_status_tracker": ("agent_framework.agent_status", "get_status_tracker"),
+    "CapabilityMatcher": ("agent_framework.capability_matcher", "CapabilityMatcher"),
+    "CapabilityMatch": ("agent_framework.capability_matcher", "CapabilityMatch"),
+    "get_capability_matcher": (
+        "agent_framework.capability_matcher",
+        "get_capability_matcher",
+    ),
+    "RuntimeContextService": (
+        "agent_framework.runtime_context_service",
+        "RuntimeContextService",
+    ),
+    "get_runtime_context_service": (
+        "agent_framework.runtime_context_service",
+        "get_runtime_context_service",
+    ),
+    "AgentToolkit": ("agent_framework.agent_tools", "AgentToolkit"),
+    "create_langchain_tools": ("agent_framework.agent_tools", "create_langchain_tools"),
+    "get_agent_toolkit": ("agent_framework.agent_tools", "get_agent_toolkit"),
+    "AgentExecutor": ("agent_framework.agent_executor", "AgentExecutor"),
+    "ExecutionContext": ("agent_framework.agent_executor", "ExecutionContext"),
+    "get_agent_executor": ("agent_framework.agent_executor", "get_agent_executor"),
+    "AgentTemplate": ("agent_framework.agent_template", "AgentTemplate"),
+    "AgentTemplateManager": ("agent_framework.agent_template", "AgentTemplateManager"),
+    "get_default_templates": (
+        "agent_framework.default_templates",
+        "get_default_templates",
+    ),
+    "initialize_default_templates": (
+        "agent_framework.default_templates",
+        "initialize_default_templates",
+    ),
+    "InterAgentCommunicator": (
+        "agent_framework.inter_agent_communication",
+        "InterAgentCommunicator",
+    ),
+    "MessageResponse": (
+        "agent_framework.inter_agent_communication",
+        "MessageResponse",
+    ),
+    "get_communicator": (
+        "agent_framework.inter_agent_communication",
+        "get_communicator",
+    ),
+    "ExecutionProfile": ("agent_framework.runtime_policy", "ExecutionProfile"),
+    "FileDeliveryGuardMode": (
+        "agent_framework.runtime_policy",
+        "FileDeliveryGuardMode",
+    ),
+    "LoopMode": ("agent_framework.runtime_policy", "LoopMode"),
+    "RuntimePolicy": ("agent_framework.runtime_policy", "RuntimePolicy"),
+    "RuntimeExecutionRequest": (
+        "agent_framework.runtime_policy",
+        "RuntimeExecutionRequest",
+    ),
+    "RuntimePolicyRegistry": (
+        "agent_framework.runtime_policy",
+        "RuntimePolicyRegistry",
+    ),
+    "get_runtime_policy_registry": (
+        "agent_framework.runtime_policy",
+        "get_runtime_policy_registry",
+    ),
+    "is_agent_test_chat_unified_runtime_enabled": (
+        "agent_framework.runtime_policy",
+        "is_agent_test_chat_unified_runtime_enabled",
+    ),
+    "is_mission_task_unified_runtime_enabled": (
+        "agent_framework.runtime_policy",
+        "is_mission_task_unified_runtime_enabled",
+    ),
+    "RuntimeAdapterRequest": (
+        "agent_framework.runtime_service",
+        "RuntimeAdapterRequest",
+    ),
+    "UnifiedAgentRuntimeService": (
+        "agent_framework.runtime_service",
+        "UnifiedAgentRuntimeService",
+    ),
+    "get_unified_agent_runtime_service": (
+        "agent_framework.runtime_service",
+        "get_unified_agent_runtime_service",
+    ),
+}
 
-from agent_framework.agent_executor import (
-    AgentExecutor,
-    ExecutionContext,
-    get_agent_executor,
-)
-from agent_framework.agent_lifecycle import (
-    AgentLifecycleManager,
-    LifecyclePhase,
-    get_lifecycle_manager,
-)
-from agent_framework.agent_memory_interface import (
-    AgentMemoryInterface,
-    get_agent_memory_interface,
-)
-from agent_framework.agent_registry import (
-    AgentInfo,
-    AgentRegistry,
-    get_agent_registry,
-)
-from agent_framework.agent_status import (
-    AgentStatusTracker,
-    StatusUpdate,
-    get_status_tracker,
-)
-from agent_framework.agent_template import (
-    AgentTemplate,
-    AgentTemplateManager,
-)
-from agent_framework.agent_tools import (
-    AgentToolkit,
-    create_langchain_tools,
-    get_agent_toolkit,
-)
-from agent_framework.base_agent import (
-    AgentConfig,
-    AgentStatus,
-    BaseAgent,
-)
-from agent_framework.capability_matcher import (
-    CapabilityMatch,
-    CapabilityMatcher,
-    get_capability_matcher,
-)
-from agent_framework.default_templates import (
-    get_default_templates,
-    initialize_default_templates,
-)
-from agent_framework.inter_agent_communication import (
-    InterAgentCommunicator,
-    MessageResponse,
-    get_communicator,
-)
-from agent_framework.runtime_policy import (
-    ExecutionProfile,
-    FileDeliveryGuardMode,
-    LoopMode,
-    RuntimeExecutionRequest,
-    RuntimePolicy,
-    RuntimePolicyRegistry,
-    get_runtime_policy_registry,
-    is_agent_test_chat_unified_runtime_enabled,
-    is_mission_task_unified_runtime_enabled,
-)
-from agent_framework.runtime_service import (
-    RuntimeAdapterRequest,
-    UnifiedAgentRuntimeService,
-    get_unified_agent_runtime_service,
-)
+__all__ = list(_EXPORTS)
 
-__all__ = [
-    # Base agent
-    "BaseAgent",
-    "AgentConfig",
-    "AgentStatus",
-    # Agent registry
-    "AgentRegistry",
-    "AgentInfo",
-    "get_agent_registry",
-    # Lifecycle management
-    "AgentLifecycleManager",
-    "LifecyclePhase",
-    "get_lifecycle_manager",
-    # Status tracking
-    "AgentStatusTracker",
-    "StatusUpdate",
-    "get_status_tracker",
-    # Capability matching
-    "CapabilityMatcher",
-    "CapabilityMatch",
-    "get_capability_matcher",
-    # Memory interface
-    "AgentMemoryInterface",
-    "get_agent_memory_interface",
-    # Tools integration
-    "AgentToolkit",
-    "create_langchain_tools",
-    "get_agent_toolkit",
-    # Agent executor
-    "AgentExecutor",
-    "ExecutionContext",
-    "get_agent_executor",
-    # Agent templates
-    "AgentTemplate",
-    "AgentTemplateManager",
-    "get_default_templates",
-    "initialize_default_templates",
-    # Inter-agent communication
-    "InterAgentCommunicator",
-    "MessageResponse",
-    "get_communicator",
-    # Runtime policy
-    "ExecutionProfile",
-    "FileDeliveryGuardMode",
-    "LoopMode",
-    "RuntimePolicy",
-    "RuntimeExecutionRequest",
-    "RuntimePolicyRegistry",
-    "get_runtime_policy_registry",
-    "is_agent_test_chat_unified_runtime_enabled",
-    "is_mission_task_unified_runtime_enabled",
-    "RuntimeAdapterRequest",
-    "UnifiedAgentRuntimeService",
-    "get_unified_agent_runtime_service",
-]
+
+def __getattr__(name: str):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module 'agent_framework' has no attribute {name!r}")
+    module_name, attr_name = _EXPORTS[name]
+    value = getattr(import_module(module_name), attr_name)
+    globals()[name] = value
+    return value

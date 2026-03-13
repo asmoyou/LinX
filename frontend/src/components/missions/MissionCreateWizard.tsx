@@ -54,6 +54,27 @@ const deriveInitialMissionTitle = (instructions: string): string => {
   return candidate || 'Untitled Mission';
 };
 
+const TEMP_MEMORY_SCOPE_ALIAS_MAP: Record<string, string> = {
+  skills: 'skills',
+  user_memory: 'user_memory',
+};
+
+const normalizeTempWorkerMemoryScopes = (scopes?: string[]): string[] => {
+  if (!Array.isArray(scopes)) {
+    return ['skills', 'user_memory'];
+  }
+
+  const normalized: string[] = [];
+  for (const rawScope of scopes) {
+    const canonical = TEMP_MEMORY_SCOPE_ALIAS_MAP[(rawScope || '').trim().toLowerCase()];
+    if (canonical && !normalized.includes(canonical)) {
+      normalized.push(canonical);
+    }
+  }
+
+  return normalized.length > 0 ? normalized : ['skills', 'user_memory'];
+};
+
 export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen, onClose }) => {
   const { t } = useTranslation();
   const { createMission, startMission, uploadAttachment, missionSettings, fetchMissionSettings } = useMissionStore();
@@ -77,7 +98,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
     allow_temporary_workers: true,
     auto_select_temp_skills: true,
     temp_worker_skill_limit: 3,
-    temp_worker_memory_scopes: ['agent', 'company', 'user_context'],
+    temp_worker_memory_scopes: ['skills', 'user_memory'],
     temp_worker_knowledge_strategy: 'owner_accessible',
     temp_worker_knowledge_limit: 6,
   });
@@ -112,8 +133,9 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
         temp_worker_skill_limit:
           missionSettings.execution_config.temp_worker_skill_limit ?? prev.temp_worker_skill_limit,
         temp_worker_memory_scopes:
-          missionSettings.execution_config.temp_worker_memory_scopes ??
-          prev.temp_worker_memory_scopes,
+          normalizeTempWorkerMemoryScopes(
+            missionSettings.execution_config.temp_worker_memory_scopes
+          ),
         temp_worker_knowledge_strategy:
           missionSettings.execution_config.temp_worker_knowledge_strategy ??
           prev.temp_worker_knowledge_strategy,
@@ -205,7 +227,7 @@ export const MissionCreateWizard: React.FC<MissionCreateWizardProps> = ({ isOpen
       allow_temporary_workers: true,
       auto_select_temp_skills: true,
       temp_worker_skill_limit: 3,
-      temp_worker_memory_scopes: ['agent', 'company', 'user_context'],
+      temp_worker_memory_scopes: ['skills', 'user_memory'],
       temp_worker_knowledge_strategy: 'owner_accessible',
       temp_worker_knowledge_limit: 6,
     });

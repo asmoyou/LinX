@@ -6,6 +6,7 @@ import { useTaskStore } from '../stores/taskStore';
 import { useKnowledgeStore } from '../stores/knowledgeStore';
 import { useMemoryStore } from '../stores/memoryStore';
 import apiClient from '../api/client';
+import { memoriesApi } from '../api/memories';
 
 /**
  * Hook to sync stores with backend API on mount
@@ -111,8 +112,11 @@ export const useStoreSync = (options: {
         if (syncMemories) {
           memoryStore.setLoading(true);
           try {
-            const response = await apiClient.get('/memories');
-            memoryStore.setMemories(response.data);
+            const [userMemory, skillProposals] = await Promise.all([
+              memoriesApi.listUserMemory({ limit: 100 }),
+              memoriesApi.listSkillProposals({ review_status: 'all', limit: 200 }),
+            ]);
+            memoryStore.setMemories([...userMemory, ...skillProposals]);
           } catch (error) {
             console.error('Failed to fetch memories:', error);
             memoryStore.setError('Failed to load memories');
@@ -199,8 +203,11 @@ export const useRefreshStore = () => {
     const memoryStore = useMemoryStore.getState();
     memoryStore.setLoading(true);
     try {
-      const response = await apiClient.get('/memories');
-      memoryStore.setMemories(response.data);
+      const [userMemory, skillProposals] = await Promise.all([
+        memoriesApi.listUserMemory({ limit: 100 }),
+        memoriesApi.listSkillProposals({ review_status: 'all', limit: 200 }),
+      ]);
+      memoryStore.setMemories([...userMemory, ...skillProposals]);
     } catch (error) {
       console.error('Failed to refresh memories:', error);
       memoryStore.setError('Failed to refresh memories');

@@ -59,9 +59,9 @@ class SandboxPool:
         self.logger.info(
             "Sandbox pool initialized",
             extra={
-                "requested": self.pool_size,
-                "created": success_count,
-                "failed": self.pool_size - success_count,
+                "requested_count": self.pool_size,
+                "created_count": success_count,
+                "failed_count": self.pool_size - success_count,
             },
         )
 

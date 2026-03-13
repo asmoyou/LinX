@@ -44,7 +44,7 @@ class SensorType(Enum):
     GAS = "gas"
 
 
-@dataclass
+@dataclass(init=False)
 class SensorData:
     """Sensor data record."""
 
@@ -55,7 +55,25 @@ class SensorData:
     data: Any
     metadata: Optional[Dict[str, Any]] = None
 
-    def __post_init__(self):
+    def __init__(
+        self,
+        sensor_id: Optional[str] = None,
+        sensor_type: SensorType = SensorType.CAMERA_RGB,
+        robot_id: Optional[UUID] = None,
+        timestamp: Optional[float] = None,
+        data: Any = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Initialize sensor data with backward-compatible defaults."""
+        self.sensor_id = sensor_id or str(uuid4())
+        self.sensor_type = sensor_type
+        self.robot_id = robot_id or uuid4()
+        self.timestamp = time.time() if timestamp is None else timestamp
+        self.data = data
+        self.metadata = metadata
+        self.__post_init__()
+
+    def __post_init__(self) -> None:
         """Initialize defaults."""
         if self.metadata is None:
             self.metadata = {}
@@ -105,6 +123,10 @@ class SensorDataStore:
         except Exception as e:
             logger.error(f"Failed to store sensor data: {e}")
             return False
+
+    def store_sensor_data(self, sensor_data: SensorData) -> bool:
+        """Backward-compatible alias for store()."""
+        return self.store(sensor_data)
 
     def query(
         self,

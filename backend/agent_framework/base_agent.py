@@ -17,15 +17,20 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.errors import GraphRecursionError
-from langgraph.graph import MessagesState, StateGraph, START, END
+from langgraph.graph import END, START, MessagesState, StateGraph
 
 from agent_framework.code_block_executor import CodeBlockExecutor, get_code_block_executor
+from agent_framework.runtime_capabilities import (
+    apply_authoritative_runtime_overrides,
+    build_runtime_capabilities_snapshot,
+    sanitize_runtime_capabilities,
+)
 from agent_framework.runtime_policy import (
     ExecutionProfile,
     FileDeliveryGuardMode,
@@ -33,11 +38,6 @@ from agent_framework.runtime_policy import (
     RuntimePolicy,
     get_runtime_policy_registry,
     parse_execution_profile,
-)
-from agent_framework.runtime_capabilities import (
-    apply_authoritative_runtime_overrides,
-    build_runtime_capabilities_snapshot,
-    sanitize_runtime_capabilities,
 )
 from agent_framework.sandbox_policy import allow_host_execution_fallback
 
@@ -453,7 +453,7 @@ class BaseAgent:
     Each agent is an autonomous entity with:
     - Identity (agent_id, name, owner)
     - Capabilities (skills from Skill Library)
-    - Memory access (Agent Memory + Company Memory)
+    - Runtime context access (User Memory + Skills + Knowledge Base)
     - Tools (LangChain tools)
     - Execution environment (isolated container)
 
@@ -497,6 +497,80 @@ class BaseAgent:
                 "agent_type": config.agent_type,
                 "capabilities": config.capabilities,
             },
+        )
+
+    async def send_message(
+        self,
+        to_agent_id: UUID,
+        message: str,
+        message_type: str = "info",
+    ) -> Dict[str, Any]:
+        """Backward-compatible inter-agent send wrapper."""
+        from agent_framework.inter_agent_communication import get_communicator
+
+        communicator = get_communicator(agent_id=self.config.agent_id, task_id=uuid4())
+        return await communicator.send_message(
+            from_agent_id=self.config.agent_id,
+            to_agent_id=to_agent_id,
+            message=message,
+            message_type=message_type,
+        )
+
+    async def receive_messages(self) -> List[Dict[str, Any]]:
+        """Backward-compatible message polling wrapper."""
+        from message_bus.pubsub import PubSubManager
+
+        bus = PubSubManager()
+        get_messages = getattr(bus, "get_messages", None)
+        if callable(get_messages):
+            return await get_messages(str(self.config.agent_id))
+        return []
+
+    async def process_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a minimal structured response for older communication tests."""
+        message_type = message.get("type", "info")
+        if message_type == "request":
+            return {"reply": f"Processed request: {message.get('content', '')}"}
+        return {"action": "acknowledged", "message_id": message.get("message_id")}
+
+    async def request_assistance(
+        self,
+        required_capability: str,
+        request: str,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Backward-compatible assistance request wrapper."""
+        from agent_framework.inter_agent_communication import get_communicator
+
+        communicator = get_communicator(agent_id=self.config.agent_id, task_id=uuid4())
+        return await communicator.request_assistance(
+            required_capability=required_capability,
+            request=request,
+            data=data or {},
+        )
+
+    async def delegate_task(self, to_agent_id: UUID, task: str) -> Dict[str, Any]:
+        """Backward-compatible collaboration helper."""
+        from agent_framework.inter_agent_communication import InterAgentCommunicator
+
+        communicator = InterAgentCommunicator(agent_id=self.config.agent_id, task_id=uuid4())
+        return await communicator.send_message(
+            from_agent_id=self.config.agent_id,
+            to_agent_id=to_agent_id,
+            message=task,
+            message_type="task_delegation",
+        )
+
+    async def send_result(self, to_agent_id: UUID, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Backward-compatible result delivery helper."""
+        from agent_framework.inter_agent_communication import InterAgentCommunicator
+
+        communicator = InterAgentCommunicator(agent_id=self.config.agent_id, task_id=uuid4())
+        return await communicator.send_message(
+            from_agent_id=self.config.agent_id,
+            to_agent_id=to_agent_id,
+            message=json.dumps(result, ensure_ascii=False),
+            message_type="result",
         )
 
     async def initialize(self) -> None:
@@ -573,8 +647,8 @@ class BaseAgent:
                         )
 
             # Add enhanced bash tool with PTY and background support
-            from agent_framework.tools.process_manager import get_process_manager
             from agent_framework.tools.bash_tool import create_bash_tool
+            from agent_framework.tools.process_manager import get_process_manager
 
             process_manager = get_process_manager()
             bash_tool = create_bash_tool(
@@ -782,13 +856,10 @@ class BaseAgent:
                         elif isinstance(image_url, str):
                             url_value = image_url.strip()
 
-                        if (
-                            url_value
-                            and (
-                                url_value.startswith("data:image/")
-                                or url_value.startswith("http://")
-                                or url_value.startswith("https://")
-                            )
+                        if url_value and (
+                            url_value.startswith("data:image/")
+                            or url_value.startswith("http://")
+                            or url_value.startswith("https://")
                         ):
                             multimodal_items.append(
                                 {"type": "image_url", "image_url": {"url": url_value}}
@@ -891,13 +962,17 @@ class BaseAgent:
             writable_roots=["/workspace"],
             ui_mode="none",
             network_access=(
-                True if code_execution_network_access is None else bool(code_execution_network_access)
+                True
+                if code_execution_network_access is None
+                else bool(code_execution_network_access)
             ),
             host_fallback_allowed=allow_host_execution_fallback(),
             session_persistent=bool(session_workdir),
             source="base_agent_execute_task",
         )
-        raw_runtime_capabilities = context.get("runtime_capabilities") if isinstance(context, dict) else None
+        raw_runtime_capabilities = (
+            context.get("runtime_capabilities") if isinstance(context, dict) else None
+        )
         return apply_authoritative_runtime_overrides(
             raw_runtime_capabilities,
             defaults=defaults,
@@ -1226,10 +1301,14 @@ class BaseAgent:
 
     def _build_autonomy_continue_feedback(self, decision: Dict[str, Any]) -> str:
         """Build generic follow-up instruction when autonomous self-check says incomplete."""
-        reason = self._truncate_stream_preview(decision.get("reason"), max_chars=220) or "Task not complete yet"
-        next_action = self._truncate_stream_preview(
-            decision.get("next_action"), max_chars=220
-        ) or "Decide and execute the most effective next step."
+        reason = (
+            self._truncate_stream_preview(decision.get("reason"), max_chars=220)
+            or "Task not complete yet"
+        )
+        next_action = (
+            self._truncate_stream_preview(decision.get("next_action"), max_chars=220)
+            or "Decide and execute the most effective next step."
+        )
         return (
             "任务尚未完成，请继续自主推进，不要在当前轮次结束。\n"
             f"自检原因：{reason}\n"
@@ -1794,9 +1873,7 @@ class BaseAgent:
 
         return normalized_calls
 
-    def _handle_native_tool_http_rejection(
-        self, error: Exception, runtime_path: str
-    ) -> bool:
+    def _handle_native_tool_http_rejection(self, error: Exception, runtime_path: str) -> bool:
         """Downgrade native tool-calling when upstream rejects tool payloads."""
         if not isinstance(error, httpx.HTTPStatusError):
             return False
@@ -2271,29 +2348,18 @@ class BaseAgent:
             # Add context information if provided
             if context:
                 context_info = []
-                if context.get("agent_memories"):
+                if context.get("skills"):
                     context_info.append(
-                        "Memory references (non-binding, verify against current task): "
-                        + ", ".join(context["agent_memories"][:3])
+                        "Relevant learned skills (non-binding, verify against current task): "
+                        + ", ".join(context["skills"][:3])
                     )
-                if context.get("company_memories"):
+                if context.get("user_memory"):
                     context_info.append(
-                        "Company references (non-binding): "
-                        + ", ".join(context["company_memories"][:3])
+                        "User memory facts (non-binding): " + ", ".join(context["user_memory"][:3])
                     )
-                if context.get("user_context_memories"):
+                if context.get("knowledge_refs"):
                     context_info.append(
-                        "User preference references (non-binding): "
-                        + ", ".join(context["user_context_memories"][:3])
-                    )
-                if context.get("task_context_memories"):
-                    context_info.append(
-                        "Task history references (non-binding): "
-                        + ", ".join(context["task_context_memories"][:3])
-                    )
-                if context.get("knowledge_snippets"):
-                    context_info.append(
-                        f"Knowledge snippets: {', '.join(context['knowledge_snippets'][:3])}"
+                        f"Knowledge references: {', '.join(context['knowledge_refs'][:3])}"
                     )
 
                 if context_info:
@@ -2431,8 +2497,9 @@ class BaseAgent:
                         try:
                             result = llm_for_round.invoke(messages)
                         except Exception as invoke_error:
-                            if self._is_cancellation_requested() or self._looks_like_cancellation_error(
-                                invoke_error
+                            if (
+                                self._is_cancellation_requested()
+                                or self._looks_like_cancellation_error(invoke_error)
                             ):
                                 raise AgentExecutionCancelled(
                                     self._cancel_reason or "cancelled during LLM invoke"
@@ -2450,7 +2517,9 @@ class BaseAgent:
                         if hasattr(result, "content"):
                             content_value = result.content
                             round_output = (
-                                content_value if isinstance(content_value, str) else str(content_value)
+                                content_value
+                                if isinstance(content_value, str)
+                                else str(content_value)
                             )
                         else:
                             round_output = str(result)
@@ -2489,8 +2558,8 @@ class BaseAgent:
                     )
 
                     # Check if output contains tool calls
-                    import re
                     import json
+                    import re
 
                     parsed_calls, parsed_errors = self._parse_tool_calls(
                         round_output,
@@ -2704,15 +2773,10 @@ class BaseAgent:
                                 content_type="info",
                             )
                             messages.append(AIMessage(content=round_output))
-                            continue_feedback = (
-                                str(completion_decision.get("feedback_prompt") or "").strip()
-                                or self._build_autonomy_continue_feedback(completion_decision)
-                            )
-                            messages.append(
-                                HumanMessage(
-                                    content=continue_feedback
-                                )
-                            )
+                            continue_feedback = str(
+                                completion_decision.get("feedback_prompt") or ""
+                            ).strip() or self._build_autonomy_continue_feedback(completion_decision)
+                            messages.append(HumanMessage(content=continue_feedback))
                             continue
 
                         logger.info(
@@ -3144,7 +3208,11 @@ class BaseAgent:
                 _add_candidate(obj_text, explicit=True)
 
         stripped_output = preprocessed.strip()
-        if stripped_output.startswith("{") and stripped_output.endswith("}") and '"tool"' in stripped_output:
+        if (
+            stripped_output.startswith("{")
+            and stripped_output.endswith("}")
+            and '"tool"' in stripped_output
+        ):
             _add_candidate(stripped_output, explicit=True)
 
         # Fallback scan: collect balanced objects containing "tool". Mark as explicit only
@@ -3407,7 +3475,11 @@ class BaseAgent:
                     safe_path = _sanitize_relative_path(raw_path)
                     if safe_path is None:
                         return None
-                    if package_root_dir and safe_path.parts and safe_path.parts[0] == package_root_dir:
+                    if (
+                        package_root_dir
+                        and safe_path.parts
+                        and safe_path.parts[0] == package_root_dir
+                    ):
                         stripped_parts = safe_path.parts[1:]
                         if stripped_parts:
                             return Path(*stripped_parts)
@@ -3436,8 +3508,8 @@ class BaseAgent:
                     skill_doc_path = skill_workspace_root / "SKILL.md"
                     skill_doc_path.parent.mkdir(parents=True, exist_ok=True)
                     skill_doc_path.write_text(skill_ref.skill_md_content, encoding="utf-8")
-                    skill_doc_path_for_log = (
-                        str(skill_doc_path.relative_to(workdir)).replace("\\", "/")
+                    skill_doc_path_for_log = str(skill_doc_path.relative_to(workdir)).replace(
+                        "\\", "/"
                     )
                     copied_files += 1
                     copied_for_skill += 1
@@ -3451,9 +3523,7 @@ class BaseAgent:
                         "agent_id": str(self.config.agent_id),
                         "skill_name": skill_ref.name,
                         "workdir": str(workdir),
-                        "workspace_skill_root": str(
-                            (Path(".skills") / skill_dir_name).as_posix()
-                        ),
+                        "workspace_skill_root": str((Path(".skills") / skill_dir_name).as_posix()),
                         "copied_package_files": len(package_files),
                         "skill_doc_path": skill_doc_path_for_log,
                     },
@@ -3489,9 +3559,10 @@ class BaseAgent:
         Returns:
             List of ExecutionResult objects
         """
-        from agent_framework.code_block_executor import ExecutionResult
         from pathlib import Path
         from uuid import uuid4
+
+        from agent_framework.code_block_executor import ExecutionResult
 
         results = []
 
@@ -3675,7 +3746,9 @@ class BaseAgent:
                     requested_timeout = tool_arguments.get("timeout")
                     try:
                         normalized_timeout = (
-                            int(requested_timeout) if requested_timeout is not None else tool_timeout_cap
+                            int(requested_timeout)
+                            if requested_timeout is not None
+                            else tool_timeout_cap
                         )
                     except (TypeError, ValueError):
                         normalized_timeout = tool_timeout_cap
@@ -3683,9 +3756,7 @@ class BaseAgent:
                         normalized_timeout = tool_timeout_cap
                     tool_arguments["timeout"] = normalized_timeout
 
-                args_summary = self._summarize_tool_arguments_for_stream(
-                    tool_name, tool_arguments
-                )
+                args_summary = self._summarize_tool_arguments_for_stream(tool_name, tool_arguments)
                 # Send "calling tool" message
                 if stream_callback:
                     retry_indicator = f" (重试 {retry_count})" if retry_count > 0 else ""
@@ -4118,28 +4189,18 @@ class BaseAgent:
         # Add context information if provided
         if context:
             context_info = []
-            if context.get("agent_memories"):
+            if context.get("skills"):
                 context_info.append(
-                    "Memory references (non-binding, verify against current task): "
-                    + ", ".join(context["agent_memories"][:3])
+                    "Relevant learned skills (non-binding, verify against current task): "
+                    + ", ".join(context["skills"][:3])
                 )
-            if context.get("company_memories"):
+            if context.get("user_memory"):
                 context_info.append(
-                    "Company references (non-binding): " + ", ".join(context["company_memories"][:3])
+                    "User memory facts (non-binding): " + ", ".join(context["user_memory"][:3])
                 )
-            if context.get("user_context_memories"):
+            if context.get("knowledge_refs"):
                 context_info.append(
-                    "User preference references (non-binding): "
-                    + ", ".join(context["user_context_memories"][:3])
-                )
-            if context.get("task_context_memories"):
-                context_info.append(
-                    "Task history references (non-binding): "
-                    + ", ".join(context["task_context_memories"][:3])
-                )
-            if context.get("knowledge_snippets"):
-                context_info.append(
-                    f"Knowledge snippets: {', '.join(context['knowledge_snippets'][:3])}"
+                    f"Knowledge references: {', '.join(context['knowledge_refs'][:3])}"
                 )
 
             if context_info:
@@ -4596,15 +4657,10 @@ class BaseAgent:
                             )
                         )
                     messages.append(AIMessage(content=round_output))
-                    continue_feedback = (
-                        str(completion_decision.get("feedback_prompt") or "").strip()
-                        or self._build_autonomy_continue_feedback(completion_decision)
-                    )
-                    messages.append(
-                        HumanMessage(
-                            content=continue_feedback
-                        )
-                    )
+                    continue_feedback = str(
+                        completion_decision.get("feedback_prompt") or ""
+                    ).strip() or self._build_autonomy_continue_feedback(completion_decision)
+                    messages.append(HumanMessage(content=continue_feedback))
                     send_round_stats()
                     continue
 
@@ -4777,7 +4833,11 @@ class BaseAgent:
                 "Avoid unrelated rewrites until dependency issues are resolved",
             ]
 
-        if "file not found" in error_text or "no such file" in error_text or "can't open file" in error_text:
+        if (
+            "file not found" in error_text
+            or "no such file" in error_text
+            or "can't open file" in error_text
+        ):
             return [
                 "Re-check file paths and ensure required files are created before use",
                 "List workspace files and validate expected input/output locations",
@@ -4884,9 +4944,9 @@ class BaseAgent:
         Returns:
             Modified output with tool results
         """
-        import re
-        import json
         import asyncio
+        import json
+        import re
 
         # Pattern to match tool invocations: ```tool:tool_name\n{json}\n```
         pattern = r"```tool:(\w+)\s*\n(.*?)\n```"

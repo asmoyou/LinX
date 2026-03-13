@@ -286,11 +286,9 @@ class TestSensorData:
         assert sensor_data.sensor_type == SensorType.CAMERA_RGB
         assert sensor_data.data["image"] == "base64_data"
 
-    @patch("memory_system.memory_system.MemorySystem")
-    def test_sensor_data_store(self, mock_memory_system):
+    def test_sensor_data_store(self):
         """Test sensor data storage."""
         mock_memory = MagicMock()
-        mock_memory_system.return_value = mock_memory
 
         store = SensorDataStore(mock_memory)
         robot_id = uuid4()
@@ -304,28 +302,31 @@ class TestSensorData:
 
         store.store_sensor_data(sensor_data)
 
-        # Verify memory system was called
-        mock_memory.store_memory.assert_called_once()
+        # Storage currently stays in the sensor cache and does not call a legacy memory system.
+        assert len(store._cache) == 1
 
-    @patch("memory_system.memory_system.MemorySystem")
-    def test_sensor_data_retrieval(self, mock_memory_system):
+    def test_sensor_data_retrieval(self):
         """Test sensor data retrieval."""
         mock_memory = MagicMock()
-        mock_memory_system.return_value = mock_memory
-
-        # Mock retrieval
-        mock_memory.search_memories.return_value = [
-            {"sensor_type": "camera", "data": {"image": "data"}}
-        ]
 
         store = SensorDataStore(mock_memory)
         robot_id = uuid4()
 
+        store.store(
+            SensorData(
+                sensor_id="sensor-1",
+                sensor_type=SensorType.CAMERA_RGB,
+                data={"image": "data"},
+                robot_id=robot_id,
+                timestamp=time.time(),
+            )
+        )
+
         # Retrieve sensor data
-        results = store.get_sensor_data(robot_id, SensorType.CAMERA_RGB, limit=10)
+        results = store.query(robot_id, SensorType.CAMERA_RGB, limit=10)
 
         assert len(results) == 1
-        mock_memory.search_memories.assert_called_once()
+        assert results[0].data == {"image": "data"}
 
 
 class TestROSInterface:

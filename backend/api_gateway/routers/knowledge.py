@@ -45,6 +45,7 @@ from access_control.permissions import CurrentUser, get_current_user
 from access_control.rbac import Action
 from database.connection import get_db_session
 from database.models import KnowledgeCollection, KnowledgeItem, User
+from knowledge_base.config_utils import load_knowledge_base_config
 from shared.config import get_config
 from shared.logging import get_logger
 
@@ -62,7 +63,7 @@ def _load_search_runtime_limits() -> tuple[int, float]:
 
     try:
         config = get_config()
-        kb_config = config.get_section("knowledge_base")
+        kb_config = load_knowledge_base_config(config)
         search_cfg = kb_config.get("search", {})
         max_concurrent_requests = int(
             search_cfg.get("max_concurrent_requests", max_concurrent_requests)
@@ -1710,7 +1711,7 @@ async def get_kb_config(
         from shared.config import get_config
 
         config = get_config()
-        kb_section = config.get_section("knowledge_base")
+        kb_section = load_knowledge_base_config(config)
 
         return KBConfigResponse(
             processing=_merge_kb_section_with_recommended(
@@ -1789,7 +1790,7 @@ async def update_kb_config(
 
         # Reload config singleton
         config = reload_config(config_path)
-        updated = config.get_section("knowledge_base")
+        updated = load_knowledge_base_config(config)
 
         return KBConfigResponse(
             processing=_merge_kb_section_with_recommended(

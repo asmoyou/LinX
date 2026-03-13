@@ -30,11 +30,8 @@ const normalizeMemoryScopes = (scopes?: string[]): string[] => {
   }
 
   const aliasMap: Record<string, string> = {
-    agent: 'agent',
-    agent_memories: 'agent',
-    company: 'company',
-    company_memories: 'company',
-    user_context: 'user_context',
+    skills: 'skills',
+    user_memory: 'user_memory',
   };
   const normalized: string[] = [];
 
@@ -134,9 +131,7 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({
   const effectiveMemoryScopes =
     configuredMemoryScopes.length > 0
       ? configuredMemoryScopes
-      : displayAgent.accessLevel === 'team' || displayAgent.accessLevel === 'public'
-      ? ['agent', 'company', 'user_context']
-      : ['agent', 'user_context'];
+      : ['skills', 'user_memory'];
 
   const tasksExecuted = Math.max(
     0,

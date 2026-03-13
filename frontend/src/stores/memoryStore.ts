@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Memory, MemoryType, MemoryFilter } from '../types/memory';
+import type { Memory, MemoryProductType, MemoryFilter } from '../types/memory';
 
 interface MemoryState {
   memories: Memory[];
@@ -8,13 +8,13 @@ interface MemoryState {
   error: string | null;
   
   // Filters
-  activeTab: MemoryType;
+  activeTab: MemoryProductType;
   filters: MemoryFilter;
   searchQuery: string;
   
   // Actions
   setMemories: (memories: Memory[]) => void;
-  setMemoriesByType: (type: MemoryType, memories: Memory[]) => void;
+  setMemoriesByType: (type: MemoryProductType, memories: Memory[]) => void;
   addMemory: (memory: Memory) => void;
   updateMemory: (id: string, updates: Partial<Memory>) => void;
   removeMemory: (id: string) => void;
@@ -24,7 +24,7 @@ interface MemoryState {
   clearError: () => void;
   
   // Filters
-  setActiveTab: (tab: MemoryType) => void;
+  setActiveTab: (tab: MemoryProductType) => void;
   setFilters: (filters: Partial<MemoryFilter>) => void;
   clearFilters: () => void;
   setSearchQuery: (query: string) => void;
@@ -32,7 +32,7 @@ interface MemoryState {
   // Computed
   getFilteredMemories: () => Memory[];
   getMemoryById: (id: string) => Memory | undefined;
-  getMemoriesByType: (type: MemoryType) => Memory[];
+  getMemoriesByType: (type: MemoryProductType) => Memory[];
   getMemoriesByAgent: (agentId: string) => Memory[];
   
   // Reset
@@ -44,7 +44,7 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
   selectedMemory: null,
   isLoading: false,
   error: null,
-  activeTab: 'agent',
+  activeTab: 'user_memory',
   filters: {},
   searchQuery: '',
   
@@ -98,7 +98,7 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
     
     let filtered = memories;
     
-    // Filter by active tab (memory type)
+  // Filter by active tab (product-level memory view)
     filtered = filtered.filter((memory) => memory.type === activeTab);
     
     // Apply additional filters
@@ -167,7 +167,7 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
     selectedMemory: null,
     isLoading: false,
     error: null,
-    activeTab: 'agent',
+    activeTab: 'user_memory',
     filters: {},
     searchQuery: '',
   }),

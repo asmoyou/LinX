@@ -11,13 +11,146 @@ import uuid
 from typing import List
 
 import pytest
+import redis
 
 from message_bus.audit import MessageAuditor
 from message_bus.authorization import AgentPermissions, MessageAuthorizer
 from message_bus.message import Message, MessageType
 from message_bus.pubsub import PubSubManager
-from message_bus.redis_manager import RedisConnectionManager, get_redis_manager
+from message_bus.redis_manager import RedisConnectionManager, close_redis_manager, get_redis_manager
 from message_bus.streams import StreamsManager
+
+
+class _FakeConnectionPool:
+    def __init__(self, **kwargs):
+        self.max_connections = kwargs.get("max_connections", 10)
+        self._created_connections = 0
+        self._available_connections = []
+
+    def disconnect(self):
+        self._available_connections.clear()
+
+
+class _FakePubSub:
+    def __init__(self, client):
+        self._client = client
+        self._channels = set()
+        self._messages = []
+
+    def subscribe(self, channel):
+        self._channels.add(channel)
+        self._client._register_pubsub(channel, self)
+
+    def unsubscribe(self, channel):
+        self._channels.discard(channel)
+        self._client._unregister_pubsub(channel, self)
+
+    def get_message(self, ignore_subscribe_messages=True, timeout=1.0):
+        if self._messages:
+            return self._messages.pop(0)
+        time.sleep(min(timeout, 0.01))
+        return None
+
+    def push_message(self, channel, data):
+        self._messages.append({"type": "message", "channel": channel, "data": data})
+
+    def close(self):
+        for channel in list(self._channels):
+            self.unsubscribe(channel)
+
+
+class _FakeRedisClient:
+    def __init__(self, connection_pool=None):
+        self.connection_pool = connection_pool
+        self._pubsubs = {}
+        self._streams = {}
+        self._groups = {}
+        if connection_pool is not None:
+            connection_pool._created_connections = 1
+            connection_pool._available_connections = [object()]
+
+    def ping(self):
+        return True
+
+    def close(self):
+        return None
+
+    def pubsub(self):
+        return _FakePubSub(self)
+
+    def _register_pubsub(self, channel, pubsub):
+        self._pubsubs.setdefault(channel, []).append(pubsub)
+
+    def _unregister_pubsub(self, channel, pubsub):
+        listeners = self._pubsubs.get(channel, [])
+        if pubsub in listeners:
+            listeners.remove(pubsub)
+        if not listeners and channel in self._pubsubs:
+            self._pubsubs.pop(channel, None)
+
+    def publish(self, channel, data):
+        listeners = list(self._pubsubs.get(channel, []))
+        for pubsub in listeners:
+            pubsub.push_message(channel, data)
+        return len(listeners)
+
+    def xadd(self, stream_name, message_data, maxlen=None, approximate=True):
+        entries = self._streams.setdefault(stream_name, [])
+        message_id = f"{len(entries) + 1}-0"
+        entries.append((message_id, message_data))
+        return message_id
+
+    def xgroup_create(self, stream_name, consumer_group, id="$", mkstream=True):
+        entries = self._streams.setdefault(stream_name, [])
+        groups = self._groups.setdefault(stream_name, {})
+        if consumer_group in groups:
+            raise redis.ResponseError("BUSYGROUP Consumer Group name already exists")
+        groups[consumer_group] = len(entries) if id == "$" else 0
+
+    def xreadgroup(self, consumer_group, consumer_name, streams, count=10, block=1000):
+        del consumer_name, block
+        results = []
+        for stream_name in streams:
+            entries = self._streams.setdefault(stream_name, [])
+            groups = self._groups.setdefault(stream_name, {})
+            start_index = groups.get(consumer_group, 0)
+            pending = entries[start_index : start_index + count]
+            if pending:
+                groups[consumer_group] = start_index + len(pending)
+                results.append((stream_name, pending))
+        return results
+
+    def xack(self, stream_name, consumer_group, message_id):
+        del stream_name, consumer_group, message_id
+        return 1
+
+    def xpending_range(self, stream_name, consumer_group, min="-", max="+", count=100):
+        del min, max, count
+        entries = self._streams.get(stream_name, [])
+        index = self._groups.get(stream_name, {}).get(consumer_group, 0)
+        return [{"message_id": message_id} for message_id, _ in entries[index:]]
+
+    def xrange(self, stream_name, min="-", max="+"):
+        del min, max
+        return self._streams.get(stream_name, [])
+
+    def xinfo_stream(self, stream_name):
+        entries = self._streams.get(stream_name, [])
+        return {
+            "length": len(entries),
+            "first-entry": entries[0] if entries else None,
+            "last-entry": entries[-1] if entries else None,
+            "groups": len(self._groups.get(stream_name, {})),
+        }
+
+
+@pytest.fixture(autouse=True)
+def fake_redis_backend(monkeypatch):
+    close_redis_manager()
+    monkeypatch.setattr("message_bus.redis_manager.ConnectionPool", _FakeConnectionPool)
+    monkeypatch.setattr("message_bus.redis_manager.redis.Redis", _FakeRedisClient)
+    yield
+    close_redis_manager()
 
 
 class TestRedisConnectionManager:
@@ -218,9 +351,10 @@ class TestStreamsManager:
 
     def test_send_message(self, streams_manager):
         """Test sending message via stream."""
+        agent_id = f"agent-{uuid.uuid4()}"
         message = Message.create(
             from_agent_id="agent-1",
-            to_agent_id="agent-2",
+            to_agent_id=agent_id,
             task_id="task-1",
             message_type=MessageType.DIRECT,
             payload={"content": "Direct message"},
@@ -236,7 +370,7 @@ class TestStreamsManager:
         def callback(message: Message):
             received_messages.append(message)
 
-        agent_id = "agent-2"
+        agent_id = f"agent-{uuid.uuid4()}"
 
         # Start consumer
         streams_manager.start_consumer(agent_id, callback)
@@ -264,7 +398,7 @@ class TestStreamsManager:
 
     def test_get_stream_info(self, streams_manager):
         """Test getting stream information."""
-        agent_id = "agent-3"
+        agent_id = f"agent-{uuid.uuid4()}"
 
         # Send a message to create stream
         message = Message.create(

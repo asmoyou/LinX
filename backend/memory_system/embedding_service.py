@@ -8,25 +8,45 @@ independently with explicit fallback rules.
 
 import json
 import logging
+from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 
 import requests
 
-from memory_system.memory_interface import EmbeddingServiceInterface
 from shared.config import get_config
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_SCOPE_MEMORY = "memory"
+EMBEDDING_SCOPE_USER_MEMORY = "user_memory"
+EMBEDDING_SCOPE_MEMORY = EMBEDDING_SCOPE_USER_MEMORY
 EMBEDDING_SCOPE_KNOWLEDGE_BASE = "knowledge_base"
-_ALLOWED_EMBEDDING_SCOPES = {EMBEDDING_SCOPE_MEMORY, EMBEDDING_SCOPE_KNOWLEDGE_BASE}
+_EMBEDDING_SCOPE_ALIASES = {
+    "memory": EMBEDDING_SCOPE_USER_MEMORY,
+    EMBEDDING_SCOPE_USER_MEMORY: EMBEDDING_SCOPE_USER_MEMORY,
+    EMBEDDING_SCOPE_KNOWLEDGE_BASE: EMBEDDING_SCOPE_KNOWLEDGE_BASE,
+}
+_ALLOWED_EMBEDDING_SCOPES = {EMBEDDING_SCOPE_USER_MEMORY, EMBEDDING_SCOPE_KNOWLEDGE_BASE}
+
+
+class EmbeddingServiceInterface(ABC):
+    """Abstract interface for embedding generation backends."""
+
+    @abstractmethod
+    def generate_embedding(self, text: str) -> List[float]:
+        """Generate one embedding vector."""
+
+    @abstractmethod
+    def generate_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings for multiple texts."""
+
+    @abstractmethod
+    def get_embedding_dimension(self) -> int:
+        """Return the vector dimension produced by this backend."""
 
 
 def _normalize_scope(scope: Optional[str]) -> str:
-    normalized = str(scope or EMBEDDING_SCOPE_MEMORY).strip().lower()
-    if normalized not in _ALLOWED_EMBEDDING_SCOPES:
-        return EMBEDDING_SCOPE_MEMORY
-    return normalized
+    normalized = str(scope or EMBEDDING_SCOPE_USER_MEMORY).strip().lower()
+    return _EMBEDDING_SCOPE_ALIASES.get(normalized, EMBEDDING_SCOPE_USER_MEMORY)
 
 
 def _safe_get_section(config, section: str) -> Dict[str, object]:
@@ -86,7 +106,7 @@ def resolve_embedding_settings(scope: str = EMBEDDING_SCOPE_MEMORY) -> Dict[str,
     """Resolve effective embedding settings for a pipeline scope.
 
     Resolution order:
-    1. scope-specific config section (memory.embedding or knowledge_base.embedding)
+    1. scope-specific config section (user_memory.embedding or knowledge_base.embedding)
     2. optional cross-scope fallback (configurable per scope)
     3. llm.embedding_provider / llm.default_provider
     4. provider model hints / hardcoded defaults
@@ -94,13 +114,15 @@ def resolve_embedding_settings(scope: str = EMBEDDING_SCOPE_MEMORY) -> Dict[str,
     normalized_scope = _normalize_scope(scope)
     config = get_config()
 
-    memory_cfg = _safe_get_section(config, "memory")
+    user_memory_cfg = _safe_get_section(config, "user_memory")
     kb_cfg = _safe_get_section(config, "knowledge_base")
     llm_cfg = _safe_get_section(config, "llm")
 
-    memory_embedding = memory_cfg.get("embedding", {}) if isinstance(memory_cfg, dict) else {}
-    if not isinstance(memory_embedding, dict):
-        memory_embedding = {}
+    user_memory_embedding = (
+        user_memory_cfg.get("embedding", {}) if isinstance(user_memory_cfg, dict) else {}
+    )
+    if not isinstance(user_memory_embedding, dict):
+        user_memory_embedding = {}
 
     kb_embedding = kb_cfg.get("embedding", {}) if isinstance(kb_cfg, dict) else {}
     if not isinstance(kb_embedding, dict):
@@ -108,14 +130,14 @@ def resolve_embedding_settings(scope: str = EMBEDDING_SCOPE_MEMORY) -> Dict[str,
 
     if normalized_scope == EMBEDDING_SCOPE_KNOWLEDGE_BASE:
         primary_name = "knowledge_base.embedding"
-        fallback_name = "memory.embedding"
+        fallback_name = "user_memory.embedding"
         primary_cfg = kb_embedding
-        fallback_cfg = memory_embedding
+        fallback_cfg = user_memory_embedding
         allow_cross_scope_fallback = bool(primary_cfg.get("inherit_from_memory", False))
     else:
-        primary_name = "memory.embedding"
+        primary_name = "user_memory.embedding"
         fallback_name = "knowledge_base.embedding"
-        primary_cfg = memory_embedding
+        primary_cfg = user_memory_embedding
         fallback_cfg = kb_embedding
         allow_cross_scope_fallback = bool(primary_cfg.get("inherit_from_knowledge_base", True))
 
@@ -435,7 +457,9 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
         )
 
         scope_section_name = (
-            "knowledge_base" if self._scope == EMBEDDING_SCOPE_KNOWLEDGE_BASE else "memory"
+            "knowledge_base"
+            if self._scope == EMBEDDING_SCOPE_KNOWLEDGE_BASE
+            else "user_memory"
         )
         scope_embedding_cfg: Dict[str, object] = {}
         try:

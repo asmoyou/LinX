@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 import requests
 
+from knowledge_base.config_utils import load_knowledge_base_config
 from shared.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 def _resolve_transcription_settings() -> dict:
     """Resolve transcription runtime settings from knowledge_base.processing.transcription."""
     config = get_config()
-    kb_config = config.get_section("knowledge_base") if config else {}
+    kb_config = load_knowledge_base_config(config)
     processing_cfg = kb_config.get("processing", {})
     transcription_cfg = processing_cfg.get("transcription", {})
 

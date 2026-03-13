@@ -227,10 +227,13 @@ class TestDOMBasedXSSPrevention:
 
         # Act
         json_data = json.dumps(data)
+        html_safe_json = json_data.replace("<", "\\u003c").replace(">", "\\u003e")
 
         # Assert
-        # JSON encoding escapes < and > as unicode
-        assert "\\u003c" in json_data or "<script>" not in json_data
+        # Python's json.dumps preserves the raw characters. If the JSON is later
+        # embedded into HTML, the caller must escape it for that context.
+        assert "<script>" in json_data
+        assert "\\u003cscript\\u003e" in html_safe_json
 
     def test_avoid_innerhtml(self):
         """Test that innerHTML is avoided in favor of textContent."""
@@ -276,10 +279,13 @@ class TestAPIResponseSecurity:
 
         # Act
         json_response = json.dumps(data)
+        html_safe_json = json_response.replace("<", "\\u003c").replace(">", "\\u003e")
 
         # Assert
-        # JSON encoding should escape special characters
-        assert "<script>" not in json_response or "\\" in json_response
+        # Raw JSON is allowed to preserve characters; callers embedding it into
+        # HTML/script contexts must apply an additional escaping step.
+        assert "<script>" in json_response
+        assert "\\u003cscript\\u003e" in html_safe_json
 
     def test_no_jsonp_callback(self):
         """Test that JSONP callbacks are not allowed."""

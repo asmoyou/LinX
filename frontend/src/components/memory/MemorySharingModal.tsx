@@ -57,17 +57,13 @@ const toIsoDateTime = (dateTimeLocal?: string): string | undefined => {
   return date.toISOString();
 };
 
-const defaultScopeByType = (type: Memory["type"]): VisibilityScope => {
-  if (type === "agent") return "department_tree";
-  if (type === "user_context") return "private";
-  return "department_tree";
-};
+const defaultScopeByType = (): VisibilityScope => "private";
 
 const resolveInitialScope = (memory: Memory): VisibilityScope => {
   const metadata = memory.metadata || {};
   const visibility = String(metadata.visibility || "").trim().toLowerCase();
 
-  if (memory.type === "user_context") {
+  if (memory.type === "user_memory") {
     if (visibility === "private" || visibility === "explicit") {
       return visibility as VisibilityScope;
     }
@@ -77,13 +73,13 @@ const resolveInitialScope = (memory: Memory): VisibilityScope => {
   if (VALID_SCOPES.includes(visibility as VisibilityScope)) {
     return visibility as VisibilityScope;
   }
-  return defaultScopeByType(memory.type);
+  return defaultScopeByType();
 };
 
 const scopeOptionsByType = (
   type: Memory["type"],
 ): Array<{ value: VisibilityScope; labelKey: string; descKey: string }> => {
-  if (type === "user_context") {
+  if (type === "user_memory") {
     return [
       {
         value: "private",
@@ -190,10 +186,10 @@ export const MemorySharingModal: React.FC<MemorySharingModalProps> = ({
   const [submitError, setSubmitError] = useState<string>("");
 
   const mode: "share" | "publish" =
-    memory?.type === "agent" ? "publish" : "share";
+    memory?.type === "skill_proposal" ? "publish" : "share";
 
   const scopeOptions = useMemo(
-    () => scopeOptionsByType(memory?.type || "company"),
+    () => scopeOptionsByType(memory?.type || "user_memory"),
     [memory?.type],
   );
 

@@ -50,9 +50,9 @@ from access_control.jwt_auth import (
     JWTTokenInvalidError,
     TokenData,
     TokenPair,
+    blacklist_session_id,
     blacklist_token,
     blacklist_token_jti,
-    blacklist_session_id,
     clear_blacklist,
     create_access_token,
     create_refresh_token,
@@ -75,14 +75,9 @@ from access_control.knowledge_filter import (
     get_accessible_knowledge_ids,
 )
 from access_control.memory_filter import (
-    MemoryType,
-    build_agent_memory_filter,
-    build_company_memory_filter,
-    can_access_agent_memory,
-    can_access_company_memory,
-    check_memory_delete_permission,
-    check_memory_write_permission,
-    filter_memory_results,
+    can_access_skill_learning,
+    check_skill_learning_delete_permission,
+    check_skill_learning_write_permission,
 )
 from access_control.models import UserModel, hash_password, verify_password
 from access_control.permissions import (
@@ -222,15 +217,10 @@ __all__ = [
     "get_accessible_knowledge_ids",
     "check_knowledge_write_permission",
     "check_knowledge_delete_permission",
-    # Memory System Filtering
-    "MemoryType",
-    "can_access_agent_memory",
-    "can_access_company_memory",
-    "build_agent_memory_filter",
-    "build_company_memory_filter",
-    "filter_memory_results",
-    "check_memory_write_permission",
-    "check_memory_delete_permission",
+    # Skill-learning access control
+    "can_access_skill_learning",
+    "check_skill_learning_write_permission",
+    "check_skill_learning_delete_permission",
     # Agent Ownership Validation
     "verify_agent_ownership",
     "require_agent_ownership",

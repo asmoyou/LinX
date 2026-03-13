@@ -16,21 +16,18 @@ def _build_agent(*, allowed_knowledge=None):
     return agent
 
 
-def _build_memory_interface():
-    memory_interface = Mock()
-    memory_interface.retrieve_agent_memory.return_value = []
-    memory_interface.retrieve_company_memory.return_value = []
-    memory_interface.retrieve_user_context_memory.return_value = []
-    memory_interface.memory_system.retrieve_memories.return_value = []
-    memory_interface.store_agent_memory.return_value = "memory-id"
-    return memory_interface
+def _build_context_service():
+    context_service = Mock()
+    context_service.retrieve_skills.return_value = []
+    context_service.retrieve_user_memory.return_value = []
+    return context_service
 
 
-def test_executor_injects_knowledge_snippets_into_execution_context():
+def test_executor_injects_knowledge_references_into_execution_context():
     """Knowledge search results should be injected into agent context."""
-    memory_interface = _build_memory_interface()
+    context_service = _build_context_service()
     agent = _build_agent(allowed_knowledge=[])
-    executor = AgentExecutor(memory_interface)
+    executor = AgentExecutor(context_service=context_service)
     context = ExecutionContext(
         agent_id=uuid4(),
         user_id=uuid4(),
@@ -64,7 +61,7 @@ def test_executor_injects_knowledge_snippets_into_execution_context():
     with patch("knowledge_base.knowledge_search.get_knowledge_search", return_value=search_service):
         context_data, debug_info = executor.build_execution_context_with_debug(agent, context)
 
-    assert context_data["knowledge_snippets"] == ["Knowledge snippet A", "Knowledge snippet B"]
+    assert context_data["knowledge_refs"] == ["Knowledge snippet A", "Knowledge snippet B"]
     assert context_data["knowledge_hits"][0]["title"] == "Retention Handbook"
     assert context_data["knowledge_hits"][0]["file_reference"] == "knowledge/retention-handbook.pdf"
     assert debug_info["knowledge"]["hit_count"] == 2
@@ -72,9 +69,9 @@ def test_executor_injects_knowledge_snippets_into_execution_context():
 
 def test_executor_skips_knowledge_search_when_allowed_collections_are_invalid():
     """Invalid allowed_knowledge IDs should skip search without failing execution."""
-    memory_interface = _build_memory_interface()
+    context_service = _build_context_service()
     agent = _build_agent(allowed_knowledge=["not-a-uuid"])
-    executor = AgentExecutor(memory_interface)
+    executor = AgentExecutor(context_service=context_service)
     context = ExecutionContext(
         agent_id=uuid4(),
         user_id=uuid4(),
@@ -87,14 +84,14 @@ def test_executor_skips_knowledge_search_when_allowed_collections_are_invalid():
     assert result["success"] is True
     mock_get_search.assert_not_called()
     execute_context = agent.execute_task.call_args.kwargs["context"]
-    assert execute_context["knowledge_snippets"] == []
+    assert execute_context["knowledge_refs"] == []
 
 
 def test_executor_continues_when_knowledge_search_throws():
     """Knowledge-base failures should not block agent execution."""
-    memory_interface = _build_memory_interface()
+    context_service = _build_context_service()
     agent = _build_agent(allowed_knowledge=[])
-    executor = AgentExecutor(memory_interface)
+    executor = AgentExecutor(context_service=context_service)
     context = ExecutionContext(
         agent_id=uuid4(),
         user_id=uuid4(),
@@ -109,4 +106,4 @@ def test_executor_continues_when_knowledge_search_throws():
 
     assert result["success"] is True
     execute_context = agent.execute_task.call_args.kwargs["context"]
-    assert execute_context["knowledge_snippets"] == []
+    assert execute_context["knowledge_refs"] == []

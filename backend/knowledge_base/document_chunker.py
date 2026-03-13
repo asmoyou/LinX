@@ -16,9 +16,22 @@ from typing import List, Optional
 
 import tiktoken
 
+from knowledge_base.config_utils import load_knowledge_base_config
 from shared.config import get_config
 
 logger = logging.getLogger(__name__)
+
+
+class _FallbackEncoding:
+    """Minimal local tokenizer used when tiktoken assets are unavailable."""
+
+    @staticmethod
+    def encode(text: str) -> List[int]:
+        return [ord(char) for char in text]
+
+    @staticmethod
+    def decode(tokens: List[int]) -> str:
+        return "".join(chr(token) for token in tokens)
 
 
 class ChunkingStrategy(Enum):
@@ -59,11 +72,19 @@ class DocumentChunker:
         """
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        self.encoding = tiktoken.get_encoding(encoding_name)
+        try:
+            self.encoding = tiktoken.get_encoding(encoding_name)
+        except Exception:
+            logger.warning(
+                "Failed to load tiktoken encoding '%s', using local fallback",
+                encoding_name,
+                exc_info=True,
+            )
+            self.encoding = _FallbackEncoding()
 
         # Load semantic chunking config
         config = get_config()
-        kb_config = config.get_section("knowledge_base") if config else {}
+        kb_config = load_knowledge_base_config(config)
         chunking_cfg = kb_config.get("chunking", {})
         self.delimiters = chunking_cfg.get("delimiters", "\n。；！？.!?")
         self.overlap_percent = chunking_cfg.get("overlap_percent", 10)
@@ -104,6 +125,24 @@ class DocumentChunker:
         else:
             # Default to fixed size
             return self._chunk_fixed_size(text, document_id, metadata)
+
+    def chunk_text(self, text: str, chunk_size: int = 512, overlap: int = 50) -> List[str]:
+        """Backward-compatible helper returning only chunk texts."""
+        if chunk_size <= 0:
+            return [text]
+        if overlap >= chunk_size:
+            overlap = max(0, chunk_size // 4)
+
+        chunks: List[str] = []
+        step = max(1, chunk_size - overlap)
+        start = 0
+        while start < len(text):
+            end = min(len(text), start + chunk_size)
+            chunks.append(text[start:end])
+            if end >= len(text):
+                break
+            start += step
+        return chunks
 
     def _chunk_fixed_size(
         self,
@@ -494,7 +533,7 @@ def _build_chunker_signature() -> str:
     """Build signature so chunker refreshes when chunking config changes."""
     try:
         config = get_config()
-        kb_config = config.get_section("knowledge_base") if config else {}
+        kb_config = load_knowledge_base_config(config)
         chunking_cfg = kb_config.get("chunking", {})
         payload = {
             "chunk_token_num": chunking_cfg.get("chunk_token_num"),
@@ -524,7 +563,7 @@ def get_document_chunker(
     signature = _build_chunker_signature()
     if _document_chunker is None or signature != _document_chunker_signature:
         config = get_config()
-        kb_config = config.get_section("knowledge_base") if config else {}
+        kb_config = load_knowledge_base_config(config)
         chunking_cfg = kb_config.get("chunking", {})
 
         resolved_chunk_size = int(chunk_size or chunking_cfg.get("chunk_token_num", 512))

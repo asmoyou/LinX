@@ -20,16 +20,15 @@ from time import monotonic
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from uuid import UUID
 
-from agent_framework.runtime_policy import (
-    ExecutionProfile,
-    is_mission_task_unified_runtime_enabled,
-)
 from agent_framework.runtime_capabilities import (
     apply_authoritative_runtime_overrides,
     build_runtime_capabilities_snapshot,
 )
-from mission_system.agent_factory import create_mission_agent
-from mission_system.agent_factory import create_registered_mission_agent
+from agent_framework.runtime_policy import (
+    ExecutionProfile,
+    is_mission_task_unified_runtime_enabled,
+)
+from mission_system.agent_factory import create_mission_agent, create_registered_mission_agent
 from mission_system.agent_roles import (
     get_leader_config,
     get_qa_config,
@@ -40,11 +39,13 @@ from mission_system.exceptions import (
     MissionCancelledException,
     MissionError,
 )
+from mission_system.mission_repository import assign_agent as assign_mission_agent
 from mission_system.mission_repository import (
-    assign_agent as assign_mission_agent,
     get_mission,
     prepare_partial_retry_for_failed_tasks,
-    update_agent_status as update_mission_agent_status,
+)
+from mission_system.mission_repository import update_agent_status as update_mission_agent_status
+from mission_system.mission_repository import (
     update_mission_fields,
     update_mission_status,
 )
@@ -685,10 +686,7 @@ class MissionOrchestrator:
                 snippet = trimmed or "<empty file>"
 
             file_sections.append(
-                (
-                    f"- {absolute_path} ({len(raw_bytes)} bytes)\n"
-                    f"```text\n{snippet}\n```"
-                )
+                (f"- {absolute_path} ({len(raw_bytes)} bytes)\n" f"```text\n{snippet}\n```")
             )
 
         if not file_sections:
@@ -1204,7 +1202,10 @@ class MissionOrchestrator:
                 "error_category": "timeout",
                 "is_transient_provider_error": True,
             }
-        if "no generations found in stream" in lowered or "no generation chunks were returned" in lowered:
+        if (
+            "no generations found in stream" in lowered
+            or "no generation chunks were returned" in lowered
+        ):
             return {
                 "error_code": "provider_empty_stream",
                 "error_category": "provider_stream",
@@ -1757,23 +1758,21 @@ class MissionOrchestrator:
 
     @staticmethod
     def _resolve_temporary_worker_memory_scopes(exec_cfg: Dict[str, Any]) -> List[str]:
-        """Resolve temporary worker memory scopes with sane defaults.
-
-        `task_context` is always enabled for temporary workers because
-        mission tasks rely on task-scoped context continuity.
-        """
+        """Resolve temporary worker runtime context sources with sane defaults."""
         raw_scopes = exec_cfg.get("temp_worker_memory_scopes")
+        alias_map = {
+            "skills": "skills",
+            "user_memory": "user_memory",
+        }
         normalized: List[str] = []
         if isinstance(raw_scopes, list):
             for scope in raw_scopes:
                 candidate = str(scope or "").strip().lower()
-                if candidate in {"agent", "company", "user_context", "task_context"}:
-                    if candidate not in normalized:
-                        normalized.append(candidate)
+                canonical = alias_map.get(candidate)
+                if canonical and canonical not in normalized:
+                    normalized.append(canonical)
         if not normalized:
-            normalized = ["agent", "company", "user_context"]
-        if "task_context" not in normalized:
-            normalized.append("task_context")
+            normalized = ["skills", "user_memory"]
         return normalized
 
     def _select_temporary_worker_skills(
@@ -2269,7 +2268,9 @@ class MissionOrchestrator:
                 writable_roots=["/workspace"],
                 ui_mode="none",
                 network_access=(
-                    True if code_execution_network_access is None else bool(code_execution_network_access)
+                    True
+                    if code_execution_network_access is None
+                    else bool(code_execution_network_access)
                 ),
                 session_persistent=bool(session_workdir),
                 source="mission_orchestrator",
@@ -2345,10 +2346,14 @@ class MissionOrchestrator:
                         error_meta.get("is_transient_provider_error", False)
                     ),
                 )
-                should_recreate_agent = can_retry and agent_factory is not None and (
-                    agent_status_before_retry in {"error", "terminated"}
-                    or "agent not active" in lower_error
-                    or bool(error_meta.get("is_transient_provider_error", False))
+                should_recreate_agent = (
+                    can_retry
+                    and agent_factory is not None
+                    and (
+                        agent_status_before_retry in {"error", "terminated"}
+                        or "agent not active" in lower_error
+                        or bool(error_meta.get("is_transient_provider_error", False))
+                    )
                 )
 
                 if should_recreate_agent:
@@ -2724,7 +2729,7 @@ class MissionOrchestrator:
                 '      "responsibilities": ["..."],\n'
                 '      "required_capabilities": ["skill_a", "skill_b"],\n'
                 '      "preferred_agent_id": "",\n'
-                '      "memory_scopes": ["agent","company","user_context"],\n'
+                '      "memory_scopes": ["skills","user_memory"],\n'
                 '      "knowledge_collection_ids": ["<collection_id>"],\n'
                 '      "sop_hint": "short SOP hint"\n'
                 "    }\n"
@@ -2937,8 +2942,8 @@ class MissionOrchestrator:
         unassigned_without_temp_titles: List[str] = []
         with get_db_session() as session:
             for idx, task_def in enumerate(task_list):
-                from uuid import uuid4
                 from types import SimpleNamespace
+                from uuid import uuid4
 
                 task_id = uuid4()
                 title = str(task_def.get("title") or f"Task {idx + 1}")
@@ -3390,7 +3395,9 @@ class MissionOrchestrator:
                         wait_elapsed = monotonic() - dependency_wait_started_at
                         if wait_elapsed >= dependency_wait_timeout_s:
                             unresolved_dep_ids = [
-                                dep_id for dep_id in dep_ids if dep_statuses.get(dep_id) != "completed"
+                                dep_id
+                                for dep_id in dep_ids
+                                if dep_statuses.get(dep_id) != "completed"
                             ]
                             task_title = (task_obj.task_metadata or {}).get("title", "Untitled")
                             timeout_error = (
@@ -3398,12 +3405,14 @@ class MissionOrchestrator:
                                 f"({dependency_wait_timeout_s}s) and was aborted"
                             )
                             if unresolved_dep_ids:
-                                timeout_error = (
-                                    f"{timeout_error}: {', '.join(unresolved_dep_ids)}"
-                                )
+                                timeout_error = f"{timeout_error}: {', '.join(unresolved_dep_ids)}"
 
                             with get_db_session() as session:
-                                t = session.query(Task).filter(Task.task_id == task_obj.task_id).first()
+                                t = (
+                                    session.query(Task)
+                                    .filter(Task.task_id == task_obj.task_id)
+                                    .first()
+                                )
                                 if t:
                                     result_payload = (
                                         dict(t.result) if isinstance(t.result, dict) else {}
@@ -3763,7 +3772,9 @@ class MissionOrchestrator:
         resolved_llm_model = str(llm_cfg.get("llm_model") or "unknown")
         execution_role = "temporary_worker"
 
-        if resolved_agent_id and self._coerce_bool(task_metadata.get("assigned_agent_temporary", False)):
+        if resolved_agent_id and self._coerce_bool(
+            task_metadata.get("assigned_agent_temporary", False)
+        ):
             bound_task_id = str(task_metadata.get("temporary_agent_task_id") or "").strip()
             current_task_id = str(task_obj.task_id)
             if bound_task_id and bound_task_id != current_task_id:
@@ -3847,7 +3858,10 @@ class MissionOrchestrator:
                             resolved_llm_provider = str(agent_info.llm_provider)
                         if agent_info.llm_model:
                             resolved_llm_model = str(agent_info.llm_model)
-                        if str(agent_info.agent_type or "").strip().lower() != "mission_temp_worker":
+                        if (
+                            str(agent_info.agent_type or "").strip().lower()
+                            != "mission_temp_worker"
+                        ):
                             execution_role = "worker"
                 except Exception:
                     logger.debug(
@@ -5077,7 +5091,9 @@ class MissionOrchestrator:
             )
 
         existing_result = dict(mission.result or {}) if isinstance(mission.result, dict) else {}
-        existing_deliverables = self._coerce_deliverable_records(existing_result.get("deliverables"))
+        existing_deliverables = self._coerce_deliverable_records(
+            existing_result.get("deliverables")
+        )
         existing_target_count = sum(1 for item in existing_deliverables if item.get("is_target"))
 
         deliverables = self._workspace.collect_deliverables(mission_id)
@@ -5085,7 +5101,11 @@ class MissionOrchestrator:
         current_target_count = sum(1 for item in current_deliverables if item.get("is_target"))
 
         final_deliverables = current_deliverables
-        if preserve_existing_deliverables and current_target_count == 0 and existing_target_count > 0:
+        if (
+            preserve_existing_deliverables
+            and current_target_count == 0
+            and existing_target_count > 0
+        ):
             final_deliverables = self._merge_deliverable_records(
                 existing_deliverables,
                 current_deliverables,

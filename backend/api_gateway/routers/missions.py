@@ -91,7 +91,7 @@ class MissionExecutionConfigSchema(BaseModel):
     auto_select_temp_skills: bool = True
     temp_worker_skill_limit: int = 3
     temp_worker_memory_scopes: List[str] = Field(
-        default_factory=lambda: ["agent", "company", "user_context"]
+        default_factory=lambda: ["skills", "user_memory"]
     )
     temp_worker_knowledge_strategy: str = "owner_accessible"
     temp_worker_knowledge_limit: int = 6

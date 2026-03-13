@@ -7,12 +7,16 @@ References:
 
 import hashlib
 import logging
+import mimetypes
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-import magic
+try:
+    import magic
+except ImportError:  # pragma: no cover - exercised in integration environments without libmagic
+    magic = None
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +83,7 @@ class FileValidator:
         """
         self.max_file_size = max_file_size
         self.enable_malware_scan = enable_malware_scan
-        self.magic = magic.Magic(mime=True)
+        self.magic = magic.Magic(mime=True) if magic is not None else None
 
         # Map MIME types to supported file types
         self.mime_type_map = {ft.value: ft for ft in SupportedFileType}
@@ -132,7 +136,7 @@ class FileValidator:
                 )
 
             # Detect MIME type
-            mime_type = self.magic.from_file(str(file_path))
+            mime_type = self._detect_mime_type(file_path)
             normalized_mime_type = mime_type.split(";", 1)[0].strip().lower()
 
             # Check if file type is supported
@@ -207,6 +211,22 @@ class FileValidator:
                 content_hash="",
                 error_message=f"Validation error: {str(e)}",
             )
+
+    def _detect_mime_type(self, file_path: Path) -> str:
+        """Detect MIME type with libmagic when available, otherwise fall back to extensions."""
+        if self.magic is not None:
+            return self.magic.from_file(str(file_path))
+
+        guessed_type, _encoding = mimetypes.guess_type(str(file_path))
+        if guessed_type:
+            return guessed_type
+
+        suffix = file_path.suffix.lower()
+        if suffix == ".md":
+            return SupportedFileType.MD.value
+        if suffix == ".txt":
+            return SupportedFileType.TXT.value
+        return "application/octet-stream"
 
     def _calculate_hash(self, file_path: Path) -> str:
         """Calculate SHA-256 hash of file content.

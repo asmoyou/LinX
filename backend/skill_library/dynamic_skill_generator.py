@@ -324,22 +324,34 @@ Requirements:
 
         # Check if code can be parsed
         try:
-            ast.parse(code)
+            tree = ast.parse(code)
         except SyntaxError as e:
             errors.append(f"Syntax error: {e}")
             return errors
 
-        # Check for dangerous patterns
-        dangerous_patterns = [
-            ("eval", "Use of eval() is not allowed"),
-            ("exec", "Use of exec() is not allowed"),
-            ("__import__", "Use of __import__() is not allowed"),
-            ("open", "Direct file operations not allowed"),
-        ]
+        # Check for dangerous runtime calls without flagging safe identifiers like `execute`.
+        dangerous_calls = {
+            "eval": "Use of eval() is not allowed",
+            "exec": "Use of exec() is not allowed",
+            "__import__": "Use of __import__() is not allowed",
+            "open": "Direct file operations not allowed",
+        }
 
-        for pattern, message in dangerous_patterns:
-            if pattern in code:
-                errors.append(message)
+        found_messages = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+
+            func_name = None
+            if isinstance(node.func, ast.Name):
+                func_name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                func_name = node.func.attr
+
+            if func_name in dangerous_calls:
+                found_messages.append(dangerous_calls[func_name])
+
+        errors.extend(list(dict.fromkeys(found_messages)))
 
         return errors
 

@@ -21,36 +21,43 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 import psutil  # For system memory monitoring
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field
 
 from access_control.permissions import CurrentUser, get_current_user
 from agent_framework.access_policy import normalize_allowed_memory_scopes, resolve_memory_scopes
 from agent_framework.agent_registry import get_agent_registry
-from memory_system.legacy_memory_compat_service import get_legacy_memory_compatibility_writer
-from memory_system.session_memory_builder import (  # noqa: F401
-    build_agent_candidate_content as _build_agent_candidate_content,
-)
-from memory_system.session_memory_builder import (  # noqa: F401
-    build_agent_candidate_seed_facts as _build_agent_candidate_seed_facts,
-)
-from memory_system.session_memory_builder import (  # noqa: F401
-    build_user_preference_memory_content as _build_user_preference_memory_content,
-)
-from memory_system.session_memory_builder import (  # noqa: F401
-    build_user_preference_seed_facts as _build_user_preference_seed_facts,
-)
-from memory_system.session_memory_builder import (
-    dedupe_user_preference_signals as _dedupe_user_preference_signals,
-)
-from memory_system.session_memory_builder import (  # noqa: F401
-    split_user_preference_content as _split_user_preference_content,
-)
-from memory_system.session_observation_builder import (
-    _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL as _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL_SHARED,
-)
 from object_storage.minio_client import get_minio_client
 from shared.logging import get_logger
+from user_memory.builder import (
+    _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL as _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL_SHARED,
+)
+from user_memory.compat import (  # noqa: F401
+    build_agent_candidate_content as _build_agent_candidate_content,
+)
+from user_memory.compat import (  # noqa: F401
+    build_agent_candidate_seed_facts as _build_agent_candidate_seed_facts,
+)
+from user_memory.compat import (  # noqa: F401
+    build_user_preference_memory_content as _build_user_preference_memory_content,
+)
+from user_memory.compat import (  # noqa: F401
+    build_user_preference_seed_facts as _build_user_preference_seed_facts,
+)
+from user_memory.compat import dedupe_user_preference_signals as _dedupe_user_preference_signals
+from user_memory.compat import (  # noqa: F401
+    split_user_preference_content as _split_user_preference_content,
+)
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -774,9 +781,8 @@ def _build_retrieval_process_messages(context_debug: Dict[str, Any]) -> List[str
     )
 
     for scope_key, scope_label in (
-        ("agent", "agent"),
-        ("company", "company"),
-        ("user_context", "user_context"),
+        ("skills", "skills"),
+        ("user_memory", "user_memory"),
     ):
         scope_info = memory_debug.get(scope_key) or {}
         if not scope_info.get("enabled"):
@@ -897,7 +903,7 @@ _SESSION_MEMORY_ITEM_MAX_CHARS = 320
 _SESSION_MEMORY_MAX_PREFERENCE_FACTS = 12
 _SESSION_MEMORY_MAX_AGENT_CANDIDATES = 4
 _SESSION_MEMORY_USER_SIGNAL_TYPE = "user_preference"
-_SESSION_MEMORY_AGENT_SIGNAL_TYPE = "agent_memory_candidate"
+_SESSION_MEMORY_AGENT_SIGNAL_TYPE = "skill_proposal"
 _SESSION_MEMORY_AGENT_REVIEW_PENDING = "pending"
 _SESSION_MEMORY_LLM_MIN_PREFERENCE_CONFIDENCE = 0.62
 _SESSION_MEMORY_LLM_MIN_AGENT_CONFIDENCE = 0.6
@@ -1082,9 +1088,9 @@ def _parse_iso_datetime(value: Any) -> Optional[datetime]:
 
 
 def _extract_json_object_from_text(text: str) -> Optional[Dict[str, Any]]:
-    from memory_system.session_observation_builder import get_session_observation_builder
+    from user_memory.builder import get_user_memory_builder
 
-    return get_session_observation_builder().extract_json_object_from_text(text)
+    return get_user_memory_builder().extract_json_object_from_text(text)
 
 
 def _extract_json_object_from_text_with_meta(
@@ -1254,7 +1260,7 @@ Agent 名称: {agent_name or "-"}
 
 抽取目标:
 1. user_preferences: 提取“用户画像事实”，不仅限于喜欢/不喜欢。
-2. agent_memory_candidates: 提取“做事成功路径经验 / 可沉淀为 skill 的方法模板”（后续人工审批）。
+2. skill_proposals: 提取“做事成功路径经验 / 可沉淀为 skill 的方法模板”（后续人工审批）。
 
 user_preferences 可包含的画像要素（示例）:
 - 偏好/禁忌: food_preference_like, food_preference_avoid, communication_style_preference
@@ -1275,7 +1281,7 @@ user_preferences 可包含的画像要素（示例）:
 - 对用户直接陈述（如“我喜欢X/我做过X/我擅长X/我不吃X/我过敏X/我通常预算X”）优先提取。
 - 这类直接陈述建议 explicit_source=true，confidence >= 0.82。
 
-agent_memory_candidates 规则:
+skill_proposals 规则:
 - 重点提取“最终成功的做事路径”，尤其是经历过多次尝试后，最后真正走通的那条路径。
 - 目标是让 agent 下次遇到相似任务时，少走弯路，优先复用成功方法。
 - 必须可迁移、可复用：避免绑定具体人名/地名/商品名/单次任务细节。
@@ -1296,7 +1302,7 @@ agent_memory_candidates 规则:
       "evidence_turns": [1, 2]
     }}
   ],
-  "agent_memory_candidates": [
+  "skill_proposals": [
     {{
       "candidate_type": "successful_path",
       "title": "成功路径标题",
@@ -1346,7 +1352,7 @@ ASSISTANT: 收到
       "evidence_turns": [1]
     }}
   ],
-  "agent_memory_candidates": []
+  "skill_proposals": []
 }}
 
 会话文本:
@@ -1519,9 +1525,9 @@ async def _call_llm_for_memory_json(
     model: Optional[str],
     timeout_seconds: float = _SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    from memory_system.session_observation_builder import get_session_observation_builder
+    from user_memory.builder import get_user_memory_builder
 
-    return await get_session_observation_builder().call_llm_for_memory_json(
+    return await get_user_memory_builder().call_llm_for_memory_json(
         llm_router=llm_router,
         prompt=prompt,
         provider=provider,
@@ -1535,9 +1541,9 @@ def _normalize_llm_user_preference_signals(
     turn_ts_map: Dict[int, Optional[str]],
     max_items: int = _SESSION_MEMORY_MAX_PREFERENCE_FACTS,
 ) -> List[Dict[str, Any]]:
-    from memory_system.session_observation_builder import get_session_observation_builder
+    from user_memory.builder import get_user_memory_builder
 
-    return get_session_observation_builder().normalize_llm_user_preference_signals(
+    return get_user_memory_builder().normalize_llm_user_preference_signals(
         raw_items,
         turn_ts_map,
         max_items=max_items,
@@ -1556,9 +1562,9 @@ def _normalize_llm_agent_candidates(
     turn_ts_map: Dict[int, Optional[str]],
     max_items: int = _SESSION_MEMORY_MAX_AGENT_CANDIDATES,
 ) -> List[Dict[str, Any]]:
-    from memory_system.session_observation_builder import get_session_observation_builder
+    from user_memory.builder import get_user_memory_builder
 
-    return get_session_observation_builder().normalize_llm_agent_candidates(
+    return get_user_memory_builder().normalize_llm_agent_candidates(
         raw_items,
         agent_name=agent_name,
         turn_ts_map=turn_ts_map,
@@ -1573,9 +1579,9 @@ async def _extract_session_memory_signals_with_llm(
     agent_name: str,
     session_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    from memory_system.session_observation_builder import get_session_observation_builder
+    from user_memory.builder import get_user_memory_builder
 
-    return await get_session_observation_builder().extract_session_memory_signals_with_llm(
+    return await get_user_memory_builder().extract_session_memory_signals_with_llm(
         turns=turns,
         agent_id=agent_id,
         agent_name=agent_name,
@@ -1586,9 +1592,9 @@ async def _extract_session_memory_signals_with_llm(
 
 def _extract_user_preference_signals(turns: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     """Extract persistent/repeated user preference signals from session turns."""
-    from memory_system.session_observation_builder import get_session_observation_builder
+    from user_memory.builder import get_user_memory_builder
 
-    return get_session_observation_builder().extract_user_preference_signals(turns)
+    return get_user_memory_builder().extract_user_preference_signals(turns)
 
 
 def _extract_step_lines(response: str) -> List[str]:
@@ -1601,64 +1607,13 @@ def _extract_step_lines(response: str) -> List[str]:
     return cleaned
 
 
-def _extract_agent_memory_candidates(
+def _extract_skill_proposals(
     turns: List[Dict[str, str]],
     agent_name: str,
 ) -> List[Dict[str, Any]]:
-    from memory_system.session_observation_builder import get_session_observation_builder
+    from user_memory.builder import get_user_memory_builder
 
-    return get_session_observation_builder().extract_agent_memory_candidates(turns, agent_name)
-
-
-def _load_existing_user_preference_map(user_id: str) -> Dict[str, Dict[str, Any]]:
-    """Load latest user preference memory per key for dedupe/upsert."""
-    return get_legacy_memory_compatibility_writer().load_existing_user_preference_map(user_id)
-
-
-def _upsert_existing_user_preference_metadata(
-    memory_id: int,
-    metadata: Dict[str, Any],
-) -> None:
-    get_legacy_memory_compatibility_writer().upsert_existing_user_preference_metadata(
-        memory_id,
-        metadata,
-    )
-
-
-def _load_existing_agent_candidate_fingerprints(
-    *,
-    agent_id: str,
-    user_id: str,
-) -> set[str]:
-    """Load known agent candidate fingerprints to avoid duplicate drafts."""
-    return get_legacy_memory_compatibility_writer().load_existing_agent_candidate_fingerprints(
-        agent_id=agent_id,
-        user_id=user_id,
-    )
-
-
-def _persist_legacy_session_memories(
-    *,
-    mem_interface: Any,
-    session: "ConversationSession",
-    reason: str,
-    agent_name: str,
-    turn_count: int,
-    extracted_signals: List[Dict[str, Any]],
-    extracted_agent_candidates: List[Dict[str, Any]],
-):
-    return get_legacy_memory_compatibility_writer().persist_session_memories(
-        mem_interface=mem_interface,
-        session=session,
-        reason=reason,
-        agent_name=agent_name,
-        turn_count=turn_count,
-        extracted_signals=extracted_signals,
-        extracted_agent_candidates=extracted_agent_candidates,
-        load_existing_user_preference_map=_load_existing_user_preference_map,
-        load_existing_agent_candidate_fingerprints=_load_existing_agent_candidate_fingerprints,
-        upsert_existing_user_preference_metadata=_upsert_existing_user_preference_metadata,
-    )
+    return get_user_memory_builder().extract_skill_proposals(turns, agent_name)
 
 
 async def _flush_session_memories(
@@ -1685,9 +1640,6 @@ async def _flush_session_memories(
         except Exception:
             agent_name = ""
 
-    from agent_framework.agent_memory_interface import get_agent_memory_interface
-
-    mem_interface = get_agent_memory_interface()
     turn_count = len(turns)
     extracted_signals, extracted_agent_candidates = await _extract_session_memory_signals_with_llm(
         turns=turns,
@@ -1695,11 +1647,33 @@ async def _flush_session_memories(
         agent_name=agent_name,
         session_id=session.session_id,
     )
+    enable_heuristic_fallback = True
+    try:
+        from shared.config import get_config
+
+        config = get_config()
+        configured_fallback = config.get("user_memory.extraction.enable_heuristic_fallback")
+        if configured_fallback is not None:
+            enable_heuristic_fallback = bool(configured_fallback)
+    except Exception:
+        enable_heuristic_fallback = True
+
+    if enable_heuristic_fallback and not extracted_signals:
+        heuristic_signals = _extract_user_preference_signals(turns)
+        if heuristic_signals:
+            logger.info(
+                "Session memory heuristic fact fallback recovered user facts",
+                extra={
+                    "session_id": session.session_id,
+                    "heuristic_signal_count": len(heuristic_signals),
+                },
+            )
+            extracted_signals = heuristic_signals
     extracted_signals = _dedupe_user_preference_signals(extracted_signals)
     try:
-        from memory_system.session_ledger_service import get_memory_session_ledger_service
+        from user_memory.session_ledger_service import get_session_ledger_service
 
-        get_memory_session_ledger_service().persist_conversation_session(
+        get_session_ledger_service().persist_conversation_session(
             session=session,
             reason=reason,
             turns=turns,
@@ -1723,27 +1697,12 @@ async def _flush_session_memories(
         )
         return
 
-    persist_result = _persist_legacy_session_memories(
-        mem_interface=mem_interface,
-        session=session,
-        reason=reason,
-        agent_name=agent_name,
-        turn_count=turn_count,
-        extracted_signals=extracted_signals,
-        extracted_agent_candidates=extracted_agent_candidates,
-    )
-
     logger.info(
-        "Stored extracted session memories",
+        "Persisted extracted session memories into reset ledger pipeline",
         extra={
             "session_id": session.session_id,
             "reason": reason,
-            "preference_created": persist_result.preference_created,
-            "preference_updated": persist_result.preference_updated,
-            "preference_skipped": persist_result.preference_skipped,
             "preference_candidates": len(extracted_signals),
-            "agent_candidate_created": persist_result.candidate_created,
-            "agent_candidate_skipped": persist_result.candidate_skipped,
             "agent_candidate_candidates": len(extracted_agent_candidates),
         },
     )

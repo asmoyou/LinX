@@ -1,5 +1,11 @@
 # Memory System V2 Migration Plan
 
+> Superseded by the one-shot reset spec under
+> [specs/memory-system-reset/requirements.md](/Users/youqilin/VIbeCodingProjects/linX/specs/memory-system-reset/requirements.md),
+> [design.md](/Users/youqilin/VIbeCodingProjects/linX/specs/memory-system-reset/design.md),
+> and [tasks.md](/Users/youqilin/VIbeCodingProjects/linX/specs/memory-system-reset/tasks.md).
+> This document reflects the transitional multi-type migration path and is no longer the target architecture.
+
 ## Purpose
 
 This document defines the migration from the current `memory_records + metadata.facts` architecture
@@ -13,8 +19,8 @@ to a layered memory system inspired by SimpleMem, but adapted for linX's require
 
 ## Why We Are Migrating
 
-The current system centralizes too many concerns inside
-[MemorySystem](/Users/youqilin/VIbeCodingProjects/linX/backend/memory_system/memory_system.py):
+The current system used to centralize too many concerns inside the legacy
+`MemorySystem` runtime:
 
 - fact extraction
 - dedupe and merge
@@ -65,7 +71,7 @@ This layer is append/replace oriented and should not decide long-term memory val
 
 Extract reusable, session-independent observations from the ledger:
 
-- user preference/profile facts
+- user fact atoms
 - agent successful paths
 - decisions
 - discoveries
@@ -151,6 +157,149 @@ and less like:
 - generic SOP prose
 - a copy of the final answer
 
+## User Memory V2 Definition
+
+User memory is no longer limited to preference key/value pairs.
+
+The builder should produce **user fact atoms** with enough structure to support:
+
+- personalization
+- factual recall
+- relational recall
+- temporal recall
+- future task adaptation
+
+Required coverage:
+
+- preference: likes, dislikes, language, output style, habits
+- relationship: who is related to whom
+- experience: what the user has done before
+- skill: what the user is strong at
+- goal: long-term goals or plans
+- constraint: budget, allergy, hard restrictions
+- identity: role, background, stable descriptors
+- event: important personal events or milestones when future tasks may reference them
+
+Each user fact atom should aim to preserve:
+
+- `fact_kind`
+- `key`
+- `value`
+- `canonical_statement`
+- `predicate`
+- `object`
+- `event_time`
+- `persons`
+- `entities`
+- `location`
+- `topic`
+- provenance and confidence
+
+This is the main gap versus the previous implementation. The old system could capture
+`response_style=concise`, but it was weak at remembering:
+
+- "王敏是用户的配偶"
+- "用户做过电商运营"
+- "2024年8月用户搬到了杭州"
+- "用户擅长 SQL"
+
+SimpleMem's key strength here is the context-independent fact unit. We should keep that strength,
+but store it in the linX ledger / observation / entry pipeline instead of mirroring SimpleMem's
+storage layout.
+
+## Session Ledger Retention Policy
+
+`memory_sessions` and `memory_session_events` are operational provenance, not permanent product data.
+
+Target policy:
+
+- keep session ledger rows for a short operational window only
+- preserve long-term memory products (`memory_entries`, `memory_materializations`)
+- allow `source_session_id` to become `NULL` after session-ledger cleanup when appropriate
+
+Recommended defaults:
+
+- `session_ledger.retention_days: 14`
+- `session_ledger.cleanup_interval_seconds: 21600`
+- `session_ledger.run_on_startup: true`
+- advisory-lock guarded cleanup
+
+Important rule:
+
+- deleting a session ledger row must not delete valid long-term entries/materializations
+  that have already been consolidated into durable memory
+
+This is already compatible with the schema because:
+
+- session events and observations cascade from `memory_sessions`
+- entries/materializations keep nullable `source_session_id`
+
+## Extraction Policy
+
+### What stays
+
+- a session-level LLM builder remains the primary way to compress raw dialogue into
+  structured memory candidates
+- agent successful-path extraction remains a first-class product requirement
+
+### What changes
+
+- the builder output must shift from `user_preferences only` to `user_fact_atoms`
+- the builder should produce context-independent statements, not only storage-friendly keys
+- the post-builder stages should stop re-extracting the same semantics from the same session
+
+### What should be retired
+
+- duplicate semantic extraction in the legacy compatibility write path
+- old assumptions that all user memory can be represented as `user.preference.<key>=<value>`
+- making session-end success entirely depend on one LLM response without deterministic fallback
+
+## Configuration Surface Redesign
+
+The old config page is retrieval-centric. That no longer matches the architecture.
+
+The new page should be organized by pipeline stage:
+
+1. `Session Extraction`
+   - provider / model / timeout / backoff
+   - max user facts
+   - max agent experience candidates
+   - fallback policy
+
+2. `Write Quality Gates`
+   - fail-closed by memory type
+   - low-value auto-generated filtering
+   - planner strictness
+
+3. `User Fact Atomization`
+   - canonical statement requirement
+   - relation / event extraction enablement
+   - event materialization policy
+
+4. `Dedup & Consolidation`
+   - exact/semantic dedupe thresholds
+   - conflict handling
+   - core-memory protection
+
+5. `Retrieval`
+   - top-k
+   - similarity threshold
+   - rerank controls
+   - keyword fallback
+
+6. `Maintenance`
+   - materialization maintenance schedule
+   - orphan cleanup schedule
+   - session-ledger retention schedule
+
+## Migration Principles For The Next Slice
+
+- new user facts should first land in `memory_observations` and `memory_entries`
+- only profile-like facts should project into `user_profile`
+- event-like facts may remain as entries first, until a dedicated episodic user view is introduced
+- legacy `memory_records` remains compatibility-only and must not define the target memory model
+- every new user fact must preserve a searchable `canonical_statement`
+
 ## Data Model Roadmap
 
 ### Phase 1 tables
@@ -204,7 +353,7 @@ Implemented in the current migration slice:
   - status sync from review state / `is_active`
   - duplicate agent-experience supersession
 - admin endpoint added:
-  `/api/v1/memories/admin/maintain-materializations`
+  `/api/v1/user-memory/admin/maintain-materializations`
 - operational CLI added:
   [maintain_materializations.py](/Users/youqilin/VIbeCodingProjects/linX/backend/scripts/maintain_materializations.py)
 - scheduled materialization maintenance is now wired into API startup/shutdown
@@ -226,6 +375,28 @@ Implemented in the current migration slice:
   - legacy `memory_records -> memory_entries` backfill
   - entry status sync
   - duplicate entry supersede for user facts and agent skill candidates
+- session extraction now prefers `user_facts` over `user_preferences`
+  and preserves richer fields for:
+  - relationship
+  - experience
+  - skill
+  - goal
+  - constraint
+  - event
+- heuristic fallback now covers:
+  - relationship facts
+  - experience facts
+  - skill facts
+  - timed event facts
+- session-ledger retention is now implemented:
+  - repository cleanup detaches durable rows before deleting old sessions
+  - scheduled manager is wired into API startup/shutdown
+  - config defaults now expose retention settings
+- config API and config UI now expose the multi-stage memory pipeline:
+  - session extraction controls
+  - session-ledger retention controls
+  - materialization maintenance controls
+  - orphan cleanup controls
 
 Not migrated yet:
 
@@ -235,6 +406,10 @@ Not migrated yet:
 - consolidation is still coarse-grained; there is no standalone entry-centric worker
   with richer conflict classes or decay policies yet
 - legacy `memory_records` remains the primary compatibility surface
+- user fact extraction is stronger, but still not yet a full SimpleMem-style
+  semantic density / episodic memory builder
+- there is still no dedicated episodic user-memory projection; timed events
+  remain entry-first instead of materializing into a separate read model
 
 ### Phase 0: Documentation and Dual-Write Foundation
 
@@ -305,6 +480,37 @@ Success criteria:
 
 - new projections become primary source for user/agent long-term memory
 - legacy metadata-based heuristics are no longer on the hot path
+
+### Phase 5: User Fact Atomization and Session Retention
+
+Deliverables:
+
+- `user_fact_atoms` extraction prompt and normalization
+- observation types that preserve relation / experience / event facts
+- canonical-statement-first entries for user memory
+- session-ledger retention worker
+- config page aligned with the multi-stage memory pipeline
+
+Success criteria:
+
+- user memory can answer relational and factual questions, not only style/preference questions
+- session ledger no longer grows forever
+- operators can understand and control each stage of the pipeline from the config page
+
+### Phase 6: Entry-Centric Consolidation and Legacy Retirement
+
+Deliverables:
+
+- entry-centric consolidation worker with richer conflict classes
+- dedicated episodic user-memory projection for timed events
+- retrieval path that can disable legacy `memory_records` per scope
+- final retirement plan for metadata.fact-heavy hot-path semantics
+
+Success criteria:
+
+- `memory_entries` become the default durable unit for user and agent memory
+- legacy compatibility becomes opt-in instead of hot-path default
+- timed event facts can be retrieved and optionally projected without polluting `user_profile`
 
 ## Rollout Rules
 

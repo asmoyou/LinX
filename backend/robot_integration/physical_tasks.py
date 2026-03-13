@@ -26,6 +26,7 @@ class PhysicalTaskType(Enum):
     PICK_OBJECT = "pick_object"
     PLACE_OBJECT = "place_object"
     MOVE_OBJECT = "move_object"
+    PICK_AND_PLACE = "pick_and_place"
     ASSEMBLE_PARTS = "assemble_parts"
 
     # Inspection tasks
@@ -81,7 +82,7 @@ class TaskLocation:
         }
 
 
-@dataclass
+@dataclass(init=False)
 class TaskConstraints:
     """Constraints for physical task execution."""
 
@@ -102,6 +103,70 @@ class TaskConstraints:
     min_temperature_c: Optional[float] = None
     max_temperature_c: Optional[float] = None
     max_humidity_percent: Optional[float] = None
+
+    def __init__(
+        self,
+        max_duration_seconds: Optional[float] = None,
+        deadline_timestamp: Optional[float] = None,
+        max_force_newtons: Optional[float] = None,
+        max_velocity_ms: Optional[float] = None,
+        safety_zone_radius_m: float = 1.0,
+        position_tolerance_m: float = 0.01,
+        orientation_tolerance_rad: float = 0.05,
+        min_temperature_c: Optional[float] = None,
+        max_temperature_c: Optional[float] = None,
+        max_humidity_percent: Optional[float] = None,
+        max_time_seconds: Optional[float] = None,
+        max_speed_ms: Optional[float] = None,
+        max_force_n: Optional[float] = None,
+    ) -> None:
+        """Initialize constraints.
+
+        The robot integration tests still exercise an older contract that used
+        max_time_seconds / max_speed_ms / max_force_n. Accept those aliases so the
+        newer field names remain the canonical storage representation.
+        """
+        self.max_duration_seconds = (
+            max_duration_seconds if max_duration_seconds is not None else max_time_seconds
+        )
+        self.deadline_timestamp = deadline_timestamp
+        self.max_force_newtons = (
+            max_force_newtons if max_force_newtons is not None else max_force_n
+        )
+        self.max_velocity_ms = max_velocity_ms if max_velocity_ms is not None else max_speed_ms
+        self.safety_zone_radius_m = safety_zone_radius_m
+        self.position_tolerance_m = position_tolerance_m
+        self.orientation_tolerance_rad = orientation_tolerance_rad
+        self.min_temperature_c = min_temperature_c
+        self.max_temperature_c = max_temperature_c
+        self.max_humidity_percent = max_humidity_percent
+
+    @property
+    def max_time_seconds(self) -> Optional[float]:
+        """Backward-compatible alias for max_duration_seconds."""
+        return self.max_duration_seconds
+
+    @max_time_seconds.setter
+    def max_time_seconds(self, value: Optional[float]) -> None:
+        self.max_duration_seconds = value
+
+    @property
+    def max_speed_ms(self) -> Optional[float]:
+        """Backward-compatible alias for max_velocity_ms."""
+        return self.max_velocity_ms
+
+    @max_speed_ms.setter
+    def max_speed_ms(self, value: Optional[float]) -> None:
+        self.max_velocity_ms = value
+
+    @property
+    def max_force_n(self) -> Optional[float]:
+        """Backward-compatible alias for max_force_newtons."""
+        return self.max_force_newtons
+
+    @max_force_n.setter
+    def max_force_n(self, value: Optional[float]) -> None:
+        self.max_force_newtons = value
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary.
@@ -131,7 +196,7 @@ class TaskConstraints:
         }
 
 
-@dataclass
+@dataclass(init=False)
 class PhysicalTask:
     """Physical task definition."""
 
@@ -153,7 +218,36 @@ class PhysicalTask:
     # Status
     status: str = "pending"  # pending, executing, completed, failed
 
-    def __post_init__(self):
+    def __init__(
+        self,
+        task_id: Optional[UUID] = None,
+        task_type: PhysicalTaskType = PhysicalTaskType.NAVIGATE_TO_LOCATION,
+        description: str = "",
+        target_location: Optional[TaskLocation] = None,
+        target_object_id: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        constraints: Optional[TaskConstraints] = None,
+        prerequisite_tasks: Optional[List[UUID]] = None,
+        status: str = "pending",
+        location: Optional[TaskLocation] = None,
+    ) -> None:
+        """Initialize a physical task.
+
+        Accept `location` as a legacy alias for `target_location` and generate a
+        task_id when older callers omit it.
+        """
+        self.task_id = task_id or uuid4()
+        self.task_type = task_type
+        self.description = description
+        self.target_location = target_location if target_location is not None else location
+        self.target_object_id = target_object_id
+        self.parameters = parameters
+        self.constraints = constraints
+        self.prerequisite_tasks = prerequisite_tasks
+        self.status = status
+        self.__post_init__()
+
+    def __post_init__(self) -> None:
         """Initialize default values."""
         if self.parameters is None:
             self.parameters = {}
@@ -161,6 +255,15 @@ class PhysicalTask:
             self.prerequisite_tasks = []
         if self.constraints is None:
             self.constraints = TaskConstraints()
+
+    @property
+    def location(self) -> Optional[TaskLocation]:
+        """Backward-compatible alias for target_location."""
+        return self.target_location
+
+    @location.setter
+    def location(self, value: Optional[TaskLocation]) -> None:
+        self.target_location = value
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary.
@@ -183,8 +286,12 @@ class PhysicalTask:
     @classmethod
     def create_navigation_task(
         cls,
-        target_location: TaskLocation,
+        target_location: Optional[TaskLocation] = None,
         description: str = "Navigate to location",
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        z: float = 0.0,
+        max_speed: Optional[float] = None,
     ) -> "PhysicalTask":
         """Create a navigation task.
 
@@ -195,11 +302,19 @@ class PhysicalTask:
         Returns:
             PhysicalTask instance
         """
+        if target_location is None:
+            if x is None or y is None:
+                raise ValueError("target_location or x/y coordinates are required")
+            target_location = TaskLocation(x=x, y=y, z=z)
+
+        constraints = TaskConstraints(max_speed_ms=max_speed) if max_speed is not None else None
+
         return cls(
             task_id=uuid4(),
             task_type=PhysicalTaskType.NAVIGATE_TO_LOCATION,
             description=description,
             target_location=target_location,
+            constraints=constraints,
         )
 
     @classmethod
@@ -232,10 +347,14 @@ class PhysicalTask:
     @classmethod
     def create_inspection_task(
         cls,
-        task_type: PhysicalTaskType,
-        target_location: TaskLocation,
+        task_type: PhysicalTaskType = PhysicalTaskType.VISUAL_INSPECTION,
+        target_location: Optional[TaskLocation] = None,
         parameters: Optional[Dict[str, Any]] = None,
         description: str = "Perform inspection",
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        z: float = 0.0,
+        inspection_type: Optional[str] = None,
     ) -> "PhysicalTask":
         """Create an inspection task.
 
@@ -248,12 +367,45 @@ class PhysicalTask:
         Returns:
             PhysicalTask instance
         """
+        if target_location is None:
+            if x is None or y is None:
+                raise ValueError("target_location or x/y coordinates are required")
+            target_location = TaskLocation(x=x, y=y, z=z)
+
+        if inspection_type and task_type == PhysicalTaskType.VISUAL_INSPECTION:
+            parameters = {**(parameters or {}), "inspection_type": inspection_type}
+
         return cls(
             task_id=uuid4(),
             task_type=task_type,
             description=description,
             target_location=target_location,
             parameters=parameters or {},
+        )
+
+    @classmethod
+    def create_pick_and_place_task(
+        cls,
+        pick_x: float,
+        pick_y: float,
+        pick_z: float,
+        place_x: float,
+        place_y: float,
+        place_z: float,
+        object_id: str,
+        description: str = "Pick object and place at target",
+    ) -> "PhysicalTask":
+        """Create a pick-and-place task using the older coordinate-based API."""
+        return cls(
+            task_type=PhysicalTaskType.PICK_AND_PLACE,
+            description=description,
+            target_object_id=object_id,
+            target_location=TaskLocation(x=place_x, y=place_y, z=place_z),
+            parameters={
+                "object_id": object_id,
+                "pick_location": {"x": pick_x, "y": pick_y, "z": pick_z},
+                "place_location": {"x": place_x, "y": place_y, "z": place_z},
+            },
         )
 
 
@@ -282,6 +434,7 @@ class PhysicalTaskValidator:
             PhysicalTaskType.PICK_OBJECT,
             PhysicalTaskType.PLACE_OBJECT,
             PhysicalTaskType.MOVE_OBJECT,
+            PhysicalTaskType.PICK_AND_PLACE,
         ]:
             if not task.target_object_id:
                 return False, "Manipulation task requires target_object_id"
@@ -295,3 +448,9 @@ class PhysicalTaskValidator:
                 return False, "max_velocity_ms must be positive"
 
         return True, None
+
+    @staticmethod
+    def validate(task: PhysicalTask) -> tuple[bool, List[str]]:
+        """Backward-compatible validator wrapper returning a list of errors."""
+        is_valid, error = PhysicalTaskValidator.validate_task(task)
+        return is_valid, ([] if error is None else [error])

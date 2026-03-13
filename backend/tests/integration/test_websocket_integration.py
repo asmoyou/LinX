@@ -29,14 +29,13 @@ def mock_websocket():
 @pytest.fixture
 def mock_connection_manager():
     """Mock WebSocket connection manager."""
-    with patch("api_gateway.websocket.ConnectionManager") as mock:
-        manager = Mock()
-        manager.connect = AsyncMock()
-        manager.disconnect = AsyncMock()
-        manager.send_personal_message = AsyncMock()
-        manager.broadcast = AsyncMock()
-        manager.active_connections = {}
-        mock.return_value = manager
+    manager = Mock()
+    manager.connect = AsyncMock()
+    manager.disconnect = AsyncMock()
+    manager.send_personal_message = AsyncMock()
+    manager.broadcast = AsyncMock()
+    manager.active_connections = {}
+    with patch("api_gateway.websocket._get_connection_manager", return_value=manager):
         yield manager
 
 

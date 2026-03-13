@@ -121,6 +121,36 @@ class TaskDecomposer:
 
         return task_tree
 
+    async def decompose(
+        self,
+        goal: str,
+        available_skills: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Backward-compatible flat decomposition API used by older tests."""
+        segments = [segment.strip() for segment in goal.replace(" and ", ", ").split(",")]
+        segments = [segment for segment in segments if segment]
+        if not segments:
+            segments = [goal.strip() or "Complete task"]
+
+        skills = available_skills or []
+        subtasks: List[Dict[str, Any]] = []
+        for index, segment in enumerate(segments):
+            matched_skills = [
+                skill for skill in skills if any(part in segment.lower() for part in skill.split("_"))
+            ]
+            if not matched_skills and index < len(skills):
+                matched_skills = [skills[index]]
+            subtasks.append(
+                {
+                    "description": segment,
+                    "required_capabilities": matched_skills or skills[:1] or ["general_execution"],
+                    "priority": index + 1,
+                    "dependencies": [index - 1] if index > 0 else [],
+                }
+            )
+
+        return subtasks
+
     async def _decompose_recursive(
         self,
         task: DecomposedTask,

@@ -1,4 +1,4 @@
-export type MemoryType = "agent" | "company" | "user_context" | "task_context";
+export type MemoryProductType = "user_memory" | "skill_proposal";
 
 export type MemoryFact = {
   key: string;
@@ -25,7 +25,14 @@ export type MemoryMetadata = {
   owner_user_id?: string;
   owner_agent_id?: string;
   department_id?: string;
-  visibility?: "explicit" | "department" | "department_tree" | "account" | "private" | "public" | string;
+  visibility?:
+    | "explicit"
+    | "department"
+    | "department_tree"
+    | "account"
+    | "private"
+    | "public"
+    | string;
   sensitivity?: string;
   source_memory_id?: number;
   last_promoted_memory_id?: number;
@@ -38,7 +45,7 @@ export type MemoryMetadata = {
 
 export type Memory = {
   id: string;
-  type: MemoryType;
+  type: MemoryProductType;
   content: string;
   summary?: string;
   agentId?: string;
@@ -58,7 +65,7 @@ export type Memory = {
 };
 
 export type MemoryFilter = {
-  type?: MemoryType;
+  type?: MemoryProductType;
   dateFrom?: string;
   dateTo?: string;
   tags?: string[];
@@ -83,10 +90,10 @@ export type MemoryIndexInfo = {
 };
 
 export type MemoryConfig = {
-  embedding: MemoryConfigEmbedding;
-  retrieval: MemoryConfigRetrieval;
-  fact_extraction: MemoryConfigFactExtraction;
-  runtime: MemoryConfigRuntime;
+  user_memory: MemoryConfigUserMemory;
+  skill_learning: MemoryConfigSkillLearning;
+  session_ledger?: MemoryConfigSessionLedger;
+  runtime_context: MemoryConfigRuntimeContext;
   recommended?: MemoryConfigRecommended;
 };
 
@@ -133,7 +140,10 @@ export type MemoryConfigRetrieval = {
   [key: string]: unknown;
 };
 
-export type MemoryConfigRuntime = {
+export type MemoryConfigRuntimeContext = {
+  enable_user_memory?: boolean;
+  enable_skills?: boolean;
+  enable_knowledge_base?: boolean;
   collection_retry_attempts?: number;
   collection_retry_delay_seconds?: number;
   search_timeout_seconds?: number;
@@ -149,7 +159,28 @@ export type MemoryConfigFactExtraction = {
   timeout_seconds?: number;
   max_facts?: number;
   max_preference_facts?: number;
-  max_agent_candidates?: number;
+  max_proposals?: number;
+  enable_heuristic_fallback?: boolean;
+  secondary_recall_enabled?: boolean;
+  failure_backoff_seconds?: number;
+  fail_closed_empty_writes?: boolean;
+  effective?: {
+    provider?: string;
+    model?: string;
+  };
+  sources?: {
+    provider?: string;
+    model?: string;
+  };
+  [key: string]: unknown;
+};
+
+export type SkillLearningExtractionConfig = {
+  enabled?: boolean;
+  provider?: string;
+  model?: string;
+  timeout_seconds?: number;
+  max_proposals?: number;
   failure_backoff_seconds?: number;
   effective?: {
     provider?: string;
@@ -162,10 +193,77 @@ export type MemoryConfigFactExtraction = {
   [key: string]: unknown;
 };
 
+export type MemoryConfigSessionLedger = {
+  enabled?: boolean;
+  retention_days?: number;
+  run_on_startup?: boolean;
+  startup_delay_seconds?: number;
+  cleanup_interval_seconds?: number;
+  batch_size?: number;
+  dry_run?: boolean;
+  use_advisory_lock?: boolean;
+  [key: string]: unknown;
+};
+
+export type MemoryConfigConsolidation = {
+  enabled?: boolean;
+  run_on_startup?: boolean;
+  startup_delay_seconds?: number;
+  interval_seconds?: number;
+  dry_run?: boolean;
+  limit?: number;
+  use_advisory_lock?: boolean;
+  [key: string]: unknown;
+};
+
+export type MemoryConfigRetention = {
+  enabled?: boolean;
+  retention_days?: number;
+  max_entries_per_user?: number;
+  max_proposals_per_agent?: number;
+  [key: string]: unknown;
+};
+
+export type MemoryConfigObservability = {
+  enable_quality_counters?: boolean;
+  [key: string]: unknown;
+};
+
+export type SkillLearningProposalReviewConfig = {
+  require_human_review?: boolean;
+  allow_revise?: boolean;
+  default_review_status?: string;
+  [key: string]: unknown;
+};
+
+export type SkillLearningPublishPolicyConfig = {
+  enabled?: boolean;
+  skill_type?: string;
+  storage_type?: string;
+  reuse_existing_by_name?: boolean;
+  [key: string]: unknown;
+};
+
+export type MemoryConfigUserMemory = {
+  retention?: MemoryConfigRetention;
+  embedding: MemoryConfigEmbedding;
+  retrieval: MemoryConfigRetrieval;
+  extraction: MemoryConfigFactExtraction;
+  consolidation?: MemoryConfigConsolidation;
+  observability?: MemoryConfigObservability;
+};
+
+export type MemoryConfigSkillLearning = {
+  retention?: MemoryConfigRetention;
+  extraction: SkillLearningExtractionConfig;
+  proposal_review?: SkillLearningProposalReviewConfig;
+  publish_policy?: SkillLearningPublishPolicyConfig;
+};
+
 export type MemoryConfigRecommended = {
-  embedding?: Partial<MemoryConfigEmbedding>;
-  retrieval?: Partial<MemoryConfigRetrieval>;
-  fact_extraction?: Partial<MemoryConfigFactExtraction>;
-  runtime?: Partial<MemoryConfigRuntime>;
+  user_memory?: Partial<MemoryConfigUserMemory>;
+  skill_learning?: Partial<MemoryConfigSkillLearning>;
+  session_ledger?: Partial<MemoryConfigSessionLedger>;
+  runtime_context?: Partial<MemoryConfigRuntimeContext>;
   [key: string]: unknown;
 };

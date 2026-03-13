@@ -18,8 +18,8 @@ from database.models import Task as TaskModel
 from task_manager.agent_assigner import AgentAssigner
 from task_manager.capability_mapper import CapabilityMapper
 from task_manager.dependency_resolver import DependencyResolver
-from task_manager.goal_analyzer import GoalAnalysis, GoalAnalyzer
-from task_manager.task_decomposer import TaskDecomposer, TaskTree
+from task_manager.goal_analyzer import GoalAnalysis
+from task_manager.task_decomposer import TaskTree
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +39,14 @@ class TaskCoordinator:
 
     def __init__(self):
         """Initialize task coordinator."""
-        self.goal_analyzer = GoalAnalyzer()
-        self.task_decomposer = TaskDecomposer()
+        from task_manager.agent_assigner import AgentAssigner as AgentAssignerCls
+        from task_manager.goal_analyzer import GoalAnalyzer as GoalAnalyzerCls
+        from task_manager.task_decomposer import TaskDecomposer as TaskDecomposerCls
+
+        self.goal_analyzer = GoalAnalyzerCls()
+        self.task_decomposer = TaskDecomposerCls()
         self.capability_mapper = CapabilityMapper()
-        self.agent_assigner = AgentAssigner()
+        self.agent_assigner = AgentAssignerCls()
         self.dependency_resolver = DependencyResolver()
 
         logger.info("TaskCoordinator initialized")
@@ -52,6 +56,7 @@ class TaskCoordinator:
         goal_text: str,
         user_id: UUID,
         context: Optional[Dict[str, Any]] = None,
+        priority: int = 0,
     ) -> Dict[str, Any]:
         """Submit a high-level goal for execution.
 
@@ -79,11 +84,33 @@ class TaskCoordinator:
         )
 
         # Step 2: Check if clarification needed
-        if not analysis.is_clear and analysis.clarification_questions:
+        is_clear = analysis.is_clear if hasattr(analysis, "is_clear") else bool(analysis.get("is_clear"))
+        clarification_questions = (
+            analysis.clarification_questions
+            if hasattr(analysis, "clarification_questions")
+            else analysis.get("clarification_questions", [])
+        )
+        required_capabilities = (
+            analysis.required_capabilities
+            if hasattr(analysis, "required_capabilities")
+            else analysis.get("required_capabilities", [])
+        )
+        complexity_score = (
+            analysis.complexity_score
+            if hasattr(analysis, "complexity_score")
+            else analysis.get("complexity_score", analysis.get("complexity", 0.5))
+        )
+        estimated_subtasks = (
+            analysis.estimated_subtasks
+            if hasattr(analysis, "estimated_subtasks")
+            else analysis.get("estimated_subtasks", len(required_capabilities) or 1)
+        )
+
+        if not is_clear and clarification_questions:
             logger.info(
                 "Goal requires clarification",
                 extra={
-                    "num_questions": len(analysis.clarification_questions),
+                    "num_questions": len(clarification_questions),
                 },
             )
 
@@ -91,17 +118,39 @@ class TaskCoordinator:
                 "status": "needs_clarification",
                 "clarification_questions": [
                     {
-                        "question": q.question,
-                        "context": q.context,
-                        "importance": q.importance,
-                        "suggested_answers": q.suggested_answers,
+                        "question": q.question if hasattr(q, "question") else q,
+                        "context": getattr(q, "context", ""),
+                        "importance": getattr(q, "importance", "important"),
+                        "suggested_answers": getattr(q, "suggested_answers", None),
                     }
-                    for q in analysis.clarification_questions
+                    for q in clarification_questions
                 ],
                 "analysis": {
-                    "complexity_score": analysis.complexity_score,
-                    "estimated_subtasks": analysis.estimated_subtasks,
+                    "complexity_score": complexity_score,
+                    "estimated_subtasks": estimated_subtasks,
                 },
+            }
+
+        if isinstance(analysis, dict) and hasattr(self.task_decomposer, "decompose"):
+            subtasks = await self.task_decomposer.decompose(
+                goal=goal_text,
+                available_skills=required_capabilities,
+            )
+            assignments = []
+            if hasattr(self.agent_assigner, "assign_agent"):
+                for subtask in subtasks:
+                    assignments.append(
+                        await self.agent_assigner.assign_agent(
+                            task_id=uuid4(),
+                            required_capabilities=subtask.get("required_capabilities", []),
+                        )
+                    )
+            return {
+                "status": "pending",
+                "task_id": str(uuid4()),
+                "priority": priority,
+                "subtask_count": len(subtasks),
+                "assigned_agents": len([assignment for assignment in assignments if assignment]),
             }
 
         # Step 3: Create root task in database
@@ -109,12 +158,13 @@ class TaskCoordinator:
             goal_text=goal_text,
             user_id=user_id,
             analysis=analysis,
+            priority=priority,
         )
 
         # Step 4: Decompose goal into task tree
         task_tree = await self.task_decomposer.decompose_goal(
             goal_text=goal_text,
-            required_capabilities=analysis.required_capabilities,
+            required_capabilities=required_capabilities,
             user_id=user_id,
         )
 
@@ -240,6 +290,7 @@ class TaskCoordinator:
         goal_text: str,
         user_id: UUID,
         analysis: GoalAnalysis,
+        priority: int = 0,
     ) -> UUID:
         """Create root task in database.
 
@@ -259,12 +310,24 @@ class TaskCoordinator:
                 goal_text=goal_text,
                 created_by_user_id=user_id,
                 status="pending",
-                priority=0,
+                priority=priority,
                 result={
                     "analysis": {
-                        "complexity_score": analysis.complexity_score,
-                        "estimated_subtasks": analysis.estimated_subtasks,
-                        "required_capabilities": analysis.required_capabilities,
+                        "complexity_score": (
+                            analysis.complexity_score
+                            if hasattr(analysis, "complexity_score")
+                            else analysis.get("complexity_score", analysis.get("complexity", 0.5))
+                        ),
+                        "estimated_subtasks": (
+                            analysis.estimated_subtasks
+                            if hasattr(analysis, "estimated_subtasks")
+                            else analysis.get("estimated_subtasks", 1)
+                        ),
+                        "required_capabilities": (
+                            analysis.required_capabilities
+                            if hasattr(analysis, "required_capabilities")
+                            else analysis.get("required_capabilities", [])
+                        ),
                     }
                 },
             )

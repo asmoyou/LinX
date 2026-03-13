@@ -3,8 +3,6 @@ import { useTranslation } from "react-i18next";
 import {
   Brain,
   User,
-  Building,
-  ListTodo,
   Clock,
   Tag,
   Share2,
@@ -115,40 +113,28 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
 
   const getTypeIcon = (type: Memory["type"]) => {
     switch (type) {
-      case "agent":
+      case "skill_proposal":
         return <Brain className="w-5 h-5 text-blue-500" />;
-      case "company":
-        return <Building className="w-5 h-5 text-green-500" />;
-      case "user_context":
+      case "user_memory":
         return <User className="w-5 h-5 text-purple-500" />;
-      case "task_context":
-        return <ListTodo className="w-5 h-5 text-amber-500" />;
     }
   };
 
   const getTypeLabel = (type: Memory["type"]) => {
     switch (type) {
-      case "agent":
-        return t("memory.tabs.agent");
-      case "company":
-        return t("memory.tabs.company");
-      case "user_context":
-        return t("memory.tabs.userContext");
-      case "task_context":
-        return t("memory.tabs.taskContext");
+      case "skill_proposal":
+        return t("memory.tabs.skillProposal", { defaultValue: "技能提案" });
+      case "user_memory":
+        return t("memory.tabs.userMemory", { defaultValue: "用户记忆" });
     }
   };
 
   const getTypeColor = (type: Memory["type"]) => {
     switch (type) {
-      case "agent":
+      case "skill_proposal":
         return "bg-blue-500/20 text-blue-700 dark:text-blue-400";
-      case "company":
-        return "bg-green-500/20 text-green-700 dark:text-green-400";
-      case "user_context":
+      case "user_memory":
         return "bg-purple-500/20 text-purple-700 dark:text-purple-400";
-      case "task_context":
-        return "bg-amber-500/20 text-amber-700 dark:text-amber-300";
     }
   };
 
@@ -203,7 +189,7 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
     .trim()
     .toLowerCase();
   const isAgentCandidate =
-    memory.type === "agent" && signalType === "agent_memory_candidate";
+    signalType === "skill_proposal" || memory.type === "skill_proposal";
   const candidateStatusKey =
     reviewStatus === "published" || reviewStatus === "rejected"
       ? reviewStatus
@@ -242,7 +228,7 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
     .trim()
     .toLowerCase();
   const visibility = (() => {
-    if (memory.type === "user_context") {
+    if (memory.type === "user_memory") {
       return rawVisibility === "explicit" || rawVisibility === "private"
         ? rawVisibility
         : "private";
@@ -250,10 +236,7 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
     if (rawVisibility) {
       return rawVisibility;
     }
-    if (memory.type === "agent") {
-      return "private";
-    }
-    return "department_tree";
+    return "private";
   })();
   const hasPolicyScope = [
     "explicit",
@@ -267,10 +250,9 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
       ? candidatePublished
       : publishMode === "promote" ||
         hasPromotionBacklink ||
-        (memory.type === "agent" &&
-          ["explicit", "department", "department_tree", "public", "account"].includes(
-            visibility,
-          ));
+        ["explicit", "department", "department_tree", "public", "account"].includes(
+          visibility,
+        );
   const sharingBadgeText = isPublished
     ? t("memory.card.published")
     : t("memory.card.shared");
@@ -305,7 +287,7 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
             defaultValue: "已拒绝，不参与记忆注入",
           })
         : t("memory.card.reviewPendingHint", {
-            defaultValue: "待审批，当前不会注入 Agent 上下文",
+            defaultValue: "待审批，当前不会进入技能注入面",
           })
     : "";
   const policyHintText =

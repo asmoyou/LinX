@@ -17,6 +17,11 @@ from fastapi.testclient import TestClient
 from access_control import clear_blacklist
 
 
+def _error_text(response) -> str:
+    payload = response.json()
+    return str(payload.get("detail") or payload.get("message") or payload)
+
+
 @pytest.fixture
 def api_client():
     """Create API test client."""
@@ -48,8 +53,8 @@ class TestAuthenticationSecurity:
 
         assert response.status_code == 401
         assert (
-            "credentials" in response.json()["detail"].lower()
-            or "invalid" in response.json()["detail"].lower()
+            "credentials" in _error_text(response).lower()
+            or "invalid" in _error_text(response).lower()
         )
 
     def test_brute_force_protection(self, api_client):
@@ -319,7 +324,6 @@ class TestAuthorizationSecurity:
         protected_endpoints = [
             ("/api/v1/users/me", "GET"),
             ("/api/v1/agents", "GET"),
-            ("/api/v1/tasks", "GET"),
             ("/api/v1/knowledge", "GET"),
         ]
 
@@ -365,16 +369,23 @@ class TestAuthorizationSecurity:
         )
         token2 = login2.json()["access_token"]
 
-        # User1 lists their tasks
-        tasks1 = api_client.get("/api/v1/tasks", headers={"Authorization": f"Bearer {token1}"})
+        # User1 creates one agent and user2 should not see it in their own list.
+        agent_response = api_client.post(
+            "/api/v1/agents",
+            headers={"Authorization": f"Bearer {token1}"},
+            json={"name": "Isolation Agent", "type": "assistant", "skills": []},
+        )
 
-        # User2 lists their tasks
-        tasks2 = api_client.get("/api/v1/tasks", headers={"Authorization": f"Bearer {token2}"})
+        if agent_response.status_code == 201:
+            created_agent_id = agent_response.json()["id"]
+            agents1 = api_client.get("/api/v1/agents", headers={"Authorization": f"Bearer {token1}"})
+            agents2 = api_client.get("/api/v1/agents", headers={"Authorization": f"Bearer {token2}"})
 
-        # Tasks should be different (or both empty)
-        if tasks1.status_code == 200 and tasks2.status_code == 200:
-            tasks1_ids = {t["task_id"] for t in tasks1.json()}
-            tasks2_ids = {t["task_id"] for t in tasks2.json()}
+            assert agents1.status_code == 200
+            assert agents2.status_code == 200
 
-            # No overlap in task IDs
-            assert len(tasks1_ids & tasks2_ids) == 0, "User data not isolated"
+            user1_agent_ids = {agent["id"] for agent in agents1.json()}
+            user2_agent_ids = {agent["id"] for agent in agents2.json()}
+
+            assert created_agent_id in user1_agent_ids
+            assert created_agent_id not in user2_agent_ids

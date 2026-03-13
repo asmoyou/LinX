@@ -7,7 +7,7 @@ References:
 """
 
 import io
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 from uuid import uuid4
 
 import pytest
@@ -122,13 +122,18 @@ class TestDocumentFlowIntegration:
             assert chunks[i][-20:] in chunks[i + 1][:70]  # Some overlap exists
 
     @pytest.mark.asyncio
-    async def test_document_indexing_creates_embeddings(self, mock_knowledge_indexer):
+    async def test_document_indexing_creates_embeddings(self):
         """Test that document indexing creates vector embeddings."""
         from knowledge_base.knowledge_indexer import KnowledgeIndexer
-        from memory_system.embedding_service import EmbeddingService
 
-        with patch.object(EmbeddingService, "generate_embedding") as mock_embed:
-            mock_embed.return_value = [0.1] * 384  # Mock embedding vector
+        with (
+            patch("knowledge_base.knowledge_indexer.get_embedding_service") as mock_get_embedding,
+            patch("knowledge_base.knowledge_indexer.get_milvus_connection") as mock_get_milvus,
+        ):
+            embedding_service = Mock()
+            embedding_service.generate_embedding = Mock(return_value=[0.1] * 384)
+            mock_get_embedding.return_value = embedding_service
+            mock_get_milvus.return_value = Mock()
 
             indexer = KnowledgeIndexer()
             knowledge_id = uuid4()
@@ -136,16 +141,18 @@ class TestDocumentFlowIntegration:
             # Index document chunks
             chunks = ["First chunk of text", "Second chunk of text", "Third chunk of text"]
 
-            result = await indexer.index_chunks(knowledge_id=knowledge_id, chunks=chunks)
+            result = await indexer.index_chunks(document_id=knowledge_id, chunks=chunks)
 
             assert result["success"] is True
             assert result["indexed_count"] == len(chunks)
 
             # Verify embeddings were generated for each chunk
-            assert mock_embed.call_count == len(chunks)
+            assert embedding_service.generate_embedding.call_count == len(chunks)
 
     @pytest.mark.asyncio
-    async def test_document_metadata_stored_in_database(self):
+    async def test_document_metadata_stored_in_database(
+        self, mock_minio_client, mock_processing_queue
+    ):
         """Test that document metadata is stored in database."""
         from database.models import KnowledgeItem
         from knowledge_base.document_upload import DocumentUpload
@@ -177,15 +184,17 @@ class TestDocumentFlowIntegration:
             session.commit.assert_called()
 
     @pytest.mark.asyncio
-    async def test_document_search_after_indexing(self, mock_knowledge_indexer):
+    async def test_document_search_after_indexing(self):
         """Test that indexed documents are searchable."""
         from knowledge_base.knowledge_search import KnowledgeSearch
 
-        search = KnowledgeSearch()
-
-        # Mock vector search results
-        with patch("memory_system.milvus_connection.MilvusConnection.search") as mock_search:
-            mock_search.return_value = [
+        with (
+            patch("knowledge_base.knowledge_search.get_embedding_service") as mock_get_embedding,
+            patch("knowledge_base.knowledge_search.get_milvus_connection") as mock_get_milvus,
+        ):
+            mock_get_embedding.return_value = Mock()
+            milvus_conn = Mock()
+            milvus_conn.search.return_value = [
                 {
                     "id": str(uuid4()),
                     "distance": 0.15,
@@ -195,6 +204,8 @@ class TestDocumentFlowIntegration:
                     },
                 }
             ]
+            mock_get_milvus.return_value = milvus_conn
+            search = KnowledgeSearch()
 
             # Search for documents
             results = await search.search(query="test document", user_id=uuid4(), limit=5)
@@ -203,7 +214,7 @@ class TestDocumentFlowIntegration:
             assert results[0]["relevance_score"] > 0.8
 
             # Verify vector search was performed
-            mock_search.assert_called_once()
+            milvus_conn.search.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_document_processing_handles_errors(self, mock_processing_queue):
@@ -226,5 +237,5 @@ class TestDocumentFlowIntegration:
 
             # Verify error status was updated
             mock_processing_queue.update_status.assert_called_with(
-                knowledge_id=knowledge_id, status="failed", error=mock.ANY
+                knowledge_id=knowledge_id, status="failed", error=ANY
             )

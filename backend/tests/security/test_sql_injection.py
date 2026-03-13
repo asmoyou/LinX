@@ -15,6 +15,12 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
+@pytest.fixture
+def mock_session():
+    """Create mock database session available to all test classes."""
+    return Mock(spec=Session)
+
+
 class TestSQLInjectionPrevention:
     """Test SQL injection prevention in database queries."""
 

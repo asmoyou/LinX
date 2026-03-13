@@ -71,8 +71,8 @@ export type { Notification, NotificationType } from './notificationStore';
  *    - Usage: const { documents, uploadQueue } = useKnowledgeStore();
  * 
  * 6. Memory Store (useMemoryStore):
- *    - Manages agent, company, and user context memories
- *    - Supports filtering by type, date, tags
+ *    - Manages user memory and skill proposals
+ *    - Supports filtering by product tab, date, tags
  *    - Usage: const { memories, activeTab } = useMemoryStore();
  * 
  * 7. Theme Store (useThemeStore):

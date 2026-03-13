@@ -1109,8 +1109,15 @@ async def update_privacy_settings(
 async def export_user_data(current_user: CurrentUser = Depends(get_current_user)):
     """Export user data for GDPR/data portability workflows."""
     from database.connection import get_db_session
-    from database.models import Agent, KnowledgeItem, MemoryRecord, ResourceQuota as ResourceQuotaModel, Task, User
-    from sqlalchemy import func, or_
+    from database.models import (
+        Agent,
+        KnowledgeItem,
+        ResourceQuota as ResourceQuotaModel,
+        Task,
+        User,
+        UserMemoryEntry,
+    )
+    from sqlalchemy import func
 
     with get_db_session() as session:
         user = session.query(User).filter(User.user_id == current_user.user_id).first()
@@ -1170,14 +1177,8 @@ async def export_user_data(current_user: CurrentUser = Depends(get_current_user)
             or 0
         )
         memory_count = (
-            session.query(func.count(MemoryRecord.id))
-            .filter(
-                MemoryRecord.is_deleted.is_(False),
-                or_(
-                    MemoryRecord.user_id == user_id_str,
-                    MemoryRecord.owner_user_id == user_id_str,
-                ),
-            )
+            session.query(func.count(UserMemoryEntry.id))
+            .filter(UserMemoryEntry.user_id == user_id_str)
             .scalar()
             or 0
         )
@@ -1210,7 +1211,7 @@ async def export_user_data(current_user: CurrentUser = Depends(get_current_user)
                 "agents_count": agents_count,
                 "tasks_count": tasks_count,
                 "knowledge_items_count": knowledge_count,
-                "memory_records_count": memory_count,
+                "user_memory_entries_count": memory_count,
             },
         }
 

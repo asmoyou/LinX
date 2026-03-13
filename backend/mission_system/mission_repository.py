@@ -432,7 +432,7 @@ DEFAULT_EXECUTION_CONFIG = {
     "auto_select_temp_skills": True,
     "temp_worker_skill_limit": 3,
     # Temporary worker contextual access
-    "temp_worker_memory_scopes": ["agent", "company", "user_context"],
+    "temp_worker_memory_scopes": ["skills", "user_memory"],
     "temp_worker_knowledge_strategy": "owner_accessible",
     "temp_worker_knowledge_limit": 6,
 }

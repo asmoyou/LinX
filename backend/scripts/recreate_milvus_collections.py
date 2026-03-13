@@ -1,46 +1,53 @@
 #!/usr/bin/env python3
-"""Recreate Milvus collections with correct embedding dimensions.
+"""Recreate reset-era Milvus collections for knowledge and user memory."""
 
-This script drops and recreates all Milvus collections to fix dimension mismatches.
-"""
-
-import sys
 import logging
+import sys
 from pathlib import Path
 
-# Add backend to path
 backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
-from memory_system.collections import initialize_all_collections, get_embedding_dimension
+from knowledge_base.vector_collection import (
+    KNOWLEDGE_EMBEDDINGS_COLLECTION,
+    get_knowledge_embedding_dimension,
+    recreate_knowledge_embeddings_collection,
+)
 from shared.logging import setup_logging
+from user_memory.vector_collection import (
+    USER_MEMORY_ENTRIES_COLLECTION,
+    get_user_memory_embedding_dimension,
+    recreate_user_memory_entries_collection,
+)
 
-# Setup logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
 
-def main():
-    """Recreate all Milvus collections."""
+def main() -> None:
     try:
-        logger.info("Starting Milvus collection recreation...")
-        
-        # Get correct embedding dimension from config
-        embedding_dim = get_embedding_dimension()
-        logger.info(f"Using embedding dimension: {embedding_dim}")
-        
-        # Initialize all collections (drop and recreate)
-        logger.info("Dropping and recreating all collections...")
-        collections = initialize_all_collections(drop_if_exists=True)
-        
-        logger.info(f"Successfully recreated {len(collections)} collections:")
-        for collection_name, collection in collections.items():
-            logger.info(f"  - {collection_name}: {collection.num_entities} entities")
-        
-        logger.info(f"All collections now use {embedding_dim}-dimensional embeddings")
-        
-    except Exception as e:
-        logger.error(f"Failed to recreate collections: {e}", exc_info=True)
+        logger.info("Starting reset-era Milvus collection recreation...")
+
+        knowledge_dim = get_knowledge_embedding_dimension()
+        user_memory_dim = get_user_memory_embedding_dimension()
+        logger.info("Using knowledge embedding dimension: %s", knowledge_dim)
+        logger.info("Using user-memory embedding dimension: %s", user_memory_dim)
+
+        knowledge_collection = recreate_knowledge_embeddings_collection()
+        user_memory_collection = recreate_user_memory_entries_collection()
+
+        logger.info(
+            "Successfully recreated %s with %s entities",
+            KNOWLEDGE_EMBEDDINGS_COLLECTION,
+            knowledge_collection.num_entities,
+        )
+        logger.info(
+            "Successfully recreated %s with %s entities",
+            USER_MEMORY_ENTRIES_COLLECTION,
+            user_memory_collection.num_entities,
+        )
+    except Exception as exc:
+        logger.error("Failed to recreate Milvus collections: %s", exc, exc_info=True)
         sys.exit(1)
 
 

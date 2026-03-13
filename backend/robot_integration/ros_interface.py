@@ -41,18 +41,28 @@ class ROSNode:
 class ROSInterface:
     """Interface for ROS communication."""
 
-    def __init__(self, node_config: Optional[ROSNode] = None):
+    def __init__(
+        self,
+        node_config: Optional[ROSNode] = None,
+        master_uri: str = "http://localhost:11311",
+    ):
         """Initialize ROS interface.
 
         Args:
             node_config: ROS node configuration
         """
         self.node_config = node_config
+        self.master_uri = master_uri
         self.is_initialized = False
         self._subscribers: Dict[str, Callable] = {}
         self._publishers: Dict[str, Any] = {}
 
         logger.info("ROSInterface created (not initialized)")
+
+    @property
+    def connected(self) -> bool:
+        """Backward-compatible alias for initialization state."""
+        return self.is_initialized
 
     def initialize(self) -> bool:
         """Initialize ROS node.

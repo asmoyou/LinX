@@ -412,17 +412,17 @@ def log_memory_access(
     reason: Optional[str] = None,
     agent_id: Optional[str] = None,
 ) -> None:
-    """Log a memory system access event.
+    """Log an access event for reset-era memory products.
 
     Args:
         session: SQLAlchemy database session
         current_user: User accessing memory
         memory_id: Memory item ID
-        memory_tier: Memory tier (agent_memory, company_memory)
+        memory_tier: Memory product surface (for example ``user_memory`` or ``skill_learning``)
         action: Action being performed
         granted: Whether access was granted
         reason: Reason for denial
-        agent_id: Agent ID (for agent memory)
+        agent_id: Agent ID when the memory product is agent-owned
     """
     event_type_map = {
         "read": AuditEventType.MEMORY_ACCESSED,

@@ -5,6 +5,7 @@ References:
 - Requirements 4: Skill Library
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 from uuid import uuid4
 
@@ -365,7 +366,7 @@ class TestSemanticSkillSearch:
         registry = Mock()
         registry.list_skills = Mock(
             return_value=[
-                Mock(
+                SimpleNamespace(
                     skill_id=uuid4(),
                     name="add_numbers",
                     description="Add two numbers together",
@@ -373,7 +374,7 @@ class TestSemanticSkillSearch:
                     interface_definition={},
                     dependencies=[],
                 ),
-                Mock(
+                SimpleNamespace(
                     skill_id=uuid4(),
                     name="multiply_numbers",
                     description="Multiply two numbers",
@@ -420,7 +421,7 @@ class TestSemanticSkillSearch:
 
         # Assert
         assert len(results) > 0
-        assert all(isinstance(r[0], Mock) for r in results)
+        assert all(hasattr(r[0], "name") for r in results)
         assert all(isinstance(r[1], float) for r in results)
 
     def test_find_exact_match(self, search):

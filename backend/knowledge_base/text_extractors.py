@@ -120,6 +120,10 @@ class PDFExtractor(TextExtractor):
             logger.error(f"PDF extraction failed: {e}", exc_info=True)
             raise
 
+    def extract_text(self, file_path: Path) -> str:
+        """Backward-compatible helper returning plain extracted text."""
+        return self.extract(file_path).text
+
     def _extract_with_pdfplumber(self, file_path: Path) -> tuple[str, Dict, int]:
         """Extract text using pdfplumber."""
         text_parts = []

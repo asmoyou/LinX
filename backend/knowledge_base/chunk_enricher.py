@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from knowledge_base.config_utils import load_knowledge_base_config
 from shared.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ class ChunkEnricher:
     def __init__(self):
         """Initialize chunk enricher with config."""
         config = get_config()
-        kb_config = config.get_section("knowledge_base") if config else {}
+        kb_config = load_knowledge_base_config(config)
         enrichment_cfg = kb_config.get("enrichment", {})
 
         self.keywords_topn = enrichment_cfg.get("keywords_topn", 5)
@@ -542,7 +543,7 @@ def _build_chunk_enricher_signature() -> str:
     """Build a config signature so singleton refreshes after runtime config updates."""
     try:
         config = get_config()
-        kb_config = config.get_section("knowledge_base") if config else {}
+        kb_config = load_knowledge_base_config(config)
         enrichment_cfg = kb_config.get("enrichment", {})
         provider_name = str(enrichment_cfg.get("provider", "ollama")).strip().lower() or "ollama"
 

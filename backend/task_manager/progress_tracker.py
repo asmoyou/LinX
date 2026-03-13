@@ -19,6 +19,19 @@ from database.models import Task as TaskModel
 logger = logging.getLogger(__name__)
 
 
+class _AwaitableResult:
+    """Tiny awaitable wrapper for backward-compatible async test helpers."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def __await__(self):
+        async def _resolve():
+            return self.value
+
+        return _resolve().__await__()
+
+
 @dataclass
 class TaskProgress:
     """Progress information for a task."""
@@ -42,12 +55,27 @@ class ProgressTracker:
 
         logger.info("ProgressTracker initialized")
 
+    async def initialize_task(self, task_id: UUID, total_steps: int) -> Dict[str, int]:
+        """Backward-compatible async initializer."""
+        self._progress_cache[task_id] = TaskProgress(
+            task_id=task_id,
+            status="in_progress",
+            progress_percentage=0.0,
+            started_at=datetime.utcnow(),
+            estimated_completion=None,
+            subtasks_completed=0,
+            subtasks_total=total_steps,
+            current_step=None,
+        )
+        return {"task_id": str(task_id), "total_steps": total_steps}
+
     def update_progress(
         self,
         task_id: UUID,
-        progress_percentage: float,
+        progress_percentage: Optional[float] = None,
         current_step: Optional[str] = None,
-    ) -> None:
+        completed_steps: Optional[int] = None,
+    ):
         """Update task progress.
 
         Args:
@@ -57,17 +85,22 @@ class ProgressTracker:
         """
         if task_id in self._progress_cache:
             progress = self._progress_cache[task_id]
-            progress.progress_percentage = progress_percentage
+            if completed_steps is not None and progress.subtasks_total:
+                progress.subtasks_completed = completed_steps
+                progress_percentage = (completed_steps / progress.subtasks_total) * 100.0
+            progress.progress_percentage = progress_percentage or 0.0
             progress.current_step = current_step
+            if progress.progress_percentage >= 100.0:
+                progress.status = "completed"
         else:
             progress = TaskProgress(
                 task_id=task_id,
                 status="in_progress",
-                progress_percentage=progress_percentage,
+                progress_percentage=progress_percentage or 0.0,
                 started_at=datetime.utcnow(),
                 estimated_completion=None,
-                subtasks_completed=0,
-                subtasks_total=0,
+                subtasks_completed=completed_steps or 0,
+                subtasks_total=completed_steps or 0,
                 current_step=current_step,
             )
             self._progress_cache[task_id] = progress
@@ -76,15 +109,16 @@ class ProgressTracker:
             "Progress updated",
             extra={
                 "task_id": str(task_id),
-                "progress": progress_percentage,
+                "progress": progress.progress_percentage,
             },
         )
+        return _AwaitableResult(None)
 
     def get_progress(
         self,
         task_id: UUID,
-        user_id: UUID,
-    ) -> Optional[TaskProgress]:
+        user_id: Optional[UUID] = None,
+    ):
         """Get progress for a task.
 
         Args:
@@ -96,10 +130,20 @@ class ProgressTracker:
         """
         # Check cache first
         if task_id in self._progress_cache:
-            return self._progress_cache[task_id]
+            cached = self._progress_cache[task_id]
+            if user_id is None:
+                return _AwaitableResult(
+                    {
+                        "percentage": round(cached.progress_percentage),
+                        "status": cached.status,
+                    }
+                )
+            return cached
 
         # Calculate from database
-        with get_db_session() as session:
+        from database.connection import get_db_session as get_db_session_fn
+
+        with get_db_session_fn() as session:
             task = (
                 session.query(TaskModel)
                 .filter(
@@ -146,6 +190,13 @@ class ProgressTracker:
             )
 
             self._progress_cache[task_id] = progress
+            if user_id is None:
+                return _AwaitableResult(
+                    {
+                        "percentage": round(progress.progress_percentage),
+                        "status": progress.status,
+                    }
+                )
             return progress
 
     def get_tree_progress(

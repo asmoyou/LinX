@@ -21,6 +21,40 @@ from shared.config import get_config
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_REDIS_CONFIG = {
+    "host": "localhost",
+    "port": 6379,
+    "password": "",
+    "db": 0,
+    "max_connections": 50,
+    "socket_timeout": 5,
+    "socket_connect_timeout": 5,
+    "retry_on_timeout": True,
+}
+
+
+def _load_redis_config(config) -> dict:
+    """Load Redis settings with safe defaults for partial test configs."""
+    if config is None:
+        return dict(_DEFAULT_REDIS_CONFIG)
+
+    getter = getattr(config, "get", None)
+    if callable(getter):
+        redis_config = getter("database.redis", None)
+        if isinstance(redis_config, dict):
+            return {**_DEFAULT_REDIS_CONFIG, **redis_config}
+
+    get_section = getattr(config, "get_section", None)
+    if callable(get_section):
+        try:
+            redis_config = get_section("database.redis")
+        except Exception:
+            return dict(_DEFAULT_REDIS_CONFIG)
+        if isinstance(redis_config, dict):
+            return {**_DEFAULT_REDIS_CONFIG, **redis_config}
+
+    return dict(_DEFAULT_REDIS_CONFIG)
+
 
 class RedisConnectionManager:
     """
@@ -47,7 +81,7 @@ class RedisConnectionManager:
             RedisConnectionError: If connection to Redis fails
         """
         try:
-            redis_config = self._config.get_section("database.redis")
+            redis_config = _load_redis_config(self._config)
 
             # Create connection pool
             self._pool = ConnectionPool(

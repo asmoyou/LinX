@@ -88,10 +88,13 @@ class VLLMProvider(BaseLLMProvider):
             payload["max_tokens"] = max_tokens
 
         # Add any additional parameters
-        payload.update(kwargs)
+        payload.update(self._normalize_request_payload(kwargs))
 
         try:
-            async with session.post(f"{self.base_url}/v1/completions", json=payload) as response:
+            request_ctx = await self._resolve_request_context(
+                session.post(f"{self.base_url}/v1/completions", json=payload)
+            )
+            async with request_ctx as response:
                 response.raise_for_status()
                 data = await response.json()
 
@@ -136,7 +139,10 @@ class VLLMProvider(BaseLLMProvider):
         }
 
         try:
-            async with session.post(f"{self.base_url}/v1/embeddings", json=payload) as response:
+            request_ctx = await self._resolve_request_context(
+                session.post(f"{self.base_url}/v1/embeddings", json=payload)
+            )
+            async with request_ctx as response:
                 response.raise_for_status()
                 data = await response.json()
 
@@ -169,7 +175,8 @@ class VLLMProvider(BaseLLMProvider):
         session = await self._get_session()
 
         try:
-            async with session.get(f"{self.base_url}/v1/models") as response:
+            request_ctx = await self._resolve_request_context(session.get(f"{self.base_url}/v1/models"))
+            async with request_ctx as response:
                 response.raise_for_status()
                 data = await response.json()
                 models = data.get("data", [])
@@ -191,12 +198,16 @@ class VLLMProvider(BaseLLMProvider):
         session = await self._get_session()
 
         try:
-            async with session.get(f"{self.base_url}/health") as response:
+            request_ctx = await self._resolve_request_context(session.get(f"{self.base_url}/health"))
+            async with request_ctx as response:
                 return response.status == 200
         except Exception:
             # Try alternative health check endpoint
             try:
-                async with session.get(f"{self.base_url}/v1/models") as response:
+                request_ctx = await self._resolve_request_context(
+                    session.get(f"{self.base_url}/v1/models")
+                )
+                async with request_ctx as response:
                     return response.status == 200
             except Exception as e:
                 logger.warning(f"vLLM health check failed: {e}")

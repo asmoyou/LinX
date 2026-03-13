@@ -270,7 +270,7 @@ def upgrade() -> None:
     op.create_index(op.f("ix_tasks_parent_task_id"), "tasks", ["parent_task_id"], unique=False)
     op.create_index(op.f("ix_tasks_priority"), "tasks", ["priority"], unique=False)
     op.create_index(op.f("ix_tasks_status"), "tasks", ["status"], unique=False)
-    op.drop_table("schema_version")
+    op.execute(sa.text("DROP TABLE IF EXISTS schema_version"))
     # ### end Alembic commands ###
 
 

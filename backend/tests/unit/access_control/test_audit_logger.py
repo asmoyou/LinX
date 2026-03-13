@@ -378,8 +378,8 @@ def test_log_knowledge_access_denied(mock_session, current_user):
 # Tests for log_memory_access
 
 
-def test_log_memory_access_agent_memory(mock_session, current_user):
-    """Test logging agent memory access."""
+def test_log_memory_access_skill_learning(mock_session, current_user):
+    """Test logging skill-learning access."""
     agent_id = str(uuid4())
     memory_id = str(uuid4())
 
@@ -387,7 +387,7 @@ def test_log_memory_access_agent_memory(mock_session, current_user):
         mock_session,
         current_user,
         memory_id,
-        "agent_memory",
+        "skill_learning",
         "read",
         granted=True,
         agent_id=agent_id,
@@ -396,10 +396,10 @@ def test_log_memory_access_agent_memory(mock_session, current_user):
     mock_session.add.assert_called_once()
 
 
-def test_log_memory_access_company_memory(mock_session, current_user):
-    """Test logging company memory access."""
+def test_log_memory_access_user_memory(mock_session, current_user):
+    """Test logging user-memory access."""
     memory_id = str(uuid4())
-    log_memory_access(mock_session, current_user, memory_id, "company_memory", "read", granted=True)
+    log_memory_access(mock_session, current_user, memory_id, "user_memory", "read", granted=True)
 
     mock_session.add.assert_called_once()
 
@@ -411,7 +411,7 @@ def test_log_memory_creation(mock_session, current_user):
         mock_session,
         current_user,
         memory_id,
-        "company_memory",
+        "user_memory",
         "create",
         granted=True,
     )

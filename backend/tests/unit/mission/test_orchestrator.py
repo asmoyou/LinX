@@ -478,7 +478,7 @@ async def test_execute_agent_task_without_container_passes_execution_context():
             return {"success": True, "output": "ok"}
 
     agent = _FakeAgent()
-    exec_context = {"agent_memories": ["prior context"]}
+    exec_context = {"user_memory": ["prior context"]}
     result = await MissionOrchestrator._execute_agent_task(
         agent,
         "ping",
@@ -490,7 +490,7 @@ async def test_execute_agent_task_without_container_passes_execution_context():
     args, kwargs = agent.calls[0]
     assert args == ()
     assert kwargs["task_description"] == "ping"
-    assert kwargs["context"]["agent_memories"] == ["prior context"]
+    assert kwargs["context"]["user_memory"] == ["prior context"]
     assert kwargs["context"]["execution_context_tag"] == "mission_run"
     runtime_capabilities = kwargs["context"]["runtime_capabilities"]
     assert runtime_capabilities["sandbox_enabled"] is False
@@ -498,7 +498,7 @@ async def test_execute_agent_task_without_container_passes_execution_context():
     assert runtime_capabilities["workspace_root_virtual"] == "/workspace"
     assert runtime_capabilities["network_access"] is True
     assert runtime_capabilities["ui_mode"] == "none"
-    assert exec_context == {"agent_memories": ["prior context"]}
+    assert exec_context == {"user_memory": ["prior context"]}
     assert kwargs["execution_profile"] == ExecutionProfile.MISSION_CONTROL
 
 
@@ -1723,7 +1723,8 @@ def test_restore_workspace_snapshot_if_available_uses_latest_history_record():
     orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: emitted_events.append(kwargs))
     orchestrator._workspace = SimpleNamespace(
         restore_workspace=lambda _mission_id, path: (
-            restored_paths.append(path) or {
+            restored_paths.append(path)
+            or {
                 "restored_file_count": 4,
                 "archive_size": 256,
                 "restored_at": "2026-02-25T00:00:00Z",
@@ -1743,9 +1744,7 @@ def test_restore_workspace_snapshot_if_available_uses_latest_history_record():
     MissionOrchestrator._restore_workspace_snapshot_if_available(orchestrator, mission_id, mission)
 
     assert restored_paths == ["artifacts/new_snapshot.tar.gz"]
-    assert any(
-        event.get("event_type") == "WORKSPACE_RESTORED" for event in emitted_events
-    )
+    assert any(event.get("event_type") == "WORKSPACE_RESTORED" for event in emitted_events)
 
 
 def test_restore_workspace_snapshot_if_available_emits_skip_when_absent():
@@ -1760,9 +1759,7 @@ def test_restore_workspace_snapshot_if_available_emits_skip_when_absent():
 
     MissionOrchestrator._restore_workspace_snapshot_if_available(orchestrator, mission_id, mission)
 
-    assert any(
-        event.get("event_type") == "WORKSPACE_RESTORE_SKIPPED" for event in emitted_events
-    )
+    assert any(event.get("event_type") == "WORKSPACE_RESTORE_SKIPPED" for event in emitted_events)
 
 
 def test_snapshot_deliverables_persists_workspace_snapshot_history(monkeypatch):
@@ -1797,13 +1794,13 @@ def test_snapshot_deliverables_persists_workspace_snapshot_history(monkeypatch):
 
     result_payload = mission_updates.get("result")
     assert isinstance(result_payload, dict)
-    assert result_payload.get("workspace_snapshot", {}).get("path") == "artifacts/new_snapshot.tar.gz"
+    assert (
+        result_payload.get("workspace_snapshot", {}).get("path") == "artifacts/new_snapshot.tar.gz"
+    )
     history = result_payload.get("workspace_snapshots", [])
     assert {"path": "artifacts/old_snapshot.tar.gz"} in history
     assert any(item.get("path") == "artifacts/new_snapshot.tar.gz" for item in history)
-    assert any(
-        event.get("event_type") == "WORKSPACE_SNAPSHOTTED" for event in emitted_events
-    )
+    assert any(event.get("event_type") == "WORKSPACE_SNAPSHOTTED" for event in emitted_events)
 
 
 def test_snapshot_deliverables_deletes_rotated_storage_objects(monkeypatch):
@@ -1842,9 +1839,7 @@ def test_snapshot_deliverables_deletes_rotated_storage_objects(monkeypatch):
                 }
             ],
             "workspace_snapshot": {"path": "artifacts/ws10.tar.gz"},
-            "workspace_snapshots": [
-                {"path": f"artifacts/ws{i}.tar.gz"} for i in range(1, 11)
-            ],
+            "workspace_snapshots": [{"path": f"artifacts/ws{i}.tar.gz"} for i in range(1, 11)],
         }
     )
 
@@ -2019,21 +2014,19 @@ def test_compute_dependency_levels_builds_execution_waves():
 
 def test_resolve_temporary_worker_memory_scopes_defaults_and_normalization():
     assert MissionOrchestrator._resolve_temporary_worker_memory_scopes({}) == [
-        "agent",
-        "company",
-        "user_context",
-        "task_context",
+        "skills",
+        "user_memory",
     ]
     normalized = MissionOrchestrator._resolve_temporary_worker_memory_scopes(
         {
             "temp_worker_memory_scopes": [
-                "COMPANY",
-                "agent",
+                "USER_MEMORY",
+                "skills",
                 "invalid_scope",
             ]
         }
     )
-    assert normalized == ["company", "agent", "task_context"]
+    assert normalized == ["user_memory", "skills"]
 
 
 def test_resolve_blueprint_role_assignments_prefers_capability_match():
@@ -2720,7 +2713,9 @@ async def test_phase_execution_propagates_blocked_dependency_without_wait_loop(m
 
         def all(self):
             if self._selected_ids is not None:
-                return [self._tasks[task_id] for task_id in self._selected_ids if task_id in self._tasks]
+                return [
+                    self._tasks[task_id] for task_id in self._selected_ids if task_id in self._tasks
+                ]
             return list(self._tasks.values())
 
         def first(self):
@@ -2872,7 +2867,9 @@ async def test_phase_execution_fails_on_dependency_wait_timeout(monkeypatch):
 
         def all(self):
             if self._selected_ids is not None:
-                return [self._tasks[task_id] for task_id in self._selected_ids if task_id in self._tasks]
+                return [
+                    self._tasks[task_id] for task_id in self._selected_ids if task_id in self._tasks
+                ]
             return list(self._tasks.values())
 
         def first(self):

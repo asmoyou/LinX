@@ -34,7 +34,7 @@ const DEFAULT_EXECUTION_CONFIG: MissionExecutionConfig = {
   allow_temporary_workers: true,
   auto_select_temp_skills: true,
   temp_worker_skill_limit: 3,
-  temp_worker_memory_scopes: ['agent', 'company', 'user_context'],
+  temp_worker_memory_scopes: ['skills', 'user_memory'],
   temp_worker_knowledge_strategy: 'owner_accessible',
   temp_worker_knowledge_limit: 6,
 };
@@ -53,10 +53,30 @@ const ROLES: { key: RoleKey; labelKey: string }[] = [
 ];
 
 const TEMP_MEMORY_SCOPE_OPTIONS: { value: string; labelKey: string }[] = [
-  { value: 'agent', labelKey: 'missions.tempMemoryScopeAgent' },
-  { value: 'company', labelKey: 'missions.tempMemoryScopeCompany' },
-  { value: 'user_context', labelKey: 'missions.tempMemoryScopeUserContext' },
+  { value: 'skills', labelKey: 'missions.tempMemoryScopeSkills' },
+  { value: 'user_memory', labelKey: 'missions.tempMemoryScopeUserMemory' },
 ];
+
+const TEMP_MEMORY_SCOPE_ALIAS_MAP: Record<string, string> = {
+  skills: 'skills',
+  user_memory: 'user_memory',
+};
+
+const normalizeTempWorkerMemoryScopes = (scopes?: string[]): string[] => {
+  if (!Array.isArray(scopes)) {
+    return [...DEFAULT_EXECUTION_CONFIG.temp_worker_memory_scopes];
+  }
+
+  const normalized: string[] = [];
+  for (const rawScope of scopes) {
+    const canonical = TEMP_MEMORY_SCOPE_ALIAS_MAP[(rawScope || '').trim().toLowerCase()];
+    if (canonical && !normalized.includes(canonical)) {
+      normalized.push(canonical);
+    }
+  }
+
+  return normalized.length > 0 ? normalized : [...DEFAULT_EXECUTION_CONFIG.temp_worker_memory_scopes];
+};
 
 export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOpen, onClose }) => {
   const { t } = useTranslation();
@@ -100,7 +120,13 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
         ...DEFAULT_ROLE_CONFIG,
         ...missionSettings.temporary_worker_config,
       });
-      setExecutionConfig({ ...DEFAULT_EXECUTION_CONFIG, ...missionSettings.execution_config });
+      setExecutionConfig({
+        ...DEFAULT_EXECUTION_CONFIG,
+        ...missionSettings.execution_config,
+        temp_worker_memory_scopes: normalizeTempWorkerMemoryScopes(
+          missionSettings.execution_config?.temp_worker_memory_scopes
+        ),
+      });
     }
   }, [missionSettings]);
 
@@ -135,7 +161,7 @@ export const MissionSettingsPanel: React.FC<MissionSettingsPanelProps> = ({ isOp
 
       return {
         ...prev,
-        temp_worker_memory_scopes: orderedScopes.length > 0 ? orderedScopes : ['agent'],
+        temp_worker_memory_scopes: orderedScopes.length > 0 ? orderedScopes : ['skills'],
       };
     });
   };

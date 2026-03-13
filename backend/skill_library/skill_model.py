@@ -279,14 +279,16 @@ class SkillModel:
             # Keep agent capability lists in sync with active skills.
             # Agent capabilities are stored as skill names, so deleting a skill
             # should remove stale names from all agents that reference it.
-            agents = (
-                session.query(Agent)
-                .filter(Agent.capabilities.isnot(None))
-                .filter(Agent.capabilities.contains([skill_name]))
-                .all()
-            )
+            #
+            # Postgres can push this containment check down to JSONB, but the
+            # test harness uses SQLite where `@>` is not supported. Deleting a
+            # skill is a low-frequency operation, so it is safer to fetch agents
+            # with non-null capabilities and normalize in Python across dialects.
+            agents = session.query(Agent).filter(Agent.capabilities.isnot(None)).all()
             for agent in agents:
                 capabilities = agent.capabilities if isinstance(agent.capabilities, list) else []
+                if skill_name not in capabilities:
+                    continue
                 normalized = [name for name in capabilities if name != skill_name]
                 if normalized != capabilities:
                     agent.capabilities = normalized

@@ -4,14 +4,14 @@ import { Loader2, Search, X } from "lucide-react";
 import { LayoutModal } from "@/components/LayoutModal";
 import { ModalPanel } from "@/components/ModalPanel";
 import { memoriesApi } from "@/api/memories";
-import type { Memory, MemoryType } from "@/types/memory";
+import type { Memory, MemoryProductType } from "@/types/memory";
 
-type RetrievalScope = MemoryType | "all";
+type RetrievalScope = MemoryProductType | "all";
 
 interface MemoryRetrievalTestPanelProps {
   isOpen: boolean;
   onClose: () => void;
-  activeType?: MemoryType | null;
+  activeType?: MemoryProductType | null;
 }
 
 const normalizeScore = (score: unknown): number | null => {
@@ -70,13 +70,48 @@ export const MemoryRetrievalTestPanel: React.FC<MemoryRetrievalTestPanelProps> =
 
     setIsSearching(true);
     try {
-      const data = await memoriesApi.search({
-        query: trimmed,
-        type: scope === "all" ? undefined : scope,
-        limit,
-        min_score: minScore,
-      });
-      setResults(data);
+      if (scope === "all") {
+        const [userMemory, skillProposals] = await Promise.all([
+          memoriesApi.listUserMemory({
+            query: trimmed,
+            limit,
+            minScore,
+          }),
+          memoriesApi.listSkillProposals({
+            review_status: "all",
+            limit,
+          }),
+        ]);
+        setResults([
+          ...userMemory,
+          ...skillProposals.filter((item) =>
+            [item.summary || "", item.content, ...(item.tags || [])]
+              .join("\n")
+              .toLowerCase()
+              .includes(trimmed.toLowerCase()),
+          ),
+        ]);
+      } else if (scope === "user_memory") {
+        const data = await memoriesApi.listUserMemory({
+          query: trimmed,
+          limit,
+          minScore,
+        });
+        setResults(data);
+      } else {
+        const data = await memoriesApi.listSkillProposals({
+          review_status: "all",
+          limit,
+        });
+        setResults(
+          data.filter((item) =>
+            [item.summary || "", item.content, ...(item.tags || [])]
+              .join("\n")
+              .toLowerCase()
+              .includes(trimmed.toLowerCase()),
+          ),
+        );
+      }
     } catch {
       setResults([]);
     } finally {
@@ -150,13 +185,15 @@ export const MemoryRetrievalTestPanel: React.FC<MemoryRetrievalTestPanelProps> =
                 className="w-full px-3 py-2 rounded-lg bg-white/10 border border-gray-300 dark:border-gray-600"
               >
                 <option value="all">{t("memory.retrievalTest.scopeAll")}</option>
-                <option value="agent">{t("memory.retrievalTest.scopeAgent")}</option>
-                <option value="company">{t("memory.retrievalTest.scopeCompany")}</option>
-                <option value="user_context">
-                  {t("memory.retrievalTest.scopeUserContext")}
+                <option value="user_memory">
+                  {t("memory.retrievalTest.scopeUserMemory", {
+                    defaultValue: "用户记忆",
+                  })}
                 </option>
-                <option value="task_context">
-                  {t("memory.retrievalTest.scopeTaskContext")}
+                <option value="skill_proposal">
+                  {t("memory.retrievalTest.scopeSkillProposal", {
+                    defaultValue: "技能提案",
+                  })}
                 </option>
               </select>
             </label>
@@ -238,13 +275,9 @@ export const MemoryRetrievalTestPanel: React.FC<MemoryRetrievalTestPanelProps> =
                   </div>
                   <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-2">
                     {t("memory.retrievalTest.typeLabel")}:{" "}
-                    {item.type === "agent"
-                      ? t("memory.tabs.agent")
-                      : item.type === "company"
-                        ? t("memory.tabs.company")
-                        : item.type === "user_context"
-                          ? t("memory.tabs.userContext")
-                          : t("memory.tabs.taskContext")}
+                    {item.type === "skill_proposal"
+                      ? t("memory.tabs.skillProposal", { defaultValue: "技能提案" })
+                      : t("memory.tabs.userMemory", { defaultValue: "用户记忆" })}
                   </div>
                   <p className="text-sm text-zinc-700 dark:text-zinc-300 line-clamp-3">
                     {item.content}

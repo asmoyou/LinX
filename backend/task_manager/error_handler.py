@@ -640,3 +640,35 @@ class AlertManager:
                     "Alert callback failed",
                     extra={"error": str(e)},
                 )
+
+
+class ErrorHandler:
+    """Backward-compatible facade over retry decision logic used by older tests."""
+
+    def __init__(self, retry_manager: Optional[RetryManager] = None):
+        self.retry_manager = retry_manager or RetryManager()
+
+    async def handle_task_error(
+        self,
+        task_id: UUID,
+        error: Exception,
+        attempt: int,
+    ) -> Dict[str, Any]:
+        failure_record = FailureRecord(
+            task_id=task_id,
+            failure_type=FailureType.AGENT_ERROR,
+            error_message=str(error),
+            timestamp=datetime.utcnow(),
+            retry_count=attempt,
+        )
+        should_retry = self.retry_manager.should_retry(task_id, failure_record)
+        retry_delay = (
+            self.retry_manager.calculate_retry_delay(attempt)
+            if should_retry
+            else 0
+        )
+        return {
+            "should_retry": should_retry,
+            "retry_delay": retry_delay,
+            "failure_type": failure_record.failure_type.value,
+        }

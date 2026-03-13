@@ -242,17 +242,17 @@ Information: ${information}
 Context: ${context}
 
 Determine:
-1. Memory type: user_context, task_context, or general
+1. Product surface: user_memory, skill_proposal, knowledge_base, or discard
 2. Importance: low, medium, high
 3. Tags: relevant keywords (3-5 tags)
-4. Should this be shared with other agents? (yes/no)
+4. Should this be promoted into a shared knowledge asset? (yes/no)
 
 Output as JSON:
 {
-  "memory_type": "...",
+  "product_surface": "...",
   "importance": "...",
   "tags": ["tag1", "tag2"],
-  "share_with_agents": true/false
+  "promote_to_shared_knowledge": true/false
 }
 """)
 

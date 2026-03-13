@@ -252,12 +252,11 @@ def main():
     
     args = parser.parse_args()
     
-    migration = AgentSkillMigration(
-        dry_run=args.dry_run,
-        backup=not args.no_backup
-    )
-    
     try:
+        migration = AgentSkillMigration(
+            dry_run=args.dry_run,
+            backup=not args.no_backup
+        )
         report = migration.run()
         
         # Exit with error code if there were errors

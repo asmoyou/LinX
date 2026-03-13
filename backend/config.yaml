@@ -83,6 +83,9 @@ database:
 storage:
   minio:
     endpoint: localhost:9000
+    # Optional browser-facing endpoint for presigned URLs.
+    # Set this to a LAN IP / public hostname when the backend uses localhost internally.
+    # public_endpoint: 192.168.2.135:9000
     access_key: minioadmin
     secret_key: minioadmin_change_me
     secure: false
@@ -442,20 +445,11 @@ task_management:
   aggregation:
     default_strategy: concatenation
     use_llm_for_summarization: true
-memory:
-  types:
-    agent_memory:
-      enabled: true
-      retention_days: 90
-      max_items_per_agent: 10000
-    company_memory:
-      enabled: true
-      retention_days: 365
-      max_items: 100000
-    user_context:
-      enabled: true
-      retention_days: 365
-      max_items_per_user: 5000
+user_memory:
+  retention:
+    enabled: true
+    retention_days: 365
+    max_entries_per_user: 5000
   embedding:
     provider: ollama
     model: bge-m3
@@ -479,78 +473,64 @@ memory:
     milvus:
       metric_type: L2
       nprobe: 10
-  write:
-    fail_closed_user_agent: true
-  observability:
-    enable_quality_counters: true
-  sharing:
-    enable_automatic: true
-    enable_explicit: true
-    default_scope: user_context
-  enhanced_memory:
+  extraction:
     enabled: true
-    low_value_min_chars: 12
-    retention_cleanup_interval_seconds: 300
-    dedupe:
-      exact_window_minutes: 4320
-      semantic_enabled: true
-      semantic_similarity_threshold: 0.86
-      min_fact_overlap: 0.35
-      candidate_limit: 8
-      db_candidate_limit: 50
-      max_conflict_history: 5
-    ranking:
-      importance_weight: 0.15
-      tier_weight: 0.1
-      mention_weight: 0.08
-      recency_half_life_days: 14
-    core_memory:
-      protect_core: true
-      importance_threshold: 0.72
-    fact_extraction:
-      enabled: true
-      model_enabled: true
-      provider: vllm
-      model: Qwen3.5-35B-A3B-FP8
-      fail_closed_auto_generated: true
-      fail_closed_types:
-      - agent
-      - user_context
-      timeout_seconds: 120
-      max_facts: 10
-      failure_backoff_seconds: 60
-      max_preference_facts: 10
-      max_agent_candidates: 6
-    action_planner:
-      enabled: true
-      strict_fail_closed: true
-      allow_explicit_delete: true
-  cleanup_orphans:
-    enabled: true
-    run_on_startup: true
-    startup_delay_seconds: 120
-    interval_seconds: 21600
-    batch_size: 1000
-    query_timeout_seconds: 10
-    dry_run: false
-    max_scan_per_collection: 200000
-    max_delete_per_collection: 20000
-    collections:
-    - agent_memories
-    - company_memories
-    advisory_lock_id: 73012019
-    use_advisory_lock: true
-  materialization_maintenance:
+    model_enabled: true
+    provider: vllm
+    model: Qwen3.5-35B-A3B-FP8
+    timeout_seconds: 120
+    max_facts: 10
+    max_preference_facts: 10
+    enable_heuristic_fallback: true
+    secondary_recall_enabled: true
+    failure_backoff_seconds: 60
+    fail_closed_empty_writes: true
+  consolidation:
     enabled: true
     run_on_startup: true
     startup_delay_seconds: 180
     interval_seconds: 21600
     dry_run: false
     limit: 5000
-    include_backfill: true
-    include_consolidation: true
     advisory_lock_id: 73012020
     use_advisory_lock: true
+  observability:
+    enable_quality_counters: true
+skill_learning:
+  retention:
+    enabled: true
+    retention_days: 90
+    max_proposals_per_agent: 10000
+  extraction:
+    enabled: true
+    provider: vllm
+    model: Qwen3.5-35B-A3B-FP8
+    timeout_seconds: 120
+    max_proposals: 6
+    failure_backoff_seconds: 60
+  proposal_review:
+    require_human_review: true
+    allow_revise: true
+    default_review_status: pending
+  publish_policy:
+    enabled: true
+    skill_type: agent_skill
+    storage_type: inline
+    reuse_existing_by_name: true
+session_ledger:
+  enabled: true
+  retention_days: 14
+  run_on_startup: true
+  startup_delay_seconds: 120
+  cleanup_interval_seconds: 21600
+  batch_size: 1000
+  dry_run: false
+  advisory_lock_id: 73012021
+  use_advisory_lock: true
+runtime_context:
+  enable_user_memory: true
+  enable_skills: true
+  enable_knowledge_base: true
   collection_retry_attempts: 3
   collection_retry_delay_seconds: 0.35
   search_timeout_seconds: 2

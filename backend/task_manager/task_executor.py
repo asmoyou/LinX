@@ -64,6 +64,39 @@ class TaskExecutor:
 
         logger.info("TaskExecutor initialized")
 
+    async def execute_task(
+        self,
+        task_id: UUID,
+        agent_id: UUID,
+        task_description: str,
+    ) -> Dict[str, Any]:
+        """Backward-compatible single-task execution API used by older tests."""
+        from agent_framework.agent_executor import get_agent_executor
+
+        executor = get_agent_executor()
+        result = await executor.execute(
+            agent_id=agent_id,
+            task={"task_id": str(task_id), "description": task_description},
+        )
+
+        try:
+            from database.connection import get_db_session as get_db_session_fn
+
+            with get_db_session_fn() as session:
+                task = (
+                    session.query(TaskModel)
+                    .filter(TaskModel.task_id == task_id)
+                    .first()
+                )
+                if task is not None:
+                    task.result = result
+                    task.status = "completed" if result.get("success") else "failed"
+                    session.commit()
+        except Exception:
+            logger.debug("Skipping task result persistence in compatibility path", exc_info=True)
+
+        return result
+
     async def execute_sequential(
         self,
         task_ids: List[UUID],
@@ -113,10 +146,10 @@ class TaskExecutor:
 
     async def execute_parallel(
         self,
-        task_ids: List[UUID],
-        user_id: UUID,
+        task_ids: List,
+        user_id: Optional[UUID] = None,
         max_concurrent: int = 5,
-    ) -> List[ExecutionResult]:
+    ):
         """Execute tasks in parallel with concurrency limit.
 
         Args:
@@ -127,12 +160,35 @@ class TaskExecutor:
         Returns:
             List of execution results
         """
+        if task_ids and isinstance(task_ids[0], dict):
+            from agent_framework.agent_executor import AgentExecutor
+
+            semaphore = asyncio.Semaphore(max_concurrent)
+
+            async def execute_compat(task_payload: Dict[str, Any]) -> Dict[str, Any]:
+                async with semaphore:
+                    executor = AgentExecutor()
+                    result = executor.execute(
+                        agent_id=task_payload["agent_id"],
+                        task={
+                            "task_id": str(task_payload["task_id"]),
+                            "description": task_payload["description"],
+                        },
+                    )
+                    if asyncio.iscoroutine(result):
+                        return await result
+                    return result
+
+            return await asyncio.gather(
+                *(execute_compat(task_payload) for task_payload in task_ids)
+            )
+
         logger.info(
             "Starting parallel execution",
             extra={
                 "num_tasks": len(task_ids),
                 "max_concurrent": max_concurrent,
-                "user_id": str(user_id),
+                "user_id": str(user_id) if user_id else None,
             },
         )
 

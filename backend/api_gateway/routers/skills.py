@@ -295,7 +295,10 @@ class SkillResponse(BaseModel):
             # manifest is a dict for agent_skill
             skill_md_content = skill_info.manifest.get('skill_md_content')
             homepage = skill_info.manifest.get('homepage')
-            skill_metadata = skill_info.manifest.get('skill_metadata')  # Renamed from 'metadata' to avoid SQLAlchemy conflict
+            skill_metadata = (
+                skill_info.manifest.get('skill_metadata')
+                or skill_info.manifest.get('metadata')
+            )
             gating_status = skill_info.manifest.get('gating_status')  # Already a dict from asdict()
         
         return cls(
@@ -760,7 +763,7 @@ async def create_skill(
                     manifest={
                         "skill_md_content": skill_md_content,
                         "homepage": parsed.metadata.homepage,
-                        "metadata": skill_metadata_dict,
+                        "skill_metadata": skill_metadata_dict,
                         "gating_status": gating_status_dict,
                     },
                     skill_md_content=skill_md_content_str,

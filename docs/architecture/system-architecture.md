@@ -192,22 +192,21 @@ LinX (灵枢) is a microservices-based system for managing AI agents and automat
 
 **Technology**: Milvus + Python
 
-**Three-Tier Architecture**:
+**Reset-Era Architecture**:
 
-1. **Agent Memory** (Private):
-   - Agent-specific experiences
-   - Learning and improvement
-   - Not shared
+1. **User Memory**:
+   - Long-term user facts and profile projections
+   - Built from session-ledger extraction
+   - Retrieved for personalization
 
-2. **Company Memory** (Shared):
-   - Organizational knowledge
-   - Cross-agent collaboration
-   - Accessible by all agents
+2. **Skill Learning**:
+   - Agent-owned successful paths and reusable execution methods
+   - Reviewed before publication
+   - Retrieved as runtime skills, not as generic memory
 
-3. **User Context** (User-specific):
-   - User preferences
-   - Interaction history
-   - Personalization
+3. **Knowledge Base**:
+   - Shared documents and reference knowledge
+   - Retrieved independently from user memory
 
 **Operations**:
 - Store memory
@@ -301,11 +300,11 @@ User → API Gateway → Knowledge Base
 ```
 Agent → Memory System
            ↓
-      Classify Type
+      Classify Product
            ↓
     ┌──────┴──────┐
     ▼             ▼
-Agent Memory  Company Memory
+User Memory   Skill Learning
     ↓             ↓
 Generate      Generate
 Embedding     Embedding

@@ -1,17 +1,19 @@
-# Memory Retrieval Configuration (Production)
+# User Memory Retrieval Configuration (Production)
 
 ## 1. Scope
 
-This document defines how the **memory system** resolves embedding/rerank models and performs retrieval in production.
+This document defines how the reset-era `user_memory` pipeline resolves embedding and rerank
+models and performs retrieval in production.
 
 Goals:
-- Keep memory retrieval independent from knowledge-base retrieval tuning.
-- Allow safe fallback to knowledge-base config when memory-specific fields are not configured.
+- Keep user-memory retrieval independent from knowledge-base retrieval tuning.
+- Allow safe fallback to knowledge-base config when user-memory-specific fields are not
+  configured.
 - Make effective runtime config observable from API/UI.
 
 ## 2. Retrieval Pipeline
 
-Memory retrieval now follows this flow:
+User-memory retrieval now follows this flow:
 
 1. Build candidate set from Milvus (`top_k` + filter expression).
 2. Convert vector distance to similarity (metric-aware: `COSINE`/`IP`/`L2`).
@@ -32,25 +34,26 @@ Keyword fallback behavior:
 
 Embedding config is resolved by **scope**.
 
-### 3.1 memory scope
+### 3.1 user_memory scope
 
 Priority:
-1. `memory.embedding.*`
-2. if `memory.embedding.inherit_from_knowledge_base=true`, fallback to `knowledge_base.embedding.*`
+1. `user_memory.embedding.*`
+2. if `user_memory.embedding.inherit_from_knowledge_base=true`, fallback to
+   `knowledge_base.embedding.*`
 3. fallback to `llm.embedding_provider` / `llm.default_provider`
 
 ### 3.2 knowledge_base scope
 
 Priority:
 1. `knowledge_base.embedding.*`
-2. optional fallback to `memory.embedding.*` (disabled by default)
+2. optional fallback to `user_memory.embedding.*` (disabled by default)
 3. fallback to `llm.embedding_provider` / `llm.default_provider`
 
-## 4. Rerank Config Resolution (Memory)
+## 4. Rerank Config Resolution (User Memory)
 
-Memory rerank settings are primarily from `memory.retrieval.*`.
+User-memory rerank settings are primarily from `user_memory.retrieval.*`.
 
-If memory rerank provider/model is blank, fallback to:
+If user-memory rerank provider/model is blank, fallback to:
 - `knowledge_base.search.rerank_provider`
 - `knowledge_base.search.rerank_model`
 
@@ -60,21 +63,21 @@ This gives independent tuning while still supporting zero-friction bootstrap.
 
 Use **split config with controlled inheritance**:
 
-- Keep memory and knowledge-base retrieval parameters separate.
-- Keep memory embedding/rerank explicitly configurable in memory scope.
+- Keep user-memory and knowledge-base retrieval parameters separate.
+- Keep user-memory embedding/rerank explicitly configurable in `user_memory` scope.
 - Allow fallback to knowledge-base defaults only as bootstrap or emergency fallback.
 - Keep provider inventory shared at LLM provider layer (DB/config), not duplicated per subsystem.
 
 Practical recommendation:
-- In production, set `memory.embedding.provider/model` explicitly.
-- Set `memory.retrieval.rerank_provider/model` explicitly when memory quality matters.
+- In production, set `user_memory.embedding.provider/model` explicitly.
+- Set `user_memory.retrieval.rerank_provider/model` explicitly when user-memory quality matters.
 - Keep inheritance enabled only if your operations team wants auto-follow behavior.
 
 ## 6. Observability and API
 
-Memory config API:
-- `GET /api/v1/memories/config`
-- `PUT /api/v1/memories/config` (admin only)
+User-memory config API:
+- `GET /api/v1/user-memory/config`
+- `PUT /api/v1/user-memory/config` (admin only)
 
 Response includes:
 - configured values
@@ -83,39 +86,26 @@ Response includes:
 
 This is intended to avoid ambiguity in incident/debug scenarios.
 
-## 7. Rollout Feature Flags
+## 7. Runtime and Safety Flags
 
-Use these flags under `memory.*` for staged rollout/rollback:
+Use these reset-era flags for staged rollout/rollback:
 
-- `memory.retrieval.strict_keyword_fallback` (default: `true`)
+- `user_memory.retrieval.strict_keyword_fallback` (default: `true`)
   - `true`: strict keyword semantics with stronger overlap/quality gate.
   - `false`: legacy keyword semantics (rollback path).
 
-- `memory.write.fail_closed_user_agent` (default: `true`)
-  - `true`: `agent`/`user_context` keep fail-closed behavior on empty extraction.
-  - `false`: relaxes that strict fail-closed policy for rollback.
+- `runtime_context.enable_user_memory` / `runtime_context.enable_skills` /
+  `runtime_context.enable_knowledge_base`
+  - Toggle which durable sources the agent runtime injects.
 
-- `memory.observability.enable_quality_counters` (default: `true`)
+- `user_memory.observability.enable_quality_counters` (default: `true`)
   - Enables quality telemetry counters:
   - blocked writes
-  - planner actions
-  - retrieval source quality (accepted/rejected)
+  - consolidation actions
+  - retrieval source quality (`vector` / `keyword`)
 
 ## 8. Top-K Relevance Evaluation
 
-Run offline Top-K tracking on labeled cases:
-
-```bash
-cd backend
-.venv/bin/python scripts/evaluate_memory_retrieval_topk.py \
-  --dataset /path/to/memory_eval.jsonl \
-  --top-k 5 \
-  --output reports/memory_retrieval_topk_report.json
-```
-
-Dataset supports `expected_memory_ids` and/or `expected_keywords` per case.
-Report includes:
-- `top1_hit_rate`, `top3_hit_rate`, `topk_hit_rate`
-- `recall_at_k`
-- `top3_irrelevant_hit_rate`
-- retrieval source breakdown (`semantic`/`keyword`)
+Run retrieval evaluation against the reset-era user-memory and skill-learning suites.
+The legacy `scripts/evaluate_memory_retrieval_topk.py` path has been removed.
+Track retrieval source breakdown (`vector` / `keyword`) as part of result analysis.

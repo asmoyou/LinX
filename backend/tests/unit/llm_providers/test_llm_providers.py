@@ -524,6 +524,7 @@ async def test_router_integration():
         "providers": {"ollama": {"base_url": "http://localhost:11434"}},
         "model_mapping": {"chat": {"ollama": "llama3"}},
         "fallback_enabled": False,
+        "prefer_config_providers": True,
         "max_retries": 2,
     }
 

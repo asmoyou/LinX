@@ -29,10 +29,18 @@ def client(app):
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _disable_persistent_session_validation(monkeypatch):
+    """Keep auth routing tests independent from database-backed session revocation."""
+    monkeypatch.setattr("access_control.permissions.ensure_session_not_revoked", lambda *_: None)
+
+
 @pytest.fixture
 def auth_token():
     """Create test authentication token."""
-    tokens = create_token_pair(user_id=uuid.uuid4(), username="testuser", role="user")
+    user_id = uuid.uuid4()
+    username = f"testuser-{user_id.hex[:8]}"
+    tokens = create_token_pair(user_id=user_id, username=username, role="user")
     return tokens.access_token
 
 

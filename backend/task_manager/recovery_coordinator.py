@@ -9,6 +9,7 @@ References:
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import UUID
 
@@ -50,6 +51,31 @@ class RecoveryCoordinator:
         self.alert_manager = AlertManager()
 
         logger.info("RecoveryCoordinator initialized")
+
+    async def create_recovery_plan(
+        self,
+        task_id: UUID,
+        failure_reason: str,
+        attempt: int,
+    ) -> Dict[str, Any]:
+        """Backward-compatible planning helper used by older tests."""
+        failure_type = (
+            FailureType.TIMEOUT if "timeout" in failure_reason.lower() else FailureType.AGENT_ERROR
+        )
+        failure_record = FailureRecord(
+            task_id=task_id,
+            failure_type=failure_type,
+            error_message=failure_reason,
+            timestamp=datetime.utcnow(),
+        )
+        failure_record.retry_count = attempt
+        strategy = self._select_recovery_strategy(failure_record)
+        plan: Dict[str, Any] = {"action": strategy.value}
+        if strategy == RecoveryStrategy.RETRY:
+            plan["retry_delay"] = self.retry_manager.calculate_retry_delay(attempt)
+        elif strategy == RecoveryStrategy.REASSIGN:
+            plan["new_agent_criteria"] = {"exclude_failed_agent": True}
+        return plan
 
     async def handle_task_failure(
         self,

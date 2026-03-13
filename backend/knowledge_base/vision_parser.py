@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+from knowledge_base.config_utils import load_knowledge_base_config
 from shared.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ class ParseResult:
 def _resolve_vision_settings() -> tuple[str, str, float, str]:
     """Resolve current vision model/provider/timeout/output language from config."""
     config = get_config()
-    kb_config = config.get_section("knowledge_base") if config else {}
+    kb_config = load_knowledge_base_config(config)
     parsing_cfg = kb_config.get("parsing", {})
     vision_model = parsing_cfg.get("vision_model", "qwen3-vl:30b")
     vision_provider = parsing_cfg.get("vision_provider", "ollama")

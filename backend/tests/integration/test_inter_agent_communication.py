@@ -176,22 +176,20 @@ class TestInterAgentCommunication:
         with patch("agent_framework.inter_agent_communication.InterAgentCommunicator") as mock_comm:
             comm_instance = Mock()
             mock_comm.return_value = comm_instance
+            comm_instance.send_message = AsyncMock(return_value={"status": "delivered"})
 
             # Coordinator delegates to analyst
-            comm_instance.send_message = AsyncMock(return_value={"status": "delivered"})
             await coordinator.delegate_task(
                 to_agent_id=analyst_config.agent_id, task="Analyze sales data"
             )
 
             # Analyst completes and notifies coordinator
-            comm_instance.send_message = AsyncMock(return_value={"status": "delivered"})
             await analyst.send_result(
                 to_agent_id=coordinator_config.agent_id,
                 result={"analysis": "Sales increased by 20%"},
             )
 
             # Coordinator delegates to writer
-            comm_instance.send_message = AsyncMock(return_value={"status": "delivered"})
             await coordinator.delegate_task(
                 to_agent_id=writer_config.agent_id, task="Write report based on analysis"
             )

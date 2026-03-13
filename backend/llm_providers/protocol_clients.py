@@ -15,6 +15,7 @@ from typing import Dict, List, Optional
 
 import aiohttp
 
+from llm_providers.base import BaseLLMProvider
 from llm_providers.model_metadata import ModelMetadata, EnhancedModelCapabilityDetector
 from llm_providers.models import ProviderProtocol
 
@@ -87,10 +88,13 @@ class OllamaClient(ProtocolClient):
         
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url,
-                    timeout=aiohttp.ClientTimeout(total=timeout),
-                ) as response:
+                request_ctx = await BaseLLMProvider._resolve_request_context(
+                    session.get(
+                        url,
+                        timeout=aiohttp.ClientTimeout(total=timeout),
+                    )
+                )
+                async with request_ctx as response:
                     if response.status != 200:
                         text = await response.text()
                         raise Exception(f"Ollama API returned {response.status}: {text}")
@@ -129,11 +133,14 @@ class OllamaClient(ProtocolClient):
         
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    url,
-                    json={"name": model_id},
-                    timeout=aiohttp.ClientTimeout(total=timeout),
-                ) as response:
+                request_ctx = await BaseLLMProvider._resolve_request_context(
+                    session.post(
+                        url,
+                        json={"name": model_id},
+                        timeout=aiohttp.ClientTimeout(total=timeout),
+                    )
+                )
+                async with request_ctx as response:
                     if response.status != 200:
                         logger.warning(f"Failed to fetch metadata for {model_id}: {response.status}")
                         return None
@@ -204,11 +211,14 @@ class OpenAICompatibleClient(ProtocolClient):
             try:
                 logger.info(f"Testing connection to {url} with headers: {list(headers.keys())}")
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        url,
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=timeout),
-                    ) as response:
+                    request_ctx = await BaseLLMProvider._resolve_request_context(
+                        session.get(
+                            url,
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=timeout),
+                        )
+                    )
+                    async with request_ctx as response:
                         response_text = await response.text()
                         
                         if response.status == 200:
@@ -280,11 +290,14 @@ class OpenAICompatibleClient(ProtocolClient):
         for url in urls_to_try:
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        url,
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=timeout),
-                    ) as response:
+                    request_ctx = await BaseLLMProvider._resolve_request_context(
+                        session.get(
+                            url,
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=timeout),
+                        )
+                    )
+                    async with request_ctx as response:
                         if response.status == 200:
                             data = await response.json()
                             

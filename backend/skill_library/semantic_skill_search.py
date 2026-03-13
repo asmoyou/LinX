@@ -30,7 +30,7 @@ class SemanticSkillSearch:
             embedding_service: EmbeddingService for generating embeddings
         """
         self.skill_registry = skill_registry or get_skill_registry()
-        self.embedding_service = embedding_service or get_embedding_service(scope="memory")
+        self.embedding_service = embedding_service or get_embedding_service(scope="user_memory")
         logger.info("SemanticSkillSearch initialized")
 
     def find_similar_skills(

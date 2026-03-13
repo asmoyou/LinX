@@ -9,6 +9,7 @@ References:
 """
 
 import json
+import inspect
 import logging
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
@@ -45,6 +46,7 @@ router = APIRouter(tags=["LLM Providers"])
 # Request/Response Models
 class ProviderStatus(BaseModel):
     """Provider health status"""
+    __test__ = False
 
     name: str
     healthy: bool
@@ -54,6 +56,7 @@ class ProviderStatus(BaseModel):
 
 class ModelInfo(BaseModel):
     """Model information"""
+    __test__ = False
 
     name: str
     provider: str
@@ -62,6 +65,7 @@ class ModelInfo(BaseModel):
 
 class LLMConfigResponse(BaseModel):
     """LLM configuration response"""
+    __test__ = False
 
     providers: Dict[str, ProviderStatus]
     default_provider: str
@@ -71,6 +75,7 @@ class LLMConfigResponse(BaseModel):
 
 class TestGenerationRequest(BaseModel):
     """Test generation request"""
+    __test__ = False
 
     prompt: str = Field(..., min_length=1, max_length=1000)
     provider: Optional[str] = None
@@ -81,12 +86,19 @@ class TestGenerationRequest(BaseModel):
 
 class TestGenerationResponse(BaseModel):
     """Test generation response"""
+    __test__ = False
 
     content: str
     model: str
     provider: str
     tokens_used: int
     success: bool
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 # Endpoints
@@ -112,6 +124,16 @@ async def get_providers(
 
     try:
         llm_router = get_llm_provider()
+        health_results: Dict[str, bool] = {}
+        router_models: Dict[str, List[str]] = {}
+        router_provider_names = set()
+
+        if llm_router is not None:
+            router_provider_names = set(getattr(llm_router, "providers", {}).keys())
+            if hasattr(llm_router, "health_check_all"):
+                health_results = dict(await _maybe_await(llm_router.health_check_all()) or {})
+            if hasattr(llm_router, "list_available_models"):
+                router_models = dict(await _maybe_await(llm_router.list_available_models()) or {})
 
         # Get all providers from database only
         db_providers = {}
@@ -128,34 +150,53 @@ async def get_providers(
         from shared.config import get_config
 
         config = get_config()
+        router_config = getattr(llm_router, "config", {}) if llm_router is not None else {}
+        default_provider = str(
+            router_config.get("default_provider")
+            or config.get("llm.default_provider", "ollama")
+        )
+        fallback_enabled = bool(
+            getattr(llm_router, "fallback_enabled", router_config.get("fallback_enabled", False))
+        )
+        model_mapping = dict(
+            getattr(llm_router, "model_mapping", None) or router_config.get("model_mapping", {}) or config.get("llm.model_mapping", {})
+        )
 
-        # Build provider status from database only
+        # Build provider status from database and router fallbacks
         providers = {}
+        provider_names = set(db_providers.keys()) | router_provider_names | set(health_results.keys()) | set(router_models.keys())
 
-        for provider_name, db_provider in db_providers.items():
-            # Health based on last test status
-            if db_provider.last_test_status == "success":
-                healthy = True
-            elif db_provider.last_test_status == "failed":
-                healthy = False
+        for provider_name in sorted(provider_names):
+            db_provider = db_providers.get(provider_name)
+            if db_provider is not None:
+                if provider_name in health_results:
+                    healthy = bool(health_results[provider_name])
+                elif db_provider.last_test_status == "success":
+                    healthy = True
+                elif db_provider.last_test_status == "failed":
+                    healthy = False
+                else:
+                    healthy = db_provider.enabled and bool(db_provider.base_url)
+
+                available_models = list(db_provider.models or router_models.get(provider_name) or [])
+                is_config_based = False
             else:
-                # Untested or no test yet - assume healthy if enabled and has base_url
-                healthy = db_provider.enabled and bool(db_provider.base_url)
-
-            available_models = db_provider.models or []
+                healthy = bool(health_results.get(provider_name, False))
+                available_models = list(router_models.get(provider_name) or [])
+                is_config_based = True
 
             providers[provider_name] = ProviderStatus(
                 name=provider_name,
                 healthy=healthy,
                 available_models=available_models,
-                is_config_based=False,  # All providers are now in database
+                is_config_based=is_config_based,
             )
 
         return LLMConfigResponse(
             providers=providers,
-            default_provider=config.get("llm.default_provider", "ollama"),
-            fallback_enabled=config.get("llm.enable_fallback", False),
-            model_mapping=config.get("llm.model_mapping", {}),
+            default_provider=default_provider,
+            fallback_enabled=fallback_enabled,
+            model_mapping=model_mapping,
         )
 
     except Exception as e:
@@ -178,8 +219,17 @@ async def get_provider_models(
         provider_name: Name of the provider (ollama, vllm, openai, anthropic)
     """
     try:
+        llm_router = get_llm_provider() if get_llm_provider is not None else None
+
         # Get models from database or config.yaml
         models = []
+
+        if llm_router is not None:
+            provider = getattr(llm_router, "providers", {}).get(provider_name)
+            if provider is not None and hasattr(provider, "list_models"):
+                models = list(await _maybe_await(provider.list_models()) or [])
+                if models:
+                    return models
 
         # Try database first
         try:
@@ -207,6 +257,15 @@ async def get_provider_models(
                 models = list(set(models_dict.values()))
             elif isinstance(models_dict, list):
                 models = models_dict
+
+        if not models and llm_router is not None:
+            if hasattr(llm_router, "list_available_models"):
+                model_map = dict(await _maybe_await(llm_router.list_available_models()) or {})
+                models = list(model_map.get(provider_name) or [])
+            if not models:
+                provider = getattr(llm_router, "providers", {}).get(provider_name)
+                if provider is not None and hasattr(provider, "list_models"):
+                    models = list(await _maybe_await(provider.list_models()) or [])
 
         if not models:
             raise HTTPException(
@@ -249,8 +308,11 @@ async def check_provider_health(
     try:
         llm_router = get_llm_provider()
 
-        # Load provider on-demand
-        provider = await llm_router._get_provider(provider_name)
+        provider = getattr(llm_router, "providers", {}).get(provider_name)
+        if provider is None and hasattr(llm_router, "_get_provider"):
+            provider = await _maybe_await(llm_router._get_provider(provider_name))
+        if provider is None:
+            provider = getattr(llm_router, "providers", {}).get(provider_name)
 
         if not provider:
             raise HTTPException(
@@ -259,7 +321,7 @@ async def check_provider_health(
             )
 
         # Perform actual health check
-        healthy = await provider.health_check()
+        healthy = bool(await _maybe_await(provider.health_check()))
 
         return {"healthy": healthy}
 
@@ -295,6 +357,34 @@ async def test_generation(
 
     try:
         start_time = time.time()
+        llm_router = get_llm_provider() if get_llm_provider is not None else None
+
+        if llm_router is not None:
+            try:
+                router_response = await _maybe_await(
+                    llm_router.generate(
+                        prompt=request.prompt,
+                        provider=request.provider,
+                        model=request.model,
+                        temperature=request.temperature,
+                        max_tokens=request.max_tokens,
+                    )
+                )
+                return TestGenerationResponse(
+                    content=str(getattr(router_response, "content", "") or ""),
+                    model=str(getattr(router_response, "model", request.model or "")),
+                    provider=str(getattr(router_response, "provider", request.provider or "")),
+                    tokens_used=int(getattr(router_response, "tokens_used", 0) or 0),
+                    success=True,
+                )
+            except ValueError as e:
+                logger.warning(f"Router generation unavailable, falling back to direct provider test: {e}")
+            except Exception as e:
+                logger.error(f"Test generation failed via router: {e}", exc_info=True)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Generation failed: {str(e)}",
+                )
 
         # Get provider from database
         with get_db_session() as db:

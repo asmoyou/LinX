@@ -32,12 +32,13 @@ from api_gateway.routers import (
     departments,
     knowledge,
     llm,
-    memory,
     missions,
     monitoring,
     notifications,
     roles,
+    skill_proposals,
     skills,
+    user_memory,
     users,
 )
 from api_gateway.websocket import router as websocket_router
@@ -203,21 +204,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.warning(f"Failed to initialize SessionManager: {e}")
 
-    # Start Milvus orphan vector cleanup manager
-    try:
-        from memory_system.orphan_vector_cleanup import initialize_orphan_cleanup_manager
-
-        manager = await initialize_orphan_cleanup_manager()
-        if manager:
-            logger.info("Milvus orphan cleanup manager initialized")
-        else:
-            logger.info("Milvus orphan cleanup manager is disabled by config")
-    except Exception as e:
-        logger.warning(f"Failed to initialize Milvus orphan cleanup manager: {e}")
-
     # Start materialization maintenance manager
     try:
-        from memory_system.materialization_maintenance_manager import (
+        from user_memory.materialization_maintenance_manager import (
             initialize_materialization_maintenance_manager,
         )
 
@@ -228,6 +217,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             logger.info("Materialization maintenance manager is disabled by config")
     except Exception as e:
         logger.warning(f"Failed to initialize materialization maintenance manager: {e}")
+
+    # Start session-ledger retention manager
+    try:
+        from user_memory.retention_manager import (
+            initialize_session_ledger_retention_manager,
+        )
+
+        manager = await initialize_session_ledger_retention_manager()
+        if manager:
+            logger.info("Session-ledger retention manager initialized")
+        else:
+            logger.info("Session-ledger retention manager is disabled by config")
+    except Exception as e:
+        logger.warning(f"Failed to initialize session-ledger retention manager: {e}")
 
     # Start document processing worker
     try:
@@ -282,18 +285,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.error(f"Failed to shutdown SessionManager: {e}")
 
-    # Stop Milvus orphan cleanup manager
-    try:
-        from memory_system.orphan_vector_cleanup import shutdown_orphan_cleanup_manager
-
-        await shutdown_orphan_cleanup_manager()
-        logger.info("Milvus orphan cleanup manager shutdown complete")
-    except Exception as e:
-        logger.error(f"Failed to shutdown Milvus orphan cleanup manager: {e}")
-
     # Stop materialization maintenance manager
     try:
-        from memory_system.materialization_maintenance_manager import (
+        from user_memory.materialization_maintenance_manager import (
             shutdown_materialization_maintenance_manager,
         )
 
@@ -301,6 +295,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.info("Materialization maintenance manager shutdown complete")
     except Exception as e:
         logger.error(f"Failed to shutdown materialization maintenance manager: {e}")
+
+    # Stop session-ledger retention manager
+    try:
+        from user_memory.retention_manager import (
+            shutdown_session_ledger_retention_manager,
+        )
+
+        await shutdown_session_ledger_retention_manager()
+        logger.info("Session-ledger retention manager shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown session-ledger retention manager: {e}")
 
     # Final Docker sandbox cleanup (catch anything SessionManager missed)
     try:
@@ -416,7 +421,12 @@ def create_app() -> FastAPI:
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
     app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
     app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["Knowledge"])
-    app.include_router(memory.router, prefix="/api/v1/memories", tags=["Memory"])
+    app.include_router(user_memory.router, prefix="/api/v1/user-memory", tags=["User Memory"])
+    app.include_router(
+        skill_proposals.router,
+        prefix="/api/v1/skill-proposals",
+        tags=["Skill Proposals"],
+    )
     app.include_router(missions.router, prefix="/api/v1/missions", tags=["Missions"])
     app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["Notifications"])
     app.include_router(skills.router, prefix="/api/v1/skills", tags=["Skills"])

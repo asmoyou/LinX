@@ -5,6 +5,8 @@ References:
 - Design Section 7: Task Management Design
 """
 
+from contextlib import contextmanager
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -15,6 +17,22 @@ from task_manager.dependency_resolver import DependencyResolver
 from task_manager.goal_analyzer import ClarificationQuestion, GoalAnalysis, GoalAnalyzer
 from task_manager.task_coordinator import TaskCoordinator
 from task_manager.task_decomposer import DecomposedTask, TaskDecomposer
+
+
+def _mock_db_session_context(*, all_result=None, first_result=None):
+    session = Mock()
+    query = Mock()
+    filtered = Mock()
+    filtered.all.return_value = all_result if all_result is not None else []
+    filtered.first.return_value = first_result
+    query.filter.return_value = filtered
+    session.query.return_value = query
+
+    @contextmanager
+    def _ctx():
+        yield session
+
+    return _ctx
 
 
 class TestGoalAnalyzer:
@@ -213,8 +231,12 @@ class TestAgentAssigner:
         assert assigner is not None
         assert assigner.capability_mapper is not None
 
-    def test_assign_agent_to_task_no_agents(self):
+    def test_assign_agent_to_task_no_agents(self, monkeypatch):
         """Test assignment when no agents available."""
+        monkeypatch.setattr(
+            "task_manager.agent_assigner.get_db_session",
+            _mock_db_session_context(all_result=[]),
+        )
         assigner = AgentAssigner()
 
         assignment = assigner.assign_agent_to_task(
@@ -911,8 +933,12 @@ class TestFailureDetector:
         assert detector is not None
         assert len(detector._timeout_thresholds) > 0
 
-    def test_detect_failure_no_task(self):
+    def test_detect_failure_no_task(self, monkeypatch):
         """Test failure detection with non-existent task."""
+        monkeypatch.setattr(
+            "task_manager.error_handler.get_db_session",
+            _mock_db_session_context(first_result=None),
+        )
         from task_manager.error_handler import FailureDetector
 
         detector = FailureDetector()

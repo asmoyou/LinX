@@ -8,6 +8,7 @@ References:
 - Design Section 9.1: Provider Architecture
 """
 
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -65,6 +66,38 @@ class BaseLLMProvider(ABC):
         """
         self.config = config
         self.provider_name = self.__class__.__name__
+
+    @staticmethod
+    def _normalize_request_value(value: Any) -> Any:
+        """Convert request payload values into JSON-safe primitives."""
+        if isinstance(value, Enum):
+            return value.value
+        if isinstance(value, dict):
+            return {
+                str(key): BaseLLMProvider._normalize_request_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [BaseLLMProvider._normalize_request_value(item) for item in value]
+        if isinstance(value, tuple):
+            return [BaseLLMProvider._normalize_request_value(item) for item in value]
+        return value
+
+    @classmethod
+    def _normalize_request_payload(cls, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            str(key): cls._normalize_request_value(value)
+            for key, value in dict(payload or {}).items()
+        }
+
+    @staticmethod
+    async def _resolve_request_context(request_result: Any) -> Any:
+        """Support both aiohttp request managers and awaited AsyncMock stubs."""
+        if hasattr(request_result, "__aenter__") and hasattr(request_result, "__aexit__"):
+            return request_result
+        if inspect.isawaitable(request_result):
+            request_result = await request_result
+        return request_result
 
     @abstractmethod
     async def generate(

@@ -19,12 +19,23 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple, Union
 from uuid import UUID
 
+from knowledge_base.config_utils import load_knowledge_base_config
 from memory_system.embedding_service import get_embedding_service
 from memory_system.milvus_connection import get_milvus_connection
 from llm_providers.provider_resolver import resolve_provider
 from shared.config import get_config
 
 logger = logging.getLogger(__name__)
+
+
+class AwaitableSearchResults(list):
+    """List wrapper that can also be awaited in compatibility paths."""
+
+    def __await__(self):
+        async def _resolve():
+            return self
+
+        return _resolve().__await__()
 
 
 @dataclass
@@ -71,7 +82,7 @@ class KnowledgeSearch:
 
         # Load search config
         config = get_config()
-        kb_config = config.get_section("knowledge_base") if config else {}
+        kb_config = load_knowledge_base_config(config)
         search_cfg = kb_config.get("search", {})
         llm_cfg = config.get_section("llm") if config else {}
 
@@ -161,7 +172,9 @@ class KnowledgeSearch:
     def search(
         self,
         query: str,
-        search_filter: SearchFilter,
+        search_filter: Optional[SearchFilter] = None,
+        user_id: Optional[UUID] = None,
+        limit: int = 10,
     ) -> List[SearchResult]:
         """Search knowledge base using hybrid vector + BM25 search.
 
@@ -172,6 +185,19 @@ class KnowledgeSearch:
         Returns:
             List of SearchResult ordered by relevance
         """
+        if search_filter is None:
+            raw_results = self.milvus_conn.search(query=query, limit=limit)
+            return AwaitableSearchResults(
+                [
+                    {
+                        "knowledge_id": hit["entity"]["knowledge_id"],
+                        "chunk_text": hit["entity"]["chunk_text"],
+                        "relevance_score": max(0.0, 1.0 - float(hit.get("distance", 1.0))),
+                    }
+                    for hit in raw_results
+                ]
+            )
+
         total_start = time.perf_counter()
         stage_ms: Dict[str, float] = {}
 
@@ -1651,7 +1677,7 @@ def _build_search_signature() -> str:
     """Build signature to refresh singleton when KB config changes."""
     try:
         config = get_config()
-        kb_config = config.get_section("knowledge_base") if config else {}
+        kb_config = load_knowledge_base_config(config)
         payload = {
             "search": kb_config.get("search", {}),
             "embedding": kb_config.get("embedding", {}),

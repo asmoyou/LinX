@@ -265,12 +265,12 @@ This checklist ensures all systems are validated and ready for production deploy
 - [ ] Document metadata correct
 
 ### Memory System
-- [ ] Agent memory isolated
-- [ ] Company memory shared correctly
-- [ ] User context preserved
+- [ ] User memory is private to the owning user
+- [ ] Skill proposals are isolated to the owning agent account
+- [ ] Knowledge base references are retrievable independently of user memory
 - [ ] Memory search works
-- [ ] Memory sharing works
-- [ ] Memory archival works
+- [ ] Skill proposal review flow works
+- [ ] Session ledger retention works
 
 ### Real-time Updates
 - [ ] WebSocket connection established

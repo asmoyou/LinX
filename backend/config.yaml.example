@@ -685,80 +685,109 @@ task_management:
     use_llm_for_summarization: true
 
 # ============================================================================
-# Memory System Configuration
+# Reset-Era User Memory / Skill Learning Configuration
 # ============================================================================
-memory:
-  # Memory Types
-  types:
-    agent_memory:
-      enabled: true
-      retention_days: 90
-      max_items_per_agent: 10000
-    
-    company_memory:
-      enabled: true
-      retention_days: 365
-      max_items: 100000
-    
-    user_context:
-      enabled: true
-      retention_days: 365
-      max_items_per_user: 5000
-  
-  # Embedding Configuration
+user_memory:
+  retention:
+    enabled: true
+    retention_days: 365
+    max_entries_per_user: 5000
+
   embedding:
-    provider: "llm-pool"  # Preferred embedding provider for memory retrieval
+    provider: "llm-pool"  # Preferred embedding provider for user-memory retrieval
     model: "BAAI/bge-m3"
-    dimension: 1024  # Must match model output dimension
+    dimension: 1024
     batch_size: 32
-    inherit_from_knowledge_base: true  # Fallback to knowledge_base.embedding when blank
-    
-  # Retrieval Configuration
+    inherit_from_knowledge_base: true
+
   retrieval:
     top_k: 10
     similarity_threshold: 0.3
-    strict_keyword_fallback: true  # Enables stricter keyword fallback semantics with overlap gating
+    strict_keyword_fallback: true
     enable_reranking: true
-    rerank_provider: "llm-pool"  # Falls back to knowledge_base.search.rerank_provider when blank
-    rerank_model: "BAAI/bge-reranker-v2-m3"  # Falls back to knowledge_base.search.rerank_model when blank
+    rerank_provider: "llm-pool"
+    rerank_model: "BAAI/bge-reranker-v2-m3"
     rerank_top_k: 30
     rerank_weight: 0.75
     rerank_timeout_seconds: 8
     rerank_failure_backoff_seconds: 30
     rerank_doc_max_chars: 1200
-    
-    # Ranking Weights
     similarity_weight: 0.7
     recency_weight: 0.3
+    milvus:
+      metric_type: "L2"
+      nprobe: 10
 
-  # Write-policy feature flags
-  write:
-    fail_closed_user_agent: true  # If false, agent/user_context writes may bypass fail-closed empty extraction
+  extraction:
+    enabled: true
+    model_enabled: true
+    provider: ""  # Defaults to llm.default_provider when blank
+    model: ""  # Auto-select first chat-capable model from provider when blank
+    timeout_seconds: 120
+    max_facts: 10
+    max_preference_facts: 10
+    enable_heuristic_fallback: true
+    secondary_recall_enabled: true
+    failure_backoff_seconds: 60
+    fail_closed_empty_writes: true
 
-  # Memory quality observability switches
-  observability:
-    enable_quality_counters: true  # Emits blocked-write/planner-action/retrieval-quality counters
-  
-  # Memory Sharing
-  sharing:
-    enable_automatic: true
-    enable_explicit: true
-    default_scope: "user_context"  # Options: agent_memory, user_context, company_memory
-
-  # Automatic Milvus orphan vector cleanup (production safety guard)
-  cleanup_orphans:
+  consolidation:
     enabled: true
     run_on_startup: true
-    startup_delay_seconds: 120
-    interval_seconds: 21600  # 6 hours
-    batch_size: 1000
-    query_timeout_seconds: 10
-    dry_run: false  # Set true to observe only, without deleting
-    max_scan_per_collection: 200000
-    max_delete_per_collection: 20000
-    collections: ["agent_memories", "company_memories"]
-    advisory_lock_id: 73012019  # PostgreSQL advisory lock for multi-worker safety
+    startup_delay_seconds: 180
+    interval_seconds: 21600
+    dry_run: false
+    limit: 5000
+    advisory_lock_id: 73012020
     use_advisory_lock: true
+
+  observability:
+    enable_quality_counters: true
+
+skill_learning:
+  retention:
+    enabled: true
+    retention_days: 90
+    max_proposals_per_agent: 10000
+
+  extraction:
+    enabled: true
+    provider: ""  # Defaults to llm.default_provider when blank
+    model: ""  # Auto-select first chat-capable model from provider when blank
+    timeout_seconds: 120
+    max_proposals: 6
+    failure_backoff_seconds: 60
+
+  proposal_review:
+    require_human_review: true
+    allow_revise: true
+    default_review_status: "pending"
+
+  publish_policy:
+    enabled: true
+    skill_type: "agent_skill"
+    storage_type: "inline"
+    reuse_existing_by_name: true
+
+session_ledger:
+  enabled: true
+  retention_days: 14
+  run_on_startup: true
+  startup_delay_seconds: 120
+  cleanup_interval_seconds: 21600
+  batch_size: 1000
+  dry_run: false
+  advisory_lock_id: 73012021
+  use_advisory_lock: true
+
+runtime_context:
+  enable_user_memory: true
+  enable_skills: true
+  enable_knowledge_base: true
+  collection_retry_attempts: 3
+  collection_retry_delay_seconds: 0.35
+  search_timeout_seconds: 2
+  delete_timeout_seconds: 2
 
 # ============================================================================
 # Knowledge Base Configuration

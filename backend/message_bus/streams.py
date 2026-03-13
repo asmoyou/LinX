@@ -105,7 +105,8 @@ class StreamsManager:
 
         # Create consumer group if it doesn't exist
         try:
-            self._client.xgroup_create(stream_name, consumer_group, id="0", mkstream=True)
+            # Start at the end of the stream so consumers only receive new messages.
+            self._client.xgroup_create(stream_name, consumer_group, id="$", mkstream=True)
             logger.info(f"Created consumer group '{consumer_group}' for stream {stream_name}")
         except redis.ResponseError as e:
             if "BUSYGROUP" not in str(e):

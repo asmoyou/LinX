@@ -6,7 +6,8 @@ References:
 - Task 4.5: Task Flow Visualization
 """
 
-from typing import Dict, Optional, Set
+from collections import defaultdict
+from typing import Any, DefaultDict, Dict, List, Optional, Set
 from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -17,7 +18,7 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 # Store active WebSocket connections by user_id
-active_connections: Dict[str, Set[WebSocket]] = {}
+active_connections: Dict[Any, Set[WebSocket]] = {}
 
 # Store task flow subscriptions: task_id -> set of websockets
 task_flow_subscriptions: Dict[UUID, Set[WebSocket]] = {}
@@ -27,9 +28,123 @@ mission_subscriptions: Dict[UUID, Set[WebSocket]] = {}
 
 # Store global mission subscriptions (all mission events)
 mission_global_subscriptions: Set[WebSocket] = set()
+offline_message_queue: DefaultDict[str, List[dict[str, Any]]] = defaultdict(list)
 
 
-def _remove_active_connection(user_id: str, websocket: WebSocket) -> None:
+class ConnectionManager:
+    """Minimal connection manager used by legacy websocket helpers and tests."""
+
+    def __init__(self):
+        self.active_connections = active_connections
+
+    async def connect(self, websocket: WebSocket, user_id: UUID | str) -> None:
+        self.active_connections.setdefault(user_id, set()).add(websocket)
+
+    async def disconnect(self, websocket: WebSocket, user_id: UUID | str) -> None:
+        _remove_active_connection(user_id, websocket)
+
+    async def send_personal_message(self, message: dict[str, Any], user_id: UUID | str) -> None:
+        connections = list(self.active_connections.get(user_id, set()))
+        stale_connections: list[WebSocket] = []
+        for connection in connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                stale_connections.append(connection)
+        for connection in stale_connections:
+            await self.disconnect(connection, user_id)
+
+    async def broadcast(self, message: dict[str, Any]) -> None:
+        for user_id in list(self.active_connections.keys()):
+            await self.send_personal_message(message, user_id)
+
+def _get_connection_manager() -> ConnectionManager:
+    return ConnectionManager()
+
+
+async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
+    """Compatibility websocket endpoint used by tests and older callers."""
+
+    manager = _get_connection_manager()
+    await websocket.accept()
+    await manager.connect(websocket, user_id)
+    try:
+        payload = await websocket.receive_text()
+        if payload == "ping":
+            await send_heartbeat(websocket, user_id)
+    finally:
+        await manager.disconnect(websocket, user_id)
+
+
+async def send_task_update(
+    user_id: UUID | str,
+    task_id: UUID | str,
+    status: str,
+    progress: Optional[int] = None,
+) -> None:
+    await _get_connection_manager().send_personal_message(
+        {
+            "type": "task_update",
+            "task_id": str(task_id),
+            "status": status,
+            "progress": progress,
+        },
+        user_id,
+    )
+
+
+async def broadcast_agent_status(
+    agent_id: UUID | str,
+    status: str,
+    current_task: Optional[str] = None,
+) -> None:
+    await _get_connection_manager().broadcast(
+        {
+            "type": "agent_status",
+            "agent_id": str(agent_id),
+            "status": status,
+            "current_task": current_task,
+        }
+    )
+
+
+async def stream_logs(user_id: UUID | str, task_id: UUID | str, log_entry: dict[str, Any]) -> None:
+    await _get_connection_manager().send_personal_message(
+        {
+            "type": "task_log",
+            "task_id": str(task_id),
+            "log_entry": log_entry,
+        },
+        user_id,
+    )
+
+
+async def handle_client_message(websocket: WebSocket, user_id: UUID | str) -> dict[str, Any]:
+    message = await websocket.receive_json()
+    if message.get("type") == "subscribe":
+        response = {
+            "type": "subscription_confirmed",
+            "channel": message.get("channel"),
+            "user_id": str(user_id),
+        }
+    else:
+        response = {
+            "type": "message_received",
+            "user_id": str(user_id),
+        }
+    await websocket.send_json(response)
+    return response
+
+
+async def send_heartbeat(websocket: WebSocket, user_id: UUID | str) -> None:
+    await websocket.send_json({"type": "heartbeat", "user_id": str(user_id)})
+
+
+async def queue_message_for_offline_user(user_id: UUID | str, message: dict[str, Any]) -> None:
+    offline_message_queue[str(user_id)].append(message)
+
+
+def _remove_active_connection(user_id: Any, websocket: WebSocket) -> None:
     connections = active_connections.get(user_id)
     if not connections:
         return

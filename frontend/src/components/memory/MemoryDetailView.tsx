@@ -4,8 +4,6 @@ import {
   X,
   Brain,
   User,
-  Building,
-  ListTodo,
   Clock,
   Tag,
   Share2,
@@ -235,27 +233,19 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
 
   const getTypeIcon = (type: Memory["type"]) => {
     switch (type) {
-      case "agent":
+      case "skill_proposal":
         return <Brain className="w-6 h-6 text-blue-500" />;
-      case "company":
-        return <Building className="w-6 h-6 text-green-500" />;
-      case "user_context":
+      case "user_memory":
         return <User className="w-6 h-6 text-purple-500" />;
-      case "task_context":
-        return <ListTodo className="w-6 h-6 text-amber-500" />;
     }
   };
 
   const getTypeLabel = (type: Memory["type"]) => {
     switch (type) {
-      case "agent":
-        return t("memory.tabs.agent");
-      case "company":
-        return t("memory.tabs.company");
-      case "user_context":
-        return t("memory.tabs.userContext");
-      case "task_context":
-        return t("memory.tabs.taskContext");
+      case "skill_proposal":
+        return t("memory.tabs.skillProposal", { defaultValue: "技能提案" });
+      case "user_memory":
+        return t("memory.tabs.userMemory", { defaultValue: "用户记忆" });
     }
   };
 
@@ -269,7 +259,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
     .trim()
     .toLowerCase();
   const isAgentCandidate =
-    memory.type === "agent" && signalType === "agent_memory_candidate";
+    signalType === "skill_proposal" || memory.type === "skill_proposal";
   const candidateStatusKey =
     reviewStatus === "published" || reviewStatus === "rejected"
       ? reviewStatus
@@ -282,7 +272,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
       return {
         label: t("memory.card.reviewPublished", { defaultValue: "已审批" }),
         hint: t("memory.card.reviewPublishedHint", {
-          defaultValue: "该候选记忆已审批，会参与 Agent 记忆注入。",
+          defaultValue: "该技能提案已审批，会参与技能经验注入。",
         }),
         className: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300",
       };
@@ -291,7 +281,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
       return {
         label: t("memory.card.reviewRejected", { defaultValue: "已拒绝" }),
         hint: t("memory.card.reviewRejectedHint", {
-          defaultValue: "该候选记忆已拒绝，不会参与 Agent 记忆注入。",
+          defaultValue: "该技能提案已拒绝，不会参与技能经验注入。",
         }),
         className: "bg-rose-500/20 text-rose-700 dark:text-rose-300",
       };
@@ -299,13 +289,13 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
     return {
       label: t("memory.card.reviewPending", { defaultValue: "待审批" }),
       hint: t("memory.card.reviewPendingHint", {
-        defaultValue: "该候选记忆待审批，当前不会参与 Agent 记忆注入。",
+        defaultValue: "该技能提案待审批，当前不会参与技能经验注入。",
       }),
       className: "bg-amber-500/20 text-amber-700 dark:text-amber-300",
     };
   })();
   const visibility = (() => {
-    if (memory.type === "user_context") {
+    if (memory.type === "user_memory") {
       return rawVisibility === "explicit" || rawVisibility === "private"
         ? rawVisibility
         : "private";
@@ -313,10 +303,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
     if (rawVisibility) {
       return rawVisibility;
     }
-    if (memory.type === "agent") {
-      return "private";
-    }
-    return "department_tree";
+    return "private";
   })();
   const hasPolicyScope = [
     "explicit",
@@ -334,10 +321,9 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
       ? candidatePublished
       : publishMode === "promote" ||
         hasPromotionBacklink ||
-        (memory.type === "agent" &&
-          ["explicit", "department", "department_tree", "public", "account"].includes(
-            visibility,
-          ));
+        ["explicit", "department", "department_tree", "public", "account"].includes(
+          visibility,
+        );
   const sharingScopeLabel = (() => {
     switch (visibility) {
       case "private":
@@ -358,7 +344,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
   })();
   const sharingTitle = isAgentCandidate
     ? t("memory.share.reviewPublishTitle", { defaultValue: "审批并发布" })
-    : memory.type === "agent"
+    : memory.type === "skill_proposal"
       ? t("memory.share.publishTitle")
       : t("memory.share.title");
   const isPolicyShared = isAgentCandidate

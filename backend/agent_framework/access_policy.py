@@ -1,26 +1,17 @@
-"""Agent access policy helpers.
-
-Defines normalization and effective-scope resolution for agent-level
-access configuration such as allowed memory scopes.
-"""
+"""Agent access policy helpers for runtime context sources."""
 
 from typing import List, Optional, Tuple
 
-
-_MEMORY_SCOPE_ALIASES = {
-    "agent": "agent",
-    "agent_memories": "agent",
-    "company": "company",
-    "company_memories": "company",
-    "user_context": "user_context",
-    "task_context": "task_context",
+_CONTEXT_SOURCE_ALIASES = {
+    "skills": "skills",
+    "user_memory": "user_memory",
 }
 
 
 def normalize_allowed_memory_scopes(
     allowed_memory: Optional[List[str]],
 ) -> Tuple[List[str], List[str]]:
-    """Normalize configured memory scopes and collect invalid values."""
+    """Normalize configured runtime context sources and collect invalid values."""
     if not allowed_memory:
         return [], []
 
@@ -31,7 +22,7 @@ def normalize_allowed_memory_scopes(
         scope = (raw_scope or "").strip().lower()
         if not scope:
             continue
-        canonical = _MEMORY_SCOPE_ALIASES.get(scope)
+        canonical = _CONTEXT_SOURCE_ALIASES.get(scope)
         if canonical is None:
             invalid.append(raw_scope)
             continue
@@ -45,12 +36,10 @@ def resolve_memory_scopes(
     access_level: Optional[str],
     allowed_memory: Optional[List[str]],
 ) -> List[str]:
-    """Resolve effective memory scopes for an agent execution."""
+    """Resolve effective runtime context sources for an agent execution."""
     normalized_scopes, _ = normalize_allowed_memory_scopes(allowed_memory)
-    if normalized_scopes:
+    if allowed_memory:
         return normalized_scopes
 
-    level = (access_level or "private").strip().lower()
-    if level in {"team", "public"}:
-        return ["agent", "company", "user_context"]
-    return ["agent", "user_context"]
+    _ = (access_level or "private").strip().lower()
+    return ["skills", "user_memory"]

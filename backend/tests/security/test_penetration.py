@@ -209,7 +209,12 @@ class TestXSSPenetration:
         # Act & Assert
         for payload in xss_payloads:
             # Should be escaped or sanitized
-            is_malicious = "<script>" in payload or "onerror=" in payload or "onload=" in payload
+            is_malicious = (
+                "<script>" in payload
+                or "onerror=" in payload
+                or "onload=" in payload
+                or payload.lower().startswith("javascript:")
+            )
             assert is_malicious is True
 
     def test_stored_xss(self):
@@ -290,7 +295,7 @@ class TestAPISecurityPenetration:
     def test_api_authentication_bypass(self):
         """Test resistance to authentication bypass."""
         # Arrange
-        endpoints_requiring_auth = ["/api/v1/users/me", "/api/v1/agents", "/api/v1/tasks"]
+        endpoints_requiring_auth = ["/api/v1/users/me", "/api/v1/agents", "/api/v1/knowledge"]
 
         # Act - Requests without auth should fail
         for endpoint in endpoints_requiring_auth:

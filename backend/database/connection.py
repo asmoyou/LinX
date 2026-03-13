@@ -14,6 +14,7 @@ References:
 """
 
 import logging
+import os
 from contextlib import contextmanager
 from typing import Generator, Optional
 
@@ -68,14 +69,7 @@ class DatabaseConnectionPool:
             return
 
         try:
-            # Load database configuration
-            db_config = self._config.get_section("database.postgres")
-
-            # Build database URL
-            database_url = (
-                f"postgresql://{db_config['username']}:{db_config['password']}"
-                f"@{db_config['host']}:{db_config['port']}/{db_config['database']}"
-            )
+            database_url, db_config = self._resolve_database_url()
 
             # Create engine with connection pooling
             self._engine = create_engine(
@@ -135,6 +129,24 @@ class DatabaseConnectionPool:
         def receive_checkin(dbapi_conn, connection_record):
             """Event listener for connection checkin to pool."""
             logger.debug("Connection checked in to pool")
+
+    def _resolve_database_url(self) -> tuple[str, dict]:
+        """Resolve database URL with test/runtime overrides when present."""
+        override_url = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
+        if override_url:
+            normalized_url = (
+                override_url.replace("postgresql+asyncpg://", "postgresql://")
+                .replace("postgresql+psycopg://", "postgresql://")
+            )
+            logger.info("Using database URL override from environment")
+            return normalized_url, {}
+
+        db_config = self._config.get_section("database.postgres")
+        database_url = (
+            f"postgresql://{db_config['username']}:{db_config['password']}"
+            f"@{db_config['host']}:{db_config['port']}/{db_config['database']}"
+        )
+        return database_url, db_config
 
     @contextmanager
     def get_session(self) -> Generator[Session, None, None]:

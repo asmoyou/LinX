@@ -137,7 +137,9 @@ class ResultCollector:
         """
         results = []
 
-        with get_db_session() as session:
+        from database.connection import get_db_session as get_db_session_fn
+
+        with get_db_session_fn() as session:
             for task_id in task_ids:
                 task = (
                     session.query(TaskModel)
@@ -375,7 +377,9 @@ Summary:"""
             Aggregated result
         """
         # Get all subtasks
-        with get_db_session() as session:
+        from database.connection import get_db_session as get_db_session_fn
+
+        with get_db_session_fn() as session:
             subtasks = (
                 session.query(TaskModel)
                 .filter(
@@ -387,14 +391,28 @@ Summary:"""
 
             subtask_ids = [task.task_id for task in subtasks]
 
-        # Collect results
-        results = self.collect_results(subtask_ids, user_id)
+        if subtasks and all(hasattr(task, "result") and hasattr(task, "status") for task in subtasks):
+            results = [
+                CollectedResult(
+                    task_id=task.task_id,
+                    result=task.result or {},
+                    status=task.status,
+                    completed_at=(
+                        task.completed_at.isoformat()
+                        if getattr(task, "completed_at", None)
+                        else None
+                    ),
+                )
+                for task in subtasks
+            ]
+        else:
+            results = self.collect_results(subtask_ids, user_id)
 
         # Aggregate
         aggregated = await self.aggregate_results(results, strategy)
 
         # Store aggregated result in parent task
-        with get_db_session() as session:
+        with get_db_session_fn() as session:
             parent_task = (
                 session.query(TaskModel)
                 .filter(

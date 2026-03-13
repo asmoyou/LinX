@@ -1,67 +1,55 @@
 import apiClient from "./client";
 import type {
   Memory,
-  MemoryType,
-  MemoryFilter,
-  MemoryIndexInfo,
+  MemoryProductType,
   MemoryConfig,
   MemoryConfigEmbedding,
   MemoryConfigFactExtraction,
   MemoryConfigRetrieval,
-  MemoryConfigRuntime,
+  MemoryConfigRuntimeContext,
+  MemoryConfigSessionLedger,
+  MemoryConfigConsolidation,
+  MemoryConfigObservability,
+  MemoryConfigRetention,
+  SkillLearningExtractionConfig,
+  SkillLearningProposalReviewConfig,
+  SkillLearningPublishPolicyConfig,
 } from "../types/memory";
 
-export interface CreateMemoryRequest {
-  type: MemoryType;
-  content: string;
-  summary?: string;
-  agent_id?: string;
-  tags?: string[];
-  metadata?: Record<string, unknown>;
-}
-
-export interface UpdateMemoryRequest {
-  content?: string;
-  summary?: string;
-  tags?: string[];
-  metadata?: Record<string, unknown>;
-}
-
-export interface SearchMemoriesRequest {
-  query: string;
-  type?: MemoryType;
-  limit?: number;
-  min_score?: number;
-  filters?: MemoryFilter;
-}
-
-export interface MemoryPagedResponse {
-  items: Memory[];
-  total: number;
-  offset: number;
-  limit: number;
-  hasMore: boolean;
-}
-
-export interface GetMemoriesByTypePagedOptions {
-  offset?: number;
-  limit?: number;
+export interface ListUserMemoryRequest {
   query?: string;
-  filters?: MemoryFilter;
+  user_id?: string;
+  limit?: number;
+  minScore?: number;
 }
 
-export interface ShareMemoryRequest {
-  user_ids?: string[];
-  scope?: "explicit" | "department" | "department_tree" | "account" | "private" | "public";
-  expires_at?: string;
-  reason?: string;
+export interface ListSkillProposalsRequest {
+  agent_id?: string;
+  review_status?: "pending" | "published" | "rejected" | "all";
+  limit?: number;
 }
 
 export interface UpdateMemoryConfigRequest {
-  embedding?: Partial<Omit<MemoryConfigEmbedding, "effective" | "sources">>;
-  retrieval?: Partial<Omit<MemoryConfigRetrieval, "sources">>;
-  fact_extraction?: Partial<Omit<MemoryConfigFactExtraction, "effective" | "sources">>;
-  runtime?: Partial<MemoryConfigRuntime>;
+  user_memory?: {
+    retention?: Partial<MemoryConfigRetention>;
+    embedding?: Partial<Omit<MemoryConfigEmbedding, "effective" | "sources">>;
+    retrieval?: Partial<Omit<MemoryConfigRetrieval, "sources">>;
+    extraction?: Partial<
+      Omit<MemoryConfigFactExtraction, "effective" | "sources">
+    >;
+    consolidation?: Partial<MemoryConfigConsolidation>;
+    observability?: Partial<MemoryConfigObservability>;
+  };
+  skill_learning?: {
+    retention?: Partial<MemoryConfigRetention>;
+    extraction?: Partial<
+      Omit<SkillLearningExtractionConfig, "effective" | "sources">
+    >;
+    proposal_review?: Partial<SkillLearningProposalReviewConfig>;
+    publish_policy?: Partial<SkillLearningPublishPolicyConfig>;
+  };
+  session_ledger?: Partial<MemoryConfigSessionLedger>;
+  runtime_context?: Partial<MemoryConfigRuntimeContext>;
 }
 
 export interface AgentCandidateReviewRequest {
@@ -72,215 +60,90 @@ export interface AgentCandidateReviewRequest {
   metadata?: Record<string, unknown>;
 }
 
+const normalizeProductMemory = (
+  memory: Memory,
+  productType: MemoryProductType,
+): Memory => ({
+  ...memory,
+  type: productType,
+  metadata: {
+    ...(memory.metadata || {}),
+    record_type: memory.type,
+  },
+});
+
 /**
  * Memory System API
  */
 export const memoriesApi = {
-  /**
-   * Get all memories
-   */
-  getAll: async (filters?: MemoryFilter): Promise<Memory[]> => {
-    const response = await apiClient.get<Memory[]>("/memories", {
-      params: filters,
+  listUserMemory: async (params?: ListUserMemoryRequest): Promise<Memory[]> => {
+    const response = await apiClient.get<Memory[]>("/user-memory", {
+      params,
     });
-    return response.data;
+    return response.data.map((item) => normalizeProductMemory(item, "user_memory"));
   },
 
-  /**
-   * Get memory by ID
-   */
-  getById: async (memoryId: string): Promise<Memory> => {
-    const response = await apiClient.get<Memory>(`/memories/${memoryId}`);
-    return response.data;
-  },
-
-  /**
-   * Create memory
-   */
-  create: async (data: CreateMemoryRequest): Promise<Memory> => {
-    const response = await apiClient.post<Memory>("/memories", data);
-    return response.data;
-  },
-
-  /**
-   * Update memory
-   */
-  update: async (
-    memoryId: string,
-    data: UpdateMemoryRequest,
-  ): Promise<Memory> => {
-    const response = await apiClient.put<Memory>(`/memories/${memoryId}`, data);
-    return response.data;
-  },
-
-  /**
-   * Delete memory
-   */
-  delete: async (memoryId: string): Promise<void> => {
-    await apiClient.delete(`/memories/${memoryId}`);
-  },
-
-  /**
-   * Search memories (semantic search)
-   */
-  search: async (data: SearchMemoriesRequest): Promise<Memory[]> => {
-    const response = await apiClient.post<Memory[]>("/memories/search", data);
-    return response.data;
-  },
-
-  /**
-   * Get memories by type
-   */
-  getByType: async (
-    type: MemoryType,
-    filters?: MemoryFilter,
+  listUserMemoryProfile: async (
+    params?: ListUserMemoryRequest,
   ): Promise<Memory[]> => {
-    const response = await apiClient.get<Memory[]>(`/memories/type/${type}`, {
-      params: filters,
-    });
-    return response.data;
-  },
-
-  /**
-   * Get memories by type with pagination
-   */
-  getByTypePaged: async (
-    type: MemoryType,
-    options?: GetMemoriesByTypePagedOptions,
-  ): Promise<MemoryPagedResponse> => {
-    const params: Record<string, unknown> = {};
-    if (typeof options?.offset === "number") {
-      params.offset = options.offset;
-    }
-    if (typeof options?.limit === "number") {
-      params.limit = options.limit;
-    }
-    if (options?.query && options.query.trim()) {
-      params.query = options.query.trim();
-    }
-    if (options?.filters?.dateFrom) {
-      params.dateFrom = options.filters.dateFrom;
-    }
-    if (options?.filters?.dateTo) {
-      params.dateTo = options.filters.dateTo;
-    }
-    if (Array.isArray(options?.filters?.tags) && options?.filters?.tags.length > 0) {
-      params.tags = options.filters.tags.join(",");
-    }
-
-    const response = await apiClient.get<MemoryPagedResponse>(`/memories/type/${type}/paged`, {
+    const response = await apiClient.get<Memory[]>("/user-memory/profile", {
       params,
     });
-    return response.data;
+    return response.data.map((item) => normalizeProductMemory(item, "user_memory"));
   },
 
-  /**
-   * Get memories by agent
-   */
-  getByAgent: async (agentId: string): Promise<Memory[]> => {
-    const response = await apiClient.get<Memory[]>(
-      `/memories/agent/${agentId}`,
+  listSkillProposals: async (
+    params?: ListSkillProposalsRequest,
+  ): Promise<Memory[]> => {
+    const response = await apiClient.get<Memory[]>("/skill-proposals", {
+      params,
+    });
+    return response.data.map((item) =>
+      normalizeProductMemory(item, "skill_proposal"),
     );
-    return response.data;
   },
 
-  /**
-   * Share memory
-   */
-  share: async (
-    memoryId: string,
-    data: ShareMemoryRequest,
-  ): Promise<Memory> => {
-    const response = await apiClient.post<Memory>(
-      `/memories/${memoryId}/share`,
-      data,
-    );
-    return response.data;
-  },
-
-  /**
-   * Publish memory (promote agent memory to team/org memory when applicable)
-   */
-  publish: async (
-    memoryId: string,
-    data: ShareMemoryRequest,
-  ): Promise<Memory> => {
-    const response = await apiClient.post<Memory>(
-      `/memories/${memoryId}/publish`,
-      data,
-    );
-    return response.data;
-  },
-
-  /**
-   * List auto-extracted agent memory candidates.
-   */
-  listAgentCandidates: async (params?: {
-    agent_id?: string;
-    review_status?: "pending" | "published" | "rejected" | "all";
+  listSkillExperiences: async (params: {
+    agent_id: string;
+    query?: string;
     limit?: number;
+    minScore?: number;
   }): Promise<Memory[]> => {
-    const response = await apiClient.get<Memory[]>("/memories/agent-candidates", {
+    const response = await apiClient.get<Memory[]>("/skill-proposals/experiences", {
       params,
     });
-    return response.data;
+    return response.data.map((item) =>
+      normalizeProductMemory(item, "skill_proposal"),
+    );
   },
 
-  /**
-   * Review one auto-extracted agent memory candidate.
-   */
-  reviewAgentCandidate: async (
+  reviewSkillProposal: async (
     memoryId: string,
     data: AgentCandidateReviewRequest,
   ): Promise<Memory> => {
     const response = await apiClient.post<Memory>(
-      `/memories/agent-candidates/${memoryId}/review`,
+      `/skill-proposals/${memoryId}/review`,
       data,
     );
-    return response.data;
-  },
-
-  /**
-   * Rebuild vector index for one memory
-   */
-  reindex: async (memoryId: string): Promise<Memory> => {
-    const response = await apiClient.post<Memory>(
-      `/memories/${memoryId}/reindex`,
-    );
-    return response.data;
-  },
-
-  /**
-   * Inspect index payload for one memory
-   */
-  getIndex: async (memoryId: string): Promise<MemoryIndexInfo> => {
-    const response = await apiClient.get<MemoryIndexInfo>(
-      `/memories/${memoryId}/index`,
-    );
-    return response.data;
+    return normalizeProductMemory(response.data, "skill_proposal");
   },
 
   /**
    * Get memory retrieval configuration
    */
   getConfig: async (): Promise<MemoryConfig> => {
-    const response = await apiClient.get<MemoryConfig>("/memories/config");
+    const response = await apiClient.get<MemoryConfig>("/user-memory/config");
     return response.data;
   },
 
   /**
    * Update memory retrieval configuration (admin only)
    */
-  updateConfig: async (data: UpdateMemoryConfigRequest): Promise<MemoryConfig> => {
-    const response = await apiClient.put<MemoryConfig>("/memories/config", data);
+  updateConfig: async (
+    data: UpdateMemoryConfigRequest,
+  ): Promise<MemoryConfig> => {
+    const response = await apiClient.put<MemoryConfig>("/user-memory/config", data);
     return response.data;
   },
 
-  /**
-   * Get shared memories
-   */
-  getShared: async (): Promise<Memory[]> => {
-    const response = await apiClient.get<Memory[]>("/memories/shared");
-    return response.data;
-  },
 };

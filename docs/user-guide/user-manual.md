@@ -202,51 +202,49 @@ Set document permissions:
 
 ## Memory System
 
-The platform uses a three-tier memory system:
+The platform uses a reset-era memory pipeline:
 
-### Agent Memory
+### User Memory
 
-- **Private to each agent**
-- Stores agent-specific experiences
-- Used for agent learning and improvement
-- Not shared with other agents
+- **Long-term facts about the user**
+- Stores preferences, relationships, background, skills, goals, and important events
+- Used for personalization and better future assistance
+- Private to the owning user by default
 
-### Company Memory
+### Skill Proposals
 
-- **Shared across all agents**
-- Stores organizational knowledge
-- Enables collaboration
-- Accessible by all agents
+- **Agent-owned learned successful paths**
+- Stores reusable execution methods that worked in practice
+- Requires review before becoming a published skill
+- Scoped to the owning agent account
 
-### User Context
+### Knowledge Base
 
-- **User-specific information**
-- Stored within Company Memory
-- Preferences and history
-- Personalized experiences
+- **Shared documents and reference knowledge**
+- Use the Knowledge Base for company or project documents
+- Not mixed into long-term user memory
 
 ### Browsing Memory
 
 1. Navigate to **Memory** in the sidebar
-2. Select memory type:
-   - Agent Memory
-   - Company Memory
-   - User Context
+2. Select a product surface:
+   - User Memory
+   - Skill Proposals
 3. Use search to find specific memories
 4. Filter by:
-   - Type (task, user, general)
+   - Product type
    - Date range
    - Tags
 5. View memory details and relevance scores
 
-### Memory Sharing
+### Skill Proposal Review
 
-Share memories between agents:
-1. Select a memory
-2. Click **"Share"**
-3. Choose target agents
-4. Add optional note
-5. Click **"Share Memory"**
+Review learned successful paths:
+1. Select a skill proposal
+2. Click **"审核"** or the review action in the detail panel
+3. Choose whether to publish, reject, or request revision
+4. Add an optional review note
+5. Confirm the review action
 
 ## User Settings
 

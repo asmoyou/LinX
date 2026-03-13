@@ -17,6 +17,12 @@ const Workforce = lazy(() => import('./pages/Workforce').then(m => ({ default: m
 const Tasks = lazy(() => import('./pages/Missions').then(m => ({ default: m.Missions })));
 const Knowledge = lazy(() => import('./pages/Knowledge').then(m => ({ default: m.Knowledge })));
 const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memory })));
+const UserMemory = lazy(() =>
+  import('./pages/UserMemory').then(m => ({ default: m.UserMemory }))
+);
+const SkillProposals = lazy(() =>
+  import('./pages/SkillProposals').then(m => ({ default: m.SkillProposals }))
+);
 const Robots = lazy(() => import('./pages/Robots').then(m => ({ default: m.Robots })));
 const Skills = lazy(() => import('./pages/Skills'));
 const Departments = lazy(() => import('./pages/Departments').then(m => ({ default: m.Departments })));
@@ -192,6 +198,40 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
                     transition={{ duration: 0.3 }}
                   >
                     <Memory />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
+            }
+          />
+          <Route
+            path="memory/user-memory"
+            element={
+              <PageErrorBoundary pageName="用户记忆">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <UserMemory />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
+            }
+          />
+          <Route
+            path="memory/skill-proposals"
+            element={
+              <PageErrorBoundary pageName="技能提案">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <SkillProposals />
                   </motion.div>
                 </Suspense>
               </PageErrorBoundary>

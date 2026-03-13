@@ -12,13 +12,10 @@ import { ImageCropModal } from '@/components/common/ImageCropModal';
 import { DepartmentSelect } from '@/components/departments/DepartmentSelect';
 import { LayoutModal } from '@/components/LayoutModal';
 
-type MemoryScope = 'agent' | 'company' | 'user_context';
+type MemoryScope = 'skills' | 'user_memory';
 const MEMORY_SCOPE_ALIAS_MAP: Record<string, MemoryScope> = {
-  agent: 'agent',
-  agent_memories: 'agent',
-  company: 'company',
-  company_memories: 'company',
-  user_context: 'user_context',
+  skills: 'skills',
+  user_memory: 'user_memory',
 };
 
 const normalizeMemoryScopes = (scopes?: string[]): MemoryScope[] => {
@@ -267,10 +264,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     if (normalizedSelected.length > 0) {
       return normalizedSelected;
     }
-    if (formData.accessLevel === 'team' || formData.accessLevel === 'public') {
-      return ['agent', 'company', 'user_context'];
-    }
-    return ['agent', 'user_context'];
+    return ['skills', 'user_memory'];
   };
 
   const fetchModelMetadata = async (provider: string, model: string) => {
@@ -1057,24 +1051,19 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                   <div className="space-y-2">
                     {[
                       {
-                        id: 'agent',
-                        title: t('agent.memoryScopeAgentTitle', 'Agent 记忆'),
+                        id: 'skills',
+                        title: t('agent.memoryScopeSkillsTitle', '技能经验'),
                         desc: t(
-                          'agent.memoryScopeAgentDesc',
-                          '仅检索当前代理的私有历史记忆。'
+                          'agent.memoryScopeSkillsDesc',
+                          '检索可复用的技能、经验与成功路径。'
                         ),
                       },
                       {
-                        id: 'company',
-                        title: t('agent.memoryScopeCompanyTitle', 'Company 记忆'),
-                        desc: t('agent.memoryScopeCompanyDesc', '检索组织共享的通用记忆。'),
-                      },
-                      {
-                        id: 'user_context',
-                        title: t('agent.memoryScopeUserContextTitle', '用户上下文'),
+                        id: 'user_memory',
+                        title: t('agent.memoryScopeUserMemoryTitle', '用户记忆'),
                         desc: t(
-                          'agent.memoryScopeUserContextDesc',
-                          '检索当前用户的偏好和上下文记忆。'
+                          'agent.memoryScopeUserMemoryDesc',
+                          '检索当前用户的事实、偏好与重要事件。'
                         ),
                       },
                     ].map((option) => {

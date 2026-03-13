@@ -20,6 +20,11 @@ depends_on = None
 
 def upgrade():
     """Create agent_templates table."""
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if "agent_templates" in inspector.get_table_names():
+        return
+
     op.create_table(
         "agent_templates",
         sa.Column("template_id", postgresql.UUID(as_uuid=True), nullable=False),
@@ -60,6 +65,11 @@ def upgrade():
 
 def downgrade():
     """Drop agent_templates table."""
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if "agent_templates" not in inspector.get_table_names():
+        return
+
     op.drop_index("ix_agent_templates_is_system_template", table_name="agent_templates")
     op.drop_index("ix_agent_templates_agent_type", table_name="agent_templates")
     op.drop_table("agent_templates")

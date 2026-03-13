@@ -18,7 +18,8 @@ References:
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 
 from llm_providers.anthropic_provider import AnthropicProvider
 from llm_providers.base import BaseLLMProvider, EmbeddingResponse, LLMResponse, TaskType
@@ -60,6 +61,7 @@ class LLMRouter:
         self.config = config
         self.model_mapping = config.get("model_mapping", {})
         self.fallback_enabled = config.get("fallback_enabled", False)
+        self.prefer_config_providers = bool(config.get("prefer_config_providers", False))
         self.max_retries = config.get("max_retries", 3)
         self.retry_delay = config.get("retry_delay", 1)
         self.cache_ttl = config.get("cache_ttl", 300)  # 5 minutes default
@@ -73,11 +75,13 @@ class LLMRouter:
         
         # Config.yaml providers (read-only system defaults)
         self._config_providers = config.get("providers", {})
+        self.providers = self._config_providers
         
         logger.info("=" * 70)
         logger.info("LLMRouter initialized with LAZY LOADING architecture")
         logger.info("- Cache TTL: %ds (0 = disabled)", self.cache_ttl)
         logger.info("- Config.yaml providers: %s", list(self._config_providers.keys()))
+        logger.info("- Prefer config providers: %s", self.prefer_config_providers)
         logger.info("- Database providers: Loaded on-demand")
         logger.info("- No pre-loading: Providers created when first used")
         logger.info("=" * 70)
@@ -139,7 +143,13 @@ class LLMRouter:
         Returns:
             Provider instance or None
         """
-        # Load from database only
+        if self.prefer_config_providers:
+            provider_config = self._config_providers.get(provider_name)
+            if isinstance(provider_config, dict):
+                logger.info(f"  → Loading from CONFIG (preferred): {provider_name}")
+                return self._create_provider_from_config(provider_name, provider_config)
+
+        # Load from database first unless config is explicitly preferred
         try:
             from database.connection import get_db_session
             from llm_providers.db_manager import ProviderDBManager
@@ -155,7 +165,12 @@ class LLMRouter:
                     logger.warning(f"  → Provider '{provider_name}' not found or disabled in database")
         except Exception as e:
             logger.error(f"  → Database load failed: {e}")
-        
+
+        provider_config = self._config_providers.get(provider_name)
+        if isinstance(provider_config, dict):
+            logger.info(f"  → Loading from CONFIG: {provider_name}")
+            return self._create_provider_from_config(provider_name, provider_config)
+
         return None
     
     async def _create_provider_from_db(self, db_provider, db_manager) -> Optional[BaseLLMProvider]:
@@ -228,7 +243,7 @@ class LLMRouter:
         Returns:
             List of enabled provider names from database
         """
-        providers = set()
+        providers = set(self._config_providers.keys())
         
         # Get providers from database only
         try:
@@ -243,6 +258,18 @@ class LLMRouter:
             logger.warning(f"Failed to list database providers: {e}")
         
         return sorted(providers)
+
+    def select_model_for_task(self, task_type: TaskType) -> Tuple[Optional[str], Optional[str]]:
+        """Select provider/model from static task mapping."""
+        task_key = task_type.value if isinstance(task_type, TaskType) else str(task_type)
+        mapping = self.model_mapping.get(task_key, {})
+        if not isinstance(mapping, dict) or not mapping:
+            return None, None
+        provider_name, model_name = next(iter(mapping.items()))
+        return str(provider_name), str(model_name)
+
+    def _track_token_usage(self, provider: str, tokens_used: int) -> None:
+        self.token_usage[str(provider)] = self.token_usage.get(str(provider), 0) + int(tokens_used or 0)
 
     async def health_check_all(self) -> Dict[str, bool]:
         """
@@ -329,6 +356,17 @@ class LLMRouter:
         Returns:
             LLMResponse
         """
+        task_type = kwargs.pop("task_type", None)
+        if task_type is not None and (not provider or not model):
+            mapped_provider, mapped_model = self.select_model_for_task(task_type)
+            provider = provider or mapped_provider
+            model = model or mapped_model
+
+        if isinstance(task_type, Enum):
+            kwargs["task_type"] = task_type.value
+        elif task_type is not None:
+            kwargs["task_type"] = str(task_type)
+
         # Auto-select provider if not specified
         if not provider:
             provider_names = await self.list_all_providers()
@@ -351,7 +389,7 @@ class LLMRouter:
         )
         
         # Track token usage
-        self.token_usage[provider] = self.token_usage.get(provider, 0) + response.tokens_used
+        self._track_token_usage(str(provider), int(response.tokens_used or 0))
         
         return response
 

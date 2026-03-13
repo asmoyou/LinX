@@ -45,7 +45,7 @@ class MilvusConnectionManager:
     Example:
         >>> manager = MilvusConnectionManager()
         >>> manager.initialize()
-        >>> collection = manager.get_collection("agent_memories")
+        >>> collection = manager.get_collection("knowledge_embeddings")
         >>> manager.close()
     """
 

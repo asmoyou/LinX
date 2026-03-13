@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -6,13 +6,14 @@ import {
   Users,
   Rocket,
   Database,
-  BrainCircuit,
+  Brain,
   Code2,
   Cpu,
   Building2,
   Settings,
   Mail,
   Shield,
+  User,
   UserCog,
   ShieldCheck,
   ChevronDown,
@@ -163,7 +164,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
         label: t('nav.groups.assets', 'Assets'),
         items: [
           { path: '/knowledge', icon: Database, label: t('nav.knowledge') },
-          { path: '/memory', icon: BrainCircuit, label: t('nav.memory') },
+          { path: '/memory/user-memory', icon: User, label: t('nav.userMemory') },
+          {
+            path: '/memory/skill-proposals',
+            icon: Brain,
+            label: t('nav.skillProposals'),
+          },
           { path: '/skills', icon: Code2, label: t('nav.skills') },
         ],
       },
@@ -200,8 +206,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
     [t]
   );
 
-  const hasAccess = (item: NavItem): boolean =>
-    !item.requiredRoles || item.requiredRoles.includes(role);
+  const hasAccess = useCallback(
+    (item: NavItem): boolean => !item.requiredRoles || item.requiredRoles.includes(role),
+    [role]
+  );
 
   const filteredNavSections = useMemo(
     () =>
@@ -211,7 +219,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
           items: section.items.filter(hasAccess),
         }))
         .filter((section) => section.items.length > 0),
-    [navSections, role]
+    [hasAccess, navSections]
   );
 
   const allVisibleNavItems = useMemo(
@@ -230,11 +238,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    // Load persisted usage when the active user changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setNavUsage(safeParseUsage(window.localStorage.getItem(usageStorageKey)));
   }, [usageStorageKey]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    // Restore the saved quick access ordering for the active user.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setQuickAccessOrder(safeParseOrder(window.localStorage.getItem(quickAccessOrderStorageKey)));
   }, [quickAccessOrderStorageKey]);
 
@@ -254,6 +266,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
   useEffect(() => {
     if (!currentNavPath || typeof window === 'undefined') return;
 
+    // Navigation usage is persisted as the active route changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setNavUsage((prev) => {
       const next = {
         ...prev,
@@ -323,12 +337,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
 
   useEffect(() => {
     const quickPaths = new Set(quickAccessCandidates.map((item) => item.path));
+    // Keep persisted custom order limited to the currently visible quick links.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setQuickAccessOrder((prev) => prev.filter((path) => quickPaths.has(path)));
   }, [quickAccessCandidates]);
 
   const isItemActive = (item: NavItem): boolean => isPathMatch(location.pathname, item.path);
 
   useEffect(() => {
+    // Auto-expand the section containing the active item when needed.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setExpandedSections((prev) => {
       let changed = false;
       const next = { ...prev };

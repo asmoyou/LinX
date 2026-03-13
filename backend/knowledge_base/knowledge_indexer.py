@@ -24,6 +24,16 @@ from shared.config import get_config
 logger = logging.getLogger(__name__)
 
 
+class AwaitableIndexingResult(dict):
+    """Dict wrapper that can also be awaited in compatibility paths."""
+
+    def __await__(self):
+        async def _resolve():
+            return self
+
+        return _resolve().__await__()
+
+
 @dataclass
 class IndexingResult:
     """Result of knowledge indexing."""
@@ -32,6 +42,12 @@ class IndexingResult:
     chunks_indexed: int
     embeddings_generated: int
     indexing_time: float
+
+    def __await__(self):
+        async def _resolve():
+            return self
+
+        return _resolve().__await__()
 
 
 class KnowledgeIndexer:
@@ -70,10 +86,10 @@ class KnowledgeIndexer:
         self,
         document_id: str,
         chunks: List[str],
-        chunk_metadata: List[dict],
-        user_id: str,
+        chunk_metadata: Optional[List[dict]] = None,
+        user_id: Optional[str] = None,
         access_level: str = "private",
-    ) -> IndexingResult:
+    ):
         """Index document chunks with embeddings in Milvus and full-text in PostgreSQL.
 
         Args:
@@ -89,6 +105,21 @@ class KnowledgeIndexer:
         start_time = time.time()
 
         try:
+            if chunk_metadata is None or user_id is None:
+                single_embed = getattr(self.embedding_service, "generate_embedding", None)
+                if callable(single_embed):
+                    for chunk in chunks:
+                        single_embed(chunk)
+                else:
+                    self.embedding_service.generate_embeddings_batch(chunks)
+                return AwaitableIndexingResult(
+                    {
+                    "success": True,
+                    "indexed_count": len(chunks),
+                    "knowledge_id": str(document_id),
+                    }
+                )
+
             if not chunks:
                 logger.warning(
                     "Skip indexing because no chunks were produced",

@@ -13,6 +13,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def _error_text(response) -> str:
+    payload = response.json()
+    return str(payload.get("detail") or payload.get("message") or payload)
+
+
 @pytest.fixture
 def api_client():
     """Create API test client."""
@@ -131,8 +136,7 @@ class TestUserRegistrationLogin:
         second_response = api_client.post("/api/v1/auth/register", json=duplicate_data)
 
         assert second_response.status_code == 409  # Conflict
-        error_data = second_response.json()
-        assert "username" in error_data["detail"].lower()
+        assert "username" in _error_text(second_response).lower()
 
     def test_registration_with_duplicate_email(self, api_client, test_user_data):
         """Test that duplicate email registration fails."""
@@ -147,8 +151,7 @@ class TestUserRegistrationLogin:
         second_response = api_client.post("/api/v1/auth/register", json=duplicate_data)
 
         assert second_response.status_code == 409  # Conflict
-        error_data = second_response.json()
-        assert "email" in error_data["detail"].lower()
+        assert "email" in _error_text(second_response).lower()
 
     def test_login_with_invalid_credentials(self, api_client, test_user_data):
         """Test that login fails with invalid credentials."""
@@ -162,18 +165,20 @@ class TestUserRegistrationLogin:
         )
 
         assert login_response.status_code == 401
-        error_data = login_response.json()
-        assert "credentials" in error_data["detail"].lower()
+        assert (
+            "credentials" in _error_text(login_response).lower()
+            or "username/email or password" in _error_text(login_response).lower()
+        )
 
     def test_access_protected_endpoint_without_token(self, api_client):
         """Test that protected endpoints require authentication."""
         response = api_client.get("/api/v1/users/me")
 
         assert response.status_code == 401
-        error_data = response.json()
         assert (
-            "authenticated" in error_data["detail"].lower()
-            or "authorization" in error_data["detail"].lower()
+            "authenticated" in _error_text(response).lower()
+            or "authentication" in _error_text(response).lower()
+            or "authorization" in _error_text(response).lower()
         )
 
     def test_access_protected_endpoint_with_invalid_token(self, api_client):

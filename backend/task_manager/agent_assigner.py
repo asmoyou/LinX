@@ -38,6 +38,41 @@ class AgentAssigner:
 
         logger.info("AgentAssigner initialized")
 
+    async def assign_agent(
+        self,
+        task_id: UUID,
+        required_capabilities: List[str],
+        user_id: Optional[UUID] = None,
+    ):
+        """Backward-compatible async assignment API used by older tests."""
+        if user_id is None:
+            try:
+                from agent_framework.agent_registry import get_agent_registry
+
+                registry = get_agent_registry()
+                finder = getattr(registry, "find_agents_by_capabilities", None)
+                if callable(finder):
+                    agents = finder(required_capabilities)
+                    return agents[0] if agents else None
+            except Exception:
+                logger.debug("Agent registry compatibility path unavailable", exc_info=True)
+                return None
+
+        assignment = self.assign_agent_to_task(
+            task_id=task_id,
+            required_capabilities=required_capabilities,
+            user_id=user_id,
+        )
+        if not assignment.agent_id:
+            return None
+
+        with get_db_session() as session:
+            return (
+                session.query(Agent)
+                .filter(Agent.agent_id == assignment.agent_id)
+                .first()
+            )
+
     def assign_agent_to_task(
         self,
         task_id: UUID,
