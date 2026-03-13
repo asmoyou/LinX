@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from _pytest.fixtures import FixtureDef
 from _pytest.tmpdir import TempPathFactory
+from sqlalchemy import or_
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 STABLE_TMP_ROOT = BACKEND_ROOT / ".pytest_tmp"
@@ -52,6 +53,28 @@ warnings.filterwarnings(
     category=DeprecationWarning,
 )
 
+SHARED_DB_TEST_USERNAME_PREFIXES = (
+    "testuser_",
+    "docperf_",
+    "loadtest_",
+    "scaletest_",
+    "sectest_",
+    "brutetest_",
+    "jwttest_",
+    "exptest_",
+    "hashtest_",
+    "logouttest_",
+    "rbactest_",
+    "owner1_",
+    "owner2_",
+    "escaltest_",
+    "isolate1_",
+    "isolate2_",
+    "enctest_",
+    "leaktest_",
+)
+SHARED_DB_TEST_EMAIL_PATTERN = "%@example.com"
+
 
 def _clear_ephemeral_tmp_artifacts() -> None:
     """Delete pytest/tempfile artifacts while leaving optional caches alone."""
@@ -77,6 +100,36 @@ def _run_async_cleanup(coro) -> None:
     finally:
         asyncio.set_event_loop(None)
         loop.close()
+
+
+def _purge_shared_db_test_artifacts() -> None:
+    """Delete shared-database users and skills created by non-isolated API tests."""
+    from database.connection import close_connection_pool, get_db_session
+    from database.models import Skill, User
+
+    close_connection_pool()
+
+    try:
+        with get_db_session() as session:
+            username_filters = [
+                User.username.like(f"{prefix}%") for prefix in SHARED_DB_TEST_USERNAME_PREFIXES
+            ]
+            user_ids = [
+                row[0]
+                for row in session.query(User.user_id)
+                .filter(or_(User.email.like(SHARED_DB_TEST_EMAIL_PATTERN), *username_filters))
+                .all()
+            ]
+
+            if not user_ids:
+                return
+
+            session.query(Skill).filter(Skill.created_by.in_(user_ids)).delete(
+                synchronize_session=False
+            )
+            session.query(User).filter(User.user_id.in_(user_ids)).delete(synchronize_session=False)
+    finally:
+        close_connection_pool()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -154,6 +207,14 @@ def _close_global_llm_router():
             llm_router_module._llm_router = None
     except Exception:
         pass
+
+
+@pytest.fixture
+def cleanup_shared_db_test_artifacts():
+    """Clean test-created users/resources when a module still targets the shared dev DB."""
+    _purge_shared_db_test_artifacts()
+    yield
+    _purge_shared_db_test_artifacts()
 
 
 @pytest.hookimpl(wrapper=True)

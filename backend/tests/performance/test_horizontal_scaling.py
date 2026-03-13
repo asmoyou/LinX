@@ -16,6 +16,11 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = [
+    pytest.mark.performance,
+    pytest.mark.usefixtures("cleanup_shared_db_test_artifacts"),
+]
+
 
 _HEAVY_SCALE_PROFILE = os.getenv("RUN_HEAVY_LOAD_TESTS") == "1"
 
@@ -29,7 +34,8 @@ def api_client():
     """Create API test client."""
     from api_gateway.main import app
 
-    return TestClient(app)
+    with TestClient(app) as client:
+        yield client
 
 
 @pytest.fixture

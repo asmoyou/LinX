@@ -16,31 +16,35 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = [
+    pytest.mark.performance,
+    pytest.mark.usefixtures("cleanup_shared_db_test_artifacts"),
+]
+
 
 @pytest.fixture
 def authenticated_client():
     """Create authenticated API client."""
     from api_gateway.main import app
 
-    client = TestClient(app)
+    with TestClient(app) as client:
+        user_data = {
+            "username": f"docperf_{uuid4()}",
+            "email": f"docperf_{uuid4()}@example.com",
+            "password": "DocPerf123!",
+            "full_name": "Doc Perf User",
+        }
 
-    user_data = {
-        "username": f"docperf_{uuid4()}",
-        "email": f"docperf_{uuid4()}@example.com",
-        "password": "DocPerf123!",
-        "full_name": "Doc Perf User",
-    }
+        client.post("/api/v1/auth/register", json=user_data)
+        login_response = client.post(
+            "/api/v1/auth/login",
+            json={"username": user_data["username"], "password": user_data["password"]},
+        )
 
-    client.post("/api/v1/auth/register", json=user_data)
-    login_response = client.post(
-        "/api/v1/auth/login",
-        json={"username": user_data["username"], "password": user_data["password"]},
-    )
+        token = login_response.json()["access_token"]
+        client.headers = {"Authorization": f"Bearer {token}"}
 
-    token = login_response.json()["access_token"]
-    client.headers = {"Authorization": f"Bearer {token}"}
-
-    return client
+        yield client
 
 
 class TestDocumentProcessingPerformance:

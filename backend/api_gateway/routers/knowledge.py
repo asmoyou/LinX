@@ -265,6 +265,24 @@ class ProcessingStatusResponse(BaseModel):
     progress_percent: Optional[int] = None
 
 
+class BatchProcessingStatusRequest(BaseModel):
+    """Batch processing-status request."""
+
+    knowledge_ids: List[str] = Field(default_factory=list, max_length=100)
+
+
+class BatchProcessingStatusItemResponse(ProcessingStatusResponse):
+    """Processing status for one knowledge item."""
+
+    knowledge_id: str
+
+
+class BatchProcessingStatusResponse(BaseModel):
+    """Batch processing-status response."""
+
+    items: List[BatchProcessingStatusItemResponse]
+
+
 class CollectionCreateRequest(BaseModel):
     """Request to create a knowledge collection."""
 
@@ -313,6 +331,129 @@ class ZipUploadResponse(BaseModel):
     items: List[KnowledgeItemResponse]
     skipped: List[str]
     errors: List[str]
+
+
+def _build_processing_status_response(
+    session: Any,
+    item: KnowledgeItem,
+    knowledge_id: str,
+) -> ProcessingStatusResponse:
+    """Resolve the best-known processing status for one knowledge item."""
+    metadata = item.item_metadata or {}
+    stored_status_raw = metadata.get("processing_status", "completed")
+    stored_status = _normalize_processing_status(stored_status_raw)
+    job_id = metadata.get("job_id")
+    if not job_id:
+        # Keep response fields stable even for legacy rows created before job_id existed.
+        job_id = f"local-{knowledge_id}"
+    created_at = metadata.get("created_at")
+    started_at = metadata.get("started_at")
+    completed_at = metadata.get("completed_at")
+    chunk_count = metadata.get("chunk_count")
+    token_count = metadata.get("token_count")
+    error_message = metadata.get("error_message")
+    if not error_message and str(stored_status_raw).lower() in {"cancelled", "canceled"}:
+        error_message = "Processing cancelled by user."
+    processed_at = metadata.get("processed_at")
+    progress_percent = metadata.get("processing_progress")
+    if progress_percent is not None:
+        try:
+            progress_percent = int(progress_percent)
+        except (TypeError, ValueError):
+            progress_percent = None
+    if processed_at is None and item.updated_at:
+        processed_at = item.updated_at.isoformat()
+    if created_at is None and item.created_at:
+        created_at = item.created_at.isoformat()
+
+    # Metadata and chunk rows can briefly diverge during reprocess retries.
+    # Reconcile here so clients don't stop polling on stale "completed" states.
+    if stored_status == "completed":
+        from database.models import KnowledgeChunk
+
+        actual_chunk_count = (
+            session.query(KnowledgeChunk)
+            .filter(KnowledgeChunk.knowledge_id == item.knowledge_id)
+            .count()
+        )
+        metadata_chunk_count = None
+        if chunk_count is not None:
+            try:
+                metadata_chunk_count = int(chunk_count)
+            except (TypeError, ValueError):
+                metadata_chunk_count = None
+
+        if metadata_chunk_count is None:
+            chunk_count = actual_chunk_count
+        elif metadata_chunk_count != actual_chunk_count:
+            if metadata_chunk_count > 0 and actual_chunk_count == 0:
+                logger.warning(
+                    "Completed status had stale chunk_count; returning processing status",
+                    extra={
+                        "knowledge_id": knowledge_id,
+                        "metadata_chunk_count": metadata_chunk_count,
+                        "actual_chunk_count": actual_chunk_count,
+                    },
+                )
+                stored_status = "processing"
+                chunk_count = None
+                token_count = None
+                error_message = None
+            else:
+                chunk_count = actual_chunk_count
+
+    # Provide best-effort progress timestamps even when queue metadata is unavailable.
+    if started_at is None and stored_status in {"processing", "completed", "failed"}:
+        started_at = processed_at or created_at
+    if completed_at is None and stored_status in {"completed", "failed"}:
+        completed_at = processed_at
+
+    # Try to get richer job status from processing queue (when available).
+    try:
+        if job_id and not str(job_id).startswith("local-"):
+            from knowledge_base.processing_queue import get_processing_queue
+
+            queue = get_processing_queue()
+            queue_job = queue.get_job(job_id)
+            if queue_job:
+                raw_queue_status = queue_job.status.value
+                stored_status = _normalize_processing_status(raw_queue_status)
+                created_at = queue_job.created_at or created_at
+                started_at = queue_job.started_at or started_at
+                completed_at = queue_job.completed_at or completed_at
+                error_message = queue_job.error_message or error_message
+                if not error_message and raw_queue_status in {"cancelled", "canceled"}:
+                    error_message = "Processing cancelled by user."
+    except Exception:
+        pass
+
+    # Backfill progress for legacy rows and keep stage status coherent.
+    if progress_percent is None:
+        if stored_status == "uploading":
+            progress_percent = 0
+        elif stored_status == "processing":
+            progress_percent = 50
+        elif stored_status in {"completed", "failed"}:
+            progress_percent = 100
+    else:
+        progress_percent = max(0, min(100, progress_percent))
+        if stored_status == "completed":
+            progress_percent = 100
+        elif stored_status == "processing" and progress_percent >= 100:
+            progress_percent = 99
+
+    return ProcessingStatusResponse(
+        job_id=job_id,
+        status=stored_status,
+        created_at=created_at,
+        started_at=started_at,
+        completed_at=completed_at,
+        chunk_count=chunk_count,
+        token_count=token_count,
+        error_message=error_message,
+        processed_at=processed_at,
+        progress_percent=progress_percent,
+    )
 
 
 def _normalize_content_type(content_type: Optional[str]) -> Optional[str]:
@@ -738,10 +879,7 @@ def _build_item_response(item: KnowledgeItem, owner_username: str) -> KnowledgeI
     chunk_count = metadata.get("chunk_count")
     token_count = metadata.get("token_count")
     error_message = metadata.get("error_message")
-    if (
-        not error_message
-        and str(raw_processing_status).lower() in {"cancelled", "canceled"}
-    ):
+    if not error_message and str(raw_processing_status).lower() in {"cancelled", "canceled"}:
         error_message = "Processing cancelled by user."
     processing_progress = metadata.get("processing_progress")
     if processing_progress is not None:
@@ -3099,13 +3237,67 @@ async def search_knowledge(
         )
 
 
+@router.post("/status/batch", response_model=BatchProcessingStatusResponse)
+async def get_processing_status_batch(
+    request: BatchProcessingStatusRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Get processing status for multiple knowledge items in one request."""
+    try:
+        if not request.knowledge_ids:
+            return BatchProcessingStatusResponse(items=[])
+
+        requested_ids = request.knowledge_ids[:100]
+        valid_ids: List[UUID] = []
+        id_by_uuid: Dict[UUID, str] = {}
+        for raw_id in requested_ids:
+            try:
+                kid = UUID(raw_id)
+            except ValueError:
+                continue
+            valid_ids.append(kid)
+            id_by_uuid[kid] = raw_id
+
+        if not valid_ids:
+            return BatchProcessingStatusResponse(items=[])
+
+        with get_db_session() as session:
+            query = session.query(KnowledgeItem).filter(KnowledgeItem.knowledge_id.in_(valid_ids))
+            items = (
+                filter_knowledge_query(query, current_user)
+                .order_by(KnowledgeItem.created_at.desc())
+                .all()
+            )
+
+            response_items = [
+                BatchProcessingStatusItemResponse(
+                    knowledge_id=id_by_uuid.get(item.knowledge_id, str(item.knowledge_id)),
+                    **_build_processing_status_response(
+                        session=session,
+                        item=item,
+                        knowledge_id=id_by_uuid.get(item.knowledge_id, str(item.knowledge_id)),
+                    ).model_dump(),
+                )
+                for item in items
+            ]
+
+        return BatchProcessingStatusResponse(items=response_items)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get batch processing status: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get batch processing status: {str(e)}",
+        )
+
+
 @router.get("/{knowledge_id}/status", response_model=ProcessingStatusResponse)
 async def get_processing_status(
     knowledge_id: str, current_user: CurrentUser = Depends(get_current_user)
 ):
     """Get processing status for a knowledge item."""
     try:
-        # First check the item exists and user has access
         with get_db_session() as session:
             try:
                 kid = UUID(knowledge_id)
@@ -3114,131 +3306,15 @@ async def get_processing_status(
                     status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid knowledge ID format"
                 )
 
-            item = session.query(KnowledgeItem).filter(KnowledgeItem.knowledge_id == kid).first()
+            item = filter_knowledge_query(
+                session.query(KnowledgeItem).filter(KnowledgeItem.knowledge_id == kid),
+                current_user,
+            ).first()
             if not item:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge item not found"
                 )
-
-            metadata = item.item_metadata or {}
-            stored_status_raw = metadata.get("processing_status", "completed")
-            stored_status = _normalize_processing_status(stored_status_raw)
-            job_id = metadata.get("job_id")
-            if not job_id:
-                # Keep response fields stable even for legacy rows created before job_id existed.
-                job_id = f"local-{knowledge_id}"
-            created_at = metadata.get("created_at")
-            started_at = metadata.get("started_at")
-            completed_at = metadata.get("completed_at")
-            chunk_count = metadata.get("chunk_count")
-            token_count = metadata.get("token_count")
-            error_message = metadata.get("error_message")
-            if (
-                not error_message
-                and str(stored_status_raw).lower() in {"cancelled", "canceled"}
-            ):
-                error_message = "Processing cancelled by user."
-            processed_at = metadata.get("processed_at")
-            progress_percent = metadata.get("processing_progress")
-            if progress_percent is not None:
-                try:
-                    progress_percent = int(progress_percent)
-                except (TypeError, ValueError):
-                    progress_percent = None
-            if processed_at is None and item.updated_at:
-                processed_at = item.updated_at.isoformat()
-            if created_at is None and item.created_at:
-                created_at = item.created_at.isoformat()
-
-            # Metadata and chunk rows can briefly diverge during reprocess retries.
-            # Reconcile here so clients don't stop polling on stale "completed" states.
-            if stored_status == "completed":
-                from database.models import KnowledgeChunk
-
-                actual_chunk_count = (
-                    session.query(KnowledgeChunk).filter(KnowledgeChunk.knowledge_id == kid).count()
-                )
-                metadata_chunk_count = None
-                if chunk_count is not None:
-                    try:
-                        metadata_chunk_count = int(chunk_count)
-                    except (TypeError, ValueError):
-                        metadata_chunk_count = None
-
-                if metadata_chunk_count is None:
-                    chunk_count = actual_chunk_count
-                elif metadata_chunk_count != actual_chunk_count:
-                    if metadata_chunk_count > 0 and actual_chunk_count == 0:
-                        logger.warning(
-                            "Completed status had stale chunk_count; returning processing status",
-                            extra={
-                                "knowledge_id": knowledge_id,
-                                "metadata_chunk_count": metadata_chunk_count,
-                                "actual_chunk_count": actual_chunk_count,
-                            },
-                        )
-                        stored_status = "processing"
-                        chunk_count = None
-                        token_count = None
-                        error_message = None
-                    else:
-                        chunk_count = actual_chunk_count
-
-        # Provide best-effort progress timestamps even when queue metadata is unavailable.
-        if started_at is None and stored_status in {"processing", "completed", "failed"}:
-            started_at = processed_at or created_at
-        if completed_at is None and stored_status in {"completed", "failed"}:
-            completed_at = processed_at
-
-        # Try to get richer job status from processing queue (when available).
-        try:
-            if job_id and not str(job_id).startswith("local-"):
-                from knowledge_base.processing_queue import get_processing_queue
-
-                queue = get_processing_queue()
-                queue_job = queue.get_job(job_id)
-                if queue_job:
-                    raw_queue_status = queue_job.status.value
-                    stored_status = _normalize_processing_status(raw_queue_status)
-                    created_at = queue_job.created_at or created_at
-                    started_at = queue_job.started_at or started_at
-                    completed_at = queue_job.completed_at or completed_at
-                    error_message = queue_job.error_message or error_message
-                    if (
-                        not error_message
-                        and raw_queue_status in {"cancelled", "canceled"}
-                    ):
-                        error_message = "Processing cancelled by user."
-        except Exception:
-            pass
-
-        # Backfill progress for legacy rows and keep stage status coherent.
-        if progress_percent is None:
-            if stored_status == "uploading":
-                progress_percent = 0
-            elif stored_status == "processing":
-                progress_percent = 50
-            elif stored_status in {"completed", "failed"}:
-                progress_percent = 100
-        else:
-            progress_percent = max(0, min(100, progress_percent))
-            if stored_status == "completed":
-                progress_percent = 100
-            elif stored_status == "processing" and progress_percent >= 100:
-                progress_percent = 99
-
-        return ProcessingStatusResponse(
-            job_id=job_id,
-            status=stored_status,
-            created_at=created_at,
-            started_at=started_at,
-            completed_at=completed_at,
-            chunk_count=chunk_count,
-            token_count=token_count,
-            error_message=error_message,
-            processed_at=processed_at,
-            progress_percent=progress_percent,
-        )
+            return _build_processing_status_response(session, item, knowledge_id)
 
     except HTTPException:
         raise

@@ -18,6 +18,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 pytestmark = [
+    pytest.mark.performance,
+    pytest.mark.usefixtures("cleanup_shared_db_test_artifacts"),
     pytest.mark.filterwarnings(
         "ignore:unclosed event loop <_UnixSelectorEventLoop.*:ResourceWarning"
     ),

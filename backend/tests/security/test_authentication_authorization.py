@@ -16,6 +16,8 @@ from fastapi.testclient import TestClient
 
 from access_control import clear_blacklist
 
+pytestmark = [pytest.mark.usefixtures("cleanup_shared_db_test_artifacts")]
+
 
 def _error_text(response) -> str:
     payload = response.json()
@@ -27,7 +29,8 @@ def api_client():
     """Create API test client."""
     from api_gateway.main import app
 
-    return TestClient(app)
+    with TestClient(app) as client:
+        yield client
 
 
 class TestAuthenticationSecurity:
@@ -378,8 +381,12 @@ class TestAuthorizationSecurity:
 
         if agent_response.status_code == 201:
             created_agent_id = agent_response.json()["id"]
-            agents1 = api_client.get("/api/v1/agents", headers={"Authorization": f"Bearer {token1}"})
-            agents2 = api_client.get("/api/v1/agents", headers={"Authorization": f"Bearer {token2}"})
+            agents1 = api_client.get(
+                "/api/v1/agents", headers={"Authorization": f"Bearer {token1}"}
+            )
+            agents2 = api_client.get(
+                "/api/v1/agents", headers={"Authorization": f"Bearer {token2}"}
+            )
 
             assert agents1.status_code == 200
             assert agents2.status_code == 200

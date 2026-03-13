@@ -13,6 +13,8 @@ from uuid import uuid4
 
 import pytest
 
+pytestmark = [pytest.mark.usefixtures("cleanup_shared_db_test_artifacts")]
+
 
 class TestEncryptionAtRest:
     """Test data encryption at rest."""

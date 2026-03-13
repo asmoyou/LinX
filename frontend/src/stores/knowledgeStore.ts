@@ -14,10 +14,9 @@ import type {
 const MAX_POLL_ATTEMPTS = 60;
 const POLL_INTERVAL_MS = 2000;
 const DOWNLOAD_DEBOUNCE_MS = 1200;
-const pollState = new Map<
-  string,
-  { attempts: number; timer?: ReturnType<typeof setTimeout> }
->();
+let batchPollTimer: ReturnType<typeof setTimeout> | null = null;
+let batchPollInFlight = false;
+let batchPollAttempts = 0;
 const downloadState = new Map<string, { lastTriggeredAt: number }>();
 
 const clampProgress = (value: number): number =>
@@ -74,23 +73,26 @@ const upsertCollection = (
   collections: Collection[],
   incoming: Collection,
 ): Collection[] => {
-  const filtered = collections.filter((collection) => collection.id !== incoming.id);
+  const filtered = collections.filter(
+    (collection) => collection.id !== incoming.id,
+  );
   return [incoming, ...filtered];
 };
 
-const stopPollingDocument = (id: string): void => {
-  const state = pollState.get(id);
-  if (state?.timer) {
-    clearTimeout(state.timer);
+const stopPollingDocument = (_id: string): void => {
+  if (batchPollTimer) {
+    clearTimeout(batchPollTimer);
+    batchPollTimer = null;
   }
-  pollState.delete(id);
 };
 
 const stopAllPolling = (): void => {
-  pollState.forEach((state, id) => {
-    if (state.timer) clearTimeout(state.timer);
-    pollState.delete(id);
-  });
+  if (batchPollTimer) {
+    clearTimeout(batchPollTimer);
+    batchPollTimer = null;
+  }
+  batchPollInFlight = false;
+  batchPollAttempts = 0;
 };
 
 interface KnowledgeState {
@@ -257,7 +259,10 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         set((state) => ({
           documents: [...visibleItems, ...state.documents],
           totalDocuments: state.totalDocuments + visibleItems.length,
-          collections: upsertCollection(state.collections, zipResult.collection),
+          collections: upsertCollection(
+            state.collections,
+            zipResult.collection,
+          ),
           isUploading: false,
         }));
 
@@ -277,7 +282,9 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
           activeCollectionId,
         );
         set((state) => ({
-          documents: shouldDisplay ? [doc, ...state.documents] : state.documents,
+          documents: shouldDisplay
+            ? [doc, ...state.documents]
+            : state.documents,
           totalDocuments: shouldDisplay
             ? state.totalDocuments + 1
             : state.totalDocuments,
@@ -313,6 +320,13 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
           state.selectedDocument?.id === id ? null : state.selectedDocument,
         totalDocuments: state.totalDocuments - 1,
       }));
+      if (
+        get().documents.some(
+          (doc) => doc.status === "processing" || doc.status === "uploading",
+        )
+      ) {
+        get().pollAllProcessing();
+      }
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : "Failed to delete document";
@@ -402,6 +416,13 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         error: updated.errorMessage || updated.error || fallbackError,
         errorMessage: updated.errorMessage || updated.error || fallbackError,
       });
+      if (
+        get().documents.some(
+          (doc) => doc.status === "processing" || doc.status === "uploading",
+        )
+      ) {
+        get().pollAllProcessing();
+      }
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : "Failed to cancel processing";
@@ -411,69 +432,90 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   },
 
   pollProcessingStatus: async (id: string) => {
-    // Avoid duplicate polling loops for the same document.
-    if (pollState.has(id)) return;
-    pollState.set(id, { attempts: 0 });
-
-    const poll = async () => {
-      const state = pollState.get(id);
-      if (!state) return;
-      const exists = get().documents.some((doc) => doc.id === id);
-      if (!exists) {
-        stopPollingDocument(id);
-        return;
-      }
-      if (state.attempts >= MAX_POLL_ATTEMPTS) {
-        stopPollingDocument(id);
-        return;
-      }
-      state.attempts += 1;
-
-      try {
-        const status = await knowledgeApi.getProcessingStatus(id);
-        const normalizedStatus = normalizeStatus(status.status);
-        const progress = clampProgress(
-          status.progress_percent ??
-            fallbackProgressForStatus(normalizedStatus),
-        );
-
-        get().updateDocument(id, {
-          status: normalizedStatus,
-          processingProgress: progress,
-          processedAt: status.processed_at || status.completed_at || undefined,
-          processingStartedAt:
-            status.started_at || status.created_at || undefined,
-          processingCompletedAt:
-            status.completed_at || status.processed_at || undefined,
-          error: status.error_message || undefined,
-          errorMessage: status.error_message || undefined,
-          chunkCount: status.chunk_count,
-          tokenCount: status.token_count,
-        });
-
-        if (normalizedStatus === "completed" || normalizedStatus === "failed") {
-          stopPollingDocument(id);
-          return;
-        }
-      } catch {
-        // Keep polling; transient network failures are common during heavy uploads.
-      }
-
-      const next = pollState.get(id);
-      if (!next) return;
-      next.timer = setTimeout(poll, POLL_INTERVAL_MS);
-    };
-
-    void poll();
+    const doc = get().documents.find((item) => item.id === id);
+    if (!doc) return;
+    if (doc.status !== "processing" && doc.status !== "uploading") return;
+    get().pollAllProcessing();
   },
 
   pollAllProcessing: () => {
-    const { documents, pollProcessingStatus } = get();
-    documents
-      .filter(
+    if (batchPollInFlight || batchPollTimer) {
+      return;
+    }
+
+    const poll = async () => {
+      const activeDocs = get().documents.filter(
         (doc) => doc.status === "processing" || doc.status === "uploading",
-      )
-      .forEach((doc) => pollProcessingStatus(doc.id));
+      );
+
+      if (activeDocs.length === 0) {
+        stopAllPolling();
+        return;
+      }
+
+      if (batchPollAttempts >= MAX_POLL_ATTEMPTS) {
+        stopAllPolling();
+        return;
+      }
+
+      batchPollInFlight = true;
+      batchPollAttempts += 1;
+
+      try {
+        const response = await knowledgeApi.getProcessingStatuses(
+          activeDocs.map((doc) => doc.id),
+        );
+        const statusById = new Map(
+          response.items.map((item) => [item.knowledge_id, item]),
+        );
+
+        activeDocs.forEach((doc) => {
+          const status = statusById.get(doc.id);
+          if (!status) return;
+
+          const normalizedStatus = normalizeStatus(status.status);
+          const progress = clampProgress(
+            status.progress_percent ??
+              fallbackProgressForStatus(normalizedStatus),
+          );
+
+          get().updateDocument(doc.id, {
+            status: normalizedStatus,
+            processingProgress: progress,
+            processedAt:
+              status.processed_at || status.completed_at || undefined,
+            processingStartedAt:
+              status.started_at || status.created_at || undefined,
+            processingCompletedAt:
+              status.completed_at || status.processed_at || undefined,
+            error: status.error_message || undefined,
+            errorMessage: status.error_message || undefined,
+            chunkCount: status.chunk_count,
+            tokenCount: status.token_count,
+          });
+        });
+      } catch {
+        // Keep polling; transient failures are expected during heavy uploads.
+      } finally {
+        batchPollInFlight = false;
+      }
+
+      if (
+        get().documents.some(
+          (doc) => doc.status === "processing" || doc.status === "uploading",
+        )
+      ) {
+        batchPollTimer = setTimeout(() => {
+          batchPollTimer = null;
+          void poll();
+        }, POLL_INTERVAL_MS);
+        return;
+      }
+
+      stopAllPolling();
+    };
+
+    void poll();
   },
 
   // Collection actions

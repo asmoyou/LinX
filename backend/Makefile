@@ -54,10 +54,10 @@ clean:
 
 # Testing
 test:
-	pytest -v
+	pytest -v -m "not performance"
 
 test-cov:
-	pytest --cov=. --cov-report=html --cov-report=term-missing
+	pytest -m "not performance" --cov=. --cov-report=html --cov-report=term-missing
 
 test-watch:
 	pytest-watch

@@ -1,5 +1,5 @@
-import apiClient from './client';
-import type { Document, Collection } from '../types/document';
+import apiClient from "./client";
+import type { Document, Collection } from "../types/document";
 
 export interface KnowledgeListResponse {
   items: Document[];
@@ -63,7 +63,7 @@ export interface KnowledgeChunk {
     has_summary?: boolean;
   };
   embedding?: {
-    status?: 'indexed' | 'missing' | 'pending' | 'failed' | 'unknown';
+    status?: "indexed" | "missing" | "pending" | "failed" | "unknown";
     indexed?: boolean;
     provider?: string;
     model?: string;
@@ -108,6 +108,14 @@ export interface ProcessingStatusResponse {
   token_count?: number;
   processed_at?: string;
   progress_percent?: number;
+}
+
+export interface ProcessingStatusBatchItem extends ProcessingStatusResponse {
+  knowledge_id: string;
+}
+
+export interface ProcessingStatusBatchResponse {
+  items: ProcessingStatusBatchItem[];
 }
 
 export interface KBConfigResponse {
@@ -178,22 +186,22 @@ export interface KBConfigResponse {
     cross_language_model?: string;
   };
   recommended?: {
-    processing?: Partial<KBConfigResponse['processing']>;
-    chunking?: Partial<KBConfigResponse['chunking']>;
-    parsing?: Partial<KBConfigResponse['parsing']>;
-    enrichment?: Partial<KBConfigResponse['enrichment']>;
-    embedding?: Partial<KBConfigResponse['embedding']>;
-    search?: Partial<KBConfigResponse['search']>;
+    processing?: Partial<KBConfigResponse["processing"]>;
+    chunking?: Partial<KBConfigResponse["chunking"]>;
+    parsing?: Partial<KBConfigResponse["parsing"]>;
+    enrichment?: Partial<KBConfigResponse["enrichment"]>;
+    embedding?: Partial<KBConfigResponse["embedding"]>;
+    search?: Partial<KBConfigResponse["search"]>;
   };
 }
 
 export interface KBConfigUpdateRequest {
-  processing?: Partial<KBConfigResponse['processing']>;
-  chunking?: Partial<KBConfigResponse['chunking']>;
-  parsing?: Partial<KBConfigResponse['parsing']>;
-  enrichment?: Partial<KBConfigResponse['enrichment']>;
-  embedding?: Partial<KBConfigResponse['embedding']>;
-  search?: Partial<KBConfigResponse['search']>;
+  processing?: Partial<KBConfigResponse["processing"]>;
+  chunking?: Partial<KBConfigResponse["chunking"]>;
+  parsing?: Partial<KBConfigResponse["parsing"]>;
+  enrichment?: Partial<KBConfigResponse["enrichment"]>;
+  embedding?: Partial<KBConfigResponse["embedding"]>;
+  search?: Partial<KBConfigResponse["search"]>;
 }
 
 export interface CollectionListResponse {
@@ -240,7 +248,9 @@ export const knowledgeApi = {
     department_id?: string;
     collection_id?: string;
   }): Promise<KnowledgeListResponse> => {
-    const response = await apiClient.get<KnowledgeListResponse>('/knowledge', { params });
+    const response = await apiClient.get<KnowledgeListResponse>("/knowledge", {
+      params,
+    });
     return response.data;
   },
 
@@ -255,19 +265,23 @@ export const knowledgeApi = {
   /**
    * Upload document (returns Document for regular files, ZipUploadResponse for ZIPs)
    */
-  upload: async (data: UploadDocumentRequest): Promise<Document | ZipUploadResponse> => {
+  upload: async (
+    data: UploadDocumentRequest,
+  ): Promise<Document | ZipUploadResponse> => {
     const formData = new FormData();
-    formData.append('file', data.file);
-    if (data.title) formData.append('title', data.title);
-    if (data.description) formData.append('description', data.description);
-    if (data.tags) formData.append('tags', JSON.stringify(data.tags));
-    if (data.access_level) formData.append('access_level', data.access_level);
-    if (data.department_id) formData.append('department_id', data.department_id);
-    if (data.collection_id) formData.append('collection_id', data.collection_id);
+    formData.append("file", data.file);
+    if (data.title) formData.append("title", data.title);
+    if (data.description) formData.append("description", data.description);
+    if (data.tags) formData.append("tags", JSON.stringify(data.tags));
+    if (data.access_level) formData.append("access_level", data.access_level);
+    if (data.department_id)
+      formData.append("department_id", data.department_id);
+    if (data.collection_id)
+      formData.append("collection_id", data.collection_id);
 
-    const response = await apiClient.post('/knowledge', formData, {
+    const response = await apiClient.post("/knowledge", formData, {
       headers: {
-        'Content-Type': 'multipart/form-data',
+        "Content-Type": "multipart/form-data",
       },
     });
     return response.data;
@@ -276,8 +290,14 @@ export const knowledgeApi = {
   /**
    * Update document metadata
    */
-  update: async (documentId: string, data: UpdateDocumentRequest): Promise<Document> => {
-    const response = await apiClient.put<Document>(`/knowledge/${documentId}`, data);
+  update: async (
+    documentId: string,
+    data: UpdateDocumentRequest,
+  ): Promise<Document> => {
+    const response = await apiClient.put<Document>(
+      `/knowledge/${documentId}`,
+      data,
+    );
     return response.data;
   },
 
@@ -291,17 +311,37 @@ export const knowledgeApi = {
   /**
    * Search knowledge base (semantic)
    */
-  search: async (data: SearchKnowledgeRequest): Promise<SearchKnowledgeResponse> => {
-    const response = await apiClient.post<SearchKnowledgeResponse>('/knowledge/search', data);
+  search: async (
+    data: SearchKnowledgeRequest,
+  ): Promise<SearchKnowledgeResponse> => {
+    const response = await apiClient.post<SearchKnowledgeResponse>(
+      "/knowledge/search",
+      data,
+    );
     return response.data;
   },
 
   /**
    * Get document processing status
    */
-  getProcessingStatus: async (documentId: string): Promise<ProcessingStatusResponse> => {
+  getProcessingStatus: async (
+    documentId: string,
+  ): Promise<ProcessingStatusResponse> => {
     const response = await apiClient.get<ProcessingStatusResponse>(
-      `/knowledge/${documentId}/status`
+      `/knowledge/${documentId}/status`,
+    );
+    return response.data;
+  },
+
+  /**
+   * Get document processing status in batch.
+   */
+  getProcessingStatuses: async (
+    documentIds: string[],
+  ): Promise<ProcessingStatusBatchResponse> => {
+    const response = await apiClient.post<ProcessingStatusBatchResponse>(
+      "/knowledge/status/batch",
+      { knowledge_ids: documentIds },
     );
     return response.data;
   },
@@ -311,8 +351,9 @@ export const knowledgeApi = {
    */
   getThumbnail: async (documentId: string): Promise<Blob | null> => {
     const response = await apiClient.get(`/knowledge/${documentId}/thumbnail`, {
-      responseType: 'blob',
-      validateStatus: (status) => (status >= 200 && status < 300) || status === 404,
+      responseType: "blob",
+      validateStatus: (status) =>
+        (status >= 200 && status < 300) || status === 404,
     });
     if (response.status === 404) {
       return null;
@@ -327,8 +368,8 @@ export const knowledgeApi = {
     documentId: string,
     options?: {
       inline?: boolean;
-      convert_to?: 'docx';
-    }
+      convert_to?: "docx";
+    },
   ): Promise<{ blob: Blob; filename?: string }> => {
     const params: Record<string, string | boolean> = {};
     if (options?.inline !== undefined) {
@@ -339,12 +380,14 @@ export const knowledgeApi = {
     }
 
     const response = await apiClient.get(`/knowledge/${documentId}/download`, {
-      responseType: 'blob',
+      responseType: "blob",
       params,
     });
 
     // Extract filename from Content-Disposition header
-    const disposition = response.headers['content-disposition'] as string | undefined;
+    const disposition = response.headers["content-disposition"] as
+      | string
+      | undefined;
     let filename: string | undefined;
     if (disposition) {
       // RFC 5987: filename*=UTF-8''encoded_name
@@ -369,11 +412,11 @@ export const knowledgeApi = {
   getChunks: async (
     documentId: string,
     page: number = 1,
-    pageSize: number = 20
+    pageSize: number = 20,
   ): Promise<KnowledgeChunksResponse> => {
     const response = await apiClient.get<KnowledgeChunksResponse>(
       `/knowledge/${documentId}/chunks`,
-      { params: { page, page_size: pageSize } }
+      { params: { page, page_size: pageSize } },
     );
     return response.data;
   },
@@ -382,7 +425,9 @@ export const knowledgeApi = {
    * Reprocess a failed or completed document
    */
   reprocess: async (documentId: string): Promise<Document> => {
-    const response = await apiClient.post<Document>(`/knowledge/${documentId}/reprocess`);
+    const response = await apiClient.post<Document>(
+      `/knowledge/${documentId}/reprocess`,
+    );
     return response.data;
   },
 
@@ -390,7 +435,9 @@ export const knowledgeApi = {
    * Cancel an in-flight processing document
    */
   cancelProcessing: async (documentId: string): Promise<Document> => {
-    const response = await apiClient.post<Document>(`/knowledge/${documentId}/cancel`);
+    const response = await apiClient.post<Document>(
+      `/knowledge/${documentId}/cancel`,
+    );
     return response.data;
   },
 
@@ -398,15 +445,20 @@ export const knowledgeApi = {
    * Get knowledge base pipeline configuration
    */
   getConfig: async (): Promise<KBConfigResponse> => {
-    const response = await apiClient.get<KBConfigResponse>('/knowledge/config');
+    const response = await apiClient.get<KBConfigResponse>("/knowledge/config");
     return response.data;
   },
 
   /**
    * Update knowledge base pipeline configuration
    */
-  updateConfig: async (data: KBConfigUpdateRequest): Promise<KBConfigResponse> => {
-    const response = await apiClient.put<KBConfigResponse>('/knowledge/config', data);
+  updateConfig: async (
+    data: KBConfigUpdateRequest,
+  ): Promise<KBConfigResponse> => {
+    const response = await apiClient.put<KBConfigResponse>(
+      "/knowledge/config",
+      data,
+    );
     return response.data;
   },
 
@@ -424,17 +476,25 @@ export const knowledgeApi = {
     department_id?: string;
     access_level?: string;
   }): Promise<CollectionListResponse> => {
-    const response = await apiClient.get<CollectionListResponse>('/knowledge/collections', {
-      params,
-    });
+    const response = await apiClient.get<CollectionListResponse>(
+      "/knowledge/collections",
+      {
+        params,
+      },
+    );
     return response.data;
   },
 
   /**
    * Create a new collection
    */
-  createCollection: async (data: CollectionCreateRequest): Promise<Collection> => {
-    const response = await apiClient.post<Collection>('/knowledge/collections', data);
+  createCollection: async (
+    data: CollectionCreateRequest,
+  ): Promise<Collection> => {
+    const response = await apiClient.post<Collection>(
+      "/knowledge/collections",
+      data,
+    );
     return response.data;
   },
 
@@ -442,7 +502,9 @@ export const knowledgeApi = {
    * Get a single collection
    */
   getCollection: async (collectionId: string): Promise<Collection> => {
-    const response = await apiClient.get<Collection>(`/knowledge/collections/${collectionId}`);
+    const response = await apiClient.get<Collection>(
+      `/knowledge/collections/${collectionId}`,
+    );
     return response.data;
   },
 
@@ -451,11 +513,11 @@ export const knowledgeApi = {
    */
   updateCollection: async (
     collectionId: string,
-    data: CollectionUpdateRequest
+    data: CollectionUpdateRequest,
   ): Promise<Collection> => {
     const response = await apiClient.put<Collection>(
       `/knowledge/collections/${collectionId}`,
-      data
+      data,
     );
     return response.data;
   },
@@ -473,11 +535,11 @@ export const knowledgeApi = {
   getCollectionItems: async (
     collectionId: string,
     page: number = 1,
-    pageSize: number = 20
+    pageSize: number = 20,
   ): Promise<KnowledgeListResponse> => {
     const response = await apiClient.get<KnowledgeListResponse>(
       `/knowledge/collections/${collectionId}/items`,
-      { params: { page, page_size: pageSize } }
+      { params: { page, page_size: pageSize } },
     );
     return response.data;
   },

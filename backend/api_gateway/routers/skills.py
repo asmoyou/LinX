@@ -219,6 +219,47 @@ def _record_skill_execution_stats(skill_id: UUID, execution_time: float) -> None
         )
 
 
+def _skill_owner_id(skill: Any) -> Optional[str]:
+    """Return the normalized owner id for a skill-like object."""
+    created_by = getattr(skill, "created_by", None)
+    return str(created_by) if created_by else None
+
+
+def _can_read_skill(skill: Any, current_user: CurrentUser) -> bool:
+    """Return whether the current user should see this skill in the library."""
+    if skill is None:
+        return False
+    if bool(getattr(skill, "is_system", False)):
+        return True
+    return _skill_owner_id(skill) == str(current_user.user_id)
+
+
+def _can_write_skill(skill: Any, current_user: CurrentUser) -> bool:
+    """Return whether the current user can mutate this skill."""
+    if skill is None:
+        return False
+    return _skill_owner_id(skill) == str(current_user.user_id)
+
+
+def _filter_visible_skills(skills: List[Any], current_user: CurrentUser) -> List[Any]:
+    """Filter a skill collection to the current user's visible skills."""
+    return [skill for skill in skills if _can_read_skill(skill, current_user)]
+
+
+def _require_readable_skill(skill: Any, current_user: CurrentUser) -> Any:
+    """Raise not-found when a skill is missing or outside the user's scope."""
+    if not _can_read_skill(skill, current_user):
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return skill
+
+
+def _require_writable_skill(skill: Any, current_user: CurrentUser) -> Any:
+    """Raise not-found when a skill is missing or not owned by the user."""
+    if not _can_write_skill(skill, current_user):
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return skill
+
+
 # Request/Response Models
 class InterfaceDefinition(BaseModel):
     """Skill interface definition."""
@@ -372,7 +413,11 @@ async def list_skills(
     """
     try:
         registry = get_skill_registry()
-        skills = registry.list_skills(limit=limit, offset=offset)
+        visible_skills = _filter_visible_skills(
+            registry.list_skills(limit=1000, offset=0),
+            current_user,
+        )
+        skills = visible_skills[offset : offset + limit]
 
         return [SkillResponse.from_skill_info(skill, include_code=include_code) for skill in skills]
 
@@ -397,7 +442,7 @@ async def search_skills(
     """
     try:
         registry = get_skill_registry()
-        skills = registry.search_skills(query)
+        skills = _filter_visible_skills(registry.search_skills(query), current_user)
 
         return [SkillResponse.from_skill_info(skill) for skill in skills]
 
@@ -581,10 +626,39 @@ async def get_skills_overview_stats(
 ):
     """Get aggregated overview metrics for all skills."""
     try:
-        from skill_library.skill_model import get_skill_model
+        registry = get_skill_registry()
+        skills = _filter_visible_skills(registry.list_skills(limit=1000, offset=0), current_user)
+        active_skills = sum(1 for skill in skills if skill.is_active is not False)
+        inactive_skills = max(len(skills) - active_skills, 0)
+        agent_skills = sum(1 for skill in skills if skill.skill_type == "agent_skill")
+        langchain_tool_skills = sum(1 for skill in skills if skill.skill_type == "langchain_tool")
+        skills_with_dependencies = sum(
+            1
+            for skill in skills
+            if isinstance(skill.dependencies, list) and len(skill.dependencies) > 0
+        )
+        total_execution_count = sum(int(skill.execution_count or 0) for skill in skills)
+        avg_samples = [
+            float(skill.average_execution_time or 0.0)
+            for skill in skills
+            if (skill.execution_count or 0) > 0 and skill.average_execution_time is not None
+        ]
+        last_executed_at = max(
+            (skill.last_executed_at for skill in skills if skill.last_executed_at),
+            default=None,
+        )
 
-        skill_model = get_skill_model()
-        return skill_model.get_overview_stats()
+        return SkillsOverviewStatsResponse(
+            total_skills=len(skills),
+            active_skills=active_skills,
+            inactive_skills=inactive_skills,
+            agent_skills=agent_skills,
+            langchain_tool_skills=langchain_tool_skills,
+            skills_with_dependencies=skills_with_dependencies,
+            total_execution_count=total_execution_count,
+            average_execution_time=(sum(avg_samples) / len(avg_samples) if avg_samples else 0.0),
+            last_executed_at=last_executed_at.isoformat() if last_executed_at else None,
+        )
 
     except Exception as e:
         logger.error(f"Failed to get skills overview stats: {e}")
@@ -610,10 +684,7 @@ async def get_skill(
     try:
         skill_uuid = UUID(skill_id)
         registry = get_skill_registry()
-        skill = registry.get_skill(skill_uuid)
-
-        if not skill:
-            raise HTTPException(status_code=404, detail="Skill not found")
+        skill = _require_readable_skill(registry.get_skill(skill_uuid), current_user)
 
         return SkillResponse.from_skill_info(skill, include_code=include_code)
 
@@ -877,9 +948,7 @@ async def update_skill(
         registry = get_skill_registry()
 
         # Check if skill exists
-        existing = registry.get_skill(skill_uuid)
-        if not existing:
-            raise HTTPException(status_code=404, detail="Skill not found")
+        existing = _require_writable_skill(registry.get_skill(skill_uuid), current_user)
 
         logger.info(
             f"Updating skill {skill_id}, request data: description={bool(request.description)}, code={bool(request.code)}, interface_def={bool(request.interface_definition)}, dependencies={bool(request.dependencies)}"
@@ -926,9 +995,7 @@ async def update_skill(
             raise HTTPException(status_code=404, detail="Skill not found")
 
         # Get updated skill info
-        skill = registry.get_skill(skill_uuid)
-        if not skill:
-            raise HTTPException(status_code=404, detail="Skill not found")
+        skill = _require_readable_skill(registry.get_skill(skill_uuid), current_user)
 
         logger.info(
             f"Skill updated by user {current_user.user_id}",
@@ -963,6 +1030,7 @@ async def delete_skill(
         from skill_library.skill_model import get_skill_model
 
         skill_model = get_skill_model()
+        _require_writable_skill(skill_model.get_skill_by_id(skill_uuid), current_user)
         deleted = skill_model.delete_skill(skill_uuid)
 
         if not deleted:
@@ -1020,6 +1088,7 @@ async def create_from_template(
             version="1.0.0",
             skill_type=template["skill_type"],
             code=template["code"],
+            created_by=str(current_user.user_id),
             validate=False,  # Skip validation for templates
         )
 
@@ -1069,10 +1138,7 @@ async def test_skill(
         from skill_library.skill_model import get_skill_model
 
         skill_model = get_skill_model()
-        skill = skill_model.get_skill_by_id(skill_uuid)
-
-        if not skill:
-            raise HTTPException(status_code=404, detail="Skill not found")
+        skill = _require_readable_skill(skill_model.get_skill_by_id(skill_uuid), current_user)
 
         # Handle agent_skill with natural language testing
         if skill.skill_type == "agent_skill":
@@ -1606,8 +1672,7 @@ async def activate_skill(
         with get_db_session() as session:
             db_skill = session.query(SkillModel).filter(SkillModel.skill_id == skill_uuid).first()
 
-            if not db_skill:
-                raise HTTPException(status_code=404, detail="Skill not found")
+            _require_writable_skill(db_skill, current_user)
 
             db_skill.is_active = True
             session.commit()
@@ -1644,8 +1709,7 @@ async def deactivate_skill(
         with get_db_session() as session:
             db_skill = session.query(SkillModel).filter(SkillModel.skill_id == skill_uuid).first()
 
-            if not db_skill:
-                raise HTTPException(status_code=404, detail="Skill not found")
+            _require_writable_skill(db_skill, current_user)
 
             db_skill.is_active = False
             session.commit()
@@ -1690,10 +1754,7 @@ async def get_skill_stats(
         from skill_library.skill_model import get_skill_model
 
         skill_model = get_skill_model()
-        skill = skill_model.get_skill_by_id(skill_uuid)
-
-        if not skill:
-            raise HTTPException(status_code=404, detail="Skill not found")
+        skill = _require_readable_skill(skill_model.get_skill_by_id(skill_uuid), current_user)
 
         return {
             "skill_id": str(skill.skill_id),
@@ -1881,10 +1942,7 @@ async def get_skill_files(
         from skill_library.skill_model import get_skill_model
 
         skill_model = get_skill_model()
-        skill = skill_model.get_skill_by_id(skill_uuid)
-
-        if not skill:
-            raise HTTPException(status_code=404, detail="Skill not found")
+        skill = _require_readable_skill(skill_model.get_skill_by_id(skill_uuid), current_user)
 
         # Only agent_skill has file structure
         if skill.skill_type != "agent_skill":
@@ -2037,10 +2095,7 @@ async def get_skill_file_content(
         from skill_library.skill_model import get_skill_model
 
         skill_model = get_skill_model()
-        skill = skill_model.get_skill_by_id(skill_uuid)
-
-        if not skill:
-            raise HTTPException(status_code=404, detail="Skill not found")
+        skill = _require_readable_skill(skill_model.get_skill_by_id(skill_uuid), current_user)
 
         # Only agent_skill has file structure
         if skill.skill_type != "agent_skill":
@@ -2173,10 +2228,7 @@ async def update_skill_file_content(
         from skill_library.skill_model import get_skill_model
 
         skill_model = get_skill_model()
-        skill = skill_model.get_skill_by_id(skill_uuid)
-
-        if not skill:
-            raise HTTPException(status_code=404, detail="Skill not found")
+        skill = _require_writable_skill(skill_model.get_skill_by_id(skill_uuid), current_user)
 
         # Only agent_skill has file structure
         if skill.skill_type != "agent_skill":
@@ -2392,10 +2444,7 @@ async def update_skill_package(
         from skill_library.skill_model import get_skill_model
 
         skill_model = get_skill_model()
-        skill = skill_model.get_skill_by_id(skill_uuid)
-
-        if not skill:
-            raise HTTPException(status_code=404, detail="Skill not found")
+        skill = _require_writable_skill(skill_model.get_skill_by_id(skill_uuid), current_user)
 
         # Only agent_skill supports package upload
         if skill.skill_type != "agent_skill":

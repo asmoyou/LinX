@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Upload as UploadIcon,
@@ -56,6 +56,7 @@ const formValueToAccessLevel = (value: string): string => {
 
 export const Knowledge: React.FC = () => {
   const { t } = useTranslation();
+  const hasLoadedInitialDocuments = useRef(false);
   const [showUploadForm, setShowUploadForm] = useState(false);
   const [showConfigPanel, setShowConfigPanel] = useState(false);
   const [showRetrievalTest, setShowRetrievalTest] = useState(false);
@@ -130,12 +131,14 @@ export const Knowledge: React.FC = () => {
   useEffect(() => {
     fetchCollections();
     fetchDocuments();
+    hasLoadedInitialDocuments.current = true;
   }, [fetchCollections, fetchDocuments]);
 
   // Re-fetch documents when active collection changes
   useEffect(() => {
+    if (!hasLoadedInitialDocuments.current) return;
     fetchDocuments();
-  }, [activeCollectionId]);
+  }, [activeCollectionId, fetchDocuments]);
 
   // Poll processing status for any documents stuck in processing after page load
   useEffect(() => {
