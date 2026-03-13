@@ -39,6 +39,14 @@ from shared.logging import (
 )
 
 
+def _close_root_logger_handlers() -> None:
+    """Close and detach root handlers to avoid leaking open file handles in tests."""
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        handler.close()
+        root_logger.removeHandler(handler)
+
+
 class TestCorrelationId:
     """Test correlation ID management."""
 
@@ -202,8 +210,7 @@ class TestSetupLogging:
 
     def teardown_method(self):
         """Clean up logging handlers after each test."""
-        root_logger = logging.getLogger()
-        root_logger.handlers.clear()
+        _close_root_logger_handlers()
 
     def test_setup_logging_with_defaults(self):
         """Test setting up logging with default configuration."""
@@ -376,8 +383,7 @@ class TestConvenienceFunctions:
 
     def teardown_method(self):
         """Clean up."""
-        root_logger = logging.getLogger()
-        root_logger.handlers.clear()
+        _close_root_logger_handlers()
 
     def test_log_api_request(self):
         """Test log_api_request function."""
@@ -453,8 +459,7 @@ class TestIntegration:
 
     def teardown_method(self):
         """Clean up."""
-        root_logger = logging.getLogger()
-        root_logger.handlers.clear()
+        _close_root_logger_handlers()
         clear_correlation_id()
 
     def test_end_to_end_json_logging(self):

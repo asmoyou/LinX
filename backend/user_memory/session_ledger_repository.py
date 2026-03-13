@@ -17,6 +17,7 @@ from database.models import (
     UserMemoryLink,
     UserMemoryView,
 )
+from shared.datetime_utils import utcnow
 
 
 @dataclass
@@ -154,9 +155,7 @@ class SessionLedgerRepository:
         session_ledger_id: Optional[int] = None,
     ) -> None:
         steps = [
-            str(step).strip()
-            for step in payload.get("successful_path") or []
-            if str(step).strip()
+            str(step).strip() for step in payload.get("successful_path") or [] if str(step).strip()
         ]
         row.agent_id = str(materialization.owner_id)
         row.user_id = str(snapshot.user_id)
@@ -164,7 +163,9 @@ class SessionLedgerRepository:
         row.title = str(materialization.title)
         row.goal = str(payload.get("goal") or materialization.title)
         row.successful_path = steps
-        row.why_it_worked = str(payload.get("why_it_worked") or materialization.summary or "") or None
+        row.why_it_worked = (
+            str(payload.get("why_it_worked") or materialization.summary or "") or None
+        )
         row.applicability = str(payload.get("applicability") or "") or None
         row.avoid = str(payload.get("avoid") or "") or None
         row.confidence = float(payload.get("confidence") or 0.72)
@@ -276,7 +277,11 @@ class SessionLedgerRepository:
 
     @staticmethod
     def _get_session_row(db, *, session_id: str) -> Optional[SessionLedger]:
-        return db.query(SessionLedger).filter(SessionLedger.session_id == str(session_id)).one_or_none()
+        return (
+            db.query(SessionLedger)
+            .filter(SessionLedger.session_id == str(session_id))
+            .one_or_none()
+        )
 
     @staticmethod
     def _get_user_view_row(
@@ -501,7 +506,9 @@ class SessionLedgerRepository:
             db.flush()
 
             for observation in observations:
-                entry = self._build_entry_from_observation(snapshot=snapshot, observation=observation)
+                entry = self._build_entry_from_observation(
+                    snapshot=snapshot, observation=observation
+                )
                 if entry is None:
                     continue
                 self._upsert_entry_row(
@@ -511,7 +518,9 @@ class SessionLedgerRepository:
                 )
 
             for materialization in materializations:
-                materialization_type = str(materialization.materialization_type or "").strip().lower()
+                materialization_type = (
+                    str(materialization.materialization_type or "").strip().lower()
+                )
                 if materialization_type in {"user_profile", "episode"}:
                     self._upsert_user_view_row(db, materialization=materialization)
                     continue
@@ -540,7 +549,7 @@ class SessionLedgerRepository:
             session_id="manual-upsert",
             agent_id=str(materialization.owner_id if materialization.owner_type == "agent" else ""),
             user_id=str(materialization.payload.get("user_id") or materialization.owner_id),
-            started_at=datetime.utcnow(),
+            started_at=utcnow(),
             ended_at=None,
             status="completed",
         )
@@ -619,10 +628,18 @@ class SessionLedgerRepository:
         """Load one user-memory view or skill proposal by numeric id."""
 
         with get_db_session() as db:
-            row = db.query(UserMemoryView).filter(UserMemoryView.id == int(materialization_id)).one_or_none()
+            row = (
+                db.query(UserMemoryView)
+                .filter(UserMemoryView.id == int(materialization_id))
+                .one_or_none()
+            )
             if row is not None:
                 return row
-            return db.query(SkillProposal).filter(SkillProposal.id == int(materialization_id)).one_or_none()
+            return (
+                db.query(SkillProposal)
+                .filter(SkillProposal.id == int(materialization_id))
+                .one_or_none()
+            )
 
     def get_entry(
         self,
@@ -643,7 +660,9 @@ class SessionLedgerRepository:
         """Load one entry row by numeric id."""
 
         with get_db_session() as db:
-            return db.query(UserMemoryEntry).filter(UserMemoryEntry.id == int(entry_id)).one_or_none()
+            return (
+                db.query(UserMemoryEntry).filter(UserMemoryEntry.id == int(entry_id)).one_or_none()
+            )
 
     def update_materialization(
         self,
@@ -661,7 +680,11 @@ class SessionLedgerRepository:
 
         del source_observation_id
         with get_db_session() as db:
-            row = db.query(UserMemoryView).filter(UserMemoryView.id == int(materialization_id)).one_or_none()
+            row = (
+                db.query(UserMemoryView)
+                .filter(UserMemoryView.id == int(materialization_id))
+                .one_or_none()
+            )
             if row is not None:
                 if title is not None:
                     row.title = str(title)
@@ -676,7 +699,11 @@ class SessionLedgerRepository:
                 db.flush()
                 return row
 
-            proposal = db.query(SkillProposal).filter(SkillProposal.id == int(materialization_id)).one_or_none()
+            proposal = (
+                db.query(SkillProposal)
+                .filter(SkillProposal.id == int(materialization_id))
+                .one_or_none()
+            )
             if proposal is None:
                 return None
             if title is not None:
@@ -713,7 +740,9 @@ class SessionLedgerRepository:
 
         del source_observation_id
         with get_db_session() as db:
-            row = db.query(UserMemoryEntry).filter(UserMemoryEntry.id == int(entry_id)).one_or_none()
+            row = (
+                db.query(UserMemoryEntry).filter(UserMemoryEntry.id == int(entry_id)).one_or_none()
+            )
             if row is None:
                 return None
             if canonical_text is not None:
@@ -834,9 +863,13 @@ class SessionLedgerRepository:
 
     def get_skill_proposal(self, proposal_id: int) -> Optional[SkillProposal]:
         with get_db_session() as db:
-            return db.query(SkillProposal).filter(SkillProposal.id == int(proposal_id)).one_or_none()
+            return (
+                db.query(SkillProposal).filter(SkillProposal.id == int(proposal_id)).one_or_none()
+            )
 
-    def get_skill_proposal_by_key(self, *, agent_id: str, proposal_key: str) -> Optional[SkillProposal]:
+    def get_skill_proposal_by_key(
+        self, *, agent_id: str, proposal_key: str
+    ) -> Optional[SkillProposal]:
         with get_db_session() as db:
             return self._get_skill_proposal_row(
                 db,
@@ -906,12 +939,16 @@ class SessionLedgerRepository:
                 (
                     db.query(UserMemoryEntry)
                     .filter(UserMemoryEntry.source_session_ledger_id.in_(session_ids))
-                    .update({UserMemoryEntry.source_session_ledger_id: None}, synchronize_session=False)
+                    .update(
+                        {UserMemoryEntry.source_session_ledger_id: None}, synchronize_session=False
+                    )
                 )
                 (
                     db.query(SkillProposal)
                     .filter(SkillProposal.evidence_session_ledger_id.in_(session_ids))
-                    .update({SkillProposal.evidence_session_ledger_id: None}, synchronize_session=False)
+                    .update(
+                        {SkillProposal.evidence_session_ledger_id: None}, synchronize_session=False
+                    )
                 )
                 (
                     db.query(SessionLedger)

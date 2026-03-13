@@ -12,6 +12,7 @@ from typing import Optional
 from uuid import UUID
 
 from agent_framework.agent_registry import AgentRegistry, get_agent_registry
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ class AgentStatusTracker:
             agent_id=agent_id,
             old_status=old_status,
             new_status=new_status,
-            timestamp=datetime.utcnow(),
+            timestamp=utcnow(),
             reason=reason,
         )
 

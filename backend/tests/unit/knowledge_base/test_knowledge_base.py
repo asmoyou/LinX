@@ -13,7 +13,9 @@ import pytest
 
 # python-magic requires a system libmagic installation. Skip these tests in
 # environments where that system dependency is unavailable.
-pytest.importorskip("magic", reason="libmagic is required for file validation tests")
+pytest.importorskip(
+    "magic", reason="libmagic is required for file validation tests", exc_type=ImportError
+)
 
 from knowledge_base.document_chunker import ChunkingStrategy, DocumentChunker
 from knowledge_base.document_upload import DocumentUploadHandler

@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from object_storage.minio_client import get_minio_client
+from shared.datetime_utils import utcnow
 from virtualization.container_manager import (
     ContainerConfig,
     ContainerManager,
@@ -48,9 +49,7 @@ DEFAULT_MISSION_SANDBOX_IMAGE = (
     or os.getenv("LINX_SANDBOX_PYTHON_IMAGE")
     or "python:3.11-bookworm"
 )
-DEFAULT_SANDBOX_TMPFS_SIZE = (
-    os.getenv("LINX_SANDBOX_TMPFS_SIZE", "1G").strip() or "1G"
-)
+DEFAULT_SANDBOX_TMPFS_SIZE = os.getenv("LINX_SANDBOX_TMPFS_SIZE", "1G").strip() or "1G"
 
 
 @dataclass
@@ -61,7 +60,7 @@ class WorkspaceInfo:
     container_id: str
     workspace_path: str
     host_workspace_path: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utcnow)
 
 
 @dataclass
@@ -532,7 +531,7 @@ class MissionWorkspaceManager:
         workspace = self._get_workspace(mission_id)
         minio = get_minio_client()
 
-        timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        timestamp = utcnow().strftime("%Y%m%dT%H%M%SZ")
         archive_name = f"workspace_snapshot_{timestamp}.tar.gz"
         archive_path = f"/tmp/{archive_name}"
 
@@ -571,7 +570,7 @@ class MissionWorkspaceManager:
                 "artifact_type": "workspace_snapshot",
                 "mission_id": str(mission_id),
                 "snapshot_reason": str(reason or "automatic"),
-                "snapshot_timestamp": datetime.utcnow().isoformat(),
+                "snapshot_timestamp": utcnow().isoformat(),
             }
             bucket_name, object_key = minio.upload_file(
                 bucket_type="artifacts",
@@ -588,7 +587,7 @@ class MissionWorkspaceManager:
                 "size": len(archive_bytes),
                 "file_count": file_count,
                 "reason": str(reason or "automatic"),
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": utcnow().isoformat(),
             }
             return snapshot_record
         finally:
@@ -647,7 +646,7 @@ class MissionWorkspaceManager:
                 "path": storage_path,
                 "restored_file_count": restored_file_count,
                 "archive_size": len(archive_bytes),
-                "restored_at": datetime.utcnow().isoformat(),
+                "restored_at": utcnow().isoformat(),
             }
         finally:
             self._container_manager.exec_in_container(

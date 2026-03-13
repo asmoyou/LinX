@@ -13,8 +13,10 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from message_bus.redis_manager import RedisConnectionManager, get_redis_manager
 from redis.exceptions import TimeoutError as RedisTimeoutError
+
+from message_bus.redis_manager import RedisConnectionManager, get_redis_manager
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +102,16 @@ class ProcessingQueue:
             user_id=user_id,
             task_id=task_id,
             status=JobStatus.QUEUED,
-            created_at=datetime.utcnow().isoformat(),
+            created_at=utcnow().isoformat(),
         )
 
         # Serialize status enum to string for JSON
         job_dict = asdict(job)
-        job_dict["status"] = job_dict["status"].value if isinstance(job_dict["status"], JobStatus) else job_dict["status"]
+        job_dict["status"] = (
+            job_dict["status"].value
+            if isinstance(job_dict["status"], JobStatus)
+            else job_dict["status"]
+        )
 
         # Store job data
         job_key = f"{self.job_prefix}{job_id}"
@@ -175,9 +181,9 @@ class ProcessingQueue:
         job_dict["status"] = status.value
 
         if status == JobStatus.PROCESSING:
-            job_dict["started_at"] = datetime.utcnow().isoformat()
+            job_dict["started_at"] = utcnow().isoformat()
         elif status in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED]:
-            job_dict["completed_at"] = datetime.utcnow().isoformat()
+            job_dict["completed_at"] = utcnow().isoformat()
 
         if error_message:
             job_dict["error_message"] = error_message
@@ -207,7 +213,7 @@ class ProcessingQueue:
         if current_status in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}:
             return False
 
-        now_iso = datetime.utcnow().isoformat()
+        now_iso = utcnow().isoformat()
         job_dict["cancel_requested"] = True
         job_dict["cancel_requested_at"] = now_iso
         job_dict["status"] = JobStatus.CANCELLED.value

@@ -12,6 +12,7 @@ import pytest
 
 from agent_framework.agent_template import AgentTemplate, AgentTemplateManager
 from agent_framework.default_templates import get_default_templates, initialize_default_templates
+from shared.datetime_utils import utcnow
 
 
 class MockSession:
@@ -90,7 +91,7 @@ class TestAgentTemplate:
         """Test template to dictionary conversion."""
         template_id = uuid4()
         user_id = uuid4()
-        now = datetime.utcnow()
+        now = utcnow()
 
         template = AgentTemplate(
             template_id=template_id,

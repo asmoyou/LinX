@@ -16,6 +16,8 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 from uuid import UUID
 
+from shared.datetime_utils import utcnow
+
 logger = logging.getLogger(__name__)
 
 
@@ -119,7 +121,7 @@ class ClassificationResult:
     confidence: float
     matched_rules: List[str] = field(default_factory=list)
     reasons: List[str] = field(default_factory=list)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=utcnow)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:

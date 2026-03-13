@@ -18,6 +18,7 @@ from shared.audit_compliance import (
     generate_user_activity_report,
     verify_audit_log_integrity,
 )
+from shared.datetime_utils import utcnow
 
 
 def test_compliance_report_types():
@@ -81,7 +82,7 @@ def test_export_audit_logs_structure():
 
 def test_date_range_calculations():
     """Test date range calculations for retention policy."""
-    now = datetime.utcnow()
+    now = utcnow()
 
     hot_retention_days = 30
     cold_retention_days = 90
@@ -121,7 +122,7 @@ def test_audit_log_export_format():
 
     exported_log = {
         "id": str(log_id),
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utcnow().isoformat(),
         "user_id": str(user_id),
         "agent_id": None,
         "action": "test_action",
@@ -155,7 +156,7 @@ def test_integrity_check_result_structure():
                 "description": "Potential duplicate audit log entries",
             },
         ],
-        "verified_at": datetime.utcnow().isoformat(),
+        "verified_at": utcnow().isoformat(),
         "integrity_status": "issues_detected",
     }
 
@@ -167,7 +168,7 @@ def test_integrity_check_result_structure():
 
 def test_retention_policy_result_structure():
     """Test retention policy result structure."""
-    now = datetime.utcnow()
+    now = utcnow()
 
     result = {
         "policy": {

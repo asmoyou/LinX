@@ -10,6 +10,7 @@ References:
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -69,14 +70,24 @@ class MigrationRunner:
             self._alembic_config = AlembicConfig(self._alembic_ini_path)
 
             # Override database URL from our config
-            db_config = self._config.get_section("database.postgres")
-            database_url = (
-                f"postgresql://{db_config['username']}:{db_config['password']}"
-                f"@{db_config['host']}:{db_config['port']}/{db_config['database']}"
-            )
+            database_url = self._resolve_database_url()
             self._alembic_config.set_main_option("sqlalchemy.url", database_url)
 
         return self._alembic_config
+
+    def _resolve_database_url(self) -> str:
+        """Resolve database URL with test/runtime overrides when present."""
+        override_url = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
+        if override_url:
+            return override_url.replace("postgresql+asyncpg://", "postgresql://").replace(
+                "postgresql+psycopg://", "postgresql://"
+            )
+
+        db_config = self._config.get_section("database.postgres")
+        return (
+            f"postgresql://{db_config['username']}:{db_config['password']}"
+            f"@{db_config['host']}:{db_config['port']}/{db_config['database']}"
+        )
 
     def get_current_version(self) -> Optional[str]:
         """
@@ -86,13 +97,7 @@ class MigrationRunner:
             str: Current revision ID, or None if no migrations have been applied
         """
         try:
-            db_config = self._config.get_section("database.postgres")
-            database_url = (
-                f"postgresql://{db_config['username']}:{db_config['password']}"
-                f"@{db_config['host']}:{db_config['port']}/{db_config['database']}"
-            )
-
-            engine = create_engine(database_url)
+            engine = create_engine(self._resolve_database_url())
             with engine.connect() as conn:
                 context = MigrationContext.configure(conn)
                 current_rev = context.get_current_revision()
@@ -227,13 +232,7 @@ class MigrationRunner:
             bool: True if database is accessible, False otherwise
         """
         try:
-            db_config = self._config.get_section("database.postgres")
-            database_url = (
-                f"postgresql://{db_config['username']}:{db_config['password']}"
-                f"@{db_config['host']}:{db_config['port']}/{db_config['database']}"
-            )
-
-            engine = create_engine(database_url)
+            engine = create_engine(self._resolve_database_url())
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
 

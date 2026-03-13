@@ -15,6 +15,7 @@ from uuid import UUID
 
 from database.connection import get_db_session
 from database.models import Task as TaskModel
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class ProgressTracker:
             task_id=task_id,
             status="in_progress",
             progress_percentage=0.0,
-            started_at=datetime.utcnow(),
+            started_at=utcnow(),
             estimated_completion=None,
             subtasks_completed=0,
             subtasks_total=total_steps,
@@ -97,7 +98,7 @@ class ProgressTracker:
                 task_id=task_id,
                 status="in_progress",
                 progress_percentage=progress_percentage or 0.0,
-                started_at=datetime.utcnow(),
+                started_at=utcnow(),
                 estimated_completion=None,
                 subtasks_completed=completed_steps or 0,
                 subtasks_total=completed_steps or 0,

@@ -16,6 +16,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Optional
 
+from shared.datetime_utils import utcnow
+
 
 class MessageType(str, Enum):
     """Message types for inter-agent communication."""
@@ -83,7 +85,7 @@ class Message:
             task_id=task_id,
             message_type=message_type,
             payload=payload,
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=utcnow().isoformat() + "Z",
             correlation_id=correlation_id,
         )
 

@@ -11,6 +11,7 @@ from sqlalchemy import desc, or_
 
 from database.connection import get_db_session
 from database.mission_models import UserNotification
+from shared.datetime_utils import utcnow
 
 
 def create_user_notification(
@@ -136,7 +137,7 @@ def mark_user_notification_read(
             return None
         if not item.is_read:
             item.is_read = True
-            item.read_at = datetime.utcnow()
+            item.read_at = utcnow()
         session.flush()
         session.refresh(item)
         session.expunge(item)
@@ -157,7 +158,7 @@ def mark_all_user_notifications_read(*, user_id: UUID) -> int:
         if not unread_items:
             return 0
 
-        now = datetime.utcnow()
+        now = utcnow()
         for item in unread_items:
             item.is_read = True
             item.read_at = now

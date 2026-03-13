@@ -54,7 +54,7 @@ def test_validate_timezone_name_rejects_invalid_timezone():
     with pytest.raises(HTTPException) as exc_info:
         _validate_timezone_name("Mars/Olympus")
 
-    assert exc_info.value.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert exc_info.value.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
     assert exc_info.value.detail == "Invalid timezone"
 
 

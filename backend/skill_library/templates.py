@@ -11,6 +11,7 @@ References:
 """
 
 from typing import Dict, List
+
 from skill_library.skill_types import SkillType
 
 
@@ -239,7 +240,7 @@ def calculator(expression: str) -> str:
             "difficulty": "beginner",
             "skill_type": SkillType.LANGCHAIN_TOOL.value,
             "code": '''from langchain_core.tools import tool
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import time
 
@@ -294,7 +295,7 @@ def datetime_tool(
         datetime_tool("parse", date_string="2024-01-15 10:30:00")
     """
     try:
-        now = datetime.utcnow() if timezone == "utc" else datetime.now()
+    now = datetime.now(timezone.utc) if timezone == "utc" else datetime.now()
 
         if operation == "now":
             return now.strftime(format_pattern)
@@ -1365,7 +1366,6 @@ def random_tool(
             "dependencies": [],
             "required_env": [],
         },
-        
         # === Agent Skills (Flexible) ===
         {
             "id": "agent_api_call",
@@ -1561,4 +1561,3 @@ def get_templates_by_skill_type(skill_type: SkillType) -> List[Dict]:
     """
     templates = get_skill_templates()
     return [t for t in templates if t["skill_type"] == skill_type]
-

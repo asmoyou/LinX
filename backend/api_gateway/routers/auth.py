@@ -18,28 +18,28 @@ from pydantic import BaseModel, Field
 from access_control import (
     blacklist_session_id,
     blacklist_token,
-    decode_token,
     create_token_pair,
+    decode_token,
     refresh_access_token,
-    verify_token,
     verify_password,
+    verify_token,
 )
 from access_control.audit_logger import log_authentication_event
 from access_control.permissions import CurrentUser, ensure_session_not_revoked, get_current_user
 from access_control.registration import (
     DuplicateUserError,
-    register_user_admin,
 )
 from access_control.registration import ValidationError as RegistrationValidationError
 from access_control.registration import (
+    register_user_admin,
     register_user_self,
 )
+from shared.logging import get_logger
 from shared.platform_settings import (
     PLATFORM_BOOTSTRAP_SETTINGS_KEY,
     get_platform_setting,
     upsert_platform_setting,
 )
-from shared.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -76,7 +76,9 @@ def _append_login_session(
     return next_attrs
 
 
-def _revoke_login_session(attributes: dict[str, Any] | None, session_id: str | None) -> dict[str, Any]:
+def _revoke_login_session(
+    attributes: dict[str, Any] | None, session_id: str | None
+) -> dict[str, Any]:
     """Remove a login session from active session metadata and mark it revoked."""
     next_attrs: dict[str, Any] = dict(attributes or {})
     if not session_id:
@@ -169,12 +171,7 @@ def _has_admin_account(session) -> bool:
     """Return whether at least one administrator exists."""
     from database.models import User
 
-    return (
-        session.query(User.user_id)
-        .filter(User.role == "admin")
-        .first()
-        is not None
-    )
+    return session.query(User.user_id).filter(User.role == "admin").first() is not None
 
 
 def _validate_timezone_name(timezone_name: str) -> str:
@@ -182,7 +179,7 @@ def _validate_timezone_name(timezone_name: str) -> str:
     candidate = (timezone_name or "").strip()
     if not candidate:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Timezone is required",
         )
 
@@ -190,7 +187,7 @@ def _validate_timezone_name(timezone_name: str) -> str:
         ZoneInfo(candidate)
     except ZoneInfoNotFoundError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Invalid timezone",
         ) from exc
 
@@ -217,7 +214,7 @@ def _build_setup_status(session) -> SetupStatusResponse:
 @router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
 async def login(payload: LoginRequest, http_request: Request):
     """Authenticate user and return JWT tokens.
-    
+
     Supports login with either username or email.
 
     Args:
@@ -230,20 +227,25 @@ async def login(payload: LoginRequest, http_request: Request):
     Raises:
         HTTPException: If credentials are invalid
     """
-    from database.connection import get_db_session
-    from database.models import User
     from sqlalchemy import or_
     from sqlalchemy.orm.attributes import flag_modified
+
+    from database.connection import get_db_session
+    from database.models import User
 
     try:
         with get_db_session() as session:
             # Query user by username OR email
-            user = session.query(User).filter(
-                or_(
-                    User.username == payload.username,
-                    User.email == payload.username  # Allow email as username
+            user = (
+                session.query(User)
+                .filter(
+                    or_(
+                        User.username == payload.username,
+                        User.email == payload.username,  # Allow email as username
+                    )
                 )
-            ).first()
+                .first()
+            )
 
             if not user or not verify_password(payload.password, user.password_hash):
                 log_authentication_event(
@@ -341,9 +343,10 @@ async def get_setup_status():
 @router.post("/setup/initialize", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
 async def initialize_platform(request: InitializePlatformRequest, http_request: Request):
     """Create the first administrator account and persist bootstrap settings."""
+    from sqlalchemy.orm.attributes import flag_modified
+
     from database.connection import get_db_session
     from database.models import User
-    from sqlalchemy.orm.attributes import flag_modified
 
     timezone_name = _validate_timezone_name(request.timezone)
     initialized_at = datetime.now(timezone.utc).isoformat()
@@ -467,7 +470,7 @@ async def initialize_platform(request: InitializePlatformRequest, http_request: 
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except RegistrationValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(exc),
         ) from exc
     except Exception as exc:
@@ -522,7 +525,7 @@ async def register(request: RegisterRequest):
     except DuplicateUserError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except RegistrationValidationError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except Exception as e:
         logger.error(f"Registration error: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -583,9 +586,10 @@ async def logout(
     Returns:
         No content
     """
+    from sqlalchemy.orm.attributes import flag_modified
+
     from database.connection import get_db_session
     from database.models import User
-    from sqlalchemy.orm.attributes import flag_modified
 
     # Best effort token blacklist (immediate invalidation for current process)
     auth_header = http_request.headers.get("authorization", "")

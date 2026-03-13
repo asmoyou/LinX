@@ -155,9 +155,7 @@ async def list_users(
 
         # Filter by status (active/disabled)
         if status_filter == "disabled":
-            query = query.filter(
-                User.attributes["is_disabled"].astext == "true"
-            )
+            query = query.filter(User.attributes["is_disabled"].astext == "true")
         elif status_filter == "active":
             query = query.filter(
                 (User.attributes["is_disabled"].astext != "true")
@@ -169,12 +167,7 @@ async def list_users(
 
         # Pagination
         offset = (page - 1) * page_size
-        users = (
-            query.order_by(User.created_at.desc())
-            .offset(offset)
-            .limit(page_size)
-            .all()
-        )
+        users = query.order_by(User.created_at.desc()).offset(offset).limit(page_size).all()
 
         return AdminUserListResponse(
             users=[_user_to_response(u) for u in users],
@@ -225,9 +218,11 @@ async def create_user(
     from access_control.registration import (
         DuplicateUserError,
         RegistrationError,
-        register_user_admin,
     )
     from access_control.registration import ValidationError as RegValidationError
+    from access_control.registration import (
+        register_user_admin,
+    )
     from database.connection import get_db_session
     from database.models import Department, User
 
@@ -256,32 +251,20 @@ async def create_user(
         except DuplicateUserError as e:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
         except RegValidationError as e:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
-            )
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
         except RegistrationError as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
-            )
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
         # Set department if provided
         if request.department_id:
-            user = (
-                session.query(User)
-                .filter(User.user_id == reg_response.user_id)
-                .first()
-            )
+            user = session.query(User).filter(User.user_id == reg_response.user_id).first()
             if user:
                 user.department_id = request.department_id
 
         session.commit()
 
         # Fetch full user for response
-        user = (
-            session.query(User)
-            .filter(User.user_id == reg_response.user_id)
-            .first()
-        )
+        user = session.query(User).filter(User.user_id == reg_response.user_id).first()
 
         # Audit log
         log_user_management_event(

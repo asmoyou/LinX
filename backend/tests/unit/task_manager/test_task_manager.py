@@ -6,11 +6,12 @@ References:
 """
 
 from contextlib import contextmanager
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
 
+from shared.datetime_utils import utcnow
 from task_manager.agent_assigner import AgentAssigner
 from task_manager.capability_mapper import CapabilityMapper
 from task_manager.dependency_resolver import DependencyResolver
@@ -35,6 +36,23 @@ def _mock_db_session_context(*, all_result=None, first_result=None):
     return _ctx
 
 
+def _build_result_collector():
+    from task_manager.result_collector import ResultCollector
+
+    return ResultCollector(llm_provider=Mock())
+
+
+@pytest.fixture(autouse=True)
+def _mock_task_manager_llm_provider(monkeypatch):
+    """Keep task-manager unit tests off the real LLM/router stack."""
+    fake_llm = Mock()
+    fake_llm.generate = AsyncMock(return_value="{}")
+    monkeypatch.setattr("task_manager.goal_analyzer.get_llm_provider", lambda: fake_llm)
+    monkeypatch.setattr("task_manager.task_decomposer.get_llm_provider", lambda: fake_llm)
+    monkeypatch.setattr("task_manager.result_collector.get_llm_provider", lambda: fake_llm)
+    yield
+
+
 class TestGoalAnalyzer:
     """Test GoalAnalyzer functionality."""
 
@@ -47,23 +65,25 @@ class TestGoalAnalyzer:
     @pytest.mark.asyncio
     async def test_analyze_clear_goal(self):
         """Test analyzing a clear goal."""
-        analyzer = GoalAnalyzer()
+        mock_llm = AsyncMock()
+        mock_llm.generate.return_value = (
+            '{"is_clear": true, "required_capabilities": ["data_analysis"], '
+            '"clarification_questions": [], "complexity_score": 0.4, '
+            '"estimated_subtasks": 3, "reasoning": "clear"}'
+        )
+        analyzer = GoalAnalyzer(llm_provider=mock_llm)
         user_id = uuid4()
 
-        # This will fail without actual LLM, but tests the interface
-        try:
-            analysis = await analyzer.analyze_goal(
-                goal_text="Analyze Q4 sales data and create a report",
-                user_id=user_id,
-            )
+        analysis = await analyzer.analyze_goal(
+            goal_text="Analyze Q4 sales data and create a report",
+            user_id=user_id,
+        )
 
-            assert isinstance(analysis, GoalAnalysis)
-            assert isinstance(analysis.is_clear, bool)
-            assert isinstance(analysis.required_capabilities, list)
-            assert isinstance(analysis.clarification_questions, list)
-        except Exception:
-            # Expected without LLM
-            pass
+        assert isinstance(analysis, GoalAnalysis)
+        assert isinstance(analysis.is_clear, bool)
+        assert isinstance(analysis.required_capabilities, list)
+        assert isinstance(analysis.clarification_questions, list)
+        mock_llm.generate.assert_awaited_once()
 
     def test_heuristic_analysis(self):
         """Test heuristic analysis fallback."""
@@ -418,13 +438,13 @@ class TestTaskExecutor:
         user_id = uuid4()
         task_ids = [uuid4(), uuid4(), uuid4()]
 
-        # This will fail without database, but tests the interface
-        try:
-            results = await executor.execute_sequential(task_ids, user_id)
-            assert isinstance(results, list)
-        except Exception:
-            # Expected without database
-            pass
+        executor._execute_single_task = AsyncMock(
+            side_effect=[Mock(success=True), Mock(success=True), Mock(success=True)]
+        )
+
+        results = await executor.execute_sequential(task_ids, user_id)
+        assert isinstance(results, list)
+        assert len(results) == 3
 
     @pytest.mark.asyncio
     async def test_execute_parallel(self):
@@ -435,12 +455,13 @@ class TestTaskExecutor:
         user_id = uuid4()
         task_ids = [uuid4(), uuid4()]
 
-        try:
-            results = await executor.execute_parallel(task_ids, user_id, max_concurrent=2)
-            assert isinstance(results, list)
-        except Exception:
-            # Expected without database
-            pass
+        executor._execute_single_task = AsyncMock(
+            side_effect=[Mock(success=True), Mock(success=True)]
+        )
+
+        results = await executor.execute_parallel(task_ids, user_id, max_concurrent=2)
+        assert isinstance(results, list)
+        assert len(results) == 2
 
 
 class TestTaskQueue:
@@ -587,17 +608,13 @@ class TestResultCollector:
 
     def test_result_collector_initialization(self):
         """Test result collector initializes correctly."""
-        from task_manager.result_collector import ResultCollector
-
-        collector = ResultCollector()
+        collector = _build_result_collector()
         assert collector is not None
         assert collector.llm_provider is not None
 
     def test_collect_results_no_tasks(self):
         """Test collecting results with no tasks."""
-        from task_manager.result_collector import ResultCollector
-
-        collector = ResultCollector()
+        collector = _build_result_collector()
         user_id = uuid4()
 
         results = collector.collect_results([], user_id)
@@ -606,9 +623,9 @@ class TestResultCollector:
 
     def test_concatenate_results(self):
         """Test concatenating results."""
-        from task_manager.result_collector import CollectedResult, ResultCollector
+        from task_manager.result_collector import CollectedResult
 
-        collector = ResultCollector()
+        collector = _build_result_collector()
 
         results = [
             CollectedResult(
@@ -633,9 +650,9 @@ class TestResultCollector:
 
     def test_merge_structured_results(self):
         """Test merging structured results."""
-        from task_manager.result_collector import CollectedResult, ResultCollector
+        from task_manager.result_collector import CollectedResult
 
-        collector = ResultCollector()
+        collector = _build_result_collector()
 
         results = [
             CollectedResult(
@@ -663,10 +680,9 @@ class TestResultCollector:
         from task_manager.result_collector import (
             AggregationStrategy,
             CollectedResult,
-            ResultCollector,
         )
 
-        collector = ResultCollector()
+        collector = _build_result_collector()
 
         results = [
             CollectedResult(
@@ -716,9 +732,9 @@ class TestAggregationStrategySelection:
 
     def test_select_strategy_for_structured_data(self):
         """Test strategy selection for structured data."""
-        from task_manager.result_collector import CollectedResult, ResultCollector
+        from task_manager.result_collector import CollectedResult
 
-        collector = ResultCollector()
+        collector = _build_result_collector()
 
         # Structured results with similar keys
         results = [
@@ -745,9 +761,9 @@ class TestAggregationStrategySelection:
 
     def test_select_strategy_for_long_text(self):
         """Test strategy selection for long text."""
-        from task_manager.result_collector import CollectedResult, ResultCollector
+        from task_manager.result_collector import CollectedResult
 
-        collector = ResultCollector()
+        collector = _build_result_collector()
 
         # Long text results
         long_text = "This is a very long text result. " * 50
@@ -781,9 +797,9 @@ class TestAggregationStrategySelection:
 
     def test_select_strategy_default(self):
         """Test default strategy selection."""
-        from task_manager.result_collector import CollectedResult, ResultCollector
+        from task_manager.result_collector import CollectedResult
 
-        collector = ResultCollector()
+        collector = _build_result_collector()
 
         # Simple results
         results = [
@@ -886,11 +902,10 @@ class TestResultAggregationIntegration:
         """Test complete aggregation workflow."""
         from task_manager.result_collector import (
             CollectedResult,
-            ResultCollector,
             ResultDelivery,
         )
 
-        collector = ResultCollector()
+        collector = _build_result_collector()
         delivery = ResultDelivery()
 
         # Create sample results
@@ -980,7 +995,7 @@ class TestRetryManager:
             task_id=task_id,
             failure_type=FailureType.TIMEOUT,
             error_message="Timeout",
-            timestamp=datetime.utcnow(),
+            timestamp=utcnow(),
             retry_count=1,
         )
 
@@ -1005,7 +1020,7 @@ class TestRetryManager:
             task_id=task_id,
             failure_type=FailureType.TIMEOUT,
             error_message="Timeout",
-            timestamp=datetime.utcnow(),
+            timestamp=utcnow(),
             retry_count=3,  # Max retries
         )
 
@@ -1132,7 +1147,7 @@ class TestEscalationManager:
             task_id=task_id,
             failure_type=FailureType.TIMEOUT,
             error_message="Test error",
-            timestamp=datetime.utcnow(),
+            timestamp=utcnow(),
         )
 
         # This will fail without database, but tests the interface
@@ -1220,7 +1235,7 @@ class TestRecoveryCoordinator:
             task_id=uuid4(),
             failure_type=FailureType.TIMEOUT,
             error_message="Timeout",
-            timestamp=datetime.utcnow(),
+            timestamp=utcnow(),
             retry_count=0,
         )
 
@@ -1245,7 +1260,7 @@ class TestRecoveryCoordinator:
             task_id=uuid4(),
             failure_type=FailureType.VALIDATION_ERROR,
             error_message="Validation failed",
-            timestamp=datetime.utcnow(),
+            timestamp=utcnow(),
             retry_count=0,
         )
 

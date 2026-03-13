@@ -2825,13 +2825,6 @@ def _get_cache_recommendations(stats: dict) -> list:
     return recommendations
 
 
-@router.post("/cache/clear", status_code=status.HTTP_200_OK)
-async def clear_cache(current_user: CurrentUser = Depends(get_current_user)):
-    """Clear the agent cache. Useful after code changes or for troubleshooting."""
-    clear_agent_cache()
-    return {"message": "Agent cache cleared successfully", "cached_agents": 0}
-
-
 _GENERIC_CONTENT_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
 _ATTACHMENT_MAX_CHARS_PER_FILE = 6000
 _ATTACHMENT_MAX_CHARS_TOTAL = 12000
@@ -3313,7 +3306,7 @@ async def transcribe_voice_input(
         text = _sanitize_transcription_text(transcription.text)
         if not text:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Speech transcription returned empty text.",
             )
 

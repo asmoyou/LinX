@@ -6,24 +6,25 @@ References:
 - docs/backend/skill-type-classification.md
 """
 
-import logging
 import json
+import logging
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Body, UploadFile, File, Form
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
-from access_control.permissions import get_current_user, CurrentUser
+from access_control.permissions import CurrentUser, get_current_user
+from object_storage.minio_client import get_minio_client
+from shared.datetime_utils import utcnow
+from skill_library.execution_engine import get_execution_engine
+from skill_library.gating_engine import GatingEngine
+from skill_library.langchain_parser import parse_langchain_tool
+from skill_library.package_handler import PackageHandler
+from skill_library.skill_md_parser import SkillMdParser
 from skill_library.skill_registry import SkillInfo, get_skill_registry
 from skill_library.skill_types import SkillType, StorageType
 from skill_library.templates import get_skill_templates, get_template_by_id
-from skill_library.execution_engine import get_execution_engine
-from skill_library.langchain_parser import parse_langchain_tool
-from skill_library.skill_md_parser import SkillMdParser
-from skill_library.gating_engine import GatingEngine
-from skill_library.package_handler import PackageHandler
-from object_storage.minio_client import get_minio_client
 
 logger = logging.getLogger(__name__)
 
@@ -33,23 +34,23 @@ router = APIRouter(tags=["skills"])
 # Helper function for MinIO operations
 def _get_minio_object_key(storage_path: str, bucket_name: str) -> str:
     """Extract object key from storage_path, handling bucket prefix if present.
-    
+
     Args:
         storage_path: Storage path from database (may include bucket prefix)
         bucket_name: Expected bucket name
-        
+
     Returns:
         Clean object key without bucket prefix
     """
     object_key = storage_path
-    
+
     # If storage_path has a slash and doesn't start with expected prefixes
-    if '/' in object_key and not object_key.startswith(('system/', 'user/')):
+    if "/" in object_key and not object_key.startswith(("system/", "user/")):
         # Check if it has bucket name prefix
-        parts = object_key.split('/', 1)
+        parts = object_key.split("/", 1)
         if parts[0] == bucket_name:
             object_key = parts[1]
-    
+
     return object_key
 
 
@@ -187,11 +188,7 @@ def _record_skill_execution_stats(skill_id: UUID, execution_time: float) -> None
         execution_time = max(float(execution_time), 0.0)
 
         with get_db_session() as session:
-            db_skill = (
-                session.query(SkillModel)
-                .filter(SkillModel.skill_id == skill_id)
-                .first()
-            )
+            db_skill = session.query(SkillModel).filter(SkillModel.skill_id == skill_id).first()
             if not db_skill:
                 logger.warning(
                     "Skip skill execution stats update because skill was not found",
@@ -202,7 +199,7 @@ def _record_skill_execution_stats(skill_id: UUID, execution_time: float) -> None
             previous_count = int(db_skill.execution_count or 0)
             new_count = previous_count + 1
             db_skill.execution_count = new_count
-            db_skill.last_executed_at = datetime.utcnow()
+            db_skill.last_executed_at = utcnow()
 
             if db_skill.average_execution_time is None:
                 db_skill.average_execution_time = execution_time
@@ -279,7 +276,7 @@ class SkillResponse(BaseModel):
     @classmethod
     def from_skill_info(cls, skill_info: SkillInfo, include_code: bool = False) -> "SkillResponse":
         """Create response from SkillInfo.
-        
+
         Args:
             skill_info: Skill information
             include_code: Whether to include code in response
@@ -289,18 +286,21 @@ class SkillResponse(BaseModel):
         homepage = None
         skill_metadata = None
         gating_status = None
-        
+
         # Only process manifest for agent_skill type
-        if skill_info.skill_type == "agent_skill" and hasattr(skill_info, 'manifest') and skill_info.manifest:
+        if (
+            skill_info.skill_type == "agent_skill"
+            and hasattr(skill_info, "manifest")
+            and skill_info.manifest
+        ):
             # manifest is a dict for agent_skill
-            skill_md_content = skill_info.manifest.get('skill_md_content')
-            homepage = skill_info.manifest.get('homepage')
-            skill_metadata = (
-                skill_info.manifest.get('skill_metadata')
-                or skill_info.manifest.get('metadata')
+            skill_md_content = skill_info.manifest.get("skill_md_content")
+            homepage = skill_info.manifest.get("homepage")
+            skill_metadata = skill_info.manifest.get("skill_metadata") or skill_info.manifest.get(
+                "metadata"
             )
-            gating_status = skill_info.manifest.get('gating_status')  # Already a dict from asdict()
-        
+            gating_status = skill_info.manifest.get("gating_status")  # Already a dict from asdict()
+
         return cls(
             skill_id=str(skill_info.skill_id),
             name=skill_info.name,
@@ -318,7 +318,9 @@ class SkillResponse(BaseModel):
             is_active=skill_info.is_active,
             execution_count=skill_info.execution_count,
             average_execution_time=skill_info.average_execution_time,
-            last_executed_at=skill_info.last_executed_at.isoformat() if skill_info.last_executed_at else None,
+            last_executed_at=(
+                skill_info.last_executed_at.isoformat() if skill_info.last_executed_at else None
+            ),
             created_at=skill_info.created_at.isoformat() if skill_info.created_at else None,
             updated_at=skill_info.updated_at.isoformat() if skill_info.updated_at else None,
             created_by=str(skill_info.created_by) if skill_info.created_by else None,
@@ -406,27 +408,29 @@ async def search_skills(
 
 @router.get("/templates", response_model=List[Dict])
 async def get_templates(
-    category: Optional[str] = Query(None, description="Filter by category (agent_skill or langchain_tool)"),
+    category: Optional[str] = Query(
+        None, description="Filter by category (agent_skill or langchain_tool)"
+    ),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get all skill templates.
-    
+
     Args:
         category: Optional category filter
         current_user: Authenticated user
-        
+
     Returns:
         List of skill templates
     """
     try:
         templates = get_skill_templates()
-        
+
         # Filter by category if provided
         if category:
             templates = [t for t in templates if t["category"] == category]
-        
+
         return templates
-        
+
     except Exception as e:
         logger.error(f"Failed to get templates: {e}")
         raise HTTPException(status_code=500, detail="Failed to get templates")
@@ -437,7 +441,7 @@ async def download_package_template(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Download a reference package template for Agent Skills.
-    
+
     Returns a ZIP file containing:
     - SKILL.md: Main skill definition with natural language instructions (required)
     - weather_helper.py: Python helper script for API calls
@@ -446,27 +450,29 @@ async def download_package_template(
     - README.md: Documentation and usage guide (optional)
     - config.yaml: Configuration template (optional)
     - assets/: Additional resources folder (optional)
-    
+
     The template follows the AgentSkills.io standard format and includes
     working Python code that can be executed by agents.
     """
-    from skill_library.template_generator import generate_agent_skill_template
-    from fastapi.responses import StreamingResponse
     import io
-    
+
+    from fastapi.responses import StreamingResponse
+
+    from skill_library.template_generator import generate_agent_skill_template
+
     try:
         # Generate template ZIP
         zip_content = generate_agent_skill_template()
-        
+
         return StreamingResponse(
             io.BytesIO(zip_content),
             media_type="application/zip",
             headers={
                 "Content-Disposition": "attachment; filename=agent-skill-package-template.zip",
                 "Access-Control-Expose-Headers": "Content-Disposition",
-            }
+            },
         )
-        
+
     except Exception as e:
         logger.error(f"Failed to generate package template: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate package template")
@@ -475,26 +481,27 @@ async def download_package_template(
 # Environment Variable Management Endpoints
 # NOTE: These must be before /{skill_id} route to avoid path conflicts
 
+
 @router.get("/env-vars", response_model=List[str])
 async def list_env_vars(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """List environment variable keys for current user.
-    
+
     Args:
         current_user: Authenticated user
-        
+
     Returns:
         List of environment variable keys (not values for security)
     """
     try:
         from skill_library.skill_env_manager import get_skill_env_manager
-        
+
         env_manager = get_skill_env_manager()
         keys = env_manager.list_env_keys_for_user(current_user.user_id)
-        
+
         return keys
-        
+
     except Exception as e:
         logger.error(f"Failed to list env vars: {e}")
         raise HTTPException(status_code=500, detail="Failed to list environment variables")
@@ -507,35 +514,34 @@ async def set_env_var(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Set an environment variable for current user.
-    
+
     Args:
         key: Environment variable name
         value: Environment variable value
         current_user: Authenticated user
-        
+
     Returns:
         Success message
     """
     try:
         from skill_library.skill_env_manager import get_skill_env_manager
-        
+
         # Validate key format
-        if not key.isupper() or not key.replace('_', '').isalnum():
+        if not key.isupper() or not key.replace("_", "").isalnum():
             raise HTTPException(
                 status_code=400,
-                detail="Environment variable key must be uppercase alphanumeric with underscores"
+                detail="Environment variable key must be uppercase alphanumeric with underscores",
             )
-        
+
         env_manager = get_skill_env_manager()
         env_manager.set_env_for_user(current_user.user_id, key, value)
-        
+
         logger.info(
-            f"Environment variable set by user {current_user.user_id}",
-            extra={"env_key": key}
+            f"Environment variable set by user {current_user.user_id}", extra={"env_key": key}
         )
-        
+
         return {"message": f"Environment variable {key} set successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -549,22 +555,21 @@ async def delete_env_var(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Delete an environment variable for current user.
-    
+
     Args:
         key: Environment variable name
         current_user: Authenticated user
     """
     try:
         from skill_library.skill_env_manager import get_skill_env_manager
-        
+
         env_manager = get_skill_env_manager()
         env_manager.delete_env_for_user(current_user.user_id, key)
-        
+
         logger.info(
-            f"Environment variable deleted by user {current_user.user_id}",
-            extra={"env_key": key}
+            f"Environment variable deleted by user {current_user.user_id}", extra={"env_key": key}
         )
-        
+
     except Exception as e:
         logger.error(f"Failed to delete env var: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete environment variable")
@@ -633,7 +638,7 @@ async def create_skill(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Create a new skill.
-    
+
     For agent_skill: package_file is required (ZIP/tar.gz with SKILL.md)
     For langchain_tool: code is required
 
@@ -652,13 +657,13 @@ async def create_skill(
     """
     try:
         import json
-        
+
         # Debug logging
         logger.info(
             f"Creating skill: name={name}, skill_type={skill_type}, "
             f"has_code={bool(code)}, has_package={bool(package_file)}"
         )
-        
+
         # Parse dependencies
         deps_list = []
         if dependencies:
@@ -666,78 +671,79 @@ async def create_skill(
                 deps_list = json.loads(dependencies)
             except json.JSONDecodeError:
                 raise HTTPException(status_code=400, detail="Invalid dependencies JSON")
-        
+
         registry = get_skill_registry()
 
         # Handle agent_skill with package
         if skill_type == "agent_skill":
             if not package_file:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Package file required for agent_skill"
-                )
-            
+                raise HTTPException(status_code=400, detail="Package file required for agent_skill")
+
             # Read package file
             file_data = await package_file.read()
-            
+
             # Extract and validate package
             handler = PackageHandler(get_minio_client())
             package_info = None
             temp_dir = None
-            
+
             try:
                 package_info = handler.extract_package(file_data)
                 temp_dir = package_info.skill_md_path.parent.parent  # Get temp directory root
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid package: {str(e)}")
-            
+
             try:
                 # Validate package
                 validation_errors = handler.validate_package(package_info)
                 if validation_errors:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Package validation failed: {', '.join(validation_errors)}"
+                        detail=f"Package validation failed: {', '.join(validation_errors)}",
                     )
-                
+
                 # Parse SKILL.md
                 parser = SkillMdParser()
-                with open(package_info.skill_md_path, 'r', encoding='utf-8') as f:
+                with open(package_info.skill_md_path, "r", encoding="utf-8") as f:
                     skill_md_content = f.read()
-                
+
                 try:
                     parsed = parser.parse(skill_md_content)
                 except ValueError as e:
                     raise HTTPException(status_code=400, detail=f"Invalid SKILL.md: {str(e)}")
-                
+
                 # Validate parsed skill
                 validation_errors = parser.validate(parsed)
                 if validation_errors:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"SKILL.md validation failed: {', '.join(validation_errors)}"
+                        detail=f"SKILL.md validation failed: {', '.join(validation_errors)}",
                     )
-                
+
                 # Check gating requirements
                 gating = GatingEngine()
                 gating_result = gating.check_eligibility(parsed.metadata)
-                
+
                 # Upload package to MinIO
                 try:
                     storage_path = await handler.upload_package(file_data, name, version)
                 except ValueError as e:
                     raise HTTPException(status_code=400, detail=f"Upload failed: {str(e)}")
-                
+
                 # Create skill with SKILL.md data
                 from dataclasses import asdict
-                
+
                 # Extract fields from parsed SKILL.md
                 skill_md_content_str = skill_md_content
                 homepage_str = parsed.metadata.homepage
                 skill_metadata_dict = asdict(parsed.metadata)
                 gating_status_dict = asdict(gating_result)
                 parsed_description = parsed.metadata.description.strip()
-                if description and description.strip() and description.strip() != parsed_description:
+                if (
+                    description
+                    and description.strip()
+                    and description.strip() != parsed_description
+                ):
                     logger.info(
                         "Ignoring form description for agent_skill and using SKILL.md description",
                         extra={
@@ -746,7 +752,7 @@ async def create_skill(
                             "skill_md_description": parsed_description,
                         },
                     )
-                
+
                 skill = registry.register_skill(
                     name=name,
                     description=parsed_description,
@@ -775,7 +781,7 @@ async def create_skill(
                     created_by=str(current_user.user_id),
                     validate=False,
                 )
-                
+
                 logger.info(
                     f"Agent skill created from package by user {current_user.user_id}",
                     extra={
@@ -785,33 +791,31 @@ async def create_skill(
                         "gating_eligible": gating_result.eligible,
                     },
                 )
-                
+
                 return SkillResponse.from_skill_info(skill)
-            
+
             finally:
                 # Clean up temporary directory
                 if temp_dir and temp_dir.exists():
                     import shutil
+
                     shutil.rmtree(temp_dir, ignore_errors=True)
                     logger.debug(f"Cleaned up temp directory: {temp_dir}")
-        
+
         # Handle langchain_tool with code
         elif skill_type == "langchain_tool":
             if not code:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Code required for langchain_tool"
-                )
+                raise HTTPException(status_code=400, detail="Code required for langchain_tool")
             if not description or not description.strip():
                 raise HTTPException(
                     status_code=400,
                     detail="Description required for langchain_tool",
                 )
-            
+
             # Parse interface from code
             interface_def = parse_langchain_tool(code)
             logger.info(f"Parsed interface from code: {interface_def}")
-            
+
             # Fall back to default interface if parsing failed
             if not interface_def or not interface_def.get("inputs"):
                 interface_def = {
@@ -819,7 +823,7 @@ async def create_skill(
                     "outputs": {"result": "string"},
                     "required_inputs": [],
                 }
-            
+
             skill = registry.register_skill(
                 name=name,
                 description=description.strip(),
@@ -834,19 +838,16 @@ async def create_skill(
                 created_by=str(current_user.user_id),
                 validate=False,
             )
-            
+
             logger.info(
                 f"LangChain tool created by user {current_user.user_id}",
                 extra={"skill_id": str(skill.skill_id), "skill_name": name},
             )
-            
+
             return SkillResponse.from_skill_info(skill)
-        
+
         else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid skill_type: {skill_type}"
-            )
+            raise HTTPException(status_code=400, detail=f"Invalid skill_type: {skill_type}")
 
     except HTTPException:
         raise
@@ -880,7 +881,9 @@ async def update_skill(
         if not existing:
             raise HTTPException(status_code=404, detail="Skill not found")
 
-        logger.info(f"Updating skill {skill_id}, request data: description={bool(request.description)}, code={bool(request.code)}, interface_def={bool(request.interface_definition)}, dependencies={bool(request.dependencies)}")
+        logger.info(
+            f"Updating skill {skill_id}, request data: description={bool(request.description)}, code={bool(request.code)}, interface_def={bool(request.interface_definition)}, dependencies={bool(request.dependencies)}"
+        )
 
         # If code is provided, re-parse interface (even if code didn't change, we should re-parse)
         interface_def = None
@@ -888,14 +891,14 @@ async def update_skill(
             # Parse interface from code
             parsed = parse_langchain_tool(request.code)
             logger.info(f"Parsed interface from code: {parsed}")
-            
+
             # Only use parsed result if it has inputs
             if parsed and parsed.get("inputs"):
                 interface_def = parsed
                 logger.info(f"Using parsed interface with {len(parsed.get('inputs', {}))} inputs")
             else:
                 logger.warning(f"Failed to parse interface from code or no inputs found")
-        
+
         # Only use provided interface definition if code parsing failed
         if not interface_def and request.interface_definition:
             interface_def = {
@@ -987,13 +990,13 @@ async def create_from_template(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Create skill from template.
-    
+
     Args:
         template_id: Template identifier
         name: Custom name for the skill
         description: Optional custom description
         current_user: Authenticated user
-        
+
     Returns:
         Created skill
     """
@@ -1002,17 +1005,13 @@ async def create_from_template(
         template = get_template_by_id(template_id)
         if not template:
             raise HTTPException(status_code=404, detail=f"Template {template_id} not found")
-        
+
         # Create skill from template
         registry = get_skill_registry()
-        
+
         # Extract interface from code (simplified - in production, parse AST)
-        interface_def = {
-            "inputs": {},
-            "outputs": {"result": "string"},
-            "required_inputs": []
-        }
-        
+        interface_def = {"inputs": {}, "outputs": {"result": "string"}, "required_inputs": []}
+
         skill = registry.register_skill(
             name=name,
             description=description or template["description"],
@@ -1021,16 +1020,16 @@ async def create_from_template(
             version="1.0.0",
             skill_type=template["skill_type"],
             code=template["code"],
-            validate=False  # Skip validation for templates
+            validate=False,  # Skip validation for templates
         )
-        
+
         logger.info(
             f"Skill created from template by user {current_user.user_id}",
-            extra={"skill_id": str(skill.skill_id), "template_id": template_id}
+            extra={"skill_id": str(skill.skill_id), "template_id": template_id},
         )
-        
+
         return SkillResponse.from_skill_info(skill)
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1048,10 +1047,10 @@ async def test_skill(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Test skill execution.
-    
+
     For langchain_tool: Use inputs dict with structured parameters
     For agent_skill: Use natural_language_input with an Agent for real execution
-    
+
     Args:
         skill_id: Skill UUID
         inputs: Input parameters for langchain_tool (structured)
@@ -1059,41 +1058,37 @@ async def test_skill(
         agent_id: Agent ID to execute the skill (agent_skill only)
         stream: Enable SSE streaming for agent_skill testing
         current_user: Authenticated user
-        
+
     Returns:
         Execution result
     """
     try:
         skill_uuid = UUID(skill_id)
-        
+
         # Get skill
         from skill_library.skill_model import get_skill_model
+
         skill_model = get_skill_model()
         skill = skill_model.get_skill_by_id(skill_uuid)
-        
+
         if not skill:
             raise HTTPException(status_code=404, detail="Skill not found")
-        
+
         # Handle agent_skill with natural language testing
         if skill.skill_type == "agent_skill":
             if not natural_language_input:
                 raise HTTPException(
-                    status_code=400,
-                    detail="natural_language_input required for agent_skill"
+                    status_code=400, detail="natural_language_input required for agent_skill"
                 )
 
             if not agent_id:
                 raise HTTPException(
-                    status_code=400,
-                    detail="agent_id required for agent_skill testing"
+                    status_code=400, detail="agent_id required for agent_skill testing"
                 )
-            
+
             if not skill.skill_md_content:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Skill has no SKILL.md content"
-                )
-            
+                raise HTTPException(status_code=400, detail="Skill has no SKILL.md content")
+
             logger.info(f"Executing agent_skill with Agent: agent_id={agent_id}")
 
             try:
@@ -1105,16 +1100,16 @@ async def test_skill(
                     get_agent_executor,
                 )
                 from agent_framework.agent_registry import get_agent_registry
-                from agent_framework.base_agent import BaseAgent, AgentConfig
+                from agent_framework.base_agent import AgentConfig, BaseAgent
                 from agent_framework.runtime_policy import (
                     ExecutionProfile,
                     is_agent_test_chat_unified_runtime_enabled,
                 )
                 from agent_framework.session_manager import get_session_manager
-                from llm_providers.custom_openai_provider import CustomOpenAIChat
-                from database.connection import get_db_session
-                from llm_providers.db_manager import ProviderDBManager
                 from api_gateway.routers.agents import _resolve_model_context_window
+                from database.connection import get_db_session
+                from llm_providers.custom_openai_provider import CustomOpenAIChat
+                from llm_providers.db_manager import ProviderDBManager
 
                 current_user_uuid = UUID(current_user.user_id)
                 session_mgr = None
@@ -1272,7 +1267,9 @@ Requirements:
 
                 executor = get_agent_executor()
 
-                def build_result_payload(execution_result: Dict[str, Any], execution_time: float) -> Dict[str, Any]:
+                def build_result_payload(
+                    execution_result: Dict[str, Any], execution_time: float
+                ) -> Dict[str, Any]:
                     normalized_outcome = _normalize_agent_skill_test_outcome(execution_result)
                     serialized_tool_calls = _serialize_tool_calls_for_response(
                         execution_result.get("tool_calls")
@@ -1301,7 +1298,9 @@ Requirements:
                             extra={
                                 "skill_id": skill_id,
                                 "agent_id": agent_id,
-                                "successful_tool_calls": normalized_outcome["successful_tool_calls"],
+                                "successful_tool_calls": normalized_outcome[
+                                    "successful_tool_calls"
+                                ],
                             },
                         )
 
@@ -1325,9 +1324,10 @@ Requirements:
                     }
 
                 if stream:
-                    from fastapi.responses import StreamingResponse
                     import queue
                     import threading
+
+                    from fastapi.responses import StreamingResponse
 
                     session_cleanup_managed_by_stream = True
 
@@ -1418,9 +1418,7 @@ Requirements:
 
                                 yield (
                                     "data: "
-                                    + json.dumps(
-                                        {"type": str(content_type), "content": str(token)}
-                                    )
+                                    + json.dumps({"type": str(content_type), "content": str(token)})
                                     + "\n\n"
                                 )
 
@@ -1461,7 +1459,9 @@ Requirements:
                                 result_holder[0],
                                 time.time() - start_time,
                             )
-                            _record_skill_execution_stats(skill_uuid, result_payload["execution_time"])
+                            _record_skill_execution_stats(
+                                skill_uuid, result_payload["execution_time"]
+                            )
                             yield (
                                 "data: "
                                 + json.dumps(
@@ -1527,11 +1527,7 @@ Requirements:
                     "mode": "agent_execution",
                 }
             finally:
-                if (
-                    session_mgr
-                    and conversation_session
-                    and not session_cleanup_managed_by_stream
-                ):
+                if session_mgr and conversation_session and not session_cleanup_managed_by_stream:
                     try:
                         ended = await session_mgr.end_session(
                             conversation_session.session_id,
@@ -1554,40 +1550,32 @@ Requirements:
                                 "agent_id": agent_id,
                             },
                         )
-        
+
         # Handle langchain_tool with structured testing
         elif skill.skill_type == "langchain_tool":
             if inputs is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="inputs required for langchain_tool"
-                )
-            
+                raise HTTPException(status_code=400, detail="inputs required for langchain_tool")
+
             # Execute skill
             engine = get_execution_engine()
             result = await engine.execute_skill(
-                skill, 
-                inputs,
-                user_id=UUID(str(current_user.user_id))
+                skill, inputs, user_id=UUID(str(current_user.user_id))
             )
-            
+
             logger.info(
                 f"LangChain tool tested by user {current_user.user_id}",
                 extra={
                     "skill_id": skill_id,
                     "success": result.success,
-                    "execution_time": result.execution_time
-                }
+                    "execution_time": result.execution_time,
+                },
             )
-            
+
             return result.to_dict()
-        
+
         else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown skill_type: {skill.skill_type}"
-            )
-        
+            raise HTTPException(status_code=400, detail=f"Unknown skill_type: {skill.skill_type}")
+
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
     except HTTPException:
@@ -1603,34 +1591,29 @@ async def activate_skill(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Activate a skill.
-    
+
     Args:
         skill_id: Skill UUID
         current_user: Authenticated user
     """
     try:
         skill_uuid = UUID(skill_id)
-        
+
         from database.connection import get_db_session
         from database.models import Skill as SkillModel
-        
+
         # Update skill status in database
         with get_db_session() as session:
-            db_skill = session.query(SkillModel).filter(
-                SkillModel.skill_id == skill_uuid
-            ).first()
-            
+            db_skill = session.query(SkillModel).filter(SkillModel.skill_id == skill_uuid).first()
+
             if not db_skill:
                 raise HTTPException(status_code=404, detail="Skill not found")
-            
+
             db_skill.is_active = True
             session.commit()
-        
-        logger.info(
-            f"Skill activated by user {current_user.user_id}",
-            extra={"skill_id": skill_id}
-        )
-        
+
+        logger.info(f"Skill activated by user {current_user.user_id}", extra={"skill_id": skill_id})
+
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
     except HTTPException:
@@ -1646,41 +1629,38 @@ async def deactivate_skill(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Deactivate a skill.
-    
+
     Args:
         skill_id: Skill UUID
         current_user: Authenticated user
     """
     try:
         skill_uuid = UUID(skill_id)
-        
+
         from database.connection import get_db_session
         from database.models import Skill as SkillModel
-        
+
         # Update skill status in database
         with get_db_session() as session:
-            db_skill = session.query(SkillModel).filter(
-                SkillModel.skill_id == skill_uuid
-            ).first()
-            
+            db_skill = session.query(SkillModel).filter(SkillModel.skill_id == skill_uuid).first()
+
             if not db_skill:
                 raise HTTPException(status_code=404, detail="Skill not found")
-            
+
             db_skill.is_active = False
             session.commit()
-        
+
         # Clear from execution engine cache
         try:
             engine = get_execution_engine()
             engine.clear_cache(skill_uuid)
         except Exception as e:
             logger.warning(f"Failed to clear execution engine cache: {e}")
-        
+
         logger.info(
-            f"Skill deactivated by user {current_user.user_id}",
-            extra={"skill_id": skill_id}
+            f"Skill deactivated by user {current_user.user_id}", extra={"skill_id": skill_id}
         )
-        
+
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
     except HTTPException:
@@ -1696,35 +1676,38 @@ async def get_skill_stats(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get skill execution statistics.
-    
+
     Args:
         skill_id: Skill UUID
         current_user: Authenticated user
-        
+
     Returns:
         Skill statistics
     """
     try:
         skill_uuid = UUID(skill_id)
-        
+
         from skill_library.skill_model import get_skill_model
+
         skill_model = get_skill_model()
         skill = skill_model.get_skill_by_id(skill_uuid)
-        
+
         if not skill:
             raise HTTPException(status_code=404, detail="Skill not found")
-        
+
         return {
             "skill_id": str(skill.skill_id),
             "name": skill.name,
             "execution_count": skill.execution_count,
-            "last_executed_at": skill.last_executed_at.isoformat() if skill.last_executed_at else None,
+            "last_executed_at": (
+                skill.last_executed_at.isoformat() if skill.last_executed_at else None
+            ),
             "average_execution_time": skill.average_execution_time,
             "is_active": skill.is_active,
             "created_at": skill.created_at.isoformat() if skill.created_at else None,
             "updated_at": skill.updated_at.isoformat() if skill.updated_at else None,
         }
-        
+
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
     except HTTPException:
@@ -1740,57 +1723,53 @@ async def validate_skill_code(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Validate skill code for safety and syntax.
-    
+
     Args:
         code: Python code to validate
         current_user: Authenticated user
-        
+
     Returns:
         Validation result
     """
     try:
         engine = get_execution_engine()
-        
+
         # Try to validate the code
         try:
             engine._validate_code_safety(code)
-            
+
             # Also check if it can be parsed
             import ast
+
             ast.parse(code)
-            
+
             # Check if it has a @tool decorated function
-            namespace = {'tool': lambda f: f}
+            namespace = {"tool": lambda f: f}
             exec(code, namespace)
-            
+
             has_tool = False
             for name, obj in namespace.items():
-                if callable(obj) and name not in ['tool']:
+                if callable(obj) and name not in ["tool"]:
                     has_tool = True
                     break
-            
+
             return {
                 "valid": True,
                 "has_tool_decorator": has_tool,
                 "message": "Code validation passed",
-                "warnings": []
+                "warnings": [],
             }
-            
+
         except SyntaxError as e:
             return {
                 "valid": False,
                 "has_tool_decorator": False,
                 "message": f"Syntax error: {str(e)}",
-                "warnings": []
+                "warnings": [],
             }
         except ValueError as e:
-            return {
-                "valid": False,
-                "has_tool_decorator": False,
-                "message": str(e),
-                "warnings": []
-            }
-            
+            return {"valid": False, "has_tool_decorator": False, "message": str(e), "warnings": []}
+
     except Exception as e:
         logger.error(f"Failed to validate code: {e}")
         raise HTTPException(status_code=500, detail="Failed to validate code")
@@ -1801,25 +1780,25 @@ async def get_cache_stats(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get skill execution cache statistics.
-    
+
     Requires admin role.
-    
+
     Args:
         current_user: Authenticated user
-        
+
     Returns:
         Cache statistics
     """
     # Only admins can view cache stats
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-    
+
     try:
         engine = get_execution_engine()
         stats = engine.get_cache_stats()
-        
+
         return stats
-        
+
     except Exception as e:
         logger.error(f"Failed to get cache stats: {e}")
         raise HTTPException(status_code=500, detail="Failed to get cache stats")
@@ -1832,29 +1811,29 @@ async def clear_cache(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Clear skill execution cache.
-    
+
     Requires admin role.
-    
+
     Args:
         skill_id: Optional skill ID to clear (clears all if not provided)
         user_id: Optional user ID to clear (clears all if not provided)
         current_user: Authenticated user
-        
+
     Returns:
         Success message
     """
     # Only admins can clear cache
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-    
+
     try:
         engine = get_execution_engine()
-        
+
         skill_uuid = UUID(skill_id) if skill_id else None
         user_uuid = UUID(user_id) if user_id else None
-        
+
         engine.clear_cache(skill_id=skill_uuid, user_id=user_uuid)
-        
+
         if skill_uuid and user_uuid:
             message = f"Cleared cache for skill {skill_id} and user {user_id}"
         elif skill_uuid:
@@ -1863,14 +1842,14 @@ async def clear_cache(
             message = f"Cleared cache for user {user_id}"
         else:
             message = "Cleared all cache"
-        
+
         logger.info(
             f"Cache cleared by admin {current_user.user_id}",
-            extra={"skill_id": skill_id, "user_id": user_id}
+            extra={"skill_id": skill_id, "user_id": user_id},
         )
-        
+
         return {"message": message}
-        
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid UUID: {str(e)}")
     except Exception as e:
@@ -1884,144 +1863,148 @@ async def get_skill_files(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get file list for agent_skill package.
-    
+
     Returns the file structure of an agent_skill package stored in MinIO.
     Only works for agent_skill type.
-    
+
     Args:
         skill_id: Skill UUID
         current_user: Authenticated user
-        
+
     Returns:
         File tree structure with metadata
     """
     try:
         skill_uuid = UUID(skill_id)
-        
+
         # Get skill
         from skill_library.skill_model import get_skill_model
+
         skill_model = get_skill_model()
         skill = skill_model.get_skill_by_id(skill_uuid)
-        
+
         if not skill:
             raise HTTPException(status_code=404, detail="Skill not found")
-        
+
         # Only agent_skill has file structure
         if skill.skill_type != "agent_skill":
             raise HTTPException(
-                status_code=400,
-                detail="Only agent_skill type supports file browsing"
+                status_code=400, detail="Only agent_skill type supports file browsing"
             )
-        
+
         if not skill.storage_path:
-            raise HTTPException(
-                status_code=400,
-                detail="Skill has no storage path"
-            )
-        
+            raise HTTPException(status_code=400, detail="Skill has no storage path")
+
         # Download and extract package from MinIO
+        import tarfile
         import tempfile
         import zipfile
-        import tarfile
         from pathlib import Path
-        
+
         minio_client = get_minio_client()
-        
+
         # Download package to temp file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_file:
             try:
                 # Parse storage_path to get bucket and object key
                 bucket_name = minio_client.buckets.get("artifacts", "agent-artifacts")
                 object_key = _get_minio_object_key(skill.storage_path, bucket_name)
-                
-                logger.info(f"[get_skill_files] Downloading: bucket={bucket_name}, key={object_key}")
-                
+
+                logger.info(
+                    f"[get_skill_files] Downloading: bucket={bucket_name}, key={object_key}"
+                )
+
                 # Download from MinIO
                 file_stream, metadata = minio_client.download_file(bucket_name, object_key)
                 tmp_file.write(file_stream.read())
                 tmp_file.flush()
-                
+
                 # Extract to temp directory
                 with tempfile.TemporaryDirectory() as extract_dir:
                     extract_path = Path(extract_dir)
-                    
+
                     # Try ZIP first
                     try:
-                        with zipfile.ZipFile(tmp_file.name, 'r') as zip_ref:
+                        with zipfile.ZipFile(tmp_file.name, "r") as zip_ref:
                             zip_ref.extractall(extract_path)
                     except zipfile.BadZipFile:
                         # Try tar.gz
-                        with tarfile.open(tmp_file.name, 'r:gz') as tar_ref:
+                        with tarfile.open(tmp_file.name, "r:gz") as tar_ref:
                             tar_ref.extractall(extract_path)
-                    
+
                     # Build file tree
                     def build_tree(path: Path, base_path: Path) -> dict:
                         """Recursively build file tree."""
                         items = []
-                        
+
                         for item in sorted(path.iterdir()):
                             rel_path = str(item.relative_to(base_path))
-                            
+
                             if item.is_file():
                                 # Get file size
                                 size = item.stat().st_size
-                                
+
                                 # Determine file type
                                 suffix = item.suffix.lower()
-                                if suffix in ['.py']:
-                                    file_type = 'python'
-                                elif suffix in ['.md', '.txt']:
-                                    file_type = 'text'
-                                elif suffix in ['.yaml', '.yml', '.json']:
-                                    file_type = 'config'
-                                elif suffix in ['.sh']:
-                                    file_type = 'script'
+                                if suffix in [".py"]:
+                                    file_type = "python"
+                                elif suffix in [".md", ".txt"]:
+                                    file_type = "text"
+                                elif suffix in [".yaml", ".yml", ".json"]:
+                                    file_type = "config"
+                                elif suffix in [".sh"]:
+                                    file_type = "script"
                                 else:
-                                    file_type = 'other'
-                                
-                                items.append({
-                                    'name': item.name,
-                                    'path': rel_path,
-                                    'type': 'file',
-                                    'file_type': file_type,
-                                    'size': size,
-                                })
+                                    file_type = "other"
+
+                                items.append(
+                                    {
+                                        "name": item.name,
+                                        "path": rel_path,
+                                        "type": "file",
+                                        "file_type": file_type,
+                                        "size": size,
+                                    }
+                                )
                             elif item.is_dir():
                                 # Skip hidden directories and __pycache__
-                                if item.name.startswith('.') or item.name == '__pycache__':
+                                if item.name.startswith(".") or item.name == "__pycache__":
                                     continue
-                                
-                                items.append({
-                                    'name': item.name,
-                                    'path': rel_path,
-                                    'type': 'directory',
-                                    'children': build_tree(item, base_path),
-                                })
-                        
+
+                                items.append(
+                                    {
+                                        "name": item.name,
+                                        "path": rel_path,
+                                        "type": "directory",
+                                        "children": build_tree(item, base_path),
+                                    }
+                                )
+
                         return items
-                    
+
                     file_tree = build_tree(extract_path, extract_path)
-                    
+
                     logger.info(
                         f"File list retrieved for skill {skill_id}",
-                        extra={"skill_id": skill_id, "file_count": len(file_tree)}
+                        extra={"skill_id": skill_id, "file_count": len(file_tree)},
                     )
-                    
+
                     return {
                         "skill_id": skill_id,
                         "skill_name": skill.name,
                         "skill_type": skill.skill_type,
                         "files": file_tree,
                     }
-                    
+
             finally:
                 # Clean up temp file
                 import os
+
                 try:
                     os.unlink(tmp_file.name)
                 except:
                     pass
-        
+
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
     except HTTPException:
@@ -2038,106 +2021,104 @@ async def get_skill_file_content(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get content of a specific file in agent_skill package.
-    
+
     Args:
         skill_id: Skill UUID
         file_path: Relative path to file within package
         current_user: Authenticated user
-        
+
     Returns:
         File content as text
     """
     try:
         skill_uuid = UUID(skill_id)
-        
+
         # Get skill
         from skill_library.skill_model import get_skill_model
+
         skill_model = get_skill_model()
         skill = skill_model.get_skill_by_id(skill_uuid)
-        
+
         if not skill:
             raise HTTPException(status_code=404, detail="Skill not found")
-        
+
         # Only agent_skill has file structure
         if skill.skill_type != "agent_skill":
             raise HTTPException(
-                status_code=400,
-                detail="Only agent_skill type supports file browsing"
+                status_code=400, detail="Only agent_skill type supports file browsing"
             )
-        
+
         if not skill.storage_path:
-            raise HTTPException(
-                status_code=400,
-                detail="Skill has no storage path"
-            )
-        
+            raise HTTPException(status_code=400, detail="Skill has no storage path")
+
         # Security: Prevent path traversal
-        if '..' in file_path or file_path.startswith('/'):
+        if ".." in file_path or file_path.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid file path")
-        
+
         # Download and extract package from MinIO
+        import tarfile
         import tempfile
         import zipfile
-        import tarfile
         from pathlib import Path
-        
+
         minio_client = get_minio_client()
-        
+
         # Download package to temp file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_file:
             try:
                 # Parse storage_path to get bucket and object key
                 bucket_name = minio_client.buckets.get("artifacts", "agent-artifacts")
                 object_key = _get_minio_object_key(skill.storage_path, bucket_name)
-                
-                logger.info(f"[get_skill_file_content] Downloading: bucket={bucket_name}, key={object_key}")
-                
+
+                logger.info(
+                    f"[get_skill_file_content] Downloading: bucket={bucket_name}, key={object_key}"
+                )
+
                 # Download from MinIO
                 file_stream, metadata = minio_client.download_file(bucket_name, object_key)
                 tmp_file.write(file_stream.read())
                 tmp_file.flush()
-                
+
                 # Extract to temp directory
                 with tempfile.TemporaryDirectory() as extract_dir:
                     extract_path = Path(extract_dir)
-                    
+
                     # Try ZIP first
                     try:
-                        with zipfile.ZipFile(tmp_file.name, 'r') as zip_ref:
+                        with zipfile.ZipFile(tmp_file.name, "r") as zip_ref:
                             zip_ref.extractall(extract_path)
                     except zipfile.BadZipFile:
                         # Try tar.gz
-                        with tarfile.open(tmp_file.name, 'r:gz') as tar_ref:
+                        with tarfile.open(tmp_file.name, "r:gz") as tar_ref:
                             tar_ref.extractall(extract_path)
-                    
+
                     # Read file content
                     file_full_path = extract_path / file_path
-                    
+
                     if not file_full_path.exists():
                         raise HTTPException(status_code=404, detail="File not found in package")
-                    
+
                     if not file_full_path.is_file():
                         raise HTTPException(status_code=400, detail="Path is not a file")
-                    
+
                     # Read file content
                     try:
-                        content = file_full_path.read_text(encoding='utf-8')
+                        content = file_full_path.read_text(encoding="utf-8")
                     except UnicodeDecodeError:
                         # Binary file
                         raise HTTPException(
-                            status_code=400,
-                            detail="File is binary and cannot be displayed as text"
+                            status_code=400, detail="File is binary and cannot be displayed as text"
                         )
-                    
+
                     # Get file metadata
                     size = file_full_path.stat().st_size
                     suffix = file_full_path.suffix.lower()
-                    
+
                     logger.info(
                         f"File content retrieved for skill {skill_id}",
-                        extra={"skill_id": skill_id, "file_path": file_path}
+                        extra={"skill_id": skill_id, "file_path": file_path},
                     )
-                    
+
                     return {
                         "skill_id": skill_id,
                         "file_path": file_path,
@@ -2146,15 +2127,16 @@ async def get_skill_file_content(
                         "size": size,
                         "extension": suffix,
                     }
-                    
+
             finally:
                 # Clean up temp file
                 import os
+
                 try:
                     os.unlink(tmp_file.name)
                 except:
                     pass
-        
+
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
     except HTTPException:
@@ -2172,92 +2154,91 @@ async def update_skill_file_content(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update content of a specific file in agent_skill package.
-    
+
     Downloads the package, updates the file, re-packages, and uploads back to MinIO.
-    
+
     Args:
         skill_id: Skill UUID
         file_path: Relative path to file within package
         content: New file content
         current_user: Authenticated user
-        
+
     Returns:
         Success message
     """
     try:
         skill_uuid = UUID(skill_id)
-        
+
         # Get skill
         from skill_library.skill_model import get_skill_model
+
         skill_model = get_skill_model()
         skill = skill_model.get_skill_by_id(skill_uuid)
-        
+
         if not skill:
             raise HTTPException(status_code=404, detail="Skill not found")
-        
+
         # Only agent_skill has file structure
         if skill.skill_type != "agent_skill":
             raise HTTPException(
-                status_code=400,
-                detail="Only agent_skill type supports file editing"
+                status_code=400, detail="Only agent_skill type supports file editing"
             )
-        
+
         if not skill.storage_path:
-            raise HTTPException(
-                status_code=400,
-                detail="Skill has no storage path"
-            )
-        
+            raise HTTPException(status_code=400, detail="Skill has no storage path")
+
         # Security: Prevent path traversal
-        if '..' in file_path or file_path.startswith('/'):
+        if ".." in file_path or file_path.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid file path")
-        
+
         # Download, modify, and re-upload package
+        import tarfile
         import tempfile
         import zipfile
-        import tarfile
         from pathlib import Path
-        
+
         minio_client = get_minio_client()
-        
+
         # Download package to temp file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_download:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_download:
             try:
                 # Download from MinIO
                 bucket_name = minio_client.buckets.get("artifacts", "agent-artifacts")
                 object_key = _get_minio_object_key(skill.storage_path, bucket_name)
-                
-                logger.info(f"[update_skill_file_content] Downloading: bucket={bucket_name}, key={object_key}")
-                
+
+                logger.info(
+                    f"[update_skill_file_content] Downloading: bucket={bucket_name}, key={object_key}"
+                )
+
                 file_stream, metadata = minio_client.download_file(bucket_name, object_key)
                 tmp_download.write(file_stream.read())
                 tmp_download.flush()
-                
+
                 # Extract to temp directory
                 with tempfile.TemporaryDirectory() as extract_dir:
                     extract_path = Path(extract_dir)
-                    
+
                     # Detect and extract package
                     is_zip = False
                     try:
-                        with zipfile.ZipFile(tmp_download.name, 'r') as zip_ref:
+                        with zipfile.ZipFile(tmp_download.name, "r") as zip_ref:
                             zip_ref.extractall(extract_path)
                             is_zip = True
                     except zipfile.BadZipFile:
-                        with tarfile.open(tmp_download.name, 'r:gz') as tar_ref:
+                        with tarfile.open(tmp_download.name, "r:gz") as tar_ref:
                             tar_ref.extractall(extract_path)
-                    
+
                     # Update file content
                     file_full_path = extract_path / file_path
-                    
+
                     if not file_full_path.exists():
                         raise HTTPException(status_code=404, detail="File not found in package")
-                    
+
                     if not file_full_path.is_file():
                         raise HTTPException(status_code=400, detail="Path is not a file")
-                    
+
                     # Write new content
-                    file_full_path.write_text(content, encoding='utf-8')
+                    file_full_path.write_text(content, encoding="utf-8")
 
                     parsed_skill_md_payload: Optional[Dict[str, Any]] = None
                     if Path(file_path).name.lower() == "skill.md":
@@ -2275,8 +2256,7 @@ async def update_skill_file_content(
                             raise HTTPException(
                                 status_code=400,
                                 detail=(
-                                    "SKILL.md validation failed: "
-                                    f"{', '.join(validation_errors)}"
+                                    "SKILL.md validation failed: " f"{', '.join(validation_errors)}"
                                 ),
                             )
 
@@ -2291,78 +2271,93 @@ async def update_skill_file_content(
                             "skill_metadata": asdict(parsed.metadata),
                             "gating_status": asdict(gating_result),
                         }
-                    
+
                     # Re-package
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_upload:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_upload:
                         if is_zip:
                             # Create ZIP
-                            with zipfile.ZipFile(tmp_upload.name, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
-                                for item in extract_path.rglob('*'):
+                            with zipfile.ZipFile(
+                                tmp_upload.name, "w", zipfile.ZIP_DEFLATED
+                            ) as zip_ref:
+                                for item in extract_path.rglob("*"):
                                     if item.is_file():
                                         arcname = item.relative_to(extract_path)
                                         zip_ref.write(item, arcname)
                         else:
                             # Create tar.gz
-                            with tarfile.open(tmp_upload.name, 'w:gz') as tar_ref:
-                                tar_ref.add(extract_path, arcname='.')
-                        
+                            with tarfile.open(tmp_upload.name, "w:gz") as tar_ref:
+                                tar_ref.add(extract_path, arcname=".")
+
                         # Upload back to MinIO
                         tmp_upload.seek(0)
                         package_data = tmp_upload.read()
-                        
+
                         # Delete old package
                         minio_client.delete_file(bucket_name, object_key)
-                        
+
                         # Upload new package
                         from skill_library.package_handler import PackageHandler
+
                         handler = PackageHandler(minio_client)
                         new_storage_path = await handler.upload_package(
-                            package_data,
-                            skill.name,
-                            skill.version
+                            package_data, skill.name, skill.version
                         )
-                        
+
                         # Update database with new storage path directly
                         from database.connection import get_db_session
                         from database.models import Skill as SkillModel
-                        
+
                         with get_db_session() as session:
-                            db_skill = session.query(SkillModel).filter(
-                                SkillModel.skill_id == skill_uuid
-                            ).first()
-                            
+                            db_skill = (
+                                session.query(SkillModel)
+                                .filter(SkillModel.skill_id == skill_uuid)
+                                .first()
+                            )
+
                             if db_skill:
                                 db_skill.storage_path = new_storage_path
                                 if parsed_skill_md_payload:
                                     db_skill.description = parsed_skill_md_payload["description"]
-                                    db_skill.skill_md_content = parsed_skill_md_payload["skill_md_content"]
+                                    db_skill.skill_md_content = parsed_skill_md_payload[
+                                        "skill_md_content"
+                                    ]
                                     db_skill.homepage = parsed_skill_md_payload["homepage"]
-                                    db_skill.skill_metadata = parsed_skill_md_payload["skill_metadata"]
-                                    db_skill.gating_status = parsed_skill_md_payload["gating_status"]
+                                    db_skill.skill_metadata = parsed_skill_md_payload[
+                                        "skill_metadata"
+                                    ]
+                                    db_skill.gating_status = parsed_skill_md_payload[
+                                        "gating_status"
+                                    ]
                                 session.commit()
-                        
+
                         logger.info(
                             f"File updated in skill package by user {current_user.user_id}",
-                            extra={"skill_id": skill_id, "file_path": file_path, "new_storage_path": new_storage_path}
+                            extra={
+                                "skill_id": skill_id,
+                                "file_path": file_path,
+                                "new_storage_path": new_storage_path,
+                            },
                         )
-                        
+
                         # Clean up temp upload file
                         try:
                             import os
+
                             os.unlink(tmp_upload.name)
                         except:
                             pass
-                        
+
                         return {"message": "File updated successfully"}
-                    
+
             finally:
                 # Clean up temp download file
                 import os
+
                 try:
                     os.unlink(tmp_download.name)
                 except:
                     pass
-        
+
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
     except HTTPException:
@@ -2379,84 +2374,84 @@ async def update_skill_package(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Re-upload package for agent_skill.
-    
+
     Replaces the entire package with a new one.
-    
+
     Args:
         skill_id: Skill UUID
         package_file: New package file (ZIP or tar.gz)
         current_user: Authenticated user
-        
+
     Returns:
         Success message
     """
     try:
         skill_uuid = UUID(skill_id)
-        
+
         # Get skill
         from skill_library.skill_model import get_skill_model
+
         skill_model = get_skill_model()
         skill = skill_model.get_skill_by_id(skill_uuid)
-        
+
         if not skill:
             raise HTTPException(status_code=404, detail="Skill not found")
-        
+
         # Only agent_skill supports package upload
         if skill.skill_type != "agent_skill":
             raise HTTPException(
-                status_code=400,
-                detail="Only agent_skill type supports package upload"
+                status_code=400, detail="Only agent_skill type supports package upload"
             )
-        
+
         # Read new package file
         file_data = await package_file.read()
-        
+
         # Validate and extract package
+        from skill_library.gating_engine import GatingEngine
         from skill_library.package_handler import PackageHandler
         from skill_library.skill_md_parser import SkillMdParser
-        from skill_library.gating_engine import GatingEngine
-        
+
         handler = PackageHandler(get_minio_client())
         package_info = None
         temp_dir = None
-        
+
         try:
             package_info = handler.extract_package(file_data)
             temp_dir = package_info.skill_md_path.parent.parent
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Invalid package: {str(e)}")
-        
+
         try:
             # Validate package
             validation_errors = handler.validate_package(package_info)
             if validation_errors:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Package validation failed: {', '.join(validation_errors)}"
+                    detail=f"Package validation failed: {', '.join(validation_errors)}",
                 )
-            
+
             # Parse SKILL.md
             parser = SkillMdParser()
-            with open(package_info.skill_md_path, 'r', encoding='utf-8') as f:
+            with open(package_info.skill_md_path, "r", encoding="utf-8") as f:
                 skill_md_content = f.read()
-            
+
             try:
                 parsed = parser.parse(skill_md_content)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid SKILL.md: {str(e)}")
-            
+
             # Validate parsed skill
             validation_errors = parser.validate(parsed)
             if validation_errors:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"SKILL.md validation failed: {', '.join(validation_errors)}"
+                    detail=f"SKILL.md validation failed: {', '.join(validation_errors)}",
                 )
-            
+
             # Check gating requirements
             gating = GatingEngine()
             gating_result = gating.check_eligibility(parsed.metadata)
-            
+
             # Delete old package from MinIO
             if skill.storage_path:
                 try:
@@ -2465,26 +2460,29 @@ async def update_skill_package(
                     minio_client.delete_file(bucket_name, skill.storage_path)
                 except Exception as e:
                     logger.warning(f"Failed to delete old package: {e}")
-            
+
             # Upload new package to MinIO
             try:
-                new_storage_path = await handler.upload_package(file_data, skill.name, skill.version)
+                new_storage_path = await handler.upload_package(
+                    file_data, skill.name, skill.version
+                )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Upload failed: {str(e)}")
-            
+
             # Update skill in database directly
             from dataclasses import asdict
+
             from database.connection import get_db_session
             from database.models import Skill as SkillModel
-            
+
             skill_metadata_dict = asdict(parsed.metadata)
             gating_status_dict = asdict(gating_result)
-            
+
             with get_db_session() as session:
-                db_skill = session.query(SkillModel).filter(
-                    SkillModel.skill_id == skill_uuid
-                ).first()
-                
+                db_skill = (
+                    session.query(SkillModel).filter(SkillModel.skill_id == skill_uuid).first()
+                )
+
                 if db_skill:
                     db_skill.storage_path = new_storage_path
                     db_skill.description = parsed.metadata.description.strip()
@@ -2493,24 +2491,25 @@ async def update_skill_package(
                     db_skill.skill_metadata = skill_metadata_dict
                     db_skill.gating_status = gating_status_dict
                     session.commit()
-            
+
             logger.info(
                 f"Package updated for skill by user {current_user.user_id}",
                 extra={
                     "skill_id": skill_id,
                     "storage_path": new_storage_path,
                     "gating_eligible": gating_result.eligible,
-                }
+                },
             )
-            
+
             return {"message": "Package updated successfully"}
-        
+
         finally:
             # Clean up temporary directory
             if temp_dir and temp_dir.exists():
                 import shutil
+
                 shutil.rmtree(temp_dir, ignore_errors=True)
-        
+
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
     except HTTPException:

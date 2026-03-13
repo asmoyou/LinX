@@ -29,8 +29,8 @@ def mock_processing_queue():
     """Mock processing queue."""
     with patch("knowledge_base.processing_queue.ProcessingQueue") as mock:
         queue = Mock()
-        queue.enqueue = AsyncMock(return_value=str(uuid4()))
-        queue.get_status = AsyncMock(return_value={"status": "processing"})
+        queue.enqueue = Mock(return_value=str(uuid4()))
+        queue.get_status = Mock(return_value={"status": "processing"})
         mock.return_value = queue
         yield queue
 

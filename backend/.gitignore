@@ -50,6 +50,7 @@ poetry.lock
 
 # Testing
 .pytest_cache/
+.pytest_tmp/
 .coverage
 .coverage.*
 htmlcov/

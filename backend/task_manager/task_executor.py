@@ -19,6 +19,7 @@ from agent_framework import BaseAgent
 from database.connection import get_db_session
 from database.models import Agent
 from database.models import Task as TaskModel
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +84,7 @@ class TaskExecutor:
             from database.connection import get_db_session as get_db_session_fn
 
             with get_db_session_fn() as session:
-                task = (
-                    session.query(TaskModel)
-                    .filter(TaskModel.task_id == task_id)
-                    .first()
-                )
+                task = session.query(TaskModel).filter(TaskModel.task_id == task_id).first()
                 if task is not None:
                     task.result = result
                     task.status = "completed" if result.get("success") else "failed"
@@ -285,7 +282,7 @@ class TaskExecutor:
         Returns:
             Execution result
         """
-        start_time = datetime.utcnow()
+        start_time = utcnow()
 
         logger.info(
             "Executing task",
@@ -347,7 +344,7 @@ class TaskExecutor:
             if task:
                 if result.success:
                     task.status = "completed"
-                    task.completed_at = datetime.utcnow()
+                    task.completed_at = utcnow()
                     task.result = result.result
                 else:
                     task.status = "failed"
@@ -355,7 +352,7 @@ class TaskExecutor:
 
                 session.commit()
 
-        execution_time = (datetime.utcnow() - start_time).total_seconds()
+        execution_time = (utcnow() - start_time).total_seconds()
         result.execution_time_seconds = execution_time
 
         logger.info(

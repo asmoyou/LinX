@@ -7,7 +7,7 @@ import pytest
 
 def test_validate_file_rejects_legacy_ppt_alias_mime(tmp_path) -> None:
     """Legacy PPT MIME aliases should be rejected."""
-    pytest.importorskip("magic")
+    pytest.importorskip("magic", exc_type=ImportError)
 
     try:
         from knowledge_base.file_validator import FileValidator
@@ -29,7 +29,7 @@ def test_validate_file_rejects_legacy_ppt_alias_mime(tmp_path) -> None:
 
 def test_validate_file_falls_back_to_pptx_extension(tmp_path) -> None:
     """When MIME is generic, .pptx extension should still be accepted."""
-    pytest.importorskip("magic")
+    pytest.importorskip("magic", exc_type=ImportError)
 
     try:
         from knowledge_base.file_validator import FileValidator, SupportedFileType

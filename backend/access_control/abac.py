@@ -17,6 +17,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
+from shared.datetime_utils import utcnow
+
 logger = logging.getLogger(__name__)
 
 
@@ -260,9 +262,9 @@ class ABACPolicy:
     def __post_init__(self):
         """Initialize timestamps if not provided."""
         if self.created_at is None:
-            self.created_at = datetime.utcnow()
+            self.created_at = utcnow()
         if self.updated_at is None:
-            self.updated_at = datetime.utcnow()
+            self.updated_at = utcnow()
 
     def evaluate(
         self,
@@ -516,7 +518,7 @@ class ABACEvaluationEngine:
         Returns:
             Dictionary with current time and other environmental attributes
         """
-        now = datetime.utcnow()
+        now = utcnow()
         return {
             "time": {
                 "hour": now.hour,

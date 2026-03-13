@@ -17,6 +17,7 @@ from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from database.models import AuditLog
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ def verify_audit_log_integrity(
     issues = []
 
     # Check for timestamp anomalies (future timestamps)
-    now = datetime.utcnow()
+    now = utcnow()
     future_logs = [log for log in logs if log.timestamp > now]
     if future_logs:
         issues.append(
@@ -125,7 +126,7 @@ def verify_audit_log_integrity(
         "total_logs": total_logs,
         "issues_found": len(issues),
         "issues": issues,
-        "verified_at": datetime.utcnow().isoformat(),
+        "verified_at": utcnow().isoformat(),
         "integrity_status": "clean" if len(issues) == 0 else "issues_detected",
     }
 
@@ -184,7 +185,7 @@ def generate_access_summary_report(
         "unique_users": unique_users,
         "resource_access": resource_access,
         "action_counts": action_counts,
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": utcnow().isoformat(),
     }
 
 
@@ -245,7 +246,7 @@ def generate_failed_access_report(
         "suspicious_users": len(suspicious_users),
         "threshold": threshold,
         "details": suspicious_users,
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": utcnow().isoformat(),
     }
 
 
@@ -309,7 +310,7 @@ def generate_user_activity_report(
         "actions_performed": actions_performed,
         "resources_accessed": resources_accessed,
         "timeline": timeline,
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": utcnow().isoformat(),
     }
 
 
@@ -376,7 +377,7 @@ def generate_resource_access_report(
         "unique_users": unique_users,
         "actions": actions,
         "access_timeline": access_timeline,
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": utcnow().isoformat(),
     }
 
 
@@ -436,7 +437,7 @@ def generate_authentication_events_report(
         "event_counts": event_counts,
         "failed_login_attempts": len(failed_logins),
         "failed_logins_by_user": failed_by_user,
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": utcnow().isoformat(),
     }
 
 
@@ -461,7 +462,7 @@ def apply_log_retention_policy(
     Returns:
         Dictionary with retention policy results
     """
-    now = datetime.utcnow()
+    now = utcnow()
 
     hot_cutoff = now - timedelta(days=hot_retention_days)
     cold_cutoff = now - timedelta(days=cold_retention_days)

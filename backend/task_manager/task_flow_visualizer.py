@@ -17,6 +17,7 @@ from uuid import UUID
 from database.connection import get_db_session
 from database.models import Agent
 from database.models import Task as TaskModel
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +49,8 @@ class TaskNode:
     progress: float = 0.0
     agent_id: Optional[UUID] = None
     agent_name: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utcnow)
+    updated_at: datetime = field(default_factory=utcnow)
     error_message: Optional[str] = None
     metadata: Dict = field(default_factory=dict)
 
@@ -144,7 +145,7 @@ class TaskFlowGraph:
             for key, value in kwargs.items():
                 if hasattr(node, key):
                     setattr(node, key, value)
-            node.updated_at = datetime.utcnow()
+            node.updated_at = utcnow()
 
     def to_dict(self) -> Dict:
         """Convert graph to dictionary for JSON serialization.

@@ -9,7 +9,7 @@ import io
 import logging
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import BinaryIO, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
@@ -20,6 +20,7 @@ from minio.error import S3Error
 from minio.versioningconfig import VersioningConfig
 
 from shared.config import get_config
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
@@ -372,7 +373,7 @@ class MinIOClient:
         upload_metadata.update(
             {
                 "user_id": user_id,
-                "upload_timestamp": datetime.utcnow().isoformat(),
+                "upload_timestamp": utcnow().isoformat(),
             }
         )
         if task_id:
@@ -641,7 +642,7 @@ class MinIOClient:
         if older_than_days is None:
             older_than_days = self.temp_file_retention_days
 
-        cutoff_date = datetime.utcnow() - timedelta(days=older_than_days)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=older_than_days)
 
         try:
             objects = self.client.list_objects(bucket_name, recursive=True)

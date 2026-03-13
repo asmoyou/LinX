@@ -8,6 +8,7 @@ References:
 import logging
 import shutil
 import subprocess
+import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,8 +18,15 @@ from typing import Any, Dict, Optional
 import markdown
 import pandas as pd
 import pdfplumber
-import PyPDF2
 from docx import Document as DocxDocument
+
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message="PyPDF2 is deprecated. Please move to the pypdf library instead.",
+        category=DeprecationWarning,
+    )
+    import PyPDF2
 
 try:
     from pptx import Presentation as PptxPresentation

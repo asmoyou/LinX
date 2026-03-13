@@ -5,7 +5,6 @@ This module handles storing and retrieving file metadata in PostgreSQL.
 """
 
 import logging
-from datetime import datetime
 from typing import Dict, List, Optional
 from uuid import UUID, uuid4
 
@@ -14,6 +13,7 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Session, relationship
 
 from database.models import Base
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +72,8 @@ class FileMetadata(Base):
     is_deleted = Column(Boolean, default=False, index=True)
 
     # Timestamps
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
     deleted_at = Column(DateTime, nullable=True)
 
     # Indexes for common queries
@@ -309,7 +309,7 @@ class FileMetadataManager:
 
         file_meta.processing_status = status
         file_meta.processing_error = error
-        file_meta.updated_at = datetime.utcnow()
+        file_meta.updated_at = utcnow()
 
         self.db.commit()
         self.db.refresh(file_meta)
@@ -346,7 +346,7 @@ class FileMetadataManager:
             file_meta.ocr_status = ocr_status
         if transcription_status:
             file_meta.transcription_status = transcription_status
-        file_meta.updated_at = datetime.utcnow()
+        file_meta.updated_at = utcnow()
 
         self.db.commit()
         self.db.refresh(file_meta)
@@ -370,8 +370,8 @@ class FileMetadataManager:
             return False
 
         file_meta.is_deleted = True
-        file_meta.deleted_at = datetime.utcnow()
-        file_meta.updated_at = datetime.utcnow()
+        file_meta.deleted_at = utcnow()
+        file_meta.updated_at = utcnow()
 
         self.db.commit()
 
@@ -391,7 +391,7 @@ class FileMetadataManager:
         """
         from datetime import timedelta
 
-        cutoff_date = datetime.utcnow() - timedelta(days=older_than_days)
+        cutoff_date = utcnow() - timedelta(days=older_than_days)
 
         return (
             self.db.query(FileMetadata)

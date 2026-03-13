@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional, Set
 
 import requests
 
+from shared.datetime_utils import utcnow
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,7 +83,7 @@ class Alert:
         self.category = category
         self.source = source
         self.details = details or {}
-        self.timestamp = datetime.utcnow()
+        self.timestamp = utcnow()
 
         # Generate alert ID if not provided
         if alert_id:
@@ -137,7 +139,7 @@ class AlertDeduplicator:
         Returns:
             True if duplicate within window
         """
-        now = datetime.utcnow()
+        now = utcnow()
         alert_id = alert.alert_id
 
         # Clean up old entries
@@ -189,7 +191,7 @@ class AlertThrottler:
         Returns:
             True if should throttle
         """
-        now = datetime.utcnow()
+        now = utcnow()
         source = alert.source
 
         # Initialize if first alert from source

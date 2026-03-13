@@ -16,6 +16,7 @@ from uuid import UUID
 from database.connection import get_db_session
 from database.models import Task as TaskModel
 from llm_providers import BaseLLMProvider, get_llm_provider
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -391,7 +392,9 @@ Summary:"""
 
             subtask_ids = [task.task_id for task in subtasks]
 
-        if subtasks and all(hasattr(task, "result") and hasattr(task, "status") for task in subtasks):
+        if subtasks and all(
+            hasattr(task, "result") and hasattr(task, "status") for task in subtasks
+        ):
             results = [
                 CollectedResult(
                     task_id=task.task_id,
@@ -522,7 +525,7 @@ class ResultDelivery:
                 if not task.result:
                     task.result = {}
 
-                task.result["delivered_at"] = str(datetime.utcnow())
+                task.result["delivered_at"] = str(utcnow())
                 task.result["delivery_method"] = "database"
 
                 session.commit()
@@ -656,7 +659,3 @@ class ResultDelivery:
 
         else:
             return str(result)
-
-
-# Import datetime for delivery timestamps
-from datetime import datetime

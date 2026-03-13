@@ -36,6 +36,7 @@ from access_control.audit_logger import (
 from access_control.permissions import CurrentUser
 from access_control.rbac import Action, ResourceType, Role
 from database.models import AuditLog
+from shared.datetime_utils import utcnow
 
 # Test fixtures
 
@@ -543,8 +544,8 @@ def test_get_audit_logs_filter_by_resource_type(mock_session):
 
 def test_get_audit_logs_filter_by_date_range(mock_session):
     """Test filtering audit logs by date range."""
-    start_date = datetime.utcnow() - timedelta(days=7)
-    end_date = datetime.utcnow()
+    start_date = utcnow() - timedelta(days=7)
+    end_date = utcnow()
     mock_logs = [Mock(spec=AuditLog) for _ in range(10)]
     mock_session.query().filter().filter().order_by().limit().all.return_value = mock_logs
 

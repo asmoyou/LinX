@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from access_control.permissions import CurrentUser
 from access_control.rbac import Action, ResourceType
 from database.models import AuditLog
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,7 @@ def log_access_control_event(
             {
                 "event_type": event_type,
                 "result": result,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": utcnow().isoformat(),
             }
         )
 

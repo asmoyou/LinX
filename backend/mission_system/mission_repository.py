@@ -4,8 +4,8 @@ CRUD operations for Mission and related models (MissionAttachment,
 MissionAgent, MissionEvent) using the shared ``get_db_session()`` pattern.
 """
 
-import logging
 import copy
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
@@ -22,6 +22,7 @@ from database.mission_models import (
     MissionEvent,
     MissionSettings,
 )
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +92,9 @@ def update_mission_status(
         if error_message is not None:
             mission.error_message = error_message
         if status == "executing" and mission.started_at is None:
-            mission.started_at = datetime.utcnow()
+            mission.started_at = utcnow()
         if status in ("completed", "failed", "cancelled"):
-            mission.completed_at = datetime.utcnow()
+            mission.completed_at = utcnow()
 
 
 def update_mission_fields(mission_id: UUID, **fields: Any) -> None:

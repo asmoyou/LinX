@@ -15,6 +15,8 @@ from enum import Enum
 from typing import Dict, List, Optional, Set
 from uuid import UUID
 
+from shared.datetime_utils import utcnow
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,7 +102,7 @@ class TaskQueue:
         queued_task = QueuedTask(
             task_id=task_id,
             priority=priority,
-            queued_at=datetime.utcnow(),
+            queued_at=utcnow(),
             dependencies=dependencies or [],
             metadata=metadata or {},
         )

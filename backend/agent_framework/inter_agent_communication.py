@@ -9,6 +9,7 @@ References:
 """
 
 import asyncio
+import inspect
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,6 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 from uuid import UUID, uuid4
 
 from message_bus import Message, MessageAuditor, MessageAuthorizer, MessageType
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +118,13 @@ class InterAgentCommunicator:
             },
         )
 
+    async def _publish(self, message: Any) -> Any:
+        """Publish through pubsub, awaiting async test doubles when needed."""
+        result = self.pubsub_manager.publish(message)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
     async def send_direct_message(
         self,
         to_agent_id: UUID,
@@ -206,7 +215,7 @@ class InterAgentCommunicator:
                     "message": message,
                     "type": message_type,
                 }
-                self.pubsub_manager.publish(envelope)
+                await self._publish(envelope)
                 delivered_count += 1
             return {"delivered_count": delivered_count}
 
@@ -231,7 +240,7 @@ class InterAgentCommunicator:
 
         try:
             # Publish via Pub/Sub
-            num_recipients = self.pubsub_manager.publish(event_message)
+            num_recipients = await self._publish(event_message)
 
             # Audit log
             if self.auditor:
@@ -276,7 +285,7 @@ class InterAgentCommunicator:
             "type": message_type,
         }
         try:
-            self.pubsub_manager.publish(envelope)
+            await self._publish(envelope)
         except Exception:
             logger.debug("PubSub publish failed in compatibility path", exc_info=True)
         if require_ack:
@@ -286,7 +295,9 @@ class InterAgentCommunicator:
             }
         return {"message_id": message_id, "status": "delivered"}
 
-    async def wait_for_acknowledgment(self, message_id: str, timeout: float = 5.0) -> Dict[str, Any]:
+    async def wait_for_acknowledgment(
+        self, message_id: str, timeout: float = 5.0
+    ) -> Dict[str, Any]:
         """Backward-compatible acknowledgment wait API."""
         if message_id in self._acknowledgments:
             return self._acknowledgments[message_id]
@@ -480,7 +491,7 @@ class InterAgentCommunicator:
         """
         event_payload = {
             "event_type": event_type,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             **payload,
         }
 
@@ -499,7 +510,7 @@ class InterAgentCommunicator:
 
         try:
             # Publish event
-            num_recipients = self.pubsub_manager.publish(message)
+            num_recipients = await self._publish(message)
 
             # Audit log
             if self.auditor:

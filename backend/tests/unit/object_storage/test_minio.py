@@ -14,7 +14,8 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database.connection import get_db_session
-from object_storage.file_metadata import FileMetadataManager
+from database.models import Base
+from object_storage.file_metadata import FileMetadata, FileMetadataManager
 from object_storage.minio_client import MinIOClient
 from shared.config import get_config
 from shared.logging import setup_logging
@@ -34,16 +35,11 @@ def test_minio_connection():
         client = MinIOClient()
 
         # Health check
-        if client.health_check():
-            logger.info("✓ MinIO connection successful")
-            return True
-        else:
-            logger.error("✗ MinIO health check failed")
-            return False
+        assert client.health_check(), "MinIO health check failed"
+        logger.info("✓ MinIO connection successful")
 
     except Exception as e:
-        logger.error(f"✗ MinIO connection failed: {e}")
-        return False
+        raise AssertionError(f"MinIO connection failed: {e}") from e
 
 
 def test_bucket_initialization():
@@ -65,11 +61,8 @@ def test_bucket_initialization():
         for bucket in buckets:
             logger.info(f"  - {bucket.name}")
 
-        return True
-
     except Exception as e:
-        logger.error(f"✗ Bucket initialization failed: {e}")
-        return False
+        raise AssertionError(f"Bucket initialization failed: {e}") from e
 
 
 def test_file_upload_download():
@@ -113,11 +106,8 @@ def test_file_upload_download():
         downloaded_data, download_metadata = client.download_file(bucket_name, object_key)
         downloaded_content = downloaded_data.read()
 
-        if downloaded_content == test_content:
-            logger.info("✓ File downloaded successfully and content matches")
-        else:
-            logger.error("✗ Downloaded content does not match original")
-            return False
+        assert downloaded_content == test_content, "Downloaded content does not match original"
+        logger.info("✓ File downloaded successfully and content matches")
 
         # Generate presigned URL
         url = client.get_presigned_url(bucket_name, object_key)
@@ -127,14 +117,11 @@ def test_file_upload_download():
         client.delete_file(bucket_name, object_key)
         logger.info(f"✓ Test file deleted")
 
-        return True
-
     except Exception as e:
-        logger.error(f"✗ File upload/download test failed: {e}")
         import traceback
 
         traceback.print_exc()
-        return False
+        raise AssertionError(f"File upload/download test failed: {e}") from e
 
 
 def test_file_metadata_storage():
@@ -151,6 +138,8 @@ def test_file_metadata_storage():
         pool.initialize()
 
         with pool.get_session() as db:
+            bind = db.get_bind()
+            Base.metadata.create_all(bind=bind, tables=[FileMetadata.__table__])
             manager = FileMetadataManager(db)
 
         # Create test metadata
@@ -172,14 +161,11 @@ def test_file_metadata_storage():
 
         # Retrieve metadata
         retrieved = manager.get_by_id(file_meta.file_id)
-        if retrieved:
-            logger.info(f"✓ File metadata retrieved:")
-            logger.info(f"  - Filename: {retrieved.original_filename}")
-            logger.info(f"  - Size: {retrieved.file_size} bytes")
-            logger.info(f"  - Status: {retrieved.processing_status}")
-        else:
-            logger.error("✗ Failed to retrieve file metadata")
-            return False
+        assert retrieved is not None, "Failed to retrieve file metadata"
+        logger.info(f"✓ File metadata retrieved:")
+        logger.info(f"  - Filename: {retrieved.original_filename}")
+        logger.info(f"  - Size: {retrieved.file_size} bytes")
+        logger.info(f"  - Status: {retrieved.processing_status}")
 
         # Update processing status
         manager.update_processing_status(file_meta.file_id, "completed")
@@ -201,21 +187,16 @@ def test_file_metadata_storage():
 
         # Verify deletion
         deleted = manager.get_by_id(file_meta.file_id)
-        if deleted is None:
-            logger.info("✓ Soft delete verified")
-        else:
-            logger.error("✗ Soft delete failed")
-            return False
+        assert deleted is None, "Soft delete failed"
+        logger.info("✓ Soft delete verified")
 
         pool.close()
-        return True
 
     except Exception as e:
-        logger.error(f"✗ File metadata storage test failed: {e}")
         import traceback
 
         traceback.print_exc()
-        return False
+        raise AssertionError(f"File metadata storage test failed: {e}") from e
 
 
 def test_versioning():
@@ -259,24 +240,18 @@ def test_versioning():
         downloaded_data, metadata = client.download_file(bucket_name, object_key)
         latest_content = downloaded_data.read()
 
-        if latest_content == v2_content:
-            logger.info("✓ Latest version retrieved correctly")
-        else:
-            logger.error("✗ Latest version content mismatch")
-            return False
+        assert latest_content == v2_content, "Latest version content mismatch"
+        logger.info("✓ Latest version retrieved correctly")
 
         # Clean up
         client.delete_file(bucket_name, object_key)
         logger.info("✓ Test file deleted")
 
-        return True
-
     except Exception as e:
-        logger.error(f"✗ Versioning test failed: {e}")
         import traceback
 
         traceback.print_exc()
-        return False
+        raise AssertionError(f"Versioning test failed: {e}") from e
 
 
 def test_cleanup():
@@ -306,14 +281,11 @@ def test_cleanup():
         deleted_count = client.cleanup_temporary_files(bucket_name=bucket_name, older_than_days=0)
         logger.info(f"✓ Cleanup completed: {deleted_count} files deleted")
 
-        return True
-
     except Exception as e:
-        logger.error(f"✗ Cleanup test failed: {e}")
         import traceback
 
         traceback.print_exc()
-        return False
+        raise AssertionError(f"Cleanup test failed: {e}") from e
 
 
 def main():

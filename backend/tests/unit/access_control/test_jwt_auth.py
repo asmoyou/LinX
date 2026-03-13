@@ -35,6 +35,7 @@ from access_control.jwt_auth import (
     refresh_access_token,
     verify_token,
 )
+from shared.datetime_utils import utcnow
 
 
 @pytest.fixture
@@ -223,7 +224,7 @@ class TestTokenDecoding:
             "username": sample_user["username"],
             "role": sample_user["role"],
             "token_type": "access",
-            "exp": datetime.utcnow() + timedelta(hours=1),
+            "exp": utcnow() + timedelta(hours=1),
         }
         token = jwt.encode(payload, wrong_secret, algorithm="HS256")
 
@@ -427,7 +428,7 @@ class TestTokenUtilities:
         expiration = get_token_expiration(token)
 
         assert isinstance(expiration, datetime)
-        assert expiration > datetime.utcnow()
+        assert expiration > utcnow()
 
     def test_get_token_expiration_invalid_token(self):
         """Test getting expiration of invalid token."""

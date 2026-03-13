@@ -58,7 +58,7 @@ class ValidationError(APIError):
         super().__init__(
             message=message,
             error_code="validation_error",
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             details=details,
         )
 
@@ -216,7 +216,7 @@ async def validation_exception_handler(
     return create_error_response(
         message="Request validation failed",
         error_code="validation_error",
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         details={"errors": errors},
     )
 

@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import UUID
 
+from shared.datetime_utils import utcnow
 from task_manager.error_handler import (
     AlertManager,
     CircuitBreaker,
@@ -66,7 +67,7 @@ class RecoveryCoordinator:
             task_id=task_id,
             failure_type=failure_type,
             error_message=failure_reason,
-            timestamp=datetime.utcnow(),
+            timestamp=utcnow(),
         )
         failure_record.retry_count = attempt
         strategy = self._select_recovery_strategy(failure_record)

@@ -7,7 +7,7 @@ import pytest
 
 def test_validate_file_accepts_audio_x_m4a_alias(tmp_path) -> None:
     """libmagic may return audio/x-m4a for M4A files; validator should still accept it."""
-    pytest.importorskip("magic")
+    pytest.importorskip("magic", exc_type=ImportError)
 
     try:
         from knowledge_base.file_validator import FileValidator, SupportedFileType

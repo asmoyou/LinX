@@ -22,13 +22,13 @@ from uuid import UUID, uuid4
 import docker
 from docker.errors import DockerException, NotFound
 
+from shared.datetime_utils import utcnow
 from virtualization.resource_limits import ResourceLimits, ResourceUsage, get_default_limits
 from virtualization.sandbox_selector import SandboxType, get_sandbox_selector
 
 logger = logging.getLogger(__name__)
 DEFAULT_SANDBOX_PYTHON_IMAGE = (
-    os.getenv("LINX_SANDBOX_PYTHON_IMAGE", "python:3.11-bookworm").strip()
-    or "python:3.11-bookworm"
+    os.getenv("LINX_SANDBOX_PYTHON_IMAGE", "python:3.11-bookworm").strip() or "python:3.11-bookworm"
 )
 
 
@@ -259,7 +259,7 @@ class ContainerManager:
                     "agent_id": str(agent_id),
                     "status": ContainerStatus.CREATING.value,
                     "config": config,
-                    "created_at": datetime.utcnow().isoformat(),
+                    "created_at": utcnow().isoformat(),
                     "started_at": None,
                     "stopped_at": None,
                 }
@@ -280,7 +280,7 @@ class ContainerManager:
                     "agent_id": str(agent_id),
                     "status": ContainerStatus.CREATING.value,
                     "config": config,
-                    "created_at": datetime.utcnow().isoformat(),
+                    "created_at": utcnow().isoformat(),
                     "started_at": None,
                     "stopped_at": None,
                 }
@@ -355,7 +355,7 @@ class ContainerManager:
                     return False
 
             self.containers[container_id]["status"] = ContainerStatus.RUNNING.value
-            self.containers[container_id]["started_at"] = datetime.utcnow().isoformat()
+            self.containers[container_id]["started_at"] = utcnow().isoformat()
 
             self.logger.info(
                 "Container started",
@@ -480,7 +480,7 @@ class ContainerManager:
                 return False
 
             self.containers[container_id]["status"] = ContainerStatus.RUNNING.value
-            self.containers[container_id]["started_at"] = datetime.utcnow().isoformat()
+            self.containers[container_id]["started_at"] = utcnow().isoformat()
             self.logger.info(
                 "Container started after network recovery",
                 extra={
@@ -524,7 +524,7 @@ class ContainerManager:
                 container.stop(timeout=timeout)
 
             self.containers[container_id]["status"] = ContainerStatus.STOPPED.value
-            self.containers[container_id]["stopped_at"] = datetime.utcnow().isoformat()
+            self.containers[container_id]["stopped_at"] = utcnow().isoformat()
 
             self.logger.info(
                 "Container stopped",

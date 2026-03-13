@@ -16,6 +16,7 @@ from uuid import UUID
 from database.connection import get_db_session
 from database.models import Agent
 from database.models import Task as TaskModel
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +215,7 @@ class LoadBalancer:
         # Bonus for recent activity (agent is "warmed up")
         recency_bonus = 0.0
         if last_completed:
-            time_since = (datetime.utcnow() - last_completed).total_seconds()
+            time_since = (utcnow() - last_completed).total_seconds()
             if time_since < 300:  # Within 5 minutes
                 recency_bonus = -0.1
 

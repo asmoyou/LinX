@@ -18,6 +18,7 @@ from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 
 from shared.config import get_config
+from shared.datetime_utils import utcfromtimestamp, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -133,12 +134,12 @@ def create_access_token(
 
     # Set expiration time
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = utcnow() + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(hours=config["access_token_expire_hours"])
+        expire = utcnow() + timedelta(hours=config["access_token_expire_hours"])
 
     # Create token payload
-    issued_at = datetime.utcnow()
+    issued_at = utcnow()
     token_id = str(uuid.uuid4())
     resolved_session_id = session_id or token_id
 
@@ -196,12 +197,12 @@ def create_refresh_token(
 
     # Set expiration time (longer than access token)
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = utcnow() + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(days=config["refresh_token_expire_days"])
+        expire = utcnow() + timedelta(days=config["refresh_token_expire_days"])
 
     # Create token payload
-    issued_at = datetime.utcnow()
+    issued_at = utcnow()
     token_id = str(uuid.uuid4())
     resolved_session_id = session_id or token_id
 
@@ -493,7 +494,7 @@ def get_token_expiration(token: str) -> Optional[datetime]:
     try:
         token_data = decode_token(token)
         if token_data.exp:
-            return datetime.utcfromtimestamp(token_data.exp)
+            return utcfromtimestamp(token_data.exp)
         return None
     except (JWTTokenExpiredError, JWTTokenInvalidError):
         return None
@@ -510,6 +511,6 @@ def get_token_remaining_time(token: str) -> Optional[timedelta]:
     """
     expiration = get_token_expiration(token)
     if expiration:
-        remaining = expiration - datetime.utcnow()
+        remaining = expiration - utcnow()
         return remaining if remaining.total_seconds() > 0 else None
     return None

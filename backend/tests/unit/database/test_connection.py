@@ -31,21 +31,15 @@ def test_database_connection():
         print(f"✓ Connection pool initialized: {pool}")
 
         # Test health check
-        if pool.health_check():
-            print("✓ Database health check passed")
-        else:
-            print("✗ Database health check failed")
-            return False
+        assert pool.health_check(), "Database health check failed"
+        print("✓ Database health check passed")
 
         # Get pool status
         status = pool.get_pool_status()
         print(f"✓ Pool status: {status}")
 
-        return True
-
     except Exception as e:
-        print(f"✗ Database connection failed: {e}")
-        return False
+        raise AssertionError(f"Database connection failed: {e}") from e
 
 
 def test_migrations():
@@ -58,11 +52,8 @@ def test_migrations():
         runner = get_migration_runner()
 
         # Check database connection
-        if runner.check_database_connection():
-            print("✓ Database connection check passed")
-        else:
-            print("✗ Database connection check failed")
-            return False
+        assert runner.check_database_connection(), "Database connection check failed"
+        print("✓ Database connection check passed")
 
         # Get current version
         current = runner.get_current_version()
@@ -84,11 +75,8 @@ def test_migrations():
         for migration in history:
             print(f"  - {migration['revision']}: {migration['description']}")
 
-        return True
-
     except Exception as e:
-        print(f"✗ Migration check failed: {e}")
-        return False
+        raise AssertionError(f"Migration check failed: {e}") from e
 
 
 def test_session():
@@ -109,11 +97,9 @@ def test_session():
             print(f"✓ Query executed successfully: {user_count} users in database")
 
         print("✓ Session closed successfully")
-        return True
 
     except Exception as e:
-        print(f"✗ Session test failed: {e}")
-        return False
+        raise AssertionError(f"Session test failed: {e}") from e
 
 
 def main():

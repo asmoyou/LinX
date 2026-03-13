@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from shared.datetime_utils import utcnow
 from virtualization.code_validator import ValidationResult, get_code_validator
 from virtualization.container_manager import ContainerConfig, ContainerStatus, get_container_manager
 from virtualization.dependency_manager import DependencyManager, get_dependency_manager
@@ -33,9 +34,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_SANDBOX_PYTHON_IMAGE = (
     os.getenv("LINX_SANDBOX_PYTHON_IMAGE", "python:3.11-bookworm").strip() or "python:3.11-bookworm"
 )
-DEFAULT_SANDBOX_TMPFS_SIZE = (
-    os.getenv("LINX_SANDBOX_TMPFS_SIZE", "1G").strip() or "1G"
-)
+DEFAULT_SANDBOX_TMPFS_SIZE = os.getenv("LINX_SANDBOX_TMPFS_SIZE", "1G").strip() or "1G"
 DEFAULT_INTERNAL_PIP_CACHE_DIR = "/opt/linx_pip_cache"
 DEFAULT_INTERNAL_PYTHON_DEPS_DIR = "/opt/linx_python_deps"
 DEFAULT_INTERNAL_DEP_WORKDIR = "/opt/linx_runtime"
@@ -206,7 +205,7 @@ class CodeExecutionSandbox:
             MemoryExceededException: If memory limit is exceeded
         """
         execution_id = str(uuid4())
-        started_at = datetime.utcnow()
+        started_at = utcnow()
         normalized_language = self._normalize_language(language)
         validation_language = self._validation_language(normalized_language)
 
@@ -246,7 +245,7 @@ class CodeExecutionSandbox:
                 error=f"Security validation failed: {', '.join(validation_result.issues)}",
                 validation_result=validation_result,
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=utcnow(),
             )
 
         # Log warnings if any
@@ -298,16 +297,18 @@ class CodeExecutionSandbox:
                             dependencies,
                             cache_scope=self.dependency_cache_scope,
                         )
-                        cached_image_available = bool(cached_image) and self._dependency_image_available(
+                        cached_image_available = bool(
                             cached_image
-                        )
+                        ) and self._dependency_image_available(cached_image)
 
                         # Metadata may be missing after process restarts; recover by deterministic tag.
                         if not cached_image_available:
-                            deterministic_image = self.dependency_manager.build_dependency_image_tag(
-                                dependencies,
-                                normalized_language,
-                                cache_scope=self.dependency_cache_scope,
+                            deterministic_image = (
+                                self.dependency_manager.build_dependency_image_tag(
+                                    dependencies,
+                                    normalized_language,
+                                    cache_scope=self.dependency_cache_scope,
+                                )
                             )
                             if deterministic_image and self._dependency_image_available(
                                 deterministic_image
@@ -489,7 +490,7 @@ class CodeExecutionSandbox:
             if metrics:
                 metrics.execution_time_seconds = execution_time
 
-            completed_at = datetime.utcnow()
+            completed_at = utcnow()
 
             success = error == ""
             status = ExecutionStatus.COMPLETED if success else ExecutionStatus.FAILED
@@ -542,7 +543,7 @@ class CodeExecutionSandbox:
                 sandbox_id=sandbox_id,
                 validation_result=validation_result,
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=utcnow(),
             )
 
         except MemoryExceededException as e:
@@ -565,7 +566,7 @@ class CodeExecutionSandbox:
                 sandbox_id=sandbox_id,
                 validation_result=validation_result,
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=utcnow(),
             )
 
         except Exception as e:
@@ -586,7 +587,7 @@ class CodeExecutionSandbox:
                 sandbox_id=sandbox_id,
                 validation_result=validation_result,
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=utcnow(),
             )
 
         finally:

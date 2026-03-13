@@ -17,6 +17,7 @@ from uuid import UUID
 from database.connection import get_db_session
 from database.models import AuditLog
 from database.models import Task as TaskModel
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -121,14 +122,14 @@ class FailureDetector:
             # Check for timeout
             if task.status == "in_progress":
                 timeout = self._get_timeout_threshold(task)
-                elapsed = (datetime.utcnow() - task.created_at).total_seconds()
+                elapsed = (utcnow() - task.created_at).total_seconds()
 
                 if elapsed > timeout:
                     return FailureRecord(
                         task_id=task_id,
                         failure_type=FailureType.TIMEOUT,
                         error_message=f"Task timeout after {elapsed:.0f} seconds",
-                        timestamp=datetime.utcnow(),
+                        timestamp=utcnow(),
                         agent_id=task.assigned_agent_id,
                     )
 
@@ -142,7 +143,7 @@ class FailureDetector:
                     task_id=task_id,
                     failure_type=FailureType.AGENT_ERROR,
                     error_message=error_msg,
-                    timestamp=datetime.utcnow(),
+                    timestamp=utcnow(),
                     agent_id=task.assigned_agent_id,
                 )
 
@@ -265,7 +266,7 @@ class RetryManager:
         if task_id not in self._retry_history:
             self._retry_history[task_id] = []
 
-        self._retry_history[task_id].append(datetime.utcnow())
+        self._retry_history[task_id].append(utcnow())
 
         logger.debug(
             "Retry recorded",
@@ -436,7 +437,7 @@ class EscalationManager:
 
                 task.result["escalated"] = True
                 task.result["escalation_message"] = message
-                task.result["escalation_time"] = datetime.utcnow().isoformat()
+                task.result["escalation_time"] = utcnow().isoformat()
                 task.status = "escalated"
 
                 session.commit()
@@ -491,7 +492,7 @@ class CircuitBreaker:
 
         breaker = self._breakers[component_id]
         breaker.failure_count += 1
-        breaker.last_failure_time = datetime.utcnow()
+        breaker.last_failure_time = utcnow()
 
         if breaker.failure_count >= breaker.threshold:
             breaker.state = "open"
@@ -523,7 +524,7 @@ class CircuitBreaker:
         if breaker.state == "open":
             # Check if timeout has passed
             if breaker.last_failure_time:
-                elapsed = (datetime.utcnow() - breaker.last_failure_time).total_seconds()
+                elapsed = (utcnow() - breaker.last_failure_time).total_seconds()
                 if elapsed > breaker.timeout_seconds:
                     breaker.state = "half_open"
                     logger.info(
@@ -658,15 +659,11 @@ class ErrorHandler:
             task_id=task_id,
             failure_type=FailureType.AGENT_ERROR,
             error_message=str(error),
-            timestamp=datetime.utcnow(),
+            timestamp=utcnow(),
             retry_count=attempt,
         )
         should_retry = self.retry_manager.should_retry(task_id, failure_record)
-        retry_delay = (
-            self.retry_manager.calculate_retry_delay(attempt)
-            if should_retry
-            else 0
-        )
+        retry_delay = self.retry_manager.calculate_retry_delay(attempt) if should_retry else 0
         return {
             "should_retry": should_retry,
             "retry_delay": retry_delay,

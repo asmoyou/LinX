@@ -285,7 +285,9 @@ async def test_openai_generate_supports_plain_output_wrapper():
     with patch.object(provider, "_get_session", side_effect=mock_get_session):
         response = await provider.generate(prompt="Test prompt", model="qwen", temperature=0.2)
 
-    assert response.content == '{"user_preferences":[{"key":"food_preference_like","value":"黄焖鸡"}]}'
+    assert (
+        response.content == '{"user_preferences":[{"key":"food_preference_like","value":"黄焖鸡"}]}'
+    )
     assert response.tokens_used == 30
     assert response.metadata["prompt_tokens"] == 12
     assert response.metadata["completion_tokens"] == 18
@@ -493,24 +495,25 @@ async def test_ollama_integration():
     config = {"base_url": "http://localhost:11434"}
     provider = OllamaProvider(config)
 
-    # Check health
-    is_healthy = await provider.health_check()
-    if not is_healthy:
-        pytest.skip("Ollama not available")
+    try:
+        # Check health
+        is_healthy = await provider.health_check()
+        if not is_healthy:
+            pytest.skip("Ollama not available")
 
-    # List models
-    models = await provider.list_models()
-    assert isinstance(models, list)
+        # List models
+        models = await provider.list_models()
+        assert isinstance(models, list)
 
-    # Generate text (if models available)
-    if models:
-        response = await provider.generate(
-            prompt="Say hello", model=models[0], temperature=0.7, max_tokens=10
-        )
-        assert isinstance(response, LLMResponse)
-        assert len(response.content) > 0
-
-    await provider.close()
+        # Generate text (if models available)
+        if models:
+            response = await provider.generate(
+                prompt="Say hello", model=models[0], temperature=0.7, max_tokens=10
+            )
+            assert isinstance(response, LLMResponse)
+            assert len(response.content) > 0
+    finally:
+        await provider.close()
 
 
 @pytest.mark.asyncio
@@ -530,25 +533,26 @@ async def test_router_integration():
 
     router = LLMRouter(config)
 
-    # Check health
-    health = await router.health_check_all()
-    if not health.get("ollama"):
-        pytest.skip("Ollama not available")
+    try:
+        # Check health
+        health = await router.health_check_all()
+        if not health.get("ollama"):
+            pytest.skip("Ollama not available")
 
-    # Generate text
-    response = await router.generate(
-        prompt="Say hello", task_type=TaskType.CHAT, temperature=0.7, max_tokens=10
-    )
+        # Generate text
+        response = await router.generate(
+            prompt="Say hello", task_type=TaskType.CHAT, temperature=0.7, max_tokens=10
+        )
 
-    assert isinstance(response, LLMResponse)
-    assert len(response.content) > 0
+        assert isinstance(response, LLMResponse)
+        assert len(response.content) > 0
 
-    # Check token tracking
-    usage = router.get_token_usage()
-    assert "ollama" in usage
-    assert usage["ollama"] > 0
-
-    await router.close_all()
+        # Check token tracking
+        usage = router.get_token_usage()
+        assert "ollama" in usage
+        assert usage["ollama"] > 0
+    finally:
+        await router.close()
 
 
 if __name__ == "__main__":

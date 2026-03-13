@@ -15,6 +15,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Optional
 
+from shared.datetime_utils import utcnow
+
 from .message import Message
 
 logger = logging.getLogger(__name__)
@@ -54,7 +56,7 @@ class MessageAuditLog:
     def __post_init__(self):
         """Set audit timestamp if not provided."""
         if self.audit_timestamp is None:
-            self.audit_timestamp = datetime.utcnow().isoformat() + "Z"
+            self.audit_timestamp = utcnow().isoformat() + "Z"
 
 
 class MessageAuditor:

@@ -12,6 +12,7 @@ import pytest
 from agent_framework.runtime_policy import ExecutionProfile
 from mission_system.exceptions import MissionError
 from mission_system.orchestrator import MissionOrchestrator
+from shared.datetime_utils import utcnow
 
 
 def test_extract_binary_verdict_prefers_explicit_fail():
@@ -2327,7 +2328,7 @@ async def test_phase_review_reuses_cached_pass_for_unchanged_output(monkeypatch)
         result={"output": task_output},
         task_metadata=task_metadata,
         dependencies=[],
-        completed_at=datetime.utcnow(),
+        completed_at=utcnow(),
     )
 
     class _FakeQuery:
@@ -2569,7 +2570,7 @@ async def test_phase_execution_resets_failed_tasks_to_pending(monkeypatch):
     failed_task = SimpleNamespace(
         task_id=uuid4(),
         status="failed",
-        completed_at=datetime.utcnow(),
+        completed_at=utcnow(),
         dependencies=[],
         task_metadata={"title": "Rework task"},
     )
@@ -3237,7 +3238,7 @@ async def test_review_task_for_dependency_gate_marks_failed_task(monkeypatch):
             },
         },
         task_metadata={"title": "Collect facts", "review_status": "pending"},
-        completed_at=datetime.utcnow(),
+        completed_at=utcnow(),
     )
 
     class _FakeQuery:
@@ -3331,7 +3332,7 @@ async def test_recover_stale_missions_after_restart_marks_orphaned_tasks(monkeyp
     task_row = SimpleNamespace(
         mission_id=mission_id,
         status="in_progress",
-        completed_at=datetime.utcnow(),
+        completed_at=utcnow(),
         result={},
     )
 

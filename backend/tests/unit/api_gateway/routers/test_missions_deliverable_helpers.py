@@ -9,6 +9,7 @@ from api_gateway.routers.missions import (
     _derive_initial_mission_title,
     _normalize_deliverable_item,
 )
+from shared.datetime_utils import utcnow
 
 
 def test_build_content_disposition_encodes_unicode_filename() -> None:
@@ -55,7 +56,7 @@ def test_normalize_deliverable_item_keeps_real_output_as_final() -> None:
 
 
 def test_compute_clarification_state_marks_pending_when_request_unanswered() -> None:
-    now = datetime.utcnow()
+    now = utcnow()
     events = [
         SimpleNamespace(
             event_type="USER_CLARIFICATION_REQUESTED",
@@ -73,7 +74,7 @@ def test_compute_clarification_state_marks_pending_when_request_unanswered() -> 
 
 
 def test_compute_clarification_state_ignores_events_before_boundary() -> None:
-    now = datetime.utcnow()
+    now = utcnow()
     events = [
         SimpleNamespace(
             event_type="USER_CLARIFICATION_REQUESTED",

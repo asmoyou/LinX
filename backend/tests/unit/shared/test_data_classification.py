@@ -15,6 +15,7 @@ from shared.data_classification import (
     classify_text,
     get_data_classifier,
 )
+from shared.datetime_utils import utcnow
 
 
 def test_classification_level_ordering():
@@ -307,7 +308,7 @@ def test_classification_metadata():
     """Test classification metadata."""
     metadata = ClassificationMetadata(
         classification=ClassificationLevel.CONFIDENTIAL,
-        classified_at=datetime.utcnow(),
+        classified_at=utcnow(),
         classified_by="automatic",
         confidence=0.9,
         review_required=True,

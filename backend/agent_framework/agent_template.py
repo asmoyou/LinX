@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from database.connection import get_db_session
 from database.models import Base
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +130,8 @@ class AgentTemplateManager:
             version=1,
             is_system_template="true" if is_system_template else "false",
             created_by=created_by,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=utcnow(),
+            updated_at=utcnow(),
         )
 
         self.session.add(template)
@@ -236,7 +237,7 @@ class AgentTemplateManager:
         if increment_version:
             template.version += 1
 
-        template.updated_at = datetime.utcnow()
+        template.updated_at = utcnow()
 
         self.session.commit()
 

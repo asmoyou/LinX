@@ -17,6 +17,13 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = [
+    pytest.mark.filterwarnings(
+        "ignore:unclosed event loop <_UnixSelectorEventLoop.*:ResourceWarning"
+    ),
+    pytest.mark.filterwarnings("ignore:PyPDF2 is deprecated.*:DeprecationWarning"),
+]
+
 
 _HEAVY_LOAD_PROFILE = os.getenv("RUN_HEAVY_LOAD_TESTS") == "1"
 
@@ -31,7 +38,8 @@ def api_client():
     """Create API test client."""
     from api_gateway.main import app
 
-    return TestClient(app)
+    with TestClient(app) as client:
+        yield client
 
 
 @pytest.fixture
@@ -141,9 +149,9 @@ class TestAPIGatewayLoad:
         minimum_rps = target_rps * 0.8 if _HEAVY_LOAD_PROFILE else 10
         p95_budget_seconds = 1.0 if _HEAVY_LOAD_PROFILE else 5.0
 
-        assert actual_rps >= minimum_rps, (
-            f"RPS {actual_rps:.2f} is below minimum expected throughput {minimum_rps:.2f}"
-        )
+        assert (
+            actual_rps >= minimum_rps
+        ), f"RPS {actual_rps:.2f} is below minimum expected throughput {minimum_rps:.2f}"
         assert (successful_requests / len(results)) >= 0.95, "Success rate below 95%"
         assert (
             p95_latency < p95_budget_seconds

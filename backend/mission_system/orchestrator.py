@@ -51,6 +51,7 @@ from mission_system.mission_repository import (
 )
 from mission_system.workspace_manager import get_workspace_manager
 from object_storage.minio_client import get_minio_client
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -4214,7 +4215,7 @@ class MissionOrchestrator:
                         task_meta["review_status"] = "pending"
                         task_meta.pop("review_output_signature", None)
                         t.task_metadata = task_meta
-                        t.completed_at = datetime.utcnow()
+                        t.completed_at = utcnow()
                         local_meta = dict(task_obj.task_metadata or {})
                         if isinstance(local_meta.get("review_feedback"), str):
                             local_meta["last_review_feedback"] = local_meta.get("review_feedback")
@@ -4293,7 +4294,7 @@ class MissionOrchestrator:
                             "llm_provider": resolved_llm_provider,
                             "llm_model": resolved_llm_model,
                             "execution_role": execution_role,
-                            "timestamp": datetime.utcnow().isoformat() + "Z",
+                            "timestamp": utcnow().isoformat() + "Z",
                             "will_retry": attempt < max_retries,
                         }
                         if backoff is not None:

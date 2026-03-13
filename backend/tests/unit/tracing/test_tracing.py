@@ -9,6 +9,10 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:Call to deprecated method __init__.*Jaeger.*:DeprecationWarning"
+)
+
 from tracing.context_propagation import (
     ContextPropagator,
     TraceContext,

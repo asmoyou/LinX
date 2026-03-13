@@ -29,6 +29,7 @@ from access_control.abac import (
 )
 from database.connection import get_db_session
 from database.models import ABACPolicyModel
+from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +233,7 @@ class PolicyLoader:
                 policy_model.conditions = self._serialize_conditions(policy.conditions)
                 policy_model.priority = policy.priority
                 policy_model.enabled = policy.enabled
-                policy_model.updated_at = datetime.utcnow()
+                policy_model.updated_at = utcnow()
 
                 session.commit()
 
@@ -400,8 +401,8 @@ class PolicyLoader:
             conditions=self._serialize_conditions(policy.conditions),
             priority=policy.priority,
             enabled=policy.enabled,
-            created_at=policy.created_at or datetime.utcnow(),
-            updated_at=policy.updated_at or datetime.utcnow(),
+            created_at=policy.created_at or utcnow(),
+            updated_at=policy.updated_at or utcnow(),
         )
 
     def _model_to_policy(self, model: ABACPolicyModel) -> ABACPolicy:

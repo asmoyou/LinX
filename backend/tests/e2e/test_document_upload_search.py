@@ -13,6 +13,18 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = [
+    pytest.mark.filterwarnings(
+        "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning"
+    ),
+    pytest.mark.filterwarnings(
+        "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning"
+    ),
+    pytest.mark.filterwarnings(
+        "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning"
+    ),
+]
+
 
 @pytest.fixture
 def authenticated_client():
