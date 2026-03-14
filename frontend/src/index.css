@@ -150,23 +150,6 @@
     background: rgba(120, 120, 128, 0.3);
   }
 
-  /* Scan line background effect - 参考 linx-workforce-web */
-  .scan-line {
-    background: linear-gradient(to bottom, transparent, rgba(16, 185, 129, 0.02), transparent);
-    background-size: 100% 200px;
-    animation: scan 12s linear infinite;
-    pointer-events: none;
-  }
-
-  @keyframes scan {
-    0% {
-      background-position: 0% 0%;
-    }
-    100% {
-      background-position: 0% 100%;
-    }
-  }
-
   /* Animate In */
   @keyframes animate-in {
     from {

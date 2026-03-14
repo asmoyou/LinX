@@ -245,8 +245,6 @@ export const Layout: React.FC = () => {
         aria-label="Main content"
         className="flex-1 flex flex-col relative overflow-hidden"
       >
-        <div className="absolute inset-0 scan-line pointer-events-none"></div>
-        
         <Header 
           isCollapsed={sidebarCollapsed} 
           onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} 
