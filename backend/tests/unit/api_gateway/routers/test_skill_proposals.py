@@ -36,14 +36,12 @@ def _proposal_row(
         proposal_key="libreoffice_fallback",
         owner_type="agent",
         owner_id=agent_id,
-        materialization_type="agent_experience",
-        materialization_key="libreoffice_fallback",
         title=title,
         summary=summary,
         details=None,
         status=status,
         published_skill_id=None,
-        materialized_data=payload
+        proposal_payload=payload
         or {
             "goal": title,
             "successful_path": ["detect office doc", "run libreoffice headless", "upload PDF"],
@@ -65,11 +63,10 @@ def test_skill_proposal_routes_registered():
     assert ("/api/v1/skill-proposals", ("GET",)) in route_paths
     assert ("/api/v1/skill-proposals/{memory_id}/review", ("POST",)) in route_paths
     assert ("/api/v1/skill-proposals/{memory_id}/publish", ("POST",)) in route_paths
-    assert ("/api/v1/skill-proposals/experiences", ("GET",)) in route_paths
 
 
 @pytest.mark.asyncio
-async def test_list_skill_proposals_reads_pending_materializations(current_user):
+async def test_list_skill_proposals_reads_pending_proposals(current_user):
     service = MagicMock()
     service.list_proposals.return_value = [_proposal_row()]
 
@@ -109,7 +106,7 @@ async def test_list_skill_proposals_reads_pending_materializations(current_user)
     assert response[0].type == "skill_proposal"
     assert response[0].metadata["signal_type"] == "skill_proposal"
     assert response[0].metadata["review_status"] == "pending"
-    assert "agent.experience.successful_path" in response[0].content
+    assert "skill.proposal.successful_path" in response[0].content
 
 
 @pytest.mark.asyncio
@@ -152,7 +149,7 @@ async def test_list_skill_proposals_without_agent_id_uses_owned_agents(current_u
 
 
 @pytest.mark.asyncio
-async def test_review_skill_proposal_updates_materialization_and_entry(current_user):
+async def test_review_skill_proposal_updates_proposal_and_entry(current_user):
     service = MagicMock()
     proposal = _proposal_row(row_id=9, agent_id="agent-123", status="pending_review")
     updated = _proposal_row(
@@ -213,11 +210,11 @@ async def test_review_skill_proposal_updates_materialization_and_entry(current_u
 
 
 @pytest.mark.asyncio
-async def test_review_skill_proposal_rejects_non_skill_materialization(current_user):
+async def test_review_skill_proposal_rejects_non_skill_proposal(current_user):
     service = MagicMock()
     service.get_proposal.return_value = SimpleNamespace(
         id=9,
-        materialization_type="user_profile",
+        agent_id="",
     )
 
     with patch(
@@ -234,47 +231,3 @@ async def test_review_skill_proposal_rejects_non_skill_materialization(current_u
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "Skill proposal not found"
-
-
-@pytest.mark.asyncio
-async def test_list_skill_experiences_returns_skill_experience_items(current_user):
-    service = MagicMock()
-    service.list_published_experiences.return_value = [
-        SimpleNamespace(
-            id=3,
-            content="agent.experience.goal=Stable PDF delivery path",
-            memory_type="skill_experience",
-            agent_id="agent-123",
-            user_id=None,
-            similarity_score=0.88,
-            timestamp=datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc),
-            metadata={"record_type": "agent_experience"},
-        )
-    ]
-
-    with (
-        patch(
-            "api_gateway.routers.skill_proposals._require_agent_read_access_sync",
-            return_value=None,
-        ),
-        patch(
-            "api_gateway.routers.skill_proposals.get_skill_proposal_service",
-            return_value=service,
-        ),
-    ):
-        response = await skill_proposals.list_skill_experiences(
-            agent_id="agent-123",
-            query_text="pdf delivery",
-            limit=10,
-            min_score=0.5,
-            current_user=current_user,
-        )
-
-    assert service.list_published_experiences.call_args.kwargs == {
-        "agent_id": "agent-123",
-        "query_text": "pdf delivery",
-        "limit": 10,
-        "min_score": 0.5,
-    }
-    assert response[0].type == "skill_experience"
-    assert response[0].metadata["record_type"] == "agent_experience"

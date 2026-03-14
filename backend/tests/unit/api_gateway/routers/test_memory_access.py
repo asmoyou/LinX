@@ -54,25 +54,6 @@ def test_memory_item_to_response_sets_private_visibility_for_user_memory():
     assert "_combined_score" not in result["metadata"]
 
 
-def test_memory_item_to_response_keeps_skill_experience_type():
-    item = SimpleNamespace(
-        id=3,
-        content="agent.experience.goal=Stable PDF delivery path",
-        memory_type="skill_experience",
-        agent_id="agent-1",
-        user_id=None,
-        timestamp=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
-        similarity_score=0.88,
-        metadata={"record_type": "agent_experience"},
-    )
-
-    result = _memory_item_to_response(item)
-
-    assert result["type"] == "skill_experience"
-    assert result["agentId"] == "agent-1"
-    assert result["metadata"]["record_type"] == "agent_experience"
-
-
 def test_is_admin_or_manager_matches_expected_roles(current_user):
     base = {
         "user_id": current_user.user_id,

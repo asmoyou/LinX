@@ -49,7 +49,7 @@ def test_update_proposal_refreshes_row_before_return() -> None:
         review_status="pending",
         review_note=None,
         published_skill_id=None,
-        materialized_data={},
+        proposal_payload={},
     )
     session = _FakeSession(row)
     repository = SkillProposalRepository(repository=MagicMock())
@@ -69,4 +69,4 @@ def test_update_proposal_refreshes_row_before_return() -> None:
     session.refresh.assert_called_once_with(row)
     assert row.why_it_worked == "updated summary"
     assert row.review_status == "published"
-    assert row.materialized_data == {"goal": "after"}
+    assert row.proposal_payload == {"goal": "after"}

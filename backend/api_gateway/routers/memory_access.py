@@ -78,7 +78,7 @@ def _normalize_visibility(memory_type: str, metadata: Dict[str, Any]) -> str:
         return configured
     if memory_type == "user_memory":
         return "private"
-    if memory_type in {"skill_proposal", "skill_experience"}:
+    if memory_type == "skill_proposal":
         return "private"
     return "private"
 

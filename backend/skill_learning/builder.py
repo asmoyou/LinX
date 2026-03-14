@@ -28,9 +28,9 @@ class SkillProposalBuilder:
         turns: List[Dict[str, Any]],
         extracted_candidates: List[Dict[str, Any]],
     ) -> Tuple[List[Any], List[Any]]:
-        """Build observation/materialization rows for skill proposals."""
+        """Build observation/projection rows for skill proposals."""
 
-        return self._builder.build_agent_experience_observations(
+        return self._builder.build_skill_proposal_observations(
             agent_id=agent_id,
             agent_name=agent_name,
             turns=turns,

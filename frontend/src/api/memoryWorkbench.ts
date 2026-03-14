@@ -1,7 +1,7 @@
 import apiClient from "./client";
 import type {
-  Memory,
-  MemoryProductType,
+  MemoryRecord,
+  MemorySurfaceType,
   MemoryConfig,
   MemoryConfigEmbedding,
   MemoryConfigFactExtraction,
@@ -9,10 +9,7 @@ import type {
   MemoryConfigRuntimeContext,
   MemoryConfigSessionLedger,
   MemoryConfigConsolidation,
-  MemoryConfigObservability,
-  MemoryConfigRetention,
   SkillLearningExtractionConfig,
-  SkillLearningProposalReviewConfig,
   SkillLearningPublishPolicyConfig,
 } from "../types/memory";
 
@@ -31,21 +28,17 @@ export interface ListSkillProposalsRequest {
 
 export interface UpdateMemoryConfigRequest {
   user_memory?: {
-    retention?: Partial<MemoryConfigRetention>;
     embedding?: Partial<Omit<MemoryConfigEmbedding, "effective" | "sources">>;
-    retrieval?: Partial<Omit<MemoryConfigRetrieval, "sources">>;
+    retrieval?: Partial<MemoryConfigRetrieval>;
     extraction?: Partial<
       Omit<MemoryConfigFactExtraction, "effective" | "sources">
     >;
     consolidation?: Partial<MemoryConfigConsolidation>;
-    observability?: Partial<MemoryConfigObservability>;
   };
   skill_learning?: {
-    retention?: Partial<MemoryConfigRetention>;
     extraction?: Partial<
       Omit<SkillLearningExtractionConfig, "effective" | "sources">
     >;
-    proposal_review?: Partial<SkillLearningProposalReviewConfig>;
     publish_policy?: Partial<SkillLearningPublishPolicyConfig>;
   };
   session_ledger?: Partial<MemoryConfigSessionLedger>;
@@ -60,72 +53,58 @@ export interface AgentCandidateReviewRequest {
   metadata?: Record<string, unknown>;
 }
 
-const normalizeProductMemory = (
-  memory: Memory,
-  productType: MemoryProductType,
-): Memory => ({
-  ...memory,
-  type: productType,
+const normalizeWorkbenchRecord = (
+  record: MemoryRecord,
+  surfaceType: MemorySurfaceType,
+): MemoryRecord => ({
+  ...record,
+  type: surfaceType,
   metadata: {
-    ...(memory.metadata || {}),
-    record_type: memory.type,
+    ...(record.metadata || {}),
+    record_type: record.type,
   },
 });
 
 /**
  * Memory System API
  */
-export const memoriesApi = {
-  listUserMemory: async (params?: ListUserMemoryRequest): Promise<Memory[]> => {
-    const response = await apiClient.get<Memory[]>("/user-memory", {
+export const memoryWorkbenchApi = {
+  listUserMemory: async (params?: ListUserMemoryRequest): Promise<MemoryRecord[]> => {
+    const response = await apiClient.get<MemoryRecord[]>("/user-memory", {
       params,
     });
-    return response.data.map((item) => normalizeProductMemory(item, "user_memory"));
+    return response.data.map((item) => normalizeWorkbenchRecord(item, "user_memory"));
   },
 
   listUserMemoryProfile: async (
     params?: ListUserMemoryRequest,
-  ): Promise<Memory[]> => {
-    const response = await apiClient.get<Memory[]>("/user-memory/profile", {
+  ): Promise<MemoryRecord[]> => {
+    const response = await apiClient.get<MemoryRecord[]>("/user-memory/profile", {
       params,
     });
-    return response.data.map((item) => normalizeProductMemory(item, "user_memory"));
+    return response.data.map((item) => normalizeWorkbenchRecord(item, "user_memory"));
   },
 
   listSkillProposals: async (
     params?: ListSkillProposalsRequest,
-  ): Promise<Memory[]> => {
-    const response = await apiClient.get<Memory[]>("/skill-proposals", {
+  ): Promise<MemoryRecord[]> => {
+    const response = await apiClient.get<MemoryRecord[]>("/skill-proposals", {
       params,
     });
     return response.data.map((item) =>
-      normalizeProductMemory(item, "skill_proposal"),
-    );
-  },
-
-  listSkillExperiences: async (params: {
-    agent_id: string;
-    query?: string;
-    limit?: number;
-    minScore?: number;
-  }): Promise<Memory[]> => {
-    const response = await apiClient.get<Memory[]>("/skill-proposals/experiences", {
-      params,
-    });
-    return response.data.map((item) =>
-      normalizeProductMemory(item, "skill_proposal"),
+      normalizeWorkbenchRecord(item, "skill_proposal"),
     );
   },
 
   reviewSkillProposal: async (
     memoryId: string,
     data: AgentCandidateReviewRequest,
-  ): Promise<Memory> => {
-    const response = await apiClient.post<Memory>(
+  ): Promise<MemoryRecord> => {
+    const response = await apiClient.post<MemoryRecord>(
       `/skill-proposals/${memoryId}/review`,
       data,
     );
-    return normalizeProductMemory(response.data, "skill_proposal");
+    return normalizeWorkbenchRecord(response.data, "skill_proposal");
   },
 
   /**
@@ -145,5 +124,4 @@ export const memoriesApi = {
     const response = await apiClient.put<MemoryConfig>("/user-memory/config", data);
     return response.data;
   },
-
 };

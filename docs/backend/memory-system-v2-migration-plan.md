@@ -90,7 +90,7 @@ Each observation must have:
 Project observations into stable read models:
 
 - `user_profile`
-- `agent_experience`
+- `skill_proposal`
 - later: `company_playbook`, `task_pattern`, `tool_failure_catalog`
 
 These are the views that should power personalization and experience reuse.
@@ -325,9 +325,9 @@ Implemented in the current migration slice:
 - dual-write of ended conversation sessions into `memory_sessions`,
   `memory_session_events`, `memory_observations`, and `memory_materializations`
 - initial `user_profile` materialization generation from extracted user preference signals
-- initial `agent_experience` materialization generation from agent successful-path candidates
-- runtime retrieval path now reads `user_profile` and `agent_experience`
-  materializations through `AgentMemoryInterface`
+- initial `skill_proposal` projection generation from successful-path candidates
+- runtime retrieval path now reads `user_profile` and published skills through
+  final reset-era services instead of the old generic `AgentMemoryInterface`
 - legacy session-end compatibility shaping has started moving into
   dedicated builders instead of staying inside `agents.py`
 - `SessionObservationBuilder` now owns session-memory extraction,
@@ -336,9 +336,8 @@ Implemented in the current migration slice:
 - `LegacyMemoryCompatibilityWriter` now owns the legacy
   `memory_records` compatibility write path, so session-end router code
   only orchestrates
-- API now has a dedicated read-only materialization endpoint for
-  `user_profile` / `agent_experience` inspection without polluting legacy
-  memory-record CRUD semantics
+- API now has dedicated read-only endpoints for `user_memory` and `skill_proposals`
+  without reviving legacy memory-record CRUD semantics
 - runtime and API non-wildcard search now share the same semantic alignment +
   keyword-fallback retrieval gateway instead of maintaining duplicate logic
 - materialization retrieval is now also exposed through the shared retrieval
@@ -346,16 +345,12 @@ Implemented in the current migration slice:
   legacy records and materialized projections through the same gateway
 - wildcard list reads for `agent` / `user_context` now also go through the
   shared retrieval gateway so list and search semantics are no longer split
-- reviewed legacy agent-memory candidates now sync their publish/reject state
-  into `agent_experience` materializations
+- reviewed skill proposals now sync publish/reject state into canonical
+  `skill_proposals` rows and the skill registry
 - `MaterializationMaintenanceService` now exists for:
   - legacy `memory_records -> memory_materializations` backfill
   - status sync from review state / `is_active`
   - duplicate agent-experience supersession
-- admin endpoint added:
-  `/api/v1/user-memory/admin/maintain-materializations`
-- operational CLI added:
-  [maintain_materializations.py](/Users/youqilin/VIbeCodingProjects/linX/backend/scripts/maintain_materializations.py)
 - scheduled materialization maintenance is now wired into API startup/shutdown
   via a dedicated manager, using config + advisory locking
 - atom-layer foundation now exists:
@@ -418,7 +413,7 @@ Deliverables:
 - this plan
 - new ledger/projection tables
 - dual-write from current session flush into ledger + observation tables
-- new agent observation type: `agent_success_path`
+- new skill-proposal observation type: `skill_proposal_candidate`
 
 Success criteria:
 
@@ -444,7 +439,7 @@ Success criteria:
 Deliverables:
 
 - `user_profile` materialization as canonical preference/profile source
-- `agent_experience` materialization for successful paths
+- `skill_proposal` projection for successful paths
 - retrieval read path can query projections first
 
 Success criteria:

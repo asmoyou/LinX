@@ -42,27 +42,41 @@ from shared.logging import get_logger
 from user_memory.builder import (
     _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL as _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL_SHARED,
 )
-from user_memory.compat import (  # noqa: F401
-    build_agent_candidate_content as _build_agent_candidate_content,
-)
-from user_memory.compat import (  # noqa: F401
-    build_agent_candidate_seed_facts as _build_agent_candidate_seed_facts,
-)
-from user_memory.compat import (  # noqa: F401
-    build_user_preference_memory_content as _build_user_preference_memory_content,
-)
-from user_memory.compat import (  # noqa: F401
-    build_user_preference_seed_facts as _build_user_preference_seed_facts,
-)
-from user_memory.compat import dedupe_user_preference_signals as _dedupe_user_preference_signals
-from user_memory.compat import (  # noqa: F401
-    split_user_preference_content as _split_user_preference_content,
-)
 
 logger = get_logger(__name__)
 router = APIRouter()
 AGENT_TEST_RUNTIME_CONTEXT_TAG = "agent_test_session"
 AGENT_TEST_MAX_ITERATIONS = 20
+
+
+def _dedupe_user_preference_signals(
+    signals: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    deduped_signals_by_key: Dict[str, Dict[str, Any]] = {}
+    for signal in signals:
+        signal_key = str(signal.get("key") or "").strip()
+        signal_value = str(signal.get("value") or "").strip()
+        if not signal_key or not signal_value:
+            continue
+        existing_signal = deduped_signals_by_key.get(signal_key)
+        if existing_signal is None:
+            deduped_signals_by_key[signal_key] = signal
+            continue
+
+        current_score = (
+            int(bool(signal.get("persistent"))),
+            int(signal.get("evidence_count") or 0),
+            str(signal.get("latest_ts") or ""),
+        )
+        existing_score = (
+            int(bool(existing_signal.get("persistent"))),
+            int(existing_signal.get("evidence_count") or 0),
+            str(existing_signal.get("latest_ts") or ""),
+        )
+        if current_score >= existing_score:
+            deduped_signals_by_key[signal_key] = signal
+
+    return list(deduped_signals_by_key.values())
 
 
 def _resolve_agent_avatar(

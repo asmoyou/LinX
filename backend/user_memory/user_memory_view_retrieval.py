@@ -1,4 +1,4 @@
-"""Retrieve materialized user-memory and skill-learning views."""
+"""Retrieve projected user-memory views."""
 
 from __future__ import annotations
 
@@ -60,10 +60,20 @@ _PROFILE_QUERY_CUES = {
     "语言",
     "历史",
 }
+_TEMPORAL_QUERY_CUES = {
+    "什么时候",
+    "何时",
+    "哪年",
+    "哪月",
+    "哪天",
+    "时间",
+    "when",
+    "time",
+}
 
 
-class MaterializedViewRetrievalService:
-    """Lightweight retrieval over materialized session projections."""
+class UserMemoryViewRetrievalService:
+    """Lightweight retrieval over projected user-memory views."""
 
     def __init__(self, repository: Optional[SessionLedgerRepository] = None):
         self._repository = repository or get_session_ledger_repository()
@@ -108,12 +118,12 @@ class MaterializedViewRetrievalService:
         if isinstance(value, dict):
             flattened: List[str] = []
             for item in value.values():
-                flattened.extend(MaterializedViewRetrievalService._flatten_payload(item))
+                flattened.extend(UserMemoryViewRetrievalService._flatten_payload(item))
             return flattened
         if isinstance(value, (list, tuple, set)):
             flattened = []
             for item in value:
-                flattened.extend(MaterializedViewRetrievalService._flatten_payload(item))
+                flattened.extend(UserMemoryViewRetrievalService._flatten_payload(item))
             return flattened
         text = str(value).strip()
         return [text] if text else []
@@ -124,9 +134,9 @@ class MaterializedViewRetrievalService:
         return re.sub(r"\s+", " ", normalized).strip()
 
     def _build_search_document(self, row: Any) -> str:
-        payload = row.materialized_data if isinstance(row.materialized_data, dict) else {}
+        payload = row.view_data if isinstance(row.view_data, dict) else {}
         parts: List[str] = [
-            str(row.materialization_key or ""),
+            str(row.view_key or ""),
             str(row.title or ""),
             str(row.summary or ""),
             str(row.details or ""),
@@ -139,6 +149,12 @@ class MaterializedViewRetrievalService:
         if not normalized or normalized == "*":
             return False
         return any(cue in normalized for cue in _PROFILE_QUERY_CUES)
+
+    def _query_requests_temporal_context(self, query_text: str) -> bool:
+        normalized = self._normalize_text(query_text)
+        if not normalized or normalized == "*":
+            return False
+        return any(cue in normalized for cue in _TEMPORAL_QUERY_CUES)
 
     @staticmethod
     def _extract_quality(payload: Dict[str, Any]) -> float:
@@ -156,7 +172,7 @@ class MaterializedViewRetrievalService:
         if not document:
             return 0.0
 
-        payload = row.materialized_data if isinstance(row.materialized_data, dict) else {}
+        payload = row.view_data if isinstance(row.view_data, dict) else {}
         quality = self._extract_quality(payload)
         normalized_query = self._normalize_text(query_text)
         exact_match = bool(
@@ -166,8 +182,8 @@ class MaterializedViewRetrievalService:
         if not query_terms:
             if normalized_query == "*" or not normalized_query:
                 return min(0.35 + 0.25 * quality, 0.92)
-            if str(row.materialization_type) == "user_profile":
-                key = str(payload.get("key") or row.materialization_key or "").strip().lower()
+            if str(row.view_type) == "user_profile":
+                key = str(payload.get("key") or row.view_key or "").strip().lower()
                 if key in _GENERAL_USER_PROFILE_KEYS:
                     return min(0.32 + 0.25 * quality, 0.9)
             return 0.0
@@ -178,90 +194,91 @@ class MaterializedViewRetrievalService:
                 hit_count += 1
         hit_ratio = hit_count / max(len(query_terms), 1)
 
-        materialization_type = str(row.materialization_type or "").strip().lower()
+        view_type = str(row.view_type or "").strip().lower()
         if hit_count == 0:
-            if materialization_type == "user_profile":
-                key = str(payload.get("key") or row.materialization_key or "").strip().lower()
+            if view_type == "user_profile":
+                key = str(payload.get("key") or row.view_key or "").strip().lower()
                 if key in _GENERAL_USER_PROFILE_KEYS:
                     return min(0.3 + 0.2 * quality, 0.88)
                 if self._query_requests_profile_context(query_text):
                     return min(0.24 + 0.2 * quality, 0.82)
+            if view_type == "episode" and self._query_requests_temporal_context(query_text):
+                anchors = [
+                    self._normalize_text(str(payload.get("event_time") or "")),
+                    self._normalize_text(str(payload.get("location") or "")),
+                    self._normalize_text(str(payload.get("topic") or "")),
+                    self._normalize_text(str(payload.get("value") or "")),
+                ]
+                if any(anchor and anchor in normalized_query for anchor in anchors):
+                    return min(0.27 + 0.22 * quality, 0.88)
             return 0.0
 
-        base = 0.28 if materialization_type == "agent_experience" else 0.24
+        base = 0.24
         if exact_match:
             base += 0.12
+        if view_type == "episode" and self._query_requests_temporal_context(query_text):
+            base += 0.08
         return min(base + 0.46 * hit_ratio + 0.18 * quality, 0.98)
 
     @staticmethod
     def _build_user_profile_content(row: Any) -> str:
-        payload = row.materialized_data if isinstance(row.materialized_data, dict) else {}
+        payload = row.view_data if isinstance(row.view_data, dict) else {}
         canonical_statement = str(payload.get("canonical_statement") or "").strip()
         if canonical_statement:
             return canonical_statement
-        key = str(payload.get("key") or row.materialization_key or "").strip()
+        key = str(payload.get("key") or row.view_key or "").strip()
         value = str(payload.get("value") or row.summary or "").strip()
         if not key or not value:
             return ""
         return f"user.preference.{key}={value}"
 
     @staticmethod
-    def _build_agent_experience_content(row: Any) -> str:
-        payload = row.materialized_data if isinstance(row.materialized_data, dict) else {}
-        goal = str(payload.get("goal") or row.title or "").strip()
-        steps = [
-            str(step).strip() for step in payload.get("successful_path") or [] if str(step).strip()
-        ]
-        why_it_worked = str(payload.get("why_it_worked") or row.summary or "").strip()
-        applicability = str(payload.get("applicability") or "").strip()
-        avoid = str(payload.get("avoid") or "").strip()
-
-        if not goal:
-            return ""
-
-        lines = [f"agent.experience.goal={goal}"]
-        if steps:
-            lines.append(f"agent.experience.successful_path={' | '.join(steps)}")
-        if why_it_worked:
-            lines.append(f"agent.experience.why_it_worked={why_it_worked}")
-        if applicability:
-            lines.append(f"agent.experience.applicability={applicability}")
-        if avoid:
-            lines.append(f"agent.experience.avoid={avoid}")
-        return "\n".join(lines)
+    def _build_user_episode_content(row: Any) -> str:
+        payload = row.view_data if isinstance(row.view_data, dict) else {}
+        canonical_statement = str(payload.get("canonical_statement") or row.summary or "").strip()
+        if canonical_statement:
+            return canonical_statement
+        event_time = str(payload.get("event_time") or "").strip()
+        value = str(payload.get("value") or row.summary or row.title or "").strip()
+        if event_time and value:
+            return f"在{event_time}，{value}"
+        topic = str(payload.get("topic") or row.title or "").strip()
+        if topic and value:
+            return f"{topic}：{value}"
+        return value
 
     def _row_to_memory_item(
         self, row: Any, *, memory_type: str, score: float
     ) -> Optional[RetrievedMemoryItem]:
-        payload = row.materialized_data if isinstance(row.materialized_data, dict) else {}
-        materialization_type = str(row.materialization_type or "").strip().lower()
-        if materialization_type == "user_profile":
+        payload = row.view_data if isinstance(row.view_data, dict) else {}
+        view_type = str(row.view_type or "").strip().lower()
+        if view_type == "user_profile":
             content = self._build_user_profile_content(row)
             signal_type = str(payload.get("fact_kind") or "user_preference")
-        elif materialization_type == "agent_experience":
-            content = self._build_agent_experience_content(row)
-            signal_type = "agent_success_path"
+        elif view_type == "episode":
+            content = self._build_user_episode_content(row)
+            signal_type = str(payload.get("fact_kind") or "event")
         else:
             content = str(row.summary or row.title or "").strip()
-            signal_type = materialization_type or "materialization"
+            signal_type = view_type or "view"
 
         if not content:
             return None
 
         metadata: Dict[str, Any] = {
-            "search_method": "materialization",
-            "memory_source": "materialization",
-            "record_type": materialization_type or "materialization",
-            "materialization_id": row.id,
-            "materialization_type": materialization_type,
-            "materialization_key": row.materialization_key,
+            "search_method": "view_projection",
+            "memory_source": "user_memory_view",
+            "record_type": view_type or "view",
+            "view_id": row.id,
+            "view_type": view_type,
+            "view_key": row.view_key,
             "signal_type": signal_type,
             "timestamp": (
                 row.updated_at.isoformat() if isinstance(row.updated_at, datetime) else None
             ),
             "_semantic_score": round(float(score), 4),
         }
-        if materialization_type == "user_profile":
+        if view_type in {"user_profile", "episode"}:
             metadata["is_active"] = True
         metadata.update(
             {
@@ -277,6 +294,8 @@ class MaterializedViewRetrievalService:
                     "semantic_key",
                     "canonical_statement",
                     "event_time",
+                    "location",
+                    "topic",
                 }
             }
         )
@@ -285,7 +304,7 @@ class MaterializedViewRetrievalService:
             id=int(row.id) if row.id is not None else None,
             content=content,
             memory_type=memory_type,
-            agent_id=getattr(row, "owner_id", None) if memory_type == "skill_experience" else None,
+            agent_id=None,
             user_id=(getattr(row, "owner_id", None) if memory_type == "user_memory" else None),
             timestamp=row.updated_at or row.created_at,
             metadata=metadata,
@@ -298,15 +317,15 @@ class MaterializedViewRetrievalService:
         *,
         owner_type: str,
         owner_id: str,
-        materialization_type: str,
+        view_type: str,
         query_text: str,
         top_k: Optional[int],
         memory_type: str,
     ) -> List[RetrievedMemoryItem]:
-        rows = self._repository.list_materializations(
+        rows = self._repository.list_projections(
             owner_type=owner_type,
             owner_id=owner_id,
-            materialization_type=materialization_type,
+            projection_type=view_type,
             status="active",
             limit=(max(int(top_k), 1) * 8) if top_k is not None else None,
         )
@@ -346,36 +365,36 @@ class MaterializedViewRetrievalService:
         return self._search_rows(
             owner_type="user",
             owner_id=str(user_id),
-            materialization_type="user_profile",
+            view_type="user_profile",
             query_text=query_text,
             top_k=top_k,
             memory_type="user_memory",
         )
 
-    def retrieve_agent_experience(
+    def retrieve_user_episodes(
         self,
         *,
-        agent_id: str,
+        user_id: str,
         query_text: str,
         top_k: Optional[int] = 5,
     ) -> List[RetrievedMemoryItem]:
         return self._search_rows(
-            owner_type="agent",
-            owner_id=str(agent_id),
-            materialization_type="agent_experience",
+            owner_type="user",
+            owner_id=str(user_id),
+            view_type="episode",
             query_text=query_text,
             top_k=top_k,
-            memory_type="skill_experience",
+            memory_type="user_memory",
         )
 
 
-_materialized_view_retrieval_service: Optional[MaterializedViewRetrievalService] = None
+_user_memory_view_retrieval_service: Optional[UserMemoryViewRetrievalService] = None
 
 
-def get_materialized_view_retrieval_service() -> MaterializedViewRetrievalService:
-    """Return a process-wide materialized-view retrieval service."""
+def get_user_memory_view_retrieval_service() -> UserMemoryViewRetrievalService:
+    """Return a process-wide user-memory view retrieval service."""
 
-    global _materialized_view_retrieval_service
-    if _materialized_view_retrieval_service is None:
-        _materialized_view_retrieval_service = MaterializedViewRetrievalService()
-    return _materialized_view_retrieval_service
+    global _user_memory_view_retrieval_service
+    if _user_memory_view_retrieval_service is None:
+        _user_memory_view_retrieval_service = UserMemoryViewRetrievalService()
+    return _user_memory_view_retrieval_service

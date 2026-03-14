@@ -62,13 +62,13 @@ class MemoryObservationData:
 
 
 @dataclass
-class MemoryMaterializationData:
+class MemoryProjectionData:
     """In-memory projection rows routed into user views or skill proposals."""
 
     owner_type: str
     owner_id: str
-    materialization_type: str
-    materialization_key: str
+    projection_type: str
+    projection_key: str
     title: str
     summary: Optional[str] = None
     details: Optional[str] = None
@@ -131,18 +131,18 @@ class SessionLedgerRepository:
     def _apply_view_fields(
         row: UserMemoryView,
         *,
-        materialization: MemoryMaterializationData,
+        projection: MemoryProjectionData,
         payload: Dict[str, Any],
     ) -> None:
-        row.user_id = str(materialization.owner_id)
-        row.view_type = str(materialization.materialization_type)
-        row.view_key = str(materialization.materialization_key)
-        row.title = str(materialization.title)
-        row.content = str(materialization.summary or materialization.title or "")
-        row.status = str(materialization.status or "active")
+        row.user_id = str(projection.owner_id)
+        row.view_type = str(projection.projection_type)
+        row.view_key = str(projection.projection_key)
+        row.title = str(projection.title)
+        row.content = str(projection.summary or projection.title or "")
+        row.status = str(projection.status or "active")
         view_payload = dict(payload)
-        if materialization.details:
-            view_payload["details"] = str(materialization.details)
+        if projection.details:
+            view_payload["details"] = str(projection.details)
         row.view_data = view_payload
 
     @staticmethod
@@ -150,35 +150,33 @@ class SessionLedgerRepository:
         row: SkillProposal,
         *,
         snapshot: SessionLedgerSnapshot,
-        materialization: MemoryMaterializationData,
+        proposal: MemoryProjectionData,
         payload: Dict[str, Any],
         session_ledger_id: Optional[int] = None,
     ) -> None:
         steps = [
             str(step).strip() for step in payload.get("successful_path") or [] if str(step).strip()
         ]
-        row.agent_id = str(materialization.owner_id)
+        row.agent_id = str(proposal.owner_id)
         row.user_id = str(snapshot.user_id)
-        row.proposal_key = str(materialization.materialization_key)
-        row.title = str(materialization.title)
-        row.goal = str(payload.get("goal") or materialization.title)
+        row.proposal_key = str(proposal.projection_key)
+        row.title = str(proposal.title)
+        row.goal = str(payload.get("goal") or proposal.title)
         row.successful_path = steps
-        row.why_it_worked = (
-            str(payload.get("why_it_worked") or materialization.summary or "") or None
-        )
+        row.why_it_worked = str(payload.get("why_it_worked") or proposal.summary or "") or None
         row.applicability = str(payload.get("applicability") or "") or None
         row.avoid = str(payload.get("avoid") or "") or None
         row.confidence = float(payload.get("confidence") or 0.72)
         row.review_status = SessionLedgerRepository._normalize_review_status(
-            materialization.status,
+            proposal.status,
             payload,
         )
         row.review_note = str(payload.get("review_note") or "") or None
         row.evidence_session_ledger_id = session_ledger_id
         merged_payload = dict(payload)
-        if materialization.details:
-            merged_payload.setdefault("review_content", str(materialization.details))
-        row.proposal_data = merged_payload
+        if proposal.details:
+            merged_payload.setdefault("review_content", str(proposal.details))
+        row.proposal_payload = merged_payload
 
     @staticmethod
     def _apply_entry_fields(
@@ -381,21 +379,21 @@ class SessionLedgerRepository:
         self,
         db,
         *,
-        materialization: MemoryMaterializationData,
+        projection: MemoryProjectionData,
     ) -> UserMemoryView:
         existing = self._get_user_view_row(
             db,
-            user_id=str(materialization.owner_id),
-            view_type=str(materialization.materialization_type),
-            view_key=str(materialization.materialization_key),
+            user_id=str(projection.owner_id),
+            view_type=str(projection.projection_type),
+            view_key=str(projection.projection_key),
         )
         if existing is None:
             existing = UserMemoryView()
             db.add(existing)
         self._apply_view_fields(
             existing,
-            materialization=materialization,
-            payload=dict(materialization.payload or {}),
+            projection=projection,
+            payload=dict(projection.payload or {}),
         )
         db.flush()
         return existing
@@ -405,13 +403,13 @@ class SessionLedgerRepository:
         db,
         *,
         snapshot: SessionLedgerSnapshot,
-        materialization: MemoryMaterializationData,
+        proposal: MemoryProjectionData,
         session_ledger_id: Optional[int],
     ) -> SkillProposal:
         existing = self._get_skill_proposal_row(
             db,
-            agent_id=str(materialization.owner_id),
-            proposal_key=str(materialization.materialization_key),
+            agent_id=str(proposal.owner_id),
+            proposal_key=str(proposal.projection_key),
         )
         if existing is None:
             existing = SkillProposal()
@@ -419,8 +417,8 @@ class SessionLedgerRepository:
         self._apply_skill_proposal_fields(
             existing,
             snapshot=snapshot,
-            materialization=materialization,
-            payload=dict(materialization.payload or {}),
+            proposal=proposal,
+            payload=dict(proposal.payload or {}),
             session_ledger_id=session_ledger_id,
         )
         db.flush()
@@ -457,7 +455,7 @@ class SessionLedgerRepository:
         snapshot: SessionLedgerSnapshot,
         events: List[SessionLedgerEventData],
         observations: List[MemoryObservationData],
-        materializations: List[MemoryMaterializationData],
+        projections: List[MemoryProjectionData],
     ) -> int:
         """Upsert one session snapshot and its derived final memory products."""
 
@@ -517,28 +515,26 @@ class SessionLedgerRepository:
                     source_session_ledger_id=int(session_row.id),
                 )
 
-            for materialization in materializations:
-                materialization_type = (
-                    str(materialization.materialization_type or "").strip().lower()
-                )
-                if materialization_type in {"user_profile", "episode"}:
-                    self._upsert_user_view_row(db, materialization=materialization)
+            for projection in projections:
+                projection_type = str(projection.projection_type or "").strip().lower()
+                if projection_type in {"user_profile", "episode"}:
+                    self._upsert_user_view_row(db, projection=projection)
                     continue
-                if materialization_type == "agent_experience":
+                if projection_type == "skill_proposal":
                     self._upsert_skill_proposal_row(
                         db,
                         snapshot=snapshot,
-                        materialization=materialization,
+                        proposal=projection,
                         session_ledger_id=int(session_row.id),
                     )
 
             db.flush()
             return int(session_row.id)
 
-    def upsert_materialization(
+    def upsert_projection(
         self,
         *,
-        materialization: MemoryMaterializationData,
+        projection: MemoryProjectionData,
         source_session_id: Optional[int] = None,
         source_observation_id: Optional[int] = None,
     ) -> int:
@@ -547,26 +543,26 @@ class SessionLedgerRepository:
         del source_observation_id
         snapshot = SessionLedgerSnapshot(
             session_id="manual-upsert",
-            agent_id=str(materialization.owner_id if materialization.owner_type == "agent" else ""),
-            user_id=str(materialization.payload.get("user_id") or materialization.owner_id),
+            agent_id=str(projection.owner_id if projection.owner_type == "agent" else ""),
+            user_id=str(projection.payload.get("user_id") or projection.owner_id),
             started_at=utcnow(),
             ended_at=None,
             status="completed",
         )
         with get_db_session() as db:
-            materialization_type = str(materialization.materialization_type or "").strip().lower()
-            if materialization_type in {"user_profile", "episode"}:
-                row = self._upsert_user_view_row(db, materialization=materialization)
+            projection_type = str(projection.projection_type or "").strip().lower()
+            if projection_type in {"user_profile", "episode"}:
+                row = self._upsert_user_view_row(db, projection=projection)
                 return int(row.id)
-            if materialization_type == "agent_experience":
+            if projection_type == "skill_proposal":
                 row = self._upsert_skill_proposal_row(
                     db,
                     snapshot=snapshot,
-                    materialization=materialization,
+                    proposal=projection,
                     session_ledger_id=source_session_id,
                 )
                 return int(row.id)
-            raise ValueError(f"Unsupported materialization type: {materialization_type}")
+            raise ValueError(f"Unsupported projection type: {projection_type}")
 
     def upsert_entry(
         self,
@@ -597,48 +593,46 @@ class SessionLedgerRepository:
             row = self._create_link_row(db, link=link, user_id=str(user_id))
             return int(row.id)
 
-    def get_materialization(
+    def get_projection(
         self,
         *,
         owner_type: str,
         owner_id: str,
-        materialization_type: str,
-        materialization_key: str,
+        projection_type: str,
+        projection_key: str,
     ) -> Optional[Any]:
         """Load one user-memory view or skill proposal by stable identity."""
 
         with get_db_session() as db:
-            materialization_type = str(materialization_type or "").strip().lower()
+            projection_type = str(projection_type or "").strip().lower()
             if str(owner_type) == "user":
                 return self._get_user_view_row(
                     db,
                     user_id=str(owner_id),
-                    view_type=materialization_type,
-                    view_key=str(materialization_key),
+                    view_type=projection_type,
+                    view_key=str(projection_key),
                 )
-            if str(owner_type) == "agent" and materialization_type == "agent_experience":
+            if str(owner_type) == "agent" and projection_type == "skill_proposal":
                 return self._get_skill_proposal_row(
                     db,
                     agent_id=str(owner_id),
-                    proposal_key=str(materialization_key),
+                    proposal_key=str(projection_key),
                 )
             return None
 
-    def get_materialization_by_id(self, materialization_id: int) -> Optional[Any]:
+    def get_projection_by_id(self, projection_id: int) -> Optional[Any]:
         """Load one user-memory view or skill proposal by numeric id."""
 
         with get_db_session() as db:
             row = (
                 db.query(UserMemoryView)
-                .filter(UserMemoryView.id == int(materialization_id))
+                .filter(UserMemoryView.id == int(projection_id))
                 .one_or_none()
             )
             if row is not None:
                 return row
             return (
-                db.query(SkillProposal)
-                .filter(SkillProposal.id == int(materialization_id))
-                .one_or_none()
+                db.query(SkillProposal).filter(SkillProposal.id == int(projection_id)).one_or_none()
             )
 
     def get_entry(
@@ -664,9 +658,9 @@ class SessionLedgerRepository:
                 db.query(UserMemoryEntry).filter(UserMemoryEntry.id == int(entry_id)).one_or_none()
             )
 
-    def update_materialization(
+    def update_projection(
         self,
-        materialization_id: int,
+        projection_id: int,
         *,
         title: Optional[str] = None,
         summary: Optional[str] = None,
@@ -682,7 +676,7 @@ class SessionLedgerRepository:
         with get_db_session() as db:
             row = (
                 db.query(UserMemoryView)
-                .filter(UserMemoryView.id == int(materialization_id))
+                .filter(UserMemoryView.id == int(projection_id))
                 .one_or_none()
             )
             if row is not None:
@@ -700,9 +694,7 @@ class SessionLedgerRepository:
                 return row
 
             proposal = (
-                db.query(SkillProposal)
-                .filter(SkillProposal.id == int(materialization_id))
-                .one_or_none()
+                db.query(SkillProposal).filter(SkillProposal.id == int(projection_id)).one_or_none()
             )
             if proposal is None:
                 return None
@@ -716,7 +708,7 @@ class SessionLedgerRepository:
             if status is not None:
                 proposal.status = status
             if payload is not None:
-                proposal.materialized_data = dict(payload)
+                proposal.proposal_payload = dict(payload)
             if source_session_id is not None:
                 proposal.evidence_session_ledger_id = source_session_id
             db.flush()
@@ -772,12 +764,12 @@ class SessionLedgerRepository:
             db.flush()
             return row
 
-    def list_materializations(
+    def list_projections(
         self,
         *,
         owner_type: Optional[str] = None,
         owner_id: Optional[str] = None,
-        materialization_type: Optional[str] = None,
+        projection_type: Optional[str] = None,
         status: Optional[str] = "active",
         limit: Optional[int] = 100,
     ) -> List[Any]:
@@ -786,8 +778,8 @@ class SessionLedgerRepository:
         safe_limit = max(int(limit), 1) if limit is not None else None
         with get_db_session() as db:
             normalized_owner_type = str(owner_type or "").strip().lower()
-            normalized_type = str(materialization_type or "").strip().lower()
-            if normalized_owner_type == "agent" or normalized_type == "agent_experience":
+            normalized_type = str(projection_type or "").strip().lower()
+            if normalized_owner_type == "agent" or normalized_type == "skill_proposal":
                 query = db.query(SkillProposal)
                 if owner_id:
                     query = query.filter(SkillProposal.agent_id == str(owner_id))
@@ -806,8 +798,8 @@ class SessionLedgerRepository:
             query = db.query(UserMemoryView)
             if owner_id:
                 query = query.filter(UserMemoryView.user_id == str(owner_id))
-            if materialization_type:
-                query = query.filter(UserMemoryView.view_type == str(materialization_type))
+            if projection_type:
+                query = query.filter(UserMemoryView.view_type == str(projection_type))
             if status:
                 query = query.filter(UserMemoryView.status == str(status))
             query = query.order_by(UserMemoryView.updated_at.desc(), UserMemoryView.id.desc())

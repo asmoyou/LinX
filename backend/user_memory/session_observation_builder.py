@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent_framework.agent_registry import get_agent_registry
 from shared.logging import get_logger
 from user_memory.session_ledger_repository import (
-    MemoryMaterializationData,
+    MemoryProjectionData,
     MemoryObservationData,
     MemorySessionEventData,
 )
@@ -546,6 +546,43 @@ class SessionObservationBuilder:
         if key_label:
             return f"{title_prefix}: {key_label}"
         return f"{title_prefix}: {self.normalize_text(value, max_chars=64)}"
+
+    @staticmethod
+    def _build_user_episode_view_key(
+        *,
+        stable_key: str,
+        canonical_statement: str,
+        event_time: Optional[str],
+        value: str,
+    ) -> str:
+        return SessionObservationBuilder._stable_key(
+            "episode",
+            stable_key,
+            event_time or "",
+            canonical_statement or value,
+        )
+
+    def _build_user_episode_title(
+        self,
+        *,
+        canonical_statement: str,
+        event_time: Optional[str],
+        topic: Optional[str],
+        value: str,
+    ) -> str:
+        statement = self.normalize_text(canonical_statement or "", max_chars=96)
+        if statement and len(statement) <= 72:
+            return statement
+        time_label = self.normalize_text(event_time or "", max_chars=32)
+        topic_label = self.normalize_text(topic or "", max_chars=32)
+        value_label = self.normalize_text(value or "", max_chars=72)
+        if time_label and topic_label:
+            return f"{time_label} · {topic_label}"
+        if time_label and value_label:
+            return f"{time_label} · {value_label}"
+        if topic_label:
+            return topic_label
+        return statement or value_label or "User episode"
 
     @staticmethod
     def _should_materialize_user_fact(fact_kind: str, persistent: bool) -> bool:
@@ -2111,11 +2148,11 @@ ASSISTANT: 收到
         user_id: str,
         turns: List[Dict[str, Any]],
         extracted_signals: List[Dict[str, Any]],
-    ) -> tuple[List[MemoryObservationData], List[MemoryMaterializationData]]:
+    ) -> tuple[List[MemoryObservationData], List[MemoryProjectionData]]:
         observations: List[MemoryObservationData] = []
-        materializations: List[MemoryMaterializationData] = []
+        projections: List[MemoryProjectionData] = []
         if not user_id:
-            return observations, materializations
+            return observations, projections
 
         source_event_indexes = list(range(max(len(turns) * 2, 0)))
         for signal in extracted_signals:
@@ -2183,13 +2220,22 @@ ASSISTANT: 收到
                     },
                 )
             )
-            if bool(signal.get("materialize_profile", True)):
-                materializations.append(
-                    MemoryMaterializationData(
+            should_project_profile = bool(
+                signal.get(
+                    "materialize_profile",
+                    self._should_materialize_user_fact(
+                        fact_kind,
+                        bool(signal.get("persistent")),
+                    ),
+                )
+            )
+            if should_project_profile:
+                projections.append(
+                    MemoryProjectionData(
                         owner_type="user",
                         owner_id=user_id,
-                        materialization_type="user_profile",
-                        materialization_key=key,
+                        projection_type="user_profile",
+                        projection_key=key,
                         title=title,
                         summary=summary,
                         details=details,
@@ -2214,20 +2260,64 @@ ASSISTANT: 收到
                         source_observation_key=observation_key,
                     )
                 )
-        return observations, materializations
+            if fact_kind == "event":
+                episode_key = self._build_user_episode_view_key(
+                    stable_key=key,
+                    canonical_statement=canonical_statement,
+                    event_time=signal.get("event_time"),
+                    value=value,
+                )
+                projections.append(
+                    MemoryProjectionData(
+                        owner_type="user",
+                        owner_id=user_id,
+                        projection_type="episode",
+                        projection_key=episode_key,
+                        title=self._build_user_episode_title(
+                            canonical_statement=canonical_statement,
+                            event_time=signal.get("event_time"),
+                            topic=signal.get("topic"),
+                            value=value,
+                        ),
+                        summary=canonical_statement,
+                        details=details,
+                        payload={
+                            "key": key,
+                            "semantic_key": semantic_key,
+                            "value": value,
+                            "fact_kind": fact_kind,
+                            "canonical_statement": canonical_statement,
+                            "predicate": signal.get("predicate"),
+                            "object": signal.get("object"),
+                            "event_time": signal.get("event_time"),
+                            "persons": list(signal.get("persons") or []),
+                            "entities": list(signal.get("entities") or []),
+                            "location": signal.get("location"),
+                            "topic": signal.get("topic"),
+                            "confidence": confidence,
+                            "importance": importance,
+                            "persistent": bool(signal.get("persistent")),
+                            "explicit_source": bool(signal.get("explicit_source")),
+                            "source_entry_key": key,
+                            "is_active": True,
+                        },
+                        source_observation_key=observation_key,
+                    )
+                )
+        return observations, projections
 
-    def build_agent_experience_observations(
+    def build_skill_proposal_observations(
         self,
         *,
         agent_id: str,
         agent_name: str,
         turns: List[Dict[str, Any]],
         extracted_agent_candidates: List[Dict[str, Any]],
-    ) -> tuple[List[MemoryObservationData], List[MemoryMaterializationData]]:
+    ) -> tuple[List[MemoryObservationData], List[MemoryProjectionData]]:
         observations: List[MemoryObservationData] = []
-        materializations: List[MemoryMaterializationData] = []
+        projections: List[MemoryProjectionData] = []
         if not agent_id:
-            return observations, materializations
+            return observations, projections
 
         source_event_indexes = list(range(max(len(turns) * 2, 0)))
         for candidate in extracted_agent_candidates:
@@ -2242,11 +2332,11 @@ ASSISTANT: 收到
             details = " -> ".join(steps)
             avoid = str(candidate.get("avoid") or "").strip() or None
             applicability = str(candidate.get("applicability") or "").strip() or None
-            observation_key = self._stable_key("agent_path", fingerprint, title)
+            observation_key = self._stable_key("skill_proposal", fingerprint, title)
             observations.append(
                 MemoryObservationData(
                     observation_key=observation_key,
-                    observation_type="agent_success_path",
+                    observation_type="skill_proposal_candidate",
                     title=title,
                     summary=summary,
                     details=details,
@@ -2265,12 +2355,12 @@ ASSISTANT: 收到
                     },
                 )
             )
-            materializations.append(
-                MemoryMaterializationData(
+            projections.append(
+                MemoryProjectionData(
                     owner_type="agent",
                     owner_id=agent_id,
-                    materialization_type="agent_experience",
-                    materialization_key=fingerprint,
+                    projection_type="skill_proposal",
+                    projection_key=fingerprint,
                     title=title,
                     summary=summary,
                     details=details,
@@ -2292,7 +2382,7 @@ ASSISTANT: 收到
                     source_observation_key=observation_key,
                 )
             )
-        return observations, materializations
+        return observations, projections
 
 
 _session_observation_builder: Optional[SessionObservationBuilder] = None

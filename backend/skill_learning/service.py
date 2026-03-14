@@ -1,15 +1,36 @@
-"""Service layer for skill proposals and learned experiences."""
+"""Service layer for skill proposals and published learned skills."""
 
 from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from shared.config import get_config
 from skill_learning.repository import SkillProposalRepository, get_skill_proposal_repository
 from skill_library.skill_registry import SkillInfo, SkillRegistry, get_skill_registry
-from user_memory.materialized_view_retrieval import get_materialized_view_retrieval_service
+from user_memory.items import RetrievedMemoryItem
+
+_STOP_TERMS = {
+    "how",
+    "what",
+    "when",
+    "where",
+    "why",
+    "with",
+    "from",
+    "this",
+    "that",
+    "into",
+    "about",
+    "请问",
+    "怎么",
+    "如何",
+    "一下",
+    "这个",
+    "那个",
+}
 
 
 def _utc_now_iso() -> str:
@@ -20,6 +41,33 @@ def _sanitize_skill_name(value: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9_]+", "_", str(value or "").strip().lower())
     normalized = re.sub(r"_+", "_", normalized).strip("_")
     return normalized or "learned_skill"
+
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _extract_query_terms(query_text: str, *, max_terms: int = 12) -> List[str]:
+    normalized = _normalize_text(query_text)
+    if not normalized or normalized == "*":
+        return []
+
+    terms = set()
+    for token in re.findall(r"[a-z0-9][a-z0-9._-]{1,}", normalized):
+        if token not in _STOP_TERMS:
+            terms.add(token)
+
+    split_terms = re.split(r"[\s,，。！？!?;；:：/\\|()\[\]{}【】\"'“”‘’]+", normalized)
+    for token in split_terms:
+        token = token.strip()
+        if len(token) >= 2 and token not in _STOP_TERMS:
+            terms.add(token)
+
+    for fragment in re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]+", normalized):
+        if len(fragment) >= 2 and fragment not in _STOP_TERMS:
+            terms.add(fragment)
+
+    return sorted(terms, key=lambda item: (-len(item), item))[: max(int(max_terms), 1)]
 
 
 class SkillProposalService:
@@ -54,24 +102,38 @@ class SkillProposalService:
         parts = [
             "learned",
             _sanitize_skill_name(str(getattr(existing, "agent_id", "") or "agent")),
-            _sanitize_skill_name(str(getattr(existing, "proposal_key", "") or getattr(existing, "title", "skill"))),
+            _sanitize_skill_name(
+                str(getattr(existing, "proposal_key", "") or getattr(existing, "title", "skill"))
+            ),
         ]
         return "_".join(part for part in parts if part)[:255]
 
     @staticmethod
     def _build_skill_description(existing: Any, payload: Dict[str, Any]) -> str:
-        goal = str(payload.get("goal") or getattr(existing, "goal", None) or getattr(existing, "title", "")).strip()
-        why = str(payload.get("why_it_worked") or getattr(existing, "why_it_worked", None) or "").strip()
+        goal = str(
+            payload.get("goal") or getattr(existing, "goal", None) or getattr(existing, "title", "")
+        ).strip()
+        why = str(
+            payload.get("why_it_worked") or getattr(existing, "why_it_worked", None) or ""
+        ).strip()
         if why:
             return f"{goal}: {why}"[:500]
         return goal[:500] if goal else "Learned execution skill"
 
     @staticmethod
     def _build_skill_md_content(existing: Any, payload: Dict[str, Any]) -> str:
-        title = str(getattr(existing, "title", "") or payload.get("goal") or "Learned Skill").strip()
-        steps = [str(step).strip() for step in payload.get("successful_path") or [] if str(step).strip()]
-        why = str(payload.get("why_it_worked") or getattr(existing, "why_it_worked", None) or "").strip()
-        applicability = str(payload.get("applicability") or getattr(existing, "applicability", None) or "").strip()
+        title = str(
+            getattr(existing, "title", "") or payload.get("goal") or "Learned Skill"
+        ).strip()
+        steps = [
+            str(step).strip() for step in payload.get("successful_path") or [] if str(step).strip()
+        ]
+        why = str(
+            payload.get("why_it_worked") or getattr(existing, "why_it_worked", None) or ""
+        ).strip()
+        applicability = str(
+            payload.get("applicability") or getattr(existing, "applicability", None) or ""
+        ).strip()
         avoid = str(payload.get("avoid") or getattr(existing, "avoid", None) or "").strip()
 
         lines = [f"# {title}", "", "## Goal", title, "", "## Successful Path"]
@@ -89,7 +151,9 @@ class SkillProposalService:
 
     @staticmethod
     def _build_skill_interface(existing: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
-        goal = str(payload.get("goal") or getattr(existing, "goal", None) or getattr(existing, "title", "")).strip()
+        goal = str(
+            payload.get("goal") or getattr(existing, "goal", None) or getattr(existing, "title", "")
+        ).strip()
         return {
             "inputs": {
                 "goal": "string",
@@ -104,6 +168,107 @@ class SkillProposalService:
             "required_inputs": ["goal"],
             "default_goal": goal,
         }
+
+    @staticmethod
+    def _build_runtime_skill_content(
+        *,
+        skill: SkillInfo,
+        proposal: Any,
+        payload: Dict[str, Any],
+    ) -> str:
+        goal = str(
+            payload.get("goal") or getattr(proposal, "goal", None) or skill.description or ""
+        ).strip()
+        steps = [
+            str(step).strip() for step in payload.get("successful_path") or [] if str(step).strip()
+        ]
+        why_it_worked = str(
+            payload.get("why_it_worked")
+            or getattr(proposal, "why_it_worked", None)
+            or skill.description
+            or ""
+        ).strip()
+        applicability = str(
+            payload.get("applicability") or getattr(proposal, "applicability", None) or ""
+        ).strip()
+        avoid = str(payload.get("avoid") or getattr(proposal, "avoid", None) or "").strip()
+
+        lines = [f"learned.skill.name={skill.name}"]
+        if goal:
+            lines.append(f"learned.skill.goal={goal}")
+        if steps:
+            lines.append(f"learned.skill.successful_path={' | '.join(steps)}")
+        if why_it_worked:
+            lines.append(f"learned.skill.summary={why_it_worked}")
+        if applicability:
+            lines.append(f"learned.skill.applicability={applicability}")
+        if avoid:
+            lines.append(f"learned.skill.avoid={avoid}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_runtime_skill_document(
+        *,
+        skill: SkillInfo,
+        proposal: Any,
+        payload: Dict[str, Any],
+    ) -> str:
+        parts: List[str] = [
+            str(skill.name or ""),
+            str(skill.description or ""),
+            str(skill.skill_md_content or ""),
+            str(getattr(proposal, "title", None) or ""),
+            str(getattr(proposal, "goal", None) or ""),
+            str(getattr(proposal, "why_it_worked", None) or ""),
+        ]
+        for item in payload.values():
+            if isinstance(item, (list, tuple, set)):
+                parts.extend(str(value or "") for value in item)
+            elif isinstance(item, dict):
+                parts.extend(str(value or "") for value in item.values())
+            else:
+                parts.append(str(item or ""))
+        return _normalize_text(" ".join(part for part in parts if part))
+
+    @staticmethod
+    def _score_published_skill(
+        *,
+        skill: SkillInfo,
+        proposal: Any,
+        payload: Dict[str, Any],
+        query_text: str,
+        query_terms: List[str],
+    ) -> float:
+        document = SkillProposalService._build_runtime_skill_document(
+            skill=skill,
+            proposal=proposal,
+            payload=payload,
+        )
+        if not document:
+            return 0.0
+
+        normalized_query = _normalize_text(query_text)
+        exact_match = bool(
+            normalized_query and normalized_query != "*" and normalized_query in document
+        )
+        confidence = payload.get("confidence", getattr(proposal, "confidence", 0.0))
+        try:
+            quality = min(max(float(confidence or 0.0), 0.0), 1.0)
+        except (TypeError, ValueError):
+            quality = 0.0
+
+        if not query_terms:
+            if not normalized_query or normalized_query == "*":
+                return min(0.38 + 0.2 * quality, 0.9)
+            return 0.0
+
+        hit_count = sum(1 for term in query_terms if term and term in document)
+        if hit_count == 0:
+            return 0.0
+
+        hit_ratio = hit_count / max(len(query_terms), 1)
+        base = 0.28 + (0.12 if exact_match else 0.0)
+        return min(base + 0.44 * hit_ratio + 0.16 * quality, 0.98)
 
     def _publish_to_skill_registry(
         self,
@@ -174,8 +339,8 @@ class SkillProposalService:
             raise ValueError(f"Unsupported skill proposal action: {action}")
 
         payload = (
-            dict(existing.materialized_data or {})
-            if isinstance(existing.materialized_data, dict)
+            dict(existing.proposal_payload or {})
+            if isinstance(existing.proposal_payload, dict)
             else {}
         )
         payload.update(payload_updates)
@@ -207,8 +372,12 @@ class SkillProposalService:
         updated = self._repository.update_proposal(
             proposal_id=int(getattr(existing, "id", proposal_id)),
             title=str(getattr(existing, "title", "") or payload.get("goal") or "") or None,
-            summary=summary if summary is not None else str(payload.get("why_it_worked") or "") or None,
-            details=details if details is not None else str(payload.get("review_content") or "") or None,
+            summary=(
+                summary if summary is not None else str(payload.get("why_it_worked") or "") or None
+            ),
+            details=(
+                details if details is not None else str(payload.get("review_content") or "") or None
+            ),
             review_status=review_status_value,
             review_note=str(payload.get("review_note") or "") or None,
             payload=payload,
@@ -234,22 +403,97 @@ class SkillProposalService:
             payload_updates=payload_updates,
         )
 
-    def list_published_experiences(
+    def list_published_skills(
         self,
         *,
         agent_id: str,
         query_text: str,
         limit: int,
         min_score: Optional[float] = None,
-    ) -> List[Any]:
-        items = get_materialized_view_retrieval_service().retrieve_agent_experience(
-            agent_id=str(agent_id),
-            query_text=query_text,
-            top_k=limit,
+    ) -> List[RetrievedMemoryItem]:
+        proposals = self._repository.list_proposals(
+            agent_ids=[str(agent_id)],
+            review_status="published",
+            limit=max(max(int(limit), 1) * 4, 20),
         )
-        if min_score is None:
-            return items
-        return [item for item in items if float(item.similarity_score or 0.0) >= float(min_score)]
+        query_terms = _extract_query_terms(query_text)
+        scored_items: List[tuple[float, RetrievedMemoryItem]] = []
+
+        for proposal in proposals:
+            raw_skill_id = getattr(proposal, "published_skill_id", None)
+            if raw_skill_id is None:
+                continue
+            try:
+                skill_id = UUID(str(raw_skill_id))
+            except (TypeError, ValueError):
+                continue
+
+            skill = self._skill_registry.get_skill(skill_id)
+            if skill is None or not skill.is_active:
+                continue
+
+            payload = (
+                dict(proposal.proposal_payload or {})
+                if isinstance(getattr(proposal, "proposal_payload", None), dict)
+                else {}
+            )
+            score = self._score_published_skill(
+                skill=skill,
+                proposal=proposal,
+                payload=payload,
+                query_text=query_text,
+                query_terms=query_terms,
+            )
+            if min_score is not None and score < float(min_score):
+                continue
+            if score <= 0:
+                continue
+
+            timestamp = (
+                getattr(skill, "updated_at", None)
+                or getattr(skill, "created_at", None)
+                or getattr(proposal, "updated_at", None)
+                or getattr(proposal, "created_at", None)
+            )
+            item = RetrievedMemoryItem(
+                id=int(getattr(proposal, "id", 0) or 0),
+                content=self._build_runtime_skill_content(
+                    skill=skill,
+                    proposal=proposal,
+                    payload=payload,
+                ),
+                memory_type="published_skill",
+                agent_id=str(getattr(proposal, "agent_id", "") or "") or None,
+                user_id=str(getattr(proposal, "user_id", "") or "") or None,
+                timestamp=timestamp,
+                metadata={
+                    "search_method": "published_skill",
+                    "memory_source": "skill_registry",
+                    "record_type": "published_skill",
+                    "signal_type": "published_skill",
+                    "skill_id": str(skill.skill_id),
+                    "skill_name": skill.name,
+                    "skill_type": skill.skill_type,
+                    "storage_type": skill.storage_type,
+                    "proposal_id": int(getattr(proposal, "id", 0) or 0),
+                    "proposal_key": str(getattr(proposal, "proposal_key", "") or ""),
+                    "review_status": str(getattr(proposal, "review_status", "") or "published"),
+                    "source": "skill_proposal",
+                },
+                similarity_score=round(float(score), 4),
+                summary=str(skill.description or getattr(proposal, "summary", None) or "").strip()
+                or None,
+            )
+            scored_items.append((float(score), item))
+
+        scored_items.sort(
+            key=lambda item: (
+                item[0],
+                getattr(item[1], "timestamp", None) or datetime.min.replace(tzinfo=timezone.utc),
+            ),
+            reverse=True,
+        )
+        return [item for _, item in scored_items[: max(int(limit), 1)]]
 
 
 _skill_proposal_service: Optional[SkillProposalService] = None

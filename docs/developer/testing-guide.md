@@ -193,7 +193,7 @@ async def test_runtime_context_reads_user_memory_and_skills():
         SimpleNamespace(content="用户的配偶是王敏", memory_type="user_memory")
     ]
     service.retrieve_skills = lambda **_: [
-        SimpleNamespace(content="agent.experience.goal=Stable PDF delivery path", memory_type="skill_experience")
+        SimpleNamespace(content="skill.proposal.goal=Stable PDF delivery path", memory_type="published_skill")
     ]
 
     user_memories = service.retrieve_user_memory(user_id="user-1", query="配偶", top_k=3)

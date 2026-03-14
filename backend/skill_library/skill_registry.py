@@ -32,6 +32,10 @@ class SkillInfo:
     config: Optional[dict] = None
     storage_path: Optional[str] = None
     manifest: Optional[dict] = None
+    skill_md_content: Optional[str] = None
+    homepage: Optional[str] = None
+    skill_metadata: Optional[dict] = None
+    gating_status: Optional[dict] = None
     is_active: bool = True
     is_system: bool = False
     execution_count: int = 0
@@ -59,6 +63,35 @@ class SkillRegistry:
         self.skill_model = skill_model or get_skill_model()
         self.skill_validator = skill_validator or get_skill_validator()
         logger.info("SkillRegistry initialized")
+
+    @staticmethod
+    def _to_skill_info(skill) -> SkillInfo:
+        return SkillInfo(
+            skill_id=skill.skill_id,
+            name=skill.name,
+            description=skill.description,
+            version=skill.version,
+            interface_definition=skill.interface_definition,
+            dependencies=skill.dependencies or [],
+            skill_type=skill.skill_type,
+            storage_type=skill.storage_type,
+            code=skill.code,
+            config=skill.config,
+            storage_path=skill.storage_path,
+            manifest=skill.manifest,
+            skill_md_content=getattr(skill, "skill_md_content", None),
+            homepage=getattr(skill, "homepage", None),
+            skill_metadata=getattr(skill, "skill_metadata", None),
+            gating_status=getattr(skill, "gating_status", None),
+            is_active=skill.is_active,
+            is_system=skill.is_system,
+            execution_count=skill.execution_count,
+            last_executed_at=skill.last_executed_at,
+            average_execution_time=skill.average_execution_time,
+            created_at=skill.created_at,
+            updated_at=skill.updated_at,
+            created_by=str(skill.created_by) if getattr(skill, "created_by", None) else None,
+        )
 
     def register_skill(
         self,
@@ -149,29 +182,11 @@ class SkillRegistry:
             created_by=created_by,
         )
 
-        logger.info(f"Skill registered: {name} v{version} (type: {skill_type}, storage: {storage_type})")
-
-        return SkillInfo(
-            skill_id=skill.skill_id,
-            name=skill.name,
-            description=skill.description,
-            version=skill.version,
-            interface_definition=skill.interface_definition,
-            dependencies=skill.dependencies or [],
-            skill_type=skill.skill_type,
-            storage_type=skill.storage_type,
-            code=skill.code,
-            config=skill.config,
-            storage_path=skill.storage_path,
-            manifest=skill.manifest,
-            is_active=skill.is_active,
-            is_system=skill.is_system,
-            execution_count=skill.execution_count,
-            last_executed_at=skill.last_executed_at,
-            average_execution_time=skill.average_execution_time,
-            created_at=skill.created_at,
-            updated_at=skill.updated_at,
+        logger.info(
+            f"Skill registered: {name} v{version} (type: {skill_type}, storage: {storage_type})"
         )
+
+        return self._to_skill_info(skill)
 
     def get_skill(self, skill_id: UUID) -> Optional[SkillInfo]:
         """Get skill by ID.
@@ -187,28 +202,7 @@ class SkillRegistry:
         if not skill:
             return None
 
-        return SkillInfo(
-            skill_id=skill.skill_id,
-            name=skill.name,
-            description=skill.description,
-            version=skill.version,
-            interface_definition=skill.interface_definition,
-            dependencies=skill.dependencies or [],
-            skill_type=skill.skill_type,
-            storage_type=skill.storage_type,
-            code=skill.code,
-            config=skill.config,
-            storage_path=skill.storage_path,
-            manifest=skill.manifest,
-            is_active=skill.is_active,
-            is_system=skill.is_system,
-            execution_count=skill.execution_count,
-            last_executed_at=skill.last_executed_at,
-            average_execution_time=skill.average_execution_time,
-            created_at=skill.created_at,
-            updated_at=skill.updated_at,
-            created_by=str(skill.created_by) if skill.created_by else None,
-        )
+        return self._to_skill_info(skill)
 
     def get_skill_by_name(
         self,
@@ -229,28 +223,7 @@ class SkillRegistry:
         if not skill:
             return None
 
-        return SkillInfo(
-            skill_id=skill.skill_id,
-            name=skill.name,
-            description=skill.description,
-            version=skill.version,
-            interface_definition=skill.interface_definition,
-            dependencies=skill.dependencies or [],
-            skill_type=skill.skill_type,
-            storage_type=skill.storage_type,
-            code=skill.code,
-            config=skill.config,
-            storage_path=skill.storage_path,
-            manifest=skill.manifest,
-            is_active=skill.is_active,
-            is_system=skill.is_system,
-            execution_count=skill.execution_count,
-            last_executed_at=skill.last_executed_at,
-            average_execution_time=skill.average_execution_time,
-            created_at=skill.created_at,
-            updated_at=skill.updated_at,
-            created_by=str(skill.created_by) if skill.created_by else None,
-        )
+        return self._to_skill_info(skill)
 
     def list_skills(self, limit: int = 100, offset: int = 0) -> List[SkillInfo]:
         """List all skills.
@@ -264,31 +237,7 @@ class SkillRegistry:
         """
         skills = self.skill_model.list_skills(limit, offset)
 
-        return [
-            SkillInfo(
-                skill_id=skill.skill_id,
-                name=skill.name,
-                description=skill.description,
-                version=skill.version,
-                interface_definition=skill.interface_definition,
-                dependencies=skill.dependencies or [],
-                skill_type=skill.skill_type,
-                storage_type=skill.storage_type,
-                code=skill.code,
-                config=skill.config,
-                storage_path=skill.storage_path,
-                manifest=skill.manifest,
-                is_active=skill.is_active,
-                is_system=skill.is_system,
-                execution_count=skill.execution_count,
-                last_executed_at=skill.last_executed_at,
-                average_execution_time=skill.average_execution_time,
-                created_at=skill.created_at,
-                updated_at=skill.updated_at,
-                created_by=str(skill.created_by) if skill.created_by else None,
-            )
-            for skill in skills
-        ]
+        return [self._to_skill_info(skill) for skill in skills]
 
     def search_skills(self, query: str) -> List[SkillInfo]:
         """Search skills by name or description.
@@ -301,31 +250,7 @@ class SkillRegistry:
         """
         skills = self.skill_model.search_skills(query)
 
-        return [
-            SkillInfo(
-                skill_id=skill.skill_id,
-                name=skill.name,
-                description=skill.description,
-                version=skill.version,
-                interface_definition=skill.interface_definition,
-                dependencies=skill.dependencies or [],
-                skill_type=skill.skill_type,
-                storage_type=skill.storage_type,
-                code=skill.code,
-                config=skill.config,
-                storage_path=skill.storage_path,
-                manifest=skill.manifest,
-                is_active=skill.is_active,
-                is_system=skill.is_system,
-                execution_count=skill.execution_count,
-                last_executed_at=skill.last_executed_at,
-                average_execution_time=skill.average_execution_time,
-                created_at=skill.created_at,
-                updated_at=skill.updated_at,
-                created_by=str(skill.created_by) if skill.created_by else None,
-            )
-            for skill in skills
-        ]
+        return [self._to_skill_info(skill) for skill in skills]
 
     def update_skill(
         self,
@@ -361,28 +286,7 @@ class SkillRegistry:
         if not skill:
             return None
 
-        return SkillInfo(
-            skill_id=skill.skill_id,
-            name=skill.name,
-            description=skill.description,
-            version=skill.version,
-            interface_definition=skill.interface_definition,
-            dependencies=skill.dependencies or [],
-            skill_type=skill.skill_type,
-            storage_type=skill.storage_type,
-            code=skill.code,
-            config=skill.config,
-            storage_path=skill.storage_path,
-            manifest=skill.manifest,
-            is_active=skill.is_active,
-            is_system=skill.is_system,
-            execution_count=skill.execution_count,
-            last_executed_at=skill.last_executed_at,
-            average_execution_time=skill.average_execution_time,
-            created_at=skill.created_at,
-            updated_at=skill.updated_at,
-            created_by=str(skill.created_by) if skill.created_by else None,
-        )
+        return self._to_skill_info(skill)
 
     def delete_skill(self, skill_id: UUID) -> bool:
         """Delete a skill.

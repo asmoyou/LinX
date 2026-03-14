@@ -13,9 +13,9 @@ import {
   Loader2,
 } from "lucide-react";
 import { GlassPanel } from "@/components/GlassPanel";
-import type { Memory, MemoryFact } from "@/types/memory";
+import type { MemoryRecord, MemoryFact } from "@/types/memory";
 
-const parseFacts = (memory: Memory): MemoryFact[] => {
+const parseFacts = (memory: MemoryRecord): MemoryFact[] => {
   const raw = memory.metadata?.facts;
   if (!Array.isArray(raw)) {
     return [];
@@ -88,10 +88,10 @@ const parseStructuredContentLines = (
 };
 
 interface MemoryCardProps {
-  memory: Memory;
-  onClick: (memory: Memory) => void;
+  memory: MemoryRecord;
+  onClick: (memory: MemoryRecord) => void;
   showRelevance?: boolean;
-  onReindex?: (memory: Memory) => void;
+  onReindex?: (memory: MemoryRecord) => void;
   isReindexing?: boolean;
 }
 
@@ -111,7 +111,7 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
   const factPreview = memoryFacts.slice(0, 2);
   const structuredPreview = structuredLines.slice(0, 2);
 
-  const getTypeIcon = (type: Memory["type"]) => {
+  const getTypeIcon = (type: MemoryRecord["type"]) => {
     switch (type) {
       case "skill_proposal":
         return <Brain className="w-5 h-5 text-blue-500" />;
@@ -120,7 +120,7 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
     }
   };
 
-  const getTypeLabel = (type: Memory["type"]) => {
+  const getTypeLabel = (type: MemoryRecord["type"]) => {
     switch (type) {
       case "skill_proposal":
         return t("memory.tabs.skillProposal", { defaultValue: "技能提案" });
@@ -129,7 +129,7 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
     }
   };
 
-  const getTypeColor = (type: Memory["type"]) => {
+  const getTypeColor = (type: MemoryRecord["type"]) => {
     switch (type) {
       case "skill_proposal":
         return "bg-blue-500/20 text-blue-700 dark:text-blue-400";

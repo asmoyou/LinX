@@ -221,7 +221,7 @@ class MemoryEntryRetrievalService:
                     return min(0.22 + 0.18 * quality, 0.8)
             return 0.0
 
-        base = 0.27 if entry_type == "agent_skill_candidate" else 0.23
+        base = 0.23
         if exact_match:
             base += 0.12
         if fact_kind == "event" and self._query_requests_temporal_context(query_text):
@@ -247,11 +247,7 @@ class MemoryEntryRetrievalService:
             "signal_type": (
                 str(payload.get("fact_kind") or "user_preference")
                 if entry_type == "user_fact"
-                else (
-                    "agent_success_path"
-                    if entry_type == "agent_skill_candidate"
-                    else entry_type or "entry"
-                )
+                else entry_type or "entry"
             ),
             "status": getattr(row, "status", None),
             "timestamp": (
@@ -281,7 +277,7 @@ class MemoryEntryRetrievalService:
             id=int(row.id) if row.id is not None else None,
             content=content,
             memory_type=memory_type,
-            agent_id=getattr(row, "owner_id", None) if memory_type == "skill_experience" else None,
+            agent_id=None,
             user_id=(getattr(row, "owner_id", None) if memory_type == "user_memory" else None),
             timestamp=row.updated_at or row.created_at,
             metadata=metadata,
@@ -349,26 +345,6 @@ class MemoryEntryRetrievalService:
             query_text=query_text,
             top_k=top_k,
             memory_type="user_memory",
-            status=status,
-        )
-
-    def retrieve_agent_skill_candidates(
-        self,
-        *,
-        agent_id: str,
-        query_text: str,
-        top_k: Optional[int] = 5,
-        status: Optional[str] = "active",
-    ) -> List[RetrievedMemoryItem]:
-        """Return agent skill-candidate entries relevant to the query."""
-
-        return self._search_rows(
-            owner_type="agent",
-            owner_id=str(agent_id),
-            entry_type="agent_skill_candidate",
-            query_text=query_text,
-            top_k=top_k,
-            memory_type="skill_experience",
             status=status,
         )
 

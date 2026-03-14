@@ -662,22 +662,6 @@ class UserMemoryView(Base):
         self.user_id = str(value) if value is not None else None
 
     @property
-    def materialization_type(self):
-        return self.view_type
-
-    @materialization_type.setter
-    def materialization_type(self, value):
-        self.view_type = str(value) if value is not None else None
-
-    @property
-    def materialization_key(self):
-        return self.view_key
-
-    @materialization_key.setter
-    def materialization_key(self, value):
-        self.view_key = str(value) if value is not None else None
-
-    @property
     def summary(self):
         return self.content
 
@@ -698,14 +682,6 @@ class UserMemoryView(Base):
         else:
             payload.pop("details", None)
         self.view_data = payload
-
-    @property
-    def materialized_data(self):
-        return self.view_data
-
-    @materialized_data.setter
-    def materialized_data(self, value):
-        self.view_data = value
 
     @property
     def source_session_id(self):
@@ -785,18 +761,6 @@ class SkillProposal(Base):
         self.agent_id = str(value) if value is not None else None
 
     @property
-    def materialization_type(self):
-        return "agent_experience"
-
-    @property
-    def materialization_key(self):
-        return self.proposal_key
-
-    @materialization_key.setter
-    def materialization_key(self, value):
-        self.proposal_key = str(value) if value is not None else None
-
-    @property
     def summary(self):
         return self.why_it_worked
 
@@ -819,7 +783,7 @@ class SkillProposal(Base):
         self.proposal_data = payload
 
     @property
-    def materialized_data(self):
+    def proposal_payload(self):
         payload = dict(self.proposal_data or {})
         payload.setdefault("goal", self.goal)
         payload.setdefault("successful_path", list(self.successful_path or []))
@@ -832,8 +796,8 @@ class SkillProposal(Base):
             payload.setdefault("published_skill_id", str(self.published_skill_id))
         return payload
 
-    @materialized_data.setter
-    def materialized_data(self, value):
+    @proposal_payload.setter
+    def proposal_payload(self, value):
         payload = dict(value or {})
         self.goal = str(payload.get("goal") or self.goal or self.title)
         self.successful_path = list(payload.get("successful_path") or self.successful_path or [])

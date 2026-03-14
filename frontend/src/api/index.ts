@@ -14,7 +14,7 @@ export { authApi } from "./auth";
 export { usersApi } from "./users";
 export { agentsApi } from "./agents";
 export { tasksApi } from "./tasks";
-export { memoriesApi } from "./memories";
+export { memoryWorkbenchApi } from "./memoryWorkbench";
 export { skillsApi } from "./skills";
 export { knowledgeApi } from "./knowledge";
 export { llmApi } from "./llm";

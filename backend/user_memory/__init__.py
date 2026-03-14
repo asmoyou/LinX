@@ -7,9 +7,9 @@ _EXPORTS = {
     "UserMemoryConsolidator": ("user_memory.consolidator", "UserMemoryConsolidator"),
     "MemoryEntryData": ("user_memory.session_ledger_repository", "MemoryEntryData"),
     "MemoryLinkData": ("user_memory.session_ledger_repository", "MemoryLinkData"),
-    "MemoryMaterializationData": (
+    "MemoryProjectionData": (
         "user_memory.session_ledger_repository",
-        "MemoryMaterializationData",
+        "MemoryProjectionData",
     ),
     "MemoryObservationData": ("user_memory.session_ledger_repository", "MemoryObservationData"),
     "MemorySessionEventData": ("user_memory.session_ledger_repository", "MemorySessionEventData"),
@@ -23,20 +23,6 @@ _EXPORTS = {
     "SessionLedgerService": ("user_memory.session_ledger_service", "SessionLedgerService"),
     "UserMemoryBuilder": ("user_memory.builder", "UserMemoryBuilder"),
     "UserMemoryRetriever": ("user_memory.retriever", "UserMemoryRetriever"),
-    "build_agent_candidate_content": ("user_memory.compat", "build_agent_candidate_content"),
-    "build_agent_candidate_seed_facts": (
-        "user_memory.compat",
-        "build_agent_candidate_seed_facts",
-    ),
-    "build_user_preference_memory_content": (
-        "user_memory.compat",
-        "build_user_preference_memory_content",
-    ),
-    "build_user_preference_seed_facts": (
-        "user_memory.compat",
-        "build_user_preference_seed_facts",
-    ),
-    "dedupe_user_preference_signals": ("user_memory.compat", "dedupe_user_preference_signals"),
     "SessionLedgerRetentionManager": (
         "user_memory.retention_manager",
         "SessionLedgerRetentionManager",
@@ -61,7 +47,6 @@ _EXPORTS = {
     "get_user_memory_projector": ("user_memory.projector", "get_user_memory_projector"),
     "get_user_memory_repository": ("user_memory.repository", "get_user_memory_repository"),
     "get_user_memory_retriever": ("user_memory.retriever", "get_user_memory_retriever"),
-    "split_user_preference_content": ("user_memory.compat", "split_user_preference_content"),
     "get_session_ledger_retention_manager": (
         "user_memory.retention_manager",
         "get_session_ledger_retention_manager",

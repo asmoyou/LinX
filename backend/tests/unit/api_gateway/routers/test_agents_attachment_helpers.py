@@ -13,8 +13,6 @@ from api_gateway.routers.agents import (
     _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL,
     FileReference,
     _agent_cache,
-    _build_agent_candidate_content,
-    _build_agent_candidate_seed_facts,
     _build_agent_metrics_from_task_rows,
     _build_attachment_prompt_context,
     _build_attachment_workspace_context,
@@ -637,34 +635,6 @@ def test_normalize_llm_agent_candidates_keeps_distinct_topic_and_title() -> None
     assert len(normalized) == 1
     assert normalized[0]["topic"] == "本地美食攻略"
     assert normalized[0]["title"] == "按人群偏好定制城市吃喝路线"
-
-
-def test_agent_candidate_seed_facts_drop_duplicate_topic_title() -> None:
-    candidate = {
-        "topic": "基于用户兴趣定制本地美食攻略",
-        "title": "基于用户兴趣定制本地美食攻略",
-        "steps": ["收集口味偏好", "筛选候选商户", "按路线输出清单"],
-        "confidence": 0.85,
-    }
-
-    facts = _build_agent_candidate_seed_facts(candidate)
-    keys = [item["key"] for item in facts]
-
-    assert "interaction.sop.title" in keys
-    assert "interaction.sop.topic" not in keys
-
-
-def test_agent_candidate_content_drops_duplicate_topic_title() -> None:
-    candidate = {
-        "topic": "基于用户兴趣定制本地美食攻略",
-        "title": "基于用户兴趣定制本地美食攻略",
-        "steps": ["收集口味偏好", "筛选候选商户", "按路线输出清单"],
-    }
-
-    content = _build_agent_candidate_content(candidate)
-
-    assert "interaction.sop.title=基于用户兴趣定制本地美食攻略" in content
-    assert "interaction.sop.topic=基于用户兴趣定制本地美食攻略" not in content
 
 
 @pytest.mark.asyncio

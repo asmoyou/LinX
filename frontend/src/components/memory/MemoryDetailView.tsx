@@ -20,9 +20,9 @@ import {
 } from "lucide-react";
 import { LayoutModal } from "@/components/LayoutModal";
 import { ModalPanel } from "@/components/ModalPanel";
-import type { Memory, MemoryFact, MemoryIndexInfo } from "@/types/memory";
+import type { MemoryRecord, MemoryFact, MemoryIndexInfo } from "@/types/memory";
 
-const parseFacts = (memory: Memory): MemoryFact[] => {
+const parseFacts = (memory: MemoryRecord): MemoryFact[] => {
   const raw = memory.metadata?.facts;
   if (!Array.isArray(raw)) {
     return [];
@@ -72,7 +72,7 @@ const parseFacts = (memory: Memory): MemoryFact[] => {
   return uniqueFacts;
 };
 
-const getMetadataText = (memory: Memory, ...candidates: string[]): string | undefined => {
+const getMetadataText = (memory: MemoryRecord, ...candidates: string[]): string | undefined => {
   const metadata = memory.metadata;
   if (!metadata || typeof metadata !== "object") {
     return undefined;
@@ -86,7 +86,7 @@ const getMetadataText = (memory: Memory, ...candidates: string[]): string | unde
   return undefined;
 };
 
-const getMetadataNumber = (memory: Memory, ...candidates: string[]): number | undefined => {
+const getMetadataNumber = (memory: MemoryRecord, ...candidates: string[]): number | undefined => {
   const metadata = memory.metadata;
   if (!metadata || typeof metadata !== "object") {
     return undefined;
@@ -121,15 +121,15 @@ const formatFactScore = (value: unknown): string | null => {
 };
 
 interface MemoryDetailViewProps {
-  memory: Memory | null;
+  memory: MemoryRecord | null;
   isOpen: boolean;
   onClose: () => void;
-  onShare?: (memory: Memory) => void;
-  onDelete?: (memory: Memory) => void;
-  onReindex?: (memory: Memory) => void;
-  onInspectIndex?: (memory: Memory) => void;
+  onShare?: (memory: MemoryRecord) => void;
+  onDelete?: (memory: MemoryRecord) => void;
+  onReindex?: (memory: MemoryRecord) => void;
+  onInspectIndex?: (memory: MemoryRecord) => void;
   onUpdate?: (
-    memory: Memory,
+    memory: MemoryRecord,
     updates: {
       content: string;
       summary?: string;
@@ -140,7 +140,7 @@ interface MemoryDetailViewProps {
     },
   ) => Promise<void> | void;
   onReviewCandidate?: (
-    memory: Memory,
+    memory: MemoryRecord,
     action: "publish" | "reject" | "revise",
   ) => Promise<void> | void;
   isUpdating?: boolean;
@@ -231,7 +231,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
     }
   };
 
-  const getTypeIcon = (type: Memory["type"]) => {
+  const getTypeIcon = (type: MemoryRecord["type"]) => {
     switch (type) {
       case "skill_proposal":
         return <Brain className="w-6 h-6 text-blue-500" />;
@@ -240,7 +240,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
     }
   };
 
-  const getTypeLabel = (type: Memory["type"]) => {
+  const getTypeLabel = (type: MemoryRecord["type"]) => {
     switch (type) {
       case "skill_proposal":
         return t("memory.tabs.skillProposal", { defaultValue: "技能提案" });

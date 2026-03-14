@@ -87,7 +87,7 @@ class SkillProposalRepository:
             if review_note is not None:
                 row.review_note = str(review_note) if review_note else None
             if payload is not None:
-                row.materialized_data = dict(payload)
+                row.proposal_payload = dict(payload)
             if published_skill_id is not None:
                 row.published_skill_id = (
                     UUID(str(published_skill_id)) if published_skill_id else None

@@ -29,7 +29,7 @@ class SessionLedgerPersistResult:
     session_row_id: int
     event_count: int
     observation_count: int
-    materialization_count: int
+    projection_count: int
 
 
 class MemorySessionLedgerService:
@@ -63,19 +63,19 @@ class MemorySessionLedgerService:
                 "agent_name": str(agent_name or "").strip() or None,
                 "turn_count": len(turns),
                 "user_signal_count": len(extracted_signals),
-                "agent_experience_count": len(extracted_agent_candidates),
+                "skill_proposal_candidate_count": len(extracted_agent_candidates),
             },
         )
         events = self._observation_builder.build_session_events(turns)
-        user_observations, user_materializations = (
+        user_observations, user_projections = (
             self._observation_builder.build_user_preference_observations(
                 user_id=str(session.user_id),
                 turns=turns,
                 extracted_signals=extracted_signals,
             )
         )
-        agent_observations, agent_materializations = (
-            self._observation_builder.build_agent_experience_observations(
+        agent_observations, skill_proposal_projections = (
+            self._observation_builder.build_skill_proposal_observations(
                 agent_id=str(session.agent_id),
                 agent_name=agent_name,
                 turns=turns,
@@ -83,12 +83,12 @@ class MemorySessionLedgerService:
             )
         )
         observations = user_observations + agent_observations
-        materializations = user_materializations + agent_materializations
+        projections = user_projections + skill_proposal_projections
         session_row_id = self._repository.record_session_snapshot(
             snapshot=snapshot,
             events=events,
             observations=observations,
-            materializations=materializations,
+            projections=projections,
         )
         logger.info(
             "Persisted session ledger snapshot",
@@ -97,14 +97,14 @@ class MemorySessionLedgerService:
                 "session_row_id": session_row_id,
                 "event_count": len(events),
                 "observation_count": len(observations),
-                "materialization_count": len(materializations),
+                "projection_count": len(projections),
             },
         )
         return SessionLedgerPersistResult(
             session_row_id=session_row_id,
             event_count=len(events),
             observation_count=len(observations),
-            materialization_count=len(materializations),
+            projection_count=len(projections),
         )
 
 

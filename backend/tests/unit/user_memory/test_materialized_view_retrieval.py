@@ -1,9 +1,9 @@
-"""Tests for materialized user-memory and skill-view retrieval."""
+"""Tests for user-memory view retrieval."""
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from user_memory.materialized_view_retrieval import MaterializedViewRetrievalService
+from user_memory.user_memory_view_retrieval import UserMemoryViewRetrievalService
 
 
 class _RepoStub:
@@ -11,15 +11,13 @@ class _RepoStub:
         self.rows = rows
         self.calls = []
 
-    def list_materializations(self, **kwargs):
+    def list_projections(self, **kwargs):
         self.calls.append(kwargs)
         rows = list(self.rows)
-        materialization_type = kwargs.get("materialization_type")
+        view_type = kwargs.get("projection_type")
         status = kwargs.get("status")
-        if materialization_type:
-            rows = [
-                row for row in rows if str(row.materialization_type) == str(materialization_type)
-            ]
+        if view_type:
+            rows = [row for row in rows if str(row.view_type) == str(view_type)]
         if status:
             rows = [row for row in rows if str(row.status) == str(status)]
         return rows
@@ -30,8 +28,8 @@ def _row(
     row_id: int,
     owner_type: str,
     owner_id: str,
-    materialization_type: str,
-    materialization_key: str,
+    view_type: str,
+    view_key: str,
     title: str = "",
     summary: str = "",
     details: str = "",
@@ -43,13 +41,13 @@ def _row(
         id=row_id,
         owner_type=owner_type,
         owner_id=owner_id,
-        materialization_type=materialization_type,
-        materialization_key=materialization_key,
+        view_type=view_type,
+        view_key=view_key,
         title=title,
         summary=summary,
         details=details,
         status=status,
-        materialized_data=dict(payload or {}),
+        view_data=dict(payload or {}),
         updated_at=now,
         created_at=now,
     )
@@ -62,8 +60,8 @@ def test_user_profile_retrieval_returns_user_memory_items() -> None:
                 row_id=1,
                 owner_type="user",
                 owner_id="u-1",
-                materialization_type="user_profile",
-                materialization_key="response_style",
+                view_type="user_profile",
+                view_key="response_style",
                 summary="concise",
                 payload={
                     "key": "response_style",
@@ -74,47 +72,50 @@ def test_user_profile_retrieval_returns_user_memory_items() -> None:
             )
         ]
     )
-    service = MaterializedViewRetrievalService(repository=repo)
+    service = UserMemoryViewRetrievalService(repository=repo)
 
     results = service.retrieve_user_profile(user_id="u-1", query_text="写得简洁一点", top_k=5)
 
     assert len(results) == 1
     assert results[0].memory_type == "user_memory"
     assert results[0].metadata["record_type"] == "user_profile"
+    assert results[0].metadata["view_type"] == "user_profile"
 
 
-def test_agent_experience_retrieval_returns_skill_experience_items() -> None:
+def test_user_episode_retrieval_returns_episode_views() -> None:
     repo = _RepoStub(
         [
             _row(
-                row_id=2,
-                owner_type="agent",
-                owner_id="a-1",
-                materialization_type="agent_experience",
-                materialization_key="pdf_delivery",
-                title="Stable PDF delivery path",
-                summary="Switch converter and verify output.",
+                row_id=3,
+                owner_type="user",
+                owner_id="u-1",
+                view_type="episode",
+                view_key="episode_move_hz",
+                title="2024年8月 · 迁居",
+                summary="在2024年8月，搬到了杭州",
                 payload={
-                    "goal": "Stable PDF delivery path",
-                    "successful_path": [
-                        "inspect input constraints",
-                        "switch converter",
-                        "verify delivered file",
-                    ],
-                    "why_it_worked": "Switch converter and verify output.",
-                    "confidence": 0.84,
+                    "value": "搬到了杭州",
+                    "fact_kind": "event",
+                    "canonical_statement": "在2024年8月，搬到了杭州",
+                    "event_time": "2024年8月",
+                    "location": "杭州",
+                    "topic": "迁居",
+                    "confidence": 0.89,
                 },
             )
         ]
     )
-    service = MaterializedViewRetrievalService(repository=repo)
+    service = UserMemoryViewRetrievalService(repository=repo)
 
-    results = service.retrieve_agent_experience(
-        agent_id="a-1",
-        query_text="reliable pdf delivery path",
+    results = service.retrieve_user_episodes(
+        user_id="u-1",
+        query_text="什么时候搬到杭州",
         top_k=5,
     )
 
     assert len(results) == 1
-    assert results[0].memory_type == "skill_experience"
-    assert results[0].metadata["record_type"] == "agent_experience"
+    assert results[0].memory_type == "user_memory"
+    assert results[0].content == "在2024年8月，搬到了杭州"
+    assert results[0].metadata["record_type"] == "episode"
+    assert results[0].metadata["view_type"] == "episode"
+    assert results[0].metadata["event_time"] == "2024年8月"

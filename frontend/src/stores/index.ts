@@ -12,7 +12,7 @@ import { useDepartmentStore } from './departmentStore';
 import { useAgentStore } from './agentStore';
 import { useTaskStore } from './taskStore';
 import { useKnowledgeStore } from './knowledgeStore';
-import { useMemoryStore } from './memoryStore';
+import { useMemoryWorkbenchStore } from './memoryWorkbenchStore';
 import { useMissionStore } from './missionStore';
 import { useHealthStore } from './healthStore';
 import { usePreferencesStore } from './preferencesStore';
@@ -31,7 +31,7 @@ export { useDepartmentStore } from './departmentStore';
 export { useAgentStore } from './agentStore';
 export { useTaskStore } from './taskStore';
 export { useKnowledgeStore } from './knowledgeStore';
-export { useMemoryStore } from './memoryStore';
+export { useMemoryWorkbenchStore } from './memoryWorkbenchStore';
 export { useMissionStore } from './missionStore';
 export { useHealthStore } from './healthStore';
 
@@ -70,10 +70,10 @@ export type { Notification, NotificationType } from './notificationStore';
  *    - Tracks upload progress
  *    - Usage: const { documents, uploadQueue } = useKnowledgeStore();
  * 
- * 6. Memory Store (useMemoryStore):
+ * 6. Memory Workbench Store (useMemoryWorkbenchStore):
  *    - Manages user memory and skill proposals
  *    - Supports filtering by product tab, date, tags
- *    - Usage: const { memories, activeTab } = useMemoryStore();
+ *    - Usage: const { records, activeTab } = useMemoryWorkbenchStore();
  * 
  * 7. Theme Store (useThemeStore):
  *    - Manages light/dark/system theme
@@ -101,7 +101,7 @@ export const resetAllStores = () => {
   const agentStore = useAgentStore.getState();
   const taskStore = useTaskStore.getState();
   const knowledgeStore = useKnowledgeStore.getState();
-  const memoryStore = useMemoryStore.getState();
+  const memoryWorkbenchStore = useMemoryWorkbenchStore.getState();
   const missionStore = useMissionStore.getState();
   const healthStore = useHealthStore.getState();
   const preferencesStore = usePreferencesStore.getState();
@@ -112,7 +112,7 @@ export const resetAllStores = () => {
   agentStore.reset();
   taskStore.reset();
   knowledgeStore.reset();
-  memoryStore.reset();
+  memoryWorkbenchStore.reset();
   missionStore.reset();
   healthStore.reset();
   preferencesStore.reset();

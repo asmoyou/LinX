@@ -18,13 +18,13 @@ from .memory_access import (
     _memory_item_to_response,
     _require_agent_read_access_sync,
 )
-from .memory_contracts import AgentCandidateReviewRequest, MemoryResponse
+from .memory_contracts import AgentCandidateReviewRequest, MemoryItemResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _materialization_review_status(row_status: str, payload: Dict[str, Any]) -> str:
+def _proposal_review_status(row_status: str, payload: Dict[str, Any]) -> str:
     normalized = str(payload.get("review_status") or "").strip().lower()
     if normalized in {"pending", "published", "rejected"}:
         return normalized
@@ -36,7 +36,7 @@ def _materialization_review_status(row_status: str, payload: Dict[str, Any]) -> 
 
 
 def _build_skill_proposal_content(row: Any) -> str:
-    payload = row.materialized_data if isinstance(row.materialized_data, dict) else {}
+    payload = row.proposal_payload if isinstance(row.proposal_payload, dict) else {}
     goal = str(payload.get("goal") or row.title or "").strip()
     steps = [
         str(step).strip() for step in payload.get("successful_path") or [] if str(step).strip()
@@ -48,31 +48,31 @@ def _build_skill_proposal_content(row: Any) -> str:
     if not goal:
         return ""
 
-    lines = [f"agent.experience.goal={goal}"]
+    lines = [f"skill.proposal.goal={goal}"]
     if steps:
-        lines.append(f"agent.experience.successful_path={' | '.join(steps)}")
+        lines.append(f"skill.proposal.successful_path={' | '.join(steps)}")
     if why_it_worked:
-        lines.append(f"agent.experience.why_it_worked={why_it_worked}")
+        lines.append(f"skill.proposal.why_it_worked={why_it_worked}")
     if applicability:
-        lines.append(f"agent.experience.applicability={applicability}")
+        lines.append(f"skill.proposal.applicability={applicability}")
     if avoid:
-        lines.append(f"agent.experience.avoid={avoid}")
+        lines.append(f"skill.proposal.avoid={avoid}")
     return "\n".join(lines)
 
 
 def _skill_proposal_row_to_response(row: Any) -> Dict[str, Any]:
     from database.connection import get_db_session
 
-    payload = dict(row.materialized_data or {}) if isinstance(row.materialized_data, dict) else {}
+    payload = dict(row.proposal_payload or {}) if isinstance(row.proposal_payload, dict) else {}
     agent_id = str(row.owner_id) if str(row.owner_type or "") == "agent" else None
-    review_status = _materialization_review_status(str(row.status or ""), payload)
+    review_status = _proposal_review_status(str(row.status or ""), payload)
     content = _build_skill_proposal_content(row) or str(row.summary or row.title or "").strip()
     created_at = row.updated_at or row.created_at or datetime.now(timezone.utc)
     metadata = {
         **payload,
         "signal_type": "skill_proposal",
         "proposal_id": int(row.id),
-        "proposal_key": str(getattr(row, "proposal_key", None) or row.materialization_key or ""),
+        "proposal_key": str(getattr(row, "proposal_key", None) or ""),
         "review_status": review_status,
         "status": str(row.status or ""),
         "agent_id": agent_id,
@@ -154,7 +154,7 @@ def _merge_review_payload(
     return updated
 
 
-@router.get("", response_model=List[MemoryResponse])
+@router.get("", response_model=List[MemoryItemResponse])
 async def list_skill_proposals(
     agent_id: Optional[str] = Query(None),
     review_status: str = Query("pending", pattern=r"^(pending|published|rejected|all)$"),
@@ -177,10 +177,10 @@ async def list_skill_proposals(
             detail=f"Failed to list skill proposals: {exc}",
         ) from exc
 
-    return [MemoryResponse(**_skill_proposal_row_to_response(item)) for item in results]
+    return [MemoryItemResponse(**_skill_proposal_row_to_response(item)) for item in results]
 
 
-@router.post("/{memory_id}/review", response_model=MemoryResponse)
+@router.post("/{memory_id}/review", response_model=MemoryItemResponse)
 async def review_skill_proposal(
     memory_id: int,
     request: AgentCandidateReviewRequest,
@@ -200,8 +200,8 @@ async def review_skill_proposal(
     try:
         payload = _merge_review_payload(
             (
-                dict(existing.materialized_data or {})
-                if isinstance(existing.materialized_data, dict)
+                dict(existing.proposal_payload or {})
+                if isinstance(existing.proposal_payload, dict)
                 else {}
             ),
             request,
@@ -228,10 +228,10 @@ async def review_skill_proposal(
             detail="Skill proposal not found",
         )
 
-    return MemoryResponse(**_skill_proposal_row_to_response(updated))
+    return MemoryItemResponse(**_skill_proposal_row_to_response(updated))
 
 
-@router.post("/{memory_id}/publish", response_model=MemoryResponse)
+@router.post("/{memory_id}/publish", response_model=MemoryItemResponse)
 async def publish_skill_proposal(
     memory_id: int,
     request: AgentCandidateReviewRequest,
@@ -244,32 +244,3 @@ async def publish_skill_proposal(
         request=request,
         current_user=current_user,
     )
-
-
-@router.get("/experiences", response_model=List[MemoryResponse])
-async def list_skill_experiences(
-    agent_id: str = Query(...),
-    query_text: str = Query("*", alias="query"),
-    limit: int = Query(20, ge=1, le=100),
-    min_score: Optional[float] = Query(None, alias="minScore", ge=0.0, le=1.0),
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    """Read approved agent-experience materializations."""
-    await asyncio.to_thread(_require_agent_read_access_sync, agent_id, current_user)
-    try:
-        results = await asyncio.to_thread(
-            get_skill_proposal_service().list_published_experiences,
-            agent_id=str(agent_id),
-            query_text=query_text,
-            limit=limit,
-            min_score=min_score,
-        )
-    except Exception as exc:
-        logger.error("Failed to list skill experiences: %s", exc, exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list skill experiences: {exc}",
-        ) from exc
-
-    results = await asyncio.to_thread(lambda: [_memory_item_to_response(item) for item in results])
-    return [MemoryResponse(**item) for item in results]

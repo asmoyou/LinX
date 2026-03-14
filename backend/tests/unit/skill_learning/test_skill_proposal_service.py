@@ -15,7 +15,7 @@ def test_review_proposal_publishes_to_skill_registry_and_updates_proposal():
         title="Stable PDF delivery path",
         goal="Stable PDF delivery path",
         why_it_worked="Try LibreOffice after conversion failures",
-        materialized_data={
+        proposal_payload={
             "goal": "Stable PDF delivery path",
             "successful_path": ["detect office doc", "run libreoffice headless", "upload PDF"],
         },
@@ -46,22 +46,51 @@ def test_review_proposal_publishes_to_skill_registry_and_updates_proposal():
     assert repository.update_proposal.call_args.kwargs["published_skill_id"] == "skill-uuid"
 
 
-def test_list_published_experiences_applies_min_score_filter():
-    service = SkillProposalService(repository=MagicMock())
-    items = [
-        SimpleNamespace(similarity_score=0.91, content="a"),
-        SimpleNamespace(similarity_score=0.3, content="b"),
-    ]
-
-    with patch(
-        "skill_learning.service.get_materialized_view_retrieval_service",
-        return_value=SimpleNamespace(retrieve_agent_experience=lambda **_: items),
-    ):
-        results = service.list_published_experiences(
+def test_list_published_skills_reads_registry_backed_runtime_items():
+    repository = MagicMock()
+    repository.list_proposals.return_value = [
+        SimpleNamespace(
+            id=7,
             agent_id="agent-1",
-            query_text="pdf",
-            limit=5,
-            min_score=0.5,
+            user_id="user-1",
+            proposal_key="pdf_delivery",
+            title="Stable PDF delivery path",
+            goal="Stable PDF delivery path",
+            why_it_worked="Switch converter and verify output.",
+            proposal_payload={
+                "goal": "Stable PDF delivery path",
+                "successful_path": ["inspect input constraints", "switch converter"],
+                "why_it_worked": "Switch converter and verify output.",
+                "confidence": 0.9,
+            },
+            published_skill_id="7f9f8b89-0f13-4c95-a827-2199efd28475",
+            review_status="published",
+            updated_at=None,
+            created_at=None,
         )
+    ]
+    registry = MagicMock()
+    registry.get_skill.return_value = SimpleNamespace(
+        skill_id="7f9f8b89-0f13-4c95-a827-2199efd28475",
+        name="learned_agent_1_pdf_delivery",
+        description="Stable PDF delivery path: Switch converter and verify output.",
+        skill_type="agent_skill",
+        storage_type="inline",
+        skill_md_content="# Stable PDF delivery path",
+        is_active=True,
+        updated_at=None,
+        created_at=None,
+    )
+    service = SkillProposalService(repository=repository, skill_registry=registry)
 
-    assert [item.content for item in results] == ["a"]
+    results = service.list_published_skills(
+        agent_id="agent-1",
+        query_text="reliable pdf delivery path",
+        limit=5,
+        min_score=0.5,
+    )
+
+    assert len(results) == 1
+    assert results[0].memory_type == "published_skill"
+    assert results[0].metadata["skill_name"] == "learned_agent_1_pdf_delivery"
+    assert "learned.skill.goal=Stable PDF delivery path" in results[0].content

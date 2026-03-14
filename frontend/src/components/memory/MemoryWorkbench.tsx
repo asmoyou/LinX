@@ -17,19 +17,19 @@ import { MemoryConfigPanel } from '@/components/memory/MemoryConfigPanel';
 import { MemoryDetailView } from '@/components/memory/MemoryDetailView';
 import { MemoryRetrievalTestPanel } from '@/components/memory/MemoryRetrievalTestPanel';
 import { MemorySearchBar } from '@/components/memory/MemorySearchBar';
-import { memoriesApi } from '@/api/memories';
-import { useMemoryStore } from '@/stores/memoryStore';
-import type { Memory, MemoryProductType } from '@/types/memory';
+import { memoryWorkbenchApi } from '@/api/memoryWorkbench';
+import { useMemoryWorkbenchStore } from '@/stores/memoryWorkbenchStore';
+import type { MemoryRecord, MemorySurfaceType } from '@/types/memory';
 
 const DEFAULT_MEMORY_PAGE_SIZE = 18;
 const MEMORY_PAGE_SIZE_OPTIONS = [12, 18, 24, 36];
-const FETCH_LIMITS: Record<MemoryProductType, number> = {
+const FETCH_LIMITS: Record<MemorySurfaceType, number> = {
   user_memory: 100,
   skill_proposal: 200,
 };
 
 const SURFACE_META: Record<
-  MemoryProductType,
+  MemorySurfaceType,
   {
     icon: typeof User;
     accentClassName: string;
@@ -64,17 +64,17 @@ const getErrorDetail = (error: unknown): string | null => {
   return typeof detail === 'string' && detail.trim() ? detail : null;
 };
 
-const matchesLocalQuery = (memory: Memory, query: string): boolean => {
+const matchesLocalQuery = (record: MemoryRecord, query: string): boolean => {
   const normalized = query.trim().toLowerCase();
   if (!normalized) {
     return true;
   }
 
   const searchSpace = [
-    memory.summary || '',
-    memory.content,
-    ...(memory.tags || []),
-    ...Object.values(memory.metadata || {}).map((value) =>
+    record.summary || '',
+    record.content,
+    ...(record.tags || []),
+    ...Object.values(record.metadata || {}).map((value) =>
       typeof value === 'string' ? value : JSON.stringify(value)
     ),
   ]
@@ -84,7 +84,7 @@ const matchesLocalQuery = (memory: Memory, query: string): boolean => {
   return searchSpace.includes(normalized);
 };
 
-const sortMemories = (items: Memory[]): Memory[] => {
+const sortRecords = (items: MemoryRecord[]): MemoryRecord[] => {
   return [...items].sort((left, right) => {
     const leftStatus = String(left.metadata?.review_status || 'pending').toLowerCase();
     const rightStatus = String(right.metadata?.review_status || 'pending').toLowerCase();
@@ -109,35 +109,35 @@ const sortMemories = (items: Memory[]): Memory[] => {
   });
 };
 
-interface MemoryWorkspaceProps {
-  memoryType: MemoryProductType;
+interface MemoryWorkbenchProps {
+  memoryType: MemorySurfaceType;
   title: string;
   description: string;
 }
 
-export const MemoryWorkspace: React.FC<MemoryWorkspaceProps> = ({
+export const MemoryWorkbench: React.FC<MemoryWorkbenchProps> = ({
   memoryType,
   title,
   description,
 }) => {
   const { t } = useTranslation();
   const {
-    memories,
+    records,
     isLoading,
     error,
-    setMemoriesByType,
-    updateMemory,
+    setRecordsByType,
+    updateRecord,
     setLoading,
     setError,
     clearError,
     setActiveTab,
-  } = useMemoryStore();
+  } = useMemoryWorkbenchStore();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
+  const [selectedRecord, setSelectedRecord] = useState<MemoryRecord | null>(null);
   const [isDetailViewOpen, setIsDetailViewOpen] = useState(false);
   const [isConfigPanelOpen, setIsConfigPanelOpen] = useState(false);
   const [isRetrievalTestOpen, setIsRetrievalTestOpen] = useState(false);
@@ -147,9 +147,9 @@ export const MemoryWorkspace: React.FC<MemoryWorkspaceProps> = ({
   const [reviewingCandidateId, setReviewingCandidateId] = useState<string | null>(null);
 
   const memoryQuery = memoryType === 'user_memory' ? debouncedSearchQuery : undefined;
-  const activeMemories = useMemo(
-    () => memories.filter((memory) => memory.type === memoryType),
-    [memories, memoryType]
+  const activeRecords = useMemo(
+    () => records.filter((record) => record.type === memoryType),
+    [records, memoryType]
   );
   const surfaceMeta = SURFACE_META[memoryType];
   const SurfaceIcon = surfaceMeta.icon;
@@ -178,15 +178,15 @@ export const MemoryWorkspace: React.FC<MemoryWorkspaceProps> = ({
     try {
       const items =
         memoryType === 'user_memory'
-          ? await memoriesApi.listUserMemory({
+          ? await memoryWorkbenchApi.listUserMemory({
               query: memoryQuery || undefined,
               limit: FETCH_LIMITS[memoryType],
             })
-          : await memoriesApi.listSkillProposals({
+          : await memoryWorkbenchApi.listSkillProposals({
               review_status: 'all',
               limit: FETCH_LIMITS[memoryType],
             });
-      setMemoriesByType(memoryType, items);
+      setRecordsByType(memoryType, items);
     } catch (fetchError: unknown) {
       setError(getErrorDetail(fetchError) || t('memory.loadError', { defaultValue: 'Failed to load memory data' }));
     } finally {
@@ -198,7 +198,7 @@ export const MemoryWorkspace: React.FC<MemoryWorkspaceProps> = ({
     memoryType,
     setError,
     setLoading,
-    setMemoriesByType,
+    setRecordsByType,
     t,
   ]);
 
@@ -207,36 +207,36 @@ export const MemoryWorkspace: React.FC<MemoryWorkspaceProps> = ({
   }, [fetchMemories]);
 
   const allTags = useMemo(
-    () => Array.from(new Set(activeMemories.flatMap((memory) => memory.tags))),
-    [activeMemories]
+    () => Array.from(new Set(activeRecords.flatMap((record) => record.tags))),
+    [activeRecords]
   );
 
-  const filteredMemories = useMemo(() => {
-    return sortMemories(
-      activeMemories.filter((memory) => {
-        if (dateFrom && new Date(memory.createdAt) < new Date(dateFrom)) {
+  const filteredRecords = useMemo(() => {
+    return sortRecords(
+      activeRecords.filter((record) => {
+        if (dateFrom && new Date(record.createdAt) < new Date(dateFrom)) {
           return false;
         }
-        if (dateTo && new Date(memory.createdAt) > new Date(dateTo)) {
+        if (dateTo && new Date(record.createdAt) > new Date(dateTo)) {
           return false;
         }
-        if (selectedTags.length > 0 && !selectedTags.some((tag) => memory.tags.includes(tag))) {
+        if (selectedTags.length > 0 && !selectedTags.some((tag) => record.tags.includes(tag))) {
           return false;
         }
-        if (memoryType === 'skill_proposal' && !matchesLocalQuery(memory, debouncedSearchQuery)) {
+        if (memoryType === 'skill_proposal' && !matchesLocalQuery(record, debouncedSearchQuery)) {
           return false;
         }
         return true;
       })
     );
-  }, [activeMemories, dateFrom, dateTo, debouncedSearchQuery, memoryType, selectedTags]);
+  }, [activeRecords, dateFrom, dateTo, debouncedSearchQuery, memoryType, selectedTags]);
 
-  const effectiveTotal = filteredMemories.length;
+  const effectiveTotal = filteredRecords.length;
   const totalPages = Math.max(1, Math.ceil(effectiveTotal / pageSize));
-  const visibleMemories = useMemo(() => {
+  const visibleRecords = useMemo(() => {
     const start = (currentPage - 1) * pageSize;
-    return filteredMemories.slice(start, start + pageSize);
-  }, [currentPage, filteredMemories, pageSize]);
+    return filteredRecords.slice(start, start + pageSize);
+  }, [currentPage, filteredRecords, pageSize]);
   const hasActiveFilters = Boolean(
     debouncedSearchQuery || dateFrom || dateTo || selectedTags.length > 0
   );
@@ -251,31 +251,31 @@ export const MemoryWorkspace: React.FC<MemoryWorkspaceProps> = ({
   }, [currentPage, totalPages]);
 
   useEffect(() => {
-    if (selectedMemory && !activeMemories.some((item) => item.id === selectedMemory.id)) {
-      setSelectedMemory(null);
+    if (selectedRecord && !activeRecords.some((item) => item.id === selectedRecord.id)) {
+      setSelectedRecord(null);
       setIsDetailViewOpen(false);
     }
-  }, [activeMemories, selectedMemory]);
+  }, [activeRecords, selectedRecord]);
 
-  const handleMemoryClick = (memory: Memory) => {
-    setSelectedMemory(memory);
+  const handleRecordClick = (record: MemoryRecord) => {
+    setSelectedRecord(record);
     setIsDetailViewOpen(true);
   };
 
   const handleReviewCandidate = async (
-    memory: Memory,
+    record: MemoryRecord,
     action: 'publish' | 'reject' | 'revise'
   ) => {
     if (reviewingCandidateId) {
       return;
     }
 
-    setReviewingCandidateId(memory.id);
+    setReviewingCandidateId(record.id);
     try {
-      const updated = await memoriesApi.reviewSkillProposal(memory.id, { action });
-      updateMemory(memory.id, updated);
-      if (selectedMemory?.id === memory.id) {
-        setSelectedMemory(updated);
+      const updated = await memoryWorkbenchApi.reviewSkillProposal(record.id, { action });
+      updateRecord(record.id, updated);
+      if (selectedRecord?.id === record.id) {
+        setSelectedRecord(updated);
       }
       await fetchMemories();
       toast.success(
@@ -318,7 +318,7 @@ export const MemoryWorkspace: React.FC<MemoryWorkspaceProps> = ({
             </span>
             <span>{title}</span>
             <span className="rounded-full bg-white/70 px-2 py-0.5 text-xs dark:bg-black/20">
-              {activeMemories.length}
+              {activeRecords.length}
             </span>
           </div>
           <div>
@@ -380,7 +380,7 @@ export const MemoryWorkspace: React.FC<MemoryWorkspaceProps> = ({
 
       {!isLoading && (
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-          {visibleMemories.length === 0 ? (
+          {visibleRecords.length === 0 ? (
             <div className="col-span-full py-12 text-center">
               <p className="text-gray-500 dark:text-gray-400">
                 {effectiveTotal === 0 && !hasActiveFilters
@@ -391,11 +391,11 @@ export const MemoryWorkspace: React.FC<MemoryWorkspaceProps> = ({
               </p>
             </div>
           ) : (
-            visibleMemories.map((memory) => (
+            visibleRecords.map((record) => (
               <MemoryCard
-                key={memory.id}
-                memory={memory}
-                onClick={handleMemoryClick}
+                key={record.id}
+                memory={record}
+                onClick={handleRecordClick}
                 showRelevance={memoryType === 'user_memory' && Boolean(debouncedSearchQuery)}
               />
             ))
@@ -456,17 +456,17 @@ export const MemoryWorkspace: React.FC<MemoryWorkspaceProps> = ({
       )}
 
       <MemoryDetailView
-        key={selectedMemory?.id || 'memory-detail'}
-        memory={selectedMemory}
+        key={selectedRecord?.id || 'memory-detail'}
+        memory={selectedRecord}
         isOpen={isDetailViewOpen}
         onClose={() => {
           setIsDetailViewOpen(false);
-          setSelectedMemory(null);
+          setSelectedRecord(null);
         }}
         onReviewCandidate={
-          selectedMemory?.type === 'skill_proposal' ? handleReviewCandidate : undefined
+          selectedRecord?.type === 'skill_proposal' ? handleReviewCandidate : undefined
         }
-        isReviewingCandidate={selectedMemory ? reviewingCandidateId === selectedMemory.id : false}
+        isReviewingCandidate={selectedRecord ? reviewingCandidateId === selectedRecord.id : false}
       />
       <MemoryConfigPanel isOpen={isConfigPanelOpen} onClose={() => setIsConfigPanelOpen(false)} />
       <MemoryRetrievalTestPanel

@@ -7,7 +7,7 @@ from typing import Iterable, List, Optional, Tuple
 
 from user_memory.memory_entry_retrieval import get_memory_entry_retrieval_service
 from user_memory.items import RetrievedMemoryItem
-from user_memory.materialized_view_retrieval import get_materialized_view_retrieval_service
+from user_memory.user_memory_view_retrieval import get_user_memory_view_retrieval_service
 
 
 class UserMemoryRetriever:
@@ -18,7 +18,12 @@ class UserMemoryRetriever:
         metadata = dict(item.metadata or {})
         return (
             str(metadata.get("memory_source") or ""),
-            str(metadata.get("entry_id") or metadata.get("materialization_id") or ""),
+            str(
+                metadata.get("entry_id")
+                or metadata.get("view_id")
+                or metadata.get("proposal_id")
+                or ""
+            ),
             str(item.content or "").strip(),
         )
 
@@ -74,7 +79,7 @@ class UserMemoryRetriever:
             query_text=query_text,
             top_k=limit,
         )
-        profile = get_materialized_view_retrieval_service().retrieve_user_profile(
+        profile = get_user_memory_view_retrieval_service().retrieve_user_profile(
             user_id=str(user_id),
             query_text=query_text,
             top_k=limit,
@@ -89,7 +94,7 @@ class UserMemoryRetriever:
         limit: int = 20,
         min_score: Optional[float] = None,
     ) -> List[RetrievedMemoryItem]:
-        profile = get_materialized_view_retrieval_service().retrieve_user_profile(
+        profile = get_user_memory_view_retrieval_service().retrieve_user_profile(
             user_id=str(user_id),
             query_text=query_text,
             top_k=limit,
@@ -104,7 +109,15 @@ class UserMemoryRetriever:
         limit: int = 20,
         min_score: Optional[float] = None,
     ) -> List[RetrievedMemoryItem]:
-        """Return user event facts only."""
+        """Return user episode views, with event-fact fallback for older rows."""
+
+        episode_views = get_user_memory_view_retrieval_service().retrieve_user_episodes(
+            user_id=str(user_id),
+            query_text=query_text,
+            top_k=limit,
+        )
+        if episode_views:
+            return self._merge_items(episode_views, limit=limit, min_score=min_score)
 
         facts = get_memory_entry_retrieval_service().retrieve_user_facts(
             user_id=str(user_id),

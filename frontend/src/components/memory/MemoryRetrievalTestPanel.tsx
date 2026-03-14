@@ -3,15 +3,15 @@ import { useTranslation } from "react-i18next";
 import { Loader2, Search, X } from "lucide-react";
 import { LayoutModal } from "@/components/LayoutModal";
 import { ModalPanel } from "@/components/ModalPanel";
-import { memoriesApi } from "@/api/memories";
-import type { Memory, MemoryProductType } from "@/types/memory";
+import { memoryWorkbenchApi } from "@/api/memoryWorkbench";
+import type { MemoryRecord, MemorySurfaceType } from "@/types/memory";
 
-type RetrievalScope = MemoryProductType | "all";
+type RetrievalScope = MemorySurfaceType | "all";
 
 interface MemoryRetrievalTestPanelProps {
   isOpen: boolean;
   onClose: () => void;
-  activeType?: MemoryProductType | null;
+  activeType?: MemorySurfaceType | null;
 }
 
 const normalizeScore = (score: unknown): number | null => {
@@ -31,7 +31,7 @@ export const MemoryRetrievalTestPanel: React.FC<MemoryRetrievalTestPanelProps> =
   const [scope, setScope] = useState<RetrievalScope>("all");
   const [limit, setLimit] = useState(20);
   const [minScore, setMinScore] = useState(0.3);
-  const [results, setResults] = useState<Memory[] | null>(null);
+  const [results, setResults] = useState<MemoryRecord[] | null>(null);
   const [isSearching, setIsSearching] = useState(false);
 
   useEffect(() => {
@@ -72,12 +72,12 @@ export const MemoryRetrievalTestPanel: React.FC<MemoryRetrievalTestPanelProps> =
     try {
       if (scope === "all") {
         const [userMemory, skillProposals] = await Promise.all([
-          memoriesApi.listUserMemory({
+          memoryWorkbenchApi.listUserMemory({
             query: trimmed,
             limit,
             minScore,
           }),
-          memoriesApi.listSkillProposals({
+          memoryWorkbenchApi.listSkillProposals({
             review_status: "all",
             limit,
           }),
@@ -92,14 +92,14 @@ export const MemoryRetrievalTestPanel: React.FC<MemoryRetrievalTestPanelProps> =
           ),
         ]);
       } else if (scope === "user_memory") {
-        const data = await memoriesApi.listUserMemory({
+        const data = await memoryWorkbenchApi.listUserMemory({
           query: trimmed,
           limit,
           minScore,
         });
         setResults(data);
       } else {
-        const data = await memoriesApi.listSkillProposals({
+        const data = await memoryWorkbenchApi.listSkillProposals({
           review_status: "all",
           limit,
         });

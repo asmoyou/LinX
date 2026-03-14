@@ -1,12 +1,12 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { MemoryWorkspace } from '@/components/memory/MemoryWorkspace';
+import { MemoryWorkbench } from '@/components/memory/MemoryWorkbench';
 
 export const UserMemory: React.FC = () => {
   const { t } = useTranslation();
 
   return (
-    <MemoryWorkspace
+    <MemoryWorkbench
       memoryType="user_memory"
       title={t('nav.userMemory', { defaultValue: 'User Memory' })}
       description={t('memory.description.userMemory', {

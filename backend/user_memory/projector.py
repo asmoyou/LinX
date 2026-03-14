@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from user_memory.builder import UserMemoryBuilder, get_user_memory_builder
 from user_memory.session_ledger_repository import (
     MemoryEntryData,
-    MemoryMaterializationData,
+    MemoryProjectionData,
     MemoryObservationData,
     SessionLedgerSnapshot,
     SessionLedgerRepository,
@@ -32,7 +32,7 @@ class UserMemoryProjector:
         user_id: str,
         turns: List[Dict[str, Any]],
         extracted_signals: List[Dict[str, Any]],
-    ) -> Tuple[List[MemoryObservationData], List[MemoryMaterializationData]]:
+    ) -> Tuple[List[MemoryObservationData], List[MemoryProjectionData]]:
         return self._builder.build_user_preference_observations(
             user_id=str(user_id),
             turns=turns,
@@ -45,7 +45,7 @@ class UserMemoryProjector:
         snapshot: SessionLedgerSnapshot,
         turns: List[Dict[str, Any]],
         extracted_signals: List[Dict[str, Any]],
-    ) -> Tuple[List[MemoryEntryData], List[MemoryMaterializationData]]:
+    ) -> Tuple[List[MemoryEntryData], List[MemoryProjectionData]]:
         observations, views = self.build_observations_and_views(
             user_id=str(snapshot.user_id),
             turns=turns,

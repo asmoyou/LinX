@@ -8,29 +8,41 @@ from api_gateway.routers.memory_contracts import MemoryConfigUpdateRequest
 from api_gateway.routers.memory_pipeline_config import (
     _build_memory_config_payload,
     get_memory_config,
-    maintain_materializations,
     update_memory_config,
 )
 
 
-def _config_payload(top_k: int) -> dict:
+def _config_payload(similarity_threshold: float) -> dict:
     return {
         "user_memory": {
             "embedding": {},
-            "retrieval": {"top_k": top_k},
+            "retrieval": {"similarity_threshold": similarity_threshold},
             "extraction": {},
-            "consolidation": {},
+            "consolidation": {
+                "enabled": True,
+                "run_on_startup": True,
+                "startup_delay_seconds": 180,
+                "interval_seconds": 21600,
+                "dry_run": False,
+                "limit": 5000,
+                "use_advisory_lock": True,
+            },
             "observability": {},
-            "retention": {},
         },
         "skill_learning": {
             "extraction": {},
-            "proposal_review": {},
-            "publish_policy": {},
-            "retention": {},
+            "publish_policy": {
+                "skill_type": "agent_skill",
+                "storage_type": "inline",
+                "reuse_existing_by_name": True,
+            },
         },
         "session_ledger": {},
-        "runtime_context": {},
+        "runtime_context": {
+            "enable_user_memory": True,
+            "enable_skills": True,
+            "enable_knowledge_base": True,
+        },
         "recommended": {},
     }
 
@@ -57,13 +69,12 @@ def regular_user():
 
 def test_build_memory_config_payload_resolves_effective_sources():
     user_memory_section = {
-        "retrieval": {"top_k": 7},
+        "retrieval": {"similarity_threshold": 0.55},
         "extraction": {"provider": "openai"},
     }
     skill_learning_section = {
         "extraction": {"provider": "openai", "max_proposals": 4},
     }
-    kb_section = {"search": {"rerank_provider": "cohere", "rerank_model": "rerank-v3"}}
     llm_section = {
         "default_provider": "anthropic",
         "providers": {"openai": {"models": {"chat": "gpt-4.1-mini"}}},
@@ -85,12 +96,11 @@ def test_build_memory_config_payload_resolves_effective_sources():
             skill_learning_section,
             {},
             {},
-            kb_section,
+            {},
             llm_section,
         )
 
-    assert payload["user_memory"]["retrieval"]["top_k"] == 7
-    assert payload["user_memory"]["retrieval"]["rerank_provider"] == "cohere"
+    assert payload["user_memory"]["retrieval"]["similarity_threshold"] == 0.55
     assert payload["user_memory"]["extraction"]["effective"]["provider"] == "openai"
     assert payload["user_memory"]["extraction"]["effective"]["model"] == "gpt-4.1-mini"
     assert payload["user_memory"]["embedding"]["effective"]["model"] == "text-embedding-3-large"
@@ -101,7 +111,7 @@ def test_build_memory_config_payload_resolves_effective_sources():
 async def test_get_memory_config_uses_reset_sections(admin_user):
     config = SimpleNamespace(
         get_section=lambda name: {
-            "user_memory": {"retrieval": {"top_k": 4}},
+            "user_memory": {"retrieval": {"similarity_threshold": 0.4}},
             "skill_learning": {},
             "session_ledger": {},
             "runtime_context": {},
@@ -109,7 +119,7 @@ async def test_get_memory_config_uses_reset_sections(admin_user):
             "llm": {},
         }[name]
     )
-    payload = _config_payload(4)
+    payload = _config_payload(0.4)
 
     with (
         patch("api_gateway.routers.memory_pipeline_config.get_config", return_value=config),
@@ -120,14 +130,16 @@ async def test_get_memory_config_uses_reset_sections(admin_user):
     ):
         result = await get_memory_config(current_user=admin_user)
 
-    assert result.user_memory == {"embedding": {}, "retrieval": {"top_k": 4}, "extraction": {}, "consolidation": {}, "observability": {}, "retention": {}}
+    assert result.user_memory == payload["user_memory"]
 
 
 @pytest.mark.asyncio
 async def test_update_memory_config_rejects_non_admin(regular_user):
     with pytest.raises(Exception) as exc:
         await update_memory_config(
-            update_data=MemoryConfigUpdateRequest(user_memory={"retrieval": {"top_k": 12}}),
+            update_data=MemoryConfigUpdateRequest(
+                user_memory={"retrieval": {"similarity_threshold": 0.42}}
+            ),
             current_user=regular_user,
         )
 
@@ -136,17 +148,22 @@ async def test_update_memory_config_rejects_non_admin(regular_user):
 
 @pytest.mark.asyncio
 async def test_update_memory_config_writes_requested_sections(admin_user):
+    canonical_payload = _config_payload(0.42)
+    canonical_payload["user_memory"]["consolidation"]["enabled"] = False
+    canonical_payload["skill_learning"]["publish_policy"]["skill_type"] = "workflow_skill"
+    canonical_payload["runtime_context"]["enable_skills"] = False
+
     update = MemoryConfigUpdateRequest(
         user_memory={
-            "retrieval": {"top_k": 12},
+            "retrieval": {"similarity_threshold": 0.42},
             "consolidation": {"enabled": False},
         },
-        runtime_context={"search_timeout_seconds": 5.5, "enable_skills": False},
-        skill_learning={"publish_policy": {"enabled": False}},
+        runtime_context={"enable_skills": False},
+        skill_learning={"publish_policy": {"skill_type": "workflow_skill"}},
     )
     reloaded = SimpleNamespace(
         get_section=lambda name: {
-            "user_memory": {"retrieval": {"top_k": 12}},
+            "user_memory": {"retrieval": {"similarity_threshold": 0.42}},
             "skill_learning": {},
             "session_ledger": {},
             "runtime_context": {},
@@ -158,66 +175,31 @@ async def test_update_memory_config_writes_requested_sections(admin_user):
 
     with (
         patch("builtins.open", file_mock),
-        patch("yaml.safe_load", return_value={"user_memory": {}, "skill_learning": {}, "runtime_context": {}}),
+        patch(
+            "yaml.safe_load",
+            return_value={"user_memory": {}, "skill_learning": {}, "runtime_context": {}},
+        ),
         patch("yaml.dump") as yaml_dump,
         patch("shared.config.reload_config", return_value=reloaded),
         patch(
             "api_gateway.routers.memory_pipeline_config._build_memory_config_payload",
-            return_value=_config_payload(12),
+            return_value=canonical_payload,
         ),
     ):
         result = await update_memory_config(update_data=update, current_user=admin_user)
 
     dumped_config = yaml_dump.call_args.args[0]
-    assert dumped_config["user_memory"]["retrieval"]["top_k"] == 12
+    assert dumped_config["user_memory"]["retrieval"] == {"similarity_threshold": 0.42}
     assert dumped_config["user_memory"]["consolidation"]["enabled"] is False
-    assert dumped_config["runtime_context"]["search_timeout_seconds"] == 5.5
+    assert dumped_config["runtime_context"] == {
+        "enable_user_memory": True,
+        "enable_skills": False,
+        "enable_knowledge_base": True,
+    }
     assert dumped_config["runtime_context"]["enable_skills"] is False
-    assert dumped_config["skill_learning"]["publish_policy"]["enabled"] is False
-    assert result.user_memory["retrieval"] == {"top_k": 12}
-
-
-@pytest.mark.asyncio
-async def test_maintain_materializations_rejects_non_admin(regular_user):
-    with pytest.raises(Exception) as exc:
-        await maintain_materializations(
-            dry_run=True,
-            user_id=None,
-            agent_id=None,
-            limit=None,
-            current_user=regular_user,
-        )
-
-    assert exc.value.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_maintain_materializations_delegates_to_service(admin_user):
-    service = MagicMock()
-    service.run_maintenance.return_value = SimpleNamespace()
-    service.to_dict.return_value = {
-        "consolidation": {"dry_run": True},
+    assert dumped_config["skill_learning"]["publish_policy"] == {
+        "skill_type": "workflow_skill",
+        "storage_type": "inline",
+        "reuse_existing_by_name": True,
     }
-
-    with patch(
-        "user_memory.materialization_maintenance_service.get_materialization_maintenance_service",
-        return_value=service,
-    ):
-        result = await maintain_materializations(
-            dry_run=True,
-            user_id="user-1",
-            agent_id="agent-1",
-            limit=50,
-            current_user=admin_user,
-        )
-
-    assert service.run_maintenance.call_args.kwargs == {
-        "dry_run": True,
-        "user_id": "user-1",
-        "agent_id": "agent-1",
-        "limit": 50,
-    }
-    assert result.requested_by == {
-        "user_id": str(admin_user.user_id),
-        "role": str(admin_user.role),
-    }
+    assert result.user_memory["retrieval"] == {"similarity_threshold": 0.42}

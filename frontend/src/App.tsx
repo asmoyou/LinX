@@ -16,7 +16,9 @@ const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m
 const Workforce = lazy(() => import('./pages/Workforce').then(m => ({ default: m.Workforce })));
 const Tasks = lazy(() => import('./pages/Missions').then(m => ({ default: m.Missions })));
 const Knowledge = lazy(() => import('./pages/Knowledge').then(m => ({ default: m.Knowledge })));
-const Memory = lazy(() => import('./pages/Memory').then(m => ({ default: m.Memory })));
+const MemoryRedirectPage = lazy(() =>
+  import('./pages/Memory').then((m) => ({ default: m.MemoryRedirectPage }))
+);
 const UserMemory = lazy(() =>
   import('./pages/UserMemory').then(m => ({ default: m.UserMemory }))
 );
@@ -197,7 +199,7 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
                     exit={{ opacity: 0, y: -20 }}
                     transition={{ duration: 0.3 }}
                   >
-                    <Memory />
+                    <MemoryRedirectPage />
                   </motion.div>
                 </Suspense>
               </PageErrorBoundary>

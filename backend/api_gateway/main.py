@@ -204,19 +204,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.warning(f"Failed to initialize SessionManager: {e}")
 
-    # Start materialization maintenance manager
+    # Start projection maintenance manager
     try:
-        from user_memory.materialization_maintenance_manager import (
-            initialize_materialization_maintenance_manager,
+        from user_memory.projection_maintenance_manager import (
+            initialize_projection_maintenance_manager,
         )
 
-        manager = await initialize_materialization_maintenance_manager()
+        manager = await initialize_projection_maintenance_manager()
         if manager:
-            logger.info("Materialization maintenance manager initialized")
+            logger.info("Projection maintenance manager initialized")
         else:
-            logger.info("Materialization maintenance manager is disabled by config")
+            logger.info("Projection maintenance manager is disabled by config")
     except Exception as e:
-        logger.warning(f"Failed to initialize materialization maintenance manager: {e}")
+        logger.warning(f"Failed to initialize projection maintenance manager: {e}")
 
     # Start session-ledger retention manager
     try:
@@ -285,16 +285,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.error(f"Failed to shutdown SessionManager: {e}")
 
-    # Stop materialization maintenance manager
+    # Stop projection maintenance manager
     try:
-        from user_memory.materialization_maintenance_manager import (
-            shutdown_materialization_maintenance_manager,
+        from user_memory.projection_maintenance_manager import (
+            shutdown_projection_maintenance_manager,
         )
 
-        await shutdown_materialization_maintenance_manager()
-        logger.info("Materialization maintenance manager shutdown complete")
+        await shutdown_projection_maintenance_manager()
+        logger.info("Projection maintenance manager shutdown complete")
     except Exception as e:
-        logger.error(f"Failed to shutdown materialization maintenance manager: {e}")
+        logger.error(f"Failed to shutdown projection maintenance manager: {e}")
 
     # Stop session-ledger retention manager
     try:

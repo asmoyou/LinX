@@ -31,7 +31,6 @@ def test_user_memory_routes_registered():
     assert ("/api/v1/user-memory/episodes", ("GET",)) in route_paths
     assert ("/api/v1/user-memory/config", ("GET",)) in route_paths
     assert ("/api/v1/user-memory/config", ("PUT",)) in route_paths
-    assert ("/api/v1/user-memory/admin/maintain-materializations", ("POST",)) in route_paths
 
 
 @pytest.mark.asyncio
@@ -79,7 +78,7 @@ async def test_list_user_memory_uses_user_scope(current_user):
 
 
 @pytest.mark.asyncio
-async def test_list_user_memory_profile_reads_user_profile_materialization(current_user):
+async def test_list_user_memory_profile_reads_user_profile_view(current_user):
     captured = {}
 
     def _list_profile(**kwargs):
@@ -90,7 +89,7 @@ async def test_list_user_memory_profile_reads_user_profile_materialization(curre
                 content="user.preference.output_format=markdown",
                 timestamp=datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
                 similarity_score=0.88,
-                metadata={"materialization_type": "user_profile", "record_type": "user_profile"},
+                metadata={"view_type": "user_profile", "record_type": "user_profile"},
                 memory_type="user_memory",
                 agent_id=None,
                 user_id="resolved-user-id",
@@ -118,7 +117,7 @@ async def test_list_user_memory_profile_reads_user_profile_materialization(curre
     assert captured["query_text"] == "markdown"
     assert captured["limit"] == 5
     assert captured["min_score"] == 0.4
-    assert response[0].metadata["materialization_type"] == "user_profile"
+    assert response[0].metadata["view_type"] == "user_profile"
 
 
 @pytest.mark.asyncio
@@ -183,7 +182,7 @@ async def test_list_user_memory_checks_owner_scope_before_search(current_user):
 
 @pytest.mark.asyncio
 async def test_get_user_memory_config_delegates_to_shared_config_helper(current_user):
-    expected = {"retrieval": {"top_k": 10}}
+    expected = {"retrieval": {"similarity_threshold": 0.3}}
 
     with patch(
         "api_gateway.routers.user_memory.get_memory_config", return_value=expected
@@ -197,44 +196,20 @@ async def test_get_user_memory_config_delegates_to_shared_config_helper(current_
 @pytest.mark.asyncio
 async def test_update_user_memory_config_passes_update_data_keyword(current_user):
     request = user_memory.MemoryConfigUpdateRequest(
-        user_memory={"retrieval": {"top_k": 8}}
+        user_memory={"retrieval": {"similarity_threshold": 0.42}}
     )
 
     with patch(
         "api_gateway.routers.user_memory.update_memory_config",
-        return_value={"user_memory": {"retrieval": {"top_k": 8}}},
+        return_value={"user_memory": {"retrieval": {"similarity_threshold": 0.42}}},
     ) as updater:
         result = await user_memory.update_user_memory_config(
             request=request,
             current_user=current_user,
         )
 
-    assert result == {"user_memory": {"retrieval": {"top_k": 8}}}
+    assert result == {"user_memory": {"retrieval": {"similarity_threshold": 0.42}}}
     assert updater.call_args.kwargs == {
         "update_data": request,
-        "current_user": current_user,
-    }
-
-
-@pytest.mark.asyncio
-async def test_maintain_user_memory_materializations_delegates_to_shared_helper(current_user):
-    with patch(
-        "api_gateway.routers.user_memory.maintain_materializations",
-        return_value="ok",
-    ) as maintain:
-        result = await user_memory.maintain_user_memory_materializations(
-            dry_run=False,
-            user_id="user-1",
-            agent_id="agent-1",
-            limit=25,
-            current_user=current_user,
-        )
-
-    assert result == "ok"
-    assert maintain.call_args.kwargs == {
-        "dry_run": False,
-        "user_id": "user-1",
-        "agent_id": "agent-1",
-        "limit": 25,
         "current_user": current_user,
     }

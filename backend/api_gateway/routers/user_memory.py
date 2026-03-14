@@ -14,14 +14,12 @@ from .memory_access import (
     _require_user_memory_read_access_sync,
 )
 from .memory_contracts import (
-    MaterializationMaintenanceResponse,
     MemoryConfigResponse,
     MemoryConfigUpdateRequest,
-    MemoryResponse,
+    MemoryItemResponse,
 )
 from .memory_pipeline_config import (
     get_memory_config,
-    maintain_materializations,
     update_memory_config,
 )
 
@@ -29,7 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("", response_model=List[MemoryResponse])
+@router.get("", response_model=List[MemoryItemResponse])
 async def list_user_memory(
     query_text: str = Query("*", alias="query"),
     user_id: Optional[str] = Query(None),
@@ -37,7 +35,7 @@ async def list_user_memory(
     min_score: Optional[float] = Query(None, alias="minScore", ge=0.0, le=1.0),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """List/search merged user memory facts and profile materializations."""
+    """List/search merged user memory facts and stable profile/episode views."""
     owner_id = str(user_id or current_user.user_id)
     await asyncio.to_thread(_require_user_memory_read_access_sync, owner_id, current_user)
 
@@ -57,10 +55,10 @@ async def list_user_memory(
         ) from exc
 
     results = await asyncio.to_thread(lambda: [_memory_item_to_response(item) for item in results])
-    return [MemoryResponse(**item) for item in results]
+    return [MemoryItemResponse(**item) for item in results]
 
 
-@router.get("/profile", response_model=List[MemoryResponse])
+@router.get("/profile", response_model=List[MemoryItemResponse])
 async def list_user_memory_profile(
     user_id: Optional[str] = Query(None),
     query_text: str = Query("*", alias="query"),
@@ -87,10 +85,10 @@ async def list_user_memory_profile(
         ) from exc
 
     results = await asyncio.to_thread(lambda: [_memory_item_to_response(item) for item in results])
-    return [MemoryResponse(**item) for item in results]
+    return [MemoryItemResponse(**item) for item in results]
 
 
-@router.get("/episodes", response_model=List[MemoryResponse])
+@router.get("/episodes", response_model=List[MemoryItemResponse])
 async def list_user_memory_episodes(
     user_id: Optional[str] = Query(None),
     query_text: str = Query("*", alias="query"),
@@ -118,7 +116,7 @@ async def list_user_memory_episodes(
         ) from exc
 
     results = await asyncio.to_thread(lambda: [_memory_item_to_response(item) for item in results])
-    return [MemoryResponse(**item) for item in results]
+    return [MemoryItemResponse(**item) for item in results]
 
 
 @router.get("/config", response_model=MemoryConfigResponse)
@@ -136,35 +134,3 @@ async def update_user_memory_config(
 ):
     """Update memory-pipeline config under the new product entry."""
     return await update_memory_config(update_data=request, current_user=current_user)
-
-
-@router.post(
-    "/admin/maintain-materializations",
-    response_model=MaterializationMaintenanceResponse,
-)
-async def maintain_user_memory_materializations(
-    dry_run: bool = Query(True, description="If true, only report affected rows"),
-    user_id: Optional[str] = Query(
-        None,
-        description="Optional user scope for user-profile consolidation",
-    ),
-    agent_id: Optional[str] = Query(
-        None,
-        description="Optional agent scope for skill-proposal consolidation",
-    ),
-    limit: Optional[int] = Query(
-        None,
-        ge=1,
-        le=50000,
-        description="Optional max materializations/entries to scan in this run",
-    ),
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    """Expose materialization consolidation through the reset user-memory surface."""
-    return await maintain_materializations(
-        dry_run=dry_run,
-        user_id=user_id,
-        agent_id=agent_id,
-        limit=limit,
-        current_user=current_user,
-    )

@@ -1,12 +1,12 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { MemoryWorkspace } from '@/components/memory/MemoryWorkspace';
+import { MemoryWorkbench } from '@/components/memory/MemoryWorkbench';
 
 export const SkillProposals: React.FC = () => {
   const { t } = useTranslation();
 
   return (
-    <MemoryWorkspace
+    <MemoryWorkbench
       memoryType="skill_proposal"
       title={t('nav.skillProposals', { defaultValue: 'Skill Proposals' })}
       description={t('memory.description.skillProposal', {

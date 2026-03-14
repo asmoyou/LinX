@@ -4,9 +4,9 @@ import { useUserStore } from '../stores/userStore';
 import { useAgentStore } from '../stores/agentStore';
 import { useTaskStore } from '../stores/taskStore';
 import { useKnowledgeStore } from '../stores/knowledgeStore';
-import { useMemoryStore } from '../stores/memoryStore';
+import { useMemoryWorkbenchStore } from '../stores/memoryWorkbenchStore';
 import apiClient from '../api/client';
-import { memoriesApi } from '../api/memories';
+import { memoryWorkbenchApi } from '../api/memoryWorkbench';
 
 /**
  * Hook to sync stores with backend API on mount
@@ -37,7 +37,7 @@ export const useStoreSync = (options: {
   const agentStore = useAgentStore();
   const taskStore = useTaskStore();
   const knowledgeStore = useKnowledgeStore();
-  const memoryStore = useMemoryStore();
+  const memoryWorkbenchStore = useMemoryWorkbenchStore();
 
   useEffect(() => {
     if (!isAuthenticated || !token) {
@@ -110,18 +110,18 @@ export const useStoreSync = (options: {
 
         // Fetch memories
         if (syncMemories) {
-          memoryStore.setLoading(true);
+          memoryWorkbenchStore.setLoading(true);
           try {
             const [userMemory, skillProposals] = await Promise.all([
-              memoriesApi.listUserMemory({ limit: 100 }),
-              memoriesApi.listSkillProposals({ review_status: 'all', limit: 200 }),
+              memoryWorkbenchApi.listUserMemory({ limit: 100 }),
+              memoryWorkbenchApi.listSkillProposals({ review_status: 'all', limit: 200 }),
             ]);
-            memoryStore.setMemories([...userMemory, ...skillProposals]);
+            memoryWorkbenchStore.setRecords([...userMemory, ...skillProposals]);
           } catch (error) {
             console.error('Failed to fetch memories:', error);
-            memoryStore.setError('Failed to load memories');
+            memoryWorkbenchStore.setError('Failed to load memories');
           } finally {
-            memoryStore.setLoading(false);
+            memoryWorkbenchStore.setLoading(false);
           }
         }
       } catch (error) {
@@ -200,19 +200,19 @@ export const useRefreshStore = () => {
   };
 
   const refreshMemories = async () => {
-    const memoryStore = useMemoryStore.getState();
-    memoryStore.setLoading(true);
+    const memoryWorkbenchStore = useMemoryWorkbenchStore.getState();
+    memoryWorkbenchStore.setLoading(true);
     try {
       const [userMemory, skillProposals] = await Promise.all([
-        memoriesApi.listUserMemory({ limit: 100 }),
-        memoriesApi.listSkillProposals({ review_status: 'all', limit: 200 }),
+        memoryWorkbenchApi.listUserMemory({ limit: 100 }),
+        memoryWorkbenchApi.listSkillProposals({ review_status: 'all', limit: 200 }),
       ]);
-      memoryStore.setMemories([...userMemory, ...skillProposals]);
+      memoryWorkbenchStore.setRecords([...userMemory, ...skillProposals]);
     } catch (error) {
       console.error('Failed to refresh memories:', error);
-      memoryStore.setError('Failed to refresh memories');
+      memoryWorkbenchStore.setError('Failed to refresh memories');
     } finally {
-      memoryStore.setLoading(false);
+      memoryWorkbenchStore.setLoading(false);
     }
   };
 

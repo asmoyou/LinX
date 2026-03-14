@@ -16,7 +16,7 @@ def test_skill_learning_publish_flow_promotes_proposal_into_skill_registry() -> 
         applicability="文件转换与交付场景",
         avoid="不要只依赖单一转换器",
         published_skill_id=None,
-        materialized_data={
+        proposal_payload={
             "goal": "稳定 PDF 转换交付",
             "successful_path": ["优先 libreoffice", "失败切图像中转", "最终上传 PDF"],
             "why_it_worked": "分层兜底避免单一路径失败。",
@@ -28,7 +28,9 @@ def test_skill_learning_publish_flow_promotes_proposal_into_skill_registry() -> 
     skill_registry = MagicMock()
     skill_registry.get_skill.return_value = None
     skill_registry.get_skill_by_name.return_value = None
-    skill_registry.register_skill.return_value = SimpleNamespace(skill_id="skill-1", name="learned_agent_1_stable_pdf_delivery_path")
+    skill_registry.register_skill.return_value = SimpleNamespace(
+        skill_id="skill-1", name="learned_agent_1_stable_pdf_delivery_path"
+    )
 
     service = SkillProposalService(repository=repository, skill_registry=skill_registry)
     updated = service.publish_proposal(

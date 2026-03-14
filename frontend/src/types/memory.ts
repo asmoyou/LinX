@@ -1,4 +1,4 @@
-export type MemoryProductType = "user_memory" | "skill_proposal";
+export type MemorySurfaceType = "user_memory" | "skill_proposal";
 
 export type MemoryFact = {
   key: string;
@@ -43,9 +43,9 @@ export type MemoryMetadata = {
   [key: string]: unknown;
 };
 
-export type Memory = {
+export type MemoryRecord = {
   id: string;
-  type: MemoryProductType;
+  type: MemorySurfaceType;
   content: string;
   summary?: string;
   agentId?: string;
@@ -64,8 +64,8 @@ export type Memory = {
   sharedWithNames?: string[];
 };
 
-export type MemoryFilter = {
-  type?: MemoryProductType;
+export type MemoryRecordFilter = {
+  type?: MemorySurfaceType;
   dateFrom?: string;
   dateTo?: string;
   tags?: string[];
@@ -116,27 +116,7 @@ export type MemoryConfigEmbedding = {
 };
 
 export type MemoryConfigRetrieval = {
-  top_k?: number;
   similarity_threshold?: number;
-  similarity_weight?: number;
-  recency_weight?: number;
-  strict_keyword_fallback?: boolean;
-  enable_reranking?: boolean;
-  rerank_provider?: string;
-  rerank_model?: string;
-  rerank_top_k?: number;
-  rerank_weight?: number;
-  rerank_timeout_seconds?: number;
-  rerank_failure_backoff_seconds?: number;
-  rerank_doc_max_chars?: number;
-  milvus?: {
-    metric_type?: string;
-    nprobe?: number;
-  };
-  sources?: {
-    rerank_provider?: string;
-    rerank_model?: string;
-  };
   [key: string]: unknown;
 };
 
@@ -144,16 +124,10 @@ export type MemoryConfigRuntimeContext = {
   enable_user_memory?: boolean;
   enable_skills?: boolean;
   enable_knowledge_base?: boolean;
-  collection_retry_attempts?: number;
-  collection_retry_delay_seconds?: number;
-  search_timeout_seconds?: number;
-  delete_timeout_seconds?: number;
   [key: string]: unknown;
 };
 
 export type MemoryConfigFactExtraction = {
-  enabled?: boolean;
-  model_enabled?: boolean;
   provider?: string;
   model?: string;
   timeout_seconds?: number;
@@ -216,28 +190,12 @@ export type MemoryConfigConsolidation = {
   [key: string]: unknown;
 };
 
-export type MemoryConfigRetention = {
-  enabled?: boolean;
-  retention_days?: number;
-  max_entries_per_user?: number;
-  max_proposals_per_agent?: number;
-  [key: string]: unknown;
-};
-
 export type MemoryConfigObservability = {
   enable_quality_counters?: boolean;
   [key: string]: unknown;
 };
 
-export type SkillLearningProposalReviewConfig = {
-  require_human_review?: boolean;
-  allow_revise?: boolean;
-  default_review_status?: string;
-  [key: string]: unknown;
-};
-
 export type SkillLearningPublishPolicyConfig = {
-  enabled?: boolean;
   skill_type?: string;
   storage_type?: string;
   reuse_existing_by_name?: boolean;
@@ -245,7 +203,6 @@ export type SkillLearningPublishPolicyConfig = {
 };
 
 export type MemoryConfigUserMemory = {
-  retention?: MemoryConfigRetention;
   embedding: MemoryConfigEmbedding;
   retrieval: MemoryConfigRetrieval;
   extraction: MemoryConfigFactExtraction;
@@ -254,9 +211,7 @@ export type MemoryConfigUserMemory = {
 };
 
 export type MemoryConfigSkillLearning = {
-  retention?: MemoryConfigRetention;
   extraction: SkillLearningExtractionConfig;
-  proposal_review?: SkillLearningProposalReviewConfig;
   publish_policy?: SkillLearningPublishPolicyConfig;
 };
 

@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from user_memory.session_ledger_repository import (
     MemoryEntryData,
-    MemoryMaterializationData,
+    MemoryProjectionData,
     SessionLedgerRepository,
     get_session_ledger_repository,
 )
@@ -18,7 +18,9 @@ class UserMemoryRepository:
     def __init__(self, repository: Optional[SessionLedgerRepository] = None):
         self._repository = repository or get_session_ledger_repository()
 
-    def upsert_entry(self, *, entry: MemoryEntryData, source_session_id: Optional[int] = None) -> int:
+    def upsert_entry(
+        self, *, entry: MemoryEntryData, source_session_id: Optional[int] = None
+    ) -> int:
         return self._repository.upsert_entry(
             entry=entry,
             source_session_id=source_session_id,
@@ -27,11 +29,11 @@ class UserMemoryRepository:
     def upsert_view(
         self,
         *,
-        view: MemoryMaterializationData,
+        view: MemoryProjectionData,
         source_session_id: Optional[int] = None,
     ) -> int:
-        return self._repository.upsert_materialization(
-            materialization=view,
+        return self._repository.upsert_projection(
+            projection=view,
             source_session_id=source_session_id,
         )
 
@@ -66,10 +68,10 @@ class UserMemoryRepository:
         status: Optional[str] = "active",
         limit: Optional[int] = 100,
     ) -> List[object]:
-        return self._repository.list_materializations(
+        return self._repository.list_projections(
             owner_type="user",
             owner_id=str(user_id),
-            materialization_type=view_type,
+            projection_type=view_type,
             status=status,
             limit=limit,
         )

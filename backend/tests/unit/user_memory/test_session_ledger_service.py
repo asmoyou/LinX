@@ -31,7 +31,7 @@ def _build_session(tmp_path: Path) -> ConversationSession:
     return session
 
 
-def test_session_ledger_service_builds_observations_and_materializations(tmp_path: Path) -> None:
+def test_session_ledger_service_builds_observations_and_projections(tmp_path: Path) -> None:
     repo = _RepoStub()
     service = SessionLedgerService(repository=repo)
     session = _build_session(tmp_path)
@@ -59,5 +59,42 @@ def test_session_ledger_service_builds_observations_and_materializations(tmp_pat
     assert result.session_row_id == 42
     assert result.event_count == 2
     assert result.observation_count == 1
-    assert result.materialization_count == 1
+    assert result.projection_count == 1
     assert repo.calls[0]["snapshot"].end_reason == "user"
+
+
+def test_session_ledger_service_materializes_user_episode_views(tmp_path: Path) -> None:
+    repo = _RepoStub()
+    service = SessionLedgerService(repository=repo)
+    session = _build_session(tmp_path)
+    turns = list(session.memory_turns)
+
+    result = service.persist_conversation_session(
+        session=session,
+        reason="user",
+        turns=turns,
+        agent_name="Memory Agent",
+        extracted_signals=[
+            {
+                "key": "life_event_move",
+                "semantic_key": "life_event_move",
+                "value": "搬到了杭州",
+                "fact_kind": "event",
+                "persistent": False,
+                "explicit_source": True,
+                "confidence": 0.91,
+                "event_time": "2024年8月",
+                "topic": "迁居",
+                "canonical_statement": "在2024年8月，搬到了杭州",
+                "latest_ts": "2026-03-07T10:00:00Z",
+                "reason": "explicit_event",
+            }
+        ],
+        extracted_agent_candidates=[],
+    )
+
+    projections = repo.calls[0]["projections"]
+
+    assert result.observation_count == 1
+    assert result.projection_count == 1
+    assert any(item.projection_type == "episode" for item in projections)

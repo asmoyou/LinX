@@ -1891,8 +1891,8 @@ class TestRuntimeContextService:
     def test_retrieve_skills_delegates_to_skill_learning_service(self, mock_get_service):
         agent_id = uuid4()
         user_id = uuid4()
-        expected = [SimpleNamespace(content="agent.experience.goal=Stable PDF delivery")]
-        mock_get_service.return_value.list_published_experiences.return_value = expected
+        expected = [SimpleNamespace(content="learned.skill.goal=Stable PDF delivery")]
+        mock_get_service.return_value.list_published_skills.return_value = expected
 
         service = RuntimeContextService()
         results = service.retrieve_skills(
@@ -1904,7 +1904,7 @@ class TestRuntimeContextService:
         )
 
         assert results == expected
-        call_kwargs = mock_get_service.return_value.list_published_experiences.call_args.kwargs
+        call_kwargs = mock_get_service.return_value.list_published_skills.call_args.kwargs
         assert call_kwargs["agent_id"] == str(agent_id)
         assert call_kwargs["query_text"] == "How should I deliver a converted PDF reliably?"
         assert call_kwargs["limit"] == 3

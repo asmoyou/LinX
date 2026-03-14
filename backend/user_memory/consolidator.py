@@ -4,18 +4,18 @@ from __future__ import annotations
 
 from typing import Optional
 
-from user_memory.materialization_maintenance_service import (
-    MaterializationConsolidationResult,
-    MaterializationMaintenanceService,
-    get_materialization_maintenance_service,
+from user_memory.projection_maintenance_service import (
+    ProjectionConsolidationResult,
+    ProjectionMaintenanceService,
+    get_projection_maintenance_service,
 )
 
 
 class UserMemoryConsolidator:
     """Consolidate duplicate or superseded user-memory facts and views."""
 
-    def __init__(self, service: Optional[MaterializationMaintenanceService] = None):
-        self._service = service or get_materialization_maintenance_service()
+    def __init__(self, service: Optional[ProjectionMaintenanceService] = None):
+        self._service = service or get_projection_maintenance_service()
 
     def consolidate(
         self,
@@ -23,8 +23,8 @@ class UserMemoryConsolidator:
         dry_run: bool = True,
         user_id: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> MaterializationConsolidationResult:
-        return self._service.consolidate_materializations(
+    ) -> ProjectionConsolidationResult:
+        return self._service.consolidate_projections(
             dry_run=dry_run,
             user_id=user_id,
             agent_id=None,

@@ -18,7 +18,7 @@ def _item(*, item_id: int, content: str, score: float, source: str, fact_kind: s
         timestamp=datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc),
         metadata={
             "memory_source": source,
-            ("entry_id" if source == "entry" else "materialization_id"): item_id,
+            ("entry_id" if source == "entry" else "view_id"): item_id,
             "fact_kind": fact_kind,
         },
     )
@@ -41,7 +41,7 @@ def test_user_memory_retriever_merges_stubbed_load_under_budget():
             item_id=2000 + index,
             content=f"user.preference.preference_{index}=value_{index}",
             score=0.8 - index * 0.0005,
-            source="materialization",
+            source="user_memory_view",
         )
         for index in range(200)
     ]
@@ -52,7 +52,7 @@ def test_user_memory_retriever_merges_stubbed_load_under_budget():
             return_value=SimpleNamespace(retrieve_user_facts=lambda **_: fact_items),
         ),
         patch(
-            "user_memory.retriever.get_materialized_view_retrieval_service",
+            "user_memory.retriever.get_user_memory_view_retrieval_service",
             return_value=SimpleNamespace(retrieve_user_profile=lambda **_: profile_items),
         ),
     ):

@@ -424,16 +424,16 @@ No company-memory duplication in the memory UI.
 ### `user_memory`
 
 Subsections:
+- `embedding`
 - `extraction`
 - `retrieval`
 - `consolidation`
-- `retention`
+- `observability`
 
 ### `skill_learning`
 
 Subsections:
 - `extraction`
-- `proposal_review`
 - `publish_policy`
 
 ### `session_ledger`
@@ -441,8 +441,18 @@ Subsections:
 Subsections:
 - `enabled`
 - `retention_days`
+- `run_on_startup`
+- `startup_delay_seconds`
 - `cleanup_interval_seconds`
 - `batch_size`
+- `dry_run`
+
+### `runtime_context`
+
+Subsections:
+- `enable_user_memory`
+- `enable_skills`
+- `enable_knowledge_base`
 
 ### `knowledge_base`
 

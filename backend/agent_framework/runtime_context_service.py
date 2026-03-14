@@ -24,9 +24,9 @@ class RuntimeContextService:
         top_k: int = 5,
         min_similarity: Optional[float] = None,
     ) -> List[object]:
-        """Retrieve published skill experiences for an agent."""
+        """Retrieve published learned skills for an agent."""
 
-        results = get_skill_proposal_service().list_published_experiences(
+        results = get_skill_proposal_service().list_published_skills(
             agent_id=str(agent_id),
             query_text=query,
             limit=top_k,

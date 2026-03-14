@@ -1,4 +1,4 @@
-"""Scheduled consolidation manager for user-memory materializations."""
+"""Scheduled consolidation manager for reset-era projection maintenance."""
 
 from __future__ import annotations
 
@@ -12,9 +12,7 @@ from typing import Any, Dict, Optional
 from sqlalchemy import text
 
 from shared.config import Config, get_config
-from user_memory.materialization_maintenance_service import (
-    get_materialization_maintenance_service,
-)
+from user_memory.projection_maintenance_service import get_projection_maintenance_service
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +50,8 @@ def _cfg_int(
 
 
 @dataclass(frozen=True)
-class MaterializationMaintenanceSettings:
-    """Configuration for scheduled materialization consolidation."""
+class ProjectionMaintenanceSettings:
+    """Configuration for scheduled projection consolidation."""
 
     enabled: bool = False
     run_on_startup: bool = True
@@ -64,8 +62,8 @@ class MaterializationMaintenanceSettings:
     advisory_lock_id: int = 73012020
     use_advisory_lock: bool = True
 
-    def with_defaults(self) -> "MaterializationMaintenanceSettings":
-        return MaterializationMaintenanceSettings(
+    def with_defaults(self) -> "ProjectionMaintenanceSettings":
+        return ProjectionMaintenanceSettings(
             enabled=self.enabled,
             run_on_startup=self.run_on_startup,
             startup_delay_seconds=self.startup_delay_seconds,
@@ -77,9 +75,9 @@ class MaterializationMaintenanceSettings:
         )
 
 
-def load_materialization_maintenance_settings(
+def load_projection_maintenance_settings(
     config: Optional[Config] = None,
-) -> MaterializationMaintenanceSettings:
+) -> ProjectionMaintenanceSettings:
     """Load settings from ``user_memory.consolidation``."""
 
     cfg = config or get_config()
@@ -87,7 +85,7 @@ def load_materialization_maintenance_settings(
 
     limit_raw = raw.get("limit")
     limit = _cfg_int(limit_raw, 5000, minimum=1, maximum=50000) if limit_raw is not None else 5000
-    settings = MaterializationMaintenanceSettings(
+    settings = ProjectionMaintenanceSettings(
         enabled=_cfg_bool(raw.get("enabled"), False),
         run_on_startup=_cfg_bool(raw.get("run_on_startup"), True),
         startup_delay_seconds=_cfg_int(raw.get("startup_delay_seconds"), 180, minimum=0),
@@ -127,19 +125,19 @@ def _release_advisory_lock(lock_id: int, session) -> None:
     try:
         session.execute(text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": lock_id})
     except Exception as exc:
-        logger.warning("Failed to release materialization lock %s cleanly: %s", lock_id, exc)
+        logger.warning("Failed to release projection lock %s cleanly: %s", lock_id, exc)
     finally:
         session.close()
 
 
-def run_materialization_maintenance_once(
-    settings: Optional[MaterializationMaintenanceSettings] = None,
+def run_projection_maintenance_once(
+    settings: Optional[ProjectionMaintenanceSettings] = None,
     *,
     reason: str = "manual",
 ) -> Dict[str, Any]:
-    """Run one materialization consolidation cycle."""
+    """Run one projection consolidation cycle."""
 
-    cfg = (settings or load_materialization_maintenance_settings()).with_defaults()
+    cfg = (settings or load_projection_maintenance_settings()).with_defaults()
     started = time.monotonic()
     if not cfg.enabled:
         return {
@@ -174,7 +172,7 @@ def run_materialization_maintenance_once(
             }
 
     try:
-        service = get_materialization_maintenance_service()
+        service = get_projection_maintenance_service()
         result = service.run_maintenance(
             dry_run=cfg.dry_run,
             limit=cfg.limit,
@@ -183,12 +181,10 @@ def run_materialization_maintenance_once(
         consolidation = payload.get("consolidation") or {}
         total_updates = (
             int(consolidation.get("user_status_updates") or 0)
-            + int(consolidation.get("agent_status_updates") or 0)
-            + int(consolidation.get("agent_duplicate_supersedes") or 0)
+            + int(consolidation.get("skill_proposal_status_updates") or 0)
+            + int(consolidation.get("skill_proposal_duplicate_supersedes") or 0)
             + int(consolidation.get("user_entry_status_updates") or 0)
-            + int(consolidation.get("agent_entry_status_updates") or 0)
             + int(consolidation.get("user_duplicate_entry_supersedes") or 0)
-            + int(consolidation.get("agent_duplicate_entry_supersedes") or 0)
         )
         return {
             "status": "ok",
@@ -203,11 +199,11 @@ def run_materialization_maintenance_once(
             _release_advisory_lock(cfg.advisory_lock_id, lock_session)
 
 
-class MaterializationMaintenanceManager:
-    """Periodic scheduler for materialization consolidation."""
+class ProjectionMaintenanceManager:
+    """Periodic scheduler for projection consolidation."""
 
-    def __init__(self, settings: Optional[MaterializationMaintenanceSettings] = None):
-        self.settings = (settings or load_materialization_maintenance_settings()).with_defaults()
+    def __init__(self, settings: Optional[ProjectionMaintenanceSettings] = None):
+        self.settings = (settings or load_projection_maintenance_settings()).with_defaults()
         self._task: Optional[asyncio.Task] = None
         self._shutdown = False
         self._run_lock = asyncio.Lock()
@@ -216,7 +212,7 @@ class MaterializationMaintenanceManager:
         """Start scheduled maintenance when enabled."""
 
         if not self.settings.enabled:
-            logger.info("Materialization maintenance is disabled by config")
+            logger.info("Projection maintenance is disabled by config")
             return False
         if self._task and not self._task.done():
             return True
@@ -224,7 +220,7 @@ class MaterializationMaintenanceManager:
         self._shutdown = False
         self._task = asyncio.create_task(self._run_loop())
         logger.info(
-            "Materialization maintenance manager started",
+            "Projection maintenance manager started",
             extra={
                 "interval_seconds": self.settings.interval_seconds,
                 "dry_run": self.settings.dry_run,
@@ -244,14 +240,14 @@ class MaterializationMaintenanceManager:
             except asyncio.CancelledError:
                 pass
         self._task = None
-        logger.info("Materialization maintenance manager stopped")
+        logger.info("Projection maintenance manager stopped")
 
     async def run_once(self, *, reason: str = "manual") -> Dict[str, Any]:
         """Run one maintenance cycle in a worker thread."""
 
         async with self._run_lock:
             result = await asyncio.to_thread(
-                run_materialization_maintenance_once,
+                run_projection_maintenance_once,
                 self.settings,
                 reason=reason,
             )
@@ -262,7 +258,7 @@ class MaterializationMaintenanceManager:
             )
             logger.log(
                 level,
-                "Materialization maintenance cycle finished",
+                "Projection maintenance cycle finished",
                 extra={
                     "status": result.get("status"),
                     "reason": reason,
@@ -298,7 +294,7 @@ class MaterializationMaintenanceManager:
             try:
                 await self.run_once(reason="startup")
             except Exception as exc:
-                logger.warning("Startup materialization maintenance cycle failed: %s", exc)
+                logger.warning("Startup projection maintenance cycle failed: %s", exc)
 
         while not self._shutdown:
             should_stop = await self._sleep_or_stop(self.settings.interval_seconds)
@@ -307,40 +303,38 @@ class MaterializationMaintenanceManager:
             try:
                 await self.run_once(reason="scheduled")
             except Exception as exc:
-                logger.warning("Scheduled materialization maintenance cycle failed: %s", exc)
+                logger.warning("Scheduled projection maintenance cycle failed: %s", exc)
 
 
-_maintenance_manager: Optional[MaterializationMaintenanceManager] = None
-_maintenance_manager_lock = threading.Lock()
+_projection_maintenance_manager: Optional[ProjectionMaintenanceManager] = None
+_projection_maintenance_manager_lock = threading.Lock()
 
 
-def get_materialization_maintenance_manager() -> MaterializationMaintenanceManager:
-    """Return global materialization maintenance manager singleton."""
+def get_projection_maintenance_manager() -> ProjectionMaintenanceManager:
+    """Return global projection maintenance manager singleton."""
 
-    global _maintenance_manager
-    with _maintenance_manager_lock:
-        if _maintenance_manager is None:
-            _maintenance_manager = MaterializationMaintenanceManager()
-        return _maintenance_manager
+    global _projection_maintenance_manager
+    with _projection_maintenance_manager_lock:
+        if _projection_maintenance_manager is None:
+            _projection_maintenance_manager = ProjectionMaintenanceManager()
+        return _projection_maintenance_manager
 
 
-async def initialize_materialization_maintenance_manager() -> (
-    Optional[MaterializationMaintenanceManager]
-):
-    """Initialize and start materialization maintenance manager if enabled."""
+async def initialize_projection_maintenance_manager() -> Optional[ProjectionMaintenanceManager]:
+    """Initialize and start the projection maintenance manager if enabled."""
 
-    manager = get_materialization_maintenance_manager()
+    manager = get_projection_maintenance_manager()
     started = await manager.start()
     return manager if started else None
 
 
-async def shutdown_materialization_maintenance_manager() -> None:
-    """Shutdown materialization maintenance manager singleton."""
+async def shutdown_projection_maintenance_manager() -> None:
+    """Shutdown the projection maintenance manager singleton."""
 
-    global _maintenance_manager
-    with _maintenance_manager_lock:
-        manager = _maintenance_manager
-        _maintenance_manager = None
+    global _projection_maintenance_manager
+    with _projection_maintenance_manager_lock:
+        manager = _projection_maintenance_manager
+        _projection_maintenance_manager = None
 
     if manager is not None:
         await manager.stop()

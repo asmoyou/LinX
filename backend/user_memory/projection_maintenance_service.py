@@ -1,4 +1,4 @@
-"""Consolidation utilities for user-memory materializations."""
+"""Consolidation utilities for reset-era user-memory views and skill proposals."""
 
 from __future__ import annotations
 
@@ -7,12 +7,13 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from user_memory.session_ledger_repository import (
+    MemoryProjectionData,
     SessionLedgerRepository,
     get_session_ledger_repository,
 )
 from user_memory.session_observation_builder import get_session_observation_builder
 
-_AGENT_REVIEW_TO_STATUS = {
+_REVIEW_TO_STATUS = {
     "published": "active",
     "pending": "pending_review",
     "rejected": "rejected",
@@ -30,28 +31,26 @@ def _utc_now_iso() -> str:
 
 
 @dataclass
-class MaterializationConsolidationResult:
+class ProjectionConsolidationResult:
     scanned_user_profiles: int = 0
-    scanned_agent_experiences: int = 0
+    scanned_skill_proposals: int = 0
     scanned_user_entries: int = 0
-    scanned_agent_entries: int = 0
+    episode_view_upserts: int = 0
     user_status_updates: int = 0
-    agent_status_updates: int = 0
+    skill_proposal_status_updates: int = 0
     user_entry_status_updates: int = 0
-    agent_entry_status_updates: int = 0
-    agent_duplicate_supersedes: int = 0
+    skill_proposal_duplicate_supersedes: int = 0
     user_duplicate_entry_supersedes: int = 0
-    agent_duplicate_entry_supersedes: int = 0
     dry_run: bool = True
 
 
 @dataclass
-class MaterializationMaintenanceResult:
-    consolidation: MaterializationConsolidationResult
+class ProjectionMaintenanceResult:
+    consolidation: ProjectionConsolidationResult
 
 
-class MaterializationMaintenanceService:
-    """Normalize materialized user-memory and skill-learning views."""
+class ProjectionMaintenanceService:
+    """Normalize reset-era projection rows and remove duplicate drift."""
 
     def __init__(
         self,
@@ -78,11 +77,11 @@ class MaterializationMaintenanceService:
 
     def _status_from_review(self, review_status: Any) -> str:
         normalized = self._normalize_status(review_status, default="pending")
-        return _AGENT_REVIEW_TO_STATUS.get(normalized, "pending_review")
+        return _REVIEW_TO_STATUS.get(normalized, "pending_review")
 
     @staticmethod
     def _desired_user_status(row: Any) -> str:
-        payload = dict(row.materialized_data or {})
+        payload = dict(getattr(row, "view_data", None) or {})
         return "active" if bool(payload.get("is_active", True)) else "superseded"
 
     @staticmethod
@@ -90,8 +89,67 @@ class MaterializationMaintenanceService:
         payload = dict(getattr(row, "entry_data", None) or {})
         return "active" if bool(payload.get("is_active", True)) else "superseded"
 
-    def _agent_signature(self, row: Any) -> Optional[str]:
-        payload = dict(row.materialized_data or {})
+    def _build_episode_view_from_entry(self, row: Any) -> Optional[MemoryProjectionData]:
+        payload = dict(getattr(row, "entry_data", None) or {})
+        if str(getattr(row, "fact_kind", "") or "").strip().lower() != "event":
+            return None
+
+        canonical_statement = str(
+            payload.get("canonical_statement") or getattr(row, "canonical_text", "") or ""
+        ).strip()
+        value = str(
+            payload.get("value") or getattr(row, "summary", "") or canonical_statement
+        ).strip()
+        event_time = (
+            str(payload.get("event_time") or getattr(row, "event_time", "") or "").strip() or None
+        )
+        topic = str(payload.get("topic") or getattr(row, "topic", "") or "").strip() or None
+        stable_key = str(payload.get("key") or getattr(row, "entry_key", "") or "").strip()
+        episode_key = self._observation_builder._build_user_episode_view_key(  # noqa: SLF001
+            stable_key=stable_key,
+            canonical_statement=canonical_statement,
+            event_time=event_time,
+            value=value,
+        )
+        title = self._observation_builder._build_user_episode_title(  # noqa: SLF001
+            canonical_statement=canonical_statement,
+            event_time=event_time,
+            topic=topic,
+            value=value,
+        )
+        details = str(payload.get("details") or getattr(row, "details", None) or "").strip() or None
+        return MemoryProjectionData(
+            owner_type="user",
+            owner_id=str(getattr(row, "owner_id", None) or getattr(row, "user_id", "")),
+            projection_type="episode",
+            projection_key=episode_key,
+            title=title,
+            summary=canonical_statement or value or title,
+            details=details,
+            status="active",
+            payload={
+                "key": stable_key,
+                "semantic_key": payload.get("semantic_key"),
+                "value": value,
+                "fact_kind": "event",
+                "canonical_statement": canonical_statement or None,
+                "predicate": payload.get("predicate"),
+                "object": payload.get("object"),
+                "event_time": event_time,
+                "persons": list(payload.get("persons") or getattr(row, "persons", None) or []),
+                "entities": list(payload.get("entities") or getattr(row, "entities", None) or []),
+                "location": payload.get("location") or getattr(row, "location", None),
+                "topic": topic,
+                "confidence": payload.get("confidence", getattr(row, "confidence", None)),
+                "importance": payload.get("importance", getattr(row, "importance", None)),
+                "source_entry_key": stable_key,
+                "source_entry_id": int(getattr(row, "id", 0) or 0),
+                "is_active": str(getattr(row, "status", "") or "active") == "active",
+            },
+        )
+
+    def _proposal_signature(self, row: Any) -> Optional[str]:
+        payload = dict(getattr(row, "proposal_payload", None) or {})
         goal = self._observation_builder.normalize_text(
             payload.get("goal") or row.title or "",
             max_chars=120,
@@ -105,59 +163,36 @@ class MaterializationMaintenanceService:
             return None
         return f"{goal}||{'|'.join(steps)}"
 
-    def _desired_agent_status(self, row: Any) -> str:
-        payload = dict(row.materialized_data or {})
-        review_status = payload.get("review_status")
-        if review_status is None:
-            return self._normalize_status(row.status, default="pending_review")
-        return self._status_from_review(review_status)
-
-    def _entry_signature(self, row: Any) -> Optional[str]:
-        payload = dict(getattr(row, "entry_data", None) or {})
-        entry_type = str(getattr(row, "entry_type", "") or "").strip().lower()
-        if entry_type == "user_fact":
-            key = str(payload.get("key") or getattr(row, "entry_key", "") or "").strip().lower()
-            if not key:
-                return None
-            return key
-        if entry_type == "agent_skill_candidate":
-            goal = self._observation_builder.normalize_text(
-                payload.get("goal") or getattr(row, "summary", "") or "",
-                max_chars=120,
-            ).lower()
-            steps = [
-                self._observation_builder.normalize_text(step, max_chars=96).lower()
-                for step in (payload.get("successful_path") or [])
-                if step
-            ]
-            if not goal or not steps:
-                return None
-            return f"{goal}||{'|'.join(steps)}"
-        return None
-
-    def _desired_agent_entry_status(self, row: Any) -> str:
-        payload = dict(getattr(row, "entry_data", None) or {})
+    def _desired_skill_proposal_status(self, row: Any) -> str:
+        payload = dict(getattr(row, "proposal_payload", None) or {})
         review_status = payload.get("review_status")
         if review_status is None:
             return self._normalize_status(getattr(row, "status", None), default="pending_review")
         return self._status_from_review(review_status)
 
-    def consolidate_materializations(
+    def _entry_signature(self, row: Any) -> Optional[str]:
+        payload = dict(getattr(row, "entry_data", None) or {})
+        if str(getattr(row, "entry_type", "") or "").strip().lower() != "user_fact":
+            return None
+        key = str(payload.get("key") or getattr(row, "entry_key", "") or "").strip().lower()
+        return key or None
+
+    def consolidate_projections(
         self,
         *,
         dry_run: bool = True,
         user_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> MaterializationConsolidationResult:
-        """Normalize status drift and supersede duplicate materializations/entries."""
+    ) -> ProjectionConsolidationResult:
+        """Normalize status drift and supersede duplicate projections/entries."""
 
-        result = MaterializationConsolidationResult(dry_run=bool(dry_run))
+        result = ProjectionConsolidationResult(dry_run=bool(dry_run))
 
-        user_rows = self._session_repository.list_materializations(
+        user_rows = self._session_repository.list_projections(
             owner_type="user",
             owner_id=user_id,
-            materialization_type="user_profile",
+            projection_type="user_profile",
             status=None,
             limit=limit,
         )
@@ -169,55 +204,56 @@ class MaterializationMaintenanceService:
             result.user_status_updates += 1
             if dry_run:
                 continue
-            payload = dict(row.materialized_data or {})
+            payload = dict(getattr(row, "view_data", None) or {})
             payload["status_sync_reason"] = "payload_is_active"
-            self._session_repository.update_materialization(
+            self._session_repository.update_projection(
                 int(row.id),
                 status=desired_status,
                 payload=payload,
             )
 
-        agent_rows = self._session_repository.list_materializations(
+        proposal_rows = self._session_repository.list_projections(
             owner_type="agent",
             owner_id=agent_id,
-            materialization_type="agent_experience",
+            projection_type="skill_proposal",
             status=None,
             limit=limit,
         )
-        result.scanned_agent_experiences = len(agent_rows)
+        result.scanned_skill_proposals = len(proposal_rows)
 
-        for row in agent_rows:
-            desired_status = self._desired_agent_status(row)
+        for row in proposal_rows:
+            desired_status = self._desired_skill_proposal_status(row)
             if str(row.status or "") == desired_status:
                 continue
-            result.agent_status_updates += 1
+            result.skill_proposal_status_updates += 1
             if dry_run:
                 continue
-            payload = dict(row.materialized_data or {})
+            payload = dict(getattr(row, "proposal_payload", None) or {})
             payload["status_sync_reason"] = "review_status"
-            self._session_repository.update_materialization(
+            self._session_repository.update_projection(
                 int(row.id),
                 status=desired_status,
                 payload=payload,
             )
             row.status = desired_status
-            row.materialized_data = payload
+            row.proposal_payload = payload
 
-        grouped: Dict[Tuple[str, str], List[Any]] = {}
-        for row in agent_rows:
-            signature = self._agent_signature(row)
+        grouped_proposals: Dict[Tuple[str, str], List[Any]] = {}
+        for row in proposal_rows:
+            signature = self._proposal_signature(row)
             if not signature:
                 continue
-            grouped.setdefault((str(row.owner_id), signature), []).append(row)
+            grouped_proposals.setdefault((str(row.owner_id), signature), []).append(row)
 
-        for (_owner_id, _signature), rows in grouped.items():
+        for (_owner_id, _signature), rows in grouped_proposals.items():
             if len(rows) < 2:
                 continue
             rows.sort(
                 key=lambda row: (
                     self._status_rank(row.status),
                     self._coerce_float(
-                        dict(row.materialized_data or {}).get("confidence"), default=0.0
+                        dict(getattr(row, "proposal_payload", None) or {}).get("confidence"),
+                        default=0.0,
                     ),
                     getattr(row, "updated_at", None)
                     or getattr(row, "created_at", None)
@@ -231,34 +267,34 @@ class MaterializationMaintenanceService:
             for duplicate in rows[1:]:
                 if str(duplicate.status or "") == "superseded":
                     continue
-                result.agent_duplicate_supersedes += 1
+                result.skill_proposal_duplicate_supersedes += 1
                 if dry_run:
                     continue
-                payload = dict(duplicate.materialized_data or {})
+                payload = dict(getattr(duplicate, "proposal_payload", None) or {})
                 payload.update(
                     {
-                        "superseded_by_materialization_id": int(canonical.id),
-                        "superseded_by_key": str(canonical.materialization_key),
+                        "superseded_by_proposal_id": int(canonical.id),
+                        "superseded_by_key": str(canonical.proposal_key),
                         "superseded_at": _utc_now_iso(),
                     }
                 )
-                self._session_repository.update_materialization(
+                self._session_repository.update_projection(
                     int(duplicate.id),
                     status="superseded",
                     payload=payload,
                 )
             if not dry_run and duplicate_ids:
-                canonical_payload = dict(canonical.materialized_data or {})
+                canonical_payload = dict(getattr(canonical, "proposal_payload", None) or {})
                 merged_ids = list(
                     dict.fromkeys(
                         [
-                            *(canonical_payload.get("merged_materialization_ids") or []),
+                            *(canonical_payload.get("merged_proposal_ids") or []),
                             *duplicate_ids,
                         ]
                     )
                 )
-                canonical_payload["merged_materialization_ids"] = merged_ids
-                self._session_repository.update_materialization(
+                canonical_payload["merged_proposal_ids"] = merged_ids
+                self._session_repository.update_projection(
                     int(canonical.id),
                     payload=canonical_payload,
                 )
@@ -288,30 +324,36 @@ class MaterializationMaintenanceService:
             row.status = desired_status
             row.entry_data = payload
 
-        agent_entry_rows = self._session_repository.list_entries(
-            owner_type="agent",
-            owner_id=agent_id,
-            entry_type="agent_skill_candidate",
-            status=None,
-            limit=limit,
-        )
-        result.scanned_agent_entries = len(agent_entry_rows)
-        for row in agent_entry_rows:
-            desired_status = self._desired_agent_entry_status(row)
-            if str(getattr(row, "status", "") or "") == desired_status:
+        for row in user_entry_rows:
+            desired_view = self._build_episode_view_from_entry(row)
+            if desired_view is None:
                 continue
-            result.agent_entry_status_updates += 1
+            existing_view = self._session_repository.get_projection(
+                owner_type="user",
+                owner_id=str(desired_view.owner_id),
+                projection_type="episode",
+                projection_key=str(desired_view.projection_key),
+            )
+            current_payload = (
+                dict(getattr(existing_view, "view_data", None) or {})
+                if existing_view is not None
+                else None
+            )
+            if (
+                existing_view is not None
+                and str(getattr(existing_view, "title", "") or "") == str(desired_view.title)
+                and str(getattr(existing_view, "summary", "") or "") == str(desired_view.summary)
+                and str(getattr(existing_view, "status", "") or "") == str(desired_view.status)
+                and current_payload == dict(desired_view.payload or {})
+            ):
+                continue
+            result.episode_view_upserts += 1
             if dry_run:
                 continue
-            payload = dict(getattr(row, "entry_data", None) or {})
-            payload["status_sync_reason"] = "review_status"
-            self._session_repository.update_entry(
-                int(row.id),
-                status=desired_status,
-                payload=payload,
+            self._session_repository.upsert_projection(
+                projection=desired_view,
+                source_session_id=getattr(row, "source_session_id", None),
             )
-            row.status = desired_status
-            row.entry_data = payload
 
         grouped_user_entries: Dict[Tuple[str, str], List[Any]] = {}
         for row in user_entry_rows:
@@ -358,51 +400,6 @@ class MaterializationMaintenanceService:
                     payload=payload,
                 )
 
-        grouped_agent_entries: Dict[Tuple[str, str], List[Any]] = {}
-        for row in agent_entry_rows:
-            signature = self._entry_signature(row)
-            if not signature:
-                continue
-            grouped_agent_entries.setdefault((str(row.owner_id), signature), []).append(row)
-
-        for (_owner_id, _signature), rows in grouped_agent_entries.items():
-            if len(rows) < 2:
-                continue
-            rows.sort(
-                key=lambda row: (
-                    self._status_rank(getattr(row, "status", None)),
-                    self._coerce_float(
-                        dict(getattr(row, "entry_data", None) or {}).get("confidence"),
-                        default=0.0,
-                    ),
-                    getattr(row, "updated_at", None)
-                    or getattr(row, "created_at", None)
-                    or datetime.min,
-                    int(getattr(row, "id", 0) or 0),
-                ),
-                reverse=True,
-            )
-            canonical = rows[0]
-            for duplicate in rows[1:]:
-                if str(getattr(duplicate, "status", "") or "") == "superseded":
-                    continue
-                result.agent_duplicate_entry_supersedes += 1
-                if dry_run:
-                    continue
-                payload = dict(getattr(duplicate, "entry_data", None) or {})
-                payload.update(
-                    {
-                        "superseded_by_entry_id": int(canonical.id),
-                        "superseded_by_key": str(canonical.entry_key),
-                        "superseded_at": _utc_now_iso(),
-                    }
-                )
-                self._session_repository.update_entry(
-                    int(duplicate.id),
-                    status="superseded",
-                    payload=payload,
-                )
-
         return result
 
     def run_maintenance(
@@ -412,9 +409,9 @@ class MaterializationMaintenanceService:
         user_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> MaterializationMaintenanceResult:
-        return MaterializationMaintenanceResult(
-            consolidation=self.consolidate_materializations(
+    ) -> ProjectionMaintenanceResult:
+        return ProjectionMaintenanceResult(
+            consolidation=self.consolidate_projections(
                 dry_run=dry_run,
                 user_id=user_id,
                 agent_id=agent_id,
@@ -423,17 +420,17 @@ class MaterializationMaintenanceService:
         )
 
     @staticmethod
-    def to_dict(result: MaterializationMaintenanceResult) -> Dict[str, Any]:
+    def to_dict(result: ProjectionMaintenanceResult) -> Dict[str, Any]:
         return {
             "consolidation": asdict(result.consolidation),
         }
 
 
-_materialization_maintenance_service: Optional[MaterializationMaintenanceService] = None
+_projection_maintenance_service: Optional[ProjectionMaintenanceService] = None
 
 
-def get_materialization_maintenance_service() -> MaterializationMaintenanceService:
-    global _materialization_maintenance_service
-    if _materialization_maintenance_service is None:
-        _materialization_maintenance_service = MaterializationMaintenanceService()
-    return _materialization_maintenance_service
+def get_projection_maintenance_service() -> ProjectionMaintenanceService:
+    global _projection_maintenance_service
+    if _projection_maintenance_service is None:
+        _projection_maintenance_service = ProjectionMaintenanceService()
+    return _projection_maintenance_service
