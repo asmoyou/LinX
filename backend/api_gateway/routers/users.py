@@ -703,7 +703,9 @@ async def list_user_api_keys(current_user: CurrentUser = Depends(get_current_use
         return sorted(items, key=lambda item: item.created_at, reverse=True)
 
 
-@router.post("/me/api-keys", response_model=CreateApiKeyResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/me/api-keys", response_model=CreateApiKeyResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_user_api_key(
     request: CreateApiKeyRequest,
     current_user: CurrentUser = Depends(get_current_user),
@@ -744,7 +746,9 @@ async def create_user_api_key(
         flag_modified(user, "attributes")
         session.commit()
 
-    logger.info("User API key created", extra={"user_id": str(current_user.user_id), "key_id": key_id})
+    logger.info(
+        "User API key created", extra={"user_id": str(current_user.user_id), "key_id": key_id}
+    )
 
     return CreateApiKeyResponse(
         key_id=key_id,
@@ -778,7 +782,9 @@ async def delete_user_api_key(key_id: str, current_user: CurrentUser = Depends(g
         flag_modified(user, "attributes")
         session.commit()
 
-    logger.info("User API key deleted", extra={"user_id": str(current_user.user_id), "key_id": key_id})
+    logger.info(
+        "User API key deleted", extra={"user_id": str(current_user.user_id), "key_id": key_id}
+    )
     return {"message": "API key deleted"}
 
 
@@ -912,7 +918,10 @@ async def revoke_user_session(
         session.commit()
 
     blacklist_session_id(session_id)
-    logger.info("User session revoked", extra={"user_id": str(current_user.user_id), "session_id": session_id})
+    logger.info(
+        "User session revoked",
+        extra={"user_id": str(current_user.user_id), "session_id": session_id},
+    )
     return {"message": "Session revoked"}
 
 
@@ -937,7 +946,9 @@ async def get_two_factor_status(current_user: CurrentUser = Depends(get_current_
         )
 
 
-@router.post("/me/two-factor/setup", response_model=TwoFactorSetupResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/me/two-factor/setup", response_model=TwoFactorSetupResponse, status_code=status.HTTP_200_OK
+)
 async def setup_two_factor(current_user: CurrentUser = Depends(get_current_user)):
     """Create a pending two-factor setup payload."""
     from database.connection import get_db_session
@@ -975,7 +986,9 @@ async def setup_two_factor(current_user: CurrentUser = Depends(get_current_user)
         )
 
 
-@router.post("/me/two-factor/enable", response_model=TwoFactorStatus, status_code=status.HTTP_200_OK)
+@router.post(
+    "/me/two-factor/enable", response_model=TwoFactorStatus, status_code=status.HTTP_200_OK
+)
 async def enable_two_factor(
     request: TwoFactorEnableRequest,
     current_user: CurrentUser = Depends(get_current_user),
@@ -986,7 +999,9 @@ async def enable_two_factor(
     from sqlalchemy.orm.attributes import flag_modified
 
     if not request.verification_code.isdigit():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code"
+        )
 
     with get_db_session() as session:
         user = session.query(User).filter(User.user_id == current_user.user_id).first()
@@ -998,7 +1013,9 @@ async def enable_two_factor(
         pending_secret = two_factor.get("pending_secret")
         pending_backup_codes = list(two_factor.get("pending_backup_codes", []))
         if not pending_secret:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No pending 2FA setup found")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="No pending 2FA setup found"
+            )
 
         two_factor["enabled"] = True
         two_factor["secret"] = pending_secret
@@ -1020,7 +1037,9 @@ async def enable_two_factor(
         )
 
 
-@router.post("/me/two-factor/disable", response_model=TwoFactorStatus, status_code=status.HTTP_200_OK)
+@router.post(
+    "/me/two-factor/disable", response_model=TwoFactorStatus, status_code=status.HTTP_200_OK
+)
 async def disable_two_factor(
     request: TwoFactorDisableRequest,
     current_user: CurrentUser = Depends(get_current_user),
@@ -1037,12 +1056,17 @@ async def disable_two_factor(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
         if not verify_password(request.current_password, user.password_hash):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect"
+            )
 
         attrs = _as_attrs(user.attributes)
         two_factor = dict(attrs.get("two_factor", {}))
         if not two_factor.get("enabled"):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Two-factor authentication is not enabled")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Two-factor authentication is not enabled",
+            )
 
         two_factor["enabled"] = False
         two_factor["disabled_at"] = _utc_now_iso()
@@ -1105,7 +1129,9 @@ async def update_privacy_settings(
         return request
 
 
-@router.post("/me/privacy/export", response_model=UserDataExportResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/me/privacy/export", response_model=UserDataExportResponse, status_code=status.HTTP_200_OK
+)
 async def export_user_data(current_user: CurrentUser = Depends(get_current_user)):
     """Export user data for GDPR/data portability workflows."""
     from database.connection import get_db_session
@@ -1236,21 +1262,57 @@ async def delete_current_user_account(
             detail="Invalid delete confirmation",
         )
 
+    user_memory_cleanup = None
     with get_db_session() as session:
         user = session.query(User).filter(User.user_id == current_user.user_id).first()
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
         if not verify_password(request.current_password, user.password_hash):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect",
+            )
+
+        from user_memory.storage_cleanup import prepare_user_memory_rows_for_user_deletion
+
+        user_memory_cleanup = prepare_user_memory_rows_for_user_deletion(
+            session,
+            user_id=str(current_user.user_id),
+        )
 
         session.delete(user)
         session.commit()
+
+    entry_ids = list((user_memory_cleanup or {}).get("entry_ids") or [])
+    if entry_ids:
+        try:
+            from user_memory.storage_cleanup import delete_user_memory_entry_vectors
+
+            delete_user_memory_entry_vectors(entry_ids)
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete legacy user-memory vectors after account deletion: %s",
+                exc,
+                extra={
+                    "user_id": str(current_user.user_id),
+                    "entry_count": len(entry_ids),
+                },
+            )
 
     if current_user.token_jti:
         blacklist_token_jti(current_user.token_jti)
     if current_user.session_id:
         blacklist_session_id(current_user.session_id)
 
-    logger.warning("User account deleted", extra={"user_id": str(current_user.user_id)})
+    logger.warning(
+        "User account deleted",
+        extra={
+            "user_id": str(current_user.user_id),
+            "user_memory_entries_deleted": len(entry_ids),
+            "user_memory_views_deleted": (user_memory_cleanup or {}).get("memory_views"),
+            "skill_proposals_deleted": (user_memory_cleanup or {}).get("skill_proposals"),
+            "session_ledgers_deleted": (user_memory_cleanup or {}).get("session_ledgers"),
+        },
+    )
     return {"message": "Account deleted"}

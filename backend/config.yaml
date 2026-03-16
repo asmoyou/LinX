@@ -491,6 +491,16 @@ user_memory:
     limit: 5000
     advisory_lock_id: 73012020
     use_advisory_lock: true
+  vector_cleanup:
+    enabled: true
+    run_on_startup: true
+    startup_delay_seconds: 360
+    interval_seconds: 21600
+    dry_run: false
+    batch_size: 500
+    compact_on_cycle: true
+    advisory_lock_id: 73012023
+    use_advisory_lock: true
   observability:
     enable_quality_counters: true
 skill_learning:

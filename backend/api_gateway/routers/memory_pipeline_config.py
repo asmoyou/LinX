@@ -43,6 +43,16 @@ _RESET_CONFIG_DEFAULTS: Dict[str, Dict[str, Any]] = {
             "limit": 5000,
             "use_advisory_lock": True,
         },
+        "vector_cleanup": {
+            "enabled": True,
+            "run_on_startup": True,
+            "startup_delay_seconds": 360,
+            "interval_seconds": 21600,
+            "dry_run": False,
+            "batch_size": 500,
+            "compact_on_cycle": True,
+            "use_advisory_lock": True,
+        },
         "observability": {
             "enable_quality_counters": True,
         },
@@ -196,6 +206,7 @@ def _stored_user_memory_section_from_payload(payload: Dict[str, Any]) -> Dict[st
             if key not in {"effective", "sources"}
         },
         "consolidation": _dict_section(user_memory_payload.get("consolidation")),
+        "vector_cleanup": _dict_section(user_memory_payload.get("vector_cleanup")),
         "observability": _dict_section(user_memory_payload.get("observability")),
     }
 
@@ -239,6 +250,7 @@ def _build_memory_config_payload(
     user_memory_retrieval_cfg = _dict_section(user_memory_cfg.get("retrieval"))
     user_memory_extraction_cfg = _dict_section(user_memory_cfg.get("extraction"))
     user_memory_consolidation_cfg = _dict_section(user_memory_cfg.get("consolidation"))
+    user_memory_vector_cleanup_cfg = _dict_section(user_memory_cfg.get("vector_cleanup"))
     user_memory_observability_cfg = _dict_section(user_memory_cfg.get("observability"))
 
     skill_learning_extraction_cfg = _dict_section(skill_learning_cfg.get("extraction"))
@@ -258,6 +270,9 @@ def _build_memory_config_payload(
     }
     user_memory_consolidation = _deep_merge(
         user_memory_defaults["consolidation"], user_memory_consolidation_cfg
+    )
+    user_memory_vector_cleanup = _deep_merge(
+        user_memory_defaults["vector_cleanup"], user_memory_vector_cleanup_cfg
     )
     user_memory_observability = _deep_merge(
         user_memory_defaults["observability"], user_memory_observability_cfg
@@ -318,6 +333,7 @@ def _build_memory_config_payload(
             "retrieval": user_memory_retrieval,
             "extraction": user_memory_extraction,
             "consolidation": user_memory_consolidation,
+            "vector_cleanup": user_memory_vector_cleanup,
             "observability": user_memory_observability,
         },
         "skill_learning": {

@@ -439,6 +439,7 @@ async def delete_user(
             detail="Cannot delete your own account",
         )
 
+    user_memory_cleanup = None
     with get_db_session() as session:
         user = session.query(User).filter(User.user_id == user_id).first()
         if not user:
@@ -458,17 +459,40 @@ async def delete_user(
             performed_by_user_id=current_user.user_id,
         )
 
+        from user_memory.storage_cleanup import prepare_user_memory_rows_for_user_deletion
+
+        user_memory_cleanup = prepare_user_memory_rows_for_user_deletion(
+            session,
+            user_id=str(user.user_id),
+        )
         session.delete(user)
         session.commit()
 
-        logger.info(
-            "Admin deleted user",
-            extra={
-                "user_id": str(user_id),
-                "username": username,
-                "deleted_by": current_user.user_id,
-            },
-        )
+    entry_ids = list((user_memory_cleanup or {}).get("entry_ids") or [])
+    if entry_ids:
+        try:
+            from user_memory.storage_cleanup import delete_user_memory_entry_vectors
+
+            delete_user_memory_entry_vectors(entry_ids)
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete legacy user-memory vectors after admin user deletion: %s",
+                exc,
+                extra={"user_id": str(user_id), "entry_count": len(entry_ids)},
+            )
+
+    logger.info(
+        "Admin deleted user",
+        extra={
+            "user_id": str(user_id),
+            "username": username,
+            "deleted_by": current_user.user_id,
+            "user_memory_entries_deleted": len(entry_ids),
+            "user_memory_views_deleted": (user_memory_cleanup or {}).get("memory_views"),
+            "skill_proposals_deleted": (user_memory_cleanup or {}).get("skill_proposals"),
+            "session_ledgers_deleted": (user_memory_cleanup or {}).get("session_ledgers"),
+        },
+    )
 
 
 @router.post("/batch", status_code=status.HTTP_200_OK)
@@ -500,6 +524,7 @@ async def batch_action(
 
         processed = 0
         skipped = 0
+        deleted_user_memory_entry_ids: list[str] = []
 
         for user in users:
             # Skip self for destructive actions
@@ -529,6 +554,13 @@ async def batch_action(
                     target_username=user.username,
                     performed_by_user_id=current_user.user_id,
                 )
+                from user_memory.storage_cleanup import prepare_user_memory_rows_for_user_deletion
+
+                cleanup_summary = prepare_user_memory_rows_for_user_deletion(
+                    session,
+                    user_id=str(user.user_id),
+                )
+                deleted_user_memory_entry_ids.extend(cleanup_summary.get("entry_ids") or [])
                 session.delete(user)
                 processed += 1
 
@@ -538,18 +570,33 @@ async def batch_action(
 
         session.commit()
 
-        logger.info(
-            "Admin batch action completed",
-            extra={
-                "action": request.action,
-                "processed": processed,
-                "skipped": skipped,
-                "performed_by": current_user.user_id,
-            },
-        )
+    if request.action == "delete" and deleted_user_memory_entry_ids:
+        try:
+            from user_memory.storage_cleanup import delete_user_memory_entry_vectors
 
-        return {
+            delete_user_memory_entry_vectors(deleted_user_memory_entry_ids)
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete legacy user-memory vectors after admin batch delete: %s",
+                exc,
+                extra={"entry_count": len(deleted_user_memory_entry_ids)},
+            )
+
+    logger.info(
+        "Admin batch action completed",
+        extra={
             "action": request.action,
             "processed": processed,
             "skipped": skipped,
-        }
+            "performed_by": current_user.user_id,
+            "user_memory_entries_deleted": (
+                len(deleted_user_memory_entry_ids) if request.action == "delete" else 0
+            ),
+        },
+    )
+
+    return {
+        "action": request.action,
+        "processed": processed,
+        "skipped": skipped,
+    }

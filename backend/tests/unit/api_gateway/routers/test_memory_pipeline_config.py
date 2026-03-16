@@ -27,6 +27,16 @@ def _config_payload(similarity_threshold: float) -> dict:
                 "limit": 5000,
                 "use_advisory_lock": True,
             },
+            "vector_cleanup": {
+                "enabled": True,
+                "run_on_startup": True,
+                "startup_delay_seconds": 360,
+                "interval_seconds": 21600,
+                "dry_run": False,
+                "batch_size": 500,
+                "compact_on_cycle": True,
+                "use_advisory_lock": True,
+            },
             "observability": {},
         },
         "skill_learning": {
@@ -104,6 +114,7 @@ def test_build_memory_config_payload_resolves_effective_sources():
     assert payload["user_memory"]["extraction"]["effective"]["provider"] == "openai"
     assert payload["user_memory"]["extraction"]["effective"]["model"] == "gpt-4.1-mini"
     assert payload["user_memory"]["embedding"]["effective"]["model"] == "text-embedding-3-large"
+    assert payload["user_memory"]["vector_cleanup"]["enabled"] is True
     assert payload["skill_learning"]["extraction"]["max_proposals"] == 4
 
 
@@ -191,6 +202,7 @@ async def test_update_memory_config_writes_requested_sections(admin_user):
     dumped_config = yaml_dump.call_args.args[0]
     assert dumped_config["user_memory"]["retrieval"] == {"similarity_threshold": 0.42}
     assert dumped_config["user_memory"]["consolidation"]["enabled"] is False
+    assert dumped_config["user_memory"]["vector_cleanup"]["enabled"] is True
     assert dumped_config["runtime_context"] == {
         "enable_user_memory": True,
         "enable_skills": False,

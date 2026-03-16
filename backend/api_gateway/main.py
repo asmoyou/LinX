@@ -232,6 +232,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.warning(f"Failed to initialize session-ledger retention manager: {e}")
 
+    # Start user-memory vector cleanup manager
+    try:
+        from user_memory.storage_cleanup import (
+            initialize_user_memory_vector_cleanup_manager,
+        )
+
+        manager = await initialize_user_memory_vector_cleanup_manager()
+        if manager:
+            logger.info("User-memory vector cleanup manager initialized")
+        else:
+            logger.info("User-memory vector cleanup manager is disabled by config")
+    except Exception as e:
+        logger.warning(f"Failed to initialize user-memory vector cleanup manager: {e}")
+
     # Start document processing worker
     try:
         from knowledge_base.document_processor_worker import start_worker
@@ -331,6 +345,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.info("Session-ledger retention manager shutdown complete")
     except Exception as e:
         logger.error(f"Failed to shutdown session-ledger retention manager: {e}")
+
+    # Stop user-memory vector cleanup manager
+    try:
+        from user_memory.storage_cleanup import (
+            shutdown_user_memory_vector_cleanup_manager,
+        )
+
+        await shutdown_user_memory_vector_cleanup_manager()
+        logger.info("User-memory vector cleanup manager shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown user-memory vector cleanup manager: {e}")
 
     # Final Docker sandbox cleanup (catch anything SessionManager missed)
     try:
