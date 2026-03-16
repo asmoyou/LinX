@@ -468,26 +468,13 @@ async def delete_user(
         session.delete(user)
         session.commit()
 
-    entry_ids = list((user_memory_cleanup or {}).get("entry_ids") or [])
-    if entry_ids:
-        try:
-            from user_memory.storage_cleanup import delete_user_memory_entry_vectors
-
-            delete_user_memory_entry_vectors(entry_ids)
-        except Exception as exc:
-            logger.warning(
-                "Failed to delete legacy user-memory vectors after admin user deletion: %s",
-                exc,
-                extra={"user_id": str(user_id), "entry_count": len(entry_ids)},
-            )
-
     logger.info(
         "Admin deleted user",
         extra={
             "user_id": str(user_id),
             "username": username,
             "deleted_by": current_user.user_id,
-            "user_memory_entries_deleted": len(entry_ids),
+            "user_memory_entries_deleted": len((user_memory_cleanup or {}).get("entry_ids") or []),
             "user_memory_views_deleted": (user_memory_cleanup or {}).get("memory_views"),
             "skill_proposals_deleted": (user_memory_cleanup or {}).get("skill_proposals"),
             "session_ledgers_deleted": (user_memory_cleanup or {}).get("session_ledgers"),
@@ -524,8 +511,6 @@ async def batch_action(
 
         processed = 0
         skipped = 0
-        deleted_user_memory_entry_ids: list[str] = []
-
         for user in users:
             # Skip self for destructive actions
             if str(user.user_id) == str(current_user.user_id):
@@ -560,7 +545,6 @@ async def batch_action(
                     session,
                     user_id=str(user.user_id),
                 )
-                deleted_user_memory_entry_ids.extend(cleanup_summary.get("entry_ids") or [])
                 session.delete(user)
                 processed += 1
 
@@ -570,18 +554,6 @@ async def batch_action(
 
         session.commit()
 
-    if request.action == "delete" and deleted_user_memory_entry_ids:
-        try:
-            from user_memory.storage_cleanup import delete_user_memory_entry_vectors
-
-            delete_user_memory_entry_vectors(deleted_user_memory_entry_ids)
-        except Exception as exc:
-            logger.warning(
-                "Failed to delete legacy user-memory vectors after admin batch delete: %s",
-                exc,
-                extra={"entry_count": len(deleted_user_memory_entry_ids)},
-            )
-
     logger.info(
         "Admin batch action completed",
         extra={
@@ -589,9 +561,6 @@ async def batch_action(
             "processed": processed,
             "skipped": skipped,
             "performed_by": current_user.user_id,
-            "user_memory_entries_deleted": (
-                len(deleted_user_memory_entry_ids) if request.action == "delete" else 0
-            ),
         },
     )
 

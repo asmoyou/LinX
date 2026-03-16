@@ -1,23 +1,9 @@
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from user_memory.storage_cleanup import (
-    UserMemoryVectorCleanupSettings,
-    delete_user_memory_entry_vectors,
-    load_user_memory_vector_cleanup_settings,
+    drop_legacy_user_memory_vector_collection,
     prepare_user_memory_rows_for_user_deletion,
-    run_user_memory_vector_cleanup_once,
 )
-
-
-class _ConfigStub:
-    def __init__(self, section):
-        self._section = section
-
-    def get(self, key, default=None):
-        if key == "user_memory.vector_cleanup":
-            return self._section
-        return default
 
 
 class _QueryStub:
@@ -95,33 +81,6 @@ class _SessionStub:
         self.flush_called = True
 
 
-def test_load_user_memory_vector_cleanup_settings_uses_defaults():
-    settings = load_user_memory_vector_cleanup_settings(_ConfigStub({"enabled": True}))
-
-    assert settings.enabled is True
-    assert settings.batch_size == 500
-    assert settings.compact_on_cycle is True
-    assert settings.interval_seconds == 21600
-
-
-def test_delete_user_memory_entry_vectors_batches_requests():
-    fake_collection = Mock()
-    fake_connection = Mock()
-    fake_connection.collection_exists.return_value = True
-    fake_connection.get_collection.return_value = fake_collection
-
-    result = delete_user_memory_entry_vectors(
-        ["101", "102", "103"],
-        milvus_conn=fake_connection,
-        batch_size=2,
-    )
-
-    assert result["deleted_entry_ids"] == 3
-    assert fake_collection.delete.call_count == 2
-    assert fake_collection.delete.call_args_list[0].args[0] == 'entry_id in ["101", "102"]'
-    assert fake_collection.delete.call_args_list[1].args[0] == 'entry_id in ["103"]'
-
-
 def test_prepare_user_memory_rows_for_user_deletion_removes_user_scoped_rows():
     session = _SessionStub()
 
@@ -143,32 +102,23 @@ def test_prepare_user_memory_rows_for_user_deletion_removes_user_scoped_rows():
     ]
 
 
-@patch("user_memory.storage_cleanup.trigger_user_memory_collection_compaction")
-@patch("user_memory.storage_cleanup.cleanup_orphaned_user_memory_vectors")
-@patch("user_memory.storage_cleanup._load_live_user_memory_entry_ids")
-def test_run_user_memory_vector_cleanup_once_returns_combined_summary(
-    mock_load_live_ids,
-    mock_cleanup_vectors,
-    mock_compaction,
-):
-    mock_load_live_ids.return_value = {"101", "102"}
-    mock_cleanup_vectors.return_value = {
-        "scanned_rows": 7,
-        "orphaned_entry_ids": 2,
-        "deleted_entry_ids": 2,
-        "errors": [],
-    }
-    mock_compaction.return_value = {"attempted": True, "triggered": True, "error": None}
+def test_drop_legacy_user_memory_vector_collection_removes_collection_when_present():
+    fake_connection = Mock()
+    fake_connection.collection_exists.return_value = True
 
-    result = run_user_memory_vector_cleanup_once(
-        UserMemoryVectorCleanupSettings(
-            enabled=True,
-            use_advisory_lock=False,
-        ),
-        reason="scheduled",
-    )
+    result = drop_legacy_user_memory_vector_collection(milvus_conn=fake_connection)
 
-    assert result["status"] == "ok"
-    assert result["cleanup"]["live_entry_ids"] == 2
-    assert result["cleanup"]["vector_cleanup"]["deleted_entry_ids"] == 2
-    assert result["cleanup"]["compaction"]["triggered"] is True
+    assert result["exists"] is True
+    assert result["dropped"] is True
+    fake_connection.drop_collection.assert_called_once_with("user_memory_entries")
+
+
+def test_drop_legacy_user_memory_vector_collection_returns_absent_when_missing():
+    fake_connection = Mock()
+    fake_connection.collection_exists.return_value = False
+
+    result = drop_legacy_user_memory_vector_collection(milvus_conn=fake_connection)
+
+    assert result["exists"] is False
+    assert result["dropped"] is False
+    fake_connection.drop_collection.assert_not_called()

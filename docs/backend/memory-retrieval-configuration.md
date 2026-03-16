@@ -37,8 +37,13 @@ skills as a separate long-term memory view product.
 
 ## 3. What The Embedding Config Still Does
 
-`user_memory.embedding.*` is still active, but only for write-side embedding generation and
-indexing support. It is not a runtime rerank/search control surface.
+`user_memory.embedding.*` no longer drives a user-memory Milvus index or runtime vector recall.
+User-memory runtime retrieval is PostgreSQL-only.
+
+That config still exists because the codebase has a shared embedding-resolution surface keyed by
+`user_memory`, and a few non-memory callers still reuse it for generic embedding generation (for
+example semantic skill similarity helpers). It should be treated as a shared embedding client
+configuration, not as a user-memory vector-search control surface.
 
 Priority for `user_memory.embedding.provider/model/dimension`:
 
@@ -55,7 +60,7 @@ The config API exposes:
 
 ## 4. Active User-Memory Knobs
 
-These settings are live in the current reset pipeline:
+These settings are still exposed in the current reset pipeline:
 
 - `user_memory.embedding.provider`
 - `user_memory.embedding.model`
@@ -89,6 +94,7 @@ These reset-era user-memory fields are no longer part of the supported config su
 - `user_memory.retrieval.similarity_weight`
 - `user_memory.retrieval.recency_weight`
 - `user_memory.retrieval.milvus.*`
+- `user_memory.vector_cleanup.*`
 - `skill_learning.proposal_review.*`
 - `skill_learning.publish_policy.enabled`
 - `runtime_context.collection_retry_attempts`

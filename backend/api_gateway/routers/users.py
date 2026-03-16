@@ -1284,22 +1284,6 @@ async def delete_current_user_account(
         session.delete(user)
         session.commit()
 
-    entry_ids = list((user_memory_cleanup or {}).get("entry_ids") or [])
-    if entry_ids:
-        try:
-            from user_memory.storage_cleanup import delete_user_memory_entry_vectors
-
-            delete_user_memory_entry_vectors(entry_ids)
-        except Exception as exc:
-            logger.warning(
-                "Failed to delete legacy user-memory vectors after account deletion: %s",
-                exc,
-                extra={
-                    "user_id": str(current_user.user_id),
-                    "entry_count": len(entry_ids),
-                },
-            )
-
     if current_user.token_jti:
         blacklist_token_jti(current_user.token_jti)
     if current_user.session_id:
@@ -1309,7 +1293,7 @@ async def delete_current_user_account(
         "User account deleted",
         extra={
             "user_id": str(current_user.user_id),
-            "user_memory_entries_deleted": len(entry_ids),
+            "user_memory_entries_deleted": len((user_memory_cleanup or {}).get("entry_ids") or []),
             "user_memory_views_deleted": (user_memory_cleanup or {}).get("memory_views"),
             "skill_proposals_deleted": (user_memory_cleanup or {}).get("skill_proposals"),
             "session_ledgers_deleted": (user_memory_cleanup or {}).get("session_ledgers"),

@@ -36,7 +36,6 @@ class _SessionStub:
 
 @pytest.mark.asyncio
 async def test_delete_current_user_account_cleans_user_memory(monkeypatch):
-    deleted_vectors = []
     session = _SessionStub(
         SimpleNamespace(
             user_id="user-1",
@@ -68,11 +67,6 @@ async def test_delete_current_user_account_cleans_user_memory(monkeypatch):
             "session_ledgers": 3,
         },
     )
-    monkeypatch.setattr(
-        "user_memory.storage_cleanup.delete_user_memory_entry_vectors",
-        lambda entry_ids: deleted_vectors.extend(entry_ids)
-        or {"deleted_entry_ids": len(entry_ids)},
-    )
 
     current_user = CurrentUser(
         user_id="user-1",
@@ -89,4 +83,3 @@ async def test_delete_current_user_account_cleans_user_memory(monkeypatch):
     assert response == {"message": "Account deleted"}
     assert session.deleted_row.user_id == "user-1"
     assert session.committed is True
-    assert deleted_vectors == ["101", "102"]

@@ -31,14 +31,6 @@ _EXPORTS = {
         "user_memory.retention_manager",
         "SessionLedgerRetentionSettings",
     ),
-    "UserMemoryVectorCleanupManager": (
-        "user_memory.storage_cleanup",
-        "UserMemoryVectorCleanupManager",
-    ),
-    "UserMemoryVectorCleanupSettings": (
-        "user_memory.storage_cleanup",
-        "UserMemoryVectorCleanupSettings",
-    ),
     "get_session_ledger_repository": (
         "user_memory.session_ledger_repository",
         "get_session_ledger_repository",
@@ -59,41 +51,25 @@ _EXPORTS = {
         "user_memory.retention_manager",
         "get_session_ledger_retention_manager",
     ),
-    "get_user_memory_vector_cleanup_manager": (
-        "user_memory.storage_cleanup",
-        "get_user_memory_vector_cleanup_manager",
-    ),
-    "initialize_user_memory_vector_cleanup_manager": (
-        "user_memory.storage_cleanup",
-        "initialize_user_memory_vector_cleanup_manager",
-    ),
     "initialize_session_ledger_retention_manager": (
         "user_memory.retention_manager",
         "initialize_session_ledger_retention_manager",
-    ),
-    "load_user_memory_vector_cleanup_settings": (
-        "user_memory.storage_cleanup",
-        "load_user_memory_vector_cleanup_settings",
     ),
     "load_session_ledger_retention_settings": (
         "user_memory.retention_manager",
         "load_session_ledger_retention_settings",
     ),
+    "drop_legacy_user_memory_vector_collection": (
+        "user_memory.storage_cleanup",
+        "drop_legacy_user_memory_vector_collection",
+    ),
     "prepare_user_memory_rows_for_user_deletion": (
         "user_memory.storage_cleanup",
         "prepare_user_memory_rows_for_user_deletion",
     ),
-    "run_user_memory_vector_cleanup_once": (
-        "user_memory.storage_cleanup",
-        "run_user_memory_vector_cleanup_once",
-    ),
     "run_session_ledger_retention_once": (
         "user_memory.retention_manager",
         "run_session_ledger_retention_once",
-    ),
-    "shutdown_user_memory_vector_cleanup_manager": (
-        "user_memory.storage_cleanup",
-        "shutdown_user_memory_vector_cleanup_manager",
     ),
     "shutdown_session_ledger_retention_manager": (
         "user_memory.retention_manager",
