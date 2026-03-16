@@ -45,7 +45,15 @@ from access_control.permissions import CurrentUser, get_current_user
 from access_control.rbac import Action
 from database.connection import get_db_session
 from database.models import KnowledgeCollection, KnowledgeItem, User
+from knowledge_base.cancellation_registry import clear_document_cancellation
 from knowledge_base.config_utils import load_knowledge_base_config
+from knowledge_base.storage_cleanup import (
+    KnowledgeStorageObjectRef,
+    build_knowledge_storage_object_metadata,
+    cleanup_knowledge_item_storage,
+    purge_minio_object_refs,
+    request_knowledge_processing_cancellation,
+)
 from shared.config import get_config
 from shared.logging import get_logger
 
@@ -712,6 +720,7 @@ def _backfill_thumbnail_for_item(item: KnowledgeItem) -> tuple[Optional[str], Op
             filename=filename,
             content_type=content_type,
             user_id=str(item.owner_user_id),
+            metadata=build_knowledge_storage_object_metadata(str(item.knowledge_id), "thumbnail"),
         )
         if not thumbnail_reference:
             _record_thumbnail_backfill_attempt(
@@ -837,6 +846,7 @@ def _upload_thumbnail_if_possible(
     filename: str,
     content_type: Optional[str],
     user_id: str,
+    metadata: Optional[Dict[str, str]] = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """Generate and upload thumbnail to MinIO images bucket."""
     generated = _generate_thumbnail_stream(
@@ -858,6 +868,7 @@ def _upload_thumbnail_if_possible(
             filename=thumb_name,
             user_id=user_id,
             content_type=thumb_mime_type,
+            metadata=metadata,
         )
         return f"minio:{thumb_bucket}:{thumb_key}", thumb_mime_type
     except Exception as ex:
@@ -1089,156 +1100,201 @@ def _handle_zip_upload(
         except ValueError:
             pass
 
-    with get_db_session() as session:
-        # Create or use existing collection
-        if parsed_collection_id:
-            collection = (
-                session.query(KnowledgeCollection)
-                .filter(KnowledgeCollection.collection_id == parsed_collection_id)
-                .first()
-            )
-            if not collection:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Collection not found",
+    uploaded_object_refs: List[KnowledgeStorageObjectRef] = []
+    collection_committed = False
+
+    try:
+        with get_db_session() as session:
+            # Create or use existing collection
+            if parsed_collection_id:
+                collection = (
+                    session.query(KnowledgeCollection)
+                    .filter(KnowledgeCollection.collection_id == parsed_collection_id)
+                    .first()
                 )
-            if not check_knowledge_write_permission(
-                current_user=current_user,
-                owner_user_id=str(collection.owner_user_id),
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You do not have permission to add files to this collection",
+                if not collection:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Collection not found",
+                    )
+                if not check_knowledge_write_permission(
+                    current_user=current_user,
+                    owner_user_id=str(collection.owner_user_id),
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="You do not have permission to add files to this collection",
+                    )
+            else:
+                # Auto-create collection named after ZIP file (sans .zip extension)
+                collection_name = os.path.splitext(filename)[0] or "Untitled Collection"
+                collection = KnowledgeCollection(
+                    name=collection_name,
+                    description=description if description else None,
+                    owner_user_id=UUID(current_user.user_id),
+                    access_level=backend_access_level,
+                    department_id=parsed_dept_id,
+                    item_count=0,
                 )
-        else:
-            # Auto-create collection named after ZIP file (sans .zip extension)
-            collection_name = os.path.splitext(filename)[0] or "Untitled Collection"
-            collection = KnowledgeCollection(
-                name=collection_name,
-                description=description if description else None,
-                owner_user_id=UUID(current_user.user_id),
-                access_level=backend_access_level,
-                department_id=parsed_dept_id,
-                item_count=0,
-            )
-            session.add(collection)
-            session.flush()
+                session.add(collection)
+                session.flush()
 
-        items_response = []
+            items_response = []
 
-        try:
-            from object_storage.minio_client import get_minio_client
-
-            minio_client = get_minio_client()
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Storage service unavailable: {str(e)}",
-            )
-
-        for extracted in result.extracted_files:
-            processing_started_at = datetime.now(timezone.utc).isoformat()
-            file_ext = os.path.splitext(extracted.filename)[1].lower()
-            doc_type = EXT_TO_DOC_TYPE.get(file_ext, "txt")
-            bucket_type = _get_bucket_type(extracted.filename, None)
-
-            # Guess MIME type
-            import mimetypes
-
-            mime_type = mimetypes.guess_type(extracted.filename)[0] or "application/octet-stream"
-
-            # Upload to MinIO
             try:
-                extracted.data.seek(0)
-                bucket_name, object_key = minio_client.upload_file(
-                    bucket_type=bucket_type,
+                from object_storage.minio_client import get_minio_client
+
+                minio_client = get_minio_client()
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Storage service unavailable: {str(e)}",
+                )
+
+            for extracted in result.extracted_files:
+                processing_started_at = datetime.now(timezone.utc).isoformat()
+                file_ext = os.path.splitext(extracted.filename)[1].lower()
+                doc_type = EXT_TO_DOC_TYPE.get(file_ext, "txt")
+                bucket_type = _get_bucket_type(extracted.filename, None)
+                knowledge_id = uuid4()
+
+                # Guess MIME type
+                import mimetypes
+
+                mime_type = (
+                    mimetypes.guess_type(extracted.filename)[0] or "application/octet-stream"
+                )
+
+                # Upload to MinIO
+                try:
+                    extracted.data.seek(0)
+                    bucket_name, object_key = minio_client.upload_file(
+                        bucket_type=bucket_type,
+                        file_data=extracted.data,
+                        filename=extracted.filename,
+                        user_id=current_user.user_id,
+                        content_type=mime_type,
+                        metadata=build_knowledge_storage_object_metadata(
+                            str(knowledge_id), "source"
+                        ),
+                    )
+                    file_reference = f"minio:{bucket_name}:{object_key}"
+                    uploaded_object_refs.append(
+                        KnowledgeStorageObjectRef(
+                            bucket_name=bucket_name,
+                            object_key=object_key,
+                            variant="source",
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(f"MinIO upload failed for {extracted.filename}: {e}")
+                    result.errors.append(f"Upload failed: {extracted.filename}")
+                    continue
+
+                thumbnail_reference, thumbnail_mime_type = _upload_thumbnail_if_possible(
+                    minio_client=minio_client,
                     file_data=extracted.data,
                     filename=extracted.filename,
-                    user_id=current_user.user_id,
                     content_type=mime_type,
+                    user_id=current_user.user_id,
+                    metadata=build_knowledge_storage_object_metadata(
+                        str(knowledge_id), "thumbnail"
+                    ),
                 )
-                file_reference = f"minio:{bucket_name}:{object_key}"
-            except Exception as e:
-                logger.warning(f"MinIO upload failed for {extracted.filename}: {e}")
-                result.errors.append(f"Upload failed: {extracted.filename}")
-                continue
+                thumbnail_parts = _parse_minio_reference(thumbnail_reference)
+                if thumbnail_parts:
+                    uploaded_object_refs.append(
+                        KnowledgeStorageObjectRef(
+                            bucket_name=thumbnail_parts[0],
+                            object_key=thumbnail_parts[1],
+                            variant="thumbnail",
+                        )
+                    )
 
-            thumbnail_reference, thumbnail_mime_type = _upload_thumbnail_if_possible(
-                minio_client=minio_client,
-                file_data=extracted.data,
-                filename=extracted.filename,
-                content_type=mime_type,
-                user_id=current_user.user_id,
-            )
+                # Create KnowledgeItem
+                knowledge_item = KnowledgeItem(
+                    knowledge_id=knowledge_id,
+                    title=extracted.filename,
+                    content_type="document",
+                    file_reference=file_reference,
+                    owner_user_id=UUID(current_user.user_id),
+                    access_level=backend_access_level,
+                    department_id=parsed_dept_id,
+                    collection_id=collection.collection_id,
+                    item_metadata={
+                        "file_size": extracted.size,
+                        "file_type": doc_type,
+                        "original_filename": extracted.filename,
+                        "mime_type": mime_type,
+                        "tags": parsed_tags,
+                        "description": None,
+                        "thumbnail_reference": thumbnail_reference,
+                        "thumbnail_mime_type": thumbnail_mime_type,
+                        "processing_status": "processing",
+                        "processing_progress": 5,
+                        "job_id": str(uuid4()),
+                        "created_at": processing_started_at,
+                        "started_at": processing_started_at,
+                        "completed_at": None,
+                    },
+                )
+                session.add(knowledge_item)
+                session.flush()
 
-            # Create KnowledgeItem
-            knowledge_item = KnowledgeItem(
-                title=extracted.filename,
-                content_type="document",
-                file_reference=file_reference,
-                owner_user_id=UUID(current_user.user_id),
-                access_level=backend_access_level,
-                department_id=parsed_dept_id,
-                collection_id=collection.collection_id,
-                item_metadata={
-                    "file_size": extracted.size,
-                    "file_type": doc_type,
-                    "original_filename": extracted.filename,
-                    "mime_type": mime_type,
-                    "tags": parsed_tags,
-                    "description": None,
-                    "thumbnail_reference": thumbnail_reference,
-                    "thumbnail_mime_type": thumbnail_mime_type,
-                    "processing_status": "processing",
-                    "processing_progress": 5,
-                    "job_id": str(uuid4()),
-                    "created_at": processing_started_at,
-                    "started_at": processing_started_at,
-                    "completed_at": None,
-                },
-            )
-            session.add(knowledge_item)
+                item_id = str(knowledge_item.knowledge_id)
+
+                # Enqueue processing
+                _enqueue_processing(
+                    item_id, bucket_name, object_key, mime_type, current_user.user_id
+                )
+
+                items_response.append(
+                    KnowledgeItemResponse(
+                        id=item_id,
+                        name=extracted.filename,
+                        type=doc_type,
+                        size=extracted.size,
+                        status="processing",
+                        processingProgress=5,
+                        uploadedAt=(
+                            knowledge_item.created_at.isoformat()
+                            if knowledge_item.created_at
+                            else ""
+                        ),
+                        owner=current_user.username,
+                        accessLevel=_map_access_level(backend_access_level),
+                        tags=parsed_tags if parsed_tags else None,
+                        thumbnailUrl=_build_thumbnail_url(item_id, thumbnail_reference),
+                        collectionId=str(collection.collection_id),
+                    )
+                )
+
+            _refresh_collection_item_counts(session, [collection.collection_id])
             session.flush()
 
-            item_id = str(knowledge_item.knowledge_id)
+            # Get owner username for collection response
+            owner = session.query(User).filter(User.user_id == collection.owner_user_id).first()
+            owner_name = owner.username if owner else current_user.username
 
-            # Enqueue processing
-            _enqueue_processing(item_id, bucket_name, object_key, mime_type, current_user.user_id)
+            collection_resp = _build_collection_response(collection, owner_name)
 
-            items_response.append(
-                KnowledgeItemResponse(
-                    id=item_id,
-                    name=extracted.filename,
-                    type=doc_type,
-                    size=extracted.size,
-                    status="processing",
-                    processingProgress=5,
-                    uploadedAt=(
-                        knowledge_item.created_at.isoformat() if knowledge_item.created_at else ""
-                    ),
-                    owner=current_user.username,
-                    accessLevel=_map_access_level(backend_access_level),
-                    tags=parsed_tags if parsed_tags else None,
-                    thumbnailUrl=_build_thumbnail_url(item_id, thumbnail_reference),
-                    collectionId=str(collection.collection_id),
+        collection_committed = True
+        return ZipUploadResponse(
+            collection=collection_resp,
+            items=items_response,
+            skipped=result.skipped_files,
+            errors=result.errors,
+        )
+    except Exception:
+        if uploaded_object_refs and not collection_committed:
+            try:
+                purge_minio_object_refs(uploaded_object_refs, purge_versions=True)
+            except Exception as cleanup_error:
+                logger.warning(
+                    "Failed to compensate uploaded ZIP objects after rollback: %s",
+                    cleanup_error,
                 )
-            )
-
-        _refresh_collection_item_counts(session, [collection.collection_id])
-        session.flush()
-
-        # Get owner username for collection response
-        owner = session.query(User).filter(User.user_id == collection.owner_user_id).first()
-        owner_name = owner.username if owner else current_user.username
-
-        collection_resp = _build_collection_response(collection, owner_name)
-
-    return ZipUploadResponse(
-        collection=collection_resp,
-        items=items_response,
-        skipped=result.skipped_files,
-        errors=result.errors,
-    )
+        raise
 
 
 def _process_document_background(
@@ -1313,6 +1369,9 @@ async def upload_knowledge(
     Saves file to MinIO, creates KnowledgeItem record, enqueues processing.
     For ZIP files, extracts contents and creates a collection.
     """
+    staged_object_refs: List[KnowledgeStorageObjectRef] = []
+    knowledge_created = False
+
     try:
         # Parse tags
         try:
@@ -1363,50 +1422,6 @@ async def upload_knowledge(
         # Map access level to backend format
         backend_access_level = _map_access_level_to_backend(access_level)
 
-        # Upload to MinIO
-        minio_client = None
-        upload_error_message: Optional[str] = None
-        try:
-            from object_storage.minio_client import get_minio_client
-
-            minio_client = get_minio_client()
-
-            # Determine bucket type based on MIME type / file extension
-            bucket_type = _get_bucket_type(file.filename or "", file.content_type)
-
-            bucket_name, object_key = minio_client.upload_file(
-                bucket_type=bucket_type,
-                file_data=file.file,
-                filename=file.filename or "upload",
-                user_id=current_user.user_id,
-                content_type=file.content_type,
-            )
-
-            file_reference = f"minio:{bucket_name}:{object_key}"
-        except ValueError as e:
-            # File-type and validation errors are user-actionable; return immediately.
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(e),
-            ) from e
-        except Exception as e:
-            logger.warning(f"MinIO upload failed, storing reference only: {e}")
-            upload_error_message = f"File storage upload failed: {str(e)}"
-            file_reference = None
-            bucket_name = ""
-            object_key = ""
-
-        thumbnail_reference = None
-        thumbnail_mime_type = None
-        if minio_client:
-            thumbnail_reference, thumbnail_mime_type = _upload_thumbnail_if_possible(
-                minio_client=minio_client,
-                file_data=file.file,
-                filename=file.filename or doc_title,
-                content_type=file.content_type,
-                user_id=current_user.user_id,
-            )
-
         # Parse department_id
         parsed_dept_id = None
         if department_id and department_id.strip():
@@ -1415,7 +1430,7 @@ async def upload_knowledge(
             except ValueError:
                 pass
 
-        # Parse collection_id
+        # Parse collection_id and validate before storage writes.
         parsed_collection_id = None
         if collection_id and collection_id.strip():
             try:
@@ -1423,9 +1438,8 @@ async def upload_knowledge(
             except ValueError:
                 pass
 
-        # Create database record
-        with get_db_session() as session:
-            if parsed_collection_id:
+        if parsed_collection_id:
+            with get_db_session() as session:
                 collection = (
                     session.query(KnowledgeCollection)
                     .filter(KnowledgeCollection.collection_id == parsed_collection_id)
@@ -1445,7 +1459,74 @@ async def upload_knowledge(
                         detail="You do not have permission to add files to this collection",
                     )
 
+        knowledge_id = uuid4()
+
+        # Upload to MinIO
+        minio_client = None
+        upload_error_message: Optional[str] = None
+        try:
+            from object_storage.minio_client import get_minio_client
+
+            minio_client = get_minio_client()
+
+            # Determine bucket type based on MIME type / file extension
+            bucket_type = _get_bucket_type(file.filename or "", file.content_type)
+
+            bucket_name, object_key = minio_client.upload_file(
+                bucket_type=bucket_type,
+                file_data=file.file,
+                filename=file.filename or "upload",
+                user_id=current_user.user_id,
+                content_type=file.content_type,
+                metadata=build_knowledge_storage_object_metadata(str(knowledge_id), "source"),
+            )
+
+            file_reference = f"minio:{bucket_name}:{object_key}"
+            staged_object_refs.append(
+                KnowledgeStorageObjectRef(
+                    bucket_name=bucket_name,
+                    object_key=object_key,
+                    variant="source",
+                )
+            )
+        except ValueError as e:
+            # File-type and validation errors are user-actionable; return immediately.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            ) from e
+        except Exception as e:
+            logger.warning(f"MinIO upload failed, storing reference only: {e}")
+            upload_error_message = f"File storage upload failed: {str(e)}"
+            file_reference = None
+            bucket_name = ""
+            object_key = ""
+
+        thumbnail_reference = None
+        thumbnail_mime_type = None
+        if minio_client and file_reference:
+            thumbnail_reference, thumbnail_mime_type = _upload_thumbnail_if_possible(
+                minio_client=minio_client,
+                file_data=file.file,
+                filename=file.filename or doc_title,
+                content_type=file.content_type,
+                user_id=current_user.user_id,
+                metadata=build_knowledge_storage_object_metadata(str(knowledge_id), "thumbnail"),
+            )
+            thumbnail_parts = _parse_minio_reference(thumbnail_reference)
+            if thumbnail_parts:
+                staged_object_refs.append(
+                    KnowledgeStorageObjectRef(
+                        bucket_name=thumbnail_parts[0],
+                        object_key=thumbnail_parts[1],
+                        variant="thumbnail",
+                    )
+                )
+
+        # Create database record
+        with get_db_session() as session:
             knowledge_item = KnowledgeItem(
+                knowledge_id=knowledge_id,
                 title=doc_title,
                 content_type=content_category,
                 file_reference=file_reference,
@@ -1559,6 +1640,7 @@ async def upload_knowledge(
                 collectionId=collection_id if collection_id and collection_id.strip() else None,
             )
 
+        knowledge_created = True
         logger.info(
             f"Knowledge item created: {item_id}",
             extra={"user_id": current_user.user_id, "original_filename": file.filename},
@@ -1566,8 +1648,24 @@ async def upload_knowledge(
         return response
 
     except HTTPException:
+        if staged_object_refs and not knowledge_created:
+            try:
+                purge_minio_object_refs(staged_object_refs, purge_versions=True)
+            except Exception as cleanup_error:
+                logger.warning(
+                    "Failed to compensate uploaded knowledge objects after HTTP error: %s",
+                    cleanup_error,
+                )
         raise
     except Exception as e:
+        if staged_object_refs and not knowledge_created:
+            try:
+                purge_minio_object_refs(staged_object_refs, purge_versions=True)
+            except Exception as cleanup_error:
+                logger.warning(
+                    "Failed to compensate uploaded knowledge objects after error: %s",
+                    cleanup_error,
+                )
         logger.error(f"Failed to upload knowledge item: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -2235,43 +2333,16 @@ async def delete_collection(
             items = session.query(KnowledgeItem).filter(KnowledgeItem.collection_id == cid).all()
 
             for item in items:
-                kid = str(item.knowledge_id)
-
-                # Delete Milvus embeddings
-                try:
-                    from memory_system.milvus_connection import get_milvus_connection
-
-                    milvus = get_milvus_connection()
-                    if milvus.collection_exists("knowledge_embeddings"):
-                        milvus_coll = milvus.get_collection(
-                            "knowledge_embeddings",
-                            force_refresh=True,
-                        )
-                        milvus_coll.delete(f'knowledge_id == "{kid}"')
-                except Exception as e:
-                    logger.warning(f"Failed to delete Milvus embeddings for {kid}: {e}")
-
                 # Delete chunks
                 try:
                     session.execute(
                         text("DELETE FROM knowledge_chunks WHERE knowledge_id = :kid"),
-                        {"kid": kid},
+                        {"kid": str(item.knowledge_id)},
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to delete chunks for {kid}: {e}")
+                    logger.warning("Failed to delete chunks for %s: %s", item.knowledge_id, e)
 
-                # Delete MinIO file
-                if item.file_reference and item.file_reference.startswith("minio:"):
-                    try:
-                        from object_storage.minio_client import get_minio_client
-
-                        minio_client = get_minio_client()
-                        parts = item.file_reference.split(":", 2)
-                        if len(parts) == 3:
-                            _, bucket_name, object_key = parts
-                            minio_client.delete_file(bucket_name, object_key)
-                    except Exception as e:
-                        logger.warning(f"Failed to delete MinIO file for {kid}: {e}")
+                cleanup_knowledge_item_storage(item)
 
             # Delete collection (cascades to items)
             session.delete(collection)
@@ -2371,8 +2442,7 @@ async def cancel_knowledge_processing(
     """Cancel an in-flight knowledge processing task."""
     cancel_message = "Processing cancelled by user."
     try:
-        job_id: Optional[str] = None
-        queue_cancel_signal_sent = False
+        cancellation_result: Optional[Dict[str, Any]] = None
         response_payload: Optional[KnowledgeItemResponse] = None
 
         with get_db_session() as session:
@@ -2425,7 +2495,6 @@ async def cancel_knowledge_processing(
             item.item_metadata = metadata
             session.flush()
 
-            job_id = metadata.get("job_id")
             owner = session.query(User).filter(User.user_id == item.owner_user_id).first()
             owner_name = owner.username if owner else "Unknown"
             response_payload = _build_item_response(item, owner_name)
@@ -2433,26 +2502,20 @@ async def cancel_knowledge_processing(
         if response_payload is None:
             raise RuntimeError("Failed to prepare cancellation response payload")
 
-        if job_id and not str(job_id).startswith("local-"):
-            try:
-                from knowledge_base.processing_queue import get_processing_queue
-
-                queue = get_processing_queue()
-                queue_cancel_signal_sent = queue.request_cancel(
-                    str(job_id), error_message=cancel_message
-                )
-            except Exception as queue_error:
-                logger.warning(
-                    f"Failed to request queue cancellation for knowledge item {knowledge_id}: "
-                    f"{queue_error}"
-                )
+        cancellation_result = request_knowledge_processing_cancellation(
+            knowledge_id=knowledge_id,
+            metadata=metadata,
+            cancel_message=cancel_message,
+        )
 
         logger.info(
             "Knowledge processing cancellation requested",
             extra={
                 "knowledge_id": knowledge_id,
-                "job_id": job_id,
-                "queue_cancel_signal_sent": queue_cancel_signal_sent,
+                "job_id": (cancellation_result or {}).get("job_id"),
+                "queue_cancel_signal_sent": (cancellation_result or {}).get(
+                    "queue_cancel_signal_sent"
+                ),
                 "user_id": current_user.user_id,
             },
         )
@@ -2525,6 +2588,7 @@ async def reprocess_knowledge(
             mime_type = metadata.get("mime_type", "application/octet-stream")
             reprocess_started_at = datetime.now(timezone.utc).isoformat()
             reprocess_job_id = str(uuid4())
+            clear_document_cancellation(knowledge_id)
 
             # Delete old chunks
             try:
@@ -3012,20 +3076,7 @@ async def delete_knowledge(
 
             original_collection_id = item.collection_id
 
-            # 1. Delete from Milvus (vector embeddings)
-            try:
-                from memory_system.milvus_connection import get_milvus_connection
-
-                milvus = get_milvus_connection()
-                if milvus.collection_exists("knowledge_embeddings"):
-                    collection = milvus.get_collection(
-                        "knowledge_embeddings",
-                        force_refresh=True,
-                    )
-                    collection.delete(f'knowledge_id == "{knowledge_id}"')
-                    logger.info(f"Deleted Milvus embeddings for {knowledge_id}")
-            except Exception as e:
-                logger.warning(f"Failed to delete from Milvus: {e}")
+            cleanup_knowledge_item_storage(item)
 
             # 2. Delete knowledge_chunks (if table exists)
             try:
@@ -3036,19 +3087,6 @@ async def delete_knowledge(
             except Exception as e:
                 logger.warning(f"Failed to delete knowledge_chunks: {e}")
                 session.rollback()
-
-            # 3. Delete from MinIO if file reference exists
-            if item.file_reference and item.file_reference.startswith("minio:"):
-                try:
-                    from object_storage.minio_client import get_minio_client
-
-                    minio_client = get_minio_client()
-                    parts = item.file_reference.split(":", 2)
-                    if len(parts) == 3:
-                        _, bucket_name, object_key = parts
-                        minio_client.delete_file(bucket_name, object_key)
-                except Exception as e:
-                    logger.warning(f"Failed to delete file from MinIO: {e}")
 
             # 4. Delete knowledge item from database
             session.delete(item)

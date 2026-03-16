@@ -70,7 +70,9 @@ class DocumentProcessorWorker:
             try:
                 self.minio_client = get_minio_client()
             except Exception:
-                logger.warning("MinIO client unavailable, using compatibility fallback", exc_info=True)
+                logger.warning(
+                    "MinIO client unavailable, using compatibility fallback", exc_info=True
+                )
         if self.indexer is None:
             try:
                 self.indexer = get_knowledge_indexer()
@@ -314,6 +316,11 @@ class DocumentProcessorWorker:
     def _is_document_cancel_requested(document_id: str) -> bool:
         """Check persistent cancellation flag in KnowledgeItem metadata."""
         try:
+            from knowledge_base.cancellation_registry import is_document_cancel_requested
+
+            if is_document_cancel_requested(document_id):
+                return True
+
             from database.connection import get_db_session
             from database.models import KnowledgeItem
 
@@ -483,10 +490,7 @@ class DocumentProcessorWorker:
             should_try_pdf_vision_fallback = (
                 self.parsing_method == "auto"
                 and "pdf" in effective_type
-                and (
-                    len(standard_text) < 100
-                    or not self._has_substantive_text(standard_text)
-                )
+                and (len(standard_text) < 100 or not self._has_substantive_text(standard_text))
             )
             if should_try_pdf_vision_fallback:
                 try:

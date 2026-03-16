@@ -83,9 +83,6 @@ database:
 storage:
   minio:
     endpoint: localhost:9000
-    # Optional browser-facing endpoint for presigned URLs.
-    # Set this to a LAN IP / public hostname when the backend uses localhost internally.
-    # public_endpoint: 192.168.2.135:9000
     access_key: minioadmin
     secret_key: minioadmin_change_me
     secure: false
@@ -461,8 +458,8 @@ user_memory:
     similarity_threshold: 0.3
     strict_keyword_fallback: true
     enable_reranking: true
-    rerank_provider: llm-pool
-    rerank_model: BAAI/bge-reranker-v2-m3
+    rerank_provider: xinference
+    rerank_model: bge-reranker-v2-m3
     rerank_top_k: 30
     rerank_weight: 0.75
     rerank_timeout_seconds: 8
@@ -614,8 +611,8 @@ knowledge_base:
     embedding_failure_backoff_seconds: 30
     rerank_enabled: true
     rerank_weight: 0.85
-    rerank_provider: llm-pool
-    rerank_model: BAAI/bge-reranker-v2-m3
+    rerank_provider: xinference
+    rerank_model: bge-reranker-v2-m3
     rerank_top_k: 30
     rerank_timeout_seconds: 10
     rerank_failure_backoff_seconds: 60
@@ -630,6 +627,17 @@ knowledge_base:
     cross_language_failure_backoff_seconds: 60
     cross_language_max_expansions: 2
     cross_language_max_queries: 3
+  cleanup:
+    enabled: true
+    run_on_startup: true
+    startup_delay_seconds: 300
+    interval_seconds: 21600
+    dry_run: false
+    batch_size: 500
+    compact_on_cycle: true
+    purge_minio_versions: true
+    advisory_lock_id: 73012022
+    use_advisory_lock: true
 message_bus:
   enable_pubsub: true
   enable_streams: true

@@ -553,7 +553,12 @@ class MinIOClient:
             raise
 
     def list_objects(
-        self, bucket_name: str, prefix: Optional[str] = None, recursive: bool = True
+        self,
+        bucket_name: str,
+        prefix: Optional[str] = None,
+        recursive: bool = True,
+        include_user_meta: bool = False,
+        include_version: bool = False,
     ) -> List[Dict]:
         """
         List objects in a bucket.
@@ -568,22 +573,30 @@ class MinIOClient:
         """
         try:
             objects = self.client.list_objects(
-                bucket_name=bucket_name, prefix=prefix, recursive=recursive
+                bucket_name=bucket_name,
+                prefix=prefix,
+                recursive=recursive,
+                include_user_meta=include_user_meta,
+                include_version=include_version,
             )
 
             result = []
             for obj in objects:
-                result.append(
-                    {
-                        "object_key": obj.object_name,
-                        "size": obj.size,
-                        "etag": obj.etag,
-                        "last_modified": (
-                            obj.last_modified.isoformat() if obj.last_modified else None
-                        ),
-                        "is_dir": obj.is_dir,
+                item = {
+                    "object_key": obj.object_name,
+                    "size": obj.size,
+                    "etag": obj.etag,
+                    "last_modified": (obj.last_modified.isoformat() if obj.last_modified else None),
+                    "is_dir": obj.is_dir,
+                    "version_id": getattr(obj, "version_id", None),
+                    "is_delete_marker": bool(getattr(obj, "is_delete_marker", False)),
+                }
+                if include_user_meta and getattr(obj, "metadata", None):
+                    item["metadata"] = {
+                        str(key).strip().lower(): str(value or "").strip()
+                        for key, value in dict(obj.metadata).items()
                     }
-                )
+                result.append(item)
 
             logger.info(
                 f"Listed {len(result)} objects from {bucket_name} " f"with prefix '{prefix or ''}'"
@@ -618,6 +631,46 @@ class MinIOClient:
 
         except S3Error as e:
             logger.error(f"Error deleting file {bucket_name}/{object_key}: {e}")
+            raise
+
+    def delete_file_versions(self, bucket_name: str, object_key: str) -> int:
+        """Delete the current object plus every retained version/delete marker."""
+
+        deleted_count = 0
+        try:
+            versions = self.client.list_objects(
+                bucket_name=bucket_name,
+                prefix=object_key,
+                recursive=True,
+                include_version=True,
+            )
+            matching_versions = [
+                version
+                for version in versions
+                if getattr(version, "object_name", None) == object_key
+            ]
+
+            if not matching_versions:
+                self.client.remove_object(bucket_name=bucket_name, object_name=object_key)
+                return 1
+
+            for version in matching_versions:
+                self.client.remove_object(
+                    bucket_name=bucket_name,
+                    object_name=object_key,
+                    version_id=getattr(version, "version_id", None),
+                )
+                deleted_count += 1
+
+            logger.info(
+                "Deleted all versions for %s/%s (%s entries)",
+                bucket_name,
+                object_key,
+                deleted_count,
+            )
+            return deleted_count
+        except S3Error as e:
+            logger.error(f"Error deleting all versions for {bucket_name}/{object_key}: {e}")
             raise
 
     def cleanup_temporary_files(

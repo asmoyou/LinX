@@ -241,6 +241,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.warning(f"Failed to start document processor worker: {e}")
 
+    # Start knowledge storage cleanup manager
+    try:
+        from knowledge_base.storage_cleanup import (
+            initialize_knowledge_storage_cleanup_manager,
+        )
+
+        manager = await initialize_knowledge_storage_cleanup_manager()
+        if manager:
+            logger.info("Knowledge storage cleanup manager initialized")
+        else:
+            logger.info("Knowledge storage cleanup manager is disabled by config")
+    except Exception as e:
+        logger.warning(f"Failed to initialize knowledge storage cleanup manager: {e}")
+
     # Recover stale non-terminal missions left by previous process exits.
     try:
         from mission_system.orchestrator import get_orchestrator
@@ -275,6 +289,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.info("Document processor worker stopped")
     except Exception as e:
         logger.error(f"Failed to stop document processor worker: {e}")
+
+    # Stop knowledge storage cleanup manager
+    try:
+        from knowledge_base.storage_cleanup import (
+            shutdown_knowledge_storage_cleanup_manager,
+        )
+
+        await shutdown_knowledge_storage_cleanup_manager()
+        logger.info("Knowledge storage cleanup manager shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown knowledge storage cleanup manager: {e}")
 
     # Shutdown session manager (clean up all sessions and workdirs)
     try:
