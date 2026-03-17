@@ -54,6 +54,25 @@ def test_memory_item_to_response_sets_private_visibility_for_user_memory():
     assert "_combined_score" not in result["metadata"]
 
 
+def test_memory_item_to_response_omits_duplicate_summary_when_same_as_content():
+    item = SimpleNamespace(
+        id=8,
+        content="用户计划与小陈一起去吃汉堡",
+        summary="用户计划与小陈一起去吃汉堡",
+        memory_type="user_memory",
+        agent_id=None,
+        user_id="user-1",
+        timestamp=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        similarity_score=0.81,
+        metadata={"record_type": "episode"},
+    )
+
+    result = _memory_item_to_response(item)
+
+    assert result["summary"] is None
+    assert result["content"] == "用户计划与小陈一起去吃汉堡"
+
+
 def test_is_admin_or_manager_matches_expected_roles(current_user):
     base = {
         "user_id": current_user.user_id,

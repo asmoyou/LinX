@@ -83,6 +83,20 @@ def _normalize_visibility(memory_type: str, metadata: Dict[str, Any]) -> str:
     return "private"
 
 
+def _normalized_summary(
+    *,
+    summary: Optional[str],
+    content: str,
+) -> Optional[str]:
+    summary_text = str(summary or "").strip()
+    if not summary_text:
+        return None
+    content_text = str(content or "").strip()
+    if summary_text == content_text:
+        return None
+    return summary_text
+
+
 def _memory_item_to_response(
     item: Any,
     agent_name: Optional[str] = None,
@@ -130,7 +144,10 @@ def _memory_item_to_response(
         "id": str(getattr(item, "id", "") or ""),
         "type": memory_type,
         "content": str(getattr(item, "content", "") or ""),
-        "summary": summary,
+        "summary": _normalized_summary(
+            summary=summary,
+            content=str(getattr(item, "content", "") or ""),
+        ),
         "agentId": getattr(item, "agent_id", None),
         "agentName": agent_name,
         "userId": getattr(item, "user_id", None),

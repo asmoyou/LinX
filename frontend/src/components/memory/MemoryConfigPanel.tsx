@@ -30,7 +30,33 @@ type MemoryConfigFormState = {
     inherit_from_knowledge_base: boolean;
   };
   retrieval: {
+    hybrid_enabled: boolean;
     similarity_threshold: number;
+    rerank: {
+      enabled: boolean;
+      provider: string;
+      model: string;
+      top_k: number;
+      weight: number;
+      timeout_seconds: number;
+      failure_backoff_seconds: number;
+      doc_max_chars: number;
+    };
+    planner: {
+      runtime_mode: string;
+      api_mode: string;
+      provider: string;
+      model: string;
+      timeout_seconds: number;
+      failure_backoff_seconds: number;
+      max_query_variants: number;
+    };
+    reflection: {
+      enabled_api: boolean;
+      max_rounds: number;
+      min_results: number;
+      min_score: number;
+    };
   };
   fact_extraction: {
     provider: string;
@@ -86,7 +112,33 @@ const DEFAULT_FORM_STATE: MemoryConfigFormState = {
     inherit_from_knowledge_base: true,
   },
   retrieval: {
+    hybrid_enabled: true,
     similarity_threshold: 0.3,
+    rerank: {
+      enabled: true,
+      provider: "",
+      model: "",
+      top_k: 30,
+      weight: 0.75,
+      timeout_seconds: 8,
+      failure_backoff_seconds: 30,
+      doc_max_chars: 1200,
+    },
+    planner: {
+      runtime_mode: "light",
+      api_mode: "full",
+      provider: "",
+      model: "",
+      timeout_seconds: 4,
+      failure_backoff_seconds: 60,
+      max_query_variants: 3,
+    },
+    reflection: {
+      enabled_api: true,
+      max_rounds: 1,
+      min_results: 3,
+      min_score: 0.45,
+    },
   },
   fact_extraction: {
     provider: "",
@@ -137,11 +189,13 @@ const DEFAULT_FORM_STATE: MemoryConfigFormState = {
 const EMBEDDING_MODEL_NAME_PATTERN =
   /embed|embedding|bge|m3e|e5|gte|voyage|jina-embeddings/i;
 const CHAT_MODEL_NAME_PATTERN = /chat|instruct|gpt|qwen|llama|claude|deepseek/i;
+const RERANK_MODEL_NAME_PATTERN = /rerank|reranker|bge-reranker|jina-reranker/i;
 
-type ModelType = "embedding" | "generation";
+type ModelType = "embedding" | "generation" | "rerank";
 type ProviderTypedModels = {
   embedding: string[];
   generation: string[];
+  rerank: string[];
 };
 
 const asObject = (value: unknown): Record<string, unknown> => {
@@ -197,6 +251,9 @@ const selectModelsByType = (
   const metadataMatches = Object.entries(metadataModels)
     .filter(([, metadata]) => {
       const normalized = metadata.model_type?.toLowerCase();
+      if (modelType === "rerank") {
+        return normalized === "rerank";
+      }
       if (modelType === "generation") {
         return normalized ? !generationExcludedTypes.has(normalized) : true;
       }
@@ -215,7 +272,9 @@ const selectModelsByType = (
   const matcher =
     modelType === "embedding"
       ? EMBEDDING_MODEL_NAME_PATTERN
-      : CHAT_MODEL_NAME_PATTERN;
+      : modelType === "rerank"
+        ? RERANK_MODEL_NAME_PATTERN
+        : CHAT_MODEL_NAME_PATTERN;
   const heuristicMatches = providerModels.filter((model) =>
     matcher.test(model),
   );
@@ -245,6 +304,9 @@ const toFormState = (config: MemoryConfig | null): MemoryConfigFormState => {
   const skillLearning = asObject(config.skill_learning);
   const userMemoryEmbedding = asObject(userMemory.embedding);
   const userMemoryRetrieval = asObject(userMemory.retrieval);
+  const userMemoryRerank = asObject(userMemoryRetrieval.rerank);
+  const userMemoryPlanner = asObject(userMemoryRetrieval.planner);
+  const userMemoryReflection = asObject(userMemoryRetrieval.reflection);
   const userMemoryExtraction = asObject(userMemory.extraction);
   const userMemoryConsolidation = asObject(userMemory.consolidation);
   const skillLearningExtraction = asObject(skillLearning.extraction);
@@ -263,10 +325,45 @@ const toFormState = (config: MemoryConfig | null): MemoryConfigFormState => {
       ),
     },
     retrieval: {
+      hybrid_enabled: asBoolean(userMemoryRetrieval.hybrid_enabled, true),
       similarity_threshold: asNumber(
         userMemoryRetrieval.similarity_threshold,
         0.3,
       ),
+      rerank: {
+        enabled: asBoolean(userMemoryRerank.enabled, true),
+        provider: asString(userMemoryRerank.provider, ""),
+        model: asString(userMemoryRerank.model, ""),
+        top_k: asNumber(userMemoryRerank.top_k, 30),
+        weight: asNumber(userMemoryRerank.weight, 0.75),
+        timeout_seconds: asNumber(userMemoryRerank.timeout_seconds, 8),
+        failure_backoff_seconds: asNumber(
+          userMemoryRerank.failure_backoff_seconds,
+          30,
+        ),
+        doc_max_chars: asNumber(userMemoryRerank.doc_max_chars, 1200),
+      },
+      planner: {
+        runtime_mode: asString(userMemoryPlanner.runtime_mode, "light"),
+        api_mode: asString(userMemoryPlanner.api_mode, "full"),
+        provider: asString(userMemoryPlanner.provider, ""),
+        model: asString(userMemoryPlanner.model, ""),
+        timeout_seconds: asNumber(userMemoryPlanner.timeout_seconds, 4),
+        failure_backoff_seconds: asNumber(
+          userMemoryPlanner.failure_backoff_seconds,
+          60,
+        ),
+        max_query_variants: asNumber(
+          userMemoryPlanner.max_query_variants,
+          3,
+        ),
+      },
+      reflection: {
+        enabled_api: asBoolean(userMemoryReflection.enabled_api, true),
+        max_rounds: asNumber(userMemoryReflection.max_rounds, 1),
+        min_results: asNumber(userMemoryReflection.min_results, 3),
+        min_score: asNumber(userMemoryReflection.min_score, 0.45),
+      },
     },
     fact_extraction: {
       provider: asString(userMemoryExtraction.provider, ""),
@@ -361,10 +458,63 @@ const toUpdatePayload = (
           formState.embedding.inherit_from_knowledge_base,
       },
       retrieval: {
+        hybrid_enabled: formState.retrieval.hybrid_enabled,
         similarity_threshold: Math.max(
           0,
           formState.retrieval.similarity_threshold,
         ),
+        rerank: {
+          enabled: formState.retrieval.rerank.enabled,
+          provider: formState.retrieval.rerank.provider.trim(),
+          model: formState.retrieval.rerank.model.trim(),
+          top_k: Math.max(1, Math.floor(formState.retrieval.rerank.top_k)),
+          weight: Math.max(0, Math.min(1, formState.retrieval.rerank.weight)),
+          timeout_seconds: Math.max(
+            1,
+            formState.retrieval.rerank.timeout_seconds,
+          ),
+          failure_backoff_seconds: Math.max(
+            1,
+            Math.floor(formState.retrieval.rerank.failure_backoff_seconds),
+          ),
+          doc_max_chars: Math.max(
+            256,
+            Math.floor(formState.retrieval.rerank.doc_max_chars),
+          ),
+        },
+        planner: {
+          runtime_mode: formState.retrieval.planner.runtime_mode.trim() || "light",
+          api_mode: formState.retrieval.planner.api_mode.trim() || "full",
+          provider: formState.retrieval.planner.provider.trim(),
+          model: formState.retrieval.planner.model.trim(),
+          timeout_seconds: Math.max(
+            1,
+            formState.retrieval.planner.timeout_seconds,
+          ),
+          failure_backoff_seconds: Math.max(
+            1,
+            Math.floor(formState.retrieval.planner.failure_backoff_seconds),
+          ),
+          max_query_variants: Math.max(
+            1,
+            Math.floor(formState.retrieval.planner.max_query_variants),
+          ),
+        },
+        reflection: {
+          enabled_api: formState.retrieval.reflection.enabled_api,
+          max_rounds: Math.max(
+            0,
+            Math.floor(formState.retrieval.reflection.max_rounds),
+          ),
+          min_results: Math.max(
+            1,
+            Math.floor(formState.retrieval.reflection.min_results),
+          ),
+          min_score: Math.max(
+            0,
+            Math.min(1, formState.retrieval.reflection.min_score),
+          ),
+        },
       },
       extraction: {
         provider: formState.fact_extraction.provider.trim(),
@@ -555,6 +705,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
           [provider]: {
             embedding: [],
             generation: [],
+            rerank: [],
           },
         }));
         return;
@@ -581,6 +732,11 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
               modelsMetadata,
               "generation",
             ),
+            rerank: selectModelsByType(
+              providerModels,
+              modelsMetadata,
+              "rerank",
+            ),
           },
         }));
       } catch {
@@ -589,6 +745,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
           [provider]: {
             embedding: selectModelsByType(providerModels, {}, "embedding"),
             generation: selectModelsByType(providerModels, {}, "generation"),
+            rerank: selectModelsByType(providerModels, {}, "rerank"),
           },
         }));
       } finally {
@@ -616,6 +773,20 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
   }, [ensureProviderTypedModels, formState.fact_extraction.provider]);
 
   useEffect(() => {
+    if (!formState.retrieval.rerank.provider) {
+      return;
+    }
+    void ensureProviderTypedModels(formState.retrieval.rerank.provider);
+  }, [ensureProviderTypedModels, formState.retrieval.rerank.provider]);
+
+  useEffect(() => {
+    if (!formState.retrieval.planner.provider) {
+      return;
+    }
+    void ensureProviderTypedModels(formState.retrieval.planner.provider);
+  }, [ensureProviderTypedModels, formState.retrieval.planner.provider]);
+
+  useEffect(() => {
     if (!formState.skill_learning.provider) {
       return;
     }
@@ -639,6 +810,23 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     );
   }, [formState.fact_extraction.provider, typedModelsByProvider]);
 
+  const rerankModels = useMemo(() => {
+    if (!formState.retrieval.rerank.provider) {
+      return [];
+    }
+    return typedModelsByProvider[formState.retrieval.rerank.provider]?.rerank || [];
+  }, [formState.retrieval.rerank.provider, typedModelsByProvider]);
+
+  const plannerModels = useMemo(() => {
+    if (!formState.retrieval.planner.provider) {
+      return [];
+    }
+    return (
+      typedModelsByProvider[formState.retrieval.planner.provider]?.generation ||
+      []
+    );
+  }, [formState.retrieval.planner.provider, typedModelsByProvider]);
+
   const skillLearningModels = useMemo(() => {
     if (!formState.skill_learning.provider) {
       return [];
@@ -656,6 +844,14 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     formState.fact_extraction.provider &&
     loadingModelMetadataByProvider[formState.fact_extraction.provider],
   );
+  const isRerankModelsLoading = Boolean(
+    formState.retrieval.rerank.provider &&
+    loadingModelMetadataByProvider[formState.retrieval.rerank.provider],
+  );
+  const isPlannerModelsLoading = Boolean(
+    formState.retrieval.planner.provider &&
+    loadingModelMetadataByProvider[formState.retrieval.planner.provider],
+  );
   const isSkillLearningModelsLoading = Boolean(
     formState.skill_learning.provider &&
     loadingModelMetadataByProvider[formState.skill_learning.provider],
@@ -667,6 +863,12 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
   const factExtractionModelMissing =
     Boolean(formState.fact_extraction.model) &&
     !factExtractionModels.includes(formState.fact_extraction.model);
+  const rerankModelMissing =
+    Boolean(formState.retrieval.rerank.model) &&
+    !rerankModels.includes(formState.retrieval.rerank.model);
+  const plannerModelMissing =
+    Boolean(formState.retrieval.planner.model) &&
+    !plannerModels.includes(formState.retrieval.planner.model);
   const skillLearningModelMissing =
     Boolean(formState.skill_learning.model) &&
     !skillLearningModels.includes(formState.skill_learning.model);
@@ -711,10 +913,26 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
       },
       retrieval: {
         ...prev.retrieval,
+        hybrid_enabled: asBoolean(
+          recommendedRetrieval.hybrid_enabled,
+          prev.retrieval.hybrid_enabled,
+        ),
         similarity_threshold: asNumber(
           recommendedRetrieval.similarity_threshold,
           prev.retrieval.similarity_threshold,
         ),
+        rerank: {
+          ...prev.retrieval.rerank,
+          ...asObject(recommendedRetrieval.rerank),
+        },
+        planner: {
+          ...prev.retrieval.planner,
+          ...asObject(recommendedRetrieval.planner),
+        },
+        reflection: {
+          ...prev.retrieval.reflection,
+          ...asObject(recommendedRetrieval.reflection),
+        },
       },
       fact_extraction: {
         ...prev.fact_extraction,
@@ -916,6 +1134,38 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     }));
   };
 
+  const handleRerankProviderChange = (provider: string) => {
+    void ensureProviderTypedModels(provider);
+    const candidates = typedModelsByProvider[provider]?.rerank || [];
+    setFormState((prev) => ({
+      ...prev,
+      retrieval: {
+        ...prev.retrieval,
+        rerank: {
+          ...prev.retrieval.rerank,
+          provider,
+          model: candidates[0] || "",
+        },
+      },
+    }));
+  };
+
+  const handlePlannerProviderChange = (provider: string) => {
+    void ensureProviderTypedModels(provider);
+    const candidates = typedModelsByProvider[provider]?.generation || [];
+    setFormState((prev) => ({
+      ...prev,
+      retrieval: {
+        ...prev.retrieval,
+        planner: {
+          ...prev.retrieval.planner,
+          provider,
+          model: candidates[0] || "",
+        },
+      },
+    }));
+  };
+
   const handleSkillLearningProviderChange = (provider: string) => {
     void ensureProviderTypedModels(provider);
     const candidates = typedModelsByProvider[provider]?.generation || [];
@@ -975,6 +1225,60 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     factExtractionModels,
     formState.fact_extraction.model,
     formState.fact_extraction.provider,
+  ]);
+
+  useEffect(() => {
+    const provider = formState.retrieval.rerank.provider;
+    if (!provider || rerankModels.length === 0) {
+      return;
+    }
+    if (
+      formState.retrieval.rerank.model &&
+      rerankModels.includes(formState.retrieval.rerank.model)
+    ) {
+      return;
+    }
+    setFormState((prev) => ({
+      ...prev,
+      retrieval: {
+        ...prev.retrieval,
+        rerank: {
+          ...prev.retrieval.rerank,
+          model: rerankModels[0] || "",
+        },
+      },
+    }));
+  }, [
+    formState.retrieval.rerank.model,
+    formState.retrieval.rerank.provider,
+    rerankModels,
+  ]);
+
+  useEffect(() => {
+    const provider = formState.retrieval.planner.provider;
+    if (!provider || plannerModels.length === 0) {
+      return;
+    }
+    if (
+      formState.retrieval.planner.model &&
+      plannerModels.includes(formState.retrieval.planner.model)
+    ) {
+      return;
+    }
+    setFormState((prev) => ({
+      ...prev,
+      retrieval: {
+        ...prev.retrieval,
+        planner: {
+          ...prev.retrieval.planner,
+          model: plannerModels[0] || "",
+        },
+      },
+    }));
+  }, [
+    formState.retrieval.planner.model,
+    formState.retrieval.planner.provider,
+    plannerModels,
   ]);
 
   useEffect(() => {
@@ -1198,7 +1502,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                   {t(
                     "memory.config.retrievalHint",
-                    "Tune the runtime threshold used when recalling user memory for prompt injection.",
+                    "Configure the live hybrid retrieval pipeline used by user-memory runtime and API search.",
                   )}
                 </p>
               </div>
@@ -1206,40 +1510,663 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
               <p className="mb-3 rounded-lg border border-emerald-200/80 bg-emerald-50/80 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-800/70 dark:bg-emerald-950/30 dark:text-emerald-200">
                 {t(
                   "memory.config.retrievalEffectiveHint",
-                  "Similarity threshold is the only retrieval knob wired into the current user-memory runtime path.",
+                  "These controls are wired into the current user-memory hybrid retrieval path, including rerank, planner, and reflection.",
                 )}
               </p>
 
-              <label className="text-sm text-zinc-700 dark:text-zinc-300">
-                <span className="block mb-1">
-                  {t("memory.config.similarityThreshold", "Similarity Threshold")}
-                </span>
-                <input
-                  type="number"
-                  step="0.01"
-                  min={0}
-                  value={formState.retrieval.similarity_threshold}
-                  onChange={(event) =>
-                    setFormState((prev) => ({
-                      ...prev,
-                      retrieval: {
-                        ...prev.retrieval,
-                        similarity_threshold: asNumber(
-                          event.target.value,
-                          prev.retrieval.similarity_threshold,
-                        ),
-                      },
-                    }))
-                  }
-                  className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
-                />
-                <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+              <div className="space-y-4">
+                <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={formState.retrieval.hybrid_enabled}
+                    onChange={(event) =>
+                      setFormState((prev) => ({
+                        ...prev,
+                        retrieval: {
+                          ...prev.retrieval,
+                          hybrid_enabled: event.target.checked,
+                        },
+                      }))
+                    }
+                    className="rounded"
+                  />
                   {t(
-                    "memory.config.similarityThresholdHint",
-                    "Global floor for memory recall in agent runtime. Lower improves recall; higher improves precision.",
+                    "memory.config.hybridEnabled",
+                    "Enable Hybrid Retrieval",
                   )}
-                </span>
-              </label>
+                </label>
+
+                <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                  <span className="block mb-1">
+                    {t("memory.config.similarityThreshold", "Similarity Threshold")}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min={0}
+                    value={formState.retrieval.similarity_threshold}
+                    onChange={(event) =>
+                      setFormState((prev) => ({
+                        ...prev,
+                        retrieval: {
+                          ...prev.retrieval,
+                          similarity_threshold: asNumber(
+                            event.target.value,
+                            prev.retrieval.similarity_threshold,
+                          ),
+                        },
+                      }))
+                    }
+                    className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                  />
+                  <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                    {t(
+                      "memory.config.similarityThresholdHint",
+                      "Final floor for memory recall. Lower improves recall; higher improves precision.",
+                    )}
+                  </span>
+                </label>
+
+                <div className="rounded-lg border border-zinc-200/80 dark:border-zinc-700/80 p-3">
+                  <div className="mb-3">
+                    <h4 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+                      {t("memory.config.rerankTitle", "Rerank")}
+                    </h4>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                      {t(
+                        "memory.config.rerankHint",
+                        "Model-based reranking after hybrid candidate merge.",
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300 md:col-span-3">
+                      <input
+                        type="checkbox"
+                        checked={formState.retrieval.rerank.enabled}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              rerank: {
+                                ...prev.retrieval.rerank,
+                                enabled: event.target.checked,
+                              },
+                            },
+                          }))
+                        }
+                        className="rounded"
+                      />
+                      {t("memory.config.rerankEnabled", "Enable Rerank")}
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.provider", "Provider")}
+                      </span>
+                      <select
+                        value={formState.retrieval.rerank.provider}
+                        onChange={(event) =>
+                          handleRerankProviderChange(event.target.value)
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      >
+                        <option value="">{t("memory.config.none", "None")}</option>
+                        {providerOptions.map((provider) => (
+                          <option key={provider} value={provider}>
+                            {provider}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.model", "Model")}
+                      </span>
+                      <select
+                        value={formState.retrieval.rerank.model}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              rerank: {
+                                ...prev.retrieval.rerank,
+                                model: event.target.value,
+                              },
+                            },
+                          }))
+                        }
+                        disabled={!formState.retrieval.rerank.provider}
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      >
+                        {!formState.retrieval.rerank.provider ? (
+                          <option value="">
+                            {t(
+                              "memory.config.selectProviderFirst",
+                              "Select provider first",
+                            )}
+                          </option>
+                        ) : isRerankModelsLoading ? (
+                          <option value="">
+                            {t("memory.config.loadingModels", "Loading models")}
+                          </option>
+                        ) : rerankModels.length === 0 ? (
+                          <option value="">
+                            {t("memory.config.noModels", "No models available")}
+                          </option>
+                        ) : null}
+                        {rerankModelMissing && (
+                          <option value={formState.retrieval.rerank.model}>
+                            {t("memory.config.currentModel", "Current")}:{" "}
+                            {formState.retrieval.rerank.model}
+                          </option>
+                        )}
+                        {rerankModels.map((model) => (
+                          <option key={model} value={model}>
+                            {model}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.rerankTopK", "Rerank Top K")}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={formState.retrieval.rerank.top_k}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              rerank: {
+                                ...prev.retrieval.rerank,
+                                top_k: asNumber(
+                                  event.target.value,
+                                  prev.retrieval.rerank.top_k,
+                                ),
+                              },
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      />
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.rerankWeight", "Rerank Weight")}
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={1}
+                        step="0.01"
+                        value={formState.retrieval.rerank.weight}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              rerank: {
+                                ...prev.retrieval.rerank,
+                                weight: asNumber(
+                                  event.target.value,
+                                  prev.retrieval.rerank.weight,
+                                ),
+                              },
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      />
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.timeoutSeconds", "Timeout (s)")}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        step="1"
+                        value={formState.retrieval.rerank.timeout_seconds}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              rerank: {
+                                ...prev.retrieval.rerank,
+                                timeout_seconds: asNumber(
+                                  event.target.value,
+                                  prev.retrieval.rerank.timeout_seconds,
+                                ),
+                              },
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      />
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t(
+                          "memory.config.failureBackoffSeconds",
+                          "Failure Backoff (s)",
+                        )}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        step="1"
+                        value={formState.retrieval.rerank.failure_backoff_seconds}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              rerank: {
+                                ...prev.retrieval.rerank,
+                                failure_backoff_seconds: asNumber(
+                                  event.target.value,
+                                  prev.retrieval.rerank.failure_backoff_seconds,
+                                ),
+                              },
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      />
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.docMaxChars", "Document Max Chars")}
+                      </span>
+                      <input
+                        type="number"
+                        min={256}
+                        step="1"
+                        value={formState.retrieval.rerank.doc_max_chars}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              rerank: {
+                                ...prev.retrieval.rerank,
+                                doc_max_chars: asNumber(
+                                  event.target.value,
+                                  prev.retrieval.rerank.doc_max_chars,
+                                ),
+                              },
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-zinc-200/80 dark:border-zinc-700/80 p-3">
+                  <div className="mb-3">
+                    <h4 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+                      {t("memory.config.plannerTitle", "Planner")}
+                    </h4>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                      {t(
+                        "memory.config.plannerHint",
+                        "Runtime uses light planning by default; API search can use a full planner model.",
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.runtimeMode", "Runtime Mode")}
+                      </span>
+                      <select
+                        value={formState.retrieval.planner.runtime_mode}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              planner: {
+                                ...prev.retrieval.planner,
+                                runtime_mode: event.target.value,
+                              },
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      >
+                        <option value="light">light</option>
+                        <option value="full">full</option>
+                      </select>
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.apiMode", "API Mode")}
+                      </span>
+                      <select
+                        value={formState.retrieval.planner.api_mode}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              planner: {
+                                ...prev.retrieval.planner,
+                                api_mode: event.target.value,
+                              },
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      >
+                        <option value="light">light</option>
+                        <option value="full">full</option>
+                      </select>
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t(
+                          "memory.config.maxQueryVariants",
+                          "Max Query Variants",
+                        )}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={formState.retrieval.planner.max_query_variants}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              planner: {
+                                ...prev.retrieval.planner,
+                                max_query_variants: asNumber(
+                                  event.target.value,
+                                  prev.retrieval.planner.max_query_variants,
+                                ),
+                              },
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      />
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.provider", "Provider")}
+                      </span>
+                      <select
+                        value={formState.retrieval.planner.provider}
+                        onChange={(event) =>
+                          handlePlannerProviderChange(event.target.value)
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      >
+                        <option value="">{t("memory.config.none", "None")}</option>
+                        {providerOptions.map((provider) => (
+                          <option key={provider} value={provider}>
+                            {provider}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.model", "Model")}
+                      </span>
+                      <select
+                        value={formState.retrieval.planner.model}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              planner: {
+                                ...prev.retrieval.planner,
+                                model: event.target.value,
+                              },
+                            },
+                          }))
+                        }
+                        disabled={!formState.retrieval.planner.provider}
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      >
+                        {!formState.retrieval.planner.provider ? (
+                          <option value="">
+                            {t(
+                              "memory.config.selectProviderFirst",
+                              "Select provider first",
+                            )}
+                          </option>
+                        ) : isPlannerModelsLoading ? (
+                          <option value="">
+                            {t("memory.config.loadingModels", "Loading models")}
+                          </option>
+                        ) : plannerModels.length === 0 ? (
+                          <option value="">
+                            {t("memory.config.noModels", "No models available")}
+                          </option>
+                        ) : null}
+                        {plannerModelMissing && (
+                          <option value={formState.retrieval.planner.model}>
+                            {t("memory.config.currentModel", "Current")}:{" "}
+                            {formState.retrieval.planner.model}
+                          </option>
+                        )}
+                        {plannerModels.map((model) => (
+                          <option key={model} value={model}>
+                            {model}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.timeoutSeconds", "Timeout (s)")}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        step="1"
+                        value={formState.retrieval.planner.timeout_seconds}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              planner: {
+                                ...prev.retrieval.planner,
+                                timeout_seconds: asNumber(
+                                  event.target.value,
+                                  prev.retrieval.planner.timeout_seconds,
+                                ),
+                              },
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      />
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t(
+                          "memory.config.failureBackoffSeconds",
+                          "Failure Backoff (s)",
+                        )}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        step="1"
+                        value={formState.retrieval.planner.failure_backoff_seconds}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              planner: {
+                                ...prev.retrieval.planner,
+                                failure_backoff_seconds: asNumber(
+                                  event.target.value,
+                                  prev.retrieval.planner.failure_backoff_seconds,
+                                ),
+                              },
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-zinc-200/80 dark:border-zinc-700/80 p-3">
+                  <div className="mb-3">
+                    <h4 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+                      {t("memory.config.reflectionTitle", "Reflection")}
+                    </h4>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                      {t(
+                        "memory.config.reflectionHint",
+                        "Optional second-pass search expansion for API retrieval.",
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300 md:col-span-4">
+                      <input
+                        type="checkbox"
+                        checked={formState.retrieval.reflection.enabled_api}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              reflection: {
+                                ...prev.retrieval.reflection,
+                                enabled_api: event.target.checked,
+                              },
+                            },
+                          }))
+                        }
+                        className="rounded"
+                      />
+                      {t(
+                        "memory.config.reflectionEnabledApi",
+                        "Enable Reflection For API Search",
+                      )}
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.maxRounds", "Max Rounds")}
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        value={formState.retrieval.reflection.max_rounds}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              reflection: {
+                                ...prev.retrieval.reflection,
+                                max_rounds: asNumber(
+                                  event.target.value,
+                                  prev.retrieval.reflection.max_rounds,
+                                ),
+                              },
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      />
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.minResults", "Min Results")}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={formState.retrieval.reflection.min_results}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              reflection: {
+                                ...prev.retrieval.reflection,
+                                min_results: asNumber(
+                                  event.target.value,
+                                  prev.retrieval.reflection.min_results,
+                                ),
+                              },
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      />
+                    </label>
+
+                    <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <span className="block mb-1">
+                        {t("memory.config.minScore", "Min Score")}
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={1}
+                        step="0.01"
+                        value={formState.retrieval.reflection.min_score}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            retrieval: {
+                              ...prev.retrieval,
+                              reflection: {
+                                ...prev.retrieval.reflection,
+                                min_score: asNumber(
+                                  event.target.value,
+                                  prev.retrieval.reflection.min_score,
+                                ),
+                              },
+                            },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                      />
+                    </label>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="rounded-xl border border-zinc-200/80 dark:border-zinc-700/80 bg-white/60 dark:bg-zinc-900/50 p-4">

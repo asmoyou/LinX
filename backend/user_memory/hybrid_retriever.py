@@ -421,7 +421,7 @@ class UserMemoryHybridRetriever:
         return RetrievedMemoryItem(
             id=int(row.id),
             content=str(row.content or row.title or "").strip(),
-            summary=str(row.content or "").strip() or None,
+            summary=str(row.summary or "").strip() or None,
             memory_type="user_memory",
             user_id=str(row.user_id),
             timestamp=row.updated_at or row.created_at,

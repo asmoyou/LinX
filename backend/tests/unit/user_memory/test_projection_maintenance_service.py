@@ -445,3 +445,44 @@ def test_episode_projection_inherits_inactive_source_entry_status() -> None:
     )
     assert episode_upsert.status == "superseded"
     assert episode_upsert.payload["is_active"] is False
+
+
+def test_run_maintenance_supersedes_event_scoped_relationship_relation() -> None:
+    repo = _RepoStub()
+    now = datetime.now(timezone.utc)
+    repo.user_relations = [
+        SimpleNamespace(
+            id=50,
+            user_id="u-1",
+            relation_key="relationship_dining_partner",
+            predicate="dining_partner",
+            object_text="小陈",
+            canonical_text="用户计划与小陈一起去吃汉堡",
+            event_time=None,
+            location=None,
+            persons=["小陈"],
+            entities=[],
+            confidence=0.88,
+            importance=0.72,
+            status="active",
+            relation_data={
+                "key": "relationship_dining_partner",
+                "semantic_key": "relationship_dining",
+                "predicate": "dining_partner",
+                "object": "小陈",
+                "canonical_statement": "用户计划与小陈一起去吃汉堡",
+            },
+            created_at=now,
+            updated_at=now,
+        )
+    ]
+    service = ProjectionMaintenanceService(session_repository=repo)
+
+    result = service.run_maintenance(dry_run=False)
+    payload = service.to_dict(result)
+
+    assert payload["consolidation"]["user_relation_status_updates"] == 1
+    assert any(
+        update[0] == 50 and update[1] == "superseded"
+        for update in repo.relation_updates
+    )

@@ -88,6 +88,41 @@ _GENERIC_RELATIONSHIP_EXPLICIT_CUES = (
     "我搭档",
     "是我搭档",
 )
+_EVENT_SCOPED_RELATIONSHIP_PLAN_CUES = (
+    "计划",
+    "打算",
+    "安排",
+    "准备",
+    "约",
+    "约好",
+    "约了",
+    "将",
+    "会",
+    "明天",
+    "后天",
+    "今天",
+    "今晚",
+    "下周",
+    "下个月",
+)
+_EVENT_SCOPED_RELATIONSHIP_ACTIVITY_CUES = (
+    "一起",
+    "去",
+    "吃",
+    "喝",
+    "聊",
+    "见面",
+    "碰面",
+    "外出",
+    "出门",
+    "出行",
+    "旅行",
+    "行程",
+    "搬家",
+    "赴约",
+    "聚餐",
+    "约会",
+)
 
 _PERSISTENT_PREFERENCE_CUES = (
     "以后",
@@ -355,8 +390,6 @@ class SessionObservationBuilder:
         canonical_statement: str,
         event_time: Optional[str],
     ) -> bool:
-        if event_time:
-            return False
         relation_key = cls.normalize_text(
             predicate or semantic_key.replace("relationship_", ""),
             max_chars=64,
@@ -367,12 +400,22 @@ class SessionObservationBuilder:
                 relation_key = relation_prefix
         if relation_key in _RELATIONSHIP_CANONICAL_LABELS:
             return False
-        if relation_key not in _GENERIC_RELATIONSHIP_PREDICATES:
-            return False
 
         combined_text = " ".join(
             part for part in (value, canonical_statement) if isinstance(part, str) and part.strip()
         )
+        has_activity_cue = any(cue in combined_text for cue in _EVENT_SCOPED_RELATIONSHIP_ACTIVITY_CUES)
+        has_plan_cue = any(cue in combined_text for cue in _EVENT_SCOPED_RELATIONSHIP_PLAN_CUES)
+
+        # Event-scoped companionship like "计划和小陈一起去吃汉堡" should stay as an
+        # event memory instead of hardening into a durable relationship fact.
+        if has_activity_cue:
+            if event_time or has_plan_cue or cls._contains_relative_temporal_cue(combined_text):
+                return True
+
+        if relation_key not in _GENERIC_RELATIONSHIP_PREDICATES:
+            return False
+
         if any(cue in combined_text for cue in _GENERIC_RELATIONSHIP_EXPLICIT_CUES):
             return False
 

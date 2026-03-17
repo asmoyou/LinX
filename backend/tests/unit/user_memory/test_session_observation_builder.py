@@ -70,3 +70,29 @@ def test_extract_user_preference_signals_skips_interrogative_food_queries() -> N
     )
 
     assert signals == []
+
+
+def test_normalize_llm_user_preference_signals_skips_event_scoped_relationships() -> None:
+    builder = SessionObservationBuilder()
+
+    signals = builder.normalize_llm_user_preference_signals(
+        [
+            {
+                "fact_kind": "relationship",
+                "key": "relationship_dining_partner",
+                "value": "小陈",
+                "canonical_statement": "用户计划与小陈一起去吃汉堡",
+                "predicate": "dining_partner",
+                "object": "小陈",
+                "persons": ["小陈"],
+                "persistent": True,
+                "explicit_source": True,
+                "confidence": 0.88,
+                "evidence_turns": [1],
+            }
+        ],
+        {1: "2026-03-17T11:58:20+08:00"},
+        max_items=4,
+    )
+
+    assert signals == []

@@ -113,6 +113,10 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
   );
   const factPreview = memoryFacts.slice(0, 2);
   const structuredPreview = structuredLines.slice(0, 2);
+  const effectiveSummary =
+    memory.summary && memory.summary.trim() !== memory.content.trim()
+      ? memory.summary
+      : undefined;
 
   const getTypeIcon = (type: MemoryRecord["type"]) => {
     switch (type) {
@@ -352,9 +356,9 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
 
         {/* Content */}
         <div className="mb-3">
-          {memory.summary && (
+          {effectiveSummary && (
             <p className="text-sm font-medium text-gray-800 dark:text-white mb-2">
-              {memory.summary}
+              {effectiveSummary}
             </p>
           )}
           {factPreview.length > 0 ? (

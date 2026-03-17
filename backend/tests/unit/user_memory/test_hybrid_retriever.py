@@ -83,6 +83,28 @@ def test_parse_rerank_response_normalizes_negative_scores() -> None:
     assert parsed[-1][1] == 0.0
 
 
+def test_view_to_item_uses_distinct_view_summary() -> None:
+    retriever = UserMemoryHybridRetriever()
+    row = SimpleNamespace(
+        id=30,
+        user_id="u-1",
+        view_type="user_profile",
+        view_key="preference_food_hamburger",
+        status="active",
+        view_data={},
+        title="用户喜欢吃汉堡",
+        summary="饮食偏好",
+        content="用户喜欢吃汉堡",
+        updated_at=datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc),
+        created_at=datetime(2026, 3, 10, 11, 0, 0, tzinfo=timezone.utc),
+    )
+
+    item = retriever._view_to_item(row, score=0.77, method="semantic")
+
+    assert item.summary == "饮食偏好"
+    assert item.content == "用户喜欢吃汉堡"
+
+
 def test_collapse_duplicate_memories_prefers_view_surface_and_preserves_best_score() -> None:
     retriever = UserMemoryHybridRetriever()
     entry_item = _item(5, "用户喜欢吃汉堡", 0.81, entry=True)

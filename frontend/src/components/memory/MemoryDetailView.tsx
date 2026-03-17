@@ -181,6 +181,10 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
     Number.isFinite(memory.relevanceScore)
       ? Math.max(0, Math.min(1, memory.relevanceScore))
       : null;
+  const effectiveSummary =
+    memory?.summary && memory.summary.trim() !== (memory.content || "").trim()
+      ? memory.summary
+      : undefined;
   const [isEditing, setIsEditing] = useState(false);
   const [editSummary, setEditSummary] = useState(() => memory?.summary || "");
   const [editContent, setEditContent] = useState(() => memory?.content || "");
@@ -215,7 +219,7 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
       setIsEditing(false);
       return;
     }
-    setEditSummary(memory.summary || "");
+    setEditSummary(effectiveSummary || "");
     setEditContent(memory.content || "");
     setEditTags((memory.tags || []).join(", "));
     setReindexAfterSave(true);
@@ -800,13 +804,13 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
             )}
 
             {/* Summary */}
-            {memory.summary && (
+            {effectiveSummary && (
               <div className="mb-6">
                 <h3 className="text-lg font-semibold text-gray-800 dark:text-white mb-2">
                   {t("memory.detail.summary")}
                 </h3>
                 <p className="text-gray-700 dark:text-gray-300 bg-white/10 p-4 rounded-lg">
-                  {memory.summary}
+                  {effectiveSummary}
                 </p>
               </div>
             )}

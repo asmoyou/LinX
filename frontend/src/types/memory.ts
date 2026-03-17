@@ -116,7 +116,60 @@ export type MemoryConfigEmbedding = {
 };
 
 export type MemoryConfigRetrieval = {
+  hybrid_enabled?: boolean;
   similarity_threshold?: number;
+  vector?: {
+    candidate_top_k?: number;
+    collection_prefix?: string;
+    metric_type?: string;
+    nprobe?: number;
+    [key: string]: unknown;
+  };
+  lexical?: {
+    enabled?: boolean;
+    top_k?: number;
+    fts_enabled?: boolean;
+    trigram_enabled?: boolean;
+    [key: string]: unknown;
+  };
+  structured?: {
+    enabled?: boolean;
+    top_k?: number;
+    [key: string]: unknown;
+  };
+  fusion?: {
+    method?: string;
+    rrf_k?: number;
+    [key: string]: unknown;
+  };
+  rerank?: {
+    enabled?: boolean;
+    provider?: string;
+    model?: string;
+    top_k?: number;
+    weight?: number;
+    timeout_seconds?: number;
+    failure_backoff_seconds?: number;
+    doc_max_chars?: number;
+    [key: string]: unknown;
+  };
+  planner?: {
+    runtime_mode?: string;
+    api_mode?: string;
+    provider?: string;
+    model?: string;
+    timeout_seconds?: number;
+    failure_backoff_seconds?: number;
+    max_query_variants?: number;
+    [key: string]: unknown;
+  };
+  reflection?: {
+    enabled_api?: boolean;
+    max_rounds?: number;
+    min_results?: number;
+    min_score?: number;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 };
 
