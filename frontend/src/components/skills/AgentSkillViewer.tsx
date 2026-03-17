@@ -5,21 +5,37 @@
  * Supports both view and edit modes
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
-import { useTranslation } from 'react-i18next';
-import { X, File, Folder, FolderOpen, ChevronRight, ChevronDown, Loader2, Edit2, Save, Upload } from 'lucide-react';
-import { skillsApi, type FileTreeItem } from '@/api/skills';
-import { LayoutModal } from '@/components/LayoutModal';
-import { ModalPanel } from '@/components/ModalPanel';
-import { FileCodePreview } from '@/components/common/FileCodePreview';
-import toast from 'react-hot-toast';
+import React, { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import {
+  X,
+  File,
+  Folder,
+  FolderOpen,
+  ChevronRight,
+  ChevronDown,
+  Loader2,
+  Edit2,
+  Save,
+  Upload,
+  AlertTriangle,
+} from "lucide-react";
+import {
+  skillsApi,
+  type FileTreeItem,
+  type SkillPackageStatus,
+} from "@/api/skills";
+import { LayoutModal } from "@/components/LayoutModal";
+import { ModalPanel } from "@/components/ModalPanel";
+import { FileCodePreview } from "@/components/common/FileCodePreview";
+import toast from "react-hot-toast";
 
 interface AgentSkillViewerProps {
   isOpen: boolean;
   onClose: () => void;
   skillId: string;
   skillName: string;
-  mode?: 'view' | 'edit';
+  mode?: "view" | "edit";
   onUpdate?: () => void;
 }
 
@@ -34,22 +50,27 @@ interface ApiErrorLike {
 }
 
 function getApiErrorMessage(error: unknown, fallback: string): string {
-  if (typeof error === 'object' && error !== null) {
+  if (typeof error === "object" && error !== null) {
     const typedError = error as ApiErrorLike;
-    return typedError.response?.data?.detail
-      || typedError.response?.data?.message
-      || typedError.message
-      || fallback;
+    return (
+      typedError.response?.data?.detail ||
+      typedError.response?.data?.message ||
+      typedError.message ||
+      fallback
+    );
   }
   return fallback;
 }
 
-function findFileByName(items: FileTreeItem[], name: string): FileTreeItem | null {
+function findFileByName(
+  items: FileTreeItem[],
+  name: string,
+): FileTreeItem | null {
   for (const item of items) {
-    if (item.type === 'file' && item.name === name) {
+    if (item.type === "file" && item.name === name) {
       return item;
     }
-    if (item.type === 'directory' && item.children) {
+    if (item.type === "directory" && item.children) {
       const found = findFileByName(item.children, name);
       if (found) return found;
     }
@@ -62,42 +83,51 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
   onClose,
   skillId,
   skillName,
-  mode = 'view',
+  mode = "view",
   onUpdate,
 }) => {
   const { t } = useTranslation();
   const [files, setFiles] = useState<FileTreeItem[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [fileContent, setFileContent] = useState<string>('');
-  const [editedContent, setEditedContent] = useState<string>('');
+  const [fileContent, setFileContent] = useState<string>("");
+  const [editedContent, setEditedContent] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [contentLoading, setContentLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  const [isEditing, setIsEditing] = useState(mode === 'edit');
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
+    new Set(),
+  );
+  const [isEditing, setIsEditing] = useState(mode === "edit");
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [packageStatus, setPackageStatus] = useState<SkillPackageStatus | null>(
+    null,
+  );
 
-  const handleFileSelect = useCallback(async (filePath: string) => {
-    setSelectedFile(filePath);
-    setContentLoading(true);
-    setError(null);
-    
-    try {
-      const data = await skillsApi.getFileContent(skillId, filePath);
-      setFileContent(data.content);
-      setEditedContent(data.content);
-    } catch (error: unknown) {
-      console.error('Failed to load file content:', error);
-      setError(getApiErrorMessage(error, 'Failed to load file content'));
-      setFileContent('');
-      setEditedContent('');
-    } finally {
-      setContentLoading(false);
-    }
-  }, [skillId]);
+  const handleFileSelect = useCallback(
+    async (filePath: string) => {
+      setSelectedFile(filePath);
+      setContentLoading(true);
+      setError(null);
+
+      try {
+        const data = await skillsApi.getFileContent(skillId, filePath);
+        setPackageStatus(data.package_status);
+        setFileContent(data.content);
+        setEditedContent(data.content);
+      } catch (error: unknown) {
+        console.error("Failed to load file content:", error);
+        setError(getApiErrorMessage(error, "Failed to load file content"));
+        setFileContent("");
+        setEditedContent("");
+      } finally {
+        setContentLoading(false);
+      }
+    },
+    [skillId],
+  );
 
   const loadFiles = useCallback(async () => {
     setLoading(true);
@@ -105,15 +135,16 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
     try {
       const data = await skillsApi.getFiles(skillId);
       setFiles(data.files);
+      setPackageStatus(data.package_status);
 
       // Auto-select SKILL.md if it exists
-      const skillMd = findFileByName(data.files, 'SKILL.md');
+      const skillMd = findFileByName(data.files, "SKILL.md");
       if (skillMd) {
         void handleFileSelect(skillMd.path);
       }
     } catch (error: unknown) {
-      console.error('Failed to load files:', error);
-      setError(getApiErrorMessage(error, 'Failed to load files'));
+      console.error("Failed to load files:", error);
+      setError(getApiErrorMessage(error, "Failed to load files"));
     } finally {
       setLoading(false);
     }
@@ -128,17 +159,17 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
 
   const handleSaveFile = async () => {
     if (!selectedFile) return;
-    
+
     setSaving(true);
     try {
       // TODO: Implement file save API
       await skillsApi.updateFileContent(skillId, selectedFile, editedContent);
       setFileContent(editedContent);
-      toast.success(t('skills.fileSaved'));
+      toast.success(t("skills.fileSaved"));
       if (onUpdate) onUpdate();
     } catch (error: unknown) {
-      console.error('Failed to save file:', error);
-      toast.error(getApiErrorMessage(error, t('skills.failedToSaveFile')));
+      console.error("Failed to save file:", error);
+      toast.error(getApiErrorMessage(error, t("skills.failedToSaveFile")));
     } finally {
       setSaving(false);
     }
@@ -146,21 +177,21 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
 
   const handleUploadPackage = async () => {
     if (!uploadFile) return;
-    
+
     setSaving(true);
     try {
       const formData = new FormData();
-      formData.append('package_file', uploadFile);
-      
+      formData.append("package_file", uploadFile);
+
       await skillsApi.updatePackage(skillId, formData);
-      toast.success(t('skills.packageUpdated'));
+      toast.success(t("skills.packageUpdated"));
       setShowUploadDialog(false);
       setUploadFile(null);
       await loadFiles();
       if (onUpdate) onUpdate();
     } catch (error: unknown) {
-      console.error('Failed to upload package:', error);
-      toast.error(getApiErrorMessage(error, t('skills.failedToUploadPackage')));
+      console.error("Failed to upload package:", error);
+      toast.error(getApiErrorMessage(error, t("skills.failedToUploadPackage")));
     } finally {
       setSaving(false);
     }
@@ -186,11 +217,13 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
     const file = e.dataTransfer.files?.[0];
     if (file) {
       // Check file type
-      const validTypes = ['.zip', '.tar.gz'];
-      const isValid = validTypes.some(type => file.name.toLowerCase().endsWith(type));
-      
+      const validTypes = [".zip", ".tar.gz"];
+      const isValid = validTypes.some((type) =>
+        file.name.toLowerCase().endsWith(type),
+      );
+
       if (!isValid) {
-        toast.error(t('skills.invalidFileType'));
+        toast.error(t("skills.invalidFileType"));
         return;
       }
 
@@ -213,12 +246,12 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
       const isExpanded = expandedFolders.has(item.path);
       const isSelected = selectedFile === item.path;
 
-      if (item.type === 'directory') {
+      if (item.type === "directory") {
         return (
           <div key={item.path}>
             <div
               className={`flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-muted/50 transition-colors ${
-                level > 0 ? `ml-${level * 4}` : ''
+                level > 0 ? `ml-${level * 4}` : ""
               }`}
               style={{ paddingLeft: `${level * 16 + 12}px` }}
               onClick={() => toggleFolder(item.path)}
@@ -246,7 +279,9 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
         <div
           key={item.path}
           className={`flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${
-            isSelected ? 'bg-primary/20 text-primary' : 'hover:bg-muted/50 text-foreground'
+            isSelected
+              ? "bg-primary/20 text-primary"
+              : "hover:bg-muted/50 text-foreground"
           }`}
           style={{ paddingLeft: `${level * 16 + 28}px` }}
           onClick={() => handleFileSelect(item.path)}
@@ -283,27 +318,31 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between mb-4 pb-4 border-b border-border">
           <div>
-            <h2 className="text-xl font-semibold text-foreground">{skillName}</h2>
+            <h2 className="text-xl font-semibold text-foreground">
+              {skillName}
+            </h2>
             <p className="text-sm text-muted-foreground mt-1">
-              {isEditing ? t('skills.editAgentSkill') : t('skills.viewAgentSkill')}
+              {isEditing
+                ? t("skills.editAgentSkill")
+                : t("skills.viewAgentSkill")}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {mode === 'edit' && (
+            {mode === "edit" && (
               <>
                 <button
                   onClick={() => setShowUploadDialog(true)}
                   className="flex items-center gap-2 px-4 py-2 rounded-lg bg-muted hover:bg-muted/80 text-foreground transition-colors"
                 >
                   <Upload className="w-4 h-4" />
-                  {t('skills.reuploadPackage')}
+                  {t("skills.reuploadPackage")}
                 </button>
                 <button
                   onClick={() => setIsEditing(!isEditing)}
                   className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground transition-colors"
                 >
                   <Edit2 className="w-4 h-4" />
-                  {isEditing ? t('skills.viewMode') : t('skills.editMode')}
+                  {isEditing ? t("skills.viewMode") : t("skills.editMode")}
                 </button>
               </>
             )}
@@ -317,81 +356,107 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
         </div>
 
         {/* Content */}
-        <div className="flex-1 flex gap-4 overflow-hidden">
-          {/* Left Sidebar - File Tree */}
-          <div className="w-80 border border-border rounded-xl overflow-hidden bg-muted/20 flex flex-col">
-            <div className="p-3 border-b border-border bg-muted/30">
-              <h3 className="text-sm font-medium text-foreground">
-                {t('skills.files')}
-              </h3>
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              {loading ? (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="w-6 h-6 animate-spin text-primary" />
-                </div>
-              ) : error ? (
-                <div className="p-4 text-sm text-destructive">{error}</div>
-              ) : (
-                <div className="py-2">{renderFileTree(files)}</div>
-              )}
-            </div>
-          </div>
-
-          {/* Right Content Area */}
-          <div className="flex-1 border border-border rounded-xl overflow-hidden flex flex-col bg-background">
-            {selectedFile ? (
-              <>
-                {/* File Header */}
-                <div className="px-4 py-3 border-b border-border bg-muted/20 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <File className="w-4 h-4 text-muted-foreground" />
-                    <span className="text-sm font-medium text-foreground">
-                      {selectedFile}
-                    </span>
-                  </div>
-                  {isEditing && selectedFile && (
-                    <button
-                      onClick={handleSaveFile}
-                      disabled={saving || editedContent === fileContent}
-                      className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {saving ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Save className="w-4 h-4" />
-                      )}
-                      {t('skills.save')}
-                    </button>
+        <div className="flex-1 flex flex-col gap-4 overflow-hidden">
+          {packageStatus?.package_missing && (
+            <div className="rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div className="space-y-1">
+                  <p className="font-medium">
+                    {t("skills.packageMissingTitle")}
+                  </p>
+                  <p className="text-amber-800 dark:text-amber-200">
+                    {packageStatus.message || t("skills.packageMissingBody")}
+                  </p>
+                  {mode === "edit" && (
+                    <p className="text-amber-800/90 dark:text-amber-200/90">
+                      {t("skills.packageMissingEditHint")}
+                    </p>
                   )}
-                </div>
-
-                {/* File Content */}
-                <div className="flex-1 overflow-auto">
-                  {contentLoading ? (
-                    <div className="flex items-center justify-center h-full">
-                      <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                    </div>
-                  ) : isEditing ? (
-                    <textarea
-                      value={editedContent}
-                      onChange={(e) => setEditedContent(e.target.value)}
-                      className="w-full h-full p-6 bg-transparent text-foreground font-mono text-sm resize-none focus:outline-none"
-                      style={{ tabSize: 2 }}
-                    />
-                  ) : (
-                    <FileCodePreview filename={selectedFile} content={fileContent} />
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="flex items-center justify-center h-full text-muted-foreground">
-                <div className="text-center">
-                  <File className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                  <p className="text-sm">{t('skills.selectFileToView')}</p>
                 </div>
               </div>
-            )}
+            </div>
+          )}
+
+          <div className="flex min-h-0 flex-1 gap-4 overflow-hidden">
+            {/* Left Sidebar - File Tree */}
+            <div className="w-80 border border-border rounded-xl overflow-hidden bg-muted/20 flex flex-col">
+              <div className="p-3 border-b border-border bg-muted/30">
+                <h3 className="text-sm font-medium text-foreground">
+                  {t("skills.files")}
+                </h3>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                {loading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                  </div>
+                ) : error ? (
+                  <div className="p-4 text-sm text-destructive">{error}</div>
+                ) : (
+                  <div className="py-2">{renderFileTree(files)}</div>
+                )}
+              </div>
+            </div>
+
+            {/* Right Content Area */}
+            <div className="flex-1 border border-border rounded-xl overflow-hidden flex flex-col bg-background">
+              {selectedFile ? (
+                <>
+                  {/* File Header */}
+                  <div className="px-4 py-3 border-b border-border bg-muted/20 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <File className="w-4 h-4 text-muted-foreground" />
+                      <span className="text-sm font-medium text-foreground">
+                        {selectedFile}
+                      </span>
+                    </div>
+                    {isEditing && selectedFile && (
+                      <button
+                        onClick={handleSaveFile}
+                        disabled={saving || editedContent === fileContent}
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {saving ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Save className="w-4 h-4" />
+                        )}
+                        {t("skills.save")}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* File Content */}
+                  <div className="flex-1 overflow-auto">
+                    {contentLoading ? (
+                      <div className="flex items-center justify-center h-full">
+                        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                      </div>
+                    ) : isEditing ? (
+                      <textarea
+                        value={editedContent}
+                        onChange={(e) => setEditedContent(e.target.value)}
+                        className="w-full h-full p-6 bg-transparent text-foreground font-mono text-sm resize-none focus:outline-none"
+                        style={{ tabSize: 2 }}
+                      />
+                    ) : (
+                      <FileCodePreview
+                        filename={selectedFile}
+                        content={fileContent}
+                      />
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center justify-center h-full text-muted-foreground">
+                  <div className="text-center">
+                    <File className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                    <p className="text-sm">{t("skills.selectFileToView")}</p>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -400,18 +465,18 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-10">
             <div className="bg-background border border-border rounded-xl p-6 max-w-lg w-full mx-4">
               <h3 className="text-lg font-semibold text-foreground mb-4">
-                {t('skills.reuploadPackage')}
+                {t("skills.reuploadPackage")}
               </h3>
               <p className="text-sm text-muted-foreground mb-6">
-                {t('skills.reuploadWarning')}
+                {t("skills.reuploadWarning")}
               </p>
-              
+
               {/* Drag and Drop Upload Area */}
-              <div 
+              <div
                 className={`border-2 border-dashed rounded-xl p-8 text-center transition-all duration-300 ${
-                  isDragging 
-                    ? 'border-primary bg-primary/10 scale-[1.02]' 
-                    : 'border-border hover:border-primary hover:bg-primary/5'
+                  isDragging
+                    ? "border-primary bg-primary/10 scale-[1.02]"
+                    : "border-border hover:border-primary hover:bg-primary/5"
                 }`}
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
@@ -424,14 +489,19 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
                   className="hidden"
                   id="package-reupload"
                 />
-                <label htmlFor="package-reupload" className="cursor-pointer block">
+                <label
+                  htmlFor="package-reupload"
+                  className="cursor-pointer block"
+                >
                   {uploadFile ? (
                     <div className="space-y-3">
                       <div className="w-16 h-16 rounded-full bg-green-500/10 flex items-center justify-center mx-auto">
                         <Upload className="w-8 h-8 text-green-500" />
                       </div>
                       <div>
-                        <p className="text-foreground font-semibold mb-1">{uploadFile.name}</p>
+                        <p className="text-foreground font-semibold mb-1">
+                          {uploadFile.name}
+                        </p>
                         <p className="text-sm text-muted-foreground">
                           {(uploadFile.size / 1024 / 1024).toFixed(2)} MB
                         </p>
@@ -444,31 +514,37 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
                         }}
                         className="mt-3 px-4 py-2 text-sm text-primary hover:text-primary/80 transition-colors font-medium rounded-lg hover:bg-primary/10"
                       >
-                        {t('skills.reselect')}
+                        {t("skills.reselect")}
                       </button>
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto transition-colors ${
-                        isDragging ? 'bg-primary/20' : 'bg-muted'
-                      }`}>
-                        <Upload className={`w-8 h-8 transition-colors ${
-                          isDragging ? 'text-primary' : 'text-muted-foreground'
-                        }`} />
+                      <div
+                        className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto transition-colors ${
+                          isDragging ? "bg-primary/20" : "bg-muted"
+                        }`}
+                      >
+                        <Upload
+                          className={`w-8 h-8 transition-colors ${
+                            isDragging
+                              ? "text-primary"
+                              : "text-muted-foreground"
+                          }`}
+                        />
                       </div>
                       <div>
                         <p className="text-foreground font-semibold mb-1">
-                          {t('skills.dragDropOrClick')}
+                          {t("skills.dragDropOrClick")}
                         </p>
                         <p className="text-sm text-muted-foreground">
-                          {t('skills.supportedFormats')}: ZIP, TAR.GZ
+                          {t("skills.supportedFormats")}: ZIP, TAR.GZ
                         </p>
                       </div>
                     </div>
                   )}
                 </label>
               </div>
-              
+
               <div className="flex gap-2 justify-end mt-6">
                 <button
                   onClick={() => {
@@ -478,7 +554,7 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
                   }}
                   className="px-4 py-2 rounded-lg bg-muted hover:bg-muted/80 text-foreground transition-colors"
                 >
-                  {t('common.cancel')}
+                  {t("common.cancel")}
                 </button>
                 <button
                   onClick={handleUploadPackage}
@@ -490,7 +566,7 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
                   ) : (
                     <Upload className="w-4 h-4" />
                   )}
-                  {t('skills.upload')}
+                  {t("skills.upload")}
                 </button>
               </div>
             </div>

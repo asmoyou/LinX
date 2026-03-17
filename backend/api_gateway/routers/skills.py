@@ -54,6 +54,201 @@ def _get_minio_object_key(storage_path: str, bucket_name: str) -> str:
     return object_key
 
 
+def _is_missing_skill_package_error(error: Exception) -> bool:
+    """Return whether an exception indicates a missing package object in storage."""
+    if isinstance(error, KeyError):
+        return True
+    error_code = getattr(error, "code", None)
+    return str(error_code or "").strip() == "NoSuchKey" or "NoSuchKey" in str(error)
+
+
+def _extract_agent_skill_package_archive(package_path, extract_path) -> bool:
+    """Extract a ZIP or tar.gz skill package into a directory.
+
+    Returns True when the package was ZIP based, False when tar.gz.
+    """
+    import tarfile
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(package_path, "r") as zip_ref:
+            zip_ref.extractall(extract_path)
+        return True
+    except zipfile.BadZipFile:
+        with tarfile.open(package_path, "r:gz") as tar_ref:
+            tar_ref.extractall(extract_path)
+        return False
+
+
+def _materialize_agent_skill_package(
+    skill: Any, extract_path, *, log_context: str
+) -> tuple[bool, bool]:
+    """Materialize an agent_skill package into a temp directory.
+
+    Returns a tuple of:
+    - is_zip: whether the extracted/rebuilt package should be written as ZIP
+    - used_fallback: whether DB-backed SKILL.md fallback was used
+    """
+    from pathlib import Path
+    import os
+    import tempfile
+
+    minio_client = get_minio_client()
+    bucket_name = minio_client.buckets.get("artifacts", "agent-artifacts")
+    object_key = (
+        _get_minio_object_key(skill.storage_path, bucket_name)
+        if getattr(skill, "storage_path", None)
+        else None
+    )
+
+    if object_key:
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".zip",
+            dir=_get_tempfile_root_dir(),
+        ) as tmp_file:
+            temp_package_path = Path(tmp_file.name)
+
+        try:
+            logger.info(
+                "[%s] Downloading: bucket=%s, key=%s",
+                log_context,
+                bucket_name,
+                object_key,
+            )
+            file_stream, _metadata = minio_client.download_file(bucket_name, object_key)
+            temp_package_path.write_bytes(file_stream.read())
+            is_zip = _extract_agent_skill_package_archive(temp_package_path, extract_path)
+            return is_zip, False
+        except Exception as exc:
+            if not _is_missing_skill_package_error(exc):
+                raise
+            logger.warning(
+                "[%s] Skill package missing from object storage, falling back to stored SKILL.md",
+                log_context,
+                extra={
+                    "skill_id": str(getattr(skill, "skill_id", "") or ""),
+                    "skill_name": str(getattr(skill, "name", "") or ""),
+                    "storage_path": str(getattr(skill, "storage_path", "") or ""),
+                },
+            )
+        finally:
+            try:
+                os.unlink(temp_package_path)
+            except OSError:
+                pass
+
+    skill_md_content = str(getattr(skill, "skill_md_content", "") or "")
+    if not skill_md_content:
+        raise HTTPException(
+            status_code=500,
+            detail="Skill package is unavailable and no stored SKILL.md fallback exists",
+        )
+
+    skill_md_path = Path(extract_path) / "SKILL.md"
+    skill_md_path.write_text(skill_md_content, encoding="utf-8")
+    return True, True
+
+
+def _build_agent_skill_package_status(*, used_fallback: bool) -> Dict[str, Any]:
+    """Build frontend-facing status for the current package materialization result."""
+    if not used_fallback:
+        return {
+            "package_missing": False,
+            "fallback_mode": False,
+            "limited_files": False,
+            "message": None,
+        }
+
+    return {
+        "package_missing": True,
+        "fallback_mode": True,
+        "limited_files": True,
+        "message": (
+            "Skill package is missing from object storage. Showing stored SKILL.md only "
+            "until the package is re-uploaded or rebuilt."
+        ),
+    }
+
+
+def _get_tempfile_root_dir():
+    """Return a guaranteed-existing parent directory for temporary files."""
+    import tempfile
+    from pathlib import Path
+
+    temp_root = Path(tempfile.gettempdir())
+    temp_root.mkdir(parents=True, exist_ok=True)
+    return temp_root
+
+
+def _delete_agent_skill_package_object(
+    minio_client: Any,
+    storage_path: Optional[str],
+) -> None:
+    """Delete one agent-skill package object if a storage path is present."""
+    if not storage_path:
+        return
+
+    bucket_name = minio_client.buckets.get("artifacts", "agent-artifacts")
+    object_key = _get_minio_object_key(storage_path, bucket_name)
+    minio_client.delete_file(bucket_name, object_key)
+
+
+def _replace_agent_skill_package_storage(
+    *,
+    skill_uuid: UUID,
+    skill_id: str,
+    minio_client: Any,
+    current_storage_path: Optional[str],
+    new_storage_path: str,
+    parsed_skill_md_payload: Optional[Dict[str, Any]] = None,
+    delete_previous_package: bool = True,
+) -> None:
+    """Persist a newly uploaded skill package without risking stale-object breakage."""
+    from database.connection import get_db_session
+    from database.models import Skill as SkillModel
+
+    try:
+        with get_db_session() as session:
+            db_skill = session.query(SkillModel).filter(SkillModel.skill_id == skill_uuid).first()
+
+            if not db_skill:
+                raise HTTPException(status_code=404, detail="Skill not found")
+
+            db_skill.storage_path = new_storage_path
+            if parsed_skill_md_payload:
+                db_skill.description = parsed_skill_md_payload["description"]
+                db_skill.skill_md_content = parsed_skill_md_payload["skill_md_content"]
+                db_skill.homepage = parsed_skill_md_payload["homepage"]
+                db_skill.skill_metadata = parsed_skill_md_payload["skill_metadata"]
+                db_skill.gating_status = parsed_skill_md_payload["gating_status"]
+            session.commit()
+    except Exception:
+        try:
+            _delete_agent_skill_package_object(minio_client, new_storage_path)
+        except Exception as cleanup_exc:
+            logger.warning(
+                "Failed to clean up newly uploaded skill package after persistence error: %s",
+                cleanup_exc,
+                extra={"skill_id": skill_id, "storage_path": new_storage_path},
+            )
+        raise
+
+    if (
+        delete_previous_package
+        and current_storage_path
+        and current_storage_path != new_storage_path
+    ):
+        try:
+            _delete_agent_skill_package_object(minio_client, current_storage_path)
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete superseded skill package after update: %s",
+                exc,
+                extra={"skill_id": skill_id, "storage_path": current_storage_path},
+            )
+
+
 def _extract_tool_call_status(call: Any) -> Optional[str]:
     """Extract status field from a tool-call record."""
     if isinstance(call, dict):
@@ -1950,118 +2145,80 @@ async def get_skill_files(
                 status_code=400, detail="Only agent_skill type supports file browsing"
             )
 
-        if not skill.storage_path:
-            raise HTTPException(status_code=400, detail="Skill has no storage path")
-
-        # Download and extract package from MinIO
-        import tarfile
+        # Download and extract package from MinIO, or fall back to stored SKILL.md
         import tempfile
-        import zipfile
         from pathlib import Path
 
-        minio_client = get_minio_client()
+        with tempfile.TemporaryDirectory(dir=_get_tempfile_root_dir()) as extract_dir:
+            extract_path = Path(extract_dir)
+            _is_zip, used_fallback = _materialize_agent_skill_package(
+                skill,
+                extract_path,
+                log_context="get_skill_files",
+            )
+            package_status = _build_agent_skill_package_status(used_fallback=used_fallback)
 
-        # Download package to temp file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_file:
-            try:
-                # Parse storage_path to get bucket and object key
-                bucket_name = minio_client.buckets.get("artifacts", "agent-artifacts")
-                object_key = _get_minio_object_key(skill.storage_path, bucket_name)
+            # Build file tree
+            def build_tree(path: Path, base_path: Path) -> dict:
+                """Recursively build file tree."""
+                items = []
 
-                logger.info(
-                    f"[get_skill_files] Downloading: bucket={bucket_name}, key={object_key}"
-                )
+                for item in sorted(path.iterdir()):
+                    rel_path = str(item.relative_to(base_path))
 
-                # Download from MinIO
-                file_stream, metadata = minio_client.download_file(bucket_name, object_key)
-                tmp_file.write(file_stream.read())
-                tmp_file.flush()
+                    if item.is_file():
+                        size = item.stat().st_size
 
-                # Extract to temp directory
-                with tempfile.TemporaryDirectory() as extract_dir:
-                    extract_path = Path(extract_dir)
+                        suffix = item.suffix.lower()
+                        if suffix in [".py"]:
+                            file_type = "python"
+                        elif suffix in [".md", ".txt"]:
+                            file_type = "text"
+                        elif suffix in [".yaml", ".yml", ".json"]:
+                            file_type = "config"
+                        elif suffix in [".sh"]:
+                            file_type = "script"
+                        else:
+                            file_type = "other"
 
-                    # Try ZIP first
-                    try:
-                        with zipfile.ZipFile(tmp_file.name, "r") as zip_ref:
-                            zip_ref.extractall(extract_path)
-                    except zipfile.BadZipFile:
-                        # Try tar.gz
-                        with tarfile.open(tmp_file.name, "r:gz") as tar_ref:
-                            tar_ref.extractall(extract_path)
+                        items.append(
+                            {
+                                "name": item.name,
+                                "path": rel_path,
+                                "type": "file",
+                                "file_type": file_type,
+                                "size": size,
+                            }
+                        )
+                    elif item.is_dir():
+                        if item.name.startswith(".") or item.name == "__pycache__":
+                            continue
 
-                    # Build file tree
-                    def build_tree(path: Path, base_path: Path) -> dict:
-                        """Recursively build file tree."""
-                        items = []
+                        items.append(
+                            {
+                                "name": item.name,
+                                "path": rel_path,
+                                "type": "directory",
+                                "children": build_tree(item, base_path),
+                            }
+                        )
 
-                        for item in sorted(path.iterdir()):
-                            rel_path = str(item.relative_to(base_path))
+                return items
 
-                            if item.is_file():
-                                # Get file size
-                                size = item.stat().st_size
+            file_tree = build_tree(extract_path, extract_path)
 
-                                # Determine file type
-                                suffix = item.suffix.lower()
-                                if suffix in [".py"]:
-                                    file_type = "python"
-                                elif suffix in [".md", ".txt"]:
-                                    file_type = "text"
-                                elif suffix in [".yaml", ".yml", ".json"]:
-                                    file_type = "config"
-                                elif suffix in [".sh"]:
-                                    file_type = "script"
-                                else:
-                                    file_type = "other"
+            logger.info(
+                f"File list retrieved for skill {skill_id}",
+                extra={"skill_id": skill_id, "file_count": len(file_tree)},
+            )
 
-                                items.append(
-                                    {
-                                        "name": item.name,
-                                        "path": rel_path,
-                                        "type": "file",
-                                        "file_type": file_type,
-                                        "size": size,
-                                    }
-                                )
-                            elif item.is_dir():
-                                # Skip hidden directories and __pycache__
-                                if item.name.startswith(".") or item.name == "__pycache__":
-                                    continue
-
-                                items.append(
-                                    {
-                                        "name": item.name,
-                                        "path": rel_path,
-                                        "type": "directory",
-                                        "children": build_tree(item, base_path),
-                                    }
-                                )
-
-                        return items
-
-                    file_tree = build_tree(extract_path, extract_path)
-
-                    logger.info(
-                        f"File list retrieved for skill {skill_id}",
-                        extra={"skill_id": skill_id, "file_count": len(file_tree)},
-                    )
-
-                    return {
-                        "skill_id": skill_id,
-                        "skill_name": skill.name,
-                        "skill_type": skill.skill_type,
-                        "files": file_tree,
-                    }
-
-            finally:
-                # Clean up temp file
-                import os
-
-                try:
-                    os.unlink(tmp_file.name)
-                except:
-                    pass
+            return {
+                "skill_id": skill_id,
+                "skill_name": skill.name,
+                "skill_type": skill.skill_type,
+                "files": file_tree,
+                "package_status": package_status,
+            }
 
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
@@ -2103,94 +2260,55 @@ async def get_skill_file_content(
                 status_code=400, detail="Only agent_skill type supports file browsing"
             )
 
-        if not skill.storage_path:
-            raise HTTPException(status_code=400, detail="Skill has no storage path")
-
         # Security: Prevent path traversal
         if ".." in file_path or file_path.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid file path")
 
-        # Download and extract package from MinIO
-        import tarfile
+        # Download and extract package from MinIO, or fall back to stored SKILL.md
         import tempfile
-        import zipfile
         from pathlib import Path
 
-        minio_client = get_minio_client()
+        with tempfile.TemporaryDirectory(dir=_get_tempfile_root_dir()) as extract_dir:
+            extract_path = Path(extract_dir)
+            _is_zip, used_fallback = _materialize_agent_skill_package(
+                skill,
+                extract_path,
+                log_context="get_skill_file_content",
+            )
+            package_status = _build_agent_skill_package_status(used_fallback=used_fallback)
 
-        # Download package to temp file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_file:
+            file_full_path = extract_path / file_path
+
+            if not file_full_path.exists():
+                raise HTTPException(status_code=404, detail="File not found in package")
+
+            if not file_full_path.is_file():
+                raise HTTPException(status_code=400, detail="Path is not a file")
+
             try:
-                # Parse storage_path to get bucket and object key
-                bucket_name = minio_client.buckets.get("artifacts", "agent-artifacts")
-                object_key = _get_minio_object_key(skill.storage_path, bucket_name)
-
-                logger.info(
-                    f"[get_skill_file_content] Downloading: bucket={bucket_name}, key={object_key}"
+                content = file_full_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                raise HTTPException(
+                    status_code=400, detail="File is binary and cannot be displayed as text"
                 )
 
-                # Download from MinIO
-                file_stream, metadata = minio_client.download_file(bucket_name, object_key)
-                tmp_file.write(file_stream.read())
-                tmp_file.flush()
+            size = file_full_path.stat().st_size
+            suffix = file_full_path.suffix.lower()
 
-                # Extract to temp directory
-                with tempfile.TemporaryDirectory() as extract_dir:
-                    extract_path = Path(extract_dir)
+            logger.info(
+                f"File content retrieved for skill {skill_id}",
+                extra={"skill_id": skill_id, "file_path": file_path},
+            )
 
-                    # Try ZIP first
-                    try:
-                        with zipfile.ZipFile(tmp_file.name, "r") as zip_ref:
-                            zip_ref.extractall(extract_path)
-                    except zipfile.BadZipFile:
-                        # Try tar.gz
-                        with tarfile.open(tmp_file.name, "r:gz") as tar_ref:
-                            tar_ref.extractall(extract_path)
-
-                    # Read file content
-                    file_full_path = extract_path / file_path
-
-                    if not file_full_path.exists():
-                        raise HTTPException(status_code=404, detail="File not found in package")
-
-                    if not file_full_path.is_file():
-                        raise HTTPException(status_code=400, detail="Path is not a file")
-
-                    # Read file content
-                    try:
-                        content = file_full_path.read_text(encoding="utf-8")
-                    except UnicodeDecodeError:
-                        # Binary file
-                        raise HTTPException(
-                            status_code=400, detail="File is binary and cannot be displayed as text"
-                        )
-
-                    # Get file metadata
-                    size = file_full_path.stat().st_size
-                    suffix = file_full_path.suffix.lower()
-
-                    logger.info(
-                        f"File content retrieved for skill {skill_id}",
-                        extra={"skill_id": skill_id, "file_path": file_path},
-                    )
-
-                    return {
-                        "skill_id": skill_id,
-                        "file_path": file_path,
-                        "file_name": file_full_path.name,
-                        "content": content,
-                        "size": size,
-                        "extension": suffix,
-                    }
-
-            finally:
-                # Clean up temp file
-                import os
-
-                try:
-                    os.unlink(tmp_file.name)
-                except:
-                    pass
+            return {
+                "skill_id": skill_id,
+                "file_path": file_path,
+                "file_name": file_full_path.name,
+                "content": content,
+                "size": size,
+                "extension": suffix,
+                "package_status": package_status,
+            }
 
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
@@ -2236,9 +2354,6 @@ async def update_skill_file_content(
                 status_code=400, detail="Only agent_skill type supports file editing"
             )
 
-        if not skill.storage_path:
-            raise HTTPException(status_code=400, detail="Skill has no storage path")
-
         # Security: Prevent path traversal
         if ".." in file_path or file_path.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid file path")
@@ -2250,165 +2365,110 @@ async def update_skill_file_content(
         from pathlib import Path
 
         minio_client = get_minio_client()
+        previous_storage_path = str(getattr(skill, "storage_path", "") or "") or None
 
-        # Download package to temp file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_download:
-            try:
-                # Download from MinIO
-                bucket_name = minio_client.buckets.get("artifacts", "agent-artifacts")
-                object_key = _get_minio_object_key(skill.storage_path, bucket_name)
+        with tempfile.TemporaryDirectory(dir=_get_tempfile_root_dir()) as extract_dir:
+            extract_path = Path(extract_dir)
+            is_zip, used_fallback = _materialize_agent_skill_package(
+                skill,
+                extract_path,
+                log_context="update_skill_file_content",
+            )
 
-                logger.info(
-                    f"[update_skill_file_content] Downloading: bucket={bucket_name}, key={object_key}"
+            # Update file content
+            file_full_path = extract_path / file_path
+
+            if not file_full_path.exists():
+                raise HTTPException(status_code=404, detail="File not found in package")
+
+            if not file_full_path.is_file():
+                raise HTTPException(status_code=400, detail="Path is not a file")
+
+            # Write new content
+            file_full_path.write_text(content, encoding="utf-8")
+
+            parsed_skill_md_payload: Optional[Dict[str, Any]] = None
+            if Path(file_path).name.lower() == "skill.md":
+                parser = SkillMdParser()
+                try:
+                    parsed = parser.parse(content)
+                except ValueError as e:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid SKILL.md: {str(e)}",
+                    )
+
+                validation_errors = parser.validate(parsed)
+                if validation_errors:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=("SKILL.md validation failed: " f"{', '.join(validation_errors)}"),
+                    )
+
+                from dataclasses import asdict
+
+                gating = GatingEngine()
+                gating_result = gating.check_eligibility(parsed.metadata)
+                parsed_skill_md_payload = {
+                    "description": parsed.metadata.description.strip(),
+                    "skill_md_content": content,
+                    "homepage": parsed.metadata.homepage,
+                    "skill_metadata": asdict(parsed.metadata),
+                    "gating_status": asdict(gating_result),
+                }
+
+            # Re-package
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".zip",
+                dir=_get_tempfile_root_dir(),
+            ) as tmp_upload:
+                if is_zip:
+                    with zipfile.ZipFile(tmp_upload.name, "w", zipfile.ZIP_DEFLATED) as zip_ref:
+                        for item in extract_path.rglob("*"):
+                            if item.is_file():
+                                arcname = item.relative_to(extract_path)
+                                zip_ref.write(item, arcname)
+                else:
+                    with tarfile.open(tmp_upload.name, "w:gz") as tar_ref:
+                        tar_ref.add(extract_path, arcname=".")
+
+                tmp_upload.seek(0)
+                package_data = tmp_upload.read()
+
+                from skill_library.package_handler import PackageHandler
+
+                handler = PackageHandler(minio_client)
+                new_storage_path = await handler.upload_package(
+                    package_data, skill.name, skill.version
+                )
+                _replace_agent_skill_package_storage(
+                    skill_uuid=skill_uuid,
+                    skill_id=skill_id,
+                    minio_client=minio_client,
+                    current_storage_path=previous_storage_path,
+                    new_storage_path=new_storage_path,
+                    parsed_skill_md_payload=parsed_skill_md_payload,
+                    delete_previous_package=bool(previous_storage_path) and not used_fallback,
                 )
 
-                file_stream, metadata = minio_client.download_file(bucket_name, object_key)
-                tmp_download.write(file_stream.read())
-                tmp_download.flush()
-
-                # Extract to temp directory
-                with tempfile.TemporaryDirectory() as extract_dir:
-                    extract_path = Path(extract_dir)
-
-                    # Detect and extract package
-                    is_zip = False
-                    try:
-                        with zipfile.ZipFile(tmp_download.name, "r") as zip_ref:
-                            zip_ref.extractall(extract_path)
-                            is_zip = True
-                    except zipfile.BadZipFile:
-                        with tarfile.open(tmp_download.name, "r:gz") as tar_ref:
-                            tar_ref.extractall(extract_path)
-
-                    # Update file content
-                    file_full_path = extract_path / file_path
-
-                    if not file_full_path.exists():
-                        raise HTTPException(status_code=404, detail="File not found in package")
-
-                    if not file_full_path.is_file():
-                        raise HTTPException(status_code=400, detail="Path is not a file")
-
-                    # Write new content
-                    file_full_path.write_text(content, encoding="utf-8")
-
-                    parsed_skill_md_payload: Optional[Dict[str, Any]] = None
-                    if Path(file_path).name.lower() == "skill.md":
-                        parser = SkillMdParser()
-                        try:
-                            parsed = parser.parse(content)
-                        except ValueError as e:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"Invalid SKILL.md: {str(e)}",
-                            )
-
-                        validation_errors = parser.validate(parsed)
-                        if validation_errors:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=(
-                                    "SKILL.md validation failed: " f"{', '.join(validation_errors)}"
-                                ),
-                            )
-
-                        from dataclasses import asdict
-
-                        gating = GatingEngine()
-                        gating_result = gating.check_eligibility(parsed.metadata)
-                        parsed_skill_md_payload = {
-                            "description": parsed.metadata.description.strip(),
-                            "skill_md_content": content,
-                            "homepage": parsed.metadata.homepage,
-                            "skill_metadata": asdict(parsed.metadata),
-                            "gating_status": asdict(gating_result),
-                        }
-
-                    # Re-package
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_upload:
-                        if is_zip:
-                            # Create ZIP
-                            with zipfile.ZipFile(
-                                tmp_upload.name, "w", zipfile.ZIP_DEFLATED
-                            ) as zip_ref:
-                                for item in extract_path.rglob("*"):
-                                    if item.is_file():
-                                        arcname = item.relative_to(extract_path)
-                                        zip_ref.write(item, arcname)
-                        else:
-                            # Create tar.gz
-                            with tarfile.open(tmp_upload.name, "w:gz") as tar_ref:
-                                tar_ref.add(extract_path, arcname=".")
-
-                        # Upload back to MinIO
-                        tmp_upload.seek(0)
-                        package_data = tmp_upload.read()
-
-                        # Delete old package
-                        minio_client.delete_file(bucket_name, object_key)
-
-                        # Upload new package
-                        from skill_library.package_handler import PackageHandler
-
-                        handler = PackageHandler(minio_client)
-                        new_storage_path = await handler.upload_package(
-                            package_data, skill.name, skill.version
-                        )
-
-                        # Update database with new storage path directly
-                        from database.connection import get_db_session
-                        from database.models import Skill as SkillModel
-
-                        with get_db_session() as session:
-                            db_skill = (
-                                session.query(SkillModel)
-                                .filter(SkillModel.skill_id == skill_uuid)
-                                .first()
-                            )
-
-                            if db_skill:
-                                db_skill.storage_path = new_storage_path
-                                if parsed_skill_md_payload:
-                                    db_skill.description = parsed_skill_md_payload["description"]
-                                    db_skill.skill_md_content = parsed_skill_md_payload[
-                                        "skill_md_content"
-                                    ]
-                                    db_skill.homepage = parsed_skill_md_payload["homepage"]
-                                    db_skill.skill_metadata = parsed_skill_md_payload[
-                                        "skill_metadata"
-                                    ]
-                                    db_skill.gating_status = parsed_skill_md_payload[
-                                        "gating_status"
-                                    ]
-                                session.commit()
-
-                        logger.info(
-                            f"File updated in skill package by user {current_user.user_id}",
-                            extra={
-                                "skill_id": skill_id,
-                                "file_path": file_path,
-                                "new_storage_path": new_storage_path,
-                            },
-                        )
-
-                        # Clean up temp upload file
-                        try:
-                            import os
-
-                            os.unlink(tmp_upload.name)
-                        except:
-                            pass
-
-                        return {"message": "File updated successfully"}
-
-            finally:
-                # Clean up temp download file
-                import os
+                logger.info(
+                    f"File updated in skill package by user {current_user.user_id}",
+                    extra={
+                        "skill_id": skill_id,
+                        "file_path": file_path,
+                        "new_storage_path": new_storage_path,
+                    },
+                )
 
                 try:
-                    os.unlink(tmp_download.name)
-                except:
+                    import os
+
+                    os.unlink(tmp_upload.name)
+                except Exception:
                     pass
+
+                return {"message": "File updated successfully"}
 
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
@@ -2501,14 +2561,8 @@ async def update_skill_package(
             gating = GatingEngine()
             gating_result = gating.check_eligibility(parsed.metadata)
 
-            # Delete old package from MinIO
-            if skill.storage_path:
-                try:
-                    minio_client = get_minio_client()
-                    bucket_name = minio_client.buckets.get("artifacts", "agent-artifacts")
-                    minio_client.delete_file(bucket_name, skill.storage_path)
-                except Exception as e:
-                    logger.warning(f"Failed to delete old package: {e}")
+            minio_client = get_minio_client()
+            previous_storage_path = str(getattr(skill, "storage_path", "") or "") or None
 
             # Upload new package to MinIO
             try:
@@ -2521,25 +2575,22 @@ async def update_skill_package(
             # Update skill in database directly
             from dataclasses import asdict
 
-            from database.connection import get_db_session
-            from database.models import Skill as SkillModel
-
             skill_metadata_dict = asdict(parsed.metadata)
             gating_status_dict = asdict(gating_result)
-
-            with get_db_session() as session:
-                db_skill = (
-                    session.query(SkillModel).filter(SkillModel.skill_id == skill_uuid).first()
-                )
-
-                if db_skill:
-                    db_skill.storage_path = new_storage_path
-                    db_skill.description = parsed.metadata.description.strip()
-                    db_skill.skill_md_content = skill_md_content
-                    db_skill.homepage = parsed.metadata.homepage
-                    db_skill.skill_metadata = skill_metadata_dict
-                    db_skill.gating_status = gating_status_dict
-                    session.commit()
+            _replace_agent_skill_package_storage(
+                skill_uuid=skill_uuid,
+                skill_id=skill_id,
+                minio_client=minio_client,
+                current_storage_path=previous_storage_path,
+                new_storage_path=new_storage_path,
+                parsed_skill_md_payload={
+                    "description": parsed.metadata.description.strip(),
+                    "skill_md_content": skill_md_content,
+                    "homepage": parsed.metadata.homepage,
+                    "skill_metadata": skill_metadata_dict,
+                    "gating_status": gating_status_dict,
+                },
+            )
 
             logger.info(
                 f"Package updated for skill by user {current_user.user_id}",

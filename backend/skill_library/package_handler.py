@@ -41,6 +41,13 @@ class PackageHandler:
         self.minio_client = minio_client
         self.max_size = 50 * 1024 * 1024  # 50MB
 
+    @staticmethod
+    def _get_temp_root() -> str:
+        """Return a guaranteed-existing temp root for package extraction."""
+        temp_root = Path(tempfile.gettempdir())
+        temp_root.mkdir(parents=True, exist_ok=True)
+        return str(temp_root)
+
     def extract_package(self, file_data: bytes) -> PackageInfo:
         """Extract and validate package.
 
@@ -55,16 +62,18 @@ class PackageHandler:
         """
         # Check size
         if len(file_data) > self.max_size:
-            raise ValueError(
-                f"Package too large: {len(file_data)} bytes (max {self.max_size})"
-            )
+            raise ValueError(f"Package too large: {len(file_data)} bytes (max {self.max_size})")
 
         # Detect format
         package_format = self._detect_format(file_data)
 
         # Create persistent temporary directory (caller must clean up)
         import tempfile
-        temp_dir = tempfile.mkdtemp(prefix="skill_package_")
+
+        temp_dir = tempfile.mkdtemp(
+            prefix="skill_package_",
+            dir=self._get_temp_root(),
+        )
         temp_path = Path(temp_dir)
 
         try:
@@ -101,6 +110,7 @@ class PackageHandler:
         except Exception as e:
             # Clean up on error
             import shutil
+
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise
 
@@ -237,8 +247,7 @@ class PackageHandler:
         # Check size
         if package_info.total_size > self.max_size:
             errors.append(
-                f"Package too large: {package_info.total_size} bytes "
-                f"(max {self.max_size})"
+                f"Package too large: {package_info.total_size} bytes " f"(max {self.max_size})"
             )
 
         # Check for malicious files
@@ -264,9 +273,7 @@ class PackageHandler:
 
         return errors
 
-    async def upload_package(
-        self, file_data: bytes, skill_name: str, version: str
-    ) -> str:
+    async def upload_package(self, file_data: bytes, skill_name: str, version: str) -> str:
         """Upload package to MinIO.
 
         Args:
@@ -285,18 +292,14 @@ class PackageHandler:
 
         # Validate size
         if len(file_data) > self.max_size:
-            raise ValueError(
-                f"Package too large: {len(file_data)} bytes (max {self.max_size})"
-            )
+            raise ValueError(f"Package too large: {len(file_data)} bytes (max {self.max_size})")
 
         # Generate storage path (object key)
         storage_path = f"skills/{skill_name}/{version}/package.zip"
 
         try:
             # Upload to MinIO using upload_file method
-            logger.info(
-                f"Uploading package to MinIO: {storage_path} ({len(file_data)} bytes)"
-            )
+            logger.info(f"Uploading package to MinIO: {storage_path} ({len(file_data)} bytes)")
 
             # Use MinIO client's upload_file method
             # Use artifacts bucket for skill packages (no file type restrictions)
@@ -312,12 +315,10 @@ class PackageHandler:
                     "skill_name": skill_name,
                     "version": version,
                     "package_type": "agent_skill",
-                }
+                },
             )
 
-            logger.info(
-                f"Package uploaded successfully to {bucket_name}/{object_key}"
-            )
+            logger.info(f"Package uploaded successfully to {bucket_name}/{object_key}")
 
             # Return the object key (storage path)
             return object_key

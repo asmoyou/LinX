@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import ARRAY, JSON, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from api_gateway.main import app
 from access_control.jwt_auth import create_access_token
@@ -89,15 +90,15 @@ def _fake_minio_client(monkeypatch):
 
 
 @pytest.fixture
-def _sqlite_session_factory(monkeypatch, tmp_path) -> Generator[sessionmaker, None, None]:
-    """Provide a file-backed SQLite session factory for API integration tests."""
+def _sqlite_session_factory(monkeypatch) -> Generator[sessionmaker, None, None]:
+    """Provide a shared SQLite session factory for API integration tests."""
     import skill_library.skill_model as skill_model_module
     import skill_library.skill_registry as skill_registry_module
 
-    db_path = tmp_path / "agent_skills_api.sqlite"
     engine = create_engine(
-        f"sqlite:///{db_path}",
+        "sqlite://",
         connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
 
     for table in Base.metadata.tables.values():
@@ -108,7 +109,9 @@ def _sqlite_session_factory(monkeypatch, tmp_path) -> Generator[sessionmaker, No
                 column.type = JSON()
 
     Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
+    SessionLocal = sessionmaker(
+        bind=engine, autocommit=False, autoflush=False, expire_on_commit=False
+    )
 
     @contextmanager
     def _get_db_session():
@@ -158,7 +161,7 @@ def test_user(db_session: Session) -> User:
         username=f"testuser-{suffix}",
         email=f"test-{suffix}@example.com",
         password_hash="hashed_password",
-        role="user"
+        role="user",
     )
     db_session.add(user)
     db_session.commit()
@@ -178,7 +181,7 @@ def valid_skill_package() -> bytes:
     """Create a valid agent skill package."""
     # Create in-memory ZIP file
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         # Add SKILL.md
         skill_md = """---
 name: weather_forecast
@@ -221,12 +224,12 @@ Test with natural language:
 - "Get weather for Seattle"
 - "What's the forecast for New York?"
 """
-        zf.writestr('SKILL.md', skill_md)
-        
+        zf.writestr("SKILL.md", skill_md)
+
         # Add additional files
-        zf.writestr('README.md', '# Weather Skill\n\nWeather forecast skill.')
-        zf.writestr('config.yaml', 'api_key: ${WEATHER_API_KEY}\n')
-    
+        zf.writestr("README.md", "# Weather Skill\n\nWeather forecast skill.")
+        zf.writestr("config.yaml", "api_key: ${WEATHER_API_KEY}\n")
+
     buffer.seek(0)
     return buffer.read()
 
@@ -235,283 +238,443 @@ Test with natural language:
 def invalid_skill_package() -> bytes:
     """Create an invalid agent skill package (missing SKILL.md)."""
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr('README.md', '# Invalid Skill\n\nMissing SKILL.md.')
-    
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("README.md", "# Invalid Skill\n\nMissing SKILL.md.")
+
     buffer.seek(0)
     return buffer.read()
 
 
 class TestCreateAgentSkillWithPackage:
     """Test creating agent skills with valid packages."""
-    
+
     def test_create_agent_skill_with_valid_package(
-        self,
-        client: TestClient,
-        auth_headers: dict,
-        valid_skill_package: bytes
+        self, client: TestClient, auth_headers: dict, valid_skill_package: bytes
     ):
         """Test creating agent skill with valid package."""
         # Arrange
         files = {
-            'package_file': ('weather_skill.zip', io.BytesIO(valid_skill_package), 'application/zip')
+            "package_file": (
+                "weather_skill.zip",
+                io.BytesIO(valid_skill_package),
+                "application/zip",
+            )
         }
         data = {
-            'name': _unique_skill_name('Weather-Forecast'),
-            'skill_type': 'agent_skill',
-            'is_active': 'true'
+            "name": _unique_skill_name("Weather-Forecast"),
+            "skill_type": "agent_skill",
+            "is_active": "true",
         }
-        
+
         # Act
-        response = client.post(
-            '/api/v1/skills',
-            headers=auth_headers,
-            files=files,
-            data=data
-        )
-        
+        response = client.post("/api/v1/skills", headers=auth_headers, files=files, data=data)
+
         # Assert
         assert response.status_code == 201
         result = response.json()
-        assert result['name'] == data['name']
-        assert result['skill_type'] == 'agent_skill'
-        assert result['description'] == 'Get weather forecast for any location'
-        assert result['skill_md_content'] is not None
-        assert result['homepage'] == 'https://example.com/weather'
-        assert result['skill_metadata'] is not None
-        assert result['gating_status'] is not None
-        assert 'missing_bins' in result['gating_status']
-        assert 'missing_env' in result['gating_status']
-        assert 'missing_config' in result['gating_status']
-    
+        assert result["name"] == data["name"]
+        assert result["skill_type"] == "agent_skill"
+        assert result["description"] == "Get weather forecast for any location"
+        assert result["skill_md_content"] is not None
+        assert result["homepage"] == "https://example.com/weather"
+        assert result["skill_metadata"] is not None
+        assert result["gating_status"] is not None
+        assert "missing_bins" in result["gating_status"]
+        assert "missing_env" in result["gating_status"]
+        assert "missing_config" in result["gating_status"]
+
     def test_create_agent_skill_with_invalid_package(
-        self,
-        client: TestClient,
-        auth_headers: dict,
-        invalid_skill_package: bytes
+        self, client: TestClient, auth_headers: dict, invalid_skill_package: bytes
     ):
         """Test creating agent skill with invalid package (missing SKILL.md)."""
         # Arrange
         files = {
-            'package_file': ('invalid_skill.zip', io.BytesIO(invalid_skill_package), 'application/zip')
+            "package_file": (
+                "invalid_skill.zip",
+                io.BytesIO(invalid_skill_package),
+                "application/zip",
+            )
         }
         data = {
-            'name': _unique_skill_name('Invalid-Skill'),
-            'skill_type': 'agent_skill',
-            'description': 'Invalid skill package',
-            'is_active': 'true'
+            "name": _unique_skill_name("Invalid-Skill"),
+            "skill_type": "agent_skill",
+            "description": "Invalid skill package",
+            "is_active": "true",
         }
-        
+
         # Act
-        response = client.post(
-            '/api/v1/skills',
-            headers=auth_headers,
-            files=files,
-            data=data
-        )
+        response = client.post("/api/v1/skills", headers=auth_headers, files=files, data=data)
 
         # Assert
         assert response.status_code == 400
-        assert 'SKILL.md' in _error_message(response)
-    
-    def test_create_agent_skill_without_package(
-        self,
-        client: TestClient,
-        auth_headers: dict
-    ):
+        assert "SKILL.md" in _error_message(response)
+
+    def test_create_agent_skill_without_package(self, client: TestClient, auth_headers: dict):
         """Test creating agent skill without package (should fail)."""
         # Arrange
         data = {
-            'name': _unique_skill_name('No-Package-Skill'),
-            'skill_type': 'agent_skill',
-            'description': 'Skill without package',
-            'code': 'print("hello")',  # Trying to use inline code
-            'is_active': 'true'
+            "name": _unique_skill_name("No-Package-Skill"),
+            "skill_type": "agent_skill",
+            "description": "Skill without package",
+            "code": 'print("hello")',  # Trying to use inline code
+            "is_active": "true",
         }
-        
+
         # Act
-        response = client.post(
-            '/api/v1/skills',
-            headers=auth_headers,
-            data=data
-        )
+        response = client.post("/api/v1/skills", headers=auth_headers, data=data)
 
         # Assert
         assert response.status_code == 400
-        assert 'package' in _error_message(response).lower()
+        assert "package" in _error_message(response).lower()
 
 
 class TestAgentSkillNaturalLanguageTesting:
     """Test natural language testing for agent skills."""
-    
+
     @pytest.fixture
     def created_skill(
         self,
         client: TestClient,
         auth_headers: dict,
         valid_skill_package: bytes,
-        db_session: Session
+        db_session: Session,
     ) -> Skill:
         """Create a skill for testing."""
         files = {
-            'package_file': ('weather_skill.zip', io.BytesIO(valid_skill_package), 'application/zip')
+            "package_file": (
+                "weather_skill.zip",
+                io.BytesIO(valid_skill_package),
+                "application/zip",
+            )
         }
         data = {
-            'name': _unique_skill_name('Weather-Forecast'),
-            'skill_type': 'agent_skill',
-            'description': 'Get weather forecast',
-            'is_active': 'true'
+            "name": _unique_skill_name("Weather-Forecast"),
+            "skill_type": "agent_skill",
+            "description": "Get weather forecast",
+            "is_active": "true",
         }
-        
-        response = client.post(
-            '/api/v1/skills',
-            headers=auth_headers,
-            files=files,
-            data=data
-        )
-        
+
+        response = client.post("/api/v1/skills", headers=auth_headers, files=files, data=data)
+
         assert response.status_code == 201
-        skill_id = uuid.UUID(response.json()['skill_id'])
+        skill_id = uuid.UUID(response.json()["skill_id"])
 
         # Fetch from database
         skill = db_session.query(Skill).filter(Skill.skill_id == skill_id).first()
         return skill
-    
+
     def test_test_agent_skill_with_natural_language(
-        self,
-        client: TestClient,
-        auth_headers: dict,
-        created_skill: Skill
+        self, client: TestClient, auth_headers: dict, created_skill: Skill
     ):
         """Test agent skill requires agent_id for real execution."""
         # Arrange
         test_data = {
-            'natural_language_input': 'Get weather for Seattle',
+            "natural_language_input": "Get weather for Seattle",
         }
-        
+
         # Act
         response = client.post(
-            f'/api/v1/skills/{created_skill.skill_id}/test',
-            headers=auth_headers,
-            json=test_data
+            f"/api/v1/skills/{created_skill.skill_id}/test", headers=auth_headers, json=test_data
         )
 
         # Assert
         assert response.status_code == 400
-        assert 'agent_id required' in _error_message(response)
-    
+        assert "agent_id required" in _error_message(response)
+
     def test_test_agent_skill_dry_run_mode(
-        self,
-        client: TestClient,
-        auth_headers: dict,
-        created_skill: Skill
+        self, client: TestClient, auth_headers: dict, created_skill: Skill
     ):
         """Dry-run mode is removed for agent_skill."""
         # Arrange
         test_data = {
-            'natural_language_input': 'What is the forecast for New York?',
-            'dry_run': True
+            "natural_language_input": "What is the forecast for New York?",
+            "dry_run": True,
         }
-        
+
         # Act
         response = client.post(
-            f'/api/v1/skills/{created_skill.skill_id}/test',
-            headers=auth_headers,
-            json=test_data
+            f"/api/v1/skills/{created_skill.skill_id}/test", headers=auth_headers, json=test_data
         )
 
         # Assert
         assert response.status_code == 400
-        assert 'agent_id required' in _error_message(response)
+        assert "agent_id required" in _error_message(response)
 
 
 class TestGatingStatusInResponse:
     """Test gating status in API responses."""
-    
+
     def test_gating_status_in_create_response(
-        self,
-        client: TestClient,
-        auth_headers: dict,
-        valid_skill_package: bytes
+        self, client: TestClient, auth_headers: dict, valid_skill_package: bytes
     ):
         """Test that gating status is included in create response."""
         # Arrange
         files = {
-            'package_file': ('weather_skill.zip', io.BytesIO(valid_skill_package), 'application/zip')
+            "package_file": (
+                "weather_skill.zip",
+                io.BytesIO(valid_skill_package),
+                "application/zip",
+            )
         }
         data = {
-            'name': _unique_skill_name('Weather-Forecast'),
-            'skill_type': 'agent_skill',
-            'description': 'Get weather forecast',
-            'is_active': 'true'
+            "name": _unique_skill_name("Weather-Forecast"),
+            "skill_type": "agent_skill",
+            "description": "Get weather forecast",
+            "is_active": "true",
         }
-        
+
         # Act
-        response = client.post(
-            '/api/v1/skills',
-            headers=auth_headers,
-            files=files,
-            data=data
-        )
-        
+        response = client.post("/api/v1/skills", headers=auth_headers, files=files, data=data)
+
         # Assert
         assert response.status_code == 201
         result = response.json()
-        assert 'gating_status' in result
-        gating = result['gating_status']
-        assert 'missing_bins' in gating
-        assert 'missing_env' in gating
-        assert 'missing_config' in gating
-        assert 'eligible' in gating
-        assert isinstance(gating['eligible'], bool)
-    
+        assert "gating_status" in result
+        gating = result["gating_status"]
+        assert "missing_bins" in gating
+        assert "missing_env" in gating
+        assert "missing_config" in gating
+        assert "eligible" in gating
+        assert isinstance(gating["eligible"], bool)
+
     def test_gating_status_in_get_response(
-        self,
-        client: TestClient,
-        auth_headers: dict,
-        valid_skill_package: bytes
+        self, client: TestClient, auth_headers: dict, valid_skill_package: bytes
     ):
         """Test that gating status is included in get response."""
         # Arrange - Create skill first
         files = {
-            'package_file': ('weather_skill.zip', io.BytesIO(valid_skill_package), 'application/zip')
+            "package_file": (
+                "weather_skill.zip",
+                io.BytesIO(valid_skill_package),
+                "application/zip",
+            )
         }
         data = {
-            'name': _unique_skill_name('Weather-Forecast'),
-            'skill_type': 'agent_skill',
-            'description': 'Get weather forecast',
-            'is_active': 'true'
+            "name": _unique_skill_name("Weather-Forecast"),
+            "skill_type": "agent_skill",
+            "description": "Get weather forecast",
+            "is_active": "true",
         }
-        
+
         create_response = client.post(
-            '/api/v1/skills',
-            headers=auth_headers,
-            files=files,
-            data=data
+            "/api/v1/skills", headers=auth_headers, files=files, data=data
         )
-        skill_id = create_response.json()['skill_id']
-        
+        skill_id = create_response.json()["skill_id"]
+
         # Act - Get skill
-        response = client.get(
-            f'/api/v1/skills/{skill_id}',
-            headers=auth_headers
-        )
-        
+        response = client.get(f"/api/v1/skills/{skill_id}", headers=auth_headers)
+
         # Assert
         assert response.status_code == 200
         result = response.json()
-        assert 'gating_status' in result
-        assert result['gating_status'] is not None
+        assert "gating_status" in result
+        assert result["gating_status"] is not None
+
+
+class TestAgentSkillPackageFallback:
+    """Test degraded package browsing when MinIO objects are missing."""
+
+    @staticmethod
+    def _create_agent_skill(
+        client: TestClient,
+        auth_headers: dict,
+        valid_skill_package: bytes,
+        db_session: Session,
+    ) -> Skill:
+        files = {
+            "package_file": (
+                "weather_skill.zip",
+                io.BytesIO(valid_skill_package),
+                "application/zip",
+            )
+        }
+        data = {
+            "name": _unique_skill_name("Weather-Forecast"),
+            "skill_type": "agent_skill",
+            "description": "Get weather forecast",
+            "is_active": "true",
+        }
+
+        response = client.post(
+            "/api/v1/skills",
+            headers=auth_headers,
+            files=files,
+            data=data,
+        )
+
+        assert response.status_code == 201
+        skill_id = uuid.UUID(response.json()["skill_id"])
+        skill = db_session.query(Skill).filter(Skill.skill_id == skill_id).first()
+        assert skill is not None
+        return skill
+
+    def test_get_skill_files_falls_back_to_stored_skill_md_when_package_is_missing(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        valid_skill_package: bytes,
+        db_session: Session,
+        _fake_minio_client,
+    ):
+        """File tree should still load when the package object has been deleted."""
+        skill = self._create_agent_skill(
+            client,
+            auth_headers,
+            valid_skill_package,
+            db_session,
+        )
+        bucket_name = _fake_minio_client.buckets["artifacts"]
+        _fake_minio_client.delete_file(bucket_name, skill.storage_path)
+
+        response = client.get(
+            f"/api/v1/skills/{skill.skill_id}/files",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["package_status"]["package_missing"] is True
+        assert result["package_status"]["fallback_mode"] is True
+        assert result["package_status"]["limited_files"] is True
+        assert "SKILL.md" in (result["package_status"]["message"] or "")
+        assert result["files"] == [
+            {
+                "name": "SKILL.md",
+                "path": "SKILL.md",
+                "type": "file",
+                "file_type": "text",
+                "size": len(skill.skill_md_content.encode("utf-8")),
+            }
+        ]
+
+    def test_get_skill_file_content_falls_back_to_stored_skill_md_when_package_is_missing(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        valid_skill_package: bytes,
+        db_session: Session,
+        _fake_minio_client,
+    ):
+        """SKILL.md content should still be readable from the DB fallback."""
+        skill = self._create_agent_skill(
+            client,
+            auth_headers,
+            valid_skill_package,
+            db_session,
+        )
+        bucket_name = _fake_minio_client.buckets["artifacts"]
+        _fake_minio_client.delete_file(bucket_name, skill.storage_path)
+
+        response = client.get(
+            f"/api/v1/skills/{skill.skill_id}/files/SKILL.md",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["file_name"] == "SKILL.md"
+        assert result["content"] == skill.skill_md_content
+        assert result["extension"] == ".md"
+        assert result["package_status"]["package_missing"] is True
+        assert result["package_status"]["fallback_mode"] is True
+        assert result["package_status"]["limited_files"] is True
+
+    def test_update_skill_md_rebuilds_package_when_original_object_is_missing(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        valid_skill_package: bytes,
+        db_session: Session,
+        _sqlite_session_factory,
+        _fake_minio_client,
+    ):
+        """Editing SKILL.md should recreate the package even if the old object is gone."""
+        skill = self._create_agent_skill(
+            client,
+            auth_headers,
+            valid_skill_package,
+            db_session,
+        )
+        bucket_name = _fake_minio_client.buckets["artifacts"]
+        _fake_minio_client.delete_file(bucket_name, skill.storage_path)
+        skill_id = skill.skill_id
+
+        updated_skill_md = skill.skill_md_content.replace(
+            "Get weather forecast for any location",
+            "Get weather forecast with package fallback recovery",
+            1,
+        )
+
+        db_session.close()
+
+        response = client.put(
+            f"/api/v1/skills/{skill_id}/files/SKILL.md",
+            headers=auth_headers,
+            json={"content": updated_skill_md},
+        )
+
+        assert response.status_code == 200
+        verification_session = _sqlite_session_factory()
+        try:
+            updated_skill = (
+                verification_session.query(Skill).filter(Skill.skill_id == skill_id).first()
+            )
+            assert updated_skill is not None
+            assert updated_skill.skill_md_content == updated_skill_md
+            assert updated_skill.storage_path
+            assert (bucket_name, updated_skill.storage_path) in _fake_minio_client._objects
+        finally:
+            verification_session.close()
+
+    def test_reupload_failure_keeps_existing_package_object(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        valid_skill_package: bytes,
+        db_session: Session,
+        _fake_minio_client,
+        monkeypatch,
+    ):
+        """Failed package replacement should not delete the current stored object."""
+        skill = self._create_agent_skill(
+            client,
+            auth_headers,
+            valid_skill_package,
+            db_session,
+        )
+        bucket_name = _fake_minio_client.buckets["artifacts"]
+        assert (bucket_name, skill.storage_path) in _fake_minio_client._objects
+
+        async def _fail_upload(self, file_data, skill_name, version):
+            raise ValueError("simulated upload failure")
+
+        monkeypatch.setattr(
+            "skill_library.package_handler.PackageHandler.upload_package",
+            _fail_upload,
+        )
+
+        files = {
+            "package_file": (
+                "weather_skill.zip",
+                io.BytesIO(valid_skill_package),
+                "application/zip",
+            )
+        }
+        response = client.put(
+            f"/api/v1/skills/{skill.skill_id}/package",
+            headers=auth_headers,
+            files=files,
+        )
+
+        assert response.status_code == 400
+        assert "upload failed" in _error_message(response).lower()
+        assert (bucket_name, skill.storage_path) in _fake_minio_client._objects
 
 
 class TestLangChainToolStillWorks:
     """Test that langchain_tool creation still works (no breaking changes)."""
-    
-    def test_create_langchain_tool_with_code(
-        self,
-        client: TestClient,
-        auth_headers: dict
-    ):
+
+    def test_create_langchain_tool_with_code(self, client: TestClient, auth_headers: dict):
         """Test creating langchain_tool with inline code (should still work)."""
         # Arrange
         code = '''
@@ -523,32 +686,26 @@ def add_numbers(a: int, b: int) -> int:
     return a + b
 '''
         data = {
-            'name': _unique_skill_name('Add-Numbers'),
-            'skill_type': 'langchain_tool',
-            'description': 'Add two numbers',
-            'code': code,
-            'is_active': True
+            "name": _unique_skill_name("Add-Numbers"),
+            "skill_type": "langchain_tool",
+            "description": "Add two numbers",
+            "code": code,
+            "is_active": True,
         }
-        
+
         # Act
-        response = client.post(
-            '/api/v1/skills',
-            headers=auth_headers,
-            data=data
-        )
-        
+        response = client.post("/api/v1/skills", headers=auth_headers, data=data)
+
         # Assert
         assert response.status_code == 201
         result = response.json()
-        assert result['name'] == data['name']
-        assert result['skill_type'] == 'langchain_tool'
-        assert result['code'] is None
-        assert result['skill_md_content'] is None  # langchain_tool doesn't use SKILL.md
-    
+        assert result["name"] == data["name"]
+        assert result["skill_type"] == "langchain_tool"
+        assert result["code"] is None
+        assert result["skill_md_content"] is None  # langchain_tool doesn't use SKILL.md
+
     def test_test_langchain_tool_with_structured_input(
-        self,
-        client: TestClient,
-        auth_headers: dict
+        self, client: TestClient, auth_headers: dict
     ):
         """Test langchain_tool with structured input (existing behavior)."""
         # Arrange - Create tool first
@@ -561,42 +718,34 @@ def multiply_numbers(a: int, b: int) -> int:
     return a * b
 '''
         create_data = {
-            'name': _unique_skill_name('Multiply-Numbers'),
-            'skill_type': 'langchain_tool',
-            'description': 'Multiply two numbers',
-            'code': code,
-            'is_active': True
+            "name": _unique_skill_name("Multiply-Numbers"),
+            "skill_type": "langchain_tool",
+            "description": "Multiply two numbers",
+            "code": code,
+            "is_active": True,
         }
-        
-        create_response = client.post(
-            '/api/v1/skills',
-            headers=auth_headers,
-            data=create_data
-        )
-        skill_id = create_response.json()['skill_id']
-        
+
+        create_response = client.post("/api/v1/skills", headers=auth_headers, data=create_data)
+        skill_id = create_response.json()["skill_id"]
+
         # Act - Test tool
-        test_data = {
-            'inputs': {'a': 5, 'b': 3}
-        }
-        
+        test_data = {"inputs": {"a": 5, "b": 3}}
+
         response = client.post(
-            f'/api/v1/skills/{skill_id}/test',
-            headers=auth_headers,
-            json=test_data
+            f"/api/v1/skills/{skill_id}/test", headers=auth_headers, json=test_data
         )
-        
+
         # Assert
         assert response.status_code == 200
         result = response.json()
-        assert 'output' in result
+        assert "output" in result
         # Note: Actual execution would return 15, but in test environment might be mocked
 
 
 @pytest.mark.integration
 class TestEndToEndAgentSkillFlow:
     """Test complete end-to-end flow for skill CRUD lifecycle."""
-    
+
     def test_complete_agent_skill_lifecycle(
         self,
         client: TestClient,
@@ -613,62 +762,43 @@ def subtract_numbers(a: int, b: int) -> int:
     return a - b
 '''
         data = {
-            'name': _unique_skill_name('Subtract-Numbers'),
-            'skill_type': 'langchain_tool',
-            'description': 'Subtract two numbers',
-            'code': code,
-            'is_active': True,
+            "name": _unique_skill_name("Subtract-Numbers"),
+            "skill_type": "langchain_tool",
+            "description": "Subtract two numbers",
+            "code": code,
+            "is_active": True,
         }
-        
-        create_response = client.post(
-            '/api/v1/skills',
-            headers=auth_headers,
-            data=data
-        )
+
+        create_response = client.post("/api/v1/skills", headers=auth_headers, data=data)
         assert create_response.status_code == 201
-        skill_id = create_response.json()['skill_id']
-        
+        skill_id = create_response.json()["skill_id"]
+
         # 2. Get
-        get_response = client.get(
-            f'/api/v1/skills/{skill_id}',
-            headers=auth_headers
-        )
+        get_response = client.get(f"/api/v1/skills/{skill_id}", headers=auth_headers)
         assert get_response.status_code == 200
-        assert get_response.json()['name'] == data['name']
-        
+        assert get_response.json()["name"] == data["name"]
+
         # 3. Test
         test_data = {
-            'inputs': {'a': 9, 'b': 4},
+            "inputs": {"a": 9, "b": 4},
         }
         test_response = client.post(
-            f'/api/v1/skills/{skill_id}/test',
-            headers=auth_headers,
-            json=test_data
+            f"/api/v1/skills/{skill_id}/test", headers=auth_headers, json=test_data
         )
         assert test_response.status_code == 200
-        
+
         # 4. Update
-        update_data = {
-            'description': 'Updated subtraction skill'
-        }
+        update_data = {"description": "Updated subtraction skill"}
         update_response = client.put(
-            f'/api/v1/skills/{skill_id}',
-            headers=auth_headers,
-            json=update_data
+            f"/api/v1/skills/{skill_id}", headers=auth_headers, json=update_data
         )
         assert update_response.status_code == 200
-        assert update_response.json()['description'] == 'Updated subtraction skill'
-        
+        assert update_response.json()["description"] == "Updated subtraction skill"
+
         # 5. Delete
-        delete_response = client.delete(
-            f'/api/v1/skills/{skill_id}',
-            headers=auth_headers
-        )
+        delete_response = client.delete(f"/api/v1/skills/{skill_id}", headers=auth_headers)
         assert delete_response.status_code == 204
-        
+
         # 6. Verify deletion
-        get_deleted_response = client.get(
-            f'/api/v1/skills/{skill_id}',
-            headers=auth_headers
-        )
+        get_deleted_response = client.get(f"/api/v1/skills/{skill_id}", headers=auth_headers)
         assert get_deleted_response.status_code == 404
