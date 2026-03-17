@@ -61,6 +61,7 @@ def test_skill_proposal_routes_registered():
     }
 
     assert ("/api/v1/skill-proposals", ("GET",)) in route_paths
+    assert ("/api/v1/skill-proposals/{memory_id}", ("DELETE",)) in route_paths
     assert ("/api/v1/skill-proposals/{memory_id}/review", ("POST",)) in route_paths
     assert ("/api/v1/skill-proposals/{memory_id}/publish", ("POST",)) in route_paths
 
@@ -231,3 +232,35 @@ async def test_review_skill_proposal_rejects_non_skill_proposal(current_user):
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "Skill proposal not found"
+
+
+@pytest.mark.asyncio
+async def test_delete_skill_proposal_calls_service(current_user):
+    service = MagicMock()
+    service.get_proposal.return_value = _proposal_row(row_id=12, agent_id="agent-123")
+    service.delete_proposal.return_value = True
+
+    with (
+        patch(
+            "api_gateway.routers.skill_proposals._require_agent_read_access_sync",
+            return_value=None,
+        ),
+        patch(
+            "api_gateway.routers.skill_proposals._agent_owned_by_user_sync",
+            return_value=True,
+        ),
+        patch(
+            "api_gateway.routers.skill_proposals.get_skill_proposal_service",
+            return_value=service,
+        ),
+    ):
+        await skill_proposals.delete_skill_proposal(
+            memory_id=12,
+            delete_published_skill=True,
+            current_user=current_user,
+        )
+
+    assert service.delete_proposal.call_args.kwargs == {
+        "proposal_id": 12,
+        "delete_published_skill": True,
+    }

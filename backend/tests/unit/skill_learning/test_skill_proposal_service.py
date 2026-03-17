@@ -30,20 +30,29 @@ def test_review_proposal_publishes_to_skill_registry_and_updates_proposal():
     )
     service = SkillProposalService(repository=repository, skill_registry=registry)
 
-    updated = service.review_proposal(
-        proposal_id=7,
-        action="publish",
-        reviewer_user_id="user-1",
-        summary="Approved path",
-        details=None,
-        payload_updates={"review_note": "ship it"},
-    )
+    with patch.object(
+        service,
+        "_upload_agent_skill_package",
+        return_value="skills/learned_agent_1_pdf_delivery/1.0.0/package.zip",
+    ) as upload_package:
+        updated = service.review_proposal(
+            proposal_id=7,
+            action="publish",
+            reviewer_user_id="user-1",
+            summary="Approved path",
+            details=None,
+            payload_updates={"review_note": "ship it"},
+        )
 
     assert updated is not None
     registry.register_skill.assert_called_once()
+    upload_package.assert_called_once()
     assert repository.update_proposal.call_args.kwargs["review_status"] == "published"
     assert repository.update_proposal.call_args.kwargs["payload"]["review_status"] == "published"
     assert repository.update_proposal.call_args.kwargs["published_skill_id"] == "skill-uuid"
+    register_kwargs = registry.register_skill.call_args.kwargs
+    assert register_kwargs["storage_type"] == "minio"
+    assert register_kwargs["storage_path"] == "skills/learned_agent_1_pdf_delivery/1.0.0/package.zip"
 
 
 def test_list_published_skills_reads_registry_backed_runtime_items():

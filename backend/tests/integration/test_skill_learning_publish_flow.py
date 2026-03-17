@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from skill_learning.service import SkillProposalService
 
@@ -33,17 +33,26 @@ def test_skill_learning_publish_flow_promotes_proposal_into_skill_registry() -> 
     )
 
     service = SkillProposalService(repository=repository, skill_registry=skill_registry)
-    updated = service.publish_proposal(
-        proposal_id=7,
-        reviewer_user_id="reviewer-1",
-        summary=None,
-        details=None,
-        payload_updates={},
-    )
+    with patch.object(
+        service,
+        "_upload_agent_skill_package",
+        return_value="skills/learned_agent_1_stable_pdf_delivery_path/1.0.0/package.zip",
+    ):
+        updated = service.publish_proposal(
+            proposal_id=7,
+            reviewer_user_id="reviewer-1",
+            summary=None,
+            details=None,
+            payload_updates={},
+        )
 
     assert updated.published_skill_id == "skill-1"
     register_kwargs = skill_registry.register_skill.call_args.kwargs
     assert register_kwargs["skill_type"] == "agent_skill"
-    assert register_kwargs["storage_type"] == "inline"
+    assert register_kwargs["storage_type"] == "minio"
+    assert (
+        register_kwargs["storage_path"]
+        == "skills/learned_agent_1_stable_pdf_delivery_path/1.0.0/package.zip"
+    )
     assert register_kwargs["config"]["proposal_id"] == 7
     assert repository.update_proposal.call_args.kwargs["published_skill_id"] == "skill-1"

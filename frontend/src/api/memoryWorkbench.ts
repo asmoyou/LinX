@@ -107,6 +107,24 @@ export const memoryWorkbenchApi = {
     return normalizeWorkbenchRecord(response.data, "skill_proposal");
   },
 
+  deleteUserMemory: async (
+    memoryId: string,
+    memorySource: "entry" | "user_memory_view",
+  ): Promise<void> => {
+    await apiClient.delete(`/user-memory/${memoryId}`, {
+      params: { memory_source: memorySource },
+    });
+  },
+
+  deleteSkillProposal: async (
+    memoryId: string,
+    deletePublishedSkill = true,
+  ): Promise<void> => {
+    await apiClient.delete(`/skill-proposals/${memoryId}`, {
+      params: { delete_published_skill: deletePublishedSkill },
+    });
+  },
+
   /**
    * Get memory retrieval configuration
    */

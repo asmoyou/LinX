@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { NavLink } from 'react-router-dom';
 import {
   AlertCircle,
   Brain,
@@ -145,6 +146,7 @@ export const MemoryWorkbench: React.FC<MemoryWorkbenchProps> = ({
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_MEMORY_PAGE_SIZE);
   const [reviewingCandidateId, setReviewingCandidateId] = useState<string | null>(null);
+  const [deletingRecordId, setDeletingRecordId] = useState<string | null>(null);
 
   const memoryQuery = memoryType === 'user_memory' ? debouncedSearchQuery : undefined;
   const activeRecords = useMemo(
@@ -298,6 +300,57 @@ export const MemoryWorkbench: React.FC<MemoryWorkbenchProps> = ({
     }
   };
 
+  const handleDeleteRecord = async (record: MemoryRecord) => {
+    if (deletingRecordId) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      record.type === 'skill_proposal'
+        ? t('memory.delete.confirmSkillProposal', {
+            defaultValue:
+              'Delete this skill proposal? If it is the only proposal linked to a published skill, the published skill will also be removed.',
+          })
+        : t('memory.delete.confirmUserMemory', {
+            defaultValue: 'Delete this memory record and its linked surfaces?',
+          })
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingRecordId(record.id);
+    try {
+      if (record.type === 'skill_proposal') {
+        await memoryWorkbenchApi.deleteSkillProposal(record.id, true);
+      } else {
+        const memorySource =
+          record.metadata?.memory_source === 'entry' ? 'entry' : 'user_memory_view';
+        await memoryWorkbenchApi.deleteUserMemory(record.id, memorySource);
+      }
+      if (selectedRecord?.id === record.id) {
+        setSelectedRecord(null);
+        setIsDetailViewOpen(false);
+      }
+      await fetchMemories();
+      toast.success(
+        record.type === 'skill_proposal'
+          ? t('memory.delete.skillProposalSuccess', {
+              defaultValue: 'Skill proposal deleted',
+            })
+          : t('memory.delete.userMemorySuccess', {
+              defaultValue: 'Memory record deleted',
+            })
+      );
+    } catch (deleteError: unknown) {
+      toast.error(getErrorDetail(deleteError) || t('memory.delete.error', {
+        defaultValue: 'Failed to delete record',
+      }));
+    } finally {
+      setDeletingRecordId(null);
+    }
+  };
+
   const handleTagToggle = (tag: string) => {
     setSelectedTags((prev) =>
       prev.includes(tag) ? prev.filter((value) => value !== tag) : [...prev, tag]
@@ -327,10 +380,42 @@ export const MemoryWorkbench: React.FC<MemoryWorkbenchProps> = ({
             <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
               {t('memory.resetNotice', {
                 defaultValue:
-                  'This surface only keeps final-model user memory and skill proposals. Shared organizational content now lives in Knowledge Base.',
+                  'Memory System keeps durable user memory and reviewable skill proposals together. Shared organizational knowledge lives in Knowledge Base.',
               })}
             </p>
           </div>
+          <div className="inline-flex rounded-xl border border-zinc-200 bg-white/70 p-1 dark:border-zinc-700 dark:bg-zinc-900/60">
+            <NavLink
+              to="/memory/user-memory"
+              className={({ isActive }) =>
+                `rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                  isActive
+                    ? 'bg-emerald-500 text-white'
+                    : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
+                }`
+              }
+            >
+              {t('nav.userMemory', { defaultValue: 'User Memory' })}
+            </NavLink>
+            <NavLink
+              to="/memory/skill-proposals"
+              className={({ isActive }) =>
+                `rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                  isActive
+                    ? 'bg-sky-500 text-white'
+                    : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
+                }`
+              }
+            >
+              {t('nav.skillProposals', { defaultValue: 'Skill Proposals' })}
+            </NavLink>
+          </div>
+          <p className="max-w-3xl text-sm text-zinc-500 dark:text-zinc-400">
+            {t('memory.tabsHint', {
+              defaultValue:
+                'User Memory stores durable facts and events about a user. Skill Proposals store reusable action patterns distilled from the same memory pipeline and can be reviewed before publishing into the Skill Library.',
+            })}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -463,6 +548,7 @@ export const MemoryWorkbench: React.FC<MemoryWorkbenchProps> = ({
           setIsDetailViewOpen(false);
           setSelectedRecord(null);
         }}
+        onDelete={handleDeleteRecord}
         onReviewCandidate={
           selectedRecord?.type === 'skill_proposal' ? handleReviewCandidate : undefined
         }

@@ -13,7 +13,6 @@ import {
   Settings,
   Mail,
   Shield,
-  User,
   UserCog,
   ShieldCheck,
   ChevronDown,
@@ -164,12 +163,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
         label: t('nav.groups.assets', 'Assets'),
         items: [
           { path: '/knowledge', icon: Database, label: t('nav.knowledge') },
-          { path: '/memory/user-memory', icon: User, label: t('nav.userMemory') },
-          {
-            path: '/memory/skill-proposals',
-            icon: Brain,
-            label: t('nav.skillProposals'),
-          },
+          { path: '/memory', icon: Brain, label: t('nav.memory') },
           { path: '/skills', icon: Code2, label: t('nav.skills') },
         ],
       },

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import re
+import zipfile
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from object_storage.minio_client import get_minio_client
 from shared.config import get_config
 from skill_learning.repository import SkillProposalRepository, get_skill_proposal_repository
 from skill_library.skill_registry import SkillInfo, SkillRegistry, get_skill_registry
@@ -170,6 +173,40 @@ class SkillProposalService:
         }
 
     @staticmethod
+    def _build_agent_skill_package_bytes(*, skill_name: str, skill_md_content: str) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(f"{skill_name}/SKILL.md", skill_md_content)
+        return buffer.getvalue()
+
+    def _upload_agent_skill_package(
+        self,
+        *,
+        skill_name: str,
+        version: str,
+        skill_md_content: str,
+    ) -> str:
+        package_bytes = self._build_agent_skill_package_bytes(
+            skill_name=skill_name,
+            skill_md_content=skill_md_content,
+        )
+        minio_client = get_minio_client()
+        _bucket_name, object_key = minio_client.upload_file(
+            bucket_type="artifacts",
+            file_data=io.BytesIO(package_bytes),
+            filename=f"{skill_name}-{version}.zip",
+            user_id="system",
+            content_type="application/zip",
+            metadata={
+                "skill_name": skill_name,
+                "version": version,
+                "package_type": "agent_skill",
+                "source": "skill_proposal",
+            },
+        )
+        return object_key
+
+    @staticmethod
     def _build_runtime_skill_content(
         *,
         skill: SkillInfo,
@@ -293,12 +330,29 @@ class SkillProposalService:
             if existing_skill is not None:
                 return existing_skill
 
+        version = "1.0.0"
+        skill_md_content = self._build_skill_md_content(existing, payload)
+        storage_path = None
+        manifest = None
+        if skill_type == "agent_skill":
+            storage_type = "minio"
+            storage_path = self._upload_agent_skill_package(
+                skill_name=skill_name,
+                version=version,
+                skill_md_content=skill_md_content,
+            )
+            manifest = {
+                "source": "skill_proposal",
+                "skill_type": skill_type,
+                "files": ["SKILL.md"],
+            }
+
         return registry.register_skill(
             name=skill_name,
             description=self._build_skill_description(existing, payload),
             interface_definition=self._build_skill_interface(existing, payload),
             dependencies=[],
-            version="1.0.0",
+            version=version,
             skill_type=skill_type,
             storage_type=storage_type,
             code=None,
@@ -308,7 +362,9 @@ class SkillProposalService:
                 "agent_id": str(getattr(existing, "agent_id", "") or ""),
                 "proposal_key": str(getattr(existing, "proposal_key", "") or ""),
             },
-            skill_md_content=self._build_skill_md_content(existing, payload),
+            storage_path=storage_path,
+            manifest=manifest,
+            skill_md_content=skill_md_content,
             skill_metadata={
                 "source": "skill_proposal",
                 "proposal_id": int(getattr(existing, "id", 0) or 0),
@@ -384,6 +440,34 @@ class SkillProposalService:
             published_skill_id=published_skill_id,
         )
         return updated
+
+    def delete_proposal(
+        self,
+        *,
+        proposal_id: int,
+        delete_published_skill: bool = True,
+    ) -> bool:
+        existing = self._repository.get_proposal(proposal_id)
+        if existing is None:
+            return False
+
+        published_skill_id = getattr(existing, "published_skill_id", None)
+        deleted = self._repository.delete_proposal(int(proposal_id))
+        if not deleted:
+            return False
+
+        if delete_published_skill and published_skill_id:
+            remaining_refs = self._repository.count_proposals_for_published_skill(
+                published_skill_id=str(published_skill_id),
+                exclude_proposal_id=int(proposal_id),
+            )
+            if remaining_refs == 0:
+                try:
+                    self._skill_registry.delete_skill(UUID(str(published_skill_id)))
+                except Exception:
+                    # Proposal deletion should still succeed even if the registry cleanup lags.
+                    pass
+        return True
 
     def publish_proposal(
         self,

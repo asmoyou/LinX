@@ -2,13 +2,15 @@
 
 import asyncio
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from access_control.permissions import CurrentUser, get_current_user
 from database.connection import get_db_session
+from database.models import UserMemoryEntry, UserMemoryRelation, UserMemoryView
 from user_memory.retriever import get_user_memory_retriever
+from user_memory.session_ledger_repository import get_session_ledger_repository
 
 from .memory_access import (
     _memory_item_to_response,
@@ -37,6 +39,152 @@ def _resolve_user_name(owner_id: str, current_user: CurrentUser) -> Optional[str
             return _lookup_user_name(session, owner_id)
     except Exception:
         return str(current_user.username or "").strip() or None
+
+
+def _mark_inactive_payload(payload: Dict[str, Any], *, reason: str) -> Dict[str, Any]:
+    updated = dict(payload or {})
+    updated["is_active"] = False
+    updated["cleanup_reason"] = reason
+    return updated
+
+
+def _delete_user_memory_record_sync(
+    *,
+    memory_id: int,
+    memory_source: str,
+    current_user: CurrentUser,
+) -> bool:
+    normalized_source = str(memory_source or "").strip().lower()
+    if normalized_source not in {"entry", "user_memory_view"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported memory source: {memory_source}",
+        )
+
+    repository = get_session_ledger_repository()
+    owner_id: Optional[str] = None
+    identity_signature: Optional[str] = None
+    source_entry_id: Optional[int] = None
+    target_entry_ids: set[int] = set()
+    target_view_ids: set[int] = set()
+    target_relation_ids: set[int] = set()
+
+    with get_db_session() as session:
+        if normalized_source == "entry":
+            row = (
+                session.query(UserMemoryEntry)
+                .filter(UserMemoryEntry.id == int(memory_id))
+                .one_or_none()
+            )
+            if row is None:
+                return False
+            owner_id = str(row.user_id)
+            payload = dict(row.entry_data or {})
+            identity_signature = str(payload.get("identity_signature") or "").strip() or None
+            source_entry_id = int(row.id)
+            target_entry_ids.add(int(row.id))
+        else:
+            row = (
+                session.query(UserMemoryView)
+                .filter(UserMemoryView.id == int(memory_id))
+                .one_or_none()
+            )
+            if row is None:
+                return False
+            owner_id = str(row.user_id)
+            payload = dict(row.view_data or {})
+            identity_signature = str(payload.get("identity_signature") or "").strip() or None
+            source_value = payload.get("source_entry_id")
+            try:
+                source_entry_id = int(source_value) if source_value is not None else None
+            except (TypeError, ValueError):
+                source_entry_id = None
+            target_view_ids.add(int(row.id))
+
+        _require_user_memory_read_access_sync(str(owner_id), current_user)
+
+        entry_rows = (
+            session.query(UserMemoryEntry)
+            .filter(UserMemoryEntry.user_id == str(owner_id))
+            .all()
+        )
+        for entry in entry_rows:
+            entry_payload = dict(entry.entry_data or {})
+            entry_signature = str(entry_payload.get("identity_signature") or "").strip()
+            if identity_signature and entry_signature == identity_signature:
+                target_entry_ids.add(int(entry.id))
+                continue
+            if source_entry_id is not None and int(entry.id) == int(source_entry_id):
+                target_entry_ids.add(int(entry.id))
+
+        view_rows = (
+            session.query(UserMemoryView)
+            .filter(UserMemoryView.user_id == str(owner_id))
+            .all()
+        )
+        for view in view_rows:
+            view_payload = dict(view.view_data or {})
+            view_signature = str(view_payload.get("identity_signature") or "").strip()
+            if identity_signature and view_signature == identity_signature:
+                target_view_ids.add(int(view.id))
+                continue
+            try:
+                candidate_source_entry_id = (
+                    int(view_payload.get("source_entry_id"))
+                    if view_payload.get("source_entry_id") is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                candidate_source_entry_id = None
+            if source_entry_id is not None and candidate_source_entry_id == int(source_entry_id):
+                target_view_ids.add(int(view.id))
+
+        relation_rows = (
+            session.query(UserMemoryRelation)
+            .filter(UserMemoryRelation.user_id == str(owner_id))
+            .all()
+        )
+        for relation in relation_rows:
+            relation_payload = dict(relation.relation_data or {})
+            relation_signature = str(relation_payload.get("identity_signature") or "").strip()
+            if identity_signature and relation_signature == identity_signature:
+                target_relation_ids.add(int(relation.id))
+                continue
+            relation_source_entry_id = getattr(relation, "source_entry_id", None)
+            if source_entry_id is not None and relation_source_entry_id == int(source_entry_id):
+                target_relation_ids.add(int(relation.id))
+
+    for entry in entry_rows:
+        if int(entry.id) not in target_entry_ids:
+            continue
+        repository.update_entry(
+            int(entry.id),
+            status="superseded",
+            payload=_mark_inactive_payload(dict(entry.entry_data or {}), reason="manual_delete"),
+        )
+
+    for view in view_rows:
+        if int(view.id) not in target_view_ids:
+            continue
+        repository.update_projection(
+            int(view.id),
+            status="superseded",
+            payload=_mark_inactive_payload(dict(view.view_data or {}), reason="manual_delete"),
+        )
+
+    for relation in relation_rows:
+        if int(relation.id) not in target_relation_ids:
+            continue
+        repository.update_relation(
+            int(relation.id),
+            status="superseded",
+            payload=_mark_inactive_payload(
+                dict(relation.relation_data or {}),
+                reason="manual_delete",
+            ),
+        )
+
+    return True
 
 
 @router.get("", response_model=List[MemoryItemResponse])
@@ -161,3 +309,23 @@ async def update_user_memory_config(
 ):
     """Update memory-pipeline config under the new product entry."""
     return await update_memory_config(update_data=request, current_user=current_user)
+
+
+@router.delete("/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user_memory(
+    memory_id: int,
+    memory_source: str = Query(..., pattern=r"^(entry|user_memory_view)$"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Hide one user-memory record and its linked entry/view/relation surfaces."""
+    deleted = await asyncio.to_thread(
+        _delete_user_memory_record_sync,
+        memory_id=int(memory_id),
+        memory_source=memory_source,
+        current_user=current_user,
+    )
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User memory record not found",
+        )

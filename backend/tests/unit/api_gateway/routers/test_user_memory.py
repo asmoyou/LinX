@@ -27,6 +27,7 @@ def test_user_memory_routes_registered():
     }
 
     assert ("/api/v1/user-memory", ("GET",)) in route_paths
+    assert ("/api/v1/user-memory/{memory_id}", ("DELETE",)) in route_paths
     assert ("/api/v1/user-memory/profile", ("GET",)) in route_paths
     assert ("/api/v1/user-memory/episodes", ("GET",)) in route_paths
     assert ("/api/v1/user-memory/config", ("GET",)) in route_paths
@@ -219,5 +220,24 @@ async def test_update_user_memory_config_passes_update_data_keyword(current_user
     assert result == {"user_memory": {"retrieval": {"similarity_threshold": 0.42}}}
     assert updater.call_args.kwargs == {
         "update_data": request,
+        "current_user": current_user,
+    }
+
+
+@pytest.mark.asyncio
+async def test_delete_user_memory_delegates_to_delete_helper(current_user):
+    with patch(
+        "api_gateway.routers.user_memory._delete_user_memory_record_sync",
+        return_value=True,
+    ) as deleter:
+        await user_memory.delete_user_memory(
+            memory_id=14,
+            memory_source="entry",
+            current_user=current_user,
+        )
+
+    assert deleter.call_args.kwargs == {
+        "memory_id": 14,
+        "memory_source": "entry",
         "current_user": current_user,
     }

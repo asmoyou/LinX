@@ -198,6 +198,12 @@ type ProviderTypedModels = {
   rerank: string[];
 };
 
+type ProviderOptionsByType = {
+  embedding: string[];
+  generation: string[];
+  rerank: string[];
+};
+
 const asObject = (value: unknown): Record<string, unknown> => {
   if (value && typeof value === "object") {
     return value as Record<string, unknown>;
@@ -686,6 +692,35 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     [availableProviders],
   );
 
+  const getCompatibleModelsForType = useCallback(
+    (provider: string, modelType: ModelType): string[] => {
+      if (!provider) {
+        return [];
+      }
+      const cached = typedModelsByProvider[provider]?.[modelType];
+      if (cached) {
+        return cached;
+      }
+      return selectModelsByType(availableProviders[provider] || [], {}, modelType);
+    },
+    [availableProviders, typedModelsByProvider],
+  );
+
+  const providerOptionsByType = useMemo<ProviderOptionsByType>(
+    () => ({
+      embedding: providerOptions.filter(
+        (provider) => getCompatibleModelsForType(provider, "embedding").length > 0,
+      ),
+      generation: providerOptions.filter(
+        (provider) => getCompatibleModelsForType(provider, "generation").length > 0,
+      ),
+      rerank: providerOptions.filter(
+        (provider) => getCompatibleModelsForType(provider, "rerank").length > 0,
+      ),
+    }),
+    [getCompatibleModelsForType, providerOptions],
+  );
+
   const ensureProviderTypedModels = useCallback(
     async (provider: string) => {
       if (!provider) {
@@ -797,44 +832,40 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     if (!formState.embedding.provider) {
       return [];
     }
-    return typedModelsByProvider[formState.embedding.provider]?.embedding || [];
-  }, [formState.embedding.provider, typedModelsByProvider]);
+    return getCompatibleModelsForType(formState.embedding.provider, "embedding");
+  }, [formState.embedding.provider, getCompatibleModelsForType]);
 
   const factExtractionModels = useMemo(() => {
     if (!formState.fact_extraction.provider) {
       return [];
     }
-    return (
-      typedModelsByProvider[formState.fact_extraction.provider]?.generation ||
-      []
-    );
-  }, [formState.fact_extraction.provider, typedModelsByProvider]);
+    return getCompatibleModelsForType(formState.fact_extraction.provider, "generation");
+  }, [formState.fact_extraction.provider, getCompatibleModelsForType]);
 
   const rerankModels = useMemo(() => {
     if (!formState.retrieval.rerank.provider) {
       return [];
     }
-    return typedModelsByProvider[formState.retrieval.rerank.provider]?.rerank || [];
-  }, [formState.retrieval.rerank.provider, typedModelsByProvider]);
+    return getCompatibleModelsForType(formState.retrieval.rerank.provider, "rerank");
+  }, [formState.retrieval.rerank.provider, getCompatibleModelsForType]);
 
   const plannerModels = useMemo(() => {
     if (!formState.retrieval.planner.provider) {
       return [];
     }
-    return (
-      typedModelsByProvider[formState.retrieval.planner.provider]?.generation ||
-      []
-    );
-  }, [formState.retrieval.planner.provider, typedModelsByProvider]);
+    return getCompatibleModelsForType(formState.retrieval.planner.provider, "generation");
+  }, [formState.retrieval.planner.provider, getCompatibleModelsForType]);
 
   const skillLearningModels = useMemo(() => {
     if (!formState.skill_learning.provider) {
       return [];
     }
-    return (
-      typedModelsByProvider[formState.skill_learning.provider]?.generation || []
-    );
-  }, [formState.skill_learning.provider, typedModelsByProvider]);
+    return getCompatibleModelsForType(formState.skill_learning.provider, "generation");
+  }, [formState.skill_learning.provider, getCompatibleModelsForType]);
+
+  const plannerConfigEnabled =
+    formState.retrieval.planner.runtime_mode === "full" ||
+    formState.retrieval.planner.api_mode === "full";
 
   const isEmbeddingModelsLoading = Boolean(
     formState.embedding.provider &&
@@ -1110,7 +1141,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
 
   const handleEmbeddingProviderChange = (provider: string) => {
     void ensureProviderTypedModels(provider);
-    const candidates = typedModelsByProvider[provider]?.embedding || [];
+    const candidates = getCompatibleModelsForType(provider, "embedding");
     setFormState((prev) => ({
       ...prev,
       embedding: {
@@ -1123,7 +1154,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
 
   const handleFactExtractionProviderChange = (provider: string) => {
     void ensureProviderTypedModels(provider);
-    const candidates = typedModelsByProvider[provider]?.generation || [];
+    const candidates = getCompatibleModelsForType(provider, "generation");
     setFormState((prev) => ({
       ...prev,
       fact_extraction: {
@@ -1136,7 +1167,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
 
   const handleRerankProviderChange = (provider: string) => {
     void ensureProviderTypedModels(provider);
-    const candidates = typedModelsByProvider[provider]?.rerank || [];
+    const candidates = getCompatibleModelsForType(provider, "rerank");
     setFormState((prev) => ({
       ...prev,
       retrieval: {
@@ -1152,7 +1183,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
 
   const handlePlannerProviderChange = (provider: string) => {
     void ensureProviderTypedModels(provider);
-    const candidates = typedModelsByProvider[provider]?.generation || [];
+    const candidates = getCompatibleModelsForType(provider, "generation");
     setFormState((prev) => ({
       ...prev,
       retrieval: {
@@ -1168,7 +1199,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
 
   const handleSkillLearningProviderChange = (provider: string) => {
     void ensureProviderTypedModels(provider);
-    const candidates = typedModelsByProvider[provider]?.generation || [];
+    const candidates = getCompatibleModelsForType(provider, "generation");
     setFormState((prev) => ({
       ...prev,
       skill_learning: {
@@ -1384,12 +1415,18 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                     className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                   >
                     <option value="">{t("memory.config.none", "None")}</option>
-                    {providerOptions.map((provider) => (
+                    {providerOptionsByType.embedding.map((provider) => (
                       <option key={provider} value={provider}>
                         {provider}
                       </option>
                     ))}
                   </select>
+                  <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                    {t(
+                      "memory.config.embeddingHint",
+                      "Choose the embedding provider/model used to write and query user-memory vectors. Only embedding-capable providers are listed.",
+                    )}
+                  </span>
                 </label>
 
                 <label className="text-sm text-zinc-700 dark:text-zinc-300">
@@ -1614,12 +1651,18 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                         className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                       >
                         <option value="">{t("memory.config.none", "None")}</option>
-                        {providerOptions.map((provider) => (
+                        {providerOptionsByType.rerank.map((provider) => (
                           <option key={provider} value={provider}>
                             {provider}
                           </option>
                         ))}
                       </select>
+                      <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                        {t(
+                          "memory.config.rerankProviderHint",
+                          "Only providers that expose rerank models are listed here.",
+                        )}
+                      </span>
                     </label>
 
                     <label className="text-sm text-zinc-700 dark:text-zinc-300">
@@ -1671,6 +1714,12 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                           </option>
                         ))}
                       </select>
+                      <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                        {t(
+                          "memory.config.rerankModelHint",
+                          "Choose a rerank model, not a chat or embedding model.",
+                        )}
+                      </span>
                     </label>
 
                     <label className="text-sm text-zinc-700 dark:text-zinc-300">
@@ -1698,6 +1747,12 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                         }
                         className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                       />
+                      <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                        {t(
+                          "memory.config.rerankTopKHint",
+                          "How many merged candidates enter the reranker.",
+                        )}
+                      </span>
                     </label>
 
                     <label className="text-sm text-zinc-700 dark:text-zinc-300">
@@ -1727,6 +1782,12 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                         }
                         className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                       />
+                      <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                        {t(
+                          "memory.config.rerankWeightHint",
+                          "How strongly rerank scores influence the final blended score.",
+                        )}
+                      </span>
                     </label>
 
                     <label className="text-sm text-zinc-700 dark:text-zinc-300">
@@ -1814,6 +1875,12 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                         }
                         className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                       />
+                      <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                        {t(
+                          "memory.config.docMaxCharsHint",
+                          "Maximum text length sent per candidate to the reranker.",
+                        )}
+                      </span>
                     </label>
                   </div>
                 </div>
@@ -1826,10 +1893,26 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                     <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                       {t(
                         "memory.config.plannerHint",
-                        "Runtime uses light planning by default; API search can use a full planner model.",
+                        "Planner decides how to expand a query before retrieval. Runtime light mode uses rules only; full mode adds one generation-model call to produce query variants and structured filters.",
                       )}
                     </p>
                   </div>
+
+                  <p className="mb-3 rounded-lg border border-sky-200/80 bg-sky-50/80 px-3 py-2 text-xs text-sky-800 dark:border-sky-800/70 dark:bg-sky-950/30 dark:text-sky-200">
+                    {t(
+                      "memory.config.plannerExplain",
+                      "Use light when you want low latency and predictable behavior. Use full when you want stronger recall and can afford one extra chat-model call.",
+                    )}
+                  </p>
+
+                  {!plannerConfigEnabled && (
+                    <p className="mb-3 rounded-lg border border-amber-200/80 bg-amber-50/80 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-200">
+                      {t(
+                        "memory.config.plannerModeDisabledHint",
+                        "Planner provider/model settings are only used when runtime mode or API mode is set to full.",
+                      )}
+                    </p>
+                  )}
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <label className="text-sm text-zinc-700 dark:text-zinc-300">
@@ -1852,9 +1935,19 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                         }
                         className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                       >
-                        <option value="light">light</option>
-                        <option value="full">full</option>
+                        <option value="light">
+                          {t("memory.config.plannerModeLight", "Light (rules only)")}
+                        </option>
+                        <option value="full">
+                          {t("memory.config.plannerModeFull", "Full (LLM planner)")}
+                        </option>
                       </select>
+                      <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                        {t(
+                          "memory.config.runtimeModeHint",
+                          "Agent runtime should usually stay on light to avoid adding extra model latency.",
+                        )}
+                      </span>
                     </label>
 
                     <label className="text-sm text-zinc-700 dark:text-zinc-300">
@@ -1877,9 +1970,19 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                         }
                         className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                       >
-                        <option value="light">light</option>
-                        <option value="full">full</option>
+                        <option value="light">
+                          {t("memory.config.plannerModeLight", "Light (rules only)")}
+                        </option>
+                        <option value="full">
+                          {t("memory.config.plannerModeFull", "Full (LLM planner)")}
+                        </option>
                       </select>
+                      <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                        {t(
+                          "memory.config.apiModeHint",
+                          "API search can use full mode when you want better recall and can afford one extra model call.",
+                        )}
+                      </span>
                     </label>
 
                     <label className="text-sm text-zinc-700 dark:text-zinc-300">
@@ -1908,8 +2011,15 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                             },
                           }))
                         }
+                        disabled={!plannerConfigEnabled}
                         className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                       />
+                      <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                        {t(
+                          "memory.config.maxQueryVariantsHint",
+                          "Upper bound for planner-generated search rewrites in full mode.",
+                        )}
+                      </span>
                     </label>
 
                     <label className="text-sm text-zinc-700 dark:text-zinc-300">
@@ -1921,15 +2031,22 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                         onChange={(event) =>
                           handlePlannerProviderChange(event.target.value)
                         }
+                        disabled={!plannerConfigEnabled}
                         className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                       >
                         <option value="">{t("memory.config.none", "None")}</option>
-                        {providerOptions.map((provider) => (
+                        {providerOptionsByType.generation.map((provider) => (
                           <option key={provider} value={provider}>
                             {provider}
                           </option>
                         ))}
                       </select>
+                      <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                        {t(
+                          "memory.config.plannerProviderHint",
+                          "Only providers with chat/generation models are listed here. Embedding and rerank models cannot be used as planner models.",
+                        )}
+                      </span>
                     </label>
 
                     <label className="text-sm text-zinc-700 dark:text-zinc-300">
@@ -1950,7 +2067,10 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                             },
                           }))
                         }
-                        disabled={!formState.retrieval.planner.provider}
+                        disabled={
+                          !plannerConfigEnabled ||
+                          !formState.retrieval.planner.provider
+                        }
                         className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                       >
                         {!formState.retrieval.planner.provider ? (
@@ -1981,6 +2101,12 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                           </option>
                         ))}
                       </select>
+                      <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                        {t(
+                          "memory.config.plannerModelHint",
+                          "Choose a chat/generation model that can reliably follow structured instructions.",
+                        )}
+                      </span>
                     </label>
 
                     <label className="text-sm text-zinc-700 dark:text-zinc-300">
@@ -2007,6 +2133,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                             },
                           }))
                         }
+                        disabled={!plannerConfigEnabled}
                         className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                       />
                     </label>
@@ -2038,6 +2165,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                             },
                           }))
                         }
+                        disabled={!plannerConfigEnabled}
                         className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                       />
                     </label>
@@ -2287,7 +2415,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                     className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                   >
                     <option value="">{t("memory.config.none", "None")}</option>
-                    {providerOptions.map((provider) => (
+                    {providerOptionsByType.generation.map((provider) => (
                       <option key={provider} value={provider}>
                         {provider}
                       </option>
@@ -2578,7 +2706,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                     className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                   >
                     <option value="">{t("memory.config.none", "None")}</option>
-                    {providerOptions.map((provider) => (
+                    {providerOptionsByType.generation.map((provider) => (
                       <option key={provider} value={provider}>
                         {provider}
                       </option>

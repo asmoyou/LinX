@@ -244,3 +244,41 @@ async def publish_skill_proposal(
         request=request,
         current_user=current_user,
     )
+
+
+@router.delete("/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_skill_proposal(
+    memory_id: int,
+    delete_published_skill: bool = Query(True),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Delete a skill proposal and optionally its published skill."""
+    service = get_skill_proposal_service()
+    existing = await asyncio.to_thread(service.get_proposal, memory_id)
+    if existing is None or not str(getattr(existing, "agent_id", "") or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Skill proposal not found",
+        )
+
+    agent_id = str(existing.owner_id or "").strip()
+    await asyncio.to_thread(_require_skill_proposal_manage_access, agent_id, current_user)
+
+    try:
+        deleted = await asyncio.to_thread(
+            service.delete_proposal,
+            proposal_id=int(memory_id),
+            delete_published_skill=bool(delete_published_skill),
+        )
+    except Exception as exc:
+        logger.error("Failed to delete skill proposal: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete skill proposal: {exc}",
+        ) from exc
+
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Skill proposal not found",
+        )

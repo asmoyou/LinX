@@ -8,7 +8,7 @@ export const UserMemory: React.FC = () => {
   return (
     <MemoryWorkbench
       memoryType="user_memory"
-      title={t('nav.userMemory', { defaultValue: 'User Memory' })}
+      title={t('memory.title', { defaultValue: 'Memory System' })}
       description={t('memory.description.userMemory', {
         defaultValue:
           'Long-term user facts including relationships, experiences, preferences, goals, and important events.',

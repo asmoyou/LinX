@@ -8,7 +8,7 @@ export const SkillProposals: React.FC = () => {
   return (
     <MemoryWorkbench
       memoryType="skill_proposal"
-      title={t('nav.skillProposals', { defaultValue: 'Skill Proposals' })}
+      title={t('memory.title', { defaultValue: 'Memory System' })}
       description={t('memory.description.skillProposal', {
         defaultValue:
           'A learned skill candidate distilled from successful task execution paths. Requires review before reuse.',

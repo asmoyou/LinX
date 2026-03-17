@@ -96,6 +96,29 @@ class SkillProposalRepository:
             db.refresh(row)
             return row
 
+    def delete_proposal(self, proposal_id: int) -> bool:
+        with get_db_session() as db:
+            row = db.query(SkillProposal).filter(SkillProposal.id == int(proposal_id)).one_or_none()
+            if row is None:
+                return False
+            db.delete(row)
+            db.flush()
+            return True
+
+    def count_proposals_for_published_skill(
+        self,
+        *,
+        published_skill_id: str,
+        exclude_proposal_id: Optional[int] = None,
+    ) -> int:
+        with get_db_session() as db:
+            query = db.query(SkillProposal).filter(
+                SkillProposal.published_skill_id == UUID(str(published_skill_id))
+            )
+            if exclude_proposal_id is not None:
+                query = query.filter(SkillProposal.id != int(exclude_proposal_id))
+            return int(query.count())
+
 
 _skill_proposal_repository: Optional[SkillProposalRepository] = None
 
