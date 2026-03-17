@@ -443,16 +443,12 @@ task_management:
     default_strategy: concatenation
     use_llm_for_summarization: true
 user_memory:
-  retention:
-    enabled: true
-    retention_days: 365
-    max_entries_per_user: 5000
   embedding:
-    provider: ollama
+    provider: xinference
     model: bge-m3
     dimension: 1024
-    batch_size: 32
     inherit_from_knowledge_base: true
+    batch_size: 32
   retrieval:
     hybrid_enabled: true
     similarity_threshold: 0.3
@@ -484,8 +480,8 @@ user_memory:
     planner:
       runtime_mode: light
       api_mode: full
-      provider: ''
-      model: ''
+      provider: vllm
+      model: Qwen3.5-35B-A3B-FP8
       timeout_seconds: 4
       failure_backoff_seconds: 60
       max_query_variants: 3
@@ -495,8 +491,6 @@ user_memory:
       min_results: 3
       min_score: 0.45
   extraction:
-    enabled: true
-    model_enabled: true
     provider: vllm
     model: Qwen3.5-35B-A3B-FP8
     timeout_seconds: 120
@@ -506,6 +500,8 @@ user_memory:
     secondary_recall_enabled: true
     failure_backoff_seconds: 60
     fail_closed_empty_writes: true
+    enabled: true
+    model_enabled: true
   consolidation:
     enabled: true
     run_on_startup: true
@@ -513,8 +509,8 @@ user_memory:
     interval_seconds: 21600
     dry_run: false
     limit: 5000
-    advisory_lock_id: 73012020
     use_advisory_lock: true
+    advisory_lock_id: 73012020
   observability:
     enable_quality_counters: true
   vector_indexing:
@@ -537,26 +533,18 @@ user_memory:
     advisory_lock_id: 73012023
     use_advisory_lock: true
 skill_learning:
-  retention:
-    enabled: true
-    retention_days: 90
-    max_proposals_per_agent: 10000
   extraction:
-    enabled: true
     provider: vllm
     model: Qwen3.5-35B-A3B-FP8
     timeout_seconds: 120
     max_proposals: 6
     failure_backoff_seconds: 60
-  proposal_review:
-    require_human_review: true
-    allow_revise: true
-    default_review_status: pending
-  publish_policy:
     enabled: true
+  publish_policy:
     skill_type: agent_skill
     storage_type: inline
     reuse_existing_by_name: true
+    enabled: true
 session_ledger:
   enabled: true
   retention_days: 14
@@ -565,8 +553,8 @@ session_ledger:
   cleanup_interval_seconds: 21600
   batch_size: 1000
   dry_run: false
-  advisory_lock_id: 73012021
   use_advisory_lock: true
+  advisory_lock_id: 73012021
 runtime_context:
   enable_user_memory: true
   enable_skills: true
