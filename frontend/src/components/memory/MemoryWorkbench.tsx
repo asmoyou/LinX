@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { NavLink } from 'react-router-dom';
 import {
   AlertCircle,
   Brain,
@@ -114,12 +113,14 @@ interface MemoryWorkbenchProps {
   memoryType: MemorySurfaceType;
   title: string;
   description: string;
+  onMemoryTypeChange?: (memoryType: MemorySurfaceType) => void;
 }
 
 export const MemoryWorkbench: React.FC<MemoryWorkbenchProps> = ({
   memoryType,
   title,
   description,
+  onMemoryTypeChange,
 }) => {
   const { t } = useTranslation();
   const {
@@ -235,6 +236,7 @@ export const MemoryWorkbench: React.FC<MemoryWorkbenchProps> = ({
 
   const effectiveTotal = filteredRecords.length;
   const totalPages = Math.max(1, Math.ceil(effectiveTotal / pageSize));
+  const shouldShowBlockingLoader = isLoading && activeRecords.length === 0;
   const visibleRecords = useMemo(() => {
     const start = (currentPage - 1) * pageSize;
     return filteredRecords.slice(start, start + pageSize);
@@ -384,31 +386,37 @@ export const MemoryWorkbench: React.FC<MemoryWorkbenchProps> = ({
               })}
             </p>
           </div>
-          <div className="inline-flex rounded-xl border border-zinc-200 bg-white/70 p-1 dark:border-zinc-700 dark:bg-zinc-900/60">
-            <NavLink
-              to="/memory/user-memory"
-              className={({ isActive }) =>
-                `rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                  isActive
-                    ? 'bg-emerald-500 text-white'
-                    : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
-                }`
-              }
+          <div
+            className="inline-flex rounded-xl border border-zinc-200 bg-white/70 p-1 dark:border-zinc-700 dark:bg-zinc-900/60"
+            role="tablist"
+            aria-label={t('memory.title', { defaultValue: 'Memory System' })}
+          >
+            <button
+              type="button"
+              onClick={() => onMemoryTypeChange?.('user_memory')}
+              className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                memoryType === 'user_memory'
+                  ? 'bg-emerald-500 text-white'
+                  : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
+              }`}
+              role="tab"
+              aria-selected={memoryType === 'user_memory'}
             >
               {t('nav.userMemory', { defaultValue: 'User Memory' })}
-            </NavLink>
-            <NavLink
-              to="/memory/skill-proposals"
-              className={({ isActive }) =>
-                `rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                  isActive
-                    ? 'bg-sky-500 text-white'
-                    : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
-                }`
-              }
+            </button>
+            <button
+              type="button"
+              onClick={() => onMemoryTypeChange?.('skill_proposal')}
+              className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                memoryType === 'skill_proposal'
+                  ? 'bg-sky-500 text-white'
+                  : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
+              }`}
+              role="tab"
+              aria-selected={memoryType === 'skill_proposal'}
             >
               {t('nav.skillProposals', { defaultValue: 'Skill Proposals' })}
-            </NavLink>
+            </button>
           </div>
           <p className="max-w-3xl text-sm text-zinc-500 dark:text-zinc-400">
             {t('memory.tabsHint', {
@@ -457,13 +465,13 @@ export const MemoryWorkbench: React.FC<MemoryWorkbenchProps> = ({
         onTagToggle={handleTagToggle}
       />
 
-      {isLoading && (
+      {shouldShowBlockingLoader && (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="h-8 w-8 animate-spin text-indigo-500" />
         </div>
       )}
 
-      {!isLoading && (
+      {!shouldShowBlockingLoader && (
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
           {visibleRecords.length === 0 ? (
             <div className="col-span-full py-12 text-center">
@@ -488,7 +496,7 @@ export const MemoryWorkbench: React.FC<MemoryWorkbenchProps> = ({
         </div>
       )}
 
-      {!isLoading && showPagerPanel && (
+      {!shouldShowBlockingLoader && showPagerPanel && (
         <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200 pt-4 dark:border-zinc-700">
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
             {t('memory.pagination.summary', {
