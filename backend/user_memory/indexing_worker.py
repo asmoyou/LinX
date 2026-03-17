@@ -21,6 +21,7 @@ from user_memory.indexing_jobs import (
     claim_user_memory_jobs,
     count_pending_user_memory_jobs,
     mark_user_memory_job_done,
+    requeue_stale_user_memory_jobs,
     reschedule_user_memory_job,
 )
 from user_memory.vector_documents import (
@@ -113,6 +114,9 @@ class UserMemoryIndexingWorker:
         if self._task and not self._task.done():
             return True
         bootstrap_user_memory_vector_index(build_state="ready")
+        recovered_jobs = requeue_stale_user_memory_jobs(
+            stale_after_seconds=min(self.settings.stale_lock_seconds, 120),
+        )
         self._shutdown = False
         self._task = asyncio.create_task(self._run_loop())
         logger.info(
@@ -120,6 +124,7 @@ class UserMemoryIndexingWorker:
             extra={
                 "poll_interval_seconds": self.settings.poll_interval_seconds,
                 "batch_size": self.settings.batch_size,
+                "recovered_jobs": recovered_jobs,
             },
         )
         return True

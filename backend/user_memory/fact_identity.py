@@ -83,9 +83,38 @@ def _normalize_compact_text(value: Any, max_chars: int = 240) -> str:
     )
 
 
+def _normalize_event_basis_text(value: Any, max_chars: int = 200) -> str:
+    text = _normalize_compact_text(value, max_chars=max_chars)
+    if not text:
+        return ""
+    text = re.sub(r"\d{4}年\d{1,2}月\d{1,2}日?", "", text)
+    text = re.sub(r"\d{4}-\d{1,2}-\d{1,2}", "", text)
+    text = (
+        text.replace("将与", "与")
+        .replace("将和", "与")
+        .replace("一起去", "")
+        .replace("一起", "")
+    )
+    while True:
+        updated = text
+        for prefix in ("用户", "我", "计划", "打算", "准备", "将会", "将", "会", "要"):
+            if updated.startswith(prefix):
+                updated = updated[len(prefix) :]
+        if updated == text:
+            break
+        text = updated
+    return text
+
+
 def _hash_parts(*parts: Any) -> str:
     payload = "||".join(str(part or "").strip() for part in parts)
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def build_stable_identity_key(prefix: str, *parts: Any) -> str:
+    payload = "||".join(str(part or "").strip() for part in parts)
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:24]
+    return f"{prefix}_{digest}"
 
 
 def _first_normalized(values: Optional[Sequence[Any]], *, max_chars: int = 160) -> str:
@@ -223,8 +252,14 @@ def build_user_fact_identity(
         )
 
     if normalized_fact_kind == "event":
-        event_basis = normalized_canonical or normalized_value or normalized_topic or semantic_key
-        identity_signature = f"event|{normalized_event_time}|{event_basis}|{normalized_location}|{normalized_entities}"
+        text_basis = _normalize_event_basis_text(value) or _normalize_event_basis_text(
+            canonical_statement
+        )
+        event_basis = text_basis or normalized_topic or semantic_key
+        participant_basis = ""
+        if not text_basis:
+            participant_basis = normalized_persons or normalized_entities
+        identity_signature = f"event|{normalized_event_time}|{event_basis}|{participant_basis}"
         time_token = normalize_memory_key(normalized_event_time, max_chars=24) or "undated"
         fact_key = f"event_{time_token}_{_hash_parts(identity_signature)}"
         return UserFactIdentity(
@@ -257,9 +292,29 @@ def build_user_fact_identity(
     )
 
 
+def build_user_memory_view_key(
+    *,
+    view_type: Any,
+    stable_key: str,
+    canonical_statement: Optional[str],
+    event_time: Optional[str],
+    value: Any,
+) -> str:
+    normalized_view_type = normalize_memory_key(view_type, max_chars=32) or "user_profile"
+    stable_key = str(stable_key or "").strip()
+    if normalized_view_type == "episode":
+        return build_stable_identity_key(
+            "episode",
+            stable_key or event_time or canonical_statement or value or "",
+        )
+    return stable_key
+
+
 __all__ = [
     "UserFactIdentity",
     "build_user_fact_identity",
+    "build_stable_identity_key",
+    "build_user_memory_view_key",
     "build_user_fact_semantic_key",
     "normalize_fact_kind",
     "normalize_identity_text",

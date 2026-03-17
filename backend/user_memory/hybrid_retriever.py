@@ -29,12 +29,14 @@ from user_memory.lexical_search import (
     get_user_memory_lexical_search_service,
     is_wildcard_query,
     normalize_text,
+    simplify_query_text,
 )
 from user_memory.query_planner import QueryPlan, get_user_memory_query_planner
 from user_memory.structured_search import (
     StructuredQueryFilters,
     get_user_memory_structured_search_service,
 )
+from user_memory.vector_documents import parse_event_time_range
 from user_memory.vector_index import search_user_memory_vectors
 
 logger = logging.getLogger(__name__)
@@ -140,6 +142,128 @@ class UserMemoryHybridRetriever:
             if key not in chosen.metadata:
                 chosen.metadata[key] = value
         return chosen
+
+    @staticmethod
+    def _metadata_score(metadata: Mapping[str, Any], key: str) -> float:
+        try:
+            return float(metadata.get(key) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _candidate_base_score(cls, item: RetrievedMemoryItem) -> float:
+        metadata = dict(item.metadata or {})
+        candidate_scores = [
+            float(item.similarity_score or 0.0),
+            cls._metadata_score(metadata, "_semantic_score"),
+            cls._metadata_score(metadata, "_lexical_score"),
+            cls._metadata_score(metadata, "_structured_score"),
+        ]
+        return min(max(max(candidate_scores), 0.0), 1.0)
+
+    @staticmethod
+    def _candidate_lexical_text(item: RetrievedMemoryItem) -> str:
+        return " ".join(
+            [
+                str(item.content or ""),
+                str(item.summary or ""),
+                json.dumps(item.metadata or {}, ensure_ascii=False),
+            ]
+        ).lower()
+
+    @classmethod
+    def _query_overlap_metrics(
+        cls,
+        *,
+        query_terms: Sequence[str],
+        item: RetrievedMemoryItem,
+    ) -> tuple[float, int, bool]:
+        terms = []
+        seen = set()
+        for term in query_terms:
+            normalized = str(term or "").strip().lower()
+            if len(normalized) < 2 or normalized in seen:
+                continue
+            seen.add(normalized)
+            terms.append(normalized)
+        if not terms:
+            return 0.0, 0, False
+
+        lexical_text = cls._candidate_lexical_text(item)
+        matched_terms = [term for term in terms if term in lexical_text]
+        total_weight = sum(max(len(term), 2) for term in terms)
+        matched_weight = sum(max(len(term), 2) for term in matched_terms)
+        weighted_overlap = matched_weight / max(total_weight, 1)
+        specific_match = any(len(term) >= 3 for term in matched_terms)
+        return weighted_overlap, len(matched_terms), specific_match
+
+    @staticmethod
+    def _ranges_overlap(
+        *,
+        query_start: datetime,
+        query_end: datetime,
+        item_start: datetime,
+        item_end: datetime,
+    ) -> bool:
+        return item_start <= query_end and item_end >= query_start
+
+    @classmethod
+    def _apply_temporal_filters(
+        cls,
+        *,
+        plan: QueryPlan,
+        results: Sequence[RetrievedMemoryItem],
+    ) -> List[RetrievedMemoryItem]:
+        query_start = plan.structured_filters.time_range.start
+        query_end = plan.structured_filters.time_range.end or query_start
+        if query_start is None or query_end is None:
+            return list(results)
+
+        filtered: List[RetrievedMemoryItem] = []
+        for item in results:
+            metadata = dict(item.metadata or {})
+            fact_kind = str(metadata.get("fact_kind") or "").strip().lower()
+            view_type = str(metadata.get("view_type") or "").strip().lower()
+            event_time = str(metadata.get("event_time") or "").strip()
+            is_temporal_candidate = bool(event_time) or fact_kind == "event" or view_type == "episode"
+            if not is_temporal_candidate:
+                filtered.append(item)
+                continue
+            item_start, item_end = parse_event_time_range(event_time)
+            if item_start is None or item_end is None:
+                continue
+            if cls._ranges_overlap(
+                query_start=query_start,
+                query_end=query_end,
+                item_start=item_start,
+                item_end=item_end,
+            ):
+                filtered.append(item)
+        return filtered
+
+    @staticmethod
+    def _allow_structured_floor(
+        structured_filters: Optional[StructuredQueryFilters],
+    ) -> bool:
+        if structured_filters is None:
+            return True
+        if structured_filters.persons or structured_filters.entities:
+            return True
+        if structured_filters.locations or structured_filters.predicates:
+            return True
+        if structured_filters.time_range.start or structured_filters.time_range.end:
+            return True
+        if any(
+            str(kind or "").strip().lower() in {"relationship", "event"}
+            for kind in structured_filters.fact_kinds
+        ):
+            return True
+        if any(
+            str(view_type or "").strip().lower() == "episode"
+            for view_type in structured_filters.view_types
+        ):
+            return True
+        return False
 
     def _collapse_duplicate_memories(
         self,
@@ -568,42 +692,55 @@ class UserMemoryHybridRetriever:
         *,
         query_terms: Sequence[str],
         results: List[RetrievedMemoryItem],
+        structured_filters: Optional[StructuredQueryFilters] = None,
     ) -> List[RetrievedMemoryItem]:
         terms = [term.lower() for term in query_terms if len(term) >= 2][:16]
         if not terms:
             return results
 
         total_results = len(results)
+        structured_floor_allowed = self._allow_structured_floor(structured_filters)
         reranked: List[RetrievedMemoryItem] = []
         for index, item in enumerate(results):
-            lexical_text = " ".join(
-                [
-                    str(item.content or ""),
-                    str(item.summary or ""),
-                    json.dumps(item.metadata or {}, ensure_ascii=False),
-                ]
-            ).lower()
-            matched_terms = sum(1 for term in terms if term in lexical_text)
-            overlap_score = matched_terms / len(terms)
-            metadata = dict(item.metadata or {})
-            method_score = max(
-                float(metadata.get("_semantic_score", item.similarity_score or 0.0)), 0.0
+            overlap_score, matched_terms, specific_match = self._query_overlap_metrics(
+                query_terms=terms,
+                item=item,
             )
+            metadata = dict(item.metadata or {})
+            method_score = self._candidate_base_score(item)
             rank_prior = 1.0 - (index / max(total_results, 1)) * 0.35
             search_methods = [
                 str(value).lower() for value in list(metadata.get("search_methods") or [])
             ]
             semantic_floor_applied = False
+            structured_floor_applied = False
             if "semantic" in search_methods and overlap_score == 0.0:
                 semantic_floor = 0.88 * method_score + 0.12 * rank_prior
                 final_score = max(semantic_floor, method_score * 0.90)
                 semantic_floor_applied = True
             else:
-                final_score = 0.55 * overlap_score + 0.35 * method_score + 0.10 * rank_prior
+                specificity_bonus = 0.06 if specific_match else 0.0
+                final_score = (
+                    0.62 * overlap_score
+                    + 0.22 * method_score
+                    + 0.10 * rank_prior
+                    + specificity_bonus
+                )
+            structured_score = self._metadata_score(metadata, "_structured_score")
+            if (
+                structured_floor_allowed
+                and "structured" in search_methods
+                and overlap_score == 0.0
+                and structured_score > 0.0
+            ):
+                structured_floor = min(0.72 * structured_score + 0.28 * rank_prior, 0.99)
+                final_score = max(final_score, structured_floor)
+                structured_floor_applied = True
 
             item.metadata = metadata
             item.metadata["query_overlap"] = round(overlap_score, 4)
             item.metadata["semantic_floor_applied"] = semantic_floor_applied
+            item.metadata["structured_floor_applied"] = structured_floor_applied
             item.similarity_score = float(final_score)
             reranked.append(item)
 
@@ -617,6 +754,7 @@ class UserMemoryHybridRetriever:
         query_terms: Sequence[str],
         results: List[RetrievedMemoryItem],
         top_k: int,
+        structured_filters: Optional[StructuredQueryFilters] = None,
     ) -> Tuple[List[RetrievedMemoryItem], bool]:
         cfg = self._rerank_cfg()
         enabled = bool(cfg.get("enabled", True))
@@ -635,10 +773,18 @@ class UserMemoryHybridRetriever:
         documents = [self._build_rerank_document(item) for item in candidates]
         rerank_items = self._call_rerank_api(query=query_text, documents=documents)
         if not rerank_items:
-            return self._heuristic_rerank(query_terms=query_terms, results=results), False
+            return (
+                self._heuristic_rerank(
+                    query_terms=query_terms,
+                    results=results,
+                    structured_filters=structured_filters,
+                ),
+                False,
+            )
 
         rerank_weight = min(max(float(cfg.get("weight") or 0.75), 0.0), 1.0)
         base_weight = 1.0 - rerank_weight
+        structured_floor_allowed = self._allow_structured_floor(structured_filters)
         reordered: List[RetrievedMemoryItem] = []
         seen = set()
         for candidate_rank, (doc_index, rerank_score) in enumerate(rerank_items):
@@ -649,9 +795,26 @@ class UserMemoryHybridRetriever:
             item.metadata["_rerank_score"] = round(float(rerank_score), 4)
             item.metadata["_rerank_provider"] = str(cfg.get("provider") or "")
             item.metadata["_rerank_model"] = str(cfg.get("model") or "")
-            base_score = min(max(float(item.similarity_score or 0.0), 0.0), 1.0)
+            base_score = self._candidate_base_score(item)
             item.metadata["_base_score"] = round(float(base_score), 4)
             blended = rerank_weight * float(rerank_score) + base_weight * base_score
+            overlap_score, _matched_terms, specific_match = self._query_overlap_metrics(
+                query_terms=query_terms,
+                item=item,
+            )
+            blended += 0.08 * overlap_score
+            if specific_match:
+                blended += 0.03
+            structured_score = self._metadata_score(item.metadata, "_structured_score")
+            if (
+                structured_floor_allowed
+                and structured_score > 0.0
+                and float(rerank_score) < 0.25
+            ):
+                structured_floor = min(0.58 * structured_score + 0.42 * base_score, 0.99)
+                item.metadata["_structured_floor"] = round(float(structured_floor), 4)
+                blended = max(blended, structured_floor)
+            blended = min(max(float(blended), 0.0), 0.99)
             item.metadata["_rerank_blended_score"] = round(float(blended), 4)
             item.similarity_score = float(blended)
             reordered.append(item)
@@ -673,6 +836,22 @@ class UserMemoryHybridRetriever:
             item for item in items if float(item.similarity_score or 0.0) >= float(threshold)
         ]
         return accepted[: max(int(limit), 1)]
+
+    @staticmethod
+    def _preferred_query_text(
+        *,
+        original_query: str,
+        query_variants: Sequence[str],
+    ) -> str:
+        simplified = simplify_query_text(original_query)
+        if simplified:
+            return simplified
+        original_normalized = normalize_text(original_query)
+        for candidate in query_variants:
+            normalized = normalize_text(candidate)
+            if normalized and normalized != original_normalized:
+                return str(candidate)
+        return original_query
 
     def _recent_search(
         self,
@@ -793,6 +972,10 @@ class UserMemoryHybridRetriever:
             scope_view_types=scope_view_types,
         )
         query_variants = build_query_variants(query_text, extra_queries=plan.query_variants)
+        retrieval_query = self._preferred_query_text(
+            original_query=query_text,
+            query_variants=query_variants,
+        )
 
         semantic_started = time.perf_counter()
         semantic_items = self._semantic_candidates(
@@ -815,7 +998,7 @@ class UserMemoryHybridRetriever:
             lexical_items.extend(
                 lexical_service.search_entries(
                     user_id=user_id,
-                    query_text=query_text,
+                    query_text=retrieval_query,
                     top_k=plan.lexical_top_k,
                     statuses=(
                         ["active", "superseded"]
@@ -830,7 +1013,7 @@ class UserMemoryHybridRetriever:
             lexical_items.extend(
                 lexical_service.search_views(
                     user_id=user_id,
-                    query_text=query_text,
+                    query_text=retrieval_query,
                     top_k=plan.lexical_top_k,
                     statuses=(
                         ["active", "superseded"]
@@ -912,16 +1095,18 @@ class UserMemoryHybridRetriever:
                 "structured": structured_items,
             },
         )
+        merged = self._apply_temporal_filters(plan=plan, results=merged)
         user_memory_retrieval_stage_latency_seconds.labels(stage="merge").observe(
             time.perf_counter() - merge_started
         )
 
         rerank_started = time.perf_counter()
         reranked, model_applied = self._apply_rerank(
-            query_text=query_text,
+            query_text=retrieval_query,
             query_terms=plan.keyword_terms,
             results=merged,
             top_k=plan.rerank_top_k,
+            structured_filters=plan.structured_filters,
         )
         user_memory_retrieval_stage_latency_seconds.labels(stage="rerank").observe(
             time.perf_counter() - rerank_started
@@ -943,7 +1128,7 @@ class UserMemoryHybridRetriever:
                 user_memory_retrieval_reflection_total.labels(outcome="triggered").inc()
                 reflection_started = time.perf_counter()
                 extra_queries = get_user_memory_query_planner().build_reflection_queries(
-                    query_text=query_text,
+                    query_text=retrieval_query,
                     plan=plan,
                     top_result_content=(reranked[0].content if reranked else None),
                 )
@@ -986,11 +1171,13 @@ class UserMemoryHybridRetriever:
                             "structured": structured_items,
                         },
                     )
+                    combined = self._apply_temporal_filters(plan=reflection_plan, results=combined)
                     reranked, model_applied = self._apply_rerank(
-                        query_text=query_text,
+                        query_text=retrieval_query,
                         query_terms=plan.keyword_terms,
                         results=combined,
                         top_k=plan.rerank_top_k,
+                        structured_filters=reflection_plan.structured_filters,
                     )
                 user_memory_retrieval_stage_latency_seconds.labels(stage="reflection").observe(
                     time.perf_counter() - reflection_started

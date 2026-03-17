@@ -51,6 +51,19 @@ STOP_TERMS = {
 _TOKEN_SPLIT_PATTERN = re.compile(r"[\s,，。！？!?;；:：/\\|()\[\]{}【】\"'“”‘’]+")
 _LATIN_TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{1,}")
 _CJK_FRAGMENT_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
+_QUERY_SUFFIX_PATTERN = re.compile(r"(?:[?？!！。]+|(?:好?吗|呢|呀|啊|吧|嘛))+$")
+_CONVERSATIONAL_QUERY_PREFIX_PATTERNS = (
+    re.compile(
+        r"^(?:(?:那|那么|对了|所以|然后|顺便|话说)\s*)*"
+        r"(?:你(?:知道|记得|还记得|清楚)|你能告诉我|能告诉我|告诉我|请问|麻烦你|"
+        r"帮我(?:回忆一下|回忆|想想|看看)?|回忆一下|我想知道|我想问|想问问)(?P<body>.+)$"
+    ),
+)
+_INTERROGATIVE_FILLER_PATTERN = re.compile(r"(?:究竟|到底)")
+_INTERROGATIVE_TARGET_PATTERN = re.compile(
+    r"(什么|啥|哪些|哪种|哪类|哪儿|哪里|哪个|谁|多少|几个|几月|几号|几点|"
+    r"什么时候|何时|为何|为什么|怎么|如何|怎样)"
+)
 
 
 def normalize_text(text: object) -> str:
@@ -65,6 +78,55 @@ def is_wildcard_query(query_text: str) -> bool:
 
     normalized = normalize_text(query_text)
     return normalized in {"", "*"}
+
+
+def simplify_query_text(query_text: object) -> str:
+    """Strip conversational wrappers from user-memory queries."""
+
+    raw = str(query_text or "").strip()
+    if not raw:
+        return ""
+
+    simplified = raw
+    for _ in range(2):
+        candidate = _QUERY_SUFFIX_PATTERN.sub("", simplified).strip()
+        if candidate:
+            simplified = candidate
+        matched = False
+        for pattern in _CONVERSATIONAL_QUERY_PREFIX_PATTERNS:
+            match = pattern.match(simplified)
+            if not match:
+                continue
+            body = str(match.group("body") or "").strip()
+            if body:
+                simplified = body
+                matched = True
+                break
+        if not matched:
+            break
+
+    simplified = _INTERROGATIVE_FILLER_PATTERN.sub("", simplified).strip()
+    simplified = _QUERY_SUFFIX_PATTERN.sub("", simplified).strip()
+    if normalize_text(simplified) == normalize_text(raw):
+        return ""
+    return simplified
+
+
+def build_intent_stem(query_text: object) -> str:
+    """Remove interrogative targets to expose the retrieval intent stem."""
+
+    base = simplify_query_text(query_text) or str(query_text or "").strip()
+    if not base:
+        return ""
+    stem = _INTERROGATIVE_TARGET_PATTERN.sub("", base)
+    stem = re.sub(r"\s+", " ", stem).strip("，,。！？!?；;:： ")
+    if stem.endswith(("是", "会", "能")):
+        stem = stem[:-1].strip()
+    if len(stem) < 4:
+        return ""
+    if normalize_text(stem) == normalize_text(base):
+        return ""
+    return stem
 
 
 def flatten_payload(value: Any) -> List[str]:
@@ -104,25 +166,32 @@ def extract_query_terms(query_text: str, *, max_terms: int = 12) -> List[str]:
         return []
 
     terms = set()
-    for token in _LATIN_TOKEN_PATTERN.findall(normalized):
-        if token not in STOP_TERMS:
-            terms.add(token)
+    sources = [normalized]
+    for variant in (simplify_query_text(query_text), build_intent_stem(query_text)):
+        candidate = normalize_text(variant)
+        if candidate and candidate not in sources:
+            sources.append(candidate)
 
-    for token in _TOKEN_SPLIT_PATTERN.split(normalized):
-        stripped = token.strip()
-        if len(stripped) >= 2 and stripped not in STOP_TERMS:
-            terms.add(stripped)
+    for source in sources:
+        for token in _LATIN_TOKEN_PATTERN.findall(source):
+            if token not in STOP_TERMS:
+                terms.add(token)
 
-    for fragment in _CJK_FRAGMENT_PATTERN.findall(normalized):
-        if len(fragment) >= 2 and fragment not in STOP_TERMS:
-            terms.add(fragment)
-        for size in (2, 3, 4):
-            if len(fragment) < size:
-                continue
-            for idx in range(len(fragment) - size + 1):
-                gram = fragment[idx : idx + size]
-                if gram and gram not in STOP_TERMS:
-                    terms.add(gram)
+        for token in _TOKEN_SPLIT_PATTERN.split(source):
+            stripped = token.strip()
+            if len(stripped) >= 2 and stripped not in STOP_TERMS:
+                terms.add(stripped)
+
+        for fragment in _CJK_FRAGMENT_PATTERN.findall(source):
+            if len(fragment) >= 2 and fragment not in STOP_TERMS:
+                terms.add(fragment)
+            for size in (2, 3, 4):
+                if len(fragment) < size:
+                    continue
+                for idx in range(len(fragment) - size + 1):
+                    gram = fragment[idx : idx + size]
+                    if gram and gram not in STOP_TERMS:
+                        terms.add(gram)
 
     return sorted(terms, key=lambda item: (-len(item), item))[: max(int(max_terms), 1)]
 
@@ -137,7 +206,13 @@ def build_query_variants(
 
     variants: List[str] = []
     seen = set()
-    for candidate in [query_text, *(extra_queries or [])]:
+    derived_candidates = [
+        query_text,
+        simplify_query_text(query_text),
+        build_intent_stem(query_text),
+        *(extra_queries or []),
+    ]
+    for candidate in derived_candidates:
         value = str(candidate or "").strip()
         normalized = normalize_text(value)
         if not value or normalized in seen:
@@ -212,12 +287,14 @@ __all__ = [
     "LexicalMatch",
     "LexicalSearchEngine",
     "STOP_TERMS",
+    "build_intent_stem",
     "build_query_variants",
     "build_search_document",
     "extract_query_terms",
     "flatten_payload",
     "is_wildcard_query",
     "normalize_text",
+    "simplify_query_text",
 ]
 
 

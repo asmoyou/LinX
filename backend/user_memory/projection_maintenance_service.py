@@ -37,12 +37,18 @@ class ProjectionConsolidationResult:
     scanned_user_profiles: int = 0
     scanned_skill_proposals: int = 0
     scanned_user_entries: int = 0
+    scanned_user_relations: int = 0
     episode_view_upserts: int = 0
     user_status_updates: int = 0
     skill_proposal_status_updates: int = 0
     user_entry_status_updates: int = 0
+    user_view_identity_rewrites: int = 0
+    user_entry_identity_rewrites: int = 0
+    user_relation_status_updates: int = 0
+    user_relation_identity_rewrites: int = 0
     skill_proposal_duplicate_supersedes: int = 0
     user_duplicate_entry_supersedes: int = 0
+    user_duplicate_relation_supersedes: int = 0
     dry_run: bool = True
 
 
@@ -95,6 +101,9 @@ class ProjectionMaintenanceService:
         payload = dict(getattr(row, "entry_data", None) or {})
         if str(getattr(row, "fact_kind", "") or "").strip().lower() != "event":
             return None
+        entry_is_active = bool(payload.get("is_active", True)) and (
+            str(getattr(row, "status", "") or "active").strip().lower() == "active"
+        )
 
         canonical_statement = str(
             payload.get("canonical_statement") or getattr(row, "canonical_text", "") or ""
@@ -128,7 +137,7 @@ class ProjectionMaintenanceService:
             title=title,
             summary=canonical_statement or value or title,
             details=details,
-            status="active",
+            status="active" if entry_is_active else "superseded",
             payload={
                 "key": stable_key,
                 "semantic_key": payload.get("semantic_key"),
@@ -146,7 +155,7 @@ class ProjectionMaintenanceService:
                 "importance": payload.get("importance", getattr(row, "importance", None)),
                 "source_entry_key": stable_key,
                 "source_entry_id": int(getattr(row, "id", 0) or 0),
-                "is_active": str(getattr(row, "status", "") or "active") == "active",
+                "is_active": entry_is_active,
             },
         )
 
@@ -173,51 +182,20 @@ class ProjectionMaintenanceService:
         return self._status_from_review(review_status)
 
     def _entry_signature(self, row: Any) -> Optional[str]:
-        payload = dict(getattr(row, "entry_data", None) or {})
         if str(getattr(row, "entry_type", "") or "").strip().lower() != "user_fact":
             return None
-        identity_signature = str(payload.get("identity_signature") or "").strip()
-        if identity_signature:
-            return identity_signature
-        fact_kind = (
-            str(payload.get("fact_kind") or getattr(row, "fact_kind", "") or "").strip().lower()
+        identity, _payload, _canonical_statement, _value = (
+            self._session_repository.resolve_entry_identity(row=row)
         )
-        canonical = self._normalize_signature_text(
-            payload.get("canonical_statement")
-            or getattr(row, "canonical_text", "")
-            or getattr(row, "summary", "")
-            or payload.get("value")
-            or ""
-        )
-        event_time = str(payload.get("event_time") or getattr(row, "event_time", "") or "").strip()
-        if fact_kind == "event" and canonical:
-            return f"event::{event_time}::{canonical}"
-        if fact_kind in {"preference", "identity", "constraint", "habit"} and canonical:
-            return f"{fact_kind}::{canonical}"
-        key = str(payload.get("key") or getattr(row, "entry_key", "") or "").strip().lower()
-        return key or canonical or None
+        return str(identity.identity_signature or "").strip() or None
 
     def _view_signature(self, row: Any) -> Optional[str]:
-        payload = dict(getattr(row, "view_data", None) or {})
-        view_type = str(getattr(row, "view_type", "") or "").strip().lower()
-        identity_signature = str(payload.get("identity_signature") or "").strip()
-        if identity_signature:
-            return identity_signature
-        canonical = self._normalize_signature_text(
-            payload.get("canonical_statement")
-            or getattr(row, "content", "")
-            or getattr(row, "summary", "")
-            or getattr(row, "title", "")
-            or ""
-        )
-        event_time = str(payload.get("event_time") or "").strip()
-        fact_kind = str(payload.get("fact_kind") or "").strip().lower()
-        if view_type == "episode" and canonical:
-            return f"episode::{event_time}::{canonical}"
-        if view_type == "user_profile" and canonical:
-            return f"profile::{fact_kind or 'generic'}::{canonical}"
-        key = str(getattr(row, "view_key", "") or "").strip().lower()
-        return key or canonical or None
+        identity, _payload, _view_key = self._session_repository.resolve_view_identity(row=row)
+        return str(identity.identity_signature or "").strip() or None
+
+    def _relation_signature(self, row: Any) -> Optional[str]:
+        identity, _payload = self._session_repository.resolve_relation_identity(row=row)
+        return str(identity.identity_signature or "").strip() or None
 
     @staticmethod
     def _normalize_signature_text(value: Any) -> str:
@@ -265,6 +243,43 @@ class ProjectionMaintenanceService:
             event_time=str(payload.get("event_time") or "") or None,
         )
 
+    def _looks_like_question_artifact_entry(self, row: Any) -> bool:
+        payload = dict(getattr(row, "entry_data", None) or {})
+        return self._observation_builder._looks_like_question_artifact(  # noqa: SLF001
+            value=str(payload.get("value") or payload.get("fact_value") or ""),
+            canonical_statement=str(
+                payload.get("canonical_statement") or getattr(row, "canonical_text", "") or ""
+            ),
+        )
+
+    def _looks_like_question_artifact_view(self, row: Any) -> bool:
+        payload = dict(getattr(row, "view_data", None) or {})
+        return self._observation_builder._looks_like_question_artifact(  # noqa: SLF001
+            value=str(
+                payload.get("value") or payload.get("object") or getattr(row, "title", "") or ""
+            ),
+            canonical_statement=str(
+                payload.get("canonical_statement")
+                or getattr(row, "content", "")
+                or getattr(row, "summary", "")
+                or getattr(row, "title", "")
+                or ""
+            ),
+        )
+
+    def _looks_like_ephemeral_relationship_relation(self, row: Any) -> bool:
+        payload = dict(getattr(row, "relation_data", None) or {})
+        return self._observation_builder._looks_like_ephemeral_relationship_signal(  # noqa: SLF001
+            semantic_key=str(payload.get("semantic_key") or getattr(row, "relation_key", "") or ""),
+            predicate=payload.get("predicate") or getattr(row, "predicate", None),
+            value=str(payload.get("object") or getattr(row, "object_text", "") or ""),
+            canonical_statement=str(
+                payload.get("canonical_statement") or getattr(row, "canonical_text", "") or ""
+            ),
+            event_time=str(payload.get("event_time") or getattr(row, "event_time", "") or "")
+            or None,
+        )
+
     def consolidate_projections(
         self,
         *,
@@ -292,6 +307,10 @@ class ProjectionMaintenanceService:
                 desired_status = "superseded"
                 payload["is_active"] = False
                 payload["cleanup_reason"] = "ephemeral_relative_relationship"
+            if self._looks_like_question_artifact_view(row):
+                desired_status = "superseded"
+                payload["is_active"] = False
+                payload["cleanup_reason"] = "interrogative_artifact"
             if str(row.status or "") == desired_status:
                 continue
             result.user_status_updates += 1
@@ -408,6 +427,10 @@ class ProjectionMaintenanceService:
                 desired_status = "superseded"
                 payload["is_active"] = False
                 payload["cleanup_reason"] = "ephemeral_relative_relationship"
+            if self._looks_like_question_artifact_entry(row):
+                desired_status = "superseded"
+                payload["is_active"] = False
+                payload["cleanup_reason"] = "interrogative_artifact"
             if str(getattr(row, "status", "") or "") == desired_status:
                 continue
             result.user_entry_status_updates += 1
@@ -453,6 +476,15 @@ class ProjectionMaintenanceService:
                 source_session_id=getattr(row, "source_session_id", None),
             )
 
+        if not dry_run:
+            user_rows = self._session_repository.list_projections(
+                owner_type="user",
+                owner_id=user_id,
+                projection_type=None,
+                status=None,
+                limit=limit,
+            )
+
         grouped_user_views: Dict[Tuple[str, str], List[Any]] = {}
         for row in user_rows:
             signature = self._view_signature(row)
@@ -461,11 +493,19 @@ class ProjectionMaintenanceService:
             grouped_user_views.setdefault((str(row.owner_id), signature), []).append(row)
 
         for (_owner_id, _signature), rows in grouped_user_views.items():
-            if len(rows) < 2:
-                continue
+            view_identities = {
+                int(getattr(row, "id", 0) or 0): self._session_repository.resolve_view_identity(
+                    row=row
+                )
+                for row in rows
+            }
             rows.sort(
                 key=lambda row: (
                     self._status_rank(getattr(row, "status", None)),
+                    int(
+                        str(getattr(row, "view_key", "") or "")
+                        == str(view_identities[int(getattr(row, "id", 0) or 0)][2] or "")
+                    ),
                     self._coerce_float(
                         dict(getattr(row, "view_data", None) or {}).get("confidence"),
                         default=0.0,
@@ -478,6 +518,25 @@ class ProjectionMaintenanceService:
                 reverse=True,
             )
             canonical = rows[0]
+            canonical_identity, canonical_payload, canonical_view_key = view_identities[
+                int(getattr(canonical, "id", 0) or 0)
+            ]
+            canonical_payload_changed = dict(getattr(canonical, "view_data", None) or {}) != dict(
+                canonical_payload or {}
+            )
+            canonical_key_changed = str(getattr(canonical, "view_key", "") or "") != str(
+                canonical_view_key or ""
+            )
+            if canonical_payload_changed or canonical_key_changed:
+                result.user_view_identity_rewrites += 1
+                if not dry_run:
+                    self._session_repository.update_projection(
+                        int(canonical.id),
+                        projection_key=str(canonical_view_key),
+                        payload=canonical_payload,
+                    )
+                    canonical.view_key = str(canonical_view_key)
+                    canonical.view_data = dict(canonical_payload)
             for duplicate in rows[1:]:
                 if str(getattr(duplicate, "status", "") or "") == "superseded":
                     continue
@@ -508,11 +567,19 @@ class ProjectionMaintenanceService:
             grouped_user_entries.setdefault((str(row.owner_id), signature), []).append(row)
 
         for (_owner_id, _signature), rows in grouped_user_entries.items():
-            if len(rows) < 2:
-                continue
+            entry_identities = {
+                int(getattr(row, "id", 0) or 0): self._session_repository.resolve_entry_identity(
+                    row=row
+                )
+                for row in rows
+            }
             rows.sort(
                 key=lambda row: (
                     self._status_rank(getattr(row, "status", None)),
+                    int(
+                        str(getattr(row, "entry_key", "") or "")
+                        == str(entry_identities[int(getattr(row, "id", 0) or 0)][0].fact_key or "")
+                    ),
                     self._coerce_float(
                         dict(getattr(row, "entry_data", None) or {}).get("confidence"),
                         default=0.0,
@@ -525,6 +592,25 @@ class ProjectionMaintenanceService:
                 reverse=True,
             )
             canonical = rows[0]
+            canonical_identity, canonical_payload, _canonical_statement, _value = entry_identities[
+                int(getattr(canonical, "id", 0) or 0)
+            ]
+            canonical_payload_changed = dict(getattr(canonical, "entry_data", None) or {}) != dict(
+                canonical_payload or {}
+            )
+            canonical_key_changed = str(getattr(canonical, "entry_key", "") or "") != str(
+                canonical_identity.fact_key or ""
+            )
+            if canonical_payload_changed or canonical_key_changed:
+                result.user_entry_identity_rewrites += 1
+                if not dry_run:
+                    self._session_repository.update_entry(
+                        int(canonical.id),
+                        entry_key=str(canonical_identity.fact_key),
+                        payload=canonical_payload,
+                    )
+                    canonical.entry_key = str(canonical_identity.fact_key)
+                    canonical.entry_data = dict(canonical_payload)
             for duplicate in rows[1:]:
                 if str(getattr(duplicate, "status", "") or "") == "superseded":
                     continue
@@ -542,6 +628,101 @@ class ProjectionMaintenanceService:
                     }
                 )
                 self._session_repository.update_entry(
+                    int(duplicate.id),
+                    status="superseded",
+                    payload=payload,
+                )
+
+        relation_rows = self._session_repository.list_relations(
+            owner_id=user_id,
+            predicate=None,
+            status=None,
+            limit=limit,
+        )
+        result.scanned_user_relations = len(relation_rows)
+        for row in relation_rows:
+            if not self._looks_like_ephemeral_relationship_relation(row):
+                continue
+            result.user_relation_status_updates += 1
+            if dry_run:
+                continue
+            payload = dict(getattr(row, "relation_data", None) or {})
+            payload["cleanup_reason"] = "ephemeral_relative_relationship"
+            self._session_repository.update_relation(
+                int(row.id),
+                status="superseded",
+                payload=payload,
+            )
+            row.status = "superseded"
+            row.relation_data = payload
+
+        grouped_relations: Dict[Tuple[str, str], List[Any]] = {}
+        for row in relation_rows:
+            signature = self._relation_signature(row)
+            if not signature:
+                continue
+            grouped_relations.setdefault((str(row.user_id), signature), []).append(row)
+
+        for (_owner_id, _signature), rows in grouped_relations.items():
+            relation_identities = {
+                int(getattr(row, "id", 0) or 0): self._session_repository.resolve_relation_identity(
+                    row=row
+                )
+                for row in rows
+            }
+            rows.sort(
+                key=lambda row: (
+                    self._status_rank(getattr(row, "status", None)),
+                    int(
+                        str(getattr(row, "relation_key", "") or "")
+                        == str(
+                            relation_identities[int(getattr(row, "id", 0) or 0)][0].fact_key or ""
+                        )
+                    ),
+                    self._coerce_float(getattr(row, "confidence", None), default=0.0),
+                    getattr(row, "updated_at", None)
+                    or getattr(row, "created_at", None)
+                    or datetime.min,
+                    int(getattr(row, "id", 0) or 0),
+                ),
+                reverse=True,
+            )
+            canonical = rows[0]
+            canonical_identity, canonical_payload = relation_identities[
+                int(getattr(canonical, "id", 0) or 0)
+            ]
+            canonical_payload_changed = dict(
+                getattr(canonical, "relation_data", None) or {}
+            ) != dict(canonical_payload or {})
+            canonical_key_changed = str(getattr(canonical, "relation_key", "") or "") != str(
+                canonical_identity.fact_key or ""
+            )
+            if canonical_payload_changed or canonical_key_changed:
+                result.user_relation_identity_rewrites += 1
+                if not dry_run:
+                    self._session_repository.update_relation(
+                        int(canonical.id),
+                        relation_key=str(canonical_identity.fact_key),
+                        payload=canonical_payload,
+                    )
+                    canonical.relation_key = str(canonical_identity.fact_key)
+                    canonical.relation_data = dict(canonical_payload)
+            for duplicate in rows[1:]:
+                if str(getattr(duplicate, "status", "") or "") == "superseded":
+                    continue
+                result.user_duplicate_relation_supersedes += 1
+                if dry_run:
+                    continue
+                payload = dict(getattr(duplicate, "relation_data", None) or {})
+                payload.update(
+                    {
+                        "cleanup_reason": "duplicate_relation",
+                        "superseded_by_relation_id": int(canonical.id),
+                        "superseded_by_key": str(canonical.relation_key),
+                        "superseded_at": _utc_now_iso(),
+                    }
+                )
+                self._session_repository.update_relation(
                     int(duplicate.id),
                     status="superseded",
                     payload=payload,

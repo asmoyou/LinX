@@ -20,6 +20,7 @@ from database.models import (
     UserMemoryView,
 )
 from shared.datetime_utils import utcnow
+from user_memory.fact_identity import build_user_fact_identity, build_user_memory_view_key
 from user_memory.indexing_jobs import enqueue_user_memory_upsert_job
 from user_memory.vector_documents import parse_event_time_range
 from user_memory.vector_index import (
@@ -173,6 +174,254 @@ class SessionLedgerRepository:
         if normalized == "rejected":
             return "rejected"
         return "pending"
+
+    @staticmethod
+    def _first_text(*values: Any) -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _string_list(value: Any) -> List[str]:
+        return [str(item).strip() for item in list(value or []) if str(item).strip()]
+
+    @classmethod
+    def resolve_entry_identity(
+        cls,
+        *,
+        entry: Optional[MemoryEntryData] = None,
+        row: Optional[UserMemoryEntry] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[Any, Dict[str, Any], str, str]:
+        source_payload = dict(
+            payload
+            or (dict(entry.payload or {}) if entry is not None else {})
+            or (dict(row.entry_data or {}) if row is not None else {})
+        )
+        fact_kind = cls._first_text(
+            source_payload.get("fact_kind"),
+            getattr(row, "fact_kind", None),
+            "preference",
+        )
+        raw_key = cls._first_text(
+            source_payload.get("semantic_key"),
+            source_payload.get("key"),
+            source_payload.get("fact_key"),
+            getattr(entry, "entry_key", None),
+            getattr(row, "entry_key", None),
+        )
+        predicate = cls._first_text(
+            source_payload.get("predicate"), getattr(row, "predicate", None)
+        )
+        obj = cls._first_text(source_payload.get("object"), getattr(row, "object_text", None))
+        persons = cls._string_list(source_payload.get("persons") or getattr(row, "persons", None))
+        entities = cls._string_list(
+            source_payload.get("entities") or getattr(row, "entities", None)
+        )
+        event_time = cls._first_text(
+            source_payload.get("event_time"),
+            getattr(row, "event_time", None),
+        )
+        location = cls._first_text(
+            source_payload.get("location"),
+            getattr(row, "location", None),
+        )
+        topic = cls._first_text(source_payload.get("topic"), getattr(row, "topic", None))
+        canonical_statement = cls._first_text(
+            source_payload.get("canonical_statement"),
+            getattr(entry, "summary", None),
+            getattr(row, "summary", None),
+            getattr(row, "canonical_text", None),
+        )
+        value = cls._first_text(
+            source_payload.get("value"),
+            source_payload.get("fact_value"),
+            obj,
+            getattr(entry, "summary", None),
+            getattr(row, "summary", None),
+            canonical_statement,
+        )
+        identity = build_user_fact_identity(
+            fact_kind=fact_kind,
+            raw_key=raw_key,
+            value=value,
+            canonical_statement=canonical_statement or value,
+            predicate=predicate or None,
+            obj=obj or None,
+            persons=persons,
+            entities=entities,
+            event_time=event_time or None,
+            location=location or None,
+            topic=topic or None,
+        )
+        source_payload["key"] = identity.fact_key
+        source_payload["fact_key"] = identity.fact_key
+        source_payload["semantic_key"] = identity.semantic_key
+        source_payload["identity_signature"] = identity.identity_signature
+        source_payload["fact_kind"] = identity.fact_kind
+        if canonical_statement:
+            source_payload["canonical_statement"] = canonical_statement
+        if value:
+            source_payload["value"] = value
+        if predicate:
+            source_payload["predicate"] = predicate
+        if obj:
+            source_payload["object"] = obj
+        if persons:
+            source_payload["persons"] = persons
+        if entities:
+            source_payload["entities"] = entities
+        if event_time:
+            source_payload["event_time"] = event_time
+        if location:
+            source_payload["location"] = location
+        if topic:
+            source_payload["topic"] = topic
+        return identity, source_payload, canonical_statement, value
+
+    @classmethod
+    def resolve_view_identity(
+        cls,
+        *,
+        projection: Optional[MemoryProjectionData] = None,
+        row: Optional[UserMemoryView] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[Any, Dict[str, Any], str]:
+        source_payload = dict(
+            payload
+            or (dict(projection.payload or {}) if projection is not None else {})
+            or (dict(row.view_data or {}) if row is not None else {})
+        )
+        view_type = cls._first_text(
+            getattr(projection, "projection_type", None),
+            getattr(row, "view_type", None),
+            "user_profile",
+        )
+        fact_kind = cls._first_text(
+            source_payload.get("fact_kind"),
+            "event" if str(view_type).strip().lower() == "episode" else "preference",
+        )
+        canonical_statement = cls._first_text(
+            source_payload.get("canonical_statement"),
+            getattr(projection, "summary", None),
+            getattr(row, "content", None),
+            getattr(row, "title", None),
+        )
+        value = cls._first_text(
+            source_payload.get("value"),
+            source_payload.get("object"),
+            getattr(projection, "summary", None),
+            getattr(projection, "title", None),
+            getattr(row, "content", None),
+            getattr(row, "title", None),
+            canonical_statement,
+        )
+        identity, normalized_payload, _canonical_statement, _value = cls.resolve_entry_identity(
+            payload={
+                **source_payload,
+                "fact_kind": fact_kind,
+                "canonical_statement": canonical_statement,
+                "value": value,
+            }
+        )
+        view_key = build_user_memory_view_key(
+            view_type=view_type,
+            stable_key=identity.fact_key,
+            canonical_statement=canonical_statement or value,
+            event_time=normalized_payload.get("event_time"),
+            value=value,
+        )
+        normalized_payload["key"] = identity.fact_key
+        normalized_payload["fact_key"] = identity.fact_key
+        normalized_payload["semantic_key"] = identity.semantic_key
+        normalized_payload["identity_signature"] = identity.identity_signature
+        if str(view_type).strip().lower() == "episode":
+            normalized_payload["source_entry_key"] = identity.fact_key
+        return identity, normalized_payload, view_key
+
+    @classmethod
+    def resolve_relation_identity(
+        cls,
+        *,
+        relation: Optional[MemoryRelationData] = None,
+        row: Optional[UserMemoryRelation] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[Any, Dict[str, Any]]:
+        source_payload = dict(
+            payload
+            or (dict(relation.payload or {}) if relation is not None else {})
+            or (dict(row.relation_data or {}) if row is not None else {})
+        )
+        predicate = cls._first_text(
+            getattr(relation, "predicate", None),
+            source_payload.get("predicate"),
+            getattr(row, "predicate", None),
+        )
+        obj = cls._first_text(
+            getattr(relation, "object_text", None),
+            source_payload.get("object"),
+            getattr(row, "object_text", None),
+        )
+        canonical_statement = cls._first_text(
+            getattr(relation, "canonical_text", None),
+            source_payload.get("canonical_statement"),
+            getattr(row, "canonical_text", None),
+        )
+        persons = cls._string_list(source_payload.get("persons") or getattr(row, "persons", None))
+        entities = cls._string_list(
+            source_payload.get("entities") or getattr(row, "entities", None)
+        )
+        event_time = cls._first_text(
+            getattr(relation, "event_time", None),
+            source_payload.get("event_time"),
+            getattr(row, "event_time", None),
+        )
+        location = cls._first_text(
+            getattr(relation, "location", None),
+            source_payload.get("location"),
+            getattr(row, "location", None),
+        )
+        topic = cls._first_text(source_payload.get("topic"))
+        raw_key = cls._first_text(
+            source_payload.get("semantic_key"),
+            source_payload.get("key"),
+            getattr(relation, "relation_key", None),
+            getattr(row, "relation_key", None),
+        )
+        identity = build_user_fact_identity(
+            fact_kind="relationship",
+            raw_key=raw_key,
+            value=obj or canonical_statement,
+            canonical_statement=canonical_statement or obj,
+            predicate=predicate or None,
+            obj=obj or None,
+            persons=persons,
+            entities=entities,
+            event_time=event_time or None,
+            location=location or None,
+            topic=topic or None,
+        )
+        source_payload["key"] = identity.fact_key
+        source_payload["semantic_key"] = identity.semantic_key
+        source_payload["identity_signature"] = identity.identity_signature
+        source_payload["fact_kind"] = "relationship"
+        source_payload["predicate"] = predicate
+        source_payload["object"] = obj
+        if canonical_statement:
+            source_payload["canonical_statement"] = canonical_statement
+        if persons:
+            source_payload["persons"] = persons
+        if entities:
+            source_payload["entities"] = entities
+        if event_time:
+            source_payload["event_time"] = event_time
+        if location:
+            source_payload["location"] = location
+        if topic:
+            source_payload["topic"] = topic
+        return identity, source_payload
 
     @staticmethod
     def _apply_view_fields(
@@ -519,6 +768,41 @@ class SessionLedgerRepository:
             .one_or_none()
         )
 
+    @classmethod
+    def _find_user_view_row(
+        cls,
+        db,
+        *,
+        projection: MemoryProjectionData,
+        payload: Dict[str, Any],
+        view_key: str,
+    ) -> Optional[UserMemoryView]:
+        existing = cls._get_user_view_row(
+            db,
+            user_id=str(projection.owner_id),
+            view_type=str(projection.projection_type),
+            view_key=str(view_key),
+        )
+        if existing is not None:
+            return existing
+
+        identity_signature = str(payload.get("identity_signature") or "").strip()
+        view_type = str(projection.projection_type or "").strip()
+        if identity_signature:
+            existing = (
+                db.query(UserMemoryView)
+                .filter(
+                    UserMemoryView.user_id == str(projection.owner_id),
+                    UserMemoryView.view_type == view_type,
+                    UserMemoryView.view_data["identity_signature"].astext == identity_signature,
+                )
+                .order_by(UserMemoryView.updated_at.desc(), UserMemoryView.id.desc())
+                .first()
+            )
+            if existing is not None:
+                return existing
+        return None
+
     @staticmethod
     def _get_skill_proposal_row(
         db,
@@ -550,6 +834,38 @@ class SessionLedgerRepository:
             )
             .one_or_none()
         )
+
+    @classmethod
+    def _find_entry_row(
+        cls,
+        db,
+        *,
+        entry: MemoryEntryData,
+        payload: Dict[str, Any],
+    ) -> Optional[UserMemoryEntry]:
+        entry_key = str(entry.entry_key or payload.get("key") or "").strip()
+        existing = cls._get_entry_row(
+            db,
+            user_id=str(entry.owner_id),
+            entry_key=entry_key,
+        )
+        if existing is not None:
+            return existing
+
+        identity_signature = str(payload.get("identity_signature") or "").strip()
+        if identity_signature:
+            existing = (
+                db.query(UserMemoryEntry)
+                .filter(
+                    UserMemoryEntry.user_id == str(entry.owner_id),
+                    UserMemoryEntry.entry_data["identity_signature"].astext == identity_signature,
+                )
+                .order_by(UserMemoryEntry.updated_at.desc(), UserMemoryEntry.id.desc())
+                .first()
+            )
+            if existing is not None:
+                return existing
+        return None
 
     @staticmethod
     def _get_link_row(
@@ -587,6 +903,39 @@ class SessionLedgerRepository:
             .one_or_none()
         )
 
+    @classmethod
+    def _find_relation_row(
+        cls,
+        db,
+        *,
+        relation: MemoryRelationData,
+        payload: Dict[str, Any],
+    ) -> Optional[UserMemoryRelation]:
+        relation_key = str(relation.relation_key or payload.get("key") or "").strip()
+        existing = cls._get_relation_row(
+            db,
+            user_id=str(relation.owner_id),
+            relation_key=relation_key,
+        )
+        if existing is not None:
+            return existing
+
+        identity_signature = str(payload.get("identity_signature") or "").strip()
+        if identity_signature:
+            existing = (
+                db.query(UserMemoryRelation)
+                .filter(
+                    UserMemoryRelation.user_id == str(relation.owner_id),
+                    UserMemoryRelation.relation_data["identity_signature"].astext
+                    == identity_signature,
+                )
+                .order_by(UserMemoryRelation.updated_at.desc(), UserMemoryRelation.id.desc())
+                .first()
+            )
+            if existing is not None:
+                return existing
+        return None
+
     def _upsert_entry_row(
         self,
         db,
@@ -596,18 +945,17 @@ class SessionLedgerRepository:
         collection_name: str,
         embedding_signature: str,
     ) -> UserMemoryEntry:
-        existing = self._get_entry_row(
-            db,
-            user_id=str(entry.owner_id),
-            entry_key=str(entry.entry_key),
-        )
+        identity, payload, _canonical_statement, _value = self.resolve_entry_identity(entry=entry)
+        entry.entry_key = identity.fact_key
+        entry.payload = payload
+        existing = self._find_entry_row(db, entry=entry, payload=payload)
         if existing is None:
             existing = UserMemoryEntry()
             db.add(existing)
         self._apply_entry_fields(
             existing,
             entry=entry,
-            payload=dict(entry.payload or {}),
+            payload=payload,
             source_session_ledger_id=source_session_ledger_id,
             collection_name=collection_name,
         )
@@ -627,11 +975,10 @@ class SessionLedgerRepository:
         *,
         relation: MemoryRelationData,
     ) -> UserMemoryRelation:
-        existing = self._get_relation_row(
-            db,
-            user_id=str(relation.owner_id),
-            relation_key=str(relation.relation_key),
-        )
+        identity, payload = self.resolve_relation_identity(relation=relation)
+        relation.relation_key = identity.fact_key
+        relation.payload = payload
+        existing = self._find_relation_row(db, relation=relation, payload=payload)
         if existing is None:
             existing = UserMemoryRelation()
             db.add(existing)
@@ -644,14 +991,20 @@ class SessionLedgerRepository:
         db,
         *,
         user_id: str,
-        relation_key: str,
+        relation_key: Optional[str] = None,
+        source_entry_id: Optional[int] = None,
     ) -> None:
+        filters = []
+        if relation_key:
+            filters.append(UserMemoryRelation.relation_key == str(relation_key))
+        if source_entry_id is not None:
+            filters.append(UserMemoryRelation.source_entry_id == int(source_entry_id))
+        if not filters:
+            return
         (
             db.query(UserMemoryRelation)
-            .filter(
-                UserMemoryRelation.user_id == str(user_id),
-                UserMemoryRelation.relation_key == str(relation_key),
-            )
+            .filter(UserMemoryRelation.user_id == str(user_id))
+            .filter(or_(*filters))
             .delete(synchronize_session=False)
         )
 
@@ -663,11 +1016,14 @@ class SessionLedgerRepository:
         collection_name: str,
         embedding_signature: str,
     ) -> UserMemoryView:
-        existing = self._get_user_view_row(
+        _identity, payload, view_key = self.resolve_view_identity(projection=projection)
+        projection.projection_key = view_key
+        projection.payload = payload
+        existing = self._find_user_view_row(
             db,
-            user_id=str(projection.owner_id),
-            view_type=str(projection.projection_type),
-            view_key=str(projection.projection_key),
+            projection=projection,
+            payload=payload,
+            view_key=view_key,
         )
         if existing is None:
             existing = UserMemoryView()
@@ -675,7 +1031,7 @@ class SessionLedgerRepository:
         self._apply_view_fields(
             existing,
             projection=projection,
-            payload=dict(projection.payload or {}),
+            payload=payload,
             collection_name=collection_name,
         )
         db.flush()
@@ -819,7 +1175,7 @@ class SessionLedgerRepository:
                     self._delete_relation_row(
                         db,
                         user_id=str(entry_row.user_id),
-                        relation_key=str(entry_row.entry_key),
+                        source_entry_id=int(entry_row.id),
                     )
 
             for projection in projections:
@@ -907,9 +1263,7 @@ class SessionLedgerRepository:
             if relation is not None:
                 self._upsert_relation_row(db, relation=relation)
             else:
-                self._delete_relation_row(
-                    db, user_id=str(row.user_id), relation_key=str(row.entry_key)
-                )
+                self._delete_relation_row(db, user_id=str(row.user_id), source_entry_id=int(row.id))
             return int(row.id)
 
     def create_link(self, *, link: MemoryLinkData, user_id: Optional[str] = None) -> int:
@@ -995,6 +1349,7 @@ class SessionLedgerRepository:
         summary: Optional[str] = None,
         details: Optional[str] = None,
         status: Optional[str] = None,
+        projection_key: Optional[str] = None,
         payload: Optional[Dict[str, Any]] = None,
         source_session_id: Optional[int] = None,
         source_observation_id: Optional[int] = None,
@@ -1010,6 +1365,8 @@ class SessionLedgerRepository:
                 .one_or_none()
             )
             if row is not None:
+                if projection_key is not None:
+                    row.view_key = str(projection_key)
                 if title is not None:
                     row.title = str(title)
                 if summary is not None:
@@ -1056,6 +1413,7 @@ class SessionLedgerRepository:
         self,
         entry_id: int,
         *,
+        entry_key: Optional[str] = None,
         canonical_text: Optional[str] = None,
         summary: Optional[str] = None,
         details: Optional[str] = None,
@@ -1076,6 +1434,8 @@ class SessionLedgerRepository:
             )
             if row is None:
                 return None
+            if entry_key is not None:
+                row.entry_key = str(entry_key)
             if canonical_text is not None:
                 row.canonical_text = str(canonical_text)
             if summary is not None:
@@ -1109,9 +1469,7 @@ class SessionLedgerRepository:
             if relation is not None:
                 self._upsert_relation_row(db, relation=relation)
             else:
-                self._delete_relation_row(
-                    db, user_id=str(row.user_id), relation_key=str(row.entry_key)
-                )
+                self._delete_relation_row(db, user_id=str(row.user_id), source_entry_id=int(row.id))
             self._enqueue_vector_job(
                 db,
                 row=row,
@@ -1119,6 +1477,61 @@ class SessionLedgerRepository:
                 collection_name=collection_name,
                 embedding_signature=embedding_signature,
             )
+            return row
+
+    def update_relation(
+        self,
+        relation_id: int,
+        *,
+        relation_key: Optional[str] = None,
+        predicate: Optional[str] = None,
+        canonical_text: Optional[str] = None,
+        confidence: Optional[float] = None,
+        importance: Optional[float] = None,
+        status: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        source_entry_id: Optional[int] = None,
+        source_session_id: Optional[int] = None,
+    ) -> Optional[UserMemoryRelation]:
+        """Update selected user-memory relation fields."""
+
+        with get_db_session() as db:
+            row = (
+                db.query(UserMemoryRelation)
+                .filter(UserMemoryRelation.id == int(relation_id))
+                .one_or_none()
+            )
+            if row is None:
+                return None
+            if relation_key is not None:
+                row.relation_key = str(relation_key)
+            if predicate is not None:
+                row.predicate = str(predicate)
+            if canonical_text is not None:
+                row.canonical_text = str(canonical_text)
+            if confidence is not None:
+                row.confidence = float(confidence)
+            if importance is not None:
+                row.importance = float(importance)
+            if status is not None:
+                row.status = str(status)
+            if payload is not None:
+                row.relation_data = dict(payload)
+                row.predicate = str(payload.get("predicate") or row.predicate or "")
+                row.object_text = str(payload.get("object") or row.object_text or "")
+                row.canonical_text = str(
+                    payload.get("canonical_statement") or row.canonical_text or ""
+                )
+                row.event_time = str(payload.get("event_time") or "") or None
+                row.event_time_start, row.event_time_end = parse_event_time_range(row.event_time)
+                row.location = str(payload.get("location") or "") or None
+                row.persons = list(payload.get("persons") or [])
+                row.entities = list(payload.get("entities") or [])
+            if source_entry_id is not None:
+                row.source_entry_id = int(source_entry_id)
+            if source_session_id is not None:
+                row.source_session_ledger_id = int(source_session_id)
+            db.flush()
             return row
 
     def list_projections(

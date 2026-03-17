@@ -61,3 +61,43 @@ def test_api_full_planner_merges_llm_plan_when_available() -> None:
     assert "spouse" in plan.structured_filters.predicates
     assert "王敏" in plan.structured_filters.persons
     assert len(plan.query_variants) >= 2
+
+
+def test_runtime_light_planner_adds_simplified_variants_for_conversational_questions() -> None:
+    planner = UserMemoryQueryPlanner()
+
+    plan = planner.plan(query_text="你知道我喜欢吃什么吗？", planner_mode="runtime_light")
+
+    assert plan.query_variants[0] == "你知道我喜欢吃什么吗？"
+    assert "我喜欢吃什么" in plan.query_variants
+    assert "我喜欢吃" in plan.query_variants
+
+
+def test_runtime_light_planner_extracts_person_and_relationship_from_conversational_query() -> None:
+    planner = UserMemoryQueryPlanner()
+
+    plan = planner.plan(query_text="那你知道我和小陈的关系吗？", planner_mode="runtime_light")
+
+    assert "relationship" in plan.structured_filters.fact_kinds
+    assert "小陈" in plan.structured_filters.persons
+
+
+def test_runtime_light_planner_extracts_relative_day_for_schedule_queries() -> None:
+    planner = UserMemoryQueryPlanner()
+
+    plan = planner.plan(query_text="我今天有哪些行程安排？", planner_mode="runtime_light")
+
+    assert "event" in plan.structured_filters.fact_kinds
+    assert "episode" in plan.structured_filters.view_types
+    assert plan.structured_filters.time_range.start is not None
+    assert plan.structured_filters.time_range.end is not None
+    assert plan.structured_filters.allow_history is False
+
+
+def test_runtime_light_planner_only_enables_history_for_explicit_history_queries() -> None:
+    planner = UserMemoryQueryPlanner()
+
+    plan = planner.plan(query_text="我以前什么时候搬到杭州？", planner_mode="runtime_light")
+
+    assert "event" in plan.structured_filters.fact_kinds
+    assert plan.structured_filters.allow_history is True

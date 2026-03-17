@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 from user_memory.hybrid_retriever import UserMemoryHybridRetriever
 from user_memory.items import RetrievedMemoryItem
+from user_memory.query_planner import QueryPlan
+from user_memory.structured_search import StructuredQueryFilters, StructuredTimeRange
 
 
 def _item(item_id: int, content: str, score: float, *, entry: bool = True) -> RetrievedMemoryItem:
@@ -194,3 +196,128 @@ def test_collapse_duplicate_relation_and_entry_prefers_relation_surface_when_ide
     assert len(collapsed) == 1
     assert collapsed[0].metadata["memory_source"] == "relation"
     assert collapsed[0].similarity_score == 0.79
+
+
+def test_apply_rerank_preserves_strong_structured_hits_when_model_score_is_tiny() -> None:
+    retriever = UserMemoryHybridRetriever()
+    candidate = _item(16, "2026年3月17日用户将与小陈一起去吃汉堡", 0.62, entry=True)
+    candidate.metadata.update(
+        {
+            "search_methods": ["structured"],
+            "fact_kind": "event",
+            "_structured_score": 0.96,
+        }
+    )
+    other = _item(17, "用户喜欢喝可乐", 0.41, entry=True)
+    other.metadata.update({"search_methods": ["lexical"], "_lexical_score": 0.41})
+
+    with patch.object(retriever, "_call_rerank_api", return_value=[(0, 0.05), (1, 0.6)]):
+        reranked, model_applied = retriever._apply_rerank(
+            query_text="我今天有哪些行程安排？",
+            query_terms=["今天", "行程", "安排"],
+            results=[candidate, other],
+            top_k=5,
+        )
+
+    assert model_applied is True
+    reranked_by_id = {item.id: item for item in reranked}
+    assert reranked_by_id[16].similarity_score >= 0.3
+
+
+def test_apply_rerank_does_not_preserve_generic_profile_structured_floor() -> None:
+    retriever = UserMemoryHybridRetriever()
+    generic = _item(22, "用户喜欢喝可乐", 0.794, entry=False)
+    generic.metadata.update(
+        {
+            "search_methods": ["structured"],
+            "view_type": "user_profile",
+            "fact_kind": "preference",
+            "_structured_score": 0.794,
+        }
+    )
+    specific = _item(23, "用户喜欢吃汉堡", 0.99, entry=False)
+    specific.metadata.update(
+        {
+            "search_methods": ["lexical", "structured"],
+            "view_type": "user_profile",
+            "fact_kind": "preference",
+            "_structured_score": 0.794,
+        }
+    )
+
+    reranked, model_applied = retriever._apply_rerank(  # noqa: SLF001
+        query_text="你知道我喜欢吃什么吗？",
+        query_terms=["我喜欢吃什么", "我喜欢吃", "吃什么"],
+        results=[generic, specific],
+        top_k=5,
+        structured_filters=StructuredQueryFilters(
+            fact_kinds=["preference"],
+            view_types=["user_profile"],
+        ),
+    )
+
+    assert model_applied is True
+    assert [item.id for item in reranked][:1] == [23]
+    reranked_by_id = {item.id: item for item in reranked}
+    assert reranked_by_id[22].similarity_score < 0.6
+
+
+def test_apply_temporal_filters_drops_non_overlapping_event_candidates() -> None:
+    retriever = UserMemoryHybridRetriever()
+    plan = QueryPlan(
+        planner_mode="runtime_light",
+        query_variants=["我今天有哪些行程安排？"],
+        keyword_terms=["今天", "行程", "安排"],
+        structured_filters=StructuredQueryFilters(
+            fact_kinds=["event"],
+            view_types=["episode"],
+            time_range=StructuredTimeRange(
+                start=datetime(2026, 3, 17, 0, 0, 0, tzinfo=timezone.utc),
+                end=datetime(2026, 3, 17, 23, 59, 59, tzinfo=timezone.utc),
+            ),
+            allow_history=False,
+        ),
+        reflection_worthwhile=False,
+        vector_top_k=40,
+        lexical_top_k=25,
+        structured_top_k=15,
+        rerank_top_k=20,
+    )
+    future_episode = _item(18, "2026年3月18日用户将与小陈一起去吃汉堡", 0.72, entry=False)
+    future_episode.metadata.update(
+        {
+            "view_type": "episode",
+            "fact_kind": "event",
+            "event_time": "2026-03-18",
+        }
+    )
+    today_episode = _item(19, "2026年3月17日用户将与小陈一起去吃汉堡", 0.61, entry=False)
+    today_episode.metadata.update(
+        {
+            "view_type": "episode",
+            "fact_kind": "event",
+            "event_time": "2026-03-17",
+        }
+    )
+
+    filtered = retriever._apply_temporal_filters(  # noqa: SLF001
+        plan=plan,
+        results=[future_episode, today_episode],
+    )
+
+    assert [item.id for item in filtered] == [19]
+
+
+def test_heuristic_rerank_prefers_specific_preference_matches_over_generic_ones() -> None:
+    retriever = UserMemoryHybridRetriever()
+    food = _item(20, "用户喜欢吃汉堡", 0.62, entry=False)
+    food.metadata.update({"search_methods": ["semantic", "lexical"], "_semantic_score": 0.62})
+    generic = _item(21, "用户喜欢喝可乐", 0.83, entry=False)
+    generic.metadata.update({"search_methods": ["semantic", "lexical"], "_semantic_score": 0.83})
+
+    reranked = retriever._heuristic_rerank(  # noqa: SLF001
+        query_terms=["喜欢吃什么", "喜欢吃", "吃什么", "喜欢"],
+        results=[generic, food],
+    )
+
+    assert [item.id for item in reranked][:1] == [20]

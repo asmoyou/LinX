@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 
 import requests
 
+from llm_providers.openai_compatible import build_api_url
 from shared.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -505,7 +506,7 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
             raise ValueError("Text cannot be empty")
 
         try:
-            url = f"{self._base_url}/v1/embeddings"
+            url = build_api_url(self._base_url, "/embeddings")
             payload = {"model": self._model, "input": text}
             headers = {"Content-Type": "application/json"}
             if self._api_key:
@@ -650,7 +651,7 @@ class VLLMEmbeddingService(EmbeddingServiceInterface):
 
     def _request_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
         """Submit one embedding batch request and parse vectors."""
-        url = f"{self._base_url}/v1/embeddings"
+        url = build_api_url(self._base_url, "/embeddings")
         payload = {"model": self._model, "input": texts}
         headers = {"Content-Type": "application/json"}
         if self._api_key:

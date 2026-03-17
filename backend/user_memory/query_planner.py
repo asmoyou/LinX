@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence
 
 import requests
@@ -37,9 +38,51 @@ _PROFILE_CUES = {
     "language",
     "profile",
 }
-_EPISODE_CUES = {"什么时候", "何时", "哪年", "哪月", "哪天", "经历", "event", "episode", "when"}
-_RELATIONSHIP_CUES = {"配偶", "妻子", "老公", "丈夫", "spouse", "wife", "husband", "relationship"}
-_EVENT_CUES = {"搬家", "搬到", "去了", "move", "moved", "event", "经历", "何时", "什么时候"}
+_EPISODE_CUES = {
+    "什么时候",
+    "何时",
+    "哪年",
+    "哪月",
+    "哪天",
+    "经历",
+    "event",
+    "episode",
+    "when",
+    "行程",
+    "安排",
+    "计划",
+    "日程",
+    "出行",
+    "出去",
+}
+_RELATIONSHIP_CUES = {
+    "配偶",
+    "妻子",
+    "老公",
+    "丈夫",
+    "spouse",
+    "wife",
+    "husband",
+    "relationship",
+    "关系",
+}
+_EVENT_CUES = {
+    "搬家",
+    "搬到",
+    "去了",
+    "move",
+    "moved",
+    "event",
+    "经历",
+    "何时",
+    "什么时候",
+    "行程",
+    "安排",
+    "计划",
+    "日程",
+    "出去",
+    "外出",
+}
 _RELATIONSHIP_PREDICATE_CUES = {
     "配偶": "spouse",
     "妻子": "spouse",
@@ -68,6 +111,23 @@ _LOCATION_PATTERN = re.compile(r"(?:在|到|去|搬到)([\u4e00-\u9fffA-Za-z0-9_
 _DATE_FRAGMENT_PATTERN = re.compile(
     r"(\d{4}年\d{1,2}月\d{1,2}日?|\d{4}年\d{1,2}月|\d{4}年|\d{4}-\d{1,2}-\d{1,2}|\d{4}-\d{1,2}|\d{4})"
 )
+_PERSON_PATTERNS = (
+    re.compile(
+        r"(?:和|跟|与)(?P<name>小[\u4e00-\u9fff]{1,2}|[\u4e00-\u9fff]{2,4})(?:的|一起|去|关系|吃|聊|见|外出|出门|$)"
+    ),
+    re.compile(r"(?P<name>小[\u4e00-\u9fff]{1,2}|[\u4e00-\u9fff]{2,4})的关系"),
+)
+_RELATIVE_DAY_OFFSETS = {
+    "今天": 0,
+    "今日": 0,
+    "明天": 1,
+    "明晚": 1,
+    "明早": 1,
+    "后天": 2,
+    "昨天": -1,
+    "前天": -2,
+}
+_EXPLICIT_HISTORY_CUES = ("以前", "之前", "过去", "history", "曾经")
 
 
 @dataclass(frozen=True)
@@ -112,6 +172,52 @@ class UserMemoryQueryPlanner:
             "rerank_top_k": 30,
         }
 
+    @staticmethod
+    def _extract_persons(query_text: str) -> List[str]:
+        persons: List[str] = []
+        for pattern in _PERSON_PATTERNS:
+            for match in pattern.finditer(query_text or ""):
+                name = str(match.group("name") or "").strip()
+                name = re.sub(r"(的|一起|关系|去|吃|聊|见|外出|出门)$", "", name).strip()
+                trailing_match = re.search(
+                    r"(小[\u4e00-\u9fff]{1,2}|[\u4e00-\u9fff]{2,4})$",
+                    name,
+                )
+                if trailing_match:
+                    name = trailing_match.group(1).strip()
+                if not name:
+                    continue
+                if name not in persons:
+                    persons.append(name)
+        return persons[:4]
+
+    @staticmethod
+    def _relative_time_range(query_text: str) -> StructuredTimeRange:
+        now = datetime.now().astimezone()
+        for cue, offset in _RELATIVE_DAY_OFFSETS.items():
+            if cue not in query_text:
+                continue
+            target = (now + timedelta(days=offset)).date()
+            start = datetime.combine(target, datetime.min.time(), tzinfo=now.tzinfo)
+            end = start + timedelta(days=1)
+            return StructuredTimeRange(start=start, end=end)
+        return StructuredTimeRange()
+
+    @staticmethod
+    def _should_allow_history(
+        *,
+        normalized_query: str,
+        time_start: Optional[datetime],
+        time_end: Optional[datetime],
+    ) -> bool:
+        if any(token in normalized_query for token in _EXPLICIT_HISTORY_CUES):
+            return True
+        effective_end = time_end or time_start
+        if effective_end is None:
+            return False
+        now = datetime.now().astimezone()
+        return effective_end <= now
+
     def _deterministic_filters(
         self,
         *,
@@ -124,6 +230,7 @@ class UserMemoryQueryPlanner:
         view_types: List[str] = list(scope_view_types or [])
         locations: List[str] = []
         predicates: List[str] = []
+        persons: List[str] = self._extract_persons(query_text)
 
         if any(cue in normalized for cue in _PROFILE_CUES):
             if "user_profile" not in view_types:
@@ -148,25 +255,28 @@ class UserMemoryQueryPlanner:
 
         if any(cue in normalized for cue in _EVENT_CUES) and "event" not in fact_kinds:
             fact_kinds.append("event")
+            if "episode" not in view_types:
+                view_types.append("episode")
 
         match = _LOCATION_PATTERN.search(query_text)
         if match:
             locations.append(match.group(1).strip())
 
-        time_start = None
-        time_end = None
+        relative_time_range = self._relative_time_range(query_text)
+        time_start = relative_time_range.start
+        time_end = relative_time_range.end
         fragment = _DATE_FRAGMENT_PATTERN.search(query_text)
         if fragment:
             time_start, time_end = parse_event_time_range(fragment.group(1))
 
-        allow_history = any(
-            token in normalized for token in ("以前", "之前", "过去", "history", "曾经")
+        allow_history = self._should_allow_history(
+            normalized_query=normalized,
+            time_start=time_start,
+            time_end=time_end,
         )
-        if time_start or time_end:
-            allow_history = True
 
         return StructuredQueryFilters(
-            persons=[],
+            persons=persons,
             entities=[],
             locations=locations,
             predicates=predicates,

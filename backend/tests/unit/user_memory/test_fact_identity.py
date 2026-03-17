@@ -1,6 +1,6 @@
 """Unit tests for server-side user-memory fact identity generation."""
 
-from user_memory.fact_identity import build_user_fact_identity
+from user_memory.fact_identity import build_user_fact_identity, build_user_memory_view_key
 
 
 def test_relationship_identity_does_not_trust_free_form_llm_key_suffixes() -> None:
@@ -81,3 +81,41 @@ def test_event_identity_is_driven_by_time_and_canonical_statement() -> None:
     assert first.fact_key == second.fact_key
     assert first.fact_key.startswith("event_2024_08_")
     assert first.identity_signature == second.identity_signature
+
+
+def test_episode_view_key_is_stable_across_wording_variants() -> None:
+    first_identity = build_user_fact_identity(
+        fact_kind="event",
+        raw_key="event_dining_with_xiaochen_2026_03_17",
+        value="用户将与小陈一起去吃汉堡",
+        canonical_statement="2026年3月17日用户将与小陈一起去吃汉堡",
+        event_time="2026-03-17",
+        persons=["小陈"],
+        location="汉堡店",
+        topic="聚餐",
+    )
+    second_identity = build_user_fact_identity(
+        fact_kind="event",
+        raw_key="important_event",
+        value="计划与小陈吃汉堡",
+        canonical_statement="用户计划与小陈一起去吃汉堡",
+        event_time="2026-03-17",
+    )
+
+    first_view_key = build_user_memory_view_key(
+        view_type="episode",
+        stable_key=first_identity.fact_key,
+        canonical_statement="2026年3月17日用户将与小陈一起去吃汉堡",
+        event_time="2026-03-17",
+        value="用户将与小陈一起去吃汉堡",
+    )
+    second_view_key = build_user_memory_view_key(
+        view_type="episode",
+        stable_key=second_identity.fact_key,
+        canonical_statement="用户计划与小陈一起去吃汉堡",
+        event_time="2026-03-17",
+        value="计划与小陈吃汉堡",
+    )
+
+    assert first_identity.fact_key == second_identity.fact_key
+    assert first_view_key == second_view_key

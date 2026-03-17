@@ -104,6 +104,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     setup_logging(config)
     logger.info("Logging system initialized")
 
+    # Ensure runtime DB schema matches the code before any DB-backed startup work.
+    try:
+        from database.migrations import run_migrations_on_startup
+
+        if run_migrations_on_startup(auto_upgrade=True):
+            logger.info("Database migrations verified at startup")
+        else:
+            raise RuntimeError("Database migrations are not up to date")
+    except Exception as migration_error:
+        logger.error(f"Failed to verify database migrations at startup: {migration_error}")
+        raise
+
     # TODO: Initialize database connections
     # TODO: Load ABAC policies
 

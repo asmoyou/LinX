@@ -257,6 +257,31 @@ def claim_user_memory_jobs(
         return claimed
 
 
+def requeue_stale_user_memory_jobs(
+    *,
+    stale_after_seconds: int,
+) -> int:
+    """Return stale processing jobs to pending so the current worker can reclaim them."""
+
+    stale_cutoff = _utc_now() - timedelta(seconds=max(int(stale_after_seconds), 1))
+    with get_db_session() as session:
+        jobs = (
+            session.query(UserMemoryEmbeddingJob)
+            .filter(
+                UserMemoryEmbeddingJob.status == USER_MEMORY_JOB_STATUS_PROCESSING,
+                UserMemoryEmbeddingJob.locked_at.isnot(None),
+                UserMemoryEmbeddingJob.locked_at <= stale_cutoff,
+            )
+            .all()
+        )
+        for job in jobs:
+            job.status = USER_MEMORY_JOB_STATUS_PENDING
+            job.locked_at = None
+            job.locked_by = None
+        session.flush()
+        return len(jobs)
+
+
 def mark_user_memory_job_done(job_id: int) -> None:
     """Mark one indexing job as completed."""
 
@@ -319,14 +344,19 @@ def list_user_memory_jobs(
 
 
 def count_pending_user_memory_jobs() -> int:
-    """Return the number of non-terminal indexing jobs."""
+    """Return the number of claimable indexing jobs."""
 
     with get_db_session() as session:
+        stale_cutoff = _utc_now() - timedelta(seconds=60)
         return int(
             session.query(UserMemoryEmbeddingJob)
             .filter(
-                UserMemoryEmbeddingJob.status.in_(
-                    [USER_MEMORY_JOB_STATUS_PENDING, USER_MEMORY_JOB_STATUS_PROCESSING]
+                or_(
+                    UserMemoryEmbeddingJob.status == USER_MEMORY_JOB_STATUS_PENDING,
+                    and_(
+                        UserMemoryEmbeddingJob.status == USER_MEMORY_JOB_STATUS_PROCESSING,
+                        UserMemoryEmbeddingJob.locked_at <= stale_cutoff,
+                    ),
                 )
             )
             .count()
@@ -348,5 +378,6 @@ __all__ = [
     "enqueue_user_memory_upsert_job",
     "list_user_memory_jobs",
     "mark_user_memory_job_done",
+    "requeue_stale_user_memory_jobs",
     "reschedule_user_memory_job",
 ]

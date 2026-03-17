@@ -304,6 +304,8 @@ class UserMemoryStructuredSearchService:
         filters: StructuredQueryFilters,
         top_k: int,
     ) -> List[RetrievedMemoryItem]:
+        if filters.fact_kinds and "relationship" not in set(filters.fact_kinds):
+            return []
         with get_db_session() as session:
             query = session.query(UserMemoryRelation).filter(
                 UserMemoryRelation.user_id == str(user_id)

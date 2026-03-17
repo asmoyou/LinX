@@ -588,10 +588,10 @@ knowledge_base:
       confidence_threshold: 0.7
     transcription:
       enabled: true
-      engine: funasr
-      model: iic/SenseVoiceSmall
+      engine: openai_compatible
+      model: SenseVoiceSmall
       language: auto
-      provider: ''
+      provider: xinference
       funasr_service_url: http://127.0.0.1:10095
       funasr_service_timeout_seconds: 300
       funasr_service_api_key: ''

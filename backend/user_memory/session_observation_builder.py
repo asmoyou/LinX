@@ -15,6 +15,7 @@ from shared.logging import get_logger
 from user_memory.fact_identity import (
     build_user_fact_identity,
     build_user_fact_semantic_key,
+    build_user_memory_view_key,
     normalize_fact_kind as normalize_user_fact_kind,
 )
 from user_memory.session_ledger_repository import (
@@ -130,6 +131,27 @@ _FOOD_PREFERENCE_AVOID_PATTERNS = (
 _PREFERENCE_ITEM_TRAILING_CLEAN_PATTERN = re.compile(
     r"(?:怎么做|怎么弄|咋做|如何做|做法|怎么制作|如何制作).*$",
     flags=re.IGNORECASE,
+)
+_QUESTION_SUFFIX_PATTERN = re.compile(r"(?:[?？!！。]+|(?:好?吗|呢|呀|啊|吧|嘛|不))+$")
+_INTERROGATIVE_FRAGMENT_PATTERN = re.compile(
+    r"(什么|啥|哪些|哪种|哪类|哪儿|哪里|哪个|谁|为何|为什么|怎么|如何|怎样|"
+    r"多少|几个|几月|几号|几点|什么时候|何时)"
+)
+_CONVERSATIONAL_QUERY_PREFIXES = (
+    "你知道",
+    "你记得",
+    "你还记得",
+    "你清楚",
+    "你能告诉我",
+    "能告诉我",
+    "告诉我",
+    "请问",
+    "麻烦你",
+    "帮我回忆",
+    "回忆一下",
+    "我想知道",
+    "我想问",
+    "想问问",
 )
 _EXPERIENCE_PATTERNS = (
     re.compile(r"我(?:之前|以前|曾经)?(?:做过|干过|从事过)(?P<item>[^，。！？；,.!?]{1,40})"),
@@ -514,6 +536,7 @@ class SessionObservationBuilder:
             return None
 
         item = _PREFERENCE_ITEM_TRAILING_CLEAN_PATTERN.sub("", item).strip()
+        item = _QUESTION_SUFFIX_PATTERN.sub("", item).strip()
         item = re.sub(r"^[：:，,\s]+", "", item)
         item = re.sub(r"[，,。！？!?；;\s]+$", "", item)
         item = " ".join(item.split())
@@ -523,7 +546,30 @@ class SessionObservationBuilder:
             return None
         if item in {"什么", "啥", "一下", "一点"}:
             return None
+        if cls._looks_like_interrogative_fragment(item):
+            return None
         return item
+
+    @classmethod
+    def _looks_like_interrogative_fragment(cls, value: str) -> bool:
+        normalized = cls.normalize_text(value or "", max_chars=120)
+        if not normalized:
+            return False
+        if "?" in normalized or "？" in normalized:
+            return True
+        if any(normalized.startswith(prefix) for prefix in _CONVERSATIONAL_QUERY_PREFIXES):
+            return True
+        return bool(_INTERROGATIVE_FRAGMENT_PATTERN.search(normalized))
+
+    @classmethod
+    def _looks_like_question_artifact(
+        cls,
+        *,
+        value: str,
+        canonical_statement: str,
+    ) -> bool:
+        candidates = [str(value or "").strip(), str(canonical_statement or "").strip()]
+        return any(cls._looks_like_interrogative_fragment(candidate) for candidate in candidates)
 
     @classmethod
     def detect_food_preference_signal(cls, text: str) -> Optional[Tuple[str, str]]:
@@ -689,11 +735,12 @@ class SessionObservationBuilder:
         event_time: Optional[str],
         value: str,
     ) -> str:
-        return SessionObservationBuilder._stable_key(
-            "episode",
-            stable_key,
-            event_time or "",
-            canonical_statement or value,
+        return build_user_memory_view_key(
+            view_type="episode",
+            stable_key=stable_key,
+            canonical_statement=canonical_statement,
+            event_time=event_time,
+            value=value,
         )
 
     def _build_user_episode_title(
@@ -1407,6 +1454,11 @@ ASSISTANT: 收到
                 event_time=event_time,
                 topic=topic,
             )
+            if self._looks_like_question_artifact(
+                value=value,
+                canonical_statement=canonical_statement,
+            ):
+                continue
             if fact_kind == "relationship" and self._looks_like_ephemeral_relationship_signal(
                 semantic_key=semantic_key,
                 predicate=predicate,
@@ -2223,6 +2275,11 @@ ASSISTANT: 收到
                 preference_value = str(signal.get("value") or "").strip()
                 strong_signal = bool(signal.get("strong_signal"))
                 if not preference_key or not preference_value:
+                    continue
+                if self._looks_like_question_artifact(
+                    value=preference_value,
+                    canonical_statement=str(signal.get("canonical_statement") or ""),
+                ):
                     continue
                 bucket = grouped.setdefault(
                     (preference_key, preference_value),

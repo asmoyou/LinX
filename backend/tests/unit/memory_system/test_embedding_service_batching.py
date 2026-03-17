@@ -23,7 +23,7 @@ class _FakeResponse:
         return self._payload
 
 
-def _build_service() -> VLLMEmbeddingService:
+def _build_service(base_url: str = "http://localhost:8000") -> VLLMEmbeddingService:
     with patch("memory_system.embedding_service.resolve_embedding_settings") as mock_settings:
         with patch("llm_providers.provider_resolver.resolve_provider") as mock_resolve_provider:
             mock_settings.return_value = {
@@ -32,7 +32,7 @@ def _build_service() -> VLLMEmbeddingService:
                 "dimension": 1024,
             }
             mock_resolve_provider.return_value = {
-                "base_url": "http://localhost:8000",
+                "base_url": base_url,
                 "api_key": None,
                 "timeout": 30,
                 "protocol": "openai_compatible",
@@ -76,3 +76,20 @@ def test_vllm_batch_splits_when_payload_too_large() -> None:
         assert vector[0] == pytest.approx(float(idx) / expected_norm)
         assert vector[1] == pytest.approx(1.0 / expected_norm)
         assert (vector[0] ** 2 + vector[1] ** 2) ** 0.5 == pytest.approx(1.0)
+
+
+def test_vllm_embedding_url_does_not_duplicate_v1_suffix() -> None:
+    """Providers that already expose `/v1` should not receive `/v1/v1/embeddings`."""
+    service = _build_service(base_url="http://localhost:9997/v1")
+
+    def _mock_post(url, json, headers, timeout):  # noqa: ANN001
+        _ = json
+        _ = headers
+        _ = timeout
+        assert url == "http://localhost:9997/v1/embeddings"
+        return _FakeResponse(payload={"data": [{"embedding": [1.0, 0.0]}]})
+
+    with patch("memory_system.embedding_service.requests.post", side_effect=_mock_post):
+        embedding = service.generate_embedding("hello")
+
+    assert embedding == [1.0, 0.0]
