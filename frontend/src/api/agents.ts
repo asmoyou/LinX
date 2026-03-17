@@ -1,5 +1,6 @@
 import apiClient from './client';
 import type { Agent } from '../types/agent';
+import type { AgentSkillSummary } from '../types/agent';
 
 export interface CreateAgentRequest {
   name: string;
@@ -7,7 +8,7 @@ export interface CreateAgentRequest {
   template_id?: string;
   avatar?: string;
   systemPrompt?: string;
-  skills?: string[];
+  skill_ids?: string[];
   model?: string;
   provider?: string;
   temperature?: number;
@@ -27,7 +28,7 @@ export interface UpdateAgentRequest {
   name?: string;
   avatar?: string;
   systemPrompt?: string;
-  skills?: string[];
+  skill_ids?: string[];
   model?: string;
   provider?: string;
   temperature?: number;
@@ -360,14 +361,8 @@ export const agentsApi = {
    */
   getAgentSkills: async (agentId: string): Promise<{
     agent_id: string;
-    configured_skills: string[];
-    available_skills: Array<{
-      skill_id: string;
-      name: string;
-      description: string;
-      skill_type: string;
-      version: string;
-    }>;
+    configured_skill_ids: string[];
+    available_skills: AgentSkillSummary[];
   }> => {
     const response = await apiClient.get(`/agents/${agentId}/skills`);
     return response.data;
@@ -376,9 +371,9 @@ export const agentsApi = {
   /**
    * Update agent's configured skills
    */
-  updateAgentSkills: async (agentId: string, skillNames: string[]): Promise<Agent> => {
+  updateAgentSkills: async (agentId: string, skillIds: string[]): Promise<Agent> => {
     const response = await apiClient.put<Agent>(`/agents/${agentId}/skills`, {
-      skill_names: skillNames
+      skill_ids: skillIds
     });
     return response.data;
   },

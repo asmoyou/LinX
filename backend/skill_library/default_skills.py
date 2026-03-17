@@ -21,7 +21,8 @@ def get_default_skill_definitions() -> List[Dict]:
     """
     return [
         {
-            "name": "data_processing",
+            "skill_slug": "data_processing",
+            "display_name": "Data Processing",
             "description": "Process and transform data using pandas",
             "interface_definition": {
                 "inputs": {
@@ -39,7 +40,8 @@ def get_default_skill_definitions() -> List[Dict]:
             "version": "1.0.0",
         },
         {
-            "name": "sql_query",
+            "skill_slug": "sql_query",
+            "display_name": "SQL Query",
             "description": "Execute SQL queries against databases",
             "interface_definition": {
                 "inputs": {
@@ -57,7 +59,8 @@ def get_default_skill_definitions() -> List[Dict]:
             "version": "1.0.0",
         },
         {
-            "name": "web_scraping",
+            "skill_slug": "web_scraping",
+            "display_name": "Web Scraping",
             "description": "Scrape data from web pages",
             "interface_definition": {
                 "inputs": {
@@ -75,7 +78,8 @@ def get_default_skill_definitions() -> List[Dict]:
             "version": "1.0.0",
         },
         {
-            "name": "statistical_analysis",
+            "skill_slug": "statistical_analysis",
+            "display_name": "Statistical Analysis",
             "description": "Perform statistical analysis on datasets",
             "interface_definition": {
                 "inputs": {
@@ -93,7 +97,8 @@ def get_default_skill_definitions() -> List[Dict]:
             "version": "1.0.0",
         },
         {
-            "name": "visualization",
+            "skill_slug": "visualization",
+            "display_name": "Visualization",
             "description": "Create data visualizations and charts",
             "interface_definition": {
                 "inputs": {
@@ -111,7 +116,8 @@ def get_default_skill_definitions() -> List[Dict]:
             "version": "1.0.0",
         },
         {
-            "name": "text_summarization",
+            "skill_slug": "text_summarization",
+            "display_name": "Text Summarization",
             "description": "Summarize long text documents",
             "interface_definition": {
                 "inputs": {
@@ -129,7 +135,8 @@ def get_default_skill_definitions() -> List[Dict]:
             "version": "1.0.0",
         },
         {
-            "name": "sentiment_analysis",
+            "skill_slug": "sentiment_analysis",
+            "display_name": "Sentiment Analysis",
             "description": "Analyze sentiment of text",
             "interface_definition": {
                 "inputs": {
@@ -147,7 +154,8 @@ def get_default_skill_definitions() -> List[Dict]:
             "version": "1.0.0",
         },
         {
-            "name": "file_operations",
+            "skill_slug": "file_operations",
+            "display_name": "File Operations",
             "description": "Perform file system operations",
             "interface_definition": {
                 "inputs": {
@@ -165,7 +173,8 @@ def get_default_skill_definitions() -> List[Dict]:
             "version": "1.0.0",
         },
         {
-            "name": "api_request",
+            "skill_slug": "api_request",
+            "display_name": "API Request",
             "description": "Make HTTP API requests",
             "interface_definition": {
                 "inputs": {
@@ -184,7 +193,8 @@ def get_default_skill_definitions() -> List[Dict]:
             "version": "1.0.0",
         },
         {
-            "name": "json_processing",
+            "skill_slug": "json_processing",
+            "display_name": "JSON Processing",
             "description": "Parse and manipulate JSON data",
             "interface_definition": {
                 "inputs": {
@@ -225,26 +235,28 @@ def register_default_skills(
             # Check if skill already exists
             if skip_existing:
                 existing = registry.get_skill_by_name(
-                    skill_def["name"],
+                    skill_def["skill_slug"],
                     skill_def["version"],
                 )
                 if existing:
-                    logger.info(f"Skipping existing skill: {skill_def['name']}")
+                    logger.info(f"Skipping existing skill: {skill_def['skill_slug']}")
                     continue
 
             # Register skill
             registry.register_skill(
-                name=skill_def["name"],
+                skill_slug=skill_def["skill_slug"],
+                display_name=skill_def["display_name"],
                 description=skill_def["description"],
                 interface_definition=skill_def["interface_definition"],
                 dependencies=skill_def["dependencies"],
                 version=skill_def["version"],
+                access_level="public",
             )
             registered_count += 1
-            logger.info(f"Registered default skill: {skill_def['name']}")
+            logger.info(f"Registered default skill: {skill_def['skill_slug']}")
 
         except Exception as e:
-            logger.error(f"Failed to register skill {skill_def['name']}: {e}")
+            logger.error(f"Failed to register skill {skill_def['skill_slug']}: {e}")
 
     logger.info(f"Registered {registered_count} default skills")
     return registered_count

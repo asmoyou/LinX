@@ -22,11 +22,20 @@ export interface SkillPackageStatus {
   message?: string | null;
 }
 
+export type SkillAccessLevel = "private" | "team" | "public";
+
 export interface Skill {
   skill_id: string;
-  name: string;
+  skill_slug: string;
+  display_name: string;
   description: string;
   version: string;
+  access_level: SkillAccessLevel;
+  department_id?: string | null;
+  department_name?: string | null;
+  can_edit?: boolean;
+  can_delete?: boolean;
+  can_publish_public?: boolean;
   skill_type?: string;
   storage_type?: string;
   storage_path?: string;
@@ -34,7 +43,6 @@ export interface Skill {
   config?: Record<string, any>;
   manifest?: Record<string, any>;
   is_active?: boolean;
-  is_system?: boolean;
   execution_count?: number;
   last_executed_at?: string;
   average_execution_time?: number;
@@ -62,20 +70,38 @@ export interface Skill {
 }
 
 export interface CreateSkillRequest {
-  name: string;
+  display_name: string;
+  skill_slug?: string;
   description?: string;
   skill_type?: string;
   code?: string;
   config?: Record<string, any>;
   dependencies?: string[];
   version?: string;
+  access_level?: SkillAccessLevel;
+  department_id?: string;
   package_file?: File;
 }
 
 export interface UpdateSkillRequest {
+  display_name?: string;
   description?: string;
   code?: string;
   dependencies?: string[];
+  access_level?: SkillAccessLevel;
+  department_id?: string | null;
+  is_active?: boolean;
+}
+
+export interface SkillShareTarget {
+  department_id: string;
+  name: string;
+}
+
+export interface SkillShareTargetsResponse {
+  can_publish_public: boolean;
+  default_department_id?: string | null;
+  allowed_department_targets: SkillShareTarget[];
 }
 
 export interface SkillTestRequest {
@@ -143,12 +169,15 @@ export const skillsApi = {
   async create(data: CreateSkillRequest): Promise<Skill> {
     // Always use multipart/form-data for consistency
     const formData = new FormData();
-    formData.append("name", data.name);
+    formData.append("display_name", data.display_name);
+    if (data.skill_slug) formData.append("skill_slug", data.skill_slug);
     if (typeof data.description === "string" && data.description.trim()) {
       formData.append("description", data.description.trim());
     }
     if (data.skill_type) formData.append("skill_type", data.skill_type);
     if (data.version) formData.append("version", data.version);
+    if (data.access_level) formData.append("access_level", data.access_level);
+    if (data.department_id) formData.append("department_id", data.department_id);
     if (data.package_file) formData.append("package_file", data.package_file);
     if (data.code) formData.append("code", data.code);
     if (data.config) formData.append("config", JSON.stringify(data.config));
@@ -194,14 +223,25 @@ export const skillsApi = {
    */
   async createFromTemplate(
     templateId: string,
-    name: string,
+    displayName: string,
     description?: string,
+    skillSlug?: string,
+    accessLevel?: SkillAccessLevel,
+    departmentId?: string,
   ): Promise<Skill> {
     const response = await apiClient.post("/skills/from-template", {
       template_id: templateId,
-      name,
+      display_name: displayName,
       description,
+      skill_slug: skillSlug,
+      access_level: accessLevel,
+      department_id: departmentId,
     });
+    return response.data;
+  },
+
+  async getShareTargets(): Promise<SkillShareTargetsResponse> {
+    const response = await apiClient.get<SkillShareTargetsResponse>("/skills/share-targets");
     return response.data;
   },
 
@@ -397,7 +437,8 @@ export const skillsApi = {
    */
   async getFiles(skillId: string): Promise<{
     skill_id: string;
-    skill_name: string;
+    skill_slug: string;
+    display_name: string;
     skill_type: string;
     files: FileTreeItem[];
     package_status: SkillPackageStatus;

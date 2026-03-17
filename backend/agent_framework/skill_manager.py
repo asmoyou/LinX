@@ -18,8 +18,9 @@ from uuid import UUID
 
 from langchain_core.tools import BaseTool
 
+from access_control.skill_access import build_skill_access_context_for_user_id, can_read_skill
 from database.connection import get_db_session
-from database.models import Skill as SkillModel
+from database.models import Skill as SkillModel, User
 from skill_library.skill_registry import get_skill_registry
 
 logger = logging.getLogger(__name__)
@@ -28,9 +29,10 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SkillInfo:
     """Information about a skill available to an agent."""
-    
+
     skill_id: UUID
-    name: str
+    skill_slug: str
+    display_name: str
     description: str
     skill_type: str  # "langchain_tool" or "agent_skill"
     storage_type: str  # "inline", "minio", etc.
@@ -39,6 +41,10 @@ class SkillInfo:
     code: Optional[str] = None
     interface_definition: Optional[dict] = None
     manifest: Optional[dict] = None
+
+    @property
+    def name(self) -> str:
+        return self.skill_slug
 
 
 @dataclass
@@ -57,7 +63,8 @@ class AgentSkillReference:
     """
 
     skill_id: UUID  # Skill UUID for code loading
-    name: str
+    skill_slug: str
+    display_name: str
     description: str
     skill_md_content: str  # Full SKILL.md content (loaded but not in prompt)
     has_scripts: bool  # Whether package contains Python scripts
@@ -69,7 +76,11 @@ class AgentSkillReference:
     def __post_init__(self):
         if self.package_files is None:
             self.package_files = {}
-    
+
+    @property
+    def name(self) -> str:
+        return self.skill_slug
+
     def format_for_prompt(self) -> str:
         """Format skill for inclusion in agent prompt.
         
@@ -79,7 +90,7 @@ class AgentSkillReference:
         Returns:
             Formatted string for system prompt (name + description only)
         """
-        return f"- {self.name}: {self.description}"
+        return f"- {self.display_name} ({self.skill_slug}): {self.description}"
 
 
 class SkillManager:
@@ -118,12 +129,12 @@ class SkillManager:
         """Discover available skills for this agent.
         
         Skills are discovered based on:
-        1. Agent's configured capabilities (skill names)
+        1. Agent's configured capabilities (skill IDs)
         2. User permissions
         3. Skill active status
         
         Args:
-            agent_capabilities: List of skill names the agent can use
+            agent_capabilities: List of skill IDs the agent can use
             context: Optional context for filtering
         
         Returns:
@@ -140,39 +151,55 @@ class SkillManager:
         discovered_skills = []
         
         with get_db_session() as session:
-            # Query skills that match agent's capabilities
-            for skill_name in agent_capabilities:
-                # Get latest version of each skill
-                skill = session.query(SkillModel).filter(
-                    SkillModel.name == skill_name,
-                    SkillModel.is_active == True
-                ).order_by(SkillModel.created_at.desc()).first()
-                
-                if skill:
-                    # TODO: Add permission check here
-                    # For now, assume user has access to all active skills
-                    
-                    skill_info = SkillInfo(
-                        skill_id=skill.skill_id,
-                        name=skill.name,
-                        description=skill.description,
-                        skill_type=skill.skill_type,
-                        storage_type=skill.storage_type,
-                        storage_path=skill.storage_path,
-                        skill_md_content=skill.skill_md_content,
-                        code=skill.code,
-                        interface_definition=skill.interface_definition,
-                        manifest=skill.manifest
+            user = session.query(User).filter(User.user_id == self.user_id).first()
+            user_role = str(getattr(user, "role", "") or "")
+            access_context = build_skill_access_context_for_user_id(
+                session=session,
+                user_id=self.user_id,
+                role=user_role,
+            )
+
+            # Query active skills by configured skill_id capability strings.
+            for capability in agent_capabilities:
+                try:
+                    capability_uuid = UUID(str(capability))
+                except (TypeError, ValueError):
+                    continue
+
+                skill = (
+                    session.query(SkillModel)
+                    .filter(
+                        SkillModel.skill_id == capability_uuid,
+                        SkillModel.is_active.is_(True),
                     )
-                    discovered_skills.append(skill_info)
-                    
-                    logger.debug(
-                        f"Discovered skill: {skill.name}",
-                        extra={
-                            "skill_id": str(skill.skill_id),
-                            "skill_type": skill.skill_type
-                        }
-                    )
+                    .first()
+                )
+
+                if not skill or not can_read_skill(skill, access_context):
+                    continue
+
+                skill_info = SkillInfo(
+                    skill_id=skill.skill_id,
+                    skill_slug=skill.skill_slug,
+                    display_name=skill.display_name,
+                    description=skill.description,
+                    skill_type=skill.skill_type,
+                    storage_type=skill.storage_type,
+                    storage_path=skill.storage_path,
+                    skill_md_content=skill.skill_md_content,
+                    code=skill.code,
+                    interface_definition=skill.interface_definition,
+                    manifest=skill.manifest,
+                )
+                discovered_skills.append(skill_info)
+
+                logger.debug(
+                    f"Discovered skill: {skill.skill_slug}",
+                    extra={
+                        "skill_id": str(skill.skill_id),
+                        "skill_type": skill.skill_type,
+                    },
+                )
         
         logger.info(
             f"Discovered {len(discovered_skills)} skills for agent {self.agent_id}",
@@ -195,14 +222,14 @@ class SkillManager:
         """
         if skill_info.skill_type != "langchain_tool":
             logger.warning(
-                f"Skill {skill_info.name} is not a langchain_tool",
+                f"Skill {skill_info.skill_slug} is not a langchain_tool",
                 extra={"skill_id": str(skill_info.skill_id)}
             )
             return None
         
         # Check if already loaded
         if skill_info.skill_id in self.loaded_langchain_tools:
-            logger.debug(f"LangChain tool {skill_info.name} already loaded")
+            logger.debug(f"LangChain tool {skill_info.skill_slug} already loaded")
             return self.loaded_langchain_tools[skill_info.skill_id]
         
         try:
@@ -219,7 +246,7 @@ class SkillManager:
             if tool:
                 self.loaded_langchain_tools[skill_info.skill_id] = tool
                 logger.info(
-                    f"Loaded LangChain tool: {skill_info.name}",
+                    f"Loaded LangChain tool: {skill_info.skill_slug}",
                     extra={"skill_id": str(skill_info.skill_id)}
                 )
             
@@ -227,7 +254,7 @@ class SkillManager:
             
         except Exception as e:
             logger.error(
-                f"Failed to load LangChain tool {skill_info.name}: {e}",
+                f"Failed to load LangChain tool {skill_info.skill_slug}: {e}",
                 extra={"skill_id": str(skill_info.skill_id)},
                 exc_info=True
             )
@@ -335,7 +362,7 @@ class SkillManager:
         
         except Exception as e:
             logger.error(
-                f"Failed to load package files for {skill_info.name}: {e}",
+                f"Failed to load package files for {skill_info.skill_slug}: {e}",
                 extra={"skill_id": str(skill_info.skill_id)},
                 exc_info=True
             )
@@ -360,21 +387,21 @@ class SkillManager:
         """
         if skill_info.skill_type != "agent_skill":
             logger.warning(
-                f"Skill {skill_info.name} is not an agent_skill",
+                f"Skill {skill_info.skill_slug} is not an agent_skill",
                 extra={"skill_id": str(skill_info.skill_id)}
             )
             return None
         
         # Check if already loaded
         if skill_info.skill_id in self.loaded_agent_skills:
-            logger.debug(f"Agent skill {skill_info.name} already loaded")
+            logger.debug(f"Agent skill {skill_info.skill_slug} already loaded")
             return self.loaded_agent_skills[skill_info.skill_id]
         
         try:
             # Check if SKILL.md content exists
             if not skill_info.skill_md_content:
                 logger.warning(
-                    f"Agent skill {skill_info.name} has no SKILL.md content",
+                    f"Agent skill {skill_info.skill_slug} has no SKILL.md content",
                     extra={"skill_id": str(skill_info.skill_id)}
                 )
                 return None
@@ -395,7 +422,8 @@ class SkillManager:
             # Create reference
             skill_ref = AgentSkillReference(
                 skill_id=skill_info.skill_id,
-                name=skill_info.name,
+                skill_slug=skill_info.skill_slug,
+                display_name=skill_info.display_name,
                 description=skill_info.description,
                 skill_md_content=skill_info.skill_md_content,
                 has_scripts=has_scripts,
@@ -408,7 +436,7 @@ class SkillManager:
             self.loaded_agent_skills[skill_info.skill_id] = skill_ref
             
             logger.info(
-                f"Loaded Agent Skill documentation: {skill_info.name}",
+                f"Loaded Agent Skill documentation: {skill_info.skill_slug}",
                 extra={
                     "skill_id": str(skill_info.skill_id),
                     "has_scripts": has_scripts,
@@ -420,7 +448,7 @@ class SkillManager:
             
         except Exception as e:
             logger.error(
-                f"Failed to load Agent Skill {skill_info.name}: {e}",
+                f"Failed to load Agent Skill {skill_info.skill_slug}: {e}",
                 extra={"skill_id": str(skill_info.skill_id)},
                 exc_info=True
             )
@@ -458,7 +486,7 @@ class SkillManager:
             extra={
                 "agent_id": str(self.agent_id),
                 "skill_count": len(agent_skills),
-                "skill_names": [skill.name for skill in agent_skills]
+                "skill_slugs": [skill.skill_slug for skill in agent_skills],
             }
         )
         
@@ -503,7 +531,7 @@ Available skills:
         This can be called to refresh skills without restarting the agent.
         
         Args:
-            agent_capabilities: Updated list of skill names
+            agent_capabilities: Updated list of skill IDs
         """
         logger.info(
             f"Reloading skills for agent {self.agent_id}",

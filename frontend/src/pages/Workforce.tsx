@@ -56,8 +56,7 @@ export const Workforce: React.FC = () => {
         name,
         type: 'general',  // Default type
         systemPrompt: systemPrompt || undefined,
-        capabilities: [],
-        config: {},
+        skill_ids: [],
         department_id: departmentId || undefined,
       });
       
@@ -92,7 +91,7 @@ export const Workforce: React.FC = () => {
       const saved = await agentsApi.update(updatedAgent.id, {
         name: updatedAgent.name,
         systemPrompt: updatedAgent.systemPrompt,
-        skills: updatedAgent.skills,
+        skill_ids: updatedAgent.skill_ids,
         model: updatedAgent.model,
         provider: updatedAgent.provider,
         temperature: updatedAgent.temperature,

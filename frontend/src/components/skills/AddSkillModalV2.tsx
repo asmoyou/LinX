@@ -1,9 +1,9 @@
 import { X, Upload, FileCode } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import CodeEditor from './CodeEditor';
 import SkillTypeSelector, { type SkillType } from './SkillTypeSelector';
 import TemplateSelector from './TemplateSelector';
-import { skillsApi } from '@/api/skills';
+import { skillsApi, type SkillAccessLevel, type SkillShareTargetsResponse } from '@/api/skills';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import { LayoutModal } from '@/components/LayoutModal';
@@ -22,13 +22,25 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [shareTargets, setShareTargets] = useState<SkillShareTargetsResponse | null>(null);
   
   const [formData, setFormData] = useState({
-    name: '',
+    display_name: '',
+    skill_slug: '',
     description: '',
     code: '',
     dependencies: [] as string[],
+    access_level: 'private' as SkillAccessLevel,
+    department_id: '',
   });
+
+  useEffect(() => {
+    if (!isOpen) return;
+    void skillsApi.getShareTargets().then(setShareTargets).catch((error) => {
+      console.error('Failed to load skill share targets:', error);
+      setShareTargets(null);
+    });
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -38,7 +50,15 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
     setSelectedTemplate(null);
     setUploadedFile(null);
     setIsDragging(false);
-    setFormData({ name: '', description: '', code: '', dependencies: [] });
+    setFormData({
+      display_name: '',
+      skill_slug: '',
+      description: '',
+      code: '',
+      dependencies: [],
+      access_level: 'private',
+      department_id: shareTargets?.default_department_id || '',
+    });
     onClose();
   };
 
@@ -47,9 +67,9 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
     if (file) {
       setUploadedFile(file);
       // Auto-fill name from filename
-      if (!formData.name) {
+      if (!formData.display_name) {
         const nameWithoutExt = file.name.replace(/\.(zip|tar\.gz)$/, '');
-        setFormData({ ...formData, name: nameWithoutExt });
+        setFormData({ ...formData, display_name: nameWithoutExt });
       }
     }
   };
@@ -86,9 +106,9 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
 
       setUploadedFile(file);
       // Auto-fill name from filename
-      if (!formData.name) {
+      if (!formData.display_name) {
         const nameWithoutExt = file.name.replace(/\.(zip|tar\.gz)$/, '');
-        setFormData({ ...formData, name: nameWithoutExt });
+        setFormData({ ...formData, display_name: nameWithoutExt });
       }
     }
   };
@@ -115,8 +135,14 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
     
     try {
       const submitData: any = {
-        name: formData.name,
+        display_name: formData.display_name,
+        skill_slug: formData.skill_slug || undefined,
         skill_type: skillType,
+        access_level: formData.access_level,
+        department_id:
+          formData.access_level === 'team'
+            ? (formData.department_id || shareTargets?.default_department_id || undefined)
+            : undefined,
       };
 
       if (skillType === 'langchain_tool') {
@@ -231,12 +257,80 @@ export default function AddSkillModalV2({ isOpen, onClose, onSubmit }: AddSkillM
                   </label>
                   <input
                     type="text"
-                    value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    value={formData.display_name}
+                    onChange={(e) => setFormData({ ...formData, display_name: e.target.value })}
                     className="w-full px-4 py-2.5 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-                    placeholder="e.g., my_custom_skill"
+                    placeholder="e.g., My Custom Skill"
                     required
                   />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
+                    {t('skills.skillSlug', { defaultValue: 'Skill Slug' })}
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.skill_slug}
+                    onChange={(e) => setFormData({ ...formData, skill_slug: e.target.value })}
+                    className="w-full px-4 py-2.5 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 font-mono"
+                    placeholder="e.g., my_custom_skill"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
+                      {t('skills.visibility', { defaultValue: 'Visibility' })}
+                    </label>
+                    <select
+                      value={formData.access_level}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          access_level: e.target.value as SkillAccessLevel,
+                          department_id:
+                            e.target.value === 'team'
+                              ? (formData.department_id || shareTargets?.default_department_id || '')
+                              : '',
+                        })
+                      }
+                      className="w-full px-4 py-2.5 rounded-xl glass text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                    >
+                      <option value="private">
+                        {t('skills.private', { defaultValue: 'Private' })}
+                      </option>
+                      <option value="team">
+                        {t('skills.team', { defaultValue: 'Team' })}
+                      </option>
+                      {shareTargets?.can_publish_public && (
+                        <option value="public">
+                          {t('skills.public', { defaultValue: 'Public' })}
+                        </option>
+                      )}
+                    </select>
+                  </div>
+
+                  {formData.access_level === 'team' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
+                        {t('skills.department', { defaultValue: 'Department' })}
+                      </label>
+                      <select
+                        value={formData.department_id || shareTargets?.default_department_id || ''}
+                        onChange={(e) =>
+                          setFormData({ ...formData, department_id: e.target.value })
+                        }
+                        className="w-full px-4 py-2.5 rounded-xl glass text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                      >
+                        {(shareTargets?.allowed_department_targets || []).map((target) => (
+                          <option key={target.department_id} value={target.department_id}>
+                            {target.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
 
                 {skillType === 'langchain_tool' && (

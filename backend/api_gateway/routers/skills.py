@@ -15,6 +15,19 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, 
 from pydantic import BaseModel, Field
 
 from access_control.permissions import CurrentUser, get_current_user
+from access_control.skill_access import (
+    SKILL_ACCESS_PRIVATE,
+    SKILL_ACCESS_PUBLIC,
+    SKILL_ACCESS_TEAM,
+    build_skill_access_context,
+    can_delete_skill,
+    can_execute_skill,
+    can_read_skill,
+    can_set_public_skill,
+    can_update_skill,
+    list_allowed_share_targets,
+    validate_team_skill_target,
+)
 from object_storage.minio_client import get_minio_client
 from shared.datetime_utils import utcnow
 from skill_library.execution_engine import get_execution_engine
@@ -23,6 +36,7 @@ from skill_library.langchain_parser import parse_langchain_tool
 from skill_library.package_handler import PackageHandler
 from skill_library.skill_md_parser import SkillMdParser
 from skill_library.skill_registry import SkillInfo, get_skill_registry
+from skill_library.skill_slug import generate_unique_skill_slug, normalize_skill_slug
 from skill_library.skill_types import SkillType, StorageType
 from skill_library.templates import get_skill_templates, get_template_by_id
 
@@ -128,7 +142,7 @@ def _materialize_agent_skill_package(
                 log_context,
                 extra={
                     "skill_id": str(getattr(skill, "skill_id", "") or ""),
-                    "skill_name": str(getattr(skill, "name", "") or ""),
+                    "skill_slug": str(getattr(skill, "skill_slug", "") or ""),
                     "storage_path": str(getattr(skill, "storage_path", "") or ""),
                 },
             )
@@ -414,45 +428,54 @@ def _record_skill_execution_stats(skill_id: UUID, execution_time: float) -> None
         )
 
 
-def _skill_owner_id(skill: Any) -> Optional[str]:
-    """Return the normalized owner id for a skill-like object."""
-    created_by = getattr(skill, "created_by", None)
-    return str(created_by) if created_by else None
-
-
-def _can_read_skill(skill: Any, current_user: CurrentUser) -> bool:
-    """Return whether the current user should see this skill in the library."""
-    if skill is None:
-        return False
-    if bool(getattr(skill, "is_system", False)):
-        return True
-    return _skill_owner_id(skill) == str(current_user.user_id)
-
-
-def _can_write_skill(skill: Any, current_user: CurrentUser) -> bool:
-    """Return whether the current user can mutate this skill."""
-    if skill is None:
-        return False
-    return _skill_owner_id(skill) == str(current_user.user_id)
-
-
-def _filter_visible_skills(skills: List[Any], current_user: CurrentUser) -> List[Any]:
-    """Filter a skill collection to the current user's visible skills."""
-    return [skill for skill in skills if _can_read_skill(skill, current_user)]
-
-
 def _require_readable_skill(skill: Any, current_user: CurrentUser) -> Any:
     """Raise not-found when a skill is missing or outside the user's scope."""
-    if not _can_read_skill(skill, current_user):
+    access_context = build_skill_access_context(current_user)
+    if not can_read_skill(skill, access_context):
         raise HTTPException(status_code=404, detail="Skill not found")
     return skill
 
 
 def _require_writable_skill(skill: Any, current_user: CurrentUser) -> Any:
-    """Raise not-found when a skill is missing or not owned by the user."""
-    if not _can_write_skill(skill, current_user):
+    """Raise not-found when a skill is missing or not writable by the user."""
+    access_context = build_skill_access_context(current_user)
+    if not can_update_skill(skill, access_context):
         raise HTTPException(status_code=404, detail="Skill not found")
     return skill
+
+
+def _normalize_access_level(raw_value: Optional[str]) -> str:
+    access_level = str(raw_value or SKILL_ACCESS_PRIVATE).strip().lower()
+    if access_level not in {SKILL_ACCESS_PRIVATE, SKILL_ACCESS_TEAM, SKILL_ACCESS_PUBLIC}:
+        raise HTTPException(status_code=400, detail="Invalid access_level")
+    return access_level
+
+
+def _resolve_department_scope(
+    *,
+    current_user: CurrentUser,
+    access_level: str,
+    department_id: Optional[str],
+    owner_user_id: str,
+) -> Optional[str]:
+    access_context = build_skill_access_context(current_user)
+    if access_level == SKILL_ACCESS_PUBLIC:
+        if not can_set_public_skill(owner_user_id=owner_user_id, context=access_context):
+            raise HTTPException(
+                status_code=403,
+                detail="You do not have permission to publish this skill publicly",
+            )
+        return None
+
+    if access_level == SKILL_ACCESS_TEAM:
+        try:
+            return validate_team_skill_target(context=access_context, department_id=department_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return None
 
 
 # Request/Response Models
@@ -467,31 +490,56 @@ class InterfaceDefinition(BaseModel):
 class CreateSkillRequest(BaseModel):
     """Request to create a new skill."""
 
-    name: str = Field(..., min_length=1, max_length=100)
+    display_name: str = Field(..., min_length=1, max_length=100)
+    skill_slug: Optional[str] = Field(default=None, min_length=1, max_length=100)
     description: Optional[str] = Field(None, min_length=1, max_length=500)
     skill_type: Optional[str] = Field(default="langchain_tool")
     code: Optional[str] = Field(default=None)
     interface_definition: Optional[InterfaceDefinition] = None
     dependencies: Optional[List[str]] = Field(default_factory=list)
     version: str = Field(default="1.0.0")
+    access_level: str = Field(default=SKILL_ACCESS_PRIVATE)
+    department_id: Optional[str] = None
 
 
 class UpdateSkillRequest(BaseModel):
     """Request to update a skill."""
 
+    display_name: Optional[str] = Field(None, min_length=1, max_length=100)
     description: Optional[str] = Field(None, min_length=1, max_length=500)
     code: Optional[str] = Field(None)
     interface_definition: Optional[InterfaceDefinition] = None
     dependencies: Optional[List[str]] = None
+    access_level: Optional[str] = None
+    department_id: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class ShareTargetResponse(BaseModel):
+    department_id: str
+    name: str
+
+
+class SkillShareTargetsResponse(BaseModel):
+    can_publish_public: bool
+    default_department_id: Optional[str] = None
+    allowed_department_targets: List[ShareTargetResponse] = Field(default_factory=list)
 
 
 class SkillResponse(BaseModel):
     """Skill response model."""
 
     skill_id: str
-    name: str
+    skill_slug: str
+    display_name: str
     description: str
     version: str
+    access_level: str = SKILL_ACCESS_PRIVATE
+    department_id: Optional[str] = None
+    department_name: Optional[str] = None
+    can_edit: bool = False
+    can_delete: bool = False
+    can_publish_public: bool = False
     skill_type: Optional[str] = "langchain_tool"
     storage_type: Optional[str] = None
     code: Optional[str] = None
@@ -510,13 +558,20 @@ class SkillResponse(BaseModel):
     gating_status: Optional[dict] = None
 
     @classmethod
-    def from_skill_info(cls, skill_info: SkillInfo, include_code: bool = False) -> "SkillResponse":
+    def from_skill_info(
+        cls,
+        skill_info: SkillInfo,
+        *,
+        current_user: CurrentUser,
+        include_code: bool = False,
+    ) -> "SkillResponse":
         """Create response from SkillInfo.
 
         Args:
             skill_info: Skill information
             include_code: Whether to include code in response
         """
+        access_context = build_skill_access_context(current_user)
         # Get additional fields from manifest if available (only for agent_skill)
         skill_md_content = None
         homepage = None
@@ -539,9 +594,19 @@ class SkillResponse(BaseModel):
 
         return cls(
             skill_id=str(skill_info.skill_id),
-            name=skill_info.name,
+            skill_slug=skill_info.skill_slug,
+            display_name=skill_info.display_name,
             description=skill_info.description,
             version=skill_info.version,
+            access_level=skill_info.access_level,
+            department_id=skill_info.department_id,
+            department_name=skill_info.department_name,
+            can_edit=can_update_skill(skill_info, access_context),
+            can_delete=can_delete_skill(skill_info, access_context),
+            can_publish_public=can_set_public_skill(
+                owner_user_id=skill_info.created_by,
+                context=access_context,
+            ),
             skill_type=skill_info.skill_type,
             storage_type=skill_info.storage_type,
             code=skill_info.code if include_code else None,
@@ -588,6 +653,29 @@ class SkillsOverviewStatsResponse(BaseModel):
     last_executed_at: Optional[str] = None
 
 
+@router.get("/share-targets", response_model=SkillShareTargetsResponse)
+async def get_skill_share_targets(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Return visibility/share options available to the current user."""
+    access_context = build_skill_access_context(current_user)
+    targets = list_allowed_share_targets(access_context)
+    return SkillShareTargetsResponse(
+        can_publish_public=can_set_public_skill(
+            owner_user_id=current_user.user_id,
+            context=access_context,
+        ),
+        default_department_id=access_context.department_id,
+        allowed_department_targets=[
+            ShareTargetResponse(
+                department_id=target.department_id,
+                name=target.name,
+            )
+            for target in targets
+        ],
+    )
+
+
 @router.get("", response_model=List[SkillResponse])
 async def list_skills(
     limit: int = Query(100, ge=1, le=1000),
@@ -608,13 +696,16 @@ async def list_skills(
     """
     try:
         registry = get_skill_registry()
-        visible_skills = _filter_visible_skills(
-            registry.list_skills(limit=1000, offset=0),
-            current_user,
+        access_context = build_skill_access_context(current_user)
+        skills = registry.list_visible_skills(
+            access_context=access_context,
+            limit=limit,
+            offset=offset,
         )
-        skills = visible_skills[offset : offset + limit]
-
-        return [SkillResponse.from_skill_info(skill, include_code=include_code) for skill in skills]
+        return [
+            SkillResponse.from_skill_info(skill, current_user=current_user, include_code=include_code)
+            for skill in skills
+        ]
 
     except Exception as e:
         logger.error(f"Failed to list skills: {e}")
@@ -637,9 +728,12 @@ async def search_skills(
     """
     try:
         registry = get_skill_registry()
-        skills = _filter_visible_skills(registry.search_skills(query), current_user)
-
-        return [SkillResponse.from_skill_info(skill) for skill in skills]
+        access_context = build_skill_access_context(current_user)
+        skills = registry.search_visible_skills(
+            query=query,
+            access_context=access_context,
+        )
+        return [SkillResponse.from_skill_info(skill, current_user=current_user) for skill in skills]
 
     except Exception as e:
         logger.error(f"Failed to search skills: {e}")
@@ -821,39 +915,11 @@ async def get_skills_overview_stats(
 ):
     """Get aggregated overview metrics for all skills."""
     try:
-        registry = get_skill_registry()
-        skills = _filter_visible_skills(registry.list_skills(limit=1000, offset=0), current_user)
-        active_skills = sum(1 for skill in skills if skill.is_active is not False)
-        inactive_skills = max(len(skills) - active_skills, 0)
-        agent_skills = sum(1 for skill in skills if skill.skill_type == "agent_skill")
-        langchain_tool_skills = sum(1 for skill in skills if skill.skill_type == "langchain_tool")
-        skills_with_dependencies = sum(
-            1
-            for skill in skills
-            if isinstance(skill.dependencies, list) and len(skill.dependencies) > 0
-        )
-        total_execution_count = sum(int(skill.execution_count or 0) for skill in skills)
-        avg_samples = [
-            float(skill.average_execution_time or 0.0)
-            for skill in skills
-            if (skill.execution_count or 0) > 0 and skill.average_execution_time is not None
-        ]
-        last_executed_at = max(
-            (skill.last_executed_at for skill in skills if skill.last_executed_at),
-            default=None,
-        )
+        from skill_library.skill_model import get_skill_model
 
-        return SkillsOverviewStatsResponse(
-            total_skills=len(skills),
-            active_skills=active_skills,
-            inactive_skills=inactive_skills,
-            agent_skills=agent_skills,
-            langchain_tool_skills=langchain_tool_skills,
-            skills_with_dependencies=skills_with_dependencies,
-            total_execution_count=total_execution_count,
-            average_execution_time=(sum(avg_samples) / len(avg_samples) if avg_samples else 0.0),
-            last_executed_at=last_executed_at.isoformat() if last_executed_at else None,
-        )
+        access_context = build_skill_access_context(current_user)
+        stats = get_skill_model().get_overview_stats(access_context=access_context)
+        return SkillsOverviewStatsResponse(**stats)
 
     except Exception as e:
         logger.error(f"Failed to get skills overview stats: {e}")
@@ -879,9 +945,14 @@ async def get_skill(
     try:
         skill_uuid = UUID(skill_id)
         registry = get_skill_registry()
-        skill = _require_readable_skill(registry.get_skill(skill_uuid), current_user)
-
-        return SkillResponse.from_skill_info(skill, include_code=include_code)
+        access_context = build_skill_access_context(current_user)
+        skill = registry.get_visible_skill(skill_id=skill_uuid, access_context=access_context)
+        skill = _require_readable_skill(skill, current_user)
+        return SkillResponse.from_skill_info(
+            skill,
+            current_user=current_user,
+            include_code=include_code,
+        )
 
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
@@ -894,13 +965,16 @@ async def get_skill(
 
 @router.post("", response_model=SkillResponse, status_code=201)
 async def create_skill(
-    name: str = Form(...),
+    display_name: str = Form(...),
+    skill_slug: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     skill_type: str = Form(default="langchain_tool"),
     version: str = Form(default="1.0.0"),
     package_file: Optional[UploadFile] = File(None),
     code: Optional[str] = Form(None),
     dependencies: Optional[str] = Form(None),  # JSON string
+    access_level: str = Form(default=SKILL_ACCESS_PRIVATE),
+    department_id: Optional[str] = Form(None),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Create a new skill.
@@ -909,13 +983,16 @@ async def create_skill(
     For langchain_tool: code is required
 
     Args:
-        name: Skill name
+        display_name: Skill display name
+        skill_slug: Optional custom skill slug
         description: Skill description
         skill_type: Type of skill (langchain_tool or agent_skill)
         version: Skill version
         package_file: Package file for agent_skill (ZIP or tar.gz)
         code: Python code for langchain_tool
         dependencies: JSON string of dependencies list
+        access_level: Visibility level
+        department_id: Department root for team-scoped skills
         current_user: Authenticated user
 
     Returns:
@@ -926,7 +1003,7 @@ async def create_skill(
 
         # Debug logging
         logger.info(
-            f"Creating skill: name={name}, skill_type={skill_type}, "
+            f"Creating skill: display_name={display_name}, skill_type={skill_type}, "
             f"has_code={bool(code)}, has_package={bool(package_file)}"
         )
 
@@ -939,6 +1016,9 @@ async def create_skill(
                 raise HTTPException(status_code=400, detail="Invalid dependencies JSON")
 
         registry = get_skill_registry()
+        normalized_access_level = _normalize_access_level(access_level)
+        access_context = build_skill_access_context(current_user)
+        requested_department_id = department_id or access_context.department_id
 
         # Handle agent_skill with package
         if skill_type == "agent_skill":
@@ -991,8 +1071,23 @@ async def create_skill(
                 gating_result = gating.check_eligibility(parsed.metadata)
 
                 # Upload package to MinIO
+                resolved_skill_slug = generate_unique_skill_slug(
+                    parsed.metadata.skill_slug or skill_slug or display_name,
+                    registry,
+                )
+                resolved_display_name = (
+                    str(parsed.metadata.display_name or "").strip()
+                    or str(display_name or "").strip()
+                    or resolved_skill_slug
+                )
+                resolved_department_id = _resolve_department_scope(
+                    current_user=current_user,
+                    access_level=normalized_access_level,
+                    department_id=requested_department_id,
+                    owner_user_id=str(current_user.user_id),
+                )
                 try:
-                    storage_path = await handler.upload_package(file_data, name, version)
+                    storage_path = await handler.upload_package(file_data, resolved_skill_slug, version)
                 except ValueError as e:
                     raise HTTPException(status_code=400, detail=f"Upload failed: {str(e)}")
 
@@ -1013,14 +1108,16 @@ async def create_skill(
                     logger.info(
                         "Ignoring form description for agent_skill and using SKILL.md description",
                         extra={
-                            "skill_name": name,
+                            "display_name": resolved_display_name,
+                            "skill_slug": resolved_skill_slug,
                             "form_description": description.strip(),
                             "skill_md_description": parsed_description,
                         },
                     )
 
                 skill = registry.register_skill(
-                    name=name,
+                    skill_slug=resolved_skill_slug,
+                    display_name=resolved_display_name,
                     description=parsed_description,
                     interface_definition={
                         "inputs": {},
@@ -1042,8 +1139,9 @@ async def create_skill(
                     homepage=homepage_str,
                     skill_metadata=skill_metadata_dict,
                     gating_status=gating_status_dict,
+                    access_level=normalized_access_level,
+                    department_id=resolved_department_id,
                     is_active=True,
-                    is_system=False,
                     created_by=str(current_user.user_id),
                     validate=False,
                 )
@@ -1052,13 +1150,13 @@ async def create_skill(
                     f"Agent skill created from package by user {current_user.user_id}",
                     extra={
                         "skill_id": str(skill.skill_id),
-                        "skill_name": name,
+                        "skill_slug": resolved_skill_slug,
                         "storage_path": storage_path,
                         "gating_eligible": gating_result.eligible,
                     },
                 )
 
-                return SkillResponse.from_skill_info(skill)
+                return SkillResponse.from_skill_info(skill, current_user=current_user)
 
             finally:
                 # Clean up temporary directory
@@ -1090,8 +1188,16 @@ async def create_skill(
                     "required_inputs": [],
                 }
 
+            resolved_skill_slug = generate_unique_skill_slug(skill_slug or display_name, registry)
+            resolved_department_id = _resolve_department_scope(
+                current_user=current_user,
+                access_level=normalized_access_level,
+                department_id=requested_department_id,
+                owner_user_id=str(current_user.user_id),
+            )
             skill = registry.register_skill(
-                name=name,
+                skill_slug=resolved_skill_slug,
+                display_name=display_name.strip(),
                 description=description.strip(),
                 interface_definition=interface_def,
                 dependencies=deps_list,
@@ -1099,18 +1205,19 @@ async def create_skill(
                 skill_type="langchain_tool",
                 storage_type="inline",
                 code=code,
+                access_level=normalized_access_level,
+                department_id=resolved_department_id,
                 is_active=True,
-                is_system=False,
                 created_by=str(current_user.user_id),
                 validate=False,
             )
 
             logger.info(
                 f"LangChain tool created by user {current_user.user_id}",
-                extra={"skill_id": str(skill.skill_id), "skill_name": name},
+                extra={"skill_id": str(skill.skill_id), "skill_slug": resolved_skill_slug},
             )
 
-            return SkillResponse.from_skill_info(skill)
+            return SkillResponse.from_skill_info(skill, current_user=current_user)
 
         else:
             raise HTTPException(status_code=400, detail=f"Invalid skill_type: {skill_type}")
@@ -1144,9 +1251,28 @@ async def update_skill(
 
         # Check if skill exists
         existing = _require_writable_skill(registry.get_skill(skill_uuid), current_user)
+        target_access_level = (
+            _normalize_access_level(request.access_level)
+            if request.access_level is not None
+            else existing.access_level
+        )
+        requested_department_id = (
+            request.department_id
+            if request.department_id is not None
+            else existing.department_id
+        )
+        resolved_department_id = _resolve_department_scope(
+            current_user=current_user,
+            access_level=target_access_level,
+            department_id=requested_department_id,
+            owner_user_id=str(existing.created_by or current_user.user_id),
+        )
 
         logger.info(
-            f"Updating skill {skill_id}, request data: description={bool(request.description)}, code={bool(request.code)}, interface_def={bool(request.interface_definition)}, dependencies={bool(request.dependencies)}"
+            f"Updating skill {skill_id}, request data: display_name={bool(request.display_name)}, "
+            f"description={bool(request.description)}, code={bool(request.code)}, "
+            f"interface_def={bool(request.interface_definition)}, dependencies={bool(request.dependencies)}, "
+            f"access_level={request.access_level}, is_active={request.is_active}"
         )
 
         # If code is provided, re-parse interface (even if code didn't change, we should re-parse)
@@ -1174,16 +1300,16 @@ async def update_skill(
 
         logger.info(f"Final interface_def to update: {interface_def}")
 
-        # Update skill via model
-        from skill_library.skill_model import get_skill_model
-
-        skill_model = get_skill_model()
-        updated = skill_model.update_skill(
+        updated = registry.update_skill(
             skill_id=skill_uuid,
+            display_name=request.display_name,
             description=request.description,
             code=request.code,
             interface_definition=interface_def,
             dependencies=request.dependencies,
+            access_level=target_access_level,
+            department_id=resolved_department_id,
+            is_active=request.is_active,
         )
 
         if not updated:
@@ -1197,7 +1323,7 @@ async def update_skill(
             extra={"skill_id": skill_id},
         )
 
-        return SkillResponse.from_skill_info(skill)
+        return SkillResponse.from_skill_info(skill, current_user=current_user)
 
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid skill ID format")
@@ -1248,16 +1374,22 @@ async def delete_skill(
 @router.post("/from-template", response_model=SkillResponse, status_code=201)
 async def create_from_template(
     template_id: str = Body(..., embed=True),
-    name: str = Body(..., embed=True),
+    display_name: str = Body(..., embed=True),
+    skill_slug: Optional[str] = Body(None, embed=True),
     description: Optional[str] = Body(None, embed=True),
+    access_level: str = Body(SKILL_ACCESS_PRIVATE, embed=True),
+    department_id: Optional[str] = Body(None, embed=True),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Create skill from template.
 
     Args:
         template_id: Template identifier
-        name: Custom name for the skill
+        display_name: Display name for the skill
+        skill_slug: Optional custom slug for the skill
         description: Optional custom description
+        access_level: Skill visibility
+        department_id: Department target when access_level is team
         current_user: Authenticated user
 
     Returns:
@@ -1271,28 +1403,43 @@ async def create_from_template(
 
         # Create skill from template
         registry = get_skill_registry()
+        normalized_access_level = _normalize_access_level(access_level)
+        resolved_department_id = _resolve_department_scope(
+            current_user=current_user,
+            access_level=normalized_access_level,
+            department_id=department_id,
+            owner_user_id=current_user.user_id,
+        )
+        resolved_skill_slug = generate_unique_skill_slug(skill_slug or display_name, registry)
 
         # Extract interface from code (simplified - in production, parse AST)
         interface_def = {"inputs": {}, "outputs": {"result": "string"}, "required_inputs": []}
 
         skill = registry.register_skill(
-            name=name,
+            skill_slug=resolved_skill_slug,
+            display_name=display_name.strip(),
             description=description or template["description"],
             interface_definition=interface_def,
             dependencies=template.get("dependencies", []),
             version="1.0.0",
             skill_type=template["skill_type"],
             code=template["code"],
+            access_level=normalized_access_level,
+            department_id=resolved_department_id,
             created_by=str(current_user.user_id),
             validate=False,  # Skip validation for templates
         )
 
         logger.info(
             f"Skill created from template by user {current_user.user_id}",
-            extra={"skill_id": str(skill.skill_id), "template_id": template_id},
+            extra={
+                "skill_id": str(skill.skill_id),
+                "skill_slug": resolved_skill_slug,
+                "template_id": template_id,
+            },
         )
 
-        return SkillResponse.from_skill_info(skill)
+        return SkillResponse.from_skill_info(skill, current_user=current_user)
 
     except HTTPException:
         raise
@@ -1395,8 +1542,9 @@ async def test_skill(
                 # Skill tests must always load the selected skill, even if this agent
                 # is not explicitly configured with it yet.
                 capabilities = list(agent_info.capabilities or [])
-                if skill.name not in capabilities:
-                    capabilities.append(skill.name)
+                required_skill_id = str(skill.skill_id)
+                if required_skill_id not in capabilities:
+                    capabilities.append(required_skill_id)
 
                 config = AgentConfig(
                     agent_id=agent_uuid,
@@ -1504,14 +1652,14 @@ async def test_skill(
                     },
                 )
 
-                task_description = f"""You are testing the agent skill "{skill.name}".
+                task_description = f"""You are testing the agent skill "{skill.display_name}" ({skill.skill_slug}).
 
 Skill description: {skill.description}
 User request: {natural_language_input}
 
 Requirements:
-1. First call read_skill for "{skill.name}" before running any skill files.
-2. Execute required tools/code using files under .skills/<skill_name>/ in the workspace.
+1. First call read_skill for "{skill.skill_slug}" before running any skill files.
+2. Execute required tools/code using files under .skills/{skill.skill_slug}/ in the workspace.
 3. Return concrete execution results and any errors clearly.
 """
                 exec_context = ExecutionContext(
@@ -1953,7 +2101,8 @@ async def get_skill_stats(
 
         return {
             "skill_id": str(skill.skill_id),
-            "name": skill.name,
+            "skill_slug": skill.skill_slug,
+            "display_name": skill.display_name,
             "execution_count": skill.execution_count,
             "last_executed_at": (
                 skill.last_executed_at.isoformat() if skill.last_executed_at else None
@@ -2214,7 +2363,8 @@ async def get_skill_files(
 
             return {
                 "skill_id": skill_id,
-                "skill_name": skill.name,
+                "skill_slug": skill.skill_slug,
+                "display_name": skill.display_name,
                 "skill_type": skill.skill_type,
                 "files": file_tree,
                 "package_status": package_status,
@@ -2440,7 +2590,7 @@ async def update_skill_file_content(
 
                 handler = PackageHandler(minio_client)
                 new_storage_path = await handler.upload_package(
-                    package_data, skill.name, skill.version
+                    package_data, skill.skill_slug, skill.version
                 )
                 _replace_agent_skill_package_storage(
                     skill_uuid=skill_uuid,
@@ -2567,7 +2717,7 @@ async def update_skill_package(
             # Upload new package to MinIO
             try:
                 new_storage_path = await handler.upload_package(
-                    file_data, skill.name, skill.version
+                    file_data, skill.skill_slug, skill.version
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Upload failed: {str(e)}")

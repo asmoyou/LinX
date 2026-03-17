@@ -473,14 +473,17 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({
                 <div className="space-y-4">
                   <SectionHeader icon={Brain} title={t('agent.selectSkills')} />
                   <div className="flex flex-wrap gap-2">
-                    {displayAgent.skills && displayAgent.skills.length > 0 ? (
-                      displayAgent.skills.map((skill) => (
+                    {displayAgent.skill_summaries && displayAgent.skill_summaries.length > 0 ? (
+                      displayAgent.skill_summaries.map((skill) => (
                         <div
-                          key={skill}
+                          key={skill.skill_id}
                           className="px-4 py-2 rounded-xl bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50 text-indigo-700 dark:text-indigo-300 text-sm font-bold flex items-center gap-2"
                         >
                           <Brain className="w-3 h-3" />
-                          {skill}
+                          <span>{skill.display_name}</span>
+                          <span className="font-mono text-[11px] text-indigo-500 dark:text-indigo-300/80">
+                            {skill.skill_slug}
+                          </span>
                         </div>
                       ))
                     ) : (

@@ -1822,39 +1822,68 @@ class MissionOrchestrator:
             )
             return []
 
-        scored: List[tuple[float, str]] = []
+        scored: List[tuple[float, str, str]] = []
         task_lower = task_text.lower()
         for skill in candidates:
-            skill_name = str(getattr(skill, "name", "") or "").strip()
-            if not skill_name:
+            skill_slug = str(getattr(skill, "skill_slug", "") or "").strip()
+            if not skill_slug:
                 continue
             skill_desc = str(getattr(skill, "description", "") or "").strip()
-            skill_tokens = self._tokenize_for_match(skill_name, skill_desc)
+            skill_tokens = self._tokenize_for_match(
+                skill_slug,
+                getattr(skill, "display_name", ""),
+                skill_desc,
+            )
             overlap = len(task_tokens.intersection(skill_tokens))
 
-            name_in_task = skill_name.lower() in task_lower
+            slug_in_task = skill_slug.lower() in task_lower
             # Only keep skills with at least one direct relevance signal.
-            if overlap <= 0 and not name_in_task:
+            if overlap <= 0 and not slug_in_task:
                 continue
 
             score = float(overlap * 2)
-            if name_in_task:
+            if slug_in_task:
                 score += 6.0
             if getattr(skill, "skill_type", "") == "agent_skill":
                 score += 0.2
 
             if score > 0:
-                scored.append((score, skill_name))
+                scored.append((score, str(skill.skill_id), skill_slug))
 
         scored.sort(key=lambda item: item[0], reverse=True)
         selected: List[str] = []
-        for _, skill_name in scored:
-            if skill_name in selected:
+        for _, skill_id, _skill_slug in scored:
+            if skill_id in selected:
                 continue
-            selected.append(skill_name)
+            selected.append(skill_id)
             if len(selected) >= limit:
                 break
         return selected
+
+    @staticmethod
+    def _resolve_skill_slugs(skill_ids: List[str]) -> List[str]:
+        """Resolve platform skill IDs into slugs for logs and task metadata."""
+        if not skill_ids:
+            return []
+
+        try:
+            from skill_library.skill_registry import get_skill_registry
+
+            registry = get_skill_registry()
+            resolved: List[str] = []
+            for skill_id in skill_ids:
+                try:
+                    skill_info = registry.get_skill(UUID(str(skill_id)))
+                except ValueError:
+                    continue
+                if not skill_info:
+                    continue
+                if skill_info.skill_slug not in resolved:
+                    resolved.append(skill_info.skill_slug)
+            return resolved
+        except Exception:
+            logger.exception("Failed to resolve skill slugs for temporary worker")
+            return []
 
     def _select_temporary_worker_knowledge_collections(
         self,
@@ -2133,6 +2162,7 @@ class MissionOrchestrator:
             task_obj=task_obj,
             exec_cfg=exec_cfg,
         )
+        selected_skill_slugs = self._resolve_skill_slugs(selected_skills)
         selected_knowledge = self._select_temporary_worker_knowledge_collections(
             mission=mission,
             task_obj=task_obj,
@@ -2194,6 +2224,7 @@ class MissionOrchestrator:
                 metadata["temporary_agent_task_id"] = str(task_obj.task_id)
                 metadata["temporary_agent_prompt_signature"] = worker_prompt_signature
                 metadata["temporary_agent_skills"] = selected_skills
+                metadata["temporary_agent_skill_slugs"] = selected_skill_slugs
                 metadata["temporary_agent_memory_scopes"] = memory_scopes
                 metadata["temporary_agent_knowledge_collections"] = selected_knowledge
                 task.task_metadata = metadata
@@ -2210,6 +2241,7 @@ class MissionOrchestrator:
         task_metadata["temporary_agent_task_id"] = str(task_obj.task_id)
         task_metadata["temporary_agent_prompt_signature"] = worker_prompt_signature
         task_metadata["temporary_agent_skills"] = selected_skills
+        task_metadata["temporary_agent_skill_slugs"] = selected_skill_slugs
         task_metadata["temporary_agent_memory_scopes"] = memory_scopes
         task_metadata["temporary_agent_knowledge_collections"] = selected_knowledge
         task_obj.task_metadata = task_metadata
@@ -2226,7 +2258,8 @@ class MissionOrchestrator:
                 "is_temporary": True,
                 "prompt_mode": "task_specific_sop",
                 "prompt_signature": worker_prompt_signature,
-                "skills": selected_skills,
+                "skill_ids": selected_skills,
+                "skill_slugs": selected_skill_slugs,
                 "memory_scopes": memory_scopes,
                 "knowledge_collections": selected_knowledge,
             },

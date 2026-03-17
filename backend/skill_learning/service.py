@@ -230,7 +230,7 @@ class SkillProposalService:
         ).strip()
         avoid = str(payload.get("avoid") or getattr(proposal, "avoid", None) or "").strip()
 
-        lines = [f"learned.skill.name={skill.name}"]
+        lines = [f"learned.skill.slug={skill.skill_slug}"]
         if goal:
             lines.append(f"learned.skill.goal={goal}")
         if steps:
@@ -251,7 +251,8 @@ class SkillProposalService:
         payload: Dict[str, Any],
     ) -> str:
         parts: List[str] = [
-            str(skill.name or ""),
+            str(skill.display_name or ""),
+            str(skill.skill_slug or ""),
             str(skill.description or ""),
             str(skill.skill_md_content or ""),
             str(getattr(proposal, "title", None) or ""),
@@ -324,9 +325,12 @@ class SkillProposalService:
             if skill is not None:
                 return skill
 
-        skill_name = self._build_skill_name(existing)
+        skill_slug = self._build_skill_name(existing)
+        display_name = (
+            str(getattr(existing, "title", "") or payload.get("goal") or "").strip() or skill_slug
+        )
         if reuse_existing_by_name:
-            existing_skill = registry.get_skill_by_name(skill_name)
+            existing_skill = registry.get_skill_by_slug(skill_slug)
             if existing_skill is not None:
                 return existing_skill
 
@@ -337,7 +341,7 @@ class SkillProposalService:
         if skill_type == "agent_skill":
             storage_type = "minio"
             storage_path = self._upload_agent_skill_package(
-                skill_name=skill_name,
+                skill_name=skill_slug,
                 version=version,
                 skill_md_content=skill_md_content,
             )
@@ -348,13 +352,15 @@ class SkillProposalService:
             }
 
         return registry.register_skill(
-            name=skill_name,
+            skill_slug=skill_slug,
+            display_name=display_name,
             description=self._build_skill_description(existing, payload),
             interface_definition=self._build_skill_interface(existing, payload),
             dependencies=[],
             version=version,
             skill_type=skill_type,
             storage_type=storage_type,
+            access_level="private",
             code=None,
             config={
                 "source": "skill_proposal",
@@ -415,7 +421,8 @@ class SkillProposalService:
             )
             published_skill_id = str(skill.skill_id)
             payload["published_skill_id"] = published_skill_id
-            payload["published_skill_name"] = skill.name
+            payload["published_skill_slug"] = skill.skill_slug
+            payload["published_skill_display_name"] = skill.display_name
 
         payload.update(
             {
@@ -556,7 +563,8 @@ class SkillProposalService:
                     "record_type": "published_skill",
                     "signal_type": "published_skill",
                     "skill_id": str(skill.skill_id),
-                    "skill_name": skill.name,
+                    "skill_slug": skill.skill_slug,
+                    "skill_display_name": skill.display_name,
                     "skill_type": skill.skill_type,
                     "storage_type": skill.storage_type,
                     "proposal_id": int(getattr(proposal, "id", 0) or 0),

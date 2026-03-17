@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 class SkillMetadata:
     """Parsed skill metadata from frontmatter."""
 
-    name: str
+    skill_slug: str
+    display_name: str
     description: str
     homepage: Optional[str] = None
     emoji: Optional[str] = None
@@ -30,6 +31,10 @@ class SkillMetadata:
     requires_env: List[str] = field(default_factory=list)
     requires_config: List[str] = field(default_factory=list)
     os_filter: Optional[List[str]] = None  # darwin, linux, win32
+
+    @property
+    def name(self) -> str:
+        return self.skill_slug
 
 
 @dataclass
@@ -61,10 +66,11 @@ class SkillMdParser:
             post = frontmatter.loads(content)
             
             # Extract required fields
-            name = post.get('name')
+            skill_slug = post.get('name')
+            display_name = post.get('display_name') or skill_slug
             description = post.get('description')
             
-            if not name:
+            if not skill_slug:
                 raise ValueError("Missing required field: name")
             if not description:
                 raise ValueError("Missing required field: description")
@@ -95,7 +101,8 @@ class SkillMdParser:
             
             # Create metadata object
             metadata = SkillMetadata(
-                name=name,
+                skill_slug=skill_slug,
+                display_name=display_name,
                 description=description,
                 homepage=homepage,
                 emoji=emoji,
@@ -130,8 +137,10 @@ class SkillMdParser:
         errors = []
         
         # Check required fields
-        if not parsed.metadata.name:
+        if not parsed.metadata.skill_slug:
             errors.append("name is required")
+        if not parsed.metadata.display_name:
+            errors.append("display_name is required")
         if not parsed.metadata.description:
             errors.append("description is required")
         
@@ -140,9 +149,9 @@ class SkillMdParser:
             errors.append("instructions cannot be empty")
         
         # Validate name format (alphanumeric, underscore, hyphen)
-        if parsed.metadata.name:
+        if parsed.metadata.skill_slug:
             import re
-            if not re.match(r'^[a-zA-Z0-9_-]+$', parsed.metadata.name):
+            if not re.match(r'^[a-zA-Z0-9_-]+$', parsed.metadata.skill_slug):
                 errors.append("name must contain only alphanumeric characters, underscores, and hyphens")
         
         # Validate homepage URL format

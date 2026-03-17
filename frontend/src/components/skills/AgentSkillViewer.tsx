@@ -23,6 +23,9 @@ import {
 import {
   skillsApi,
   type FileTreeItem,
+  type Skill,
+  type SkillAccessLevel,
+  type SkillShareTargetsResponse,
   type SkillPackageStatus,
 } from "@/api/skills";
 import { LayoutModal } from "@/components/LayoutModal";
@@ -33,10 +36,9 @@ import toast from "react-hot-toast";
 interface AgentSkillViewerProps {
   isOpen: boolean;
   onClose: () => void;
-  skillId: string;
-  skillName: string;
+  skill: Skill;
   mode?: "view" | "edit";
-  onUpdate?: () => void;
+  onUpdate?: () => void | Promise<void>;
 }
 
 interface ApiErrorLike {
@@ -81,12 +83,12 @@ function findFileByName(
 const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
   isOpen,
   onClose,
-  skillId,
-  skillName,
+  skill,
   mode = "view",
   onUpdate,
 }) => {
   const { t } = useTranslation();
+  const skillId = skill.skill_id;
   const [files, setFiles] = useState<FileTreeItem[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string>("");
@@ -102,9 +104,25 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [displayName, setDisplayName] = useState(skill.display_name);
+  const [accessLevel, setAccessLevel] = useState<SkillAccessLevel>(skill.access_level);
+  const [departmentId, setDepartmentId] = useState(skill.department_id || "");
+  const [shareTargets, setShareTargets] = useState<SkillShareTargetsResponse | null>(null);
+  const [settingsSaving, setSettingsSaving] = useState(false);
   const [packageStatus, setPackageStatus] = useState<SkillPackageStatus | null>(
     null,
   );
+  const isReadOnly = mode === "view";
+  const resolvedDepartmentId =
+    accessLevel === "team"
+      ? departmentId || shareTargets?.default_department_id || ""
+      : "";
+  const initialDepartmentId =
+    skill.access_level === "team" ? skill.department_id || "" : "";
+  const settingsDirty =
+    displayName.trim() !== skill.display_name ||
+    accessLevel !== skill.access_level ||
+    resolvedDepartmentId !== initialDepartmentId;
 
   const handleFileSelect = useCallback(
     async (filePath: string) => {
@@ -156,6 +174,88 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
       void loadFiles();
     }
   }, [isOpen, skillId, loadFiles]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    setIsEditing(mode === "edit");
+    setShowUploadDialog(false);
+    setUploadFile(null);
+    setIsDragging(false);
+    setDisplayName(skill.display_name);
+    setAccessLevel(skill.access_level);
+    setDepartmentId(skill.department_id || "");
+
+    if (mode !== "edit") {
+      setShareTargets(null);
+      return;
+    }
+
+    void skillsApi
+      .getShareTargets()
+      .then((data) => setShareTargets(data))
+      .catch((error: unknown) => {
+        console.error("Failed to load skill share targets:", error);
+        setShareTargets(null);
+      });
+  }, [
+    isOpen,
+    mode,
+    skill.skill_id,
+    skill.access_level,
+    skill.department_id,
+    skill.department_name,
+    skill.display_name,
+  ]);
+
+  const handleSaveSettings = async () => {
+    if (isReadOnly || !displayName.trim()) {
+      return;
+    }
+
+    if (accessLevel === "team" && !resolvedDepartmentId) {
+      toast.error(
+        t("skills.departmentRequired", {
+          defaultValue: "Department is required for team visibility",
+        }),
+      );
+      return;
+    }
+
+    setSettingsSaving(true);
+    try {
+      const updatedSkill = await skillsApi.update(skillId, {
+        display_name: displayName.trim(),
+        access_level: accessLevel,
+        department_id: accessLevel === "team" ? resolvedDepartmentId : null,
+      });
+      setDisplayName(updatedSkill.display_name);
+      setAccessLevel(updatedSkill.access_level);
+      setDepartmentId(updatedSkill.department_id || "");
+      toast.success(
+        t("skills.settingsSaved", {
+          defaultValue: "Settings saved successfully",
+        }),
+      );
+      if (onUpdate) {
+        await onUpdate();
+      }
+    } catch (error: unknown) {
+      console.error("Failed to save skill settings:", error);
+      toast.error(
+        getApiErrorMessage(
+          error,
+          t("skills.failedToSaveSettings", {
+            defaultValue: "Failed to save settings",
+          }),
+        ),
+      );
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
 
   const handleSaveFile = async () => {
     if (!selectedFile) return;
@@ -314,12 +414,12 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
       closeOnEscape={true}
       backdropClassName="bg-black/50 backdrop-blur-sm"
     >
-      <ModalPanel className="w-full max-w-[95vw] h-[calc(100vh-var(--app-header-height,4rem)-3rem)] flex flex-col overflow-hidden">
+      <ModalPanel className="w-full max-w-[95vw] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between mb-4 pb-4 border-b border-border">
           <div>
             <h2 className="text-xl font-semibold text-foreground">
-              {skillName}
+              {displayName}
             </h2>
             <p className="text-sm text-muted-foreground mt-1">
               {isEditing
@@ -356,7 +456,7 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
         </div>
 
         {/* Content */}
-        <div className="flex-1 flex flex-col gap-4 overflow-hidden">
+        <div className="flex flex-col gap-4">
           {packageStatus?.package_missing && (
             <div className="rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
               <div className="flex items-start gap-3">
@@ -378,82 +478,191 @@ const AgentSkillViewer: React.FC<AgentSkillViewerProps> = ({
             </div>
           )}
 
-          <div className="flex min-h-0 flex-1 gap-4 overflow-hidden">
-            {/* Left Sidebar - File Tree */}
-            <div className="w-80 border border-border rounded-xl overflow-hidden bg-muted/20 flex flex-col">
-              <div className="p-3 border-b border-border bg-muted/30">
-                <h3 className="text-sm font-medium text-foreground">
-                  {t("skills.files")}
-                </h3>
+          <div className="flex flex-col gap-4">
+            <div className="flex h-[calc(100vh-var(--app-header-height,4rem)-9rem)] min-h-[30rem] gap-4">
+              {/* Left Sidebar - File Tree */}
+              <div className="min-h-0 w-80 border border-border rounded-xl overflow-hidden bg-muted/20 flex flex-col">
+                <div className="p-3 border-b border-border bg-muted/30">
+                  <h3 className="text-sm font-medium text-foreground">
+                    {t("skills.files")}
+                  </h3>
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                  {loading ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                    </div>
+                  ) : error ? (
+                    <div className="p-4 text-sm text-destructive">{error}</div>
+                  ) : (
+                    <div className="py-2">{renderFileTree(files)}</div>
+                  )}
+                </div>
               </div>
-              <div className="flex-1 overflow-y-auto">
-                {loading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <Loader2 className="w-6 h-6 animate-spin text-primary" />
-                  </div>
-                ) : error ? (
-                  <div className="p-4 text-sm text-destructive">{error}</div>
+
+              {/* Right Content Area */}
+              <div className="min-h-0 flex-1 border border-border rounded-xl overflow-hidden flex flex-col bg-background">
+                {selectedFile ? (
+                  <>
+                    {/* File Header */}
+                    <div className="px-4 py-3 border-b border-border bg-muted/20 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <File className="w-4 h-4 text-muted-foreground" />
+                        <span className="text-sm font-medium text-foreground">
+                          {selectedFile}
+                        </span>
+                      </div>
+                      {isEditing && selectedFile && (
+                        <button
+                          onClick={handleSaveFile}
+                          disabled={saving || editedContent === fileContent}
+                          className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {saving ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Save className="w-4 h-4" />
+                          )}
+                          {t("skills.save")}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* File Content */}
+                    <div className="flex-1 min-h-0 overflow-hidden">
+                      {contentLoading ? (
+                        <div className="flex items-center justify-center h-full">
+                          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                        </div>
+                      ) : isEditing ? (
+                        <textarea
+                          value={editedContent}
+                          onChange={(e) => setEditedContent(e.target.value)}
+                          className="h-full w-full overflow-auto p-6 bg-transparent text-foreground font-mono text-sm resize-none focus:outline-none"
+                          style={{ tabSize: 2 }}
+                        />
+                      ) : (
+                        <FileCodePreview
+                          filename={selectedFile}
+                          content={fileContent}
+                        />
+                      )}
+                    </div>
+                  </>
                 ) : (
-                  <div className="py-2">{renderFileTree(files)}</div>
+                  <div className="flex items-center justify-center h-full text-muted-foreground">
+                    <div className="text-center">
+                      <File className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                      <p className="text-sm">{t("skills.selectFileToView")}</p>
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
 
-            {/* Right Content Area */}
-            <div className="flex-1 border border-border rounded-xl overflow-hidden flex flex-col bg-background">
-              {selectedFile ? (
-                <>
-                  {/* File Header */}
-                  <div className="px-4 py-3 border-b border-border bg-muted/20 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <File className="w-4 h-4 text-muted-foreground" />
-                      <span className="text-sm font-medium text-foreground">
-                        {selectedFile}
-                      </span>
-                    </div>
-                    {isEditing && selectedFile && (
-                      <button
-                        onClick={handleSaveFile}
-                        disabled={saving || editedContent === fileContent}
-                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {saving ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Save className="w-4 h-4" />
-                        )}
-                        {t("skills.save")}
-                      </button>
-                    )}
-                  </div>
+            <div className="shrink-0 rounded-xl border border-border bg-muted/10 p-4">
+              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-semibold text-foreground">
+                    {t("skills.visibility", { defaultValue: "Visibility" })}
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    {t("skills.editSkillDesc")}
+                  </p>
+                </div>
+                <p className="text-xs font-mono text-muted-foreground">
+                  {skill.skill_slug}
+                </p>
+              </div>
 
-                  {/* File Content */}
-                  <div className="flex-1 overflow-auto">
-                    {contentLoading ? (
-                      <div className="flex items-center justify-center h-full">
-                        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                      </div>
-                    ) : isEditing ? (
-                      <textarea
-                        value={editedContent}
-                        onChange={(e) => setEditedContent(e.target.value)}
-                        className="w-full h-full p-6 bg-transparent text-foreground font-mono text-sm resize-none focus:outline-none"
-                        style={{ tabSize: 2 }}
-                      />
-                    ) : (
-                      <FileCodePreview
-                        filename={selectedFile}
-                        content={fileContent}
-                      />
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(15rem,0.9fr)]">
+                <div className="space-y-2">
+                  <label className="block text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {t("skills.skillName")}
+                  </label>
+                  <input
+                    type="text"
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    disabled={isReadOnly || settingsSaving}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-70"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {t("skills.visibility", { defaultValue: "Visibility" })}
+                  </label>
+                  <select
+                    value={accessLevel}
+                    onChange={(e) => {
+                      const nextAccessLevel = e.target.value as SkillAccessLevel;
+                      setAccessLevel(nextAccessLevel);
+                      if (nextAccessLevel === "team") {
+                        setDepartmentId(
+                          departmentId || shareTargets?.default_department_id || "",
+                        );
+                      } else {
+                        setDepartmentId("");
+                      }
+                    }}
+                    disabled={isReadOnly || settingsSaving}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    <option value="private">
+                      {t("skills.private", { defaultValue: "Private" })}
+                    </option>
+                    <option value="team">
+                      {t("skills.team", { defaultValue: "Team" })}
+                    </option>
+                    {shareTargets?.can_publish_public && (
+                      <option value="public">
+                        {t("skills.public", { defaultValue: "Public" })}
+                      </option>
                     )}
-                  </div>
-                </>
-              ) : (
-                <div className="flex items-center justify-center h-full text-muted-foreground">
-                  <div className="text-center">
-                    <File className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                    <p className="text-sm">{t("skills.selectFileToView")}</p>
-                  </div>
+                  </select>
+                </div>
+              </div>
+
+              {accessLevel === "team" && (
+                <div className="mt-4 max-w-md space-y-2">
+                  <label className="block text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {t("skills.department", { defaultValue: "Department" })}
+                  </label>
+                  <select
+                    value={resolvedDepartmentId}
+                    onChange={(e) => setDepartmentId(e.target.value)}
+                    disabled={isReadOnly || settingsSaving}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {(shareTargets?.allowed_department_targets || []).map((target) => (
+                      <option key={target.department_id} value={target.department_id}>
+                        {target.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {!isReadOnly && (
+                <div className="mt-4 flex justify-end">
+                  <button
+                    onClick={handleSaveSettings}
+                    disabled={
+                      settingsSaving ||
+                      !settingsDirty ||
+                      !displayName.trim() ||
+                      (accessLevel === "team" && !resolvedDepartmentId)
+                    }
+                    className="flex min-w-32 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {settingsSaving ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Save className="h-4 w-4" />
+                    )}
+                    {t("skills.save", { defaultValue: "Save" })}
+                  </button>
                 </div>
               )}
             </div>

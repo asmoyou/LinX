@@ -104,7 +104,8 @@ class DynamicSkillGenerator:
         if register and is_valid:
             try:
                 skill_info = self.skill_registry.register_skill(
-                    name=skill_name,
+                    skill_slug=skill_name,
+                    display_name=skill_name.replace("_", " ").title(),
                     description=description,
                     interface_definition=interface_def,
                     dependencies=dependencies,

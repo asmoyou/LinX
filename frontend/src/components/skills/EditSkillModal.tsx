@@ -1,7 +1,12 @@
 import { X } from "lucide-react";
 import { useState, useEffect } from "react";
 import CodeEditor from "./CodeEditor";
-import type { Skill } from "@/api/skills";
+import {
+  skillsApi,
+  type Skill,
+  type SkillAccessLevel,
+  type SkillShareTargetsResponse,
+} from "@/api/skills";
 import { useTranslation } from "react-i18next";
 import { LayoutModal } from "@/components/LayoutModal";
 
@@ -22,24 +27,37 @@ export default function EditSkillModal({
 }: EditSkillModalProps) {
   const { t } = useTranslation();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [shareTargets, setShareTargets] = useState<SkillShareTargetsResponse | null>(null);
   const isReadOnly = mode === "view";
   const [formData, setFormData] = useState({
-    name: "",
+    display_name: "",
     description: "",
     code: "",
     dependencies: [] as string[],
+    access_level: "private" as SkillAccessLevel,
+    department_id: "",
   });
 
   useEffect(() => {
     if (skill) {
       setFormData({
-        name: skill.name,
+        display_name: skill.display_name,
         description: skill.description,
         code: skill.code || "",
         dependencies: skill.dependencies || [],
+        access_level: skill.access_level,
+        department_id: skill.department_id || "",
       });
     }
   }, [skill]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    void skillsApi.getShareTargets().then(setShareTargets).catch((error) => {
+      console.error("Failed to load skill share targets:", error);
+      setShareTargets(null);
+    });
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -56,9 +74,15 @@ export default function EditSkillModal({
     try {
       // Only send fields that can be updated (exclude name)
       const updateData = {
+        display_name: formData.display_name,
         description: formData.description,
         code: formData.code,
         dependencies: formData.dependencies,
+        access_level: formData.access_level,
+        department_id:
+          formData.access_level === "team"
+            ? formData.department_id || shareTargets?.default_department_id || undefined
+            : undefined,
       };
       await onSubmit(skill.skill_id, updateData);
       handleClose();
@@ -102,15 +126,18 @@ export default function EditSkillModal({
               </label>
               <input
                 type="text"
-                value={formData.name}
+                value={formData.display_name}
                 onChange={(e) =>
-                  setFormData({ ...formData, name: e.target.value })
+                  setFormData({ ...formData, display_name: e.target.value })
                 }
                 className="w-full px-4 py-3 rounded-xl glass text-zinc-800 dark:text-white placeholder:text-zinc-500 dark:placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all disabled:opacity-70 disabled:cursor-not-allowed"
-                placeholder="e.g., my_custom_skill"
+                placeholder="e.g., My Custom Skill"
                 required
                 disabled={isReadOnly || isSubmitting}
               />
+              <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400 font-mono">
+                {skill.skill_slug}
+              </p>
             </div>
 
             <div>
@@ -152,6 +179,55 @@ export default function EditSkillModal({
             )}
 
             {/* Dependencies */}
+            <div>
+              <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                {t("skills.visibility", { defaultValue: "Visibility" })}
+              </label>
+              <select
+                value={formData.access_level}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    access_level: e.target.value as SkillAccessLevel,
+                    department_id:
+                      e.target.value === "team"
+                        ? formData.department_id || shareTargets?.default_department_id || ""
+                        : "",
+                  })
+                }
+                className="w-full px-4 py-3 rounded-xl glass text-zinc-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all disabled:opacity-70 disabled:cursor-not-allowed"
+                disabled={isReadOnly || isSubmitting}
+              >
+                <option value="private">{t("skills.private", { defaultValue: "Private" })}</option>
+                <option value="team">{t("skills.team", { defaultValue: "Team" })}</option>
+                {shareTargets?.can_publish_public && (
+                  <option value="public">{t("skills.public", { defaultValue: "Public" })}</option>
+                )}
+              </select>
+            </div>
+
+            {formData.access_level === "team" && (
+              <div>
+                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t("skills.department", { defaultValue: "Department" })}
+                </label>
+                <select
+                  value={formData.department_id || shareTargets?.default_department_id || ""}
+                  onChange={(e) =>
+                    setFormData({ ...formData, department_id: e.target.value })
+                  }
+                  className="w-full px-4 py-3 rounded-xl glass text-zinc-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all disabled:opacity-70 disabled:cursor-not-allowed"
+                  disabled={isReadOnly || isSubmitting}
+                >
+                  {(shareTargets?.allowed_department_targets || []).map((target) => (
+                    <option key={target.department_id} value={target.department_id}>
+                      {target.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div>
               <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
                 {t("skills.dependencies")}

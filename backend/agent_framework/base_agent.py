@@ -320,7 +320,7 @@ class AgentConfig:
     name: str
     agent_type: str
     owner_user_id: UUID
-    capabilities: List[str]  # List of skill names
+    capabilities: List[str]  # Platform skill IDs plus any non-platform runtime capabilities
     access_level: str = "private"
     allowed_knowledge: List[str] = field(default_factory=list)
     allowed_memory: List[str] = field(default_factory=list)
@@ -608,9 +608,9 @@ class BaseAgent:
                     if tool:
                         self.tools.append(tool)
                         langchain_tool_count += 1
-                        langchain_tool_names.add(skill_info.name)
+                        langchain_tool_names.add(skill_info.skill_slug)
                         logger.info(
-                            f"✓ Loaded LangChain tool: {skill_info.name}",
+                            f"✓ Loaded LangChain tool: {skill_info.skill_slug}",
                             extra={
                                 "agent_id": str(self.config.agent_id),
                                 "skill_id": str(skill_info.skill_id),
@@ -618,7 +618,7 @@ class BaseAgent:
                         )
                     else:
                         logger.error(
-                            f"✗ Failed to load LangChain tool: {skill_info.name}",
+                            f"✗ Failed to load LangChain tool: {skill_info.skill_slug}",
                             extra={
                                 "agent_id": str(self.config.agent_id),
                                 "skill_id": str(skill_info.skill_id),
@@ -629,9 +629,9 @@ class BaseAgent:
                     skill_ref = await self.skill_manager.load_agent_skill_doc(skill_info)
                     if skill_ref:
                         agent_skill_count += 1
-                        agent_skill_names.add(skill_info.name)
+                        agent_skill_names.add(skill_info.skill_slug)
                         logger.info(
-                            f"✓ Loaded Agent Skill doc: {skill_info.name}",
+                            f"✓ Loaded Agent Skill doc: {skill_info.skill_slug}",
                             extra={
                                 "agent_id": str(self.config.agent_id),
                                 "skill_id": str(skill_info.skill_id),
@@ -639,7 +639,7 @@ class BaseAgent:
                         )
                     else:
                         logger.error(
-                            f"✗ Failed to load Agent Skill doc: {skill_info.name}",
+                            f"✗ Failed to load Agent Skill doc: {skill_info.skill_slug}",
                             extra={
                                 "agent_id": str(self.config.agent_id),
                                 "skill_id": str(skill_info.skill_id),
@@ -3431,7 +3431,9 @@ class BaseAgent:
             for skill_ref in agent_skills:
                 copied_for_skill = 0
                 skill_doc_path_for_log: Optional[str] = None
-                skill_dir_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", skill_ref.name).strip("._")
+                skill_dir_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", skill_ref.skill_slug).strip(
+                    "._"
+                )
                 if not skill_dir_name:
                     skill_dir_name = "skill"
                 skill_workspace_root = workdir / ".skills" / skill_dir_name
@@ -3521,7 +3523,7 @@ class BaseAgent:
                     f"{log_prefix} Copied {copied_for_skill} skill files to workdir",
                     extra={
                         "agent_id": str(self.config.agent_id),
-                        "skill_name": skill_ref.name,
+                        "skill_slug": skill_ref.skill_slug,
                         "workdir": str(workdir),
                         "workspace_skill_root": str((Path(".skills") / skill_dir_name).as_posix()),
                         "copied_package_files": len(package_files),
@@ -5031,7 +5033,11 @@ class BaseAgent:
             base_prompt = self.config.system_prompt
         else:
             # Generate default system prompt
-            base_prompt = f"""You are {self.config.name}, a {self.config.agent_type} agent with the following capabilities: {', '.join(self.config.capabilities)}.
+            capability_labels = sorted(self.langchain_tool_skill_names | self.agent_skill_names)
+            if not capability_labels:
+                capability_labels = [str(item) for item in self.config.capabilities if str(item).strip()]
+            capability_text = ", ".join(capability_labels) if capability_labels else "general"
+            base_prompt = f"""You are {self.config.name}, a {self.config.agent_type} agent with the following capabilities: {capability_text}.
 
 Your role is to help users accomplish tasks using your available tools and capabilities.
 

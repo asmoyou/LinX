@@ -273,12 +273,12 @@ class PackageHandler:
 
         return errors
 
-    async def upload_package(self, file_data: bytes, skill_name: str, version: str) -> str:
+    async def upload_package(self, file_data: bytes, skill_slug: str, version: str) -> str:
         """Upload package to MinIO.
 
         Args:
             file_data: Package file bytes
-            skill_name: Skill name
+            skill_slug: Skill slug
             version: Skill version
 
         Returns:
@@ -295,7 +295,7 @@ class PackageHandler:
             raise ValueError(f"Package too large: {len(file_data)} bytes (max {self.max_size})")
 
         # Generate storage path (object key)
-        storage_path = f"skills/{skill_name}/{version}/package.zip"
+        storage_path = f"skills/{skill_slug}/{version}/package.zip"
 
         try:
             # Upload to MinIO using upload_file method
@@ -306,13 +306,13 @@ class PackageHandler:
             bucket_name, object_key = self.minio_client.upload_file(
                 bucket_type="artifacts",  # Use artifacts bucket for skill packages
                 file_data=io.BytesIO(file_data),
-                filename=f"{skill_name}-{version}.zip",
+                filename=f"{skill_slug}-{version}.zip",
                 user_id="system",  # System upload
                 task_id=None,
                 agent_id=None,
                 content_type="application/zip",
                 metadata={
-                    "skill_name": skill_name,
+                    "skill_slug": skill_slug,
                     "version": version,
                     "package_type": "agent_skill",
                 },

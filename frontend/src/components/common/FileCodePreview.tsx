@@ -37,7 +37,9 @@ export const FileCodePreview: React.FC<FileCodePreviewProps> = ({ filename, cont
       language={getLanguageFromFilename(filename)}
       style={vscDarkPlus}
       customStyle={{
+        height: '100%',
         margin: 0,
+        overflow: 'auto',
         padding: '1.5rem',
         background: 'transparent',
         fontSize: '0.875rem',
@@ -49,4 +51,3 @@ export const FileCodePreview: React.FC<FileCodePreviewProps> = ({ filename, cont
     </SyntaxHighlighter>
   );
 };
-

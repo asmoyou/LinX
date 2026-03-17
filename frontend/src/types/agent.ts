@@ -1,3 +1,15 @@
+export type AgentSkillSummary = {
+  skill_id: string;
+  skill_slug: string;
+  display_name: string;
+  description: string;
+  skill_type: string;
+  version: string;
+  access_level: 'private' | 'team' | 'public';
+  department_id?: string | null;
+  department_name?: string | null;
+};
+
 export type Agent = {
   id: string;
   name: string;
@@ -11,7 +23,8 @@ export type Agent = {
   completionRate?: number;
   uptime: string;
   systemPrompt?: string;
-  skills?: string[];
+  skill_ids?: string[];
+  skill_summaries?: AgentSkillSummary[];
   model?: string;
   provider?: string;
   temperature?: number;

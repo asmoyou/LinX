@@ -28,8 +28,10 @@ logger = logging.getLogger(__name__)
 
 class ReadSkillInput(BaseModel):
     """Input for read_skill tool."""
-    
-    skill_name: str = Field(description="Name of the skill to read (e.g., 'my_cal', 'weather-forcast')")
+
+    skill_name: str = Field(
+        description="Skill slug to read (e.g., 'my_cal', 'weather-forcast')"
+    )
 
 
 class ReadSkillTool(BaseTool):
@@ -48,7 +50,7 @@ Use this tool when:
 - You need to see example code or get executable code
 - You want to import and run skill code directly
 
-Input: skill_name (e.g., "my_cal", "weather-forcast")
+Input: skill_name / skill slug (e.g., "my_cal", "weather-forcast")
 Output: Complete SKILL.md content with extracted code blocks ready for execution"""
     
     args_schema: type[BaseModel] = ReadSkillInput
@@ -62,15 +64,15 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
     model_config = {"arbitrary_types_allowed": True}
 
     @staticmethod
-    def _sanitize_skill_dir(skill_name: str) -> str:
-        """Normalize skill name to a safe directory name."""
-        candidate = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(skill_name or "")).strip("._")
+    def _sanitize_skill_dir(skill_slug: str) -> str:
+        """Normalize skill slug to a safe directory name."""
+        candidate = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(skill_slug or "")).strip("._")
         return candidate or "skill"
 
     @classmethod
-    def _workspace_skill_root(cls, skill_name: str) -> str:
+    def _workspace_skill_root(cls, skill_slug: str) -> str:
         """Return workspace-relative root directory for one skill package."""
-        return f".skills/{cls._sanitize_skill_dir(skill_name)}"
+        return f".skills/{cls._sanitize_skill_dir(skill_slug)}"
 
     @staticmethod
     def _sanitize_relative_path(raw_path: str) -> Optional[Path]:
@@ -141,7 +143,7 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
             return 0
 
         package_files = skill_ref.package_files or {}
-        skill_root = Path(workspace_root) / self._workspace_skill_root(skill_ref.name)
+        skill_root = Path(workspace_root) / self._workspace_skill_root(skill_ref.skill_slug)
         package_root_dir = self._infer_package_root_dir(package_files)
         copied = 0
 
@@ -177,15 +179,23 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
             # Get the skill reference from loaded agent skills
             agent_skills = skill_manager.get_agent_skill_docs()
             
-            # Find the skill by name
+            requested_skill_slug = str(skill_name or "").strip()
+
+            # Find the skill by slug
             skill_ref = None
             for skill in agent_skills:
-                if skill.name == skill_name:
+                if skill.skill_slug == requested_skill_slug:
                     skill_ref = skill
                     break
             
             if not skill_ref:
-                return f"❌ Error: Skill '{skill_name}' not found or not configured for this agent.\n\nAvailable skills: {', '.join([s.name for s in agent_skills])}"
+                available_skills = ", ".join(
+                    f"{skill.display_name} ({skill.skill_slug})" for skill in agent_skills
+                )
+                return (
+                    f"Error: Skill slug '{requested_skill_slug}' not found or not configured for "
+                    f"this agent.\n\nAvailable skills: {available_skills}"
+                )
 
             materialized_count = self._materialize_skill_files_to_workspace(skill_ref)
             if materialized_count:
@@ -193,7 +203,7 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
                     "Materialized skill files into workspace for read_skill",
                     extra={
                         "agent_id": str(self.agent_id),
-                        "skill_name": skill_ref.name,
+                        "skill_slug": skill_ref.skill_slug,
                         "file_count": materialized_count,
                     },
                 )
@@ -201,7 +211,7 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
             # Load skill package with code extraction
             skill_package = self.skill_loader.load_skill(
                 skill_id=skill_ref.skill_id,
-                skill_name=skill_ref.name,
+                skill_name=skill_ref.skill_slug,
                 skill_md_content=skill_ref.skill_md_content,
                 storage_path=None,
                 manifest=skill_ref.manifest,
@@ -209,7 +219,7 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
             )
 
             package_files = skill_ref.package_files or {}
-            workspace_skill_root = self._workspace_skill_root(skill_ref.name)
+            workspace_skill_root = self._workspace_skill_root(skill_ref.skill_slug)
             package_root_dir = self._infer_package_root_dir(package_files)
             skill_base_dir = workspace_skill_root
 
@@ -245,7 +255,7 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
             )
 
             # Format the skill documentation
-            output = f"""# Skill: {skill_ref.name}
+            output = f"""# Skill: {skill_ref.display_name} ({skill_ref.skill_slug})
 
 ## Description
 {skill_ref.description}
@@ -253,7 +263,7 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
 ## Package Workspace Layout
 
 - Skill base directory: `{skill_base_dir}`
-- Skill package root is flattened under `.skills/<skill_name>/` to avoid workspace root pollution.
+- Skill package root is flattened under `.skills/<skill_slug>/` to avoid workspace root pollution.
 - Use relative paths from workspace root, e.g. `{skill_base_dir}/scripts/...`
 
 """
@@ -324,10 +334,10 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
                 output += "\n## Execution Note\n\nThis is a workflow/documentation skill. Follow the instructions to accomplish the task.\n"
             
             logger.info(
-                f"Agent read skill documentation: {skill_name}",
+                f"Agent read skill documentation: {requested_skill_slug}",
                 extra={
                     "agent_id": str(self.agent_id),
-                    "skill_name": skill_name,
+                    "skill_slug": requested_skill_slug,
                     "doc_length": len(output),
                     "code_blocks": len(skill_package.code_blocks),
                 }
@@ -337,7 +347,7 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
             
         except Exception as e:
             logger.error(f"Failed to read skill {skill_name}: {e}", exc_info=True)
-            return f"❌ Error reading skill '{skill_name}': {str(e)}"
+            return f"Error reading skill '{skill_name}': {str(e)}"
     
     async def _arun(self, skill_name: str) -> str:
         """Read skill documentation asynchronously."""

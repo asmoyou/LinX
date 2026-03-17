@@ -288,7 +288,8 @@ class Skill(Base):
     __tablename__ = "skills"
 
     skill_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String(255), unique=True, nullable=False, index=True)
+    skill_slug = Column(String(255), unique=True, nullable=False, index=True)
+    display_name = Column(String(255), nullable=False, index=True)
     description = Column(Text, nullable=False)
 
     # Skill type and implementation
@@ -320,7 +321,13 @@ class Skill(Base):
     # Metadata
     version = Column(String(50), nullable=False, default="1.0.0")
     is_active = Column(Boolean, nullable=False, default=True, index=True)
-    is_system = Column(Boolean, nullable=False, default=False, index=True)
+    access_level = Column(String(50), nullable=False, default="private", index=True)
+    department_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("departments.department_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Execution stats
     execution_count = Column(Integer, nullable=False, default=0)
@@ -339,8 +346,27 @@ class Skill(Base):
         index=True,
     )
 
+    department = relationship("Department")
+
+    __table_args__ = (
+        Index("idx_skills_access_level", "access_level"),
+        Index("idx_skills_department_access", "department_id", "access_level"),
+        Index("idx_skills_created_by_access", "created_by", "access_level"),
+    )
+
+    @property
+    def name(self):
+        return self.skill_slug
+
+    @name.setter
+    def name(self, value):
+        self.skill_slug = value
+
     def __repr__(self):
-        return f"<Skill(skill_id={self.skill_id}, name={self.name}, type={self.skill_type}, storage={self.storage_type}, version={self.version})>"
+        return (
+            f"<Skill(skill_id={self.skill_id}, skill_slug={self.skill_slug}, "
+            f"type={self.skill_type}, storage={self.storage_type}, version={self.version})>"
+        )
 
 
 class Permission(Base):

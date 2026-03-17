@@ -176,7 +176,7 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure
 
       <div className="mt-4 pt-3 border-t border-zinc-500/5 flex justify-between items-center">
         <span className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider">
-          {agent.skills?.length || 0} Skills
+          {agent.skill_ids?.length || 0} Skills
         </span>
         <button 
           onClick={handleTestChat}

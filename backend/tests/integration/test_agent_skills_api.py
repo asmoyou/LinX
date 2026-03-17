@@ -29,7 +29,7 @@ from sqlalchemy.pool import StaticPool
 from api_gateway.main import app
 from access_control.jwt_auth import create_access_token
 from database.connection import close_connection_pool
-from database.models import Base, Skill, User
+from database.models import Agent, Base, Skill, User
 
 
 def _unique_skill_name(prefix: str) -> str:
@@ -92,6 +92,7 @@ def _fake_minio_client(monkeypatch):
 @pytest.fixture
 def _sqlite_session_factory(monkeypatch) -> Generator[sessionmaker, None, None]:
     """Provide a shared SQLite session factory for API integration tests."""
+    import agent_framework.agent_registry as agent_registry_module
     import skill_library.skill_model as skill_model_module
     import skill_library.skill_registry as skill_registry_module
 
@@ -127,10 +128,13 @@ def _sqlite_session_factory(monkeypatch) -> Generator[sessionmaker, None, None]:
 
     close_connection_pool()
     monkeypatch.setattr("database.connection.get_db_session", _get_db_session)
+    monkeypatch.setattr(agent_registry_module, "get_db_session", _get_db_session)
     monkeypatch.setattr(skill_model_module, "get_db_session", _get_db_session)
+    agent_registry_module._agent_registry = None
     skill_model_module._skill_model = None
     skill_registry_module._skill_registry = None
     yield SessionLocal
+    agent_registry_module._agent_registry = None
     skill_model_module._skill_model = None
     skill_registry_module._skill_registry = None
     close_connection_pool()
@@ -740,6 +744,76 @@ def multiply_numbers(a: int, b: int) -> int:
         result = response.json()
         assert "output" in result
         # Note: Actual execution would return 15, but in test environment might be mocked
+
+
+class TestSkillIdentityRegression:
+    """Regression tests for hard-cut skill identity rollout."""
+
+    def test_update_langchain_tool_succeeds_after_identity_refactor(
+        self, client: TestClient, auth_headers: dict
+    ):
+        code = '''
+from langchain.tools import tool
+
+@tool
+def add_numbers(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+'''
+        create_response = client.post(
+            "/api/v1/skills",
+            headers=auth_headers,
+            data={
+                "display_name": _unique_skill_name("Add-Numbers"),
+                "skill_type": "langchain_tool",
+                "description": "Add two numbers",
+                "code": code,
+            },
+        )
+
+        assert create_response.status_code == 201, _error_message(create_response)
+        skill_id = create_response.json()["skill_id"]
+
+        update_response = client.put(
+            f"/api/v1/skills/{skill_id}",
+            headers=auth_headers,
+            json={
+                "display_name": "Updated Add Numbers",
+                "access_level": "private",
+            },
+        )
+
+        assert update_response.status_code == 200, _error_message(update_response)
+        payload = update_response.json()
+        assert payload["display_name"] == "Updated Add Numbers"
+        assert payload["access_level"] == "private"
+
+    def test_list_agents_skips_legacy_slug_capabilities_instead_of_500(
+        self,
+        client: TestClient,
+        auth_headers: dict,
+        db_session: Session,
+        test_user: User,
+    ):
+        agent = Agent(
+            name="Legacy Agent",
+            agent_type="general",
+            owner_user_id=test_user.user_id,
+            capabilities=["my_cal", "weather-search"],
+            status="idle",
+            access_level="private",
+        )
+        db_session.add(agent)
+        db_session.commit()
+
+        response = client.get("/api/v1/agents", headers=auth_headers)
+
+        assert response.status_code == 200, _error_message(response)
+        payload = response.json()
+        assert len(payload) == 1
+        assert payload[0]["name"] == "Legacy Agent"
+        assert payload[0]["skill_ids"] == []
+        assert payload[0]["skill_summaries"] == []
 
 
 @pytest.mark.integration

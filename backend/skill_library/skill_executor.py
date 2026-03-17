@@ -88,7 +88,11 @@ class SkillExecutor:
             execution_time = time.time() - start_time
 
             logger.info(
-                f"Skill executed: {skill_info.name}", extra={"execution_time": execution_time}
+                "Skill executed",
+                extra={
+                    "skill_slug": skill_info.skill_slug,
+                    "execution_time": execution_time,
+                },
             )
 
             return ExecutionResult(
@@ -106,30 +110,30 @@ class SkillExecutor:
                 error_message=str(e),
             )
 
-    def execute_skill_by_name(
+    def execute_skill_by_slug(
         self,
-        skill_name: str,
+        skill_slug: str,
         inputs: Dict[str, Any],
         version: Optional[str] = None,
     ) -> ExecutionResult:
-        """Execute a skill by name.
+        """Execute a skill by slug.
 
         Args:
-            skill_name: Skill name
+            skill_slug: Skill slug
             inputs: Input parameters
             version: Optional specific version
 
         Returns:
             ExecutionResult with output or error
         """
-        skill_info = self.skill_registry.get_skill_by_name(skill_name, version)
+        skill_info = self.skill_registry.get_skill_by_slug(skill_slug, version)
 
         if not skill_info:
             return ExecutionResult(
                 success=False,
                 output=None,
                 execution_time=0.0,
-                error_message=f"Skill not found: {skill_name}",
+                error_message=f"Skill not found: {skill_slug}",
             )
 
         return self.execute_skill(skill_info.skill_id, inputs)
@@ -183,7 +187,7 @@ class SkillExecutor:
             # Load skill package with code extraction
             skill_package = self.skill_loader.load_skill(
                 skill_id=skill_info.skill_id,
-                skill_name=skill_info.name,
+                skill_name=skill_info.skill_slug,
                 skill_md_content=getattr(skill_info, 'skill_md_content', None),
                 storage_path=skill_info.storage_path,
                 manifest=skill_info.manifest,
@@ -192,10 +196,10 @@ class SkillExecutor:
 
             # Check if skill has executable code
             if not skill_package.code_blocks:
-                logger.warning(f"Skill {skill_info.name} has no executable code blocks")
+                logger.warning(f"Skill {skill_info.skill_slug} has no executable code blocks")
                 return {
                     "status": "completed",
-                    "result": f"Skill {skill_info.name} is a documentation-only skill",
+                    "result": f"Skill {skill_info.skill_slug} is a documentation-only skill",
                     "inputs_received": inputs,
                 }
 
@@ -216,10 +220,10 @@ class SkillExecutor:
                 return result
 
             # No executable code found
-            logger.warning(f"Skill {skill_info.name} has no Python or Bash executable code")
+            logger.warning(f"Skill {skill_info.skill_slug} has no Python or Bash executable code")
             return {
                 "status": "completed",
-                "result": f"Skill {skill_info.name} has code blocks but none are executable",
+                "result": f"Skill {skill_info.skill_slug} has code blocks but none are executable",
                 "inputs_received": inputs,
                 "available_languages": [cb.language for cb in skill_package.code_blocks],
             }

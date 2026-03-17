@@ -185,18 +185,28 @@ export default function SkillCardV2({
   const TypeIcon = typeInfo.icon;
   const latestUpdatedAt = skill.updated_at || skill.created_at;
   const skillMetadata = skill.skill_metadata || skill.metadata;
-  const canManageSkill = !skill.is_system;
-  const ownershipInfo = skill.is_system
-    ? {
-        label: t("skills.systemShared"),
-        className:
-          "bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300",
-      }
-    : {
-        label: t("skills.personalPrivate"),
-        className:
-          "bg-slate-100 dark:bg-slate-500/20 text-slate-700 dark:text-slate-300",
-      };
+  const canManageSkill = Boolean(skill.can_edit);
+  const canDeleteSkill = Boolean(skill.can_delete);
+  const ownershipInfo =
+    skill.access_level === "public"
+      ? {
+          label: t("skills.public", { defaultValue: "Public" }),
+          className:
+            "bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300",
+        }
+      : skill.access_level === "team"
+        ? {
+            label: skill.department_name
+              ? `${t("skills.team", { defaultValue: "Team" })} · ${skill.department_name}`
+              : t("skills.team", { defaultValue: "Team" }),
+            className:
+              "bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300",
+          }
+        : {
+            label: t("skills.private", { defaultValue: "Private" }),
+            className:
+              "bg-slate-100 dark:bg-slate-500/20 text-slate-700 dark:text-slate-300",
+          };
   const EditActionIcon = canManageSkill ? Edit : Eye;
   const updatedDate = latestUpdatedAt ? new Date(latestUpdatedAt) : null;
   const dateLocale = i18n.language === "zh" ? "zh-CN" : undefined;
@@ -243,8 +253,11 @@ export default function SkillCardV2({
             </div>
             <div className="flex-1 min-w-0">
               <h3 className="text-lg font-semibold text-foreground truncate group-hover:text-primary transition-colors">
-                {skill.name}
+                {skill.display_name}
               </h3>
+              <p className="text-xs font-mono text-muted-foreground mt-1 truncate">
+                {skill.skill_slug}
+              </p>
               <div className="flex items-center gap-2 mt-2 mb-1 flex-wrap min-w-0">
                 <span
                   className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${typeInfo.bgColor} ${typeInfo.color}`}
@@ -400,7 +413,7 @@ export default function SkillCardV2({
               <EditActionIcon className="w-4 h-4" />
             </button>
 
-            {canManageSkill && (
+            {canDeleteSkill && (
               <button
                 onClick={() => onDelete(skill.skill_id)}
                 className="p-2.5 rounded-xl bg-red-100 dark:bg-red-500/10 hover:bg-red-200 dark:hover:bg-red-500/20 text-red-700 dark:text-red-400 transition-all duration-300 hover:shadow-lg"

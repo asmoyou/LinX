@@ -1,16 +1,19 @@
-"""Skill model and database operations.
+"""Skill model and database operations."""
 
-References:
-- Requirements 4: Skill Library
-- Design Section 4.4: Skill Library
-"""
+from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from sqlalchemy import case, func
+from sqlalchemy import and_, case, func, or_
+from sqlalchemy.orm import joinedload
 
+from access_control.skill_access import (
+    SKILL_ACCESS_PUBLIC,
+    SKILL_ACCESS_TEAM,
+    SkillAccessContext,
+)
 from database.connection import get_db_session
 from database.models import Agent, Skill
 
@@ -20,9 +23,35 @@ logger = logging.getLogger(__name__)
 class SkillModel:
     """Database operations for skills."""
 
+    @staticmethod
+    def _base_query(session):
+        return session.query(Skill).options(joinedload(Skill.department))
+
+    @staticmethod
+    def _apply_visibility_filter(query, access_context: SkillAccessContext):
+        if access_context.is_admin:
+            return query
+
+        visibility_clauses = [Skill.access_level == SKILL_ACCESS_PUBLIC]
+        if access_context.user_id:
+            visibility_clauses.append(Skill.created_by == UUID(str(access_context.user_id)))
+        if access_context.department_ancestor_ids:
+            visibility_clauses.append(
+                and_(
+                    Skill.access_level == SKILL_ACCESS_TEAM,
+                    Skill.department_id.in_([UUID(item) for item in access_context.department_ancestor_ids]),
+                )
+            )
+
+        if not visibility_clauses:
+            return query.filter(False)
+        return query.filter(or_(*visibility_clauses))
+
     def create_skill(
         self,
-        name: str,
+        *,
+        skill_slug: str,
+        display_name: str,
         description: str,
         interface_definition: dict,
         dependencies: Optional[List[str]] = None,
@@ -37,48 +66,19 @@ class SkillModel:
         homepage: Optional[str] = None,
         skill_metadata: Optional[dict] = None,
         gating_status: Optional[dict] = None,
+        access_level: str = "private",
+        department_id: Optional[str] = None,
         is_active: bool = True,
-        is_system: bool = False,
         created_by: Optional[str] = None,
     ) -> Skill:
-        """Create a new skill in the database.
-
-        Args:
-            name: Unique skill name
-            description: Skill description
-            interface_definition: Interface definition (inputs, outputs)
-            dependencies: List of required dependencies
-            version: Skill version
-            skill_type: Type of skill (langchain_tool, agent_skill)
-            storage_type: Storage type (inline, minio)
-            code: Python code for inline skills
-            config: Configuration for API/DB skills
-            storage_path: MinIO path for package skills
-            manifest: Parsed manifest for package skills
-            skill_md_content: SKILL.md content for agent_skill (required for agent_skill)
-            homepage: Homepage URL for agent_skill
-            skill_metadata: Additional metadata (emoji, tags, etc.)
-            gating_status: Gating check results
-            is_active: Whether skill is active
-            is_system: Whether skill is system skill
-            created_by: User ID who created the skill (string UUID)
-
-        Returns:
-            Created Skill object
-        """
-        from uuid import UUID as UUIDType
-        
+        """Create a new skill in the database."""
         with get_db_session() as session:
-            # Convert created_by to UUID if it's a string
-            created_by_uuid = None
-            if created_by:
-                try:
-                    created_by_uuid = UUIDType(created_by) if isinstance(created_by, str) else created_by
-                except (ValueError, TypeError):
-                    logger.warning(f"Invalid created_by UUID: {created_by}")
-            
+            created_by_uuid = UUID(str(created_by)) if created_by else None
+            department_uuid = UUID(str(department_id)) if department_id else None
+
             skill = Skill(
-                name=name,
+                skill_slug=skill_slug,
+                display_name=display_name,
                 description=description,
                 interface_definition=interface_definition,
                 dependencies=dependencies or [],
@@ -93,8 +93,9 @@ class SkillModel:
                 homepage=homepage,
                 skill_metadata=skill_metadata,
                 gating_status=gating_status,
+                access_level=access_level,
+                department_id=department_uuid,
                 is_active=is_active,
-                is_system=is_system,
                 created_by=created_by_uuid,
             )
             session.add(skill)
@@ -105,144 +106,130 @@ class SkillModel:
                 "Skill created",
                 extra={
                     "skill_id": str(skill.skill_id),
-                    "skill_name": name,
+                    "skill_slug": skill.skill_slug,
+                    "display_name": skill.display_name,
                     "skill_version": version,
                     "skill_type": skill_type,
                     "storage_type": storage_type,
-                    "has_code": bool(code),
+                    "access_level": access_level,
                 },
             )
 
-            return skill
+            return self._base_query(session).filter(Skill.skill_id == skill.skill_id).first()
 
     def get_skill_by_id(self, skill_id: UUID) -> Optional[Skill]:
-        """Get skill by ID.
-
-        Args:
-            skill_id: Skill UUID
-
-        Returns:
-            Skill object or None if not found
-        """
         with get_db_session() as session:
-            return session.query(Skill).filter(Skill.skill_id == skill_id).first()
+            return self._base_query(session).filter(Skill.skill_id == skill_id).first()
 
-    def get_skill_by_name(self, name: str, version: Optional[str] = None) -> Optional[Skill]:
-        """Get skill by name and optional version.
-
-        Args:
-            name: Skill name
-            version: Optional specific version
-
-        Returns:
-            Skill object or None if not found
-        """
+    def get_visible_skill_by_id(
+        self, *, skill_id: UUID, access_context: SkillAccessContext
+    ) -> Optional[Skill]:
         with get_db_session() as session:
-            query = session.query(Skill).filter(Skill.name == name)
+            query = self._apply_visibility_filter(self._base_query(session), access_context)
+            return query.filter(Skill.skill_id == skill_id).first()
 
+    def get_skill_by_slug(self, skill_slug: str, version: Optional[str] = None) -> Optional[Skill]:
+        with get_db_session() as session:
+            query = self._base_query(session).filter(Skill.skill_slug == skill_slug)
             if version:
                 query = query.filter(Skill.version == version)
             else:
-                # Get latest version
                 query = query.order_by(Skill.created_at.desc())
-
             return query.first()
 
+    def get_skill_by_name(self, name: str, version: Optional[str] = None) -> Optional[Skill]:
+        """Internal alias for slug-based lookups."""
+        return self.get_skill_by_slug(name, version)
+
     def list_skills(self, limit: int = 100, offset: int = 0) -> List[Skill]:
-        """List all skills with pagination.
-
-        Args:
-            limit: Maximum number of skills to return
-            offset: Number of skills to skip
-
-        Returns:
-            List of Skill objects
-        """
         with get_db_session() as session:
-            return session.query(Skill).limit(limit).offset(offset).all()
+            return (
+                self._base_query(session)
+                .order_by(Skill.created_at.desc(), Skill.skill_id.desc())
+                .limit(limit)
+                .offset(offset)
+                .all()
+            )
 
-    def get_overview_stats(self) -> Dict[str, Any]:
+    def list_visible_skills(
+        self,
+        *,
+        access_context: SkillAccessContext,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Skill]:
+        with get_db_session() as session:
+            query = self._apply_visibility_filter(self._base_query(session), access_context)
+            return (
+                query.order_by(Skill.created_at.desc(), Skill.skill_id.desc())
+                .limit(limit)
+                .offset(offset)
+                .all()
+            )
+
+    def get_overview_stats(self, *, access_context: Optional[SkillAccessContext] = None) -> Dict[str, Any]:
         """Get aggregated overview statistics for the skills library."""
-        with get_db_session() as session:
-            aggregate_row = (
-                session.query(
-                    func.count(Skill.skill_id).label("total_skills"),
-                    func.coalesce(
-                        func.sum(case((Skill.is_active.is_(True), 1), else_=0)),
-                        0,
-                    ).label("active_skills"),
-                    func.coalesce(
-                        func.sum(case((Skill.is_active.is_(False), 1), else_=0)),
-                        0,
-                    ).label("inactive_skills"),
-                    func.coalesce(
-                        func.sum(case((Skill.skill_type == "agent_skill", 1), else_=0)),
-                        0,
-                    ).label("agent_skills"),
-                    func.coalesce(
-                        func.sum(case((Skill.skill_type == "langchain_tool", 1), else_=0)),
-                        0,
-                    ).label("langchain_tool_skills"),
-                    func.coalesce(func.sum(Skill.execution_count), 0).label("total_execution_count"),
-                    func.max(Skill.last_executed_at).label("last_executed_at"),
-                )
-                .one()
-            )
+        skills: List[Skill]
+        if access_context is not None:
+            skills = self.list_visible_skills(access_context=access_context, limit=1000, offset=0)
+        else:
+            skills = self.list_skills(limit=1000, offset=0)
 
-            avg_execution_time = (
-                session.query(func.avg(Skill.average_execution_time))
-                .filter(Skill.execution_count > 0)
-                .filter(Skill.average_execution_time.isnot(None))
-                .scalar()
-                or 0.0
-            )
+        active_skills = [skill for skill in skills if skill.is_active is not False]
+        dependency_count = sum(
+            1 for skill in skills if isinstance(skill.dependencies, list) and skill.dependencies
+        )
+        avg_samples = [
+            float(skill.average_execution_time or 0.0)
+            for skill in skills
+            if (skill.execution_count or 0) > 0 and skill.average_execution_time is not None
+        ]
+        last_executed_at = max(
+            (skill.last_executed_at for skill in skills if skill.last_executed_at),
+            default=None,
+        )
 
-            dependency_rows = session.query(Skill.dependencies).all()
-            skills_with_dependencies = sum(
-                1
-                for (dependencies,) in dependency_rows
-                if isinstance(dependencies, list) and len(dependencies) > 0
-            )
-
-            last_executed_at = aggregate_row.last_executed_at
-            return {
-                "total_skills": int(aggregate_row.total_skills or 0),
-                "active_skills": int(aggregate_row.active_skills or 0),
-                "inactive_skills": int(aggregate_row.inactive_skills or 0),
-                "agent_skills": int(aggregate_row.agent_skills or 0),
-                "langchain_tool_skills": int(aggregate_row.langchain_tool_skills or 0),
-                "skills_with_dependencies": skills_with_dependencies,
-                "total_execution_count": int(aggregate_row.total_execution_count or 0),
-                "average_execution_time": float(avg_execution_time),
-                "last_executed_at": last_executed_at.isoformat() if last_executed_at else None,
-            }
+        return {
+            "total_skills": len(skills),
+            "active_skills": len(active_skills),
+            "inactive_skills": max(len(skills) - len(active_skills), 0),
+            "agent_skills": sum(1 for skill in skills if skill.skill_type == "agent_skill"),
+            "langchain_tool_skills": sum(
+                1 for skill in skills if skill.skill_type == "langchain_tool"
+            ),
+            "skills_with_dependencies": dependency_count,
+            "total_execution_count": sum(int(skill.execution_count or 0) for skill in skills),
+            "average_execution_time": (sum(avg_samples) / len(avg_samples) if avg_samples else 0.0),
+            "last_executed_at": last_executed_at.isoformat() if last_executed_at else None,
+        }
 
     def update_skill(
         self,
+        *,
         skill_id: UUID,
+        display_name: Optional[str] = None,
         description: Optional[str] = None,
         code: Optional[str] = None,
         interface_definition: Optional[dict] = None,
         dependencies: Optional[List[str]] = None,
+        config: Optional[dict] = None,
+        access_level: Optional[str] = None,
+        department_id: Optional[str] = None,
+        is_active: Optional[bool] = None,
+        storage_path: Optional[str] = None,
+        manifest: Optional[dict] = None,
+        skill_md_content: Optional[str] = None,
+        homepage: Optional[str] = None,
+        skill_metadata: Optional[dict] = None,
+        gating_status: Optional[dict] = None,
     ) -> Optional[Skill]:
-        """Update skill properties.
-
-        Args:
-            skill_id: Skill UUID
-            description: New description
-            code: New code
-            interface_definition: New interface definition
-            dependencies: New dependencies
-
-        Returns:
-            Updated Skill object or None if not found
-        """
         with get_db_session() as session:
             skill = session.query(Skill).filter(Skill.skill_id == skill_id).first()
-
             if not skill:
                 return None
 
+            if display_name is not None:
+                skill.display_name = display_name
             if description is not None:
                 skill.description = description
             if code is not None:
@@ -251,45 +238,48 @@ class SkillModel:
                 skill.interface_definition = interface_definition
             if dependencies is not None:
                 skill.dependencies = dependencies
+            if config is not None:
+                skill.config = config
+            if access_level is not None:
+                skill.access_level = access_level
+            if department_id is not None:
+                skill.department_id = UUID(str(department_id)) if department_id else None
+            if is_active is not None:
+                skill.is_active = is_active
+            if storage_path is not None:
+                skill.storage_path = storage_path
+            if manifest is not None:
+                skill.manifest = manifest
+            if skill_md_content is not None:
+                skill.skill_md_content = skill_md_content
+            if homepage is not None:
+                skill.homepage = homepage
+            if skill_metadata is not None:
+                skill.skill_metadata = skill_metadata
+            if gating_status is not None:
+                skill.gating_status = gating_status
 
             session.commit()
             session.refresh(skill)
 
-            logger.info(f"Skill updated: {skill_id}")
-            return skill
+            logger.info("Skill updated", extra={"skill_id": str(skill_id)})
+            return self._base_query(session).filter(Skill.skill_id == skill.skill_id).first()
 
     def delete_skill(self, skill_id: UUID) -> bool:
-        """Delete a skill.
-
-        Args:
-            skill_id: Skill UUID
-
-        Returns:
-            True if deleted, False if not found
-        """
         with get_db_session() as session:
             skill = session.query(Skill).filter(Skill.skill_id == skill_id).first()
-
             if not skill:
                 return False
 
-            skill_name = skill.name
+            skill_id_str = str(skill.skill_id)
             detached_agent_ids: List[str] = []
 
-            # Keep agent capability lists in sync with active skills.
-            # Agent capabilities are stored as skill names, so deleting a skill
-            # should remove stale names from all agents that reference it.
-            #
-            # Postgres can push this containment check down to JSONB, but the
-            # test harness uses SQLite where `@>` is not supported. Deleting a
-            # skill is a low-frequency operation, so it is safer to fetch agents
-            # with non-null capabilities and normalize in Python across dialects.
             agents = session.query(Agent).filter(Agent.capabilities.isnot(None)).all()
             for agent in agents:
                 capabilities = agent.capabilities if isinstance(agent.capabilities, list) else []
-                if skill_name not in capabilities:
+                if skill_id_str not in capabilities:
                     continue
-                normalized = [name for name in capabilities if name != skill_name]
+                normalized = [item for item in capabilities if item != skill_id_str]
                 if normalized != capabilities:
                     agent.capabilities = normalized
                     detached_agent_ids.append(str(agent.agent_id))
@@ -300,8 +290,8 @@ class SkillModel:
             logger.info(
                 "Skill deleted and detached from agent capabilities",
                 extra={
-                    "skill_id": str(skill_id),
-                    "skill_name": skill_name,
+                    "skill_id": skill_id_str,
+                    "skill_slug": skill.skill_slug,
                     "detached_agent_count": len(detached_agent_ids),
                     "detached_agent_ids": detached_agent_ids[:20],
                 },
@@ -309,32 +299,52 @@ class SkillModel:
             return True
 
     def search_skills(self, query: str) -> List[Skill]:
-        """Search skills by name or description.
-
-        Args:
-            query: Search query
-
-        Returns:
-            List of matching Skill objects
-        """
         with get_db_session() as session:
+            search_pattern = f"%{query}%"
             return (
-                session.query(Skill)
-                .filter((Skill.name.ilike(f"%{query}%")) | (Skill.description.ilike(f"%{query}%")))
+                self._base_query(session)
+                .filter(
+                    or_(
+                        Skill.display_name.ilike(search_pattern),
+                        Skill.skill_slug.ilike(search_pattern),
+                        Skill.description.ilike(search_pattern),
+                    )
+                )
+                .order_by(Skill.created_at.desc(), Skill.skill_id.desc())
+                .all()
+            )
+
+    def search_visible_skills(
+        self,
+        *,
+        query: str,
+        access_context: SkillAccessContext,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Skill]:
+        with get_db_session() as session:
+            search_pattern = f"%{query}%"
+            filtered = self._apply_visibility_filter(self._base_query(session), access_context)
+            return (
+                filtered.filter(
+                    or_(
+                        Skill.display_name.ilike(search_pattern),
+                        Skill.skill_slug.ilike(search_pattern),
+                        Skill.description.ilike(search_pattern),
+                    )
+                )
+                .order_by(Skill.created_at.desc(), Skill.skill_id.desc())
+                .limit(limit)
+                .offset(offset)
                 .all()
             )
 
 
-# Singleton instance
 _skill_model: Optional[SkillModel] = None
 
 
 def get_skill_model() -> SkillModel:
-    """Get or create the skill model singleton.
-
-    Returns:
-        SkillModel instance
-    """
+    """Get or create the skill model singleton."""
     global _skill_model
     if _skill_model is None:
         _skill_model = SkillModel()

@@ -1,15 +1,13 @@
-"""Skill registration and retrieval.
+"""Skill registration and retrieval."""
 
-References:
-- Requirements 4: Skill Library
-- Design Section 4.4: Skill Library
-"""
+from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 from typing import List, Optional
 from uuid import UUID
 
+from access_control.skill_access import SkillAccessContext
 from skill_library.skill_model import SkillModel, get_skill_model
 from skill_library.skill_validator import SkillValidator, get_skill_validator
 
@@ -21,7 +19,8 @@ class SkillInfo:
     """Skill information."""
 
     skill_id: UUID
-    name: str
+    skill_slug: str
+    display_name: str
     description: str
     version: str
     interface_definition: dict
@@ -36,14 +35,20 @@ class SkillInfo:
     homepage: Optional[str] = None
     skill_metadata: Optional[dict] = None
     gating_status: Optional[dict] = None
+    access_level: str = "private"
+    department_id: Optional[str] = None
+    department_name: Optional[str] = None
     is_active: bool = True
-    is_system: bool = False
     execution_count: int = 0
-    last_executed_at: Optional[object] = None  # datetime
+    last_executed_at: Optional[object] = None
     average_execution_time: Optional[float] = None
-    created_at: Optional[object] = None  # datetime
-    updated_at: Optional[object] = None  # datetime
+    created_at: Optional[object] = None
+    updated_at: Optional[object] = None
     created_by: Optional[str] = None
+
+    @property
+    def name(self) -> str:
+        return self.skill_slug
 
 
 class SkillRegistry:
@@ -54,21 +59,17 @@ class SkillRegistry:
         skill_model: Optional[SkillModel] = None,
         skill_validator: Optional[SkillValidator] = None,
     ):
-        """Initialize skill registry.
-
-        Args:
-            skill_model: SkillModel for database operations
-            skill_validator: SkillValidator for validation
-        """
         self.skill_model = skill_model or get_skill_model()
         self.skill_validator = skill_validator or get_skill_validator()
         logger.info("SkillRegistry initialized")
 
     @staticmethod
     def _to_skill_info(skill) -> SkillInfo:
+        department = getattr(skill, "department", None)
         return SkillInfo(
             skill_id=skill.skill_id,
-            name=skill.name,
+            skill_slug=skill.skill_slug,
+            display_name=skill.display_name,
             description=skill.description,
             version=skill.version,
             interface_definition=skill.interface_definition,
@@ -83,8 +84,12 @@ class SkillRegistry:
             homepage=getattr(skill, "homepage", None),
             skill_metadata=getattr(skill, "skill_metadata", None),
             gating_status=getattr(skill, "gating_status", None),
+            access_level=getattr(skill, "access_level", "private"),
+            department_id=(
+                str(getattr(skill, "department_id", None)) if getattr(skill, "department_id", None) else None
+            ),
+            department_name=getattr(department, "name", None),
             is_active=skill.is_active,
-            is_system=skill.is_system,
             execution_count=skill.execution_count,
             last_executed_at=skill.last_executed_at,
             average_execution_time=skill.average_execution_time,
@@ -95,7 +100,9 @@ class SkillRegistry:
 
     def register_skill(
         self,
-        name: str,
+        *,
+        skill_slug: str,
+        display_name: str,
         description: str,
         interface_definition: dict,
         dependencies: Optional[List[str]] = None,
@@ -110,59 +117,28 @@ class SkillRegistry:
         homepage: Optional[str] = None,
         skill_metadata: Optional[dict] = None,
         gating_status: Optional[dict] = None,
+        access_level: str = "private",
+        department_id: Optional[str] = None,
         is_active: bool = True,
-        is_system: bool = False,
         created_by: Optional[str] = None,
         validate: bool = True,
     ) -> SkillInfo:
-        """Register a new skill.
-
-        Args:
-            name: Unique skill name
-            description: Skill description
-            interface_definition: Interface definition
-            dependencies: List of dependencies
-            version: Skill version
-            skill_type: Type of skill (langchain_tool, agent_skill)
-            storage_type: Storage type (inline, minio)
-            code: Python code for inline skills
-            config: Configuration for API/DB skills
-            storage_path: MinIO path for package skills
-            manifest: Parsed manifest for package skills
-            skill_md_content: SKILL.md content for agent_skill (required for agent_skill)
-            homepage: Homepage URL for agent_skill
-            skill_metadata: Additional metadata (emoji, tags, etc.)
-            gating_status: Gating check results
-            is_active: Whether skill is active
-            is_system: Whether skill is system skill
-            created_by: User ID who created the skill
-            validate: Whether to validate before registration
-
-        Returns:
-            SkillInfo with registered skill details
-
-        Raises:
-            ValueError: If validation fails
-        """
-        # Validate skill if requested
         if validate:
             validation = self.skill_validator.validate_skill(
-                name=name,
+                skill_slug,
                 interface_definition=interface_definition,
                 dependencies=dependencies or [],
             )
-
             if not validation.is_valid:
                 raise ValueError(f"Skill validation failed: {validation.errors}")
 
-        # Check if skill already exists
-        existing = self.skill_model.get_skill_by_name(name, version)
+        existing = self.skill_model.get_skill_by_slug(skill_slug, version)
         if existing:
-            raise ValueError(f"Skill {name} version {version} already exists")
+            raise ValueError(f"Skill {skill_slug} version {version} already exists")
 
-        # Create skill
         skill = self.skill_model.create_skill(
-            name=name,
+            skill_slug=skill_slug,
+            display_name=display_name,
             description=description,
             interface_definition=interface_definition,
             dependencies=dependencies,
@@ -177,139 +153,130 @@ class SkillRegistry:
             homepage=homepage,
             skill_metadata=skill_metadata,
             gating_status=gating_status,
+            access_level=access_level,
+            department_id=department_id,
             is_active=is_active,
-            is_system=is_system,
             created_by=created_by,
         )
 
         logger.info(
-            f"Skill registered: {name} v{version} (type: {skill_type}, storage: {storage_type})"
+            "Skill registered",
+            extra={
+                "skill_slug": skill_slug,
+                "version": version,
+                "skill_type": skill_type,
+                "storage_type": storage_type,
+                "access_level": access_level,
+            },
         )
-
         return self._to_skill_info(skill)
 
     def get_skill(self, skill_id: UUID) -> Optional[SkillInfo]:
-        """Get skill by ID.
-
-        Args:
-            skill_id: Skill UUID
-
-        Returns:
-            SkillInfo or None if not found
-        """
         skill = self.skill_model.get_skill_by_id(skill_id)
+        return self._to_skill_info(skill) if skill else None
 
-        if not skill:
-            return None
-
-        return self._to_skill_info(skill)
-
-    def get_skill_by_name(
-        self,
-        name: str,
-        version: Optional[str] = None,
+    def get_visible_skill(
+        self, *, skill_id: UUID, access_context: SkillAccessContext
     ) -> Optional[SkillInfo]:
-        """Get skill by name and optional version.
+        skill = self.skill_model.get_visible_skill_by_id(skill_id=skill_id, access_context=access_context)
+        return self._to_skill_info(skill) if skill else None
 
-        Args:
-            name: Skill name
-            version: Optional specific version (defaults to latest)
+    def get_skill_by_slug(self, skill_slug: str, version: Optional[str] = None) -> Optional[SkillInfo]:
+        skill = self.skill_model.get_skill_by_slug(skill_slug, version)
+        return self._to_skill_info(skill) if skill else None
 
-        Returns:
-            SkillInfo or None if not found
-        """
-        skill = self.skill_model.get_skill_by_name(name, version)
-
-        if not skill:
-            return None
-
-        return self._to_skill_info(skill)
+    def get_skill_by_name(self, name: str, version: Optional[str] = None) -> Optional[SkillInfo]:
+        return self.get_skill_by_slug(name, version)
 
     def list_skills(self, limit: int = 100, offset: int = 0) -> List[SkillInfo]:
-        """List all skills.
+        return [self._to_skill_info(skill) for skill in self.skill_model.list_skills(limit, offset)]
 
-        Args:
-            limit: Maximum number of skills
-            offset: Number of skills to skip
-
-        Returns:
-            List of SkillInfo objects
-        """
-        skills = self.skill_model.list_skills(limit, offset)
-
-        return [self._to_skill_info(skill) for skill in skills]
+    def list_visible_skills(
+        self,
+        *,
+        access_context: SkillAccessContext,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[SkillInfo]:
+        return [
+            self._to_skill_info(skill)
+            for skill in self.skill_model.list_visible_skills(
+                access_context=access_context,
+                limit=limit,
+                offset=offset,
+            )
+        ]
 
     def search_skills(self, query: str) -> List[SkillInfo]:
-        """Search skills by name or description.
+        return [self._to_skill_info(skill) for skill in self.skill_model.search_skills(query)]
 
-        Args:
-            query: Search query
-
-        Returns:
-            List of matching SkillInfo objects
-        """
-        skills = self.skill_model.search_skills(query)
-
-        return [self._to_skill_info(skill) for skill in skills]
+    def search_visible_skills(
+        self,
+        *,
+        query: str,
+        access_context: SkillAccessContext,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[SkillInfo]:
+        return [
+            self._to_skill_info(skill)
+            for skill in self.skill_model.search_visible_skills(
+                query=query,
+                access_context=access_context,
+                limit=limit,
+                offset=offset,
+            )
+        ]
 
     def update_skill(
         self,
+        *,
         skill_id: UUID,
+        display_name: Optional[str] = None,
         description: Optional[str] = None,
         interface_definition: Optional[dict] = None,
         dependencies: Optional[List[str]] = None,
         code: Optional[str] = None,
         config: Optional[dict] = None,
+        access_level: Optional[str] = None,
+        department_id: Optional[str] = None,
         is_active: Optional[bool] = None,
+        storage_path: Optional[str] = None,
+        manifest: Optional[dict] = None,
+        skill_md_content: Optional[str] = None,
+        homepage: Optional[str] = None,
+        skill_metadata: Optional[dict] = None,
+        gating_status: Optional[dict] = None,
     ) -> Optional[SkillInfo]:
-        """Update a skill.
-
-        Args:
-            skill_id: Skill UUID
-            description: New description
-            interface_definition: New interface definition
-            dependencies: New dependencies
-            code: New code
-            config: New config
-            is_active: New active status
-
-        Returns:
-            Updated SkillInfo or None if not found
-        """
         skill = self.skill_model.update_skill(
             skill_id=skill_id,
+            display_name=display_name,
             description=description,
+            code=code,
             interface_definition=interface_definition,
             dependencies=dependencies,
+            config=config,
+            access_level=access_level,
+            department_id=department_id,
+            is_active=is_active,
+            storage_path=storage_path,
+            manifest=manifest,
+            skill_md_content=skill_md_content,
+            homepage=homepage,
+            skill_metadata=skill_metadata,
+            gating_status=gating_status,
         )
-
-        if not skill:
-            return None
-
-        return self._to_skill_info(skill)
+        return self._to_skill_info(skill) if skill else None
 
     def delete_skill(self, skill_id: UUID) -> bool:
-        """Delete a skill.
-
-        Args:
-            skill_id: Skill UUID
-
-        Returns:
-            True if deleted, False if not found
-        """
         return self.skill_model.delete_skill(skill_id)
 
 
-# Singleton instance
 _skill_registry: Optional[SkillRegistry] = None
 
 
 def get_skill_registry() -> SkillRegistry:
-    """Get or create the skill registry singleton.
-
-    Returns:
-        SkillRegistry instance
-    """
+    """Get or create the skill registry singleton."""
     global _skill_registry
     if _skill_registry is None:
         _skill_registry = SkillRegistry()

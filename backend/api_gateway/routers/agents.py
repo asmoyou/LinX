@@ -235,6 +235,130 @@ def _validate_allowed_memory(allowed_memory: Optional[List[str]]) -> Optional[Li
     return normalized_scopes
 
 
+def _normalize_skill_id_strings(
+    raw_skill_ids: Optional[List[str]],
+    *,
+    strict: bool = True,
+    log_context: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Normalize, dedupe, and validate UUID-formatted skill IDs."""
+    if not raw_skill_ids:
+        return []
+
+    normalized: List[str] = []
+    invalid: List[str] = []
+
+    for raw_skill_id in raw_skill_ids:
+        candidate = str(raw_skill_id or "").strip()
+        if not candidate:
+            continue
+        try:
+            normalized_uuid = str(UUID(candidate))
+        except ValueError:
+            invalid.append(candidate)
+            continue
+        if normalized_uuid not in normalized:
+            normalized.append(normalized_uuid)
+
+    if invalid and strict:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid skill IDs: {', '.join(invalid)}",
+        )
+    if invalid and not strict:
+        logger.warning(
+            "Skipping persisted non-UUID agent capabilities while building skill payload",
+            extra={
+                "invalid_capabilities": invalid[:20],
+                "invalid_capability_count": len(invalid),
+                **(log_context or {}),
+            },
+        )
+
+    return normalized
+
+
+def _validate_skill_ids(
+    skill_ids: Optional[List[str]],
+    current_user: CurrentUser,
+) -> List[str]:
+    """Validate that selected skills exist, are active, and visible to current user."""
+    normalized_skill_ids = _normalize_skill_id_strings(skill_ids, strict=True)
+    if not normalized_skill_ids:
+        return []
+
+    from access_control.skill_access import build_skill_access_context
+    from skill_library.skill_registry import get_skill_registry
+
+    access_context = build_skill_access_context(current_user)
+    registry = get_skill_registry()
+
+    missing_or_inaccessible: List[str] = []
+    validated: List[str] = []
+    for skill_id in normalized_skill_ids:
+        skill_info = registry.get_visible_skill(skill_id=UUID(skill_id), access_context=access_context)
+        if not skill_info or not skill_info.is_active:
+            missing_or_inaccessible.append(skill_id)
+            continue
+        validated.append(skill_id)
+
+    if missing_or_inaccessible:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Skills not found, inactive, or inaccessible: "
+                f"{', '.join(missing_or_inaccessible)}"
+            ),
+        )
+
+    return validated
+
+
+def _platform_skill_id_strings(
+    agent_type: str,
+    capabilities: Optional[List[str]],
+    *,
+    agent_id: Optional[str] = None,
+) -> List[str]:
+    """Return configured platform skill IDs from agent capabilities."""
+    if agent_type == "mission_temp_worker":
+        return []
+    return _normalize_skill_id_strings(
+        capabilities,
+        strict=False,
+        log_context={"agent_id": agent_id, "agent_type": agent_type},
+    )
+
+
+def _build_skill_summary_map(skill_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Load skill summary payloads keyed by skill_id string."""
+    if not skill_ids:
+        return {}
+
+    from skill_library.skill_registry import get_skill_registry
+
+    registry = get_skill_registry()
+    summary_map: Dict[str, Dict[str, Any]] = {}
+
+    for skill_id in skill_ids:
+        skill_info = registry.get_skill(UUID(skill_id))
+        if not skill_info:
+            continue
+        summary_map[skill_id] = {
+            "skill_id": str(skill_info.skill_id),
+            "skill_slug": skill_info.skill_slug,
+            "display_name": skill_info.display_name,
+            "description": skill_info.description,
+            "skill_type": skill_info.skill_type,
+            "version": skill_info.version,
+            "access_level": skill_info.access_level,
+            "department_id": skill_info.department_id,
+            "department_name": skill_info.department_name,
+        }
+
+    return summary_map
+
+
 def _trim_process_text(text: Optional[str], max_chars: int = 120) -> str:
     """Trim long text for process/debug stream display."""
     if not text:
@@ -1972,7 +2096,7 @@ class CreateAgentRequest(BaseModel):
     template_id: Optional[str] = None
     avatar: Optional[str] = None
     systemPrompt: Optional[str] = None
-    skills: List[str] = Field(default_factory=list)
+    skill_ids: List[str] = Field(default_factory=list)
     model: Optional[str] = None
     provider: Optional[str] = None
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
@@ -1989,7 +2113,7 @@ class UpdateAgentRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     avatar: Optional[str] = None
     systemPrompt: Optional[str] = None
-    skills: Optional[List[str]] = None
+    skill_ids: Optional[List[str]] = None
     model: Optional[str] = None
     provider: Optional[str] = None
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
@@ -2020,7 +2144,8 @@ class AgentResponse(BaseModel):
     completionRate: float = 0.0
     uptime: str = "0h 0m"
     systemPrompt: Optional[str] = None
-    skills: List[str] = Field(default_factory=list)
+    skill_ids: List[str] = Field(default_factory=list)
+    skill_summaries: List[Dict[str, Any]] = Field(default_factory=list)
     model: Optional[str] = None
     provider: Optional[str] = None
     temperature: float = 0.7
@@ -2086,16 +2211,21 @@ def _get_owned_agent_or_raise(agent_id: str, current_user: CurrentUser):
 
     return agent, agent_uuid
 
-
-def _public_agent_skills(agent_type: str, capabilities: Optional[List[str]]) -> List[str]:
-    """Normalize capabilities for API responses.
-
-    Temporary mission workers may carry internal capabilities that are not platform skills.
-    Hide them from the workforce skills UI to avoid misleading counts/configuration state.
-    """
-    if agent_type == "mission_temp_worker":
-        return []
-    return capabilities or []
+def _build_agent_response_payload(agent_info: Any) -> Dict[str, Any]:
+    """Build skill-related payload fields for agent API responses."""
+    skill_ids = _platform_skill_id_strings(
+        agent_info.agent_type,
+        agent_info.capabilities,
+        agent_id=str(getattr(agent_info, "agent_id", "") or ""),
+    )
+    skill_summary_map = _build_skill_summary_map(skill_ids)
+    skill_summaries = [
+        skill_summary_map[skill_id] for skill_id in skill_ids if skill_id in skill_summary_map
+    ]
+    return {
+        "skill_ids": skill_ids,
+        "skill_summaries": skill_summaries,
+    }
 
 
 class AvailableProvidersResponse(BaseModel):
@@ -2162,13 +2292,14 @@ async def create_agent(
             current_user,
         )
         validated_allowed_memory = _validate_allowed_memory(request.allowedMemory or [])
+        validated_skill_ids = _validate_skill_ids(request.skill_ids, current_user)
 
         # Register agent in database with LLM configuration
         agent_info = registry.register_agent(
             name=request.name,
             agent_type=request.type,
             owner_user_id=UUID(current_user.user_id),
-            capabilities=request.skills or [],
+            capabilities=validated_skill_ids,
             llm_provider=request.provider,
             llm_model=request.model,
             system_prompt=request.systemPrompt,
@@ -2191,6 +2322,7 @@ async def create_agent(
             extra={"agent_id": str(agent_info.agent_id), "user_id": current_user.user_id},
         )
 
+        response_payload = _build_agent_response_payload(agent_info)
         return AgentResponse(
             id=str(agent_info.agent_id),
             name=agent_info.name,
@@ -2204,7 +2336,8 @@ async def create_agent(
             completionRate=0.0,
             uptime="0h 0m",
             systemPrompt=agent_info.system_prompt,
-            skills=_public_agent_skills(agent_info.agent_type, agent_info.capabilities),
+            skill_ids=response_payload["skill_ids"],
+            skill_summaries=response_payload["skill_summaries"],
             model=agent_info.llm_model,
             provider=agent_info.llm_provider,
             temperature=agent_info.temperature,
@@ -2219,6 +2352,8 @@ async def create_agent(
             createdAt=agent_info.created_at,
             updatedAt=agent_info.updated_at,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to create agent: {e}")
         raise HTTPException(
@@ -2243,6 +2378,7 @@ async def list_agents(
         responses: List[AgentResponse] = []
         for agent in agents:
             task_stats = task_stats_by_agent.get(agent.agent_id, _default_agent_task_stats())
+            response_payload = _build_agent_response_payload(agent)
             responses.append(
                 AgentResponse(
                     id=str(agent.agent_id),
@@ -2257,7 +2393,8 @@ async def list_agents(
                     completionRate=task_stats["completionRate"],
                     uptime="0h 0m",  # Deprecated in UI but kept for compatibility
                     systemPrompt=agent.system_prompt,
-                    skills=_public_agent_skills(agent.agent_type, agent.capabilities),
+                    skill_ids=response_payload["skill_ids"],
+                    skill_summaries=response_payload["skill_summaries"],
                     model=agent.llm_model,
                     provider=agent.llm_provider,
                     temperature=agent.temperature,
@@ -2298,6 +2435,7 @@ async def get_agent(
             agent.agent_id, _default_agent_task_stats()
         )
 
+        response_payload = _build_agent_response_payload(agent)
         return AgentResponse(
             id=str(agent.agent_id),
             name=agent.name,
@@ -2311,7 +2449,8 @@ async def get_agent(
             completionRate=task_stats["completionRate"],
             uptime="0h 0m",
             systemPrompt=agent.system_prompt,
-            skills=_public_agent_skills(agent.agent_type, agent.capabilities),
+            skill_ids=response_payload["skill_ids"],
+            skill_summaries=response_payload["skill_summaries"],
             model=agent.llm_model,
             provider=agent.llm_provider,
             temperature=agent.temperature,
@@ -2468,11 +2607,16 @@ async def update_agent(
             else None
         )
         validated_allowed_memory = _validate_allowed_memory(payload.allowedMemory)
+        validated_skill_ids = (
+            _validate_skill_ids(payload.skill_ids, current_user)
+            if payload.skill_ids is not None
+            else None
+        )
         updated_agent = registry.update_agent(
             agent_id=UUID(agent_id),
             name=payload.name,
             avatar=payload.avatar,
-            capabilities=payload.skills,
+            capabilities=validated_skill_ids,
             llm_provider=payload.provider,
             llm_model=payload.model,
             system_prompt=payload.systemPrompt,
@@ -2505,6 +2649,7 @@ async def update_agent(
             updated_agent.agent_id, _default_agent_task_stats()
         )
 
+        response_payload = _build_agent_response_payload(updated_agent)
         return AgentResponse(
             id=str(updated_agent.agent_id),
             name=updated_agent.name,
@@ -2518,7 +2663,8 @@ async def update_agent(
             completionRate=task_stats["completionRate"],
             uptime="0h 0m",
             systemPrompt=updated_agent.system_prompt,
-            skills=_public_agent_skills(updated_agent.agent_type, updated_agent.capabilities),
+            skill_ids=response_payload["skill_ids"],
+            skill_summaries=response_payload["skill_summaries"],
             model=updated_agent.llm_model,
             provider=updated_agent.llm_provider,
             temperature=updated_agent.temperature,
@@ -4799,10 +4945,10 @@ class AgentSkillsResponse(BaseModel):
     """Response model for agent skills configuration."""
 
     agent_id: str
-    configured_skills: List[str] = Field(
-        description="List of skill names configured for this agent"
+    configured_skill_ids: List[str] = Field(
+        description="List of skill IDs configured for this agent"
     )
-    available_skills: List[Dict[str, str]] = Field(description="List of all available skills")
+    available_skills: List[Dict[str, Any]] = Field(description="List of visible active skills")
 
 
 @router.get("/{agent_id}/skills", response_model=AgentSkillsResponse)
@@ -4810,8 +4956,8 @@ async def get_agent_skills(agent_id: str, current_user: CurrentUser = Depends(ge
     """Get agent's configured skills and available skills.
 
     Returns:
-        - configured_skills: Skills currently configured for this agent (in capabilities)
-        - available_skills: All skills available in the system
+        - configured_skill_ids: Skill IDs currently configured for this agent
+        - available_skills: Visible active skills available for configuration
     """
     try:
         agent_uuid = UUID(agent_id)
@@ -4827,34 +4973,38 @@ async def get_agent_skills(agent_id: str, current_user: CurrentUser = Depends(ge
             raise HTTPException(status_code=403, detail="Not authorized to access this agent")
 
         # Get all available skills from database
-        from database.connection import get_db_session
-        from database.models import Skill
+        from access_control.skill_access import build_skill_access_context
+        from skill_library.skill_registry import get_skill_registry
 
-        available_skills = []
-        with get_db_session() as session:
-            skills = session.query(Skill).filter(Skill.is_active == True).order_by(Skill.name).all()
-
-            for skill in skills:
-                available_skills.append(
-                    {
-                        "skill_id": str(skill.skill_id),
-                        "name": skill.name,
-                        "description": skill.description,
-                        "skill_type": skill.skill_type,
-                        "version": skill.version,
-                    }
-                )
-
-        available_skill_names = {item["name"] for item in available_skills}
-        configured_skills = [
-            name for name in (agent_info.capabilities or []) if name in available_skill_names
+        access_context = build_skill_access_context(current_user)
+        registry = get_skill_registry()
+        visible_skills = registry.list_visible_skills(access_context=access_context, limit=1000, offset=0)
+        available_skills = [
+            {
+                "skill_id": str(skill.skill_id),
+                "skill_slug": skill.skill_slug,
+                "display_name": skill.display_name,
+                "description": skill.description,
+                "skill_type": skill.skill_type,
+                "version": skill.version,
+                "access_level": skill.access_level,
+                "department_id": skill.department_id,
+                "department_name": skill.department_name,
+            }
+            for skill in visible_skills
+            if skill.is_active
         ]
-        if agent_info.agent_type == "mission_temp_worker":
-            configured_skills = []
+
+        available_skill_ids = {item["skill_id"] for item in available_skills}
+        configured_skill_ids = [
+            skill_id
+            for skill_id in _platform_skill_id_strings(agent_info.agent_type, agent_info.capabilities)
+            if skill_id in available_skill_ids
+        ]
 
         return AgentSkillsResponse(
             agent_id=agent_id,
-            configured_skills=configured_skills,
+            configured_skill_ids=configured_skill_ids,
             available_skills=available_skills,
         )
 
@@ -4870,7 +5020,7 @@ async def get_agent_skills(agent_id: str, current_user: CurrentUser = Depends(ge
 class UpdateAgentSkillsRequest(BaseModel):
     """Request model for updating agent skills."""
 
-    skill_names: List[str] = Field(description="List of skill names to configure for this agent")
+    skill_ids: List[str] = Field(description="List of skill IDs to configure for this agent")
 
 
 @router.put("/{agent_id}/skills", response_model=AgentResponse)
@@ -4882,7 +5032,7 @@ async def update_agent_skills(
 ):
     """Update agent's configured skills.
 
-    This updates the agent's capabilities list with the selected skills.
+    This updates the agent's capabilities list with the selected skill IDs.
     The agent will load these skills on next initialization.
     """
     try:
@@ -4898,41 +5048,23 @@ async def update_agent_skills(
         if str(agent_info.owner_user_id) != current_user.user_id:
             raise HTTPException(status_code=403, detail="Not authorized to modify this agent")
 
-        # Validate that all skill names exist
-        from database.connection import get_db_session
-        from database.models import Skill
-
-        with get_db_session() as session:
-            for skill_name in payload.skill_names:
-                skill = (
-                    session.query(Skill)
-                    .filter(Skill.name == skill_name, Skill.is_active == True)
-                    .first()
-                )
-
-                if not skill:
-                    raise HTTPException(
-                        status_code=400, detail=f"Skill '{skill_name}' not found or not active"
-                    )
+        validated_skill_ids = _validate_skill_ids(payload.skill_ids, current_user)
 
         # Update agent capabilities
-        updated_agent = registry.update_agent(agent_uuid, capabilities=payload.skill_names)
+        updated_agent = registry.update_agent(agent_uuid, capabilities=validated_skill_ids)
 
         if not updated_agent:
             raise HTTPException(status_code=404, detail="Agent not found")
 
-        # Clear agent from cache to force reload with new skills
-        cache_key = f"{agent_id}:{current_user.user_id}"
-        if cache_key in _agent_cache:
-            del _agent_cache[cache_key]
-            logger.info(f"Cleared agent cache after skills update: {agent_id}")
+        # Clear agent cache to force reload with new skills
+        invalidate_agent_cache(agent_id)
 
         logger.info(
             f"Updated agent skills: {agent_id}",
             extra={
                 "agent_id": agent_id,
-                "skill_count": len(payload.skill_names),
-                "skills": payload.skill_names,
+                "skill_count": len(validated_skill_ids),
+                "skill_ids": validated_skill_ids,
             },
         )
 
@@ -4940,13 +5072,14 @@ async def update_agent_skills(
             updated_agent.agent_id, _default_agent_task_stats()
         )
 
-        # Return updated agent info
+        response_payload = _build_agent_response_payload(updated_agent)
         return AgentResponse(
             id=str(updated_agent.agent_id),
             name=updated_agent.name,
             type=updated_agent.agent_type,
             avatar=_resolve_agent_avatar(updated_agent.avatar, request),
-            skills=_public_agent_skills(updated_agent.agent_type, updated_agent.capabilities),
+            skill_ids=response_payload["skill_ids"],
+            skill_summaries=response_payload["skill_summaries"],
             status=updated_agent.status,
             systemPrompt=updated_agent.system_prompt,
             currentTask=None,

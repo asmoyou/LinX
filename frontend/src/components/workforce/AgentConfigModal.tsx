@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { X, Save, Loader2, AlertCircle, Info } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { Agent } from '@/types/agent';
+import type { AgentSkillSummary } from '@/types/agent';
 import { llmApi, agentsApi } from '@/api';
 import { knowledgeApi } from '@/api/knowledge';
 import type { ModelMetadata } from '@/api/llm';
@@ -63,13 +64,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [knowledgeBasesError, setKnowledgeBasesError] = useState<string | null>(null);
   
   // Skills state
-  const [availableSkills, setAvailableSkills] = useState<Array<{
-    skill_id: string;
-    name: string;
-    description: string;
-    skill_type: string;
-    version: string;
-  }>>([]);
+  const [availableSkills, setAvailableSkills] = useState<AgentSkillSummary[]>([]);
   const [isLoadingSkills, setIsLoadingSkills] = useState(false);
   const [skillsError, setSkillsError] = useState<string | null>(null);
 
@@ -78,7 +73,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     type: '',
     avatar: '',
     systemPrompt: '',
-    skills: [],
+    skill_ids: [],
     model: '',
     provider: '',
     temperature: 0.7,
@@ -102,7 +97,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         type: agent.type || '',
         avatar: agent.avatar || '',
         systemPrompt: agent.systemPrompt || '',
-        skills: agent.skills || [],
+        skill_ids: agent.skill_ids || [],
         model: agent.model || '',
         provider: agent.provider || '',
         temperature: agent.temperature ?? 0.7,
@@ -208,10 +203,10 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       setAvailableSkills(response.available_skills || []);
       
       // Update form data with configured skills if not already set
-      if (!formData.skills || formData.skills.length === 0) {
+      if (!formData.skill_ids || formData.skill_ids.length === 0) {
         setFormData(prev => ({
           ...prev,
-          skills: response.configured_skills || []
+          skill_ids: response.configured_skill_ids || []
         }));
       }
     } catch (error: any) {
@@ -223,17 +218,17 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     }
   };
   
-  const toggleSkill = (skillName: string) => {
-    const currentSkills = formData.skills || [];
-    const isSelected = currentSkills.includes(skillName);
+  const toggleSkill = (skillId: string) => {
+    const currentSkills = formData.skill_ids || [];
+    const isSelected = currentSkills.includes(skillId);
     
     const newSkills = isSelected
-      ? currentSkills.filter(s => s !== skillName)
-      : [...currentSkills, skillName];
+      ? currentSkills.filter(s => s !== skillId)
+      : [...currentSkills, skillId];
     
     setFormData({
       ...formData,
-      skills: newSkills
+      skill_ids: newSkills
     });
   };
 
@@ -583,7 +578,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                         {t('agent.selectedSkills', '已选择技能')}
                       </span>
                       <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
-                        {formData.skills?.length || 0} / {availableSkills.length}
+                        {formData.skill_ids?.length || 0} / {availableSkills.length}
                       </span>
                     </div>
                     
@@ -598,14 +593,14 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                     ) : (
                       <div className="grid grid-cols-1 gap-2 max-h-[400px] overflow-y-auto p-1">
                         {availableSkills.map((skill) => {
-                          const isSelected = formData.skills?.includes(skill.name) || false;
+                          const isSelected = formData.skill_ids?.includes(skill.skill_id) || false;
                           const isLangChainTool = skill.skill_type === 'langchain_tool';
                           
                           return (
                             <button
                               key={skill.skill_id}
                               type="button"
-                              onClick={() => toggleSkill(skill.name)}
+                              onClick={() => toggleSkill(skill.skill_id)}
                               className={`
                                 p-3 rounded-lg border-2 text-left transition-all
                                 ${isSelected
@@ -634,8 +629,11 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                                 <div className="flex-1 min-w-0">
                                   <div className="flex items-center gap-2 mb-1">
                                     <h4 className="font-medium text-zinc-900 dark:text-zinc-100">
-                                      {skill.name}
+                                      {skill.display_name}
                                     </h4>
+                                    <span className="text-xs text-zinc-500 dark:text-zinc-400 font-mono">
+                                      {skill.skill_slug}
+                                    </span>
                                     <span className={`
                                       px-2 py-0.5 text-xs font-medium rounded
                                       ${isLangChainTool
@@ -648,6 +646,10 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                                   </div>
                                   <p className="text-sm text-zinc-600 dark:text-zinc-400 line-clamp-2">
                                     {skill.description}
+                                  </p>
+                                  <p className="text-xs text-zinc-500 dark:text-zinc-500 mt-1">
+                                    {skill.access_level}
+                                    {skill.department_name ? ` · ${skill.department_name}` : ''}
                                   </p>
                                   {skill.version && (
                                     <p className="text-xs text-zinc-500 dark:text-zinc-500 mt-1">

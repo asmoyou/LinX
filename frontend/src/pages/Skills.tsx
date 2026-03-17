@@ -88,7 +88,8 @@ export default function Skills() {
       setFilteredSkills(
         skills.filter(
           (skill) =>
-            skill.name.toLowerCase().includes(query) ||
+            skill.display_name.toLowerCase().includes(query) ||
+            skill.skill_slug.toLowerCase().includes(query) ||
             skill.description.toLowerCase().includes(query),
         ),
       );
@@ -144,7 +145,7 @@ export default function Skills() {
 
   const handleEditSkill = (skill: Skill) => {
     setSelectedSkill(skill);
-    setSelectedSkillMode(skill.is_system ? "view" : "edit");
+    setSelectedSkillMode(skill.can_edit ? "edit" : "view");
     // Use different editor based on skill type
     if (skill.skill_type === "agent_skill") {
       setIsAgentSkillViewerOpen(true);
@@ -199,13 +200,15 @@ export default function Skills() {
 
   const resolvedOverviewStats =
     overviewStats ?? buildOverviewStatsFromSkills(skills);
-  const filteredSystemSharedCount = filteredSkills.filter(
-    (skill) => skill.is_system,
+  const filteredPublicCount = filteredSkills.filter(
+    (skill) => skill.access_level === "public",
   ).length;
-  const filteredPersonalPrivateCount = Math.max(
-    filteredSkills.length - filteredSystemSharedCount,
-    0,
-  );
+  const filteredTeamCount = filteredSkills.filter(
+    (skill) => skill.access_level === "team",
+  ).length;
+  const filteredPrivateCount = filteredSkills.filter(
+    (skill) => skill.access_level === "private",
+  ).length;
   const formattedCardValues = {
     total: resolvedOverviewStats.total_skills.toLocaleString(),
     active: resolvedOverviewStats.active_skills.toLocaleString(),
@@ -266,15 +269,21 @@ export default function Skills() {
               </span>
             </span>
             <span>
-              {t("skills.systemShared")}:{" "}
+              {t("skills.public", { defaultValue: "Public" })}:{" "}
               <span className="font-semibold text-foreground">
-                {filteredSystemSharedCount}
+                {filteredPublicCount}
               </span>
             </span>
             <span>
-              {t("skills.personalPrivate")}:{" "}
+              {t("skills.team", { defaultValue: "Team" })}:{" "}
               <span className="font-semibold text-foreground">
-                {filteredPersonalPrivateCount}
+                {filteredTeamCount}
+              </span>
+            </span>
+            <span>
+              {t("skills.private", { defaultValue: "Private" })}:{" "}
+              <span className="font-semibold text-foreground">
+                {filteredPrivateCount}
               </span>
             </span>
           </div>
@@ -430,8 +439,7 @@ export default function Skills() {
               setSelectedSkill(null);
               setSelectedSkillMode("edit");
             }}
-            skillId={selectedSkill.skill_id}
-            skillName={selectedSkill.name}
+            skill={selectedSkill}
             mode={selectedSkillMode}
             onUpdate={loadSkills}
           />
@@ -447,7 +455,7 @@ export default function Skills() {
               void loadSkills();
             }}
             skillId={selectedSkill.skill_id}
-            skillName={selectedSkill.name}
+            skillName={selectedSkill.display_name}
             skillType={selectedSkill.skill_type}
             interfaceDefinition={selectedSkill.interface_definition}
           />

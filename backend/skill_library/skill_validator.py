@@ -73,8 +73,12 @@ class SkillValidator:
         # Validate name
         if not name or not isinstance(name, str):
             errors.append("Skill name must be a non-empty string")
-        elif not name.replace("_", "").isalnum():
-            errors.append("Skill name must contain only alphanumeric characters and underscores")
+        else:
+            normalized = name.replace("_", "").replace("-", "")
+            if not normalized.isalnum():
+                errors.append(
+                    "Skill name must contain only alphanumeric characters, hyphens, and underscores"
+                )
 
         # Validate interface
         interface_errors = self._validate_interface(interface_definition)
