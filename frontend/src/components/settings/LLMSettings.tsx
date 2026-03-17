@@ -163,6 +163,8 @@ export const LLMSettings: React.FC = () => {
       reasoning: { label: 'Reasoning', color: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300', icon: '🧠' },
       embedding: { label: 'Embedding', color: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300', icon: '🔢' },
       rerank: { label: 'Rerank', color: 'bg-cyan-100 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300', icon: '🔄' },
+      audio: { label: 'ASR', color: 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300', icon: '🎙️' },
+      asr: { label: 'ASR', color: 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300', icon: '🎙️' },
       code: { label: 'Code', color: 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300', icon: '💻' },
       image_generation: { label: 'Image Gen', color: 'bg-pink-100 dark:bg-pink-900/30 text-pink-700 dark:text-pink-300', icon: '🎨' },
     };
@@ -496,8 +498,12 @@ export const LLMSettings: React.FC = () => {
                       const metadata = modelsMetadata[name]?.models[model];
                       if (!metadata) return null;
 
-                      // Check if this is an embedding or rerank model
-                      const isEmbeddingOrRerank = metadata.model_type === 'embedding' || metadata.model_type === 'rerank';
+                      const normalizedModelType = (metadata.model_type || '').toLowerCase();
+                      const isAudioModel =
+                        ['audio', 'asr'].includes(normalizedModelType) ||
+                        Boolean(metadata.supports_audio_transcription);
+                      const isSpecializedModel =
+                        ['embedding', 'rerank'].includes(normalizedModelType) || isAudioModel;
 
                       return (
                         <div
@@ -536,7 +542,7 @@ export const LLMSettings: React.FC = () => {
                           </div>
 
                           {/* Model Properties Grid - Different for embedding/rerank models */}
-                          {!isEmbeddingOrRerank && (
+                          {!isSpecializedModel && (
                             <div className="grid grid-cols-2 gap-3 mb-3">
                               {metadata.context_window && (
                                 <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
@@ -580,22 +586,34 @@ export const LLMSettings: React.FC = () => {
                           )}
 
                           {/* Embedding/Rerank Model Properties */}
-                          {isEmbeddingOrRerank && (
+                          {isSpecializedModel && (
                             <div className="mb-3">
                               <div className="grid grid-cols-2 gap-3 mb-3">
                                 <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
                                   <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">{t('settings.modelDetails.type')}</div>
                                   <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                                    {metadata.model_type === 'embedding' ? t('settings.modelDetails.textEmbedding') : t('settings.modelDetails.reranking')}
+                                    {normalizedModelType === 'embedding'
+                                      ? t('settings.modelDetails.textEmbedding')
+                                      : normalizedModelType === 'rerank'
+                                        ? t('settings.modelDetails.reranking')
+                                        : t('settings.modelDetails.audioTranscription', 'Speech Transcription')}
                                   </div>
                                 </div>
-                                {metadata.model_type === 'embedding' && metadata.embedding_dimension && (
+                                {normalizedModelType === 'embedding' && metadata.embedding_dimension && (
                                   <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
                                     <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">{t('settings.modelDetails.embeddingDimension')}</div>
                                     <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                                       {metadata.embedding_dimension.toLocaleString()}
                                     </div>
                                     <div className="text-xs text-zinc-500 dark:text-zinc-400">{t('settings.modelDetails.dimensions')}</div>
+                                  </div>
+                                )}
+                                {isAudioModel && (
+                                  <div className="p-2 bg-zinc-50 dark:bg-zinc-800/50 rounded">
+                                    <div className="text-xs text-zinc-500 dark:text-zinc-400 mb-0.5">{t('settings.modelDetails.features')}</div>
+                                    <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                      {t('settings.modelDetails.audioTranscription', 'Speech Transcription')}
+                                    </div>
                                   </div>
                                 )}
                                 {metadata.context_window && (
@@ -623,7 +641,7 @@ export const LLMSettings: React.FC = () => {
                           )}
 
                           {/* Features - Only show for chat/vision/reasoning models */}
-                          {!isEmbeddingOrRerank && (
+                          {!isSpecializedModel && (
                             <div className="mb-3">
                               <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-2">
                                 {t('settings.modelDetails.features')}
@@ -652,6 +670,11 @@ export const LLMSettings: React.FC = () => {
                                 {metadata.supports_system_prompt && (
                                   <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded text-xs">
                                     📋 {t('settings.modelDetails.systemPrompt')}
+                                  </span>
+                                )}
+                                {metadata.supports_audio_transcription && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-1 bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 rounded text-xs">
+                                    🎙️ {t('settings.modelDetails.audioTranscription', 'Speech Transcription')}
                                   </span>
                                 )}
                               </div>

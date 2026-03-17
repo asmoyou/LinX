@@ -22,9 +22,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel
 
-from llm_providers.base import BaseLLMProvider
-from llm_providers.protocol_clients import get_protocol_client
-
 logger = logging.getLogger(__name__)
 
 
@@ -74,7 +71,7 @@ async def check_model_with_single_key(
     """
     Check a single model with a single API key.
 
-    Detects model type (chat / embedding / rerank) and uses the appropriate
+    Detects model type (chat / embedding / rerank / audio) and uses the appropriate
     test endpoint so that non-chat models are not incorrectly tested against
     /chat/completions.
 
@@ -104,6 +101,8 @@ async def check_model_with_single_key(
             await _test_embedding_model(protocol, base_url, model_id, api_key, timeout)
         elif model_type == "rerank":
             await _test_rerank_model(protocol, base_url, model_id, api_key, timeout)
+        elif model_type == "audio":
+            await _test_audio_model(base_url, model_id, api_key, timeout)
         else:
             # Chat / completion model
             if protocol == "ollama":
@@ -230,7 +229,7 @@ def _detect_model_type(model_id: str) -> str:
     """
     Detect model type based on model ID patterns.
 
-    Returns: "embedding", "rerank", or "chat"
+    Returns: "embedding", "rerank", "audio", or "chat"
     """
     model_lower = model_id.lower()
 
@@ -264,7 +263,34 @@ def _detect_model_type(model_id: str) -> str:
         if re.search(pattern, model_lower):
             return "embedding"
 
+    audio_patterns = [
+        r"sensevoice",
+        r"\basr\b",
+        r"whisper",
+        r"transcribe",
+        r"transcription",
+        r"speech[-_ ]?to[-_ ]?text",
+        r"\bstt\b",
+    ]
+    for pattern in audio_patterns:
+        if re.search(pattern, model_lower):
+            return "audio"
+
     return "chat"
+
+
+def _normalize_model_type_name(value: Any) -> str:
+    """Normalize model type aliases used in metadata."""
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "speech": "audio",
+        "speech_to_text": "audio",
+        "speech2text": "audio",
+        "transcription": "audio",
+        "asr": "audio",
+        "stt": "audio",
+    }
+    return aliases.get(normalized, normalized)
 
 
 def _resolve_model_type(
@@ -275,9 +301,16 @@ def _resolve_model_type(
     Determine model type using metadata first, falling back to pattern detection.
     """
     if model_metadata:
-        meta_type = model_metadata.get("model_type", "")
-        if meta_type in ("embedding", "rerank"):
+        meta_type = _normalize_model_type_name(model_metadata.get("model_type"))
+        if meta_type in ("embedding", "rerank", "audio"):
             return meta_type
+        if bool(model_metadata.get("supports_audio_transcription")):
+            return "audio"
+        capabilities = model_metadata.get("capabilities") or []
+        if isinstance(capabilities, list):
+            normalized_caps = {_normalize_model_type_name(item) for item in capabilities}
+            if "audio" in normalized_caps:
+                return "audio"
     return _detect_model_type(model_id)
 
 
@@ -400,6 +433,116 @@ async def _test_rerank_model(
             last_error = str(e)
 
     raise Exception(last_error or "Rerank test failed")
+
+
+def _build_test_audio_bytes() -> bytes:
+    """Build a tiny valid WAV payload for audio model health checks."""
+    import io
+    import wave
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(b"\x00\x00" * 1600)
+    return buffer.getvalue()
+
+
+def _has_transcription_text(data: Any) -> bool:
+    """Check whether the payload contains non-empty transcription text."""
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            return bool(data.strip())
+
+    if not isinstance(data, dict):
+        return False
+
+    for key in ("text", "transcript", "output_text", "result"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+        if isinstance(value, dict) and str(value.get("text", "")).strip():
+            return True
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    return True
+                if isinstance(item, dict) and str(item.get("text", "")).strip():
+                    return True
+
+    sentence_info = data.get("sentence_info")
+    if isinstance(sentence_info, list):
+        return any(
+            isinstance(item, dict) and str(item.get("text", "")).strip()
+            for item in sentence_info
+        )
+
+    return False
+
+
+async def _test_audio_model(
+    base_url: str,
+    model_id: str,
+    api_key: Optional[str],
+    timeout: int,
+) -> None:
+    """Test an OpenAI-compatible audio transcription model."""
+    import aiohttp
+
+    base = base_url.rstrip("/")
+    base_without_v1 = base[:-3] if base.endswith("/v1") else base
+    if base.endswith("/v1"):
+        urls_to_try = [f"{base}/audio/transcriptions"]
+    else:
+        urls_to_try = [f"{base}/v1/audio/transcriptions"]
+    urls_to_try.append(f"{base_without_v1}/audio/transcriptions")
+    urls_to_try = list(dict.fromkeys(urls_to_try))
+
+    headers: Dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    audio_bytes = _build_test_audio_bytes()
+    last_error: Optional[str] = None
+
+    for url in urls_to_try:
+        form = aiohttp.FormData()
+        form.add_field("model", model_id)
+        form.add_field("language", "auto")
+        form.add_field(
+            "file",
+            audio_bytes,
+            filename="linx-healthcheck.wav",
+            content_type="audio/wav",
+        )
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    data=form,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                ) as response:
+                    if response.status == 200:
+                        raw_text = await response.text()
+                        try:
+                            data = json.loads(raw_text)
+                        except Exception:
+                            data = {"text": raw_text}
+                        if _has_transcription_text(data):
+                            return
+                        last_error = "HTTP 200 but no transcription text found in payload"
+                    else:
+                        text = await response.text()
+                        last_error = f"HTTP {response.status}: {text[:200]}"
+        except Exception as e:
+            last_error = str(e)
+
+    raise Exception(last_error or "Audio transcription test failed")
 
 
 def _has_embedding_data(data: Any) -> bool:

@@ -55,6 +55,10 @@ class TestDetectModelType:
             ("e5-large", "embedding"),
             ("voyage-2", "embedding"),
             ("doubao-embedding-v1", "embedding"),
+            # Audio / ASR models
+            ("sensevoicesmall", "audio"),
+            ("FunAudioLLM/SenseVoiceSmall", "audio"),
+            ("gpt-4o-mini-transcribe", "audio"),
             # Chat models (default)
             ("llama3:8b", "chat"),
             ("qwen2:7b", "chat"),
@@ -82,6 +86,10 @@ class TestResolveModelType:
         result = _resolve_model_type("custom-model", {"model_type": "rerank"})
         assert result == "rerank"
 
+    def test_metadata_audio_overrides_pattern(self):
+        result = _resolve_model_type("custom-model", {"model_type": "audio"})
+        assert result == "audio"
+
     def test_metadata_chat_falls_through_to_pattern(self):
         """A chat metadata doesn't force chat — pattern still runs."""
         result = _resolve_model_type("bge-m3", {"model_type": "chat"})
@@ -90,6 +98,7 @@ class TestResolveModelType:
     def test_no_metadata_uses_pattern(self):
         assert _resolve_model_type("bge-reranker-v2-m3") == "rerank"
         assert _resolve_model_type("bge-m3") == "embedding"
+        assert _resolve_model_type("sensevoicesmall") == "audio"
         assert _resolve_model_type("llama3") == "chat"
 
 
@@ -279,6 +288,43 @@ class TestCheckModelRerank:
         assert result.status == HealthStatus.SUCCESS
 
 
+class TestCheckModelAudio:
+    """Audio models should hit the transcription endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_openai_compatible_audio_model(self):
+        resp = _FakeResponse(200, {"text": "hello from asr"})
+        with _patch_aiohttp(resp) as mock_cls:
+            result = await check_model_with_single_key(
+                provider_name="xinference",
+                protocol="openai_compatible",
+                base_url="http://localhost:9997",
+                model_id="sensevoicesmall",
+                api_key="test-key",
+                timeout=10,
+            )
+
+        assert result.status == HealthStatus.SUCCESS
+        call_args = mock_cls.return_value.post.call_args
+        url = call_args.args[0] if call_args.args else call_args.kwargs.get("url", "")
+        assert "/audio/transcriptions" in url
+
+    @pytest.mark.asyncio
+    async def test_audio_model_via_metadata_override(self):
+        resp = _FakeResponse(200, {"transcript": "manual metadata audio"})
+        with _patch_aiohttp(resp):
+            result = await check_model_with_single_key(
+                provider_name="custom",
+                protocol="openai_compatible",
+                base_url="http://localhost:8080",
+                model_id="my-custom-audio-model",
+                timeout=10,
+                model_metadata={"model_type": "audio"},
+            )
+
+        assert result.status == HealthStatus.SUCCESS
+
+
 class TestCheckModelChat:
     """Chat models should still hit the chat/generate endpoint."""
 
@@ -357,11 +403,11 @@ class TestCheckModelFailure:
 
 
 class TestCheckModelsHealthMixed:
-    """Batch health check with a mix of chat, embedding, rerank models."""
+    """Batch health check with a mix of chat, embedding, rerank, and audio models."""
 
     @pytest.mark.asyncio
     async def test_mixed_models_use_correct_endpoints(self):
-        """All three model types in one batch should each get the right test."""
+        """All supported model types in one batch should each get the right test."""
         call_log = []
 
         async def mock_check_single(
@@ -384,13 +430,13 @@ class TestCheckModelsHealthMixed:
                 provider_name="xinference",
                 protocol="openai_compatible",
                 base_url="http://localhost:9997",
-                models=["qwen2-chat", "bge-m3", "bge-reranker-v2-m3"],
+                models=["qwen2-chat", "bge-m3", "bge-reranker-v2-m3", "sensevoicesmall"],
                 api_keys=[],
                 concurrent=False,
                 timeout=10,
             )
 
-        assert len(results) == 3
+        assert len(results) == 4
         assert all(r.status == HealthStatus.SUCCESS for r in results)
 
         # Verify each model was classified correctly
@@ -398,6 +444,7 @@ class TestCheckModelsHealthMixed:
         assert types["qwen2-chat"] == "chat"
         assert types["bge-m3"] == "embedding"
         assert types["bge-reranker-v2-m3"] == "rerank"
+        assert types["sensevoicesmall"] == "audio"
 
     @pytest.mark.asyncio
     async def test_metadata_map_passed_through(self):

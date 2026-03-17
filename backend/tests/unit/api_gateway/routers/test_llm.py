@@ -20,6 +20,8 @@ from api_gateway.routers.llm import (
     ProviderStatus,
     TestGenerationRequest,
     TestGenerationResponse,
+    _detect_model_type,
+    _test_audio_transcription_model,
 )
 from access_control.permissions import CurrentUser
 from access_control.rbac import Role
@@ -216,6 +218,56 @@ class TestCheckProviderHealth:
 
 class TestTestGeneration:
     """Tests for POST /api/v1/llm/test endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_audio_model_detection_and_helper(self, monkeypatch):
+        """Audio models should be tested via the transcription endpoint."""
+
+        class _FakeResponse:
+            def __init__(self):
+                self.status = 200
+
+            async def json(self):
+                return {"text": "hello from asr"}
+
+            async def text(self):
+                return '{"text":"hello from asr"}'
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class _FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, **kwargs):
+                self.calls.append((url, kwargs))
+                return _FakeResponse()
+
+        fake_session = _FakeSession()
+        monkeypatch.setattr("aiohttp.ClientSession", lambda: fake_session)
+
+        result = await _test_audio_transcription_model(
+            protocol="openai_compatible",
+            base_url="http://localhost:9997",
+            model="sensevoicesmall",
+            api_key="test-key",
+            timeout=10,
+        )
+
+        assert _detect_model_type("sensevoicesmall") == "audio"
+        assert "ASR test successful" in result
+        assert fake_session.calls
+        assert "/audio/transcriptions" in fake_session.calls[0][0]
     
     @pytest.mark.asyncio
     async def test_test_generation_success(self, mock_current_user, mock_llm_router):

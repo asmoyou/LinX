@@ -11,10 +11,23 @@ interface EditModelModalProps {
   onSave: (metadata: ModelMetadata) => Promise<void>;
 }
 
+const normalizeEditableMetadata = (source: ModelMetadata): ModelMetadata => {
+  const normalizedModelType =
+    (source.model_type || '').toLowerCase() === 'asr' ? 'audio' : source.model_type;
+  return {
+    ...source,
+    model_type: normalizedModelType,
+    supports_audio_transcription:
+      source.supports_audio_transcription ??
+      ['audio', 'asr'].includes((normalizedModelType || '').toLowerCase()),
+  };
+};
+
 const MODEL_TYPES = [
   { value: 'chat', icon: '💬', colorActive: 'bg-blue-500 text-white', colorInactive: 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400' },
   { value: 'embedding', icon: '🔢', colorActive: 'bg-green-500 text-white', colorInactive: 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400' },
   { value: 'rerank', icon: '🔄', colorActive: 'bg-cyan-500 text-white', colorInactive: 'bg-cyan-50 dark:bg-cyan-900/20 text-cyan-600 dark:text-cyan-400' },
+  { value: 'audio', icon: '🎙️', colorActive: 'bg-orange-500 text-white', colorInactive: 'bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400' },
   { value: 'vision', icon: '👁️', colorActive: 'bg-purple-500 text-white', colorInactive: 'bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400' },
   { value: 'reasoning', icon: '🧠', colorActive: 'bg-amber-500 text-white', colorInactive: 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400' },
   { value: 'code', icon: '💻', colorActive: 'bg-indigo-500 text-white', colorInactive: 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400' },
@@ -35,18 +48,20 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
   onSave,
 }) => {
   const { t } = useTranslation();
-  const [formData, setFormData] = useState<ModelMetadata>(metadata);
+  const [formData, setFormData] = useState<ModelMetadata>(() => normalizeEditableMetadata(metadata));
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
 
-  const isEmbeddingOrRerank = formData.model_type === 'embedding' || formData.model_type === 'rerank';
-  const isEmbedding = formData.model_type === 'embedding';
+  const normalizedModelType = (formData.model_type || '').toLowerCase();
+  const isEmbedding = normalizedModelType === 'embedding';
+  const isAudio = normalizedModelType === 'audio' || normalizedModelType === 'asr';
+  const isSpecializedModel = ['embedding', 'rerank', 'audio', 'asr'].includes(normalizedModelType);
 
   useEffect(() => {
     if (isOpen) {
-      setFormData(metadata);
+      setFormData(normalizeEditableMetadata(metadata));
       setHasChanges(false);
       setError(null);
       setShowAdvanced(false);
@@ -68,7 +83,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
   };
 
   const handleReset = () => {
-    setFormData(metadata);
+    setFormData(normalizeEditableMetadata(metadata));
     setHasChanges(false);
   };
 
@@ -78,11 +93,12 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
   };
 
   const handleModelTypeChange = (newType: string) => {
-    const newIsEmbeddingOrRerank = newType === 'embedding' || newType === 'rerank';
+    const normalizedNewType = newType.toLowerCase();
+    const newIsSpecializedModel = ['embedding', 'rerank', 'audio', 'asr'].includes(normalizedNewType);
     setFormData((prev) => {
       const updated = { ...prev, model_type: newType };
-      // When switching to embedding/rerank, clear chat-specific features
-      if (newIsEmbeddingOrRerank) {
+      // Specialized models should not inherit chat-only runtime flags.
+      if (newIsSpecializedModel) {
         updated.supports_vision = false;
         updated.supports_reasoning = false;
         updated.supports_function_calling = false;
@@ -90,8 +106,9 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
         updated.supports_system_prompt = false;
         updated.max_output_tokens = undefined;
       }
+      updated.supports_audio_transcription = normalizedNewType === 'audio' || normalizedNewType === 'asr';
       // Clear embedding dimension when switching away from embedding
-      if (newType !== 'embedding') {
+      if (normalizedNewType !== 'embedding') {
         updated.embedding_dimension = undefined;
       }
       return updated;
@@ -109,6 +126,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
     chat: t('settings.editModel.typeChat'),
     embedding: t('settings.editModel.typeEmbedding'),
     rerank: t('settings.editModel.typeRerank'),
+    audio: t('settings.editModel.typeAudio', 'Speech / ASR'),
     vision: t('settings.editModel.typeVision'),
     reasoning: t('settings.editModel.typeReasoning'),
     code: t('settings.editModel.typeCode'),
@@ -231,12 +249,12 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
                 {t('settings.editModel.capabilities')}
               </label>
               <div className="flex items-center gap-2">
-                {isEmbeddingOrRerank && (
+                {isSpecializedModel && (
                   <span className="text-xs text-zinc-400 dark:text-zinc-500 italic">
                     {t('settings.editModel.capabilitiesDisabledHint')}
                   </span>
                 )}
-                {hasChanges && !isEmbeddingOrRerank && (
+                {hasChanges && !isSpecializedModel && (
                   <button
                     onClick={handleReset}
                     className="flex items-center gap-1 px-2 py-1 text-xs text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded transition-colors"
@@ -252,35 +270,35 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
                 icon={<Eye className="w-3.5 h-3.5" />}
                 label={t('settings.editModel.vision')}
                 active={formData.supports_vision}
-                disabled={isEmbeddingOrRerank}
+                disabled={isSpecializedModel}
                 onClick={() => toggleFeature('supports_vision')}
               />
               <CapabilityTag
                 icon={<Brain className="w-3.5 h-3.5" />}
                 label={t('settings.editModel.reasoning')}
                 active={formData.supports_reasoning}
-                disabled={isEmbeddingOrRerank}
+                disabled={isSpecializedModel}
                 onClick={() => toggleFeature('supports_reasoning')}
               />
               <CapabilityTag
                 icon={<Code className="w-3.5 h-3.5" />}
                 label={t('settings.editModel.functionCalling')}
                 active={formData.supports_function_calling}
-                disabled={isEmbeddingOrRerank}
+                disabled={isSpecializedModel}
                 onClick={() => toggleFeature('supports_function_calling')}
               />
               <CapabilityTag
                 icon={<Zap className="w-3.5 h-3.5" />}
                 label={t('settings.editModel.streaming')}
                 active={formData.supports_streaming}
-                disabled={isEmbeddingOrRerank}
+                disabled={isSpecializedModel}
                 onClick={() => toggleFeature('supports_streaming')}
               />
               <CapabilityTag
                 icon={<MessageSquare className="w-3.5 h-3.5" />}
                 label={t('settings.editModel.systemPrompt')}
                 active={formData.supports_system_prompt}
-                disabled={isEmbeddingOrRerank}
+                disabled={isSpecializedModel}
                 onClick={() => toggleFeature('supports_system_prompt')}
               />
             </div>
@@ -347,6 +365,33 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
             </div>
           )}
 
+          {isAudio && (
+            <div className="p-4 bg-orange-50/50 dark:bg-orange-900/10 border border-orange-200 dark:border-orange-800/30 rounded-lg space-y-3">
+              <label className="block text-sm font-semibold text-orange-700 dark:text-orange-400">
+                {t('settings.editModel.audioSettings', 'Speech Recognition Settings')}
+              </label>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                {t(
+                  'settings.editModel.audioSettingsHint',
+                  'ASR models use the audio transcription endpoint and do not use chat-specific capabilities.'
+                )}
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
+                  {t('settings.editModel.maxInputTokens')}
+                </label>
+                <input
+                  type="number"
+                  value={formData.context_window || ''}
+                  onChange={(e) => updateField('context_window', parseInt(e.target.value) || undefined)}
+                  placeholder={t('settings.editModel.maxInputTokensPlaceholder')}
+                  className="w-full px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                />
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">{t('settings.editModel.tokens')}</p>
+              </div>
+            </div>
+          )}
+
           {/* Advanced Settings Toggle */}
           <button
             onClick={() => setShowAdvanced(!showAdvanced)}
@@ -366,7 +411,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
           {showAdvanced && (
             <div className="space-y-3 pt-2">
               {/* Context & Output - Only for non-embedding/rerank */}
-              {!isEmbeddingOrRerank && (
+              {!isSpecializedModel && (
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
@@ -399,7 +444,7 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
               )}
 
               {/* Temperature - Only for non-embedding/rerank */}
-              {!isEmbeddingOrRerank && (
+              {!isSpecializedModel && (
                 <div>
                   <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
                     {t('settings.editModel.defaultTemperature')}

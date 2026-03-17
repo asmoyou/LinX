@@ -353,13 +353,12 @@ async def test_generation(
     Returns detailed error information if generation fails.
     """
     import time
-    import re
 
     try:
         start_time = time.time()
         llm_router = get_llm_provider() if get_llm_provider is not None else None
 
-        # Detect model type early — embedding/rerank models must NOT be
+        # Detect model type early — embedding/rerank/audio models must NOT be
         # routed through llm_router.generate() which always hits the chat
         # completions endpoint and would fail with a 500.
         early_model_type = "chat"
@@ -443,8 +442,8 @@ async def test_generation(
             model_type = "chat"  # default
             if db_provider.model_metadata and model_to_test in db_provider.model_metadata:
                 metadata = db_provider.model_metadata[model_to_test]
-                metadata_type = metadata.get("model_type", "chat")
-                if metadata_type in ["embedding", "rerank"]:
+                metadata_type = _metadata_model_type(metadata)
+                if metadata_type in ["embedding", "rerank", "audio"]:
                     model_type = metadata_type
             else:
                 # Fallback to pattern detection
@@ -467,6 +466,14 @@ async def test_generation(
                 elif model_type == "rerank":
                     # Test rerank model
                     response_content = await _test_rerank_model(
+                        protocol=db_provider.protocol,
+                        base_url=db_provider.base_url,
+                        model=model_to_test,
+                        api_key=api_key,
+                        timeout=30,
+                    )
+                elif model_type == "audio":
+                    response_content = await _test_audio_transcription_model(
                         protocol=db_provider.protocol,
                         base_url=db_provider.base_url,
                         model=model_to_test,
@@ -534,7 +541,7 @@ def _detect_model_type(model_id: str) -> str:
     Detect model type based on model ID.
     Based on cherry-studio's model detection logic.
 
-    Returns: "embedding", "rerank", or "chat"
+    Returns: "embedding", "rerank", "audio", or "chat"
     """
     import re
 
@@ -571,8 +578,201 @@ def _detect_model_type(model_id: str) -> str:
         if re.search(pattern, model_lower):
             return "embedding"
 
+    audio_patterns = [
+        r"sensevoice",
+        r"\basr\b",
+        r"whisper",
+        r"transcribe",
+        r"transcription",
+        r"speech[-_ ]?to[-_ ]?text",
+        r"\bstt\b",
+    ]
+    for pattern in audio_patterns:
+        if re.search(pattern, model_lower):
+            return "audio"
+
     # Default to chat model
     return "chat"
+
+
+def _normalize_model_type_name(value: Any) -> str:
+    """Normalize model type aliases used across providers and stored metadata."""
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "speech": "audio",
+        "speech_to_text": "audio",
+        "speech2text": "audio",
+        "transcription": "audio",
+        "asr": "audio",
+        "stt": "audio",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _extract_provider_capability_names(provider_metadata: Dict[str, Any]) -> set[str]:
+    """Collect provider-declared capability names from common metadata shapes."""
+    capability_names: set[str] = set()
+
+    for key in ("capabilities", "model_ability", "abilities", "ability", "tasks", "task_types"):
+        value = provider_metadata.get(key)
+        values: list[Any]
+        if isinstance(value, list):
+            values = value
+        elif isinstance(value, str):
+            values = [part.strip() for part in value.split(",")]
+        else:
+            continue
+
+        for item in values:
+            normalized = _normalize_model_type_name(item)
+            if normalized:
+                capability_names.add(normalized)
+
+    return capability_names
+
+
+def _extract_provider_declared_model_type(provider_metadata: Dict[str, Any]) -> str:
+    """Extract a provider-reported model type from metadata when available."""
+    direct_keys = ("model_type", "type", "task", "task_type")
+    for key in direct_keys:
+        normalized = _normalize_model_type_name(provider_metadata.get(key))
+        if normalized in {
+            "chat",
+            "embedding",
+            "rerank",
+            "audio",
+            "vision",
+            "reasoning",
+            "code",
+            "image_generation",
+        }:
+            return normalized
+
+    capability_names = _extract_provider_capability_names(provider_metadata)
+    if capability_names & {"audio"}:
+        return "audio"
+    if capability_names & {"embedding"}:
+        return "embedding"
+    if capability_names & {"rerank"}:
+        return "rerank"
+
+    return ""
+
+
+def _metadata_model_type(model_metadata: Optional[Dict[str, Any]]) -> str:
+    """Resolve model type from stored metadata with compatibility aliases."""
+    if not model_metadata:
+        return ""
+
+    normalized = _normalize_model_type_name(model_metadata.get("model_type"))
+    if normalized in {"embedding", "rerank", "audio"}:
+        return normalized
+
+    if bool(model_metadata.get("supports_audio_transcription")):
+        return "audio"
+
+    capabilities = model_metadata.get("capabilities") or []
+    if isinstance(capabilities, list):
+        normalized_caps = {_normalize_model_type_name(item) for item in capabilities}
+        if "audio" in normalized_caps:
+            return "audio"
+
+    return ""
+
+
+def _apply_specialized_model_type(detected_metadata: Any, model_type_name: str) -> None:
+    """Override detector output when provider metadata explicitly declares a specialized type."""
+    from llm_providers.model_metadata import ModelCapability, ModelType
+
+    normalized = _normalize_model_type_name(model_type_name)
+    if normalized not in {"embedding", "rerank", "audio"}:
+        return
+
+    type_enum = {
+        "embedding": ModelType.EMBEDDING,
+        "rerank": ModelType.RERANK,
+        "audio": ModelType.AUDIO,
+    }[normalized]
+    capability_enum = {
+        "embedding": ModelCapability.EMBEDDING,
+        "rerank": ModelCapability.RERANK,
+        "audio": ModelCapability.AUDIO,
+    }[normalized]
+
+    detected_metadata.model_type = type_enum
+    detected_metadata.capabilities = [capability_enum]
+    detected_metadata.supports_streaming = False
+    detected_metadata.supports_system_prompt = False
+    detected_metadata.supports_function_calling = False
+    detected_metadata.supports_vision = False
+    detected_metadata.supports_reasoning = False
+    detected_metadata.supports_audio_transcription = normalized == "audio"
+
+    if normalized != "embedding":
+        detected_metadata.embedding_dimension = None
+    if normalized in {"rerank", "audio"}:
+        detected_metadata.max_output_tokens = None
+    if normalized == "audio" and not detected_metadata.description:
+        detected_metadata.description = "Automatic speech recognition (ASR) / transcription model"
+
+
+def _extract_transcription_text(payload: Any) -> str:
+    """Extract transcription text from a provider payload."""
+    if isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+        except Exception:
+            return payload.strip()
+        return _extract_transcription_text(parsed)
+
+    if not isinstance(payload, dict):
+        return ""
+
+    for key in ("text", "transcript", "output_text", "result"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            text = str(value.get("text", "")).strip()
+            if text:
+                return text
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    parts.append(item.strip())
+                elif isinstance(item, dict):
+                    text = str(item.get("text", "")).strip()
+                    if text:
+                        parts.append(text)
+            if parts:
+                return " ".join(parts)
+
+    sentence_info = payload.get("sentence_info")
+    if isinstance(sentence_info, list):
+        segments = [
+            str(segment.get("text", "")).strip()
+            for segment in sentence_info
+            if isinstance(segment, dict) and str(segment.get("text", "")).strip()
+        ]
+        if segments:
+            return " ".join(segments)
+
+    return ""
+
+
+def _build_test_audio_bytes() -> bytes:
+    """Build a tiny valid WAV payload for ASR connectivity checks."""
+    import io
+    import wave
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(b"\x00\x00" * 1600)
+    return buffer.getvalue()
 
 
 def _extract_embedding_vectors_from_payload(payload: Any) -> List[List[float]]:
@@ -773,6 +973,75 @@ async def _test_rerank_model(
             last_error = str(e)
 
     raise Exception(last_error or "Rerank test failed")
+
+
+async def _test_audio_transcription_model(
+    protocol: str,
+    base_url: str,
+    model: str,
+    api_key: Optional[str],
+    timeout: int = 30,
+) -> str:
+    """Test an audio transcription model with a tiny WAV sample."""
+    import aiohttp
+
+    if protocol == "ollama":
+        raise Exception("Audio transcription test is not supported for Ollama providers")
+
+    base_url = base_url.rstrip("/")
+    base_without_v1 = base_url[:-3] if base_url.endswith("/v1") else base_url
+    if base_url.endswith("/v1"):
+        urls_to_try = [f"{base_url}/audio/transcriptions"]
+    else:
+        urls_to_try = [f"{base_url}/v1/audio/transcriptions"]
+    urls_to_try.append(f"{base_without_v1}/audio/transcriptions")
+    urls_to_try = list(dict.fromkeys(urls_to_try))
+
+    headers: Dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    audio_bytes = _build_test_audio_bytes()
+    last_error = None
+
+    for url in urls_to_try:
+        form = aiohttp.FormData()
+        form.add_field("model", model)
+        form.add_field("language", "auto")
+        form.add_field(
+            "file",
+            audio_bytes,
+            filename="linx-asr-test.wav",
+            content_type="audio/wav",
+        )
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    data=form,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                ) as response:
+                    if response.status != 200:
+                        text = await response.text()
+                        last_error = f"HTTP {response.status}: {text[:200]}"
+                        continue
+
+                    raw_text = await response.text()
+                    try:
+                        payload = json.loads(raw_text)
+                    except Exception:
+                        payload = {"text": raw_text}
+                    transcript = _extract_transcription_text(payload)
+                    if transcript:
+                        preview = transcript[:80]
+                        return f"ASR test successful ({preview})"
+                    return "ASR test successful"
+        except Exception as e:
+            last_error = str(e)
+
+    raise Exception(last_error or "Audio transcription test failed")
 
 
 async def _test_ollama_streaming(
@@ -1529,7 +1798,7 @@ class ModelMetadataResponse(BaseModel):
 
     model_id: str
     model_type: Optional[str] = (
-        None  # chat, vision, reasoning, embedding, rerank, code, image_generation
+        None  # chat, vision, reasoning, embedding, rerank, audio, code, image_generation
     )
     display_name: Optional[str] = None
     description: Optional[str] = None
@@ -1544,6 +1813,7 @@ class ModelMetadataResponse(BaseModel):
     supports_function_calling: bool = False
     supports_vision: bool = False
     supports_reasoning: bool = False
+    supports_audio_transcription: bool = False
     input_price_per_1m: Optional[float] = None  # Per 1 million tokens
     output_price_per_1m: Optional[float] = None  # Per 1 million tokens
     version: Optional[str] = None
@@ -1687,6 +1957,7 @@ async def get_provider_models_metadata(
                     supports_function_calling=detected_metadata.supports_function_calling,
                     supports_vision=detected_metadata.supports_vision,
                     supports_reasoning=detected_metadata.supports_reasoning,
+                    supports_audio_transcription=detected_metadata.supports_audio_transcription,
                     input_price_per_1m=detected_metadata.input_price_per_1m,
                     output_price_per_1m=detected_metadata.output_price_per_1m,
                     version=detected_metadata.version,
@@ -1961,6 +2232,21 @@ async def refresh_models_metadata(
 
                 # Merge provider metadata with detected metadata
                 if provider_metadata:
+                    declared_model_type = _extract_provider_declared_model_type(provider_metadata)
+                    if declared_model_type:
+                        _apply_specialized_model_type(detected_metadata, declared_model_type)
+                    if "display_name" in provider_metadata:
+                        detected_metadata.display_name = str(
+                            provider_metadata["display_name"] or ""
+                        ).strip() or detected_metadata.display_name
+                    elif "name" in provider_metadata:
+                        detected_metadata.display_name = str(
+                            provider_metadata["name"] or ""
+                        ).strip() or detected_metadata.display_name
+                    if "description" in provider_metadata:
+                        detected_metadata.description = str(
+                            provider_metadata["description"] or ""
+                        ).strip() or detected_metadata.description
                     # Update detected metadata with provider-specific info
                     if "context_window" in provider_metadata:
                         detected_metadata.context_window = provider_metadata["context_window"]

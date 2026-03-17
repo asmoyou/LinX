@@ -133,6 +133,39 @@ async def test_openai_compatible_client_fetch_models_no_api_key(monkeypatch):
         await client.fetch_models("http://openai.local")
 
 
+@pytest.mark.asyncio
+async def test_openai_compatible_client_fetch_model_metadata_preserves_audio_fields(monkeypatch):
+    client = OpenAICompatibleClient()
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                200,
+                json_payload={
+                    "id": "sensevoicesmall",
+                    "model_type": "audio",
+                    "description": "ASR model",
+                    "model_ability": ["audio"],
+                    "context_length": 16384,
+                },
+            )
+        ]
+    )
+    monkeypatch.setattr("llm_providers.protocol_clients.aiohttp.ClientSession", lambda: session)
+
+    metadata = await client.fetch_model_metadata("http://openai.local", "sensevoicesmall")
+
+    assert metadata == {
+        "model_id": "sensevoicesmall",
+        "object": None,
+        "created": None,
+        "owned_by": None,
+        "context_window": 16384,
+        "model_type": "audio",
+        "description": "ASR model",
+        "model_ability": ["audio"],
+    }
+
+
 def test_get_protocol_client_ollama():
     client = get_protocol_client(ProviderProtocol.OLLAMA)
     assert isinstance(client, OllamaClient)

@@ -281,6 +281,7 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({
   const handleTranscriptionProviderChange = (provider: string) => {
     const models = availableProviders[provider] || [];
     if (!config) return;
+    const currentModel = String(config.processing?.transcription?.model || "");
     setConfig({
       ...config,
       processing: {
@@ -288,7 +289,10 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({
         transcription: {
           ...(config.processing?.transcription || {}),
           provider,
-          model: models[0] || "",
+          model:
+            currentModel && (models.includes(currentModel) || models.length === 0)
+              ? currentModel
+              : models[0] || "",
         },
       },
     });
@@ -473,6 +477,10 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({
   );
   const transcriptionProvider = transcription.provider || "";
   const transcriptionModels = availableProviders[transcriptionProvider] || [];
+  const transcriptionModelMissing =
+    Boolean(transcription.model) &&
+    !!transcriptionProvider &&
+    !transcriptionModels.includes(String(transcription.model));
   const embeddingProvider = config?.embedding?.provider || "";
   const embeddingModels = availableProviders[embeddingProvider] || [];
   const enrichmentProvider = config?.enrichment?.provider || "";
@@ -524,25 +532,33 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({
     onChange: (v: string) => void,
     models: string[],
     hasProvider: boolean,
-  ) => (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      disabled={!hasProvider}
-      className={`${selectClass} disabled:opacity-50 disabled:cursor-not-allowed`}
-    >
-      <option value="">
-        {hasProvider
-          ? t("kbConfig.selectModel")
-          : t("kbConfig.selectProviderFirst")}
-      </option>
-      {models.map((m) => (
-        <option key={m} value={m}>
-          {m}
+  ) => {
+    const effectiveModels =
+      value && !models.includes(value) ? [value, ...models] : models;
+
+    return (
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={!hasProvider}
+        className={`${selectClass} disabled:opacity-50 disabled:cursor-not-allowed`}
+      >
+        <option value="">
+          {hasProvider
+            ? t("kbConfig.selectModel")
+            : t("kbConfig.selectProviderFirst")}
         </option>
-      ))}
-    </select>
-  );
+        {effectiveModels.map((m) => (
+          <option key={m} value={m}>
+            {m}
+            {value === m && !models.includes(m)
+              ? ` (${t("kbConfig.manualModelTag", "Manual")})`
+              : ""}
+          </option>
+        ))}
+      </select>
+    );
+  };
 
   return (
     <LayoutModal
@@ -818,26 +834,57 @@ export const KBConfigPanel: React.FC<KBConfigPanelProps> = ({
                         )}
                       </div>
                     ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div>
-                          <label className={labelClass}>
-                            {t("kbConfig.transcriptionProvider")}
-                          </label>
-                          {providerSelect(
-                            transcriptionProvider,
-                            handleTranscriptionProviderChange,
-                          )}
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div>
+                            <label className={labelClass}>
+                              {t("kbConfig.transcriptionProvider")}
+                            </label>
+                            {providerSelect(
+                              transcriptionProvider,
+                              handleTranscriptionProviderChange,
+                            )}
+                          </div>
+                          <div>
+                            <label className={labelClass}>
+                              {t("kbConfig.transcriptionModel")}
+                            </label>
+                            {modelSelect(
+                              transcription.model || "",
+                              (v) => updateTranscription("model", v),
+                              transcriptionModels,
+                              !!transcriptionProvider,
+                            )}
+                          </div>
                         </div>
                         <div>
                           <label className={labelClass}>
-                            {t("kbConfig.transcriptionModel")}
+                            {t("kbConfig.manualModelOverride", "Manual Model ID")}
                           </label>
-                          {modelSelect(
-                            transcription.model || "",
-                            (v) => updateTranscription("model", v),
-                            transcriptionModels,
-                            !!transcriptionProvider,
-                          )}
+                          <input
+                            type="text"
+                            value={transcription.model || ""}
+                            onChange={(e) =>
+                              updateTranscription("model", e.target.value)
+                            }
+                            disabled={!transcriptionProvider}
+                            className={`${inputClass} disabled:opacity-50 disabled:cursor-not-allowed`}
+                            placeholder={t(
+                              "kbConfig.manualModelOverridePlaceholder",
+                              "Enter the transcription model ID manually",
+                            )}
+                          />
+                          <p className={hintClass}>
+                            {transcriptionModelMissing
+                              ? t(
+                                  "kbConfig.manualModelOverrideUsing",
+                                  "Using a manual model ID because it was not returned by provider metadata.",
+                                )
+                              : t(
+                                  "kbConfig.manualModelOverrideHint",
+                                  "If provider metadata is incomplete, enter the exact ASR model ID here.",
+                                )}
+                          </p>
                         </div>
                       </div>
                     )}

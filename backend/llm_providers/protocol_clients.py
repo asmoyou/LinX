@@ -300,7 +300,7 @@ class OpenAICompatibleClient(ProtocolClient):
                     async with request_ctx as response:
                         if response.status == 200:
                             data = await response.json()
-                            
+
                             # Extract useful metadata
                             metadata = {
                                 "model_id": data.get("id", model_id),
@@ -308,13 +308,27 @@ class OpenAICompatibleClient(ProtocolClient):
                                 "created": data.get("created"),
                                 "owned_by": data.get("owned_by"),
                             }
-                            
+
                             # Some providers include additional fields
                             if "context_length" in data:
                                 metadata["context_window"] = data["context_length"]
                             if "max_tokens" in data:
                                 metadata["max_output_tokens"] = data["max_tokens"]
-                            
+                            for field in (
+                                "model_type",
+                                "description",
+                                "display_name",
+                                "name",
+                                "capabilities",
+                                "model_ability",
+                                "abilities",
+                                "ability",
+                                "task",
+                                "task_type",
+                            ):
+                                if field in data:
+                                    metadata[field] = data[field]
+
                             return metadata
                             
             except Exception as e:

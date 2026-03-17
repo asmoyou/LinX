@@ -10,6 +10,7 @@ References:
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -408,13 +409,46 @@ class OpenAIProvider(BaseLLMProvider):
         configured_models = self.config.get("models", {})
         if configured_models:
             try:
-                # Get the first configured model
+                # Prefer a chat-capable model if the provider also exposes embedding/rerank/audio models.
                 if isinstance(configured_models, dict):
-                    test_model = list(configured_models.values())[0]
+                    configured_model_list = list(configured_models.values())
                 elif isinstance(configured_models, list):
-                    test_model = configured_models[0]
+                    configured_model_list = configured_models
                 else:
-                    test_model = str(configured_models)
+                    configured_model_list = [str(configured_models)]
+
+                model_metadata = self.config.get("model_metadata") or {}
+
+                def _is_chat_candidate(model_name: str) -> bool:
+                    metadata = (
+                        model_metadata.get(model_name, {})
+                        if isinstance(model_metadata, dict)
+                        else {}
+                    )
+                    model_type = str(metadata.get("model_type") or "").strip().lower()
+                    if model_type in {"embedding", "rerank", "audio", "asr"}:
+                        return False
+                    if bool(metadata.get("supports_audio_transcription")):
+                        return False
+
+                    model_lower = model_name.lower()
+                    excluded_patterns = [
+                        r"rerank",
+                        r"embed",
+                        r"sensevoice",
+                        r"\basr\b",
+                        r"whisper",
+                        r"transcribe",
+                        r"transcription",
+                        r"speech[-_ ]?to[-_ ]?text",
+                        r"\bstt\b",
+                    ]
+                    return not any(re.search(pattern, model_lower) for pattern in excluded_patterns)
+
+                test_model = next(
+                    (model_name for model_name in configured_model_list if _is_chat_candidate(model_name)),
+                    configured_model_list[0],
+                )
 
                 test_payload = {
                     "model": test_model,

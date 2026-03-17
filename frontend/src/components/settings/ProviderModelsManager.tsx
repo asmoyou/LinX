@@ -105,6 +105,8 @@ export const ProviderModelsManager: React.FC<ProviderModelsManagerProps> = ({ pr
     const modelTypeFeatures: Record<string, string> = {
       embedding: 'Embedding',
       rerank: 'Rerank',
+      audio: 'Speech Transcription',
+      asr: 'Speech Transcription',
       image_generation: 'Image Generation',
       code: 'Code',
       vision: 'Vision',
@@ -119,6 +121,7 @@ export const ProviderModelsManager: React.FC<ProviderModelsManagerProps> = ({ pr
     if (metadata.supports_function_calling) addFeature('Function Calling');
     if (metadata.supports_streaming) addFeature('Streaming');
     if (metadata.supports_system_prompt) addFeature('System Prompt');
+    if (metadata.supports_audio_transcription) addFeature('Speech Transcription');
 
     return features;
   };
@@ -234,6 +237,11 @@ export const ProviderModelsManager: React.FC<ProviderModelsManagerProps> = ({ pr
                   {metadata.supports_function_calling && (
                     <span className="px-2 py-0.5 bg-green-500/10 text-green-700 dark:text-green-400 text-xs rounded border border-green-500/20">
                       Functions
+                    </span>
+                  )}
+                  {metadata.supports_audio_transcription && (
+                    <span className="px-2 py-0.5 bg-orange-500/10 text-orange-700 dark:text-orange-400 text-xs rounded border border-orange-500/20">
+                      ASR
                     </span>
                   )}
                   {metadata.deprecated && (

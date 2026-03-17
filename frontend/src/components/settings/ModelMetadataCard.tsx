@@ -5,6 +5,7 @@ import {
   Save, 
   X, 
   Eye, 
+  Mic,
   MessageSquare, 
   Zap, 
   Code, 
@@ -153,6 +154,11 @@ export const ModelMetadataCard: React.FC<ModelMetadataCardProps> = ({
               label="System Prompt"
               value={metadata.supports_system_prompt}
               icon={<MessageSquare className="w-3.5 h-3.5" />}
+            />
+            <FeatureItem
+              label="Speech Transcription"
+              value={Boolean(metadata.supports_audio_transcription)}
+              icon={<Mic className="w-3.5 h-3.5" />}
             />
           </div>
         </div>

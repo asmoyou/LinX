@@ -89,7 +89,7 @@ export interface TestGenerationResponse {
 
 export interface ModelMetadata {
   model_id: string;
-  model_type?: string;  // chat, vision, reasoning, embedding, rerank, code, image_generation
+  model_type?: string;  // chat, vision, reasoning, embedding, rerank, audio, code, image_generation
   display_name?: string;
   description?: string;
   capabilities?: string[];  // Backward-compatible field; frontend display is driven by supports_*
@@ -103,6 +103,7 @@ export interface ModelMetadata {
   supports_function_calling: boolean;
   supports_vision: boolean;
   supports_reasoning: boolean;
+  supports_audio_transcription?: boolean;
   input_price_per_1m?: number;  // Per 1 million tokens
   output_price_per_1m?: number;  // Per 1 million tokens
   version?: string;

@@ -46,6 +46,7 @@ class ModelType(str, Enum):
     CHAT = "chat"
     EMBEDDING = "embedding"
     RERANK = "rerank"
+    AUDIO = "audio"
     VISION = "vision"
     REASONING = "reasoning"
     CODE = "code"
@@ -88,6 +89,7 @@ class ModelMetadata(BaseModel):
     supports_vision: bool = False
     supports_json_mode: bool = False
     supports_reasoning: bool = False
+    supports_audio_transcription: bool = False
 
     # Reasoning effort options (for models that support it)
     reasoning_effort_options: Optional[List[str]] = None
@@ -302,6 +304,17 @@ class EnhancedModelCapabilityDetector:
         r"re-ranking",
     ]
 
+    # Speech transcription / ASR model patterns
+    AUDIO_PATTERNS = [
+        r"sensevoice",
+        r"\basr\b",
+        r"whisper",
+        r"transcribe",
+        r"transcription",
+        r"speech[-_ ]?to[-_ ]?text",
+        r"\bstt\b",
+    ]
+
     # Known embedding model metadata: {pattern: (max_context, dimension)}
     KNOWN_EMBEDDING_MODELS = {
         # OpenAI
@@ -478,6 +491,14 @@ class EnhancedModelCapabilityDetector:
         return cls._matches_pattern(model_id, cls.IMAGE_GENERATION_PATTERNS)
 
     @classmethod
+    def is_audio_model(cls, model_id: str, model_name: str = None) -> bool:
+        """Detect if model is intended for speech transcription / ASR."""
+        for text in [model_id, model_name]:
+            if text and cls._matches_pattern(text, cls.AUDIO_PATTERNS):
+                return True
+        return False
+
+    @classmethod
     def get_thinking_token_limits(cls, model_id: str) -> Optional[Tuple[int, int]]:
         """Get thinking token limits for reasoning models."""
         model_lower = model_id.lower()
@@ -551,6 +572,8 @@ class EnhancedModelCapabilityDetector:
             model_type = ModelType.RERANK
         elif cls.is_embedding_model(model_id):
             model_type = ModelType.EMBEDDING
+        elif cls.is_audio_model(model_id, model_name):
+            model_type = ModelType.AUDIO
         elif cls.is_image_generation_model(model_id):
             model_type = ModelType.IMAGE_GENERATION
         elif cls.is_reasoning_model(model_id, model_name):
@@ -569,6 +592,8 @@ class EnhancedModelCapabilityDetector:
             capabilities = [ModelCapability.EMBEDDING]
         elif model_type == ModelType.RERANK:
             capabilities = [ModelCapability.RERANK]
+        elif model_type == ModelType.AUDIO:
+            capabilities = [ModelCapability.AUDIO]
         elif model_type == ModelType.IMAGE_GENERATION:
             capabilities = [ModelCapability.IMAGE_GENERATION]
         else:
@@ -616,6 +641,11 @@ class EnhancedModelCapabilityDetector:
         metadata = ModelMetadata(
             model_id=model_id,
             display_name=cls._generate_display_name(model_id),
+            description=(
+                "Automatic speech recognition (ASR) / transcription model"
+                if model_type == ModelType.AUDIO
+                else None
+            ),
             provider=provider,
             model_type=model_type,
             capabilities=capabilities,
@@ -627,12 +657,19 @@ class EnhancedModelCapabilityDetector:
             embedding_dimension=embedding_dimension,
             min_thinking_tokens=min_thinking,
             max_thinking_tokens=max_thinking,
-            supports_streaming=model_type not in [ModelType.EMBEDDING, ModelType.RERANK],
+            supports_streaming=model_type
+            not in [ModelType.EMBEDDING, ModelType.RERANK, ModelType.AUDIO],
             supports_system_prompt=model_type
-            not in [ModelType.EMBEDDING, ModelType.RERANK, ModelType.IMAGE_GENERATION],
+            not in [
+                ModelType.EMBEDDING,
+                ModelType.RERANK,
+                ModelType.IMAGE_GENERATION,
+                ModelType.AUDIO,
+            ],
             supports_function_calling=ModelCapability.FUNCTION_CALLING in capabilities,
             supports_vision=ModelCapability.VISION in capabilities,
             supports_reasoning=ModelCapability.REASONING in capabilities,
+            supports_audio_transcription=ModelCapability.AUDIO in capabilities,
         )
 
         return metadata
