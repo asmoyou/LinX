@@ -60,6 +60,8 @@ class RuntimeContextService:
             query_text=query,
             limit=top_k,
             min_score=min_similarity,
+            planner_mode="runtime_light",
+            allow_reflection=False,
         )
         logger.info(
             "Retrieved runtime user memory",

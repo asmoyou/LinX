@@ -17,6 +17,7 @@ import pytest
 
 from llm_providers.anthropic_provider import AnthropicProvider
 from llm_providers.base import BaseLLMProvider, EmbeddingResponse, LLMResponse, TaskType
+from llm_providers.openai_compatible import build_api_url_candidates
 from llm_providers.ollama_provider import OllamaProvider
 from llm_providers.openai_provider import OpenAIProvider
 from llm_providers.prompts import (
@@ -34,6 +35,24 @@ def test_base_provider_is_abstract():
     """Test that BaseLLMProvider cannot be instantiated directly"""
     with pytest.raises(TypeError):
         BaseLLMProvider({})
+
+
+def test_build_api_url_candidates_for_v1_base_avoids_invalid_api_path() -> None:
+    """Providers configured with `/v1` should not generate `/v1/api/*` fallbacks."""
+    candidates = build_api_url_candidates("http://127.0.0.1:9997/v1", "/rerank")
+    assert candidates == [
+        "http://127.0.0.1:9997/v1/rerank",
+        "http://127.0.0.1:9997/rerank",
+    ]
+
+
+def test_build_api_url_candidates_for_nested_api_base_avoids_duplicate_api_path() -> None:
+    """Reverse-proxy bases that already contain `/api/...` should not append another `/api`."""
+    candidates = build_api_url_candidates("https://example.com/api/v1/ai/openai", "/rerank")
+    assert candidates == [
+        "https://example.com/api/v1/ai/openai/v1/rerank",
+        "https://example.com/api/v1/ai/openai/rerank",
+    ]
 
 
 # Test Ollama Provider
@@ -294,6 +313,48 @@ async def test_openai_generate_supports_plain_output_wrapper():
 
 
 @pytest.mark.asyncio
+async def test_openai_generate_merges_extra_body_into_payload() -> None:
+    """OpenAI-compatible generate should merge SDK-style extra_body into the JSON payload."""
+    provider = OpenAIProvider({"base_url": "http://127.0.0.1:6006/v1"})
+
+    mock_response = {
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"total_tokens": 10, "prompt_tokens": 4, "completion_tokens": 6},
+    }
+
+    class _ResponseContext:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return False
+
+        async def json(self):
+            return mock_response
+
+        def raise_for_status(self):
+            return None
+
+    mock_post = Mock(return_value=_ResponseContext())
+    mock_session_obj = SimpleNamespace(post=mock_post)
+
+    async def mock_get_session():
+        return mock_session_obj
+
+    with patch.object(provider, "_get_session", side_effect=mock_get_session):
+        await provider.generate(
+            prompt="Test prompt",
+            model="Qwen3.5-35B-A3B-FP8",
+            temperature=0.2,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+
+    payload = mock_post.call_args.kwargs["json"]
+    assert "extra_body" not in payload
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+@pytest.mark.asyncio
 async def test_openai_provider_close_resets_session() -> None:
     """Provider close should release and clear cached session."""
     provider = OpenAIProvider({"base_url": "http://127.0.0.1:6006/v1"})
@@ -439,6 +500,77 @@ async def test_router_clear_cache_closes_cached_providers() -> None:
     provider_a.close.assert_awaited_once()
     provider_b.close.assert_awaited_once()
     assert router._provider_cache == {}
+
+
+@pytest.mark.asyncio
+async def test_router_prefers_default_provider_when_it_supports_requested_model() -> None:
+    """Auto-selected provider should honor configured default when it serves the model."""
+    router = LLMRouter({"providers": {}, "default_provider": "vllm"})
+    provider_instance = SimpleNamespace(
+        generate=AsyncMock(
+            return_value=LLMResponse(
+                content="ok",
+                model="Qwen3.5-35B-A3B-FP8",
+                provider="OpenAI",
+                tokens_used=1,
+                finish_reason="stop",
+                metadata={},
+            )
+        )
+    )
+
+    with (
+        patch.object(router, "list_all_providers", AsyncMock(return_value=["aliyun-bl", "vllm"])),
+        patch("llm_providers.router.resolve_provider") as resolve_provider_mock,
+        patch.object(
+            router, "_get_provider", AsyncMock(return_value=provider_instance)
+        ) as get_provider,
+    ):
+        resolve_provider_mock.side_effect = lambda provider_name: {
+            "models": (
+                ["qwen-flash"] if provider_name == "aliyun-bl" else ["./Qwen3.5-35B-A3B-FP8"]
+            )
+        }
+
+        response = await router.generate(prompt="hello", model="Qwen3.5-35B-A3B-FP8")
+
+    assert response.content == "ok"
+    get_provider.assert_awaited_once_with("vllm")
+
+
+@pytest.mark.asyncio
+async def test_router_picks_provider_that_matches_requested_model_when_default_does_not() -> None:
+    """Auto-selection should match the requested model instead of using alphabetical order."""
+    router = LLMRouter({"providers": {}, "default_provider": "aliyun-bl"})
+    provider_instance = SimpleNamespace(
+        generate=AsyncMock(
+            return_value=LLMResponse(
+                content="ok",
+                model="Qwen3.5-35B-A3B-FP8",
+                provider="OpenAI",
+                tokens_used=1,
+                finish_reason="stop",
+                metadata={},
+            )
+        )
+    )
+
+    with (
+        patch.object(router, "list_all_providers", AsyncMock(return_value=["aliyun-bl", "vllm"])),
+        patch("llm_providers.router.resolve_provider") as resolve_provider_mock,
+        patch.object(
+            router, "_get_provider", AsyncMock(return_value=provider_instance)
+        ) as get_provider,
+    ):
+        resolve_provider_mock.side_effect = lambda provider_name: {
+            "models": (
+                ["qwen-flash"] if provider_name == "aliyun-bl" else ["./Qwen3.5-35B-A3B-FP8"]
+            )
+        }
+
+        await router.generate(prompt="hello", model="Qwen/Qwen3.5-35B-A3B-FP8")
+
+    get_provider.assert_awaited_once_with("vllm")
 
 
 # Test Prompt Templates

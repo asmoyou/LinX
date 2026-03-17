@@ -7,10 +7,12 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from access_control.permissions import CurrentUser, get_current_user
+from database.connection import get_db_session
 from user_memory.retriever import get_user_memory_retriever
 
 from .memory_access import (
     _memory_item_to_response,
+    _lookup_user_name,
     _require_user_memory_read_access_sync,
 )
 from .memory_contracts import (
@@ -25,6 +27,16 @@ from .memory_pipeline_config import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _resolve_user_name(owner_id: str, current_user: CurrentUser) -> Optional[str]:
+    if str(owner_id) == str(current_user.user_id):
+        return str(current_user.username or "").strip() or None
+    try:
+        with get_db_session() as session:
+            return _lookup_user_name(session, owner_id)
+    except Exception:
+        return str(current_user.username or "").strip() or None
 
 
 @router.get("", response_model=List[MemoryItemResponse])
@@ -46,6 +58,8 @@ async def list_user_memory(
             query_text=query_text,
             limit=limit,
             min_score=min_score,
+            planner_mode="api_full",
+            allow_reflection=True,
         )
     except Exception as exc:
         logger.error("Failed to list user memory: %s", exc, exc_info=True)
@@ -54,7 +68,10 @@ async def list_user_memory(
             detail=f"Failed to list user memory: {exc}",
         ) from exc
 
-    results = await asyncio.to_thread(lambda: [_memory_item_to_response(item) for item in results])
+    user_name = await asyncio.to_thread(_resolve_user_name, owner_id, current_user)
+    results = await asyncio.to_thread(
+        lambda: [_memory_item_to_response(item, user_name=user_name) for item in results]
+    )
     return [MemoryItemResponse(**item) for item in results]
 
 
@@ -76,6 +93,8 @@ async def list_user_memory_profile(
             query_text=query_text,
             limit=limit,
             min_score=min_score,
+            planner_mode="api_full",
+            allow_reflection=True,
         )
     except Exception as exc:
         logger.error("Failed to list user memory profile: %s", exc, exc_info=True)
@@ -84,7 +103,10 @@ async def list_user_memory_profile(
             detail=f"Failed to list user memory profile: {exc}",
         ) from exc
 
-    results = await asyncio.to_thread(lambda: [_memory_item_to_response(item) for item in results])
+    user_name = await asyncio.to_thread(_resolve_user_name, owner_id, current_user)
+    results = await asyncio.to_thread(
+        lambda: [_memory_item_to_response(item, user_name=user_name) for item in results]
+    )
     return [MemoryItemResponse(**item) for item in results]
 
 
@@ -107,6 +129,8 @@ async def list_user_memory_episodes(
             query_text=query_text,
             limit=limit,
             min_score=min_score,
+            planner_mode="api_full",
+            allow_reflection=True,
         )
     except Exception as exc:
         logger.error("Failed to list user memory episodes: %s", exc, exc_info=True)
@@ -115,7 +139,10 @@ async def list_user_memory_episodes(
             detail=f"Failed to list user memory episodes: {exc}",
         ) from exc
 
-    results = await asyncio.to_thread(lambda: [_memory_item_to_response(item) for item in results])
+    user_name = await asyncio.to_thread(_resolve_user_name, owner_id, current_user)
+    results = await asyncio.to_thread(
+        lambda: [_memory_item_to_response(item, user_name=user_name) for item in results]
+    )
     return [MemoryItemResponse(**item) for item in results]
 
 

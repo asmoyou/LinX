@@ -1637,6 +1637,7 @@
       "error": "Failed to share memory"
     },
     "card": {
+      "userMemoryOwner": "{{name}}'s memory",
       "shared": "Shared",
       "published": "Published",
       "reviewPending": "Pending Review",

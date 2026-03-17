@@ -20,7 +20,74 @@ class _RepoStub:
                 view_data={"is_active": False, "confidence": 0.7},
                 created_at=now,
                 updated_at=now,
-            )
+                content="concise",
+            ),
+            SimpleNamespace(
+                id=2,
+                owner_id="u-1",
+                owner_type="user",
+                view_type="user_profile",
+                view_key="relationship_acquaintance_xiaochen",
+                title="用户明天将和小陈一起外出",
+                summary="用户明天将和小陈一起外出",
+                status="active",
+                view_data={
+                    "key": "relationship_acquaintance_xiaochen",
+                    "semantic_key": "relationship_acquaintance_xiaochen",
+                    "fact_kind": "relationship",
+                    "predicate": "associate",
+                    "value": "小陈",
+                    "object": "小陈",
+                    "canonical_statement": "用户明天将和小陈一起外出",
+                    "event_time": None,
+                    "is_active": True,
+                },
+                created_at=now,
+                updated_at=now,
+                content="用户明天将和小陈一起外出",
+            ),
+            SimpleNamespace(
+                id=3,
+                owner_id="u-1",
+                owner_type="user",
+                view_type="user_profile",
+                view_key="preference_drink_cola",
+                title="用户喜欢喝可乐",
+                summary="用户喜欢喝可乐",
+                status="active",
+                view_data={
+                    "key": "preference_drink_cola",
+                    "semantic_key": "preference_drink_cola",
+                    "fact_kind": "preference",
+                    "canonical_statement": "用户喜欢喝可乐",
+                    "is_active": True,
+                    "confidence": 0.78,
+                },
+                created_at=now,
+                updated_at=now,
+                content="用户喜欢喝可乐",
+            ),
+            SimpleNamespace(
+                id=4,
+                owner_id="u-1",
+                owner_type="user",
+                view_type="user_profile",
+                view_key="preference_drink_coke",
+                title="用户喜欢喝可乐",
+                summary="用户喜欢喝可乐",
+                status="active",
+                view_data={
+                    "key": "preference_drink_coke",
+                    "semantic_key": "preference_drink_coke",
+                    "fact_kind": "preference",
+                    "canonical_statement": "用户喜欢喝可乐",
+                    "is_active": True,
+                    "confidence": 0.86,
+                },
+                created_at=now,
+                updated_at=now,
+                content="用户喜欢喝可乐",
+            ),
         ]
         self.skill_proposals = [
             SimpleNamespace(
@@ -77,6 +144,33 @@ class _RepoStub:
                 updated_at=now,
             ),
             SimpleNamespace(
+                id=22,
+                owner_id="u-1",
+                owner_type="user",
+                entry_type="user_fact",
+                fact_kind="relationship",
+                entry_key="relationship_acquaintance_xiaochen",
+                canonical_text="用户明天将和小陈一起外出",
+                summary="用户明天将和小陈一起外出",
+                event_time=None,
+                predicate="associate",
+                object_text="小陈",
+                status="active",
+                entry_data={
+                    "key": "relationship_acquaintance_xiaochen",
+                    "semantic_key": "relationship_acquaintance_xiaochen",
+                    "value": "小陈",
+                    "fact_kind": "relationship",
+                    "predicate": "associate",
+                    "object": "小陈",
+                    "canonical_statement": "用户明天将和小陈一起外出",
+                    "event_time": None,
+                    "is_active": True,
+                },
+                created_at=now,
+                updated_at=now,
+            ),
+            SimpleNamespace(
                 id=21,
                 owner_id="u-1",
                 owner_type="user",
@@ -102,6 +196,50 @@ class _RepoStub:
                     "confidence": 0.88,
                     "importance": 0.91,
                     "is_active": True,
+                },
+                created_at=now,
+                updated_at=now,
+            ),
+            SimpleNamespace(
+                id=23,
+                owner_id="u-1",
+                owner_type="user",
+                entry_type="user_fact",
+                fact_kind="preference",
+                entry_key="preference_drink_cola",
+                canonical_text="用户喜欢喝可乐",
+                summary="用户喜欢喝可乐",
+                status="active",
+                entry_data={
+                    "key": "preference_drink_cola",
+                    "semantic_key": "preference_drink_cola",
+                    "value": "可乐",
+                    "fact_kind": "preference",
+                    "canonical_statement": "用户喜欢喝可乐",
+                    "is_active": True,
+                    "confidence": 0.78,
+                },
+                created_at=now,
+                updated_at=now,
+            ),
+            SimpleNamespace(
+                id=24,
+                owner_id="u-1",
+                owner_type="user",
+                entry_type="user_fact",
+                fact_kind="preference",
+                entry_key="preference_drink_coke",
+                canonical_text="用户喜欢喝可乐",
+                summary="用户喜欢喝可乐",
+                status="active",
+                entry_data={
+                    "key": "preference_drink_coke",
+                    "semantic_key": "preference_drink_coke",
+                    "value": "可乐",
+                    "fact_kind": "preference",
+                    "canonical_statement": "用户喜欢喝可乐",
+                    "is_active": True,
+                    "confidence": 0.86,
                 },
                 created_at=now,
                 updated_at=now,
@@ -199,11 +337,16 @@ def test_run_maintenance_consolidates_status_and_supersedes_duplicates() -> None
     payload = service.to_dict(result)
 
     assert payload["consolidation"]["episode_view_upserts"] == 1
-    assert payload["consolidation"]["user_status_updates"] == 1
-    assert payload["consolidation"]["user_entry_status_updates"] == 1
+    assert payload["consolidation"]["user_status_updates"] == 3
+    assert payload["consolidation"]["user_entry_status_updates"] == 2
     assert payload["consolidation"]["skill_proposal_duplicate_supersedes"] == 1
+    assert payload["consolidation"]["user_duplicate_entry_supersedes"] == 1
 
     assert any(update[0] == 1 and update[1] == "superseded" for update in repo.projection_updates)
+    assert any(update[0] == 2 and update[1] == "superseded" for update in repo.projection_updates)
+    assert any(update[0] == 3 and update[1] == "superseded" for update in repo.projection_updates)
     assert any(update[0] == 11 and update[1] == "superseded" for update in repo.projection_updates)
     assert any(update[0] == 20 and update[1] == "superseded" for update in repo.entry_updates)
+    assert any(update[0] == 22 and update[1] == "superseded" for update in repo.entry_updates)
+    assert any(update[0] == 23 and update[1] == "superseded" for update in repo.entry_updates)
     assert any(item.projection_type == "episode" for item in repo.projection_upserts)

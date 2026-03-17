@@ -1,11 +1,11 @@
-"""Performance tests for reset-architecture user-memory retrieval."""
+"""Performance tests for the user-memory retriever facade."""
 
 from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from user_memory.retriever import UserMemoryRetriever
 
@@ -24,9 +24,9 @@ def _item(*, item_id: int, content: str, score: float, source: str, fact_kind: s
     )
 
 
-def test_user_memory_retriever_merges_stubbed_load_under_budget():
+def test_user_memory_retriever_delegates_under_budget():
     retriever = UserMemoryRetriever()
-    fact_items = [
+    expected = [
         _item(
             item_id=index,
             content=f"用户事件 {index}",
@@ -34,28 +34,12 @@ def test_user_memory_retriever_merges_stubbed_load_under_budget():
             source="entry",
             fact_kind="event" if index % 5 == 0 else "preference",
         )
-        for index in range(1000)
+        for index in range(40)
     ]
-    profile_items = [
-        _item(
-            item_id=2000 + index,
-            content=f"user.preference.preference_{index}=value_{index}",
-            score=0.8 - index * 0.0005,
-            source="user_memory_view",
-        )
-        for index in range(200)
-    ]
+    hybrid = MagicMock()
+    hybrid.search_user_memory.return_value = expected
 
-    with (
-        patch(
-            "user_memory.retriever.get_memory_entry_retrieval_service",
-            return_value=SimpleNamespace(retrieve_user_facts=lambda **_: fact_items),
-        ),
-        patch(
-            "user_memory.retriever.get_user_memory_view_retrieval_service",
-            return_value=SimpleNamespace(retrieve_user_profile=lambda **_: profile_items),
-        ),
-    ):
+    with patch("user_memory.retriever.get_user_memory_hybrid_retriever", return_value=hybrid):
         started = time.perf_counter()
         results = retriever.search_user_memory(
             user_id="u-1",
@@ -64,5 +48,5 @@ def test_user_memory_retriever_merges_stubbed_load_under_budget():
         )
         duration = time.perf_counter() - started
 
-    assert len(results) == 40
-    assert duration < 0.25, f"user-memory retrieval took {duration:.4f}s"
+    assert results == expected
+    assert duration < 0.05, f"user-memory retriever facade took {duration:.4f}s"

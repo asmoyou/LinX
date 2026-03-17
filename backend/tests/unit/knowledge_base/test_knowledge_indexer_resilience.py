@@ -120,3 +120,38 @@ def test_index_chunks_degrades_when_flush_keeps_failing_after_retries():
     indexer.milvus_conn.reconnect.assert_called()
     assert indexer.milvus_conn.reconnect.call_count == 2
     indexer._store_chunks_in_postgres.assert_called_once()
+
+
+def test_index_chunks_normalizes_multimodal_text_before_embedding_and_storage():
+    """Indexing should sanitize noisy multimodal chunk text before persistence."""
+    indexer = _build_indexer()
+    indexer.embedding_service.generate_embeddings_batch.return_value = [[0.1, 0.2, 0.3]]
+
+    collection = Mock()
+    indexer.milvus_conn.get_collection.return_value = collection
+
+    raw_chunk = (
+        "Audio Transcript:\n<|nospeech|>欢迎来到卡丁车赛道。\n\n"
+        "Visual Analysis:\nVideo Summary:\n### 摘要\n"
+        "**1) 整体剧情** 卡丁车高速过弯。\n"
+    )
+
+    KnowledgeIndexer.index_chunks(
+        indexer,
+        document_id="1fdb519c-9ac8-4c9a-a945-812b82213ae7",
+        chunks=[raw_chunk],
+        chunk_metadata=[{"chunk_index": 0, "summary": "### 摘要\n**卡丁车高速过弯。**"}],
+        user_id="user-1",
+    )
+
+    embedding_input = indexer.embedding_service.generate_embeddings_batch.call_args.args[0][0]
+    assert "<|" not in embedding_input
+    assert "Audio Transcript:" not in embedding_input
+    assert "卡丁车赛道" in embedding_input
+
+    stored_chunks = indexer._store_chunks_in_postgres.call_args.kwargs["chunks"]
+    assert "<|" not in stored_chunks[0]
+    assert "Visual Analysis:" not in stored_chunks[0]
+
+    stored_meta = indexer._store_chunks_in_postgres.call_args.kwargs["chunk_metadata"][0]
+    assert stored_meta["summary"] == "摘要\n卡丁车高速过弯。"

@@ -80,3 +80,38 @@ def test_build_entry_from_user_fact_observation_uses_canonical_statement() -> No
     assert entry.canonical_text == "用户的配偶是王敏"
     assert entry.payload["fact_kind"] == "relationship"
     assert entry.payload["persons"] == ["王敏"]
+
+
+def test_build_relation_from_observation_uses_server_generated_identity() -> None:
+    observation = MemoryObservationData(
+        observation_key="user_fact_relationship_friend",
+        observation_type="user_fact_signal",
+        title="User relationship: friend",
+        summary="用户与小陈是朋友",
+        confidence=0.91,
+        importance=0.84,
+        metadata={
+            "fact_key": "relationship_friend_b13f7f2a9c20",
+            "semantic_key": "relationship_friend",
+            "identity_signature": "relationship|friend|小陈",
+            "fact_kind": "relationship",
+            "canonical_statement": "用户与小陈是朋友",
+            "predicate": "friend",
+            "object": "小陈",
+            "persons": ["小陈"],
+        },
+    )
+
+    relation = SessionLedgerRepository._build_relation_from_observation(  # noqa: SLF001
+        snapshot=_snapshot(),
+        observation=observation,
+        source_entry_id=42,
+        source_session_ledger_id=7,
+    )
+
+    assert relation is not None
+    assert relation.relation_key == "relationship_friend_b13f7f2a9c20"
+    assert relation.predicate == "friend"
+    assert relation.object_text == "小陈"
+    assert relation.payload["identity_signature"] == "relationship|friend|小陈"
+    assert relation.source_entry_id == 42

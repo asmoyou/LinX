@@ -73,8 +73,11 @@ async def test_list_user_memory_uses_user_scope(current_user):
     assert captured["user_id"] == "resolved-user-id"
     assert captured["limit"] == 10
     assert captured["min_score"] == 0.5
+    assert captured["planner_mode"] == "api_full"
+    assert captured["allow_reflection"] is True
     assert response[0].content == "user.preference.response_style=concise"
     assert response[0].type == "user_memory"
+    assert response[0].user_name == "tester"
 
 
 @pytest.mark.asyncio
@@ -117,6 +120,8 @@ async def test_list_user_memory_profile_reads_user_profile_view(current_user):
     assert captured["query_text"] == "markdown"
     assert captured["limit"] == 5
     assert captured["min_score"] == 0.4
+    assert captured["planner_mode"] == "api_full"
+    assert captured["allow_reflection"] is True
     assert response[0].metadata["view_type"] == "user_profile"
 
 
@@ -158,8 +163,11 @@ async def test_list_user_memory_episodes_reads_event_entries(current_user):
 
     assert captured["user_id"] == "resolved-user-id"
     assert captured["query_text"] == "什么时候搬到杭州"
+    assert captured["planner_mode"] == "api_full"
+    assert captured["allow_reflection"] is True
     assert response[0].content == "在2024年8月，搬到了杭州"
     assert response[0].metadata["fact_kind"] == "event"
+    assert response[0].user_name == "tester"
 
 
 @pytest.mark.asyncio

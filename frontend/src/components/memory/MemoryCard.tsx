@@ -37,12 +37,15 @@ const parseFacts = (memory: MemoryRecord): MemoryFact[] => {
       value: entry.value.trim(),
     }));
 
-  const sopTitleValue = parsed.find((entry) => entry.key === "interaction.sop.title")?.value;
+  const sopTitleValue = parsed.find(
+    (entry) => entry.key === "interaction.sop.title",
+  )?.value;
   const shouldDropSopTopic = Boolean(
     sopTitleValue &&
-      parsed.some(
-        (entry) => entry.key === "interaction.sop.topic" && entry.value === sopTitleValue,
-      ),
+    parsed.some(
+      (entry) =>
+        entry.key === "interaction.sop.topic" && entry.value === sopTitleValue,
+    ),
   );
 
   const uniqueFacts: MemoryFact[] = [];
@@ -125,7 +128,12 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
       case "skill_proposal":
         return t("memory.tabs.skillProposal", { defaultValue: "技能提案" });
       case "user_memory":
-        return t("memory.tabs.userMemory", { defaultValue: "用户记忆" });
+        return memory.userName
+          ? t("memory.card.userMemoryOwner", {
+              defaultValue: "{{name}} 的记忆",
+              name: memory.userName,
+            })
+          : t("memory.tabs.userMemory", { defaultValue: "用户记忆" });
     }
   };
 
@@ -223,7 +231,9 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
   const publishMode = String(memory.metadata?.publish_mode || "")
     .trim()
     .toLowerCase();
-  const hasPromotionBacklink = Boolean(memory.metadata?.last_promoted_memory_id);
+  const hasPromotionBacklink = Boolean(
+    memory.metadata?.last_promoted_memory_id,
+  );
   const rawVisibility = String(memory.metadata?.visibility || "")
     .trim()
     .toLowerCase();
@@ -244,15 +254,19 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
     "department_tree",
     "public",
   ].includes(visibility);
-  const candidatePublished = isAgentCandidate && candidateStatusKey === "published";
-  const isPublished =
-    isAgentCandidate
-      ? candidatePublished
-      : publishMode === "promote" ||
-        hasPromotionBacklink ||
-        ["explicit", "department", "department_tree", "public", "account"].includes(
-          visibility,
-        );
+  const candidatePublished =
+    isAgentCandidate && candidateStatusKey === "published";
+  const isPublished = isAgentCandidate
+    ? candidatePublished
+    : publishMode === "promote" ||
+      hasPromotionBacklink ||
+      [
+        "explicit",
+        "department",
+        "department_tree",
+        "public",
+        "account",
+      ].includes(visibility);
   const sharingBadgeText = isPublished
     ? t("memory.card.published")
     : t("memory.card.shared");
@@ -346,7 +360,10 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
           {factPreview.length > 0 ? (
             <div className="space-y-2">
               {factPreview.map((fact, index) => (
-                <div key={`${fact.key}-${index}`} className="rounded-lg bg-white/10 p-2">
+                <div
+                  key={`${fact.key}-${index}`}
+                  className="rounded-lg bg-white/10 p-2"
+                >
                   <p className="text-[11px] text-indigo-600 dark:text-indigo-300 font-mono break-all">
                     {fact.key}
                   </p>
@@ -366,7 +383,10 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
           ) : structuredPreview.length > 0 ? (
             <div className="space-y-2">
               {structuredPreview.map((line, index) => (
-                <div key={`${line.key}-${index}`} className="rounded-lg bg-white/10 p-2">
+                <div
+                  key={`${line.key}-${index}`}
+                  className="rounded-lg bg-white/10 p-2"
+                >
                   <p className="text-[11px] text-indigo-600 dark:text-indigo-300 font-mono break-all">
                     {line.key}
                   </p>

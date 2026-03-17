@@ -1637,6 +1637,7 @@
       "error": "共享记忆失败"
     },
     "card": {
+      "userMemoryOwner": "{{name}} 的记忆",
       "shared": "已共享",
       "published": "已发布",
       "reviewPending": "待审批",

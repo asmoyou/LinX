@@ -13,11 +13,19 @@ from database.models import (
     SessionLedger,
     SessionLedgerEvent,
     SkillProposal,
+    UserMemoryEmbeddingJob,
     UserMemoryEntry,
     UserMemoryLink,
+    UserMemoryRelation,
     UserMemoryView,
 )
 from shared.datetime_utils import utcnow
+from user_memory.indexing_jobs import enqueue_user_memory_upsert_job
+from user_memory.vector_documents import parse_event_time_range
+from user_memory.vector_index import (
+    build_user_memory_embedding_signature,
+    resolve_active_user_memory_collection,
+)
 
 
 @dataclass
@@ -108,12 +116,51 @@ class MemoryLinkData:
     source_session_id: Optional[int] = None
 
 
+@dataclass
+class MemoryRelationData:
+    """Typed user-memory relationship edge derived from a normalized observation."""
+
+    owner_id: str
+    relation_key: str
+    predicate: str
+    object_text: str
+    canonical_text: str
+    confidence: float = 0.7
+    importance: float = 0.5
+    status: str = "active"
+    payload: Dict[str, Any] = field(default_factory=dict)
+    event_time: Optional[str] = None
+    location: Optional[str] = None
+    source_entry_id: Optional[int] = None
+    source_session_ledger_id: Optional[int] = None
+
+
 MemorySessionSnapshot = SessionLedgerSnapshot
 MemorySessionEventData = SessionLedgerEventData
 
 
 class SessionLedgerRepository:
     """Persistence layer for session-ledger snapshots and final memory products."""
+
+    @staticmethod
+    def _current_vector_target() -> tuple[str, str]:
+        return (
+            resolve_active_user_memory_collection(),
+            build_user_memory_embedding_signature(),
+        )
+
+    @staticmethod
+    def _mark_row_vector_pending(row: Any, *, collection_name: str) -> None:
+        if hasattr(row, "vector_sync_state"):
+            row.vector_sync_state = "pending"
+        if hasattr(row, "vector_document_hash"):
+            row.vector_document_hash = None
+        if hasattr(row, "vector_collection_name"):
+            row.vector_collection_name = str(collection_name)
+        if hasattr(row, "vector_indexed_at"):
+            row.vector_indexed_at = None
+        if hasattr(row, "vector_error"):
+            row.vector_error = None
 
     @staticmethod
     def _normalize_review_status(status: str, payload: Dict[str, Any]) -> str:
@@ -133,6 +180,7 @@ class SessionLedgerRepository:
         *,
         projection: MemoryProjectionData,
         payload: Dict[str, Any],
+        collection_name: Optional[str] = None,
     ) -> None:
         row.user_id = str(projection.owner_id)
         row.view_type = str(projection.projection_type)
@@ -144,6 +192,11 @@ class SessionLedgerRepository:
         if projection.details:
             view_payload["details"] = str(projection.details)
         row.view_data = view_payload
+        if collection_name:
+            SessionLedgerRepository._mark_row_vector_pending(
+                row,
+                collection_name=collection_name,
+            )
 
     @staticmethod
     def _apply_skill_proposal_fields(
@@ -185,6 +238,7 @@ class SessionLedgerRepository:
         entry: MemoryEntryData,
         payload: Dict[str, Any],
         source_session_ledger_id: Optional[int] = None,
+        collection_name: Optional[str] = None,
     ) -> None:
         row.user_id = str(entry.owner_id)
         row.entry_key = str(entry.entry_key)
@@ -207,6 +261,60 @@ class SessionLedgerRepository:
         if entry.details:
             merged_payload["details"] = entry.details
         row.entry_data = merged_payload
+        event_time_start, event_time_end = parse_event_time_range(payload.get("event_time"))
+        row.event_time_start = event_time_start
+        row.event_time_end = event_time_end
+        if collection_name:
+            SessionLedgerRepository._mark_row_vector_pending(
+                row,
+                collection_name=collection_name,
+            )
+
+    @staticmethod
+    def _apply_relation_fields(
+        row: UserMemoryRelation,
+        *,
+        relation: MemoryRelationData,
+    ) -> None:
+        row.user_id = str(relation.owner_id)
+        row.relation_key = str(relation.relation_key)
+        row.predicate = str(relation.predicate)
+        row.subject_type = "user"
+        row.subject_text = "user"
+        row.object_text = str(relation.object_text)
+        row.canonical_text = str(relation.canonical_text)
+        row.event_time = str(relation.event_time or "") or None
+        row.event_time_start, row.event_time_end = parse_event_time_range(relation.event_time)
+        row.location = str(relation.location or "") or None
+        row.persons = list(relation.payload.get("persons") or [])
+        row.entities = list(relation.payload.get("entities") or [])
+        row.confidence = float(relation.confidence)
+        row.importance = float(relation.importance)
+        row.status = str(relation.status or "active")
+        row.source_entry_id = relation.source_entry_id
+        row.source_session_ledger_id = relation.source_session_ledger_id
+        row.relation_data = dict(relation.payload or {})
+
+    @staticmethod
+    def _enqueue_vector_job(
+        db,
+        *,
+        row: Any,
+        source_kind: str,
+        collection_name: str,
+        embedding_signature: str,
+    ) -> None:
+        enqueue_user_memory_upsert_job(
+            db,
+            source_kind=source_kind,
+            source_id=int(row.id),
+            user_id=str(row.user_id),
+            collection_name=collection_name,
+            embedding_signature=embedding_signature,
+            payload={
+                "status": getattr(row, "status", None),
+            },
+        )
 
     @staticmethod
     def _build_entry_from_observation(
@@ -238,8 +346,9 @@ class SessionLedgerRepository:
             metadata.get("canonical_statement") or observation.summary or ""
         ).strip()
         fact_kind = str(metadata.get("fact_kind") or "preference").strip()
+        semantic_key = str(metadata.get("semantic_key") or key).strip() or key
         if observation_type == "user_preference_signal":
-            canonical_text = f"user.preference.{key}={value}"
+            canonical_text = f"user.preference.{semantic_key}={value}"
         else:
             canonical_text = canonical_statement or f"user.fact.{key}={value}"
 
@@ -259,6 +368,8 @@ class SessionLedgerRepository:
                 "key": key,
                 "value": value,
                 "fact_kind": fact_kind,
+                "semantic_key": semantic_key,
+                "identity_signature": str(metadata.get("identity_signature") or "") or None,
                 "canonical_statement": canonical_statement or None,
                 "predicate": str(metadata.get("predicate") or "") or None,
                 "object": str(metadata.get("object") or "") or None,
@@ -271,6 +382,115 @@ class SessionLedgerRepository:
                 **metadata,
             },
             source_event_indexes=list(observation.source_event_indexes or []),
+        )
+
+    @staticmethod
+    def _build_relation_from_observation(
+        *,
+        snapshot: SessionLedgerSnapshot,
+        observation: MemoryObservationData,
+        source_entry_id: Optional[int],
+        source_session_ledger_id: Optional[int],
+    ) -> Optional[MemoryRelationData]:
+        metadata = dict(observation.metadata or {})
+        if str(metadata.get("fact_kind") or "").strip() != "relationship":
+            return None
+
+        predicate = str(metadata.get("predicate") or "").strip()
+        object_text = str(metadata.get("object") or metadata.get("fact_value") or "").strip()
+        canonical_text = str(
+            metadata.get("canonical_statement") or observation.summary or observation.title or ""
+        ).strip()
+        relation_key = str(
+            metadata.get("fact_key")
+            or metadata.get("semantic_key")
+            or observation.observation_key
+            or ""
+        ).strip()
+        if not predicate or not object_text or not canonical_text or not relation_key:
+            return None
+
+        return MemoryRelationData(
+            owner_id=str(snapshot.user_id),
+            relation_key=relation_key,
+            predicate=predicate,
+            object_text=object_text,
+            canonical_text=canonical_text,
+            confidence=float(observation.confidence),
+            importance=float(observation.importance),
+            status="active",
+            payload={
+                "semantic_key": str(metadata.get("semantic_key") or "") or None,
+                "identity_signature": str(metadata.get("identity_signature") or "") or None,
+                "canonical_statement": canonical_text,
+                "predicate": predicate,
+                "object": object_text,
+                "event_time": str(metadata.get("event_time") or "") or None,
+                "persons": list(metadata.get("persons") or []),
+                "entities": list(metadata.get("entities") or []),
+                "location": str(metadata.get("location") or "") or None,
+                "topic": str(metadata.get("topic") or "") or None,
+            },
+            event_time=str(metadata.get("event_time") or "") or None,
+            location=str(metadata.get("location") or "") or None,
+            source_entry_id=source_entry_id,
+            source_session_ledger_id=source_session_ledger_id,
+        )
+
+    @staticmethod
+    def _build_relation_from_entry_row(
+        row: UserMemoryEntry,
+        *,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Optional[MemoryRelationData]:
+        relation_payload = dict(payload or row.entry_data or {})
+        if str(relation_payload.get("fact_kind") or row.fact_kind or "").strip() != "relationship":
+            return None
+
+        predicate = str(relation_payload.get("predicate") or row.predicate or "").strip()
+        object_text = str(relation_payload.get("object") or row.object_text or "").strip()
+        canonical_text = str(
+            relation_payload.get("canonical_statement") or row.summary or row.canonical_text or ""
+        ).strip()
+        relation_key = str(
+            relation_payload.get("key")
+            or row.entry_key
+            or relation_payload.get("semantic_key")
+            or ""
+        ).strip()
+        if not predicate or not object_text or not canonical_text or not relation_key:
+            return None
+
+        return MemoryRelationData(
+            owner_id=str(row.user_id),
+            relation_key=relation_key,
+            predicate=predicate,
+            object_text=object_text,
+            canonical_text=canonical_text,
+            confidence=float(row.confidence or 0.7),
+            importance=float(row.importance or 0.5),
+            status=str(row.status or "active"),
+            payload={
+                "semantic_key": str(relation_payload.get("semantic_key") or "") or None,
+                "identity_signature": str(relation_payload.get("identity_signature") or "") or None,
+                "canonical_statement": canonical_text,
+                "predicate": predicate,
+                "object": object_text,
+                "event_time": str(relation_payload.get("event_time") or row.event_time or "")
+                or None,
+                "persons": list(relation_payload.get("persons") or row.persons or []),
+                "entities": list(relation_payload.get("entities") or row.entities or []),
+                "location": str(relation_payload.get("location") or row.location or "") or None,
+                "topic": str(relation_payload.get("topic") or row.topic or "") or None,
+            },
+            event_time=str(relation_payload.get("event_time") or row.event_time or "") or None,
+            location=str(relation_payload.get("location") or row.location or "") or None,
+            source_entry_id=int(row.id) if row.id is not None else None,
+            source_session_ledger_id=(
+                int(row.source_session_ledger_id)
+                if row.source_session_ledger_id is not None
+                else None
+            ),
         )
 
     @staticmethod
@@ -351,12 +571,30 @@ class SessionLedgerRepository:
             .one_or_none()
         )
 
+    @staticmethod
+    def _get_relation_row(
+        db,
+        *,
+        user_id: str,
+        relation_key: str,
+    ) -> Optional[UserMemoryRelation]:
+        return (
+            db.query(UserMemoryRelation)
+            .filter(
+                UserMemoryRelation.user_id == str(user_id),
+                UserMemoryRelation.relation_key == str(relation_key),
+            )
+            .one_or_none()
+        )
+
     def _upsert_entry_row(
         self,
         db,
         *,
         entry: MemoryEntryData,
         source_session_ledger_id: Optional[int] = None,
+        collection_name: str,
+        embedding_signature: str,
     ) -> UserMemoryEntry:
         existing = self._get_entry_row(
             db,
@@ -371,15 +609,59 @@ class SessionLedgerRepository:
             entry=entry,
             payload=dict(entry.payload or {}),
             source_session_ledger_id=source_session_ledger_id,
+            collection_name=collection_name,
         )
         db.flush()
+        self._enqueue_vector_job(
+            db,
+            row=existing,
+            source_kind="entry",
+            collection_name=collection_name,
+            embedding_signature=embedding_signature,
+        )
         return existing
+
+    def _upsert_relation_row(
+        self,
+        db,
+        *,
+        relation: MemoryRelationData,
+    ) -> UserMemoryRelation:
+        existing = self._get_relation_row(
+            db,
+            user_id=str(relation.owner_id),
+            relation_key=str(relation.relation_key),
+        )
+        if existing is None:
+            existing = UserMemoryRelation()
+            db.add(existing)
+        self._apply_relation_fields(existing, relation=relation)
+        db.flush()
+        return existing
+
+    @staticmethod
+    def _delete_relation_row(
+        db,
+        *,
+        user_id: str,
+        relation_key: str,
+    ) -> None:
+        (
+            db.query(UserMemoryRelation)
+            .filter(
+                UserMemoryRelation.user_id == str(user_id),
+                UserMemoryRelation.relation_key == str(relation_key),
+            )
+            .delete(synchronize_session=False)
+        )
 
     def _upsert_user_view_row(
         self,
         db,
         *,
         projection: MemoryProjectionData,
+        collection_name: str,
+        embedding_signature: str,
     ) -> UserMemoryView:
         existing = self._get_user_view_row(
             db,
@@ -394,8 +676,16 @@ class SessionLedgerRepository:
             existing,
             projection=projection,
             payload=dict(projection.payload or {}),
+            collection_name=collection_name,
         )
         db.flush()
+        self._enqueue_vector_job(
+            db,
+            row=existing,
+            source_kind="view",
+            collection_name=collection_name,
+            embedding_signature=embedding_signature,
+        )
         return existing
 
     def _upsert_skill_proposal_row(
@@ -460,6 +750,7 @@ class SessionLedgerRepository:
         """Upsert one session snapshot and its derived final memory products."""
 
         with get_db_session() as db:
+            collection_name, embedding_signature = self._current_vector_target()
             session_row = self._get_session_row(db, session_id=str(snapshot.session_id))
             if session_row is None:
                 session_row = SessionLedger(
@@ -509,16 +800,37 @@ class SessionLedgerRepository:
                 )
                 if entry is None:
                     continue
-                self._upsert_entry_row(
+                entry_row = self._upsert_entry_row(
                     db,
                     entry=entry,
                     source_session_ledger_id=int(session_row.id),
+                    collection_name=collection_name,
+                    embedding_signature=embedding_signature,
                 )
+                relation = self._build_relation_from_observation(
+                    snapshot=snapshot,
+                    observation=observation,
+                    source_entry_id=int(entry_row.id),
+                    source_session_ledger_id=int(session_row.id),
+                )
+                if relation is not None:
+                    self._upsert_relation_row(db, relation=relation)
+                else:
+                    self._delete_relation_row(
+                        db,
+                        user_id=str(entry_row.user_id),
+                        relation_key=str(entry_row.entry_key),
+                    )
 
             for projection in projections:
                 projection_type = str(projection.projection_type or "").strip().lower()
                 if projection_type in {"user_profile", "episode"}:
-                    self._upsert_user_view_row(db, projection=projection)
+                    self._upsert_user_view_row(
+                        db,
+                        projection=projection,
+                        collection_name=collection_name,
+                        embedding_signature=embedding_signature,
+                    )
                     continue
                 if projection_type == "skill_proposal":
                     self._upsert_skill_proposal_row(
@@ -550,9 +862,15 @@ class SessionLedgerRepository:
             status="completed",
         )
         with get_db_session() as db:
+            collection_name, embedding_signature = self._current_vector_target()
             projection_type = str(projection.projection_type or "").strip().lower()
             if projection_type in {"user_profile", "episode"}:
-                row = self._upsert_user_view_row(db, projection=projection)
+                row = self._upsert_user_view_row(
+                    db,
+                    projection=projection,
+                    collection_name=collection_name,
+                    embedding_signature=embedding_signature,
+                )
                 return int(row.id)
             if projection_type == "skill_proposal":
                 row = self._upsert_skill_proposal_row(
@@ -577,11 +895,21 @@ class SessionLedgerRepository:
         if str(entry.owner_type or "") != "user" or str(entry.entry_type or "") != "user_fact":
             raise ValueError("Only user_fact entries are supported in reset-era persistence")
         with get_db_session() as db:
+            collection_name, embedding_signature = self._current_vector_target()
             row = self._upsert_entry_row(
                 db,
                 entry=entry,
                 source_session_ledger_id=source_session_id,
+                collection_name=collection_name,
+                embedding_signature=embedding_signature,
             )
+            relation = self._build_relation_from_entry_row(row, payload=dict(entry.payload or {}))
+            if relation is not None:
+                self._upsert_relation_row(db, relation=relation)
+            else:
+                self._delete_relation_row(
+                    db, user_id=str(row.user_id), relation_key=str(row.entry_key)
+                )
             return int(row.id)
 
     def create_link(self, *, link: MemoryLinkData, user_id: Optional[str] = None) -> int:
@@ -624,6 +952,7 @@ class SessionLedgerRepository:
         """Load one user-memory view or skill proposal by numeric id."""
 
         with get_db_session() as db:
+            collection_name, embedding_signature = self._current_vector_target()
             row = (
                 db.query(UserMemoryView)
                 .filter(UserMemoryView.id == int(projection_id))
@@ -674,6 +1003,7 @@ class SessionLedgerRepository:
 
         del source_observation_id
         with get_db_session() as db:
+            collection_name, embedding_signature = self._current_vector_target()
             row = (
                 db.query(UserMemoryView)
                 .filter(UserMemoryView.id == int(projection_id))
@@ -690,7 +1020,15 @@ class SessionLedgerRepository:
                     row.status = str(status)
                 if payload is not None:
                     row.view_data = dict(payload)
+                self._mark_row_vector_pending(row, collection_name=collection_name)
                 db.flush()
+                self._enqueue_vector_job(
+                    db,
+                    row=row,
+                    source_kind="view",
+                    collection_name=collection_name,
+                    embedding_signature=embedding_signature,
+                )
                 return row
 
             proposal = (
@@ -732,6 +1070,7 @@ class SessionLedgerRepository:
 
         del source_observation_id
         with get_db_session() as db:
+            collection_name, embedding_signature = self._current_vector_target()
             row = (
                 db.query(UserMemoryEntry).filter(UserMemoryEntry.id == int(entry_id)).one_or_none()
             )
@@ -755,13 +1094,31 @@ class SessionLedgerRepository:
                 row.predicate = str(payload.get("predicate") or "") or None
                 row.object_text = str(payload.get("object") or "") or None
                 row.event_time = str(payload.get("event_time") or "") or None
+                row.event_time_start, row.event_time_end = parse_event_time_range(row.event_time)
                 row.location = str(payload.get("location") or "") or None
                 row.persons = list(payload.get("persons") or [])
                 row.entities = list(payload.get("entities") or [])
                 row.topic = str(payload.get("topic") or "") or None
             if source_session_id is not None:
                 row.source_session_ledger_id = source_session_id
+            self._mark_row_vector_pending(row, collection_name=collection_name)
             db.flush()
+            relation = self._build_relation_from_entry_row(
+                row, payload=dict(payload or row.entry_data or {})
+            )
+            if relation is not None:
+                self._upsert_relation_row(db, relation=relation)
+            else:
+                self._delete_relation_row(
+                    db, user_id=str(row.user_id), relation_key=str(row.entry_key)
+                )
+            self._enqueue_vector_job(
+                db,
+                row=row,
+                source_kind="entry",
+                collection_name=collection_name,
+                embedding_signature=embedding_signature,
+            )
             return row
 
     def list_projections(
@@ -829,6 +1186,31 @@ class SessionLedgerRepository:
             if status:
                 query = query.filter(UserMemoryEntry.status == str(status))
             query = query.order_by(UserMemoryEntry.updated_at.desc(), UserMemoryEntry.id.desc())
+            if limit is not None:
+                query = query.limit(max(int(limit), 1))
+            return list(query.all())
+
+    def list_relations(
+        self,
+        *,
+        owner_id: Optional[str] = None,
+        predicate: Optional[str] = None,
+        status: Optional[str] = "active",
+        limit: Optional[int] = 100,
+    ) -> List[UserMemoryRelation]:
+        """List typed user-memory relations ordered by recency."""
+
+        with get_db_session() as db:
+            query = db.query(UserMemoryRelation)
+            if owner_id:
+                query = query.filter(UserMemoryRelation.user_id == str(owner_id))
+            if predicate:
+                query = query.filter(UserMemoryRelation.predicate == str(predicate))
+            if status:
+                query = query.filter(UserMemoryRelation.status == str(status))
+            query = query.order_by(
+                UserMemoryRelation.updated_at.desc(), UserMemoryRelation.id.desc()
+            )
             if limit is not None:
                 query = query.limit(max(int(limit), 1))
             return list(query.all())
@@ -909,6 +1291,7 @@ class SessionLedgerRepository:
                     "deleted_sessions": 0,
                     "deleted_events": 0,
                     "detached_entries": 0,
+                    "detached_relations": 0,
                     "detached_skill_proposals": 0,
                 }
 
@@ -922,6 +1305,11 @@ class SessionLedgerRepository:
                 .filter(UserMemoryEntry.source_session_ledger_id.in_(session_ids))
                 .count()
             )
+            detached_relations = (
+                db.query(UserMemoryRelation)
+                .filter(UserMemoryRelation.source_session_ledger_id.in_(session_ids))
+                .count()
+            )
             detached_skill_proposals = (
                 db.query(SkillProposal)
                 .filter(SkillProposal.evidence_session_ledger_id.in_(session_ids))
@@ -933,6 +1321,14 @@ class SessionLedgerRepository:
                     .filter(UserMemoryEntry.source_session_ledger_id.in_(session_ids))
                     .update(
                         {UserMemoryEntry.source_session_ledger_id: None}, synchronize_session=False
+                    )
+                )
+                (
+                    db.query(UserMemoryRelation)
+                    .filter(UserMemoryRelation.source_session_ledger_id.in_(session_ids))
+                    .update(
+                        {UserMemoryRelation.source_session_ledger_id: None},
+                        synchronize_session=False,
                     )
                 )
                 (
@@ -954,6 +1350,7 @@ class SessionLedgerRepository:
                 "deleted_sessions": 0 if dry_run else len(session_ids),
                 "deleted_events": deleted_events,
                 "detached_entries": detached_entries,
+                "detached_relations": detached_relations,
                 "detached_skill_proposals": detached_skill_proposals,
             }
 

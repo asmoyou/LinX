@@ -467,6 +467,8 @@ class UserMemoryEntry(Base):
     predicate = Column(String(255), nullable=True)
     object_text = Column(Text, nullable=True)
     event_time = Column(String(255), nullable=True)
+    event_time_start = Column(DateTime(timezone=True), nullable=True, index=True)
+    event_time_end = Column(DateTime(timezone=True), nullable=True, index=True)
     location = Column(String(255), nullable=True)
     persons = Column(JSONB, nullable=True)
     entities = Column(JSONB, nullable=True)
@@ -482,6 +484,12 @@ class UserMemoryEntry(Base):
     )
     source_event_indexes = Column(JSONB, nullable=True)
     entry_data = Column(JSONB, nullable=True)
+    search_vector = Column(TSVector(), nullable=True)
+    vector_sync_state = Column(String(32), nullable=False, default="pending", index=True)
+    vector_document_hash = Column(String(64), nullable=True)
+    vector_collection_name = Column(String(255), nullable=True)
+    vector_indexed_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    vector_error = Column(Text, nullable=True)
     superseded_by_id = Column(
         BigInteger,
         ForeignKey("user_memory_entries.id", ondelete="SET NULL"),
@@ -495,6 +503,25 @@ class UserMemoryEntry(Base):
 
     __table_args__ = (
         Index("idx_user_memory_entries_user_fact_status", "user_id", "fact_kind", "status"),
+        Index("idx_user_memory_entries_search_vector", "search_vector", postgresql_using="gin"),
+        Index(
+            "idx_user_memory_entries_canonical_text_trgm",
+            "canonical_text",
+            postgresql_using="gin",
+            postgresql_ops={"canonical_text": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_user_memory_entries_vector_sync",
+            "user_id",
+            "status",
+            "vector_sync_state",
+            "vector_indexed_at",
+        ),
+        Index(
+            "idx_user_memory_entries_vector_collection",
+            "vector_collection_name",
+            "vector_sync_state",
+        ),
         Index("ux_user_memory_entries_user_key", "user_id", "entry_key", unique=True),
     )
 
@@ -626,6 +653,64 @@ class UserMemoryLink(Base):
         )
 
 
+class UserMemoryRelation(Base):
+    """Typed user-memory relationship edges stored independently from fact entries."""
+
+    __tablename__ = "user_memory_relations"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    relation_key = Column(String(255), nullable=False)
+    predicate = Column(String(64), nullable=False, index=True)
+    subject_type = Column(String(32), nullable=False, default="user")
+    subject_text = Column(String(255), nullable=True)
+    object_text = Column(Text, nullable=False)
+    canonical_text = Column(Text, nullable=False)
+    event_time = Column(String(255), nullable=True)
+    event_time_start = Column(DateTime(timezone=True), nullable=True, index=True)
+    event_time_end = Column(DateTime(timezone=True), nullable=True, index=True)
+    location = Column(String(255), nullable=True)
+    persons = Column(JSONB, nullable=True)
+    entities = Column(JSONB, nullable=True)
+    confidence = Column(Float, nullable=False, default=0.7)
+    importance = Column(Float, nullable=False, default=0.5)
+    status = Column(String(32), nullable=False, default="active", index=True)
+    source_entry_id = Column(
+        BigInteger,
+        ForeignKey("user_memory_entries.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_session_ledger_id = Column(
+        BigInteger,
+        ForeignKey("session_ledgers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    relation_data = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_user_memory_relations_user_predicate", "user_id", "predicate", "status"),
+        Index("ux_user_memory_relations_user_key", "user_id", "relation_key", unique=True),
+        Index(
+            "idx_user_memory_relations_object_text_trgm",
+            "object_text",
+            postgresql_using="gin",
+            postgresql_ops={"object_text": "gin_trgm_ops"},
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<UserMemoryRelation(id={self.id}, user_id={self.user_id}, "
+            f"predicate={self.predicate}, key={self.relation_key})>"
+        )
+
+
 class UserMemoryView(Base):
     """Stable user-memory projections for profile and episode surfaces."""
 
@@ -639,6 +724,12 @@ class UserMemoryView(Base):
     content = Column(Text, nullable=False)
     view_data = Column(JSONB, nullable=True)
     status = Column(String(32), nullable=False, default="active", index=True)
+    search_vector = Column(TSVector(), nullable=True)
+    vector_sync_state = Column(String(32), nullable=False, default="pending", index=True)
+    vector_document_hash = Column(String(64), nullable=True)
+    vector_collection_name = Column(String(255), nullable=True)
+    vector_indexed_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    vector_error = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -646,6 +737,26 @@ class UserMemoryView(Base):
 
     __table_args__ = (
         Index("idx_user_memory_views_user_type", "user_id", "view_type", "status"),
+        Index("idx_user_memory_views_search_vector", "search_vector", postgresql_using="gin"),
+        Index(
+            "idx_user_memory_views_content_trgm",
+            "content",
+            postgresql_using="gin",
+            postgresql_ops={"content": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_user_memory_views_vector_sync",
+            "user_id",
+            "view_type",
+            "status",
+            "vector_sync_state",
+            "vector_indexed_at",
+        ),
+        Index(
+            "idx_user_memory_views_vector_collection",
+            "vector_collection_name",
+            "vector_sync_state",
+        ),
         Index("ux_user_memory_views_user_key", "user_id", "view_type", "view_key", unique=True),
     )
 
@@ -703,6 +814,59 @@ class UserMemoryView(Base):
         return (
             f"<UserMemoryView(id={self.id}, user_id={self.user_id}, "
             f"view_type={self.view_type}, key={self.view_key})>"
+        )
+
+
+class UserMemoryEmbeddingJob(Base):
+    """DB-backed background jobs for user-memory vector indexing."""
+
+    __tablename__ = "user_memory_embedding_jobs"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    job_key = Column(String(255), nullable=False, unique=True, index=True)
+    source_kind = Column(String(16), nullable=False, index=True)
+    source_id = Column(BigInteger, nullable=True, index=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    operation = Column(String(16), nullable=False)
+    collection_name = Column(String(255), nullable=False)
+    embedding_signature = Column(String(255), nullable=False)
+    payload = Column(JSONB, nullable=True)
+    status = Column(String(16), nullable=False, default="pending", index=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    available_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    locked_at = Column(DateTime(timezone=True), nullable=True)
+    locked_by = Column(String(128), nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_user_memory_embedding_jobs_claim",
+            "status",
+            "available_at",
+            "id",
+        ),
+        Index(
+            "idx_user_memory_embedding_jobs_user_status",
+            "user_id",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "idx_user_memory_embedding_jobs_source_status",
+            "source_kind",
+            "source_id",
+            "status",
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<UserMemoryEmbeddingJob(id={self.id}, key={self.job_key}, "
+            f"status={self.status}, user_id={self.user_id})>"
         )
 
 

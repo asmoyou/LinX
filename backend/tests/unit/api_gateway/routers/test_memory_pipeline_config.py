@@ -69,7 +69,12 @@ def regular_user():
 
 def test_build_memory_config_payload_resolves_effective_sources():
     user_memory_section = {
-        "retrieval": {"similarity_threshold": 0.55},
+        "retrieval": {
+            "similarity_threshold": 0.55,
+            "legacy_fallback_enabled": True,
+            "rerank_provider": "legacy-provider",
+            "rerank_model": "legacy-model",
+        },
         "extraction": {"provider": "openai"},
     }
     skill_learning_section = {
@@ -80,16 +85,30 @@ def test_build_memory_config_payload_resolves_effective_sources():
         "providers": {"openai": {"models": {"chat": "gpt-4.1-mini"}}},
     }
 
-    with patch(
-        "memory_system.embedding_service.resolve_embedding_settings",
-        return_value={
-            "provider": "openai",
-            "model": "text-embedding-3-large",
-            "dimension": 3072,
-            "provider_source": "user_memory.embedding.provider",
-            "model_source": "user_memory.embedding.model",
-            "dimension_source": "user_memory.embedding.dimension",
-        },
+    with (
+        patch(
+            "memory_system.embedding_service.resolve_embedding_settings",
+            return_value={
+                "provider": "openai",
+                "model": "text-embedding-3-large",
+                "dimension": 3072,
+                "provider_source": "user_memory.embedding.provider",
+                "model_source": "user_memory.embedding.model",
+                "dimension_source": "user_memory.embedding.dimension",
+            },
+        ),
+        patch(
+            "user_memory.vector_index.get_user_memory_vector_index_state",
+            return_value={
+                "active_collection": "user_memory_embeddings_v2_deadbeef",
+                "active_signature": "sig",
+                "build_state": "ready",
+            },
+        ),
+        patch(
+            "user_memory.vector_index.user_memory_vector_reindex_required",
+            return_value=False,
+        ),
     ):
         payload = _build_memory_config_payload(
             user_memory_section,
@@ -101,9 +120,17 @@ def test_build_memory_config_payload_resolves_effective_sources():
         )
 
     assert payload["user_memory"]["retrieval"]["similarity_threshold"] == 0.55
+    assert payload["user_memory"]["retrieval"]["rerank"]["provider"] == "legacy-provider"
+    assert payload["user_memory"]["retrieval"]["rerank"]["model"] == "legacy-model"
+    assert "legacy_fallback_enabled" not in payload["user_memory"]["retrieval"]
     assert payload["user_memory"]["extraction"]["effective"]["provider"] == "openai"
     assert payload["user_memory"]["extraction"]["effective"]["model"] == "gpt-4.1-mini"
     assert payload["user_memory"]["embedding"]["effective"]["model"] == "text-embedding-3-large"
+    assert (
+        payload["user_memory"]["indexState"]["activeCollection"]
+        == "user_memory_embeddings_v2_deadbeef"
+    )
+    assert payload["user_memory"]["indexState"]["reindexRequired"] is False
     assert payload["skill_learning"]["extraction"]["max_proposals"] == 4
 
 

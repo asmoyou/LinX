@@ -20,12 +20,15 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 from uuid import UUID
 
 from knowledge_base.config_utils import load_knowledge_base_config
+from knowledge_base.text_normalizer import normalize_knowledge_text
+from llm_providers.openai_compatible import build_api_url_candidates, normalize_rerank_scores
 from memory_system.embedding_service import get_embedding_service
 from memory_system.milvus_connection import get_milvus_connection
 from llm_providers.provider_resolver import resolve_provider
 from shared.config import get_config
 
 logger = logging.getLogger(__name__)
+_CJK_TOKEN_PATTERN = re.compile(r"^[\u3400-\u4dbf\u4e00-\u9fff]+$")
 
 
 class AwaitableSearchResults(list):
@@ -125,9 +128,7 @@ class KnowledgeSearch:
         self.cross_language_provider = str(
             search_cfg.get("cross_language_provider", default_provider) or default_provider
         ).strip()
-        self.cross_language_model = str(
-            search_cfg.get("cross_language_model", "") or ""
-        ).strip()
+        self.cross_language_model = str(search_cfg.get("cross_language_model", "") or "").strip()
         self.cross_language_timeout_seconds = float(
             search_cfg.get("cross_language_timeout_seconds", 4)
         )
@@ -137,9 +138,7 @@ class KnowledgeSearch:
         self.cross_language_max_expansions = int(search_cfg.get("cross_language_max_expansions", 2))
         self.cross_language_max_queries = int(search_cfg.get("cross_language_max_queries", 3))
         languages_key = ",".join(self.cross_language_languages) or "-"
-        self._cross_language_state_key = (
-            f"{self.cross_language_provider}|{self.cross_language_model or '<auto>'}|{languages_key}"
-        )
+        self._cross_language_state_key = f"{self.cross_language_provider}|{self.cross_language_model or '<auto>'}|{languages_key}"
 
         # Failure backoff timestamps to avoid repeated slow timeouts when upstream is unhealthy.
         self._embedding_fail_until = 0.0
@@ -262,18 +261,19 @@ class KnowledgeSearch:
             else:
                 stage_ms["heuristic_rerank"] = 0.0
 
-            # Apply configurable relevance gate (similar to RAGFlow similarity_threshold).
-            # When model rerank is unavailable and heuristic rerank is used, scores are in a
-            # different (lower) range, so we auto-lower the threshold to avoid filtering
-            # out all results.
-            relevance_gate_start = time.perf_counter()
-            effective_min_score = (
-                search_filter.min_relevance_score
-                if search_filter.min_relevance_score is not None
-                else self.min_relevance_score
+            filtered_results = self._apply_short_query_precision_guard(
+                query=query,
+                query_terms=query_terms,
+                bm25_results=bm25_results,
+                results=filtered_results,
             )
-            if not model_rerank_applied and effective_min_score > 0.3:
-                effective_min_score = max(effective_min_score * 0.5, 0.1)
+
+            # Apply configurable relevance gate (similar to RAGFlow similarity_threshold).
+            relevance_gate_start = time.perf_counter()
+            effective_min_score = self._resolve_effective_min_relevance_score(
+                search_filter.min_relevance_score,
+                model_rerank_applied=model_rerank_applied,
+            )
             filtered_results = [
                 result
                 for result in filtered_results
@@ -320,7 +320,11 @@ class KnowledgeSearch:
             return []
 
         variants = [base_query]
-        if self.cross_language_expansion_enabled and self.cross_language_languages:
+        if (
+            self.cross_language_expansion_enabled
+            and self.cross_language_languages
+            and self._should_expand_cross_language(base_query)
+        ):
             variants.extend(self._expand_query_cross_language(base_query))
 
         deduped: List[str] = []
@@ -328,6 +332,8 @@ class KnowledgeSearch:
         for candidate in variants:
             clean = (candidate or "").strip()
             if not clean:
+                continue
+            if clean != base_query and not self._is_meaningful_query_variant(clean):
                 continue
             key = self._normalize_query_key(clean)
             if key in seen:
@@ -337,6 +343,25 @@ class KnowledgeSearch:
             if len(deduped) >= max(int(self.cross_language_max_queries), 1):
                 break
         return deduped or [base_query]
+
+    @staticmethod
+    def _is_meaningful_query_variant(candidate: str) -> bool:
+        normalized = unicodedata.normalize("NFKC", (candidate or "")).strip()
+        if len(normalized) < 2:
+            return False
+        if normalized in {"...", "…", "……"}:
+            return False
+        return bool(re.search(r"[A-Za-z0-9\u3400-\u4dbf\u4e00-\u9fff]", normalized))
+
+    def _should_expand_cross_language(self, query: str) -> bool:
+        normalized = unicodedata.normalize("NFKC", (query or "")).strip()
+        if len(normalized) < 4:
+            return False
+        if len(self._extract_query_terms(normalized)) < 2 and not re.search(
+            r"[A-Za-z]{3,}", normalized
+        ):
+            return False
+        return True
 
     def _expand_query_cross_language(self, query: str) -> List[str]:
         """Expand user query into additional languages for lexical retrieval."""
@@ -384,7 +409,7 @@ class KnowledgeSearch:
             prompt = (
                 "You are a multilingual retrieval query expander.\n"
                 "Rewrite the input query into the target languages while preserving intent.\n"
-                "Return JSON only: {\"queries\": [\"...\"]}.\n"
+                'Return JSON only: {"queries": ["..."]}.\n'
                 "No explanations, no markdown.\n\n"
                 f"Input query: {query}\n"
                 f"Target languages: {', '.join(self.cross_language_languages)}\n"
@@ -429,9 +454,9 @@ class KnowledgeSearch:
             error_text = str(e).lower()
             timeout_like = "timed out" in error_text or "timeout" in error_text
             with self._cross_language_state_lock:
-                failure_count = self._cross_language_failures_by_key.get(
-                    self._cross_language_state_key, 0
-                ) + 1
+                failure_count = (
+                    self._cross_language_failures_by_key.get(self._cross_language_state_key, 0) + 1
+                )
                 self._cross_language_failures_by_key[self._cross_language_state_key] = failure_count
 
             if timeout_like:
@@ -618,8 +643,11 @@ class KnowledgeSearch:
             except Exception:
                 continue
             extracted = _extract_from_obj(parsed)
-            if extracted:
-                return extracted
+            meaningful = [
+                item for item in extracted if KnowledgeSearch._is_meaningful_query_variant(item)
+            ]
+            if meaningful:
+                return meaningful
 
         # Fallback to delimiter-based parsing.
         items = re.split(r"(?:\n+|###|===|；|;)", text)
@@ -631,7 +659,8 @@ class KnowledgeSearch:
             lowered = candidate.lower()
             if lowered.startswith("output"):
                 continue
-            cleaned.append(candidate)
+            if KnowledgeSearch._is_meaningful_query_variant(candidate):
+                cleaned.append(candidate)
         return cleaned
 
     def _generate_query_embedding(self, query: str) -> Optional[List[float]]:
@@ -761,11 +790,15 @@ class KnowledgeSearch:
             search_results = []
             for hits in results:
                 for hit in hits:
+                    content, summary = self._normalize_result_texts(
+                        content=hit.entity.get("content"),
+                        summary=None,
+                    )
                     search_results.append(
                         SearchResult(
                             chunk_id=str(hit.id),
                             document_id=hit.entity.get("knowledge_id"),
-                            content=hit.entity.get("content"),
+                            content=content,
                             similarity_score=1.0
                             / (1.0 + hit.distance),  # Convert distance to similarity
                             chunk_index=hit.entity.get("chunk_index", 0),
@@ -773,6 +806,7 @@ class KnowledgeSearch:
                                 "owner_user_id": hit.entity.get("owner_user_id"),
                                 "access_level": hit.entity.get("access_level", "private"),
                             },
+                            summary=summary,
                             search_method="vector",
                         )
                     )
@@ -808,7 +842,9 @@ class KnowledgeSearch:
         for q in queries:
             for row in self._bm25_search_single(q, search_filter):
                 existing = merged.get(row.chunk_id)
-                if existing is None or float(row.similarity_score) > float(existing.similarity_score):
+                if existing is None or float(row.similarity_score) > float(
+                    existing.similarity_score
+                ):
                     row.metadata = dict(row.metadata or {})
                     if len(queries) > 1:
                         row.metadata["matched_query"] = q
@@ -833,7 +869,9 @@ class KnowledgeSearch:
             )
             for row in fallback_results:
                 existing = merged.get(row.chunk_id)
-                if existing is None or float(row.similarity_score) > float(existing.similarity_score):
+                if existing is None or float(row.similarity_score) > float(
+                    existing.similarity_score
+                ):
                     merged[row.chunk_id] = row
             search_results = sorted(
                 merged.values(),
@@ -930,16 +968,20 @@ class KnowledgeSearch:
                 row_metadata = dict(row.chunk_metadata or {})
                 row_metadata.setdefault("owner_user_id", str(row.owner_user_id))
                 row_metadata.setdefault("access_level", row.access_level or "private")
+                content, summary = self._normalize_result_texts(
+                    content=row.content,
+                    summary=row.summary,
+                )
                 search_results.append(
                     SearchResult(
                         chunk_id=str(row.chunk_id),
                         document_id=str(row.knowledge_id),
-                        content=row.content,
+                        content=content,
                         similarity_score=float(row.rank),
                         chunk_index=row.chunk_index,
                         metadata=row_metadata,
                         keywords=row.keywords,
-                        summary=row.summary,
+                        summary=summary,
                         search_method="bm25",
                     )
                 )
@@ -967,7 +1009,9 @@ class KnowledgeSearch:
         base_terms = [t for t in (query_terms or []) if t]
         for q in queries:
             per_query_terms = self._extract_query_terms(q)
-            terms = list(dict.fromkeys(base_terms + per_query_terms))[: max(self.keyword_max_terms, 1)]
+            terms = list(dict.fromkeys(base_terms + per_query_terms))[
+                : max(self.keyword_max_terms, 1)
+            ]
             rows = self._keyword_fallback_search(
                 query=q,
                 query_terms=terms,
@@ -977,7 +1021,9 @@ class KnowledgeSearch:
             )
             for row in rows:
                 existing = merged.get(row.chunk_id)
-                if existing is None or float(row.similarity_score) > float(existing.similarity_score):
+                if existing is None or float(row.similarity_score) > float(
+                    existing.similarity_score
+                ):
                     merged[row.chunk_id] = row
                 if len(merged) >= limit:
                     break
@@ -1031,33 +1077,41 @@ class KnowledgeSearch:
         cjk_question_chars = {"如", "何", "怎", "样", "请", "问"}
 
         raw_terms: Set[str] = set()
+
+        def _is_meaningful_term(term: str) -> bool:
+            return bool(re.search(r"[A-Za-z0-9\u3400-\u4dbf\u4e00-\u9fff]", term))
+
         split_terms = re.split(
             r"[\s,，。！？!?;；:：/\\|()\[\]{}【】\"'“”‘’]+",
             normalized_query,
         )
         for term in split_terms:
             term = term.strip()
-            if len(term) >= 2 and term not in stop_terms:
+            if len(term) >= 2 and term not in stop_terms and _is_meaningful_term(term):
                 raw_terms.add(term)
 
         # Preserve contiguous Chinese fragments and generate short n-grams for phrase recall.
         cjk_fragments = re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]+", normalized_query)
         for fragment in cjk_fragments:
-            if len(fragment) >= 2 and fragment not in stop_terms:
+            if len(fragment) >= 2 and fragment not in stop_terms and _is_meaningful_term(fragment):
                 raw_terms.add(fragment)
             for n in (2, 3):
                 if len(fragment) < n:
                     continue
                 for idx in range(len(fragment) - n + 1):
-                    gram = fragment[idx: idx + n]
+                    gram = fragment[idx : idx + n]
                     if any(question_term in gram for question_term in cjk_question_terms):
                         continue
                     if gram and gram[0] in cjk_question_chars:
                         continue
-                    if len(gram) >= 2 and gram not in stop_terms:
+                    if len(gram) >= 2 and gram not in stop_terms and _is_meaningful_term(gram):
                         raw_terms.add(gram)
 
-        if normalized_query not in stop_terms and len(normalized_query) >= 2:
+        if (
+            normalized_query not in stop_terms
+            and len(normalized_query) >= 2
+            and _is_meaningful_term(normalized_query)
+        ):
             raw_terms.add(normalized_query)
 
         # Longer phrases first to favor specific matches.
@@ -1084,11 +1138,9 @@ class KnowledgeSearch:
             from database.connection import get_db_session
             from database.models import KnowledgeChunk, KnowledgeItem
 
-            terms = [
-                t.strip()
-                for t in query_terms
-                if len(t.strip()) >= 2
-            ][: max(self.keyword_max_terms, 1)]
+            terms = [t.strip() for t in query_terms if len(t.strip()) >= 2][
+                : max(self.keyword_max_terms, 1)
+            ]
             full_query = unicodedata.normalize("NFKC", (query or "")).strip().lower()
             if len(full_query) >= 2 and full_query not in terms:
                 terms.insert(0, full_query)
@@ -1166,24 +1218,21 @@ class KnowledgeSearch:
             min_term_hits = 1 if len(terms) <= 2 else 2
 
             with get_db_session() as session:
-                q = (
-                    session.query(
-                        KnowledgeChunk.chunk_id,
-                        KnowledgeChunk.knowledge_id,
-                        KnowledgeChunk.content,
-                        KnowledgeChunk.chunk_index,
-                        KnowledgeChunk.keywords,
-                        KnowledgeChunk.summary,
-                        KnowledgeChunk.chunk_metadata,
-                        KnowledgeItem.owner_user_id,
-                        KnowledgeItem.access_level,
-                        rank_expr,
-                        term_hits_label,
-                    )
-                    .join(
-                        KnowledgeItem,
-                        KnowledgeItem.knowledge_id == KnowledgeChunk.knowledge_id,
-                    )
+                q = session.query(
+                    KnowledgeChunk.chunk_id,
+                    KnowledgeChunk.knowledge_id,
+                    KnowledgeChunk.content,
+                    KnowledgeChunk.chunk_index,
+                    KnowledgeChunk.keywords,
+                    KnowledgeChunk.summary,
+                    KnowledgeChunk.chunk_metadata,
+                    KnowledgeItem.owner_user_id,
+                    KnowledgeItem.access_level,
+                    rank_expr,
+                    term_hits_label,
+                ).join(
+                    KnowledgeItem,
+                    KnowledgeItem.knowledge_id == KnowledgeChunk.knowledge_id,
                 )
                 current_user = CurrentUser(
                     user_id=search_filter.user_id,
@@ -1226,16 +1275,20 @@ class KnowledgeSearch:
                 row_metadata.setdefault("access_level", row.access_level or "private")
                 row_metadata["keyword_rank"] = rank
                 row_metadata["keyword_term_hits"] = term_hits
+                content, summary = self._normalize_result_texts(
+                    content=row.content,
+                    summary=row.summary,
+                )
                 fallback_results.append(
                     SearchResult(
                         chunk_id=str(row.chunk_id),
                         document_id=str(row.knowledge_id),
-                        content=row.content,
+                        content=content,
                         similarity_score=rank,
                         chunk_index=row.chunk_index,
                         metadata=row_metadata,
                         keywords=row.keywords,
-                        summary=row.summary,
+                        summary=summary,
                         search_method="keyword",
                     )
                 )
@@ -1247,6 +1300,39 @@ class KnowledgeSearch:
         except Exception as e:
             logger.warning(f"Keyword fallback search failed: {e}")
             return []
+
+    def _normalize_result_score_for_blend(self, result: SearchResult) -> float:
+        """Normalize result score into [0, 1] before blending with rerank."""
+        raw_score = max(float(result.similarity_score or 0.0), 0.0)
+        method = (result.search_method or "").lower()
+        if method == "vector":
+            return min(raw_score, 1.0)
+        if method == "bm25":
+            return raw_score / (1.0 + raw_score)
+        if method == "keyword":
+            keyword_scale = max(self.keyword_min_rank * 2.0, 1.0)
+            return min(raw_score / keyword_scale, 1.0)
+        if method == "hybrid":
+            hybrid_scale = max(self.hybrid_score_scale, 1e-6)
+            return min(raw_score / hybrid_scale, 1.0)
+        return raw_score / (1.0 + raw_score)
+
+    def _resolve_effective_min_relevance_score(
+        self,
+        requested_min_score: Optional[float],
+        *,
+        model_rerank_applied: bool,
+    ) -> float:
+        """Resolve the final relevance floor for one search request."""
+        effective = self.min_relevance_score
+        if requested_min_score is not None:
+            try:
+                effective = float(requested_min_score)
+            except (TypeError, ValueError):
+                effective = self.min_relevance_score
+        if not model_rerank_applied:
+            effective = max(effective, self.min_relevance_score)
+        return max(0.0, min(effective, 1.0))
 
     def _rerank_with_model(
         self,
@@ -1274,10 +1360,13 @@ class KnowledgeSearch:
 
         candidate_limit = min(
             len(results),
-            max(int(self.rerank_top_k), int(top_k) * 3, int(top_k)),
+            max(int(self.rerank_top_k), int(top_k), 10),
         )
         candidates = results[:candidate_limit]
-        documents = [self._build_rerank_document(candidate) for candidate in candidates]
+        doc_char_limit = self._effective_rerank_doc_max_chars(candidate_limit)
+        documents = [
+            self._build_rerank_document(candidate)[:doc_char_limit] for candidate in candidates
+        ]
         rerank_items = self._call_rerank_api(
             base_url=base_url,
             api_key=provider_cfg.get("api_key"),
@@ -1300,9 +1389,10 @@ class KnowledgeSearch:
             candidate.metadata["rerank_score"] = round(float(rerank_score), 4)
             candidate.metadata["rerank_model"] = self.rerank_model
             candidate.metadata["rerank_provider"] = self.rerank_provider
-            base_prior = 1.0 - (candidate_rank / max(candidate_limit, 1)) * 0.25
+            base_score = self._normalize_result_score_for_blend(candidate)
+            candidate.metadata["base_score"] = round(float(base_score), 4)
             candidate.similarity_score = (
-                rerank_weight * float(rerank_score) + base_weight * base_prior
+                rerank_weight * float(rerank_score) + base_weight * base_score
             )
             reranked_candidates.append(candidate)
 
@@ -1317,17 +1407,59 @@ class KnowledgeSearch:
         reranked_candidates.extend(results[candidate_limit:])
         return reranked_candidates, True
 
+    @staticmethod
+    def _sanitize_rerank_text(text: str) -> str:
+        """Remove obvious transcription/analysis scaffolding before rerank."""
+        raw = normalize_knowledge_text(text)
+        if not raw:
+            return ""
+
+        dropped_prefixes = (
+            "okay, let's see",
+            "let's see",
+            "the user wants me to",
+            "so in markdown",
+            "let's format",
+            "text starts with",
+            "would be in chinese as well",
+        )
+        lines: List[str] = []
+        for line in raw.splitlines():
+            normalized_line = line.strip().lower()
+            if normalized_line.startswith(dropped_prefixes):
+                continue
+            lines.append(line)
+
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _normalize_result_texts(
+        *,
+        content: Optional[str],
+        summary: Optional[str],
+    ) -> Tuple[str, Optional[str]]:
+        normalized_content = normalize_knowledge_text(content)
+        normalized_summary = normalize_knowledge_text(summary)
+        if normalized_summary and normalized_summary == normalized_content:
+            normalized_summary = None
+        return normalized_content or str(content or ""), normalized_summary or None
+
     def _build_rerank_document(self, result: SearchResult) -> str:
         """Build compact rerank input text from chunk content and enrichment fields."""
-        parts = [result.content or ""]
+        parts = [self._sanitize_rerank_text(result.content or "")]
         if result.summary:
-            parts.append(f"Summary: {result.summary}")
+            parts.append(f"Summary: {self._sanitize_rerank_text(result.summary)}")
         if result.keywords:
             parts.append("Keywords: " + ", ".join(result.keywords))
 
         text = "\n".join(part.strip() for part in parts if part and part.strip())
         max_chars = max(int(self.rerank_doc_max_chars), 256)
         return text[:max_chars]
+
+    def _effective_rerank_doc_max_chars(self, candidate_limit: int) -> int:
+        """Return configured rerank document size without implicit extra truncation."""
+        del candidate_limit
+        return max(int(self.rerank_doc_max_chars), 256)
 
     def _call_rerank_api(
         self,
@@ -1365,22 +1497,25 @@ class KnowledgeSearch:
                 "documents": documents,
                 "top_n": len(documents),
             }
-            urls_to_try = [
-                f"{base_url.rstrip('/')}/v1/rerank",
-                f"{base_url.rstrip('/')}/rerank",
-                f"{base_url.rstrip('/')}/api/rerank",
-            ]
-            per_attempt_timeout = max(total_timeout / max(len(urls_to_try), 1), 1.0)
+            urls_to_try = build_api_url_candidates(base_url, "/rerank")
 
             last_error = None
-            for url in urls_to_try:
+            for attempt_index, url in enumerate(urls_to_try):
                 attempt_start = time.perf_counter()
+                attempt_timeout = (
+                    total_timeout
+                    if attempt_index == 0
+                    else min(
+                        max(total_timeout / 3.0, 1.0),
+                        3.0,
+                    )
+                )
                 try:
                     response = requests.post(
                         url,
                         json=payload,
                         headers=headers,
-                        timeout=per_attempt_timeout,
+                        timeout=attempt_timeout,
                     )
                     if response.status_code != 200:
                         last_error = f"{url} -> HTTP {response.status_code}: {response.text[:200]}"
@@ -1393,7 +1528,9 @@ class KnowledgeSearch:
                             "Rerank API call succeeded",
                             extra={
                                 "url": url,
-                                "elapsed_ms": round((time.perf_counter() - attempt_start) * 1000.0, 2),
+                                "elapsed_ms": round(
+                                    (time.perf_counter() - attempt_start) * 1000.0, 2
+                                ),
                                 "rerank_provider": self.rerank_provider,
                                 "result_count": len(parsed),
                             },
@@ -1410,7 +1547,7 @@ class KnowledgeSearch:
                     extra={
                         "error": last_error,
                         "total_timeout_seconds": total_timeout,
-                        "per_attempt_timeout_seconds": per_attempt_timeout,
+                        "per_attempt_timeout_seconds": total_timeout,
                         "backoff_seconds": self.rerank_failure_backoff_seconds,
                     },
                 )
@@ -1484,10 +1621,9 @@ class KnowledgeSearch:
 
             if doc_index < 0 or doc_index >= doc_count:
                 continue
-            parsed.append((doc_index, max(min(score, 1.0), 0.0)))
+            parsed.append((doc_index, score))
 
-        parsed.sort(key=lambda pair: pair[1], reverse=True)
-        return parsed
+        return normalize_rerank_scores(parsed)
 
     def _rerank_by_query_overlap(
         self,
@@ -1534,8 +1670,8 @@ class KnowledgeSearch:
             method = (result.search_method or "").lower()
             semantic_floor_applied = False
 
-            # Preserve semantic-only hits for cross-lingual queries where lexical overlap is zero.
-            if method == "vector" and overlap_score == 0.0:
+            # Preserve semantic-only hits for cross-lingual multi-term queries where lexical overlap is zero.
+            if method == "vector" and overlap_score == 0.0 and len(terms) >= 2:
                 semantic_floor = 0.88 * method_score + 0.12 * rank_prior
                 final_score = max(semantic_floor, method_score * 0.90)
                 semantic_floor_applied = True
@@ -1551,6 +1687,117 @@ class KnowledgeSearch:
 
         reranked.sort(key=lambda item: item.similarity_score, reverse=True)
         return reranked
+
+    @staticmethod
+    def _contains_literal_query_term(result: SearchResult, term: str) -> bool:
+        normalized_term = unicodedata.normalize("NFKC", (term or "")).strip().lower()
+        if len(normalized_term) < 2:
+            return False
+        haystack = " ".join(
+            [
+                str(result.content or ""),
+                str(result.summary or ""),
+                " ".join(result.keywords or []),
+            ]
+        ).lower()
+        return normalized_term in haystack
+
+    def _apply_short_query_precision_guard(
+        self,
+        *,
+        query: str,
+        query_terms: List[str],
+        bm25_results: List[SearchResult],
+        results: List[SearchResult],
+    ) -> List[SearchResult]:
+        """Drop weak semantic-only hits for literal short queries with no lexical support."""
+        if not results or bm25_results:
+            return results
+
+        normalized_query = unicodedata.normalize("NFKC", (query or "")).strip().lower()
+        if len(normalized_query) < 2:
+            return results
+
+        is_short_cjk_query = (
+            bool(_CJK_TOKEN_PATTERN.match(normalized_query)) and len(normalized_query) <= 4
+        )
+        is_short_single_token = " " not in normalized_query and len(normalized_query) <= 4
+        if not (is_short_cjk_query or is_short_single_token):
+            return results
+
+        literal_terms: List[str] = []
+        for candidate in [normalized_query, *query_terms]:
+            term = unicodedata.normalize("NFKC", str(candidate or "")).strip().lower()
+            if len(term) < 2 or term in literal_terms:
+                continue
+            literal_terms.append(term)
+
+        top_rerank_score = max(
+            float(dict(result.metadata or {}).get("rerank_score") or 0.0) for result in results
+        )
+        if top_rerank_score >= 0.03:
+            supported: List[SearchResult] = []
+            rerank_support_floor = max(top_rerank_score * 0.5, 0.02)
+            for result in results:
+                if any(self._contains_literal_query_term(result, term) for term in literal_terms):
+                    supported.append(result)
+                    continue
+
+                metadata = dict(result.metadata or {})
+                rerank_score = float(metadata.get("rerank_score") or 0.0)
+                if rerank_score < rerank_support_floor:
+                    continue
+
+                base_score = float(
+                    metadata.get("base_score")
+                    or self._normalize_result_score_for_blend(result)
+                    or 0.0
+                )
+                if base_score < 0.42:
+                    continue
+
+                result.similarity_score = max(
+                    float(result.similarity_score or 0.0), base_score * 0.9
+                )
+                supported.append(result)
+
+            if supported:
+                return supported
+
+        scored_by_base = [
+            (
+                result,
+                float(
+                    dict(result.metadata or {}).get("base_score")
+                    or self._normalize_result_score_for_blend(result)
+                    or 0.0
+                ),
+            )
+            for result in results
+        ]
+        scored_by_base.sort(key=lambda item: item[1], reverse=True)
+        if scored_by_base:
+            leader, leader_base = scored_by_base[0]
+            runner_up_base = scored_by_base[1][1] if len(scored_by_base) > 1 else 0.0
+            if leader_base >= 0.5 and (leader_base - runner_up_base) >= 0.03:
+                leader.similarity_score = max(
+                    float(leader.similarity_score or 0.0), leader_base * 0.9
+                )
+                return [leader]
+
+        guarded: List[SearchResult] = []
+        for result in results:
+            if any(self._contains_literal_query_term(result, term) for term in literal_terms):
+                guarded.append(result)
+                continue
+
+            metadata = dict(result.metadata or {})
+            rerank_score = float(metadata.get("rerank_score") or 0.0)
+            base_score = self._normalize_result_score_for_blend(result)
+            if max(rerank_score, base_score) >= 0.75:
+                guarded.append(result)
+
+        return guarded
 
     def _apply_permission_filter(
         self,
@@ -1576,19 +1823,21 @@ class KnowledgeSearch:
             # Convert SearchResults to dicts for the filter function
             result_dicts = []
             for r in results:
-                result_dicts.append({
-                    "chunk_id": r.chunk_id,
-                    "document_id": r.document_id,
-                    "owner_user_id": r.metadata.get("owner_user_id", search_filter.user_id),
-                    "access_level": r.metadata.get("access_level", "private"),
-                    "content": r.content,
-                    "similarity_score": r.similarity_score,
-                    "chunk_index": r.chunk_index,
-                    "metadata": r.metadata,
-                    "keywords": r.keywords,
-                    "summary": r.summary,
-                    "search_method": r.search_method,
-                })
+                result_dicts.append(
+                    {
+                        "chunk_id": r.chunk_id,
+                        "document_id": r.document_id,
+                        "owner_user_id": r.metadata.get("owner_user_id", search_filter.user_id),
+                        "access_level": r.metadata.get("access_level", "private"),
+                        "content": r.content,
+                        "similarity_score": r.similarity_score,
+                        "chunk_index": r.chunk_index,
+                        "metadata": r.metadata,
+                        "keywords": r.keywords,
+                        "summary": r.summary,
+                        "search_method": r.search_method,
+                    }
+                )
 
             current_user = CurrentUser(
                 user_id=search_filter.user_id,

@@ -1,116 +1,122 @@
-# User Memory Retrieval Configuration (Production)
+# User Memory Retrieval Configuration
 
 ## 1. Scope
 
-This document describes the reset-era runtime path for:
+This document describes the current reset-era user-memory retrieval stack for:
 
 - `user_memory_entries`
-- `user_memory_views` (`profile` / `episode`)
-- published skills that originated from approved `skill_proposals`
+- `user_memory_views`
+- runtime context injection
+- `/api/v1/user-memory*` query endpoints
 
-The reset architecture no longer uses a dedicated Milvus+rereank retrieval stack for user
-memory. User-memory runtime recall is now PostgreSQL-backed and view-aware.
+User-memory now runs on a hybrid pipeline:
 
-## 2. Runtime Retrieval Pipeline
+- PostgreSQL remains the source of truth for entries and views
+- Milvus stores the user-memory vector index
+- PostgreSQL FTS / trigram / structured filters provide lexical and symbolic retrieval
+- the final ranking path uses hybrid fusion and reranking
 
-At runtime, context assembly reads from three durable sources:
+## 2. Runtime Architecture
 
-1. `user_memory`
-2. `skills`
-3. `knowledge_base`
+Write path:
 
-`runtime_context.enable_user_memory`, `runtime_context.enable_skills`, and
-`runtime_context.enable_knowledge_base` independently gate those sources.
+1. `session ledger -> observations -> entries/views`
+2. the same transaction enqueues embedding jobs in `user_memory_embedding_jobs`
+3. the indexing worker writes entry/view embeddings into the active Milvus collection
 
-When `user_memory` is enabled, the retriever:
+Read path:
 
-1. queries `user_memory_views` for `profile` projections
-2. queries `user_memory_views` for `episode` projections
-3. queries `user_memory_entries` for atomic user facts
-4. scores candidates with lexical / heuristic matching in PostgreSQL
-5. applies `user_memory.retrieval.similarity_threshold`
-6. merges and truncates the final context set
+1. planner builds query variants, keyword terms, and structured filters
+2. semantic retrieval queries Milvus
+3. lexical retrieval queries PostgreSQL search indexes
+4. structured retrieval filters PostgreSQL metadata fields
+5. candidates are merged with reciprocal-rank fusion
+6. reranking applies model rerank when configured, otherwise heuristic rerank
+7. the final relevance gate applies `user_memory.retrieval.similarity_threshold`
 
-When `skills` is enabled, the runtime path reads published skills from the skill registry and
-uses the published proposal only as provenance / summary source. It no longer treats learned
-skills as a separate long-term memory view product.
+Cleanup path:
 
-## 3. What The Embedding Config Still Does
+- `backfill_user_memory_embeddings.py` builds the active collection
+- `reconcile_user_memory_embeddings.py` checks missing/orphan vectors
+- periodic vector cleanup runs reconcile + optional compaction
 
-`user_memory.embedding.*` no longer drives a user-memory Milvus index or runtime vector recall.
-User-memory runtime retrieval is PostgreSQL-only.
+## 3. Planner Modes
 
-That config still exists because the codebase has a shared embedding-resolution surface keyed by
-`user_memory`, and a few non-memory callers still reuse it for generic embedding generation (for
-example semantic skill similarity helpers). It should be treated as a shared embedding client
-configuration, not as a user-memory vector-search control surface.
+Runtime and API share the same hybrid core but use different planner policies.
 
-Priority for `user_memory.embedding.provider/model/dimension`:
+Runtime:
 
-1. `user_memory.embedding.*`
-2. if `user_memory.embedding.inherit_from_knowledge_base=true`, fallback to
-   `knowledge_base.embedding.*`
-3. fallback to `llm.embedding_provider` / `llm.default_provider`
+- `planner_mode=runtime_light`
+- deterministic planning only
+- no extra LLM call
+- no reflection
 
-The config API exposes:
+API:
 
-- configured values
-- `effective` resolved values
-- `sources` for provider / model / dimension
+- `planner_mode=api_full`
+- one optional LLM planning pass
+- up to one reflection round when enabled and worthwhile
+- `/api/v1/user-memory/profile` scopes retrieval to `view_type=user_profile`
+- `/api/v1/user-memory/episodes` scopes retrieval to `view_type=episode` and supplements with `fact_kind=event` when needed
 
-## 4. Active User-Memory Knobs
+Wildcard queries (`""` or `"*"`) bypass the full hybrid path and return recent active rows from PostgreSQL.
 
-These settings are still exposed in the current reset pipeline:
+## 4. Active Config Surface
 
-- `user_memory.embedding.provider`
-- `user_memory.embedding.model`
-- `user_memory.embedding.dimension`
-- `user_memory.embedding.batch_size`
-- `user_memory.embedding.inherit_from_knowledge_base`
+Canonical user-memory retrieval config:
+
+- `user_memory.embedding.*`
+- `user_memory.retrieval.hybrid_enabled`
 - `user_memory.retrieval.similarity_threshold`
-- `user_memory.extraction.provider`
-- `user_memory.extraction.model`
-- `user_memory.extraction.timeout_seconds`
-- `user_memory.extraction.max_facts`
-- `user_memory.extraction.max_preference_facts`
-- `user_memory.extraction.enable_heuristic_fallback`
-- `user_memory.extraction.secondary_recall_enabled`
-- `user_memory.extraction.failure_backoff_seconds`
+- `user_memory.retrieval.vector.*`
+- `user_memory.retrieval.lexical.*`
+- `user_memory.retrieval.structured.*`
+- `user_memory.retrieval.fusion.*`
+- `user_memory.retrieval.rerank.*`
+- `user_memory.retrieval.planner.*`
+- `user_memory.retrieval.reflection.*`
+- `user_memory.vector_indexing.*`
+- `user_memory.vector_cleanup.*`
+- `user_memory.extraction.*`
 - `user_memory.consolidation.*`
 - `session_ledger.*`
 - `runtime_context.enable_*`
 
-Skill-learning settings live under `skill_learning.extraction.*` and
-`skill_learning.publish_policy.*`.
+`GET /api/v1/user-memory/config` also returns:
 
-## 5. Removed User-Memory Knobs
+- `user_memory.indexState.activeCollection`
+- `user_memory.indexState.activeSignature`
+- `user_memory.indexState.buildState`
+- `user_memory.indexState.lastBackfillStartedAt`
+- `user_memory.indexState.lastBackfillCompletedAt`
+- `user_memory.indexState.lastReconcileAt`
+- `user_memory.indexState.reindexRequired`
 
-These reset-era user-memory fields are no longer part of the supported config surface:
+## 5. Removed Legacy Surface
 
-- `user_memory.retrieval.top_k`
+The API no longer exposes these legacy retrieval keys:
+
+- `user_memory.retrieval.legacy_fallback_enabled`
 - `user_memory.retrieval.strict_keyword_fallback`
-- `user_memory.retrieval.enable_reranking`
-- all `user_memory.retrieval.rerank_*`
-- `user_memory.retrieval.similarity_weight`
-- `user_memory.retrieval.recency_weight`
-- `user_memory.retrieval.milvus.*`
-- `user_memory.vector_cleanup.*`
-- `skill_learning.proposal_review.*`
-- `skill_learning.publish_policy.enabled`
-- `runtime_context.collection_retry_attempts`
-- `runtime_context.collection_retry_delay_seconds`
-- `runtime_context.search_timeout_seconds`
-- `runtime_context.delete_timeout_seconds`
+- flat rerank keys such as `user_memory.retrieval.rerank_provider`
+- nested `user_memory.retrieval.milvus.*`
 
-If these keys still exist in an old config file, they are leftover migration residue and should
-be removed.
+If these keys still exist in an older config file, the config endpoint canonicalizes them into the
+new hybrid structure and omits the legacy names from responses.
 
-## 6. API Surface
+## 6. Operational Scripts
 
-User-memory config API:
+Use these scripts for vector-index lifecycle management:
 
-- `GET /api/v1/user-memory/config`
-- `PUT /api/v1/user-memory/config` (admin only)
+- `backend/scripts/bootstrap_user_memory_vector_index.py`
+- `backend/scripts/backfill_user_memory_embeddings.py`
+- `backend/scripts/reconcile_user_memory_embeddings.py`
+- `backend/scripts/verify_user_memory_cutover.py`
 
-The response is intentionally canonicalized so the UI only shows the reset-era supported
-configuration surface.
+Recommended cutover sequence:
+
+1. bootstrap the active collection
+2. backfill embeddings
+3. run verify to compare hybrid retrieval against the recent-row baseline and inspect dry-run reconcile output
+4. deploy the application
+5. run reconcile daily during the first post-cutover week

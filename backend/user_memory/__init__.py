@@ -23,6 +23,10 @@ _EXPORTS = {
     "SessionLedgerService": ("user_memory.session_ledger_service", "SessionLedgerService"),
     "UserMemoryBuilder": ("user_memory.builder", "UserMemoryBuilder"),
     "UserMemoryRetriever": ("user_memory.retriever", "UserMemoryRetriever"),
+    "UserMemoryHybridRetriever": (
+        "user_memory.hybrid_retriever",
+        "UserMemoryHybridRetriever",
+    ),
     "SessionLedgerRetentionManager": (
         "user_memory.retention_manager",
         "SessionLedgerRetentionManager",
@@ -47,13 +51,25 @@ _EXPORTS = {
     "get_user_memory_projector": ("user_memory.projector", "get_user_memory_projector"),
     "get_user_memory_repository": ("user_memory.repository", "get_user_memory_repository"),
     "get_user_memory_retriever": ("user_memory.retriever", "get_user_memory_retriever"),
+    "get_user_memory_hybrid_retriever": (
+        "user_memory.hybrid_retriever",
+        "get_user_memory_hybrid_retriever",
+    ),
     "get_session_ledger_retention_manager": (
         "user_memory.retention_manager",
         "get_session_ledger_retention_manager",
     ),
+    "initialize_user_memory_indexing_worker": (
+        "user_memory.indexing_worker",
+        "initialize_user_memory_indexing_worker",
+    ),
     "initialize_session_ledger_retention_manager": (
         "user_memory.retention_manager",
         "initialize_session_ledger_retention_manager",
+    ),
+    "initialize_user_memory_vector_cleanup_manager": (
+        "user_memory.storage_cleanup",
+        "initialize_user_memory_vector_cleanup_manager",
     ),
     "load_session_ledger_retention_settings": (
         "user_memory.retention_manager",
@@ -67,13 +83,25 @@ _EXPORTS = {
         "user_memory.storage_cleanup",
         "prepare_user_memory_rows_for_user_deletion",
     ),
+    "reconcile_user_memory_vectors": (
+        "user_memory.storage_cleanup",
+        "reconcile_user_memory_vectors",
+    ),
     "run_session_ledger_retention_once": (
         "user_memory.retention_manager",
         "run_session_ledger_retention_once",
     ),
+    "shutdown_user_memory_indexing_worker": (
+        "user_memory.indexing_worker",
+        "shutdown_user_memory_indexing_worker",
+    ),
     "shutdown_session_ledger_retention_manager": (
         "user_memory.retention_manager",
         "shutdown_session_ledger_retention_manager",
+    ),
+    "shutdown_user_memory_vector_cleanup_manager": (
+        "user_memory.storage_cleanup",
+        "shutdown_user_memory_vector_cleanup_manager",
     ),
 }
 

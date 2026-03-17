@@ -115,20 +115,11 @@ def _memory_item_to_response(
     metadata["visibility"] = visibility
     metadata.setdefault("record_type", str(metadata.get("record_type") or memory_type))
     metadata.setdefault("memory_type", memory_type)
+    metadata = {key: value for key, value in metadata.items() if not str(key).startswith("_")}
 
     shared_with_user_ids = metadata.get("shared_with_user_ids", [])
     if not isinstance(shared_with_user_ids, list):
         shared_with_user_ids = []
-
-    for key in (
-        "_combined_score",
-        "_recency_score",
-        "_rerank_score",
-        "_rerank_blended_score",
-        "_rerank_provider",
-        "_rerank_model",
-    ):
-        metadata.pop(key, None)
 
     timestamp = getattr(item, "timestamp", None)
     created_at = (

@@ -17,6 +17,7 @@ from pymilvus import MilvusException
 
 from database.connection import get_db_session
 from database.models import KnowledgeChunk, KnowledgeItem
+from knowledge_base.text_normalizer import normalize_knowledge_text
 from memory_system.embedding_service import get_embedding_service
 from memory_system.milvus_connection import get_milvus_connection
 from shared.config import get_config
@@ -114,9 +115,9 @@ class KnowledgeIndexer:
                     self.embedding_service.generate_embeddings_batch(chunks)
                 return AwaitableIndexingResult(
                     {
-                    "success": True,
-                    "indexed_count": len(chunks),
-                    "knowledge_id": str(document_id),
+                        "success": True,
+                        "indexed_count": len(chunks),
+                        "knowledge_id": str(document_id),
                     }
                 )
 
@@ -149,8 +150,15 @@ class KnowledgeIndexer:
                 else:
                     normalized_metadata = normalized_metadata[: len(chunks)]
 
+            prepared_chunks = [
+                normalize_knowledge_text(chunk) or str(chunk or "") for chunk in chunks
+            ]
+            prepared_metadata = [
+                self._sanitize_chunk_metadata(meta) for meta in normalized_metadata
+            ]
+
             # Generate embeddings for all chunks
-            embeddings = self.embedding_service.generate_embeddings_batch(chunks)
+            embeddings = self.embedding_service.generate_embeddings_batch(prepared_chunks)
 
             # Prepare IDs for PostgreSQL chunks (Milvus uses auto_id)
             # Use uuid.UUID objects, not strings — SQLAlchemy UUID(as_uuid=True) needs exact type
@@ -160,12 +168,12 @@ class KnowledgeIndexer:
             # knowledge_id, chunk_index, embedding, content, owner_user_id, access_level, metadata
             entities = [
                 [document_id] * len(chunks),
-                [meta.get("chunk_index", i) for i, meta in enumerate(normalized_metadata)],
+                [meta.get("chunk_index", i) for i, meta in enumerate(prepared_metadata)],
                 embeddings,
-                chunks,
+                prepared_chunks,
                 [user_id] * len(chunks),
                 [access_level] * len(chunks),
-                [meta for meta in normalized_metadata],
+                [meta for meta in prepared_metadata],
             ]
 
             self._insert_and_flush_with_retry(document_id=document_id, entities=entities)
@@ -174,8 +182,8 @@ class KnowledgeIndexer:
             self._store_chunks_in_postgres(
                 document_id=document_id,
                 chunk_ids=ids,
-                chunks=chunks,
-                chunk_metadata=normalized_metadata,
+                chunks=prepared_chunks,
+                chunk_metadata=prepared_metadata,
             )
 
             indexing_time = time.time() - start_time
@@ -184,14 +192,14 @@ class KnowledgeIndexer:
                 "Knowledge indexed (dual)",
                 extra={
                     "document_id": document_id,
-                    "chunks": len(chunks),
+                    "chunks": len(prepared_chunks),
                     "time": indexing_time,
                 },
             )
 
             return IndexingResult(
                 document_id=document_id,
-                chunks_indexed=len(chunks),
+                chunks_indexed=len(prepared_chunks),
                 embeddings_generated=len(embeddings),
                 indexing_time=indexing_time,
             )
@@ -199,6 +207,41 @@ class KnowledgeIndexer:
         except Exception as e:
             logger.error(f"Knowledge indexing failed: {e}", exc_info=True)
             raise
+
+    @staticmethod
+    def _sanitize_chunk_metadata(meta: Optional[dict]) -> dict:
+        normalized = dict(meta or {})
+        summary = normalize_knowledge_text(normalized.get("summary"))
+        if summary:
+            normalized["summary"] = summary
+        elif "summary" in normalized:
+            normalized.pop("summary", None)
+
+        keywords = normalized.get("keywords")
+        if isinstance(keywords, list):
+            cleaned_keywords = []
+            for keyword in keywords:
+                cleaned = normalize_knowledge_text(keyword)
+                if cleaned and cleaned not in cleaned_keywords:
+                    cleaned_keywords.append(cleaned)
+            if cleaned_keywords:
+                normalized["keywords"] = cleaned_keywords
+            else:
+                normalized.pop("keywords", None)
+
+        questions = normalized.get("questions")
+        if isinstance(questions, list):
+            cleaned_questions = []
+            for question in questions:
+                cleaned = normalize_knowledge_text(question)
+                if cleaned and cleaned not in cleaned_questions:
+                    cleaned_questions.append(cleaned)
+            if cleaned_questions:
+                normalized["questions"] = cleaned_questions
+            else:
+                normalized.pop("questions", None)
+
+        return normalized
 
     def _insert_and_flush_with_retry(self, document_id: str, entities: List[list]) -> None:
         """Insert vectors and flush Milvus with retry/reconnect on transient failures."""

@@ -15,6 +15,11 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from llm_providers.base import BaseLLMProvider, EmbeddingResponse, LLMResponse
+from llm_providers.openai_compatible import (
+    build_api_url,
+    extract_chat_completion_content,
+    merge_extra_body,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +48,7 @@ class OpenAIProvider(BaseLLMProvider):
         # Use base_url as-is, don't modify it
         # User should provide the complete base URL including version path
         base_url = config.get("base_url", "https://api.openai.com/v1")
-        self.base_url = base_url.rstrip('/')
+        self.base_url = base_url.rstrip("/")
         self.api_key = config.get("api_key")
 
         # Backward compatible default:
@@ -54,7 +59,7 @@ class OpenAIProvider(BaseLLMProvider):
             require_api_key = "api.openai.com" in self.base_url
         if require_api_key and not self.api_key:
             raise ValueError("OpenAI API key is required")
-        
+
         self.timeout = config.get("timeout", 60)
         self.organization = config.get("organization")
         self.session: Optional[aiohttp.ClientSession] = None
@@ -66,14 +71,7 @@ class OpenAIProvider(BaseLLMProvider):
         OpenAI-compatible endpoints under `/v1/*`. Align with CustomOpenAIChat
         behavior so both agent runtime and memory extraction hit the same route.
         """
-        normalized_path = path if path.startswith("/") else f"/{path}"
-        base = self.base_url.rstrip("/")
-
-        if base.endswith(normalized_path):
-            return base
-        if base.endswith("/v1"):
-            return f"{base}{normalized_path}"
-        return f"{base}/v1{normalized_path}"
+        return build_api_url(self.base_url, path)
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session"""
@@ -110,7 +108,7 @@ class OpenAIProvider(BaseLLMProvider):
 
         Returns:
             LLMResponse with generated text
-            
+
         Note:
             Modern OpenAI-compatible APIs use /chat/completions endpoint.
             The legacy /completions endpoint is only used for specific completion models.
@@ -120,13 +118,19 @@ class OpenAIProvider(BaseLLMProvider):
         # Default to chat completions API (modern standard for OpenAI-compatible APIs)
         # Only use legacy completions API for specific models that require it
         use_chat_api = True
-        
+
         # Check if this is a legacy completion model (not a chat model)
         # These are rare and typically only in older OpenAI models
-        legacy_completion_models = ["text-davinci-003", "text-davinci-002", "text-curie-001", "text-babbage-001", "text-ada-001"]
+        legacy_completion_models = [
+            "text-davinci-003",
+            "text-davinci-002",
+            "text-curie-001",
+            "text-babbage-001",
+            "text-ada-001",
+        ]
         if any(legacy in model.lower() for legacy in legacy_completion_models):
             use_chat_api = False
-        
+
         if use_chat_api:
             # Use chat completions API (standard for all modern models)
             chat_url = self._build_api_url("/chat/completions")
@@ -140,7 +144,10 @@ class OpenAIProvider(BaseLLMProvider):
                 payload["max_tokens"] = max_tokens
                 payload["max_completion_tokens"] = max_tokens
 
-            payload.update(self._normalize_request_payload(kwargs))
+            normalized_kwargs = self._normalize_request_payload(kwargs)
+            extra_body = normalized_kwargs.pop("extra_body", None)
+            payload.update(normalized_kwargs)
+            payload = merge_extra_body(payload, extra_body)
 
             try:
                 request_ctx = await self._resolve_request_context(
@@ -149,7 +156,7 @@ class OpenAIProvider(BaseLLMProvider):
                 async with request_ctx as response:
                     response.raise_for_status()
                     data = await response.json()
-                    
+
                     # Handle wrapped response format (some proxies wrap the response)
                     # Example: {"output": "{...}", "request_tokens": 12, ...}
                     if "output" in data and isinstance(data["output"], str):
@@ -161,9 +168,7 @@ class OpenAIProvider(BaseLLMProvider):
                             parsed_output = json.loads(wrapped_output)
                             # If wrapped payload is already final model text/JSON result
                             # (not OpenAI `choices` envelope), surface it directly.
-                            if not (
-                                isinstance(parsed_output, dict) and "choices" in parsed_output
-                            ):
+                            if not (isinstance(parsed_output, dict) and "choices" in parsed_output):
                                 return LLMResponse(
                                     content=wrapped_output,
                                     model=model,
@@ -192,23 +197,10 @@ class OpenAIProvider(BaseLLMProvider):
                             )
 
                     choice = data.get("choices", [{}])[0]
-                    message = choice.get("message", {})
                     usage = data.get("usage", {})
-                    
-                    # Extract content - try multiple fields for compatibility
-                    # Some models put content in reasoning fields instead of plain "content".
-                    content = message.get("content", "")
-                    if not content:
-                        content = message.get("reasoning_content", "")
-                    if not content:
-                        content = message.get("reasoning", "")
-                    if not content:
-                        content = message.get("thinking", "")
-                    if not content:
-                        # Fallback to text field for completion-style responses
-                        content = message.get("text", "")
+                    content = extract_chat_completion_content(data)
                     if not content and usage.get("completion_tokens", 0) > 0:
-                        # Last-resort fallback for provider-specific formats.
+                        message = choice.get("message", {})
                         content = str(message)
 
                     return LLMResponse(
@@ -240,7 +232,10 @@ class OpenAIProvider(BaseLLMProvider):
             if max_tokens:
                 payload["max_tokens"] = max_tokens
 
-            payload.update(self._normalize_request_payload(kwargs))
+            normalized_kwargs = self._normalize_request_payload(kwargs)
+            extra_body = normalized_kwargs.pop("extra_body", None)
+            payload.update(normalized_kwargs)
+            payload = merge_extra_body(payload, extra_body)
 
             try:
                 request_ctx = await self._resolve_request_context(
@@ -321,7 +316,7 @@ class OpenAIProvider(BaseLLMProvider):
     async def list_models(self) -> List[str]:
         """
         List available OpenAI models.
-        
+
         Uses a fallback strategy:
         1. Try to fetch from /models endpoint
         2. If that fails, return models from configuration
@@ -336,10 +331,7 @@ class OpenAIProvider(BaseLLMProvider):
         # Strategy 1: Try to fetch from API
         try:
             request_ctx = await self._resolve_request_context(
-                session.get(
-                    models_url,
-                    timeout=aiohttp.ClientTimeout(total=5)
-                )
+                session.get(models_url, timeout=aiohttp.ClientTimeout(total=5))
             )
             async with request_ctx as response:
                 if response.status == 200:
@@ -353,14 +345,14 @@ class OpenAIProvider(BaseLLMProvider):
             logger.debug(f"OpenAI list models error: {e}")
         except Exception as e:
             logger.debug(f"Unexpected error listing OpenAI models: {e}")
-        
+
         # Strategy 2: Return configured models as fallback
         # First check available_models (from database)
         available_models = self.config.get("available_models", [])
         if available_models:
             logger.info(f"Using {len(available_models)} models from configuration")
             return available_models
-        
+
         # Then check models dict (from config.yaml)
         configured_models = self.config.get("models", {})
         if configured_models:
@@ -372,18 +364,18 @@ class OpenAIProvider(BaseLLMProvider):
             elif isinstance(configured_models, list):
                 # Format: ["model1", "model2"]
                 model_list = configured_models
-            
+
             if model_list:
                 logger.info(f"Using {len(model_list)} configured models (API fetch failed)")
                 return model_list
-        
+
         logger.warning("No models available from API or configuration")
         return []
 
     async def health_check(self) -> bool:
         """
         Check if OpenAI API is available.
-        
+
         Uses a two-tier strategy:
         1. Try GET /models endpoint (standard OpenAI API)
         2. If configured models exist, try a minimal chat request
@@ -398,10 +390,7 @@ class OpenAIProvider(BaseLLMProvider):
         # Strategy 1: Try /models endpoint
         try:
             request_ctx = await self._resolve_request_context(
-                session.get(
-                    models_url,
-                    timeout=aiohttp.ClientTimeout(total=3)
-                )
+                session.get(models_url, timeout=aiohttp.ClientTimeout(total=3))
             )
             async with request_ctx as response:
                 if response.status == 200:
@@ -409,10 +398,12 @@ class OpenAIProvider(BaseLLMProvider):
                     return True
                 # Log the failure for debugging
                 response_text = await response.text()
-                logger.debug(f"OpenAI /models endpoint returned {response.status}: {response_text[:200]}")
+                logger.debug(
+                    f"OpenAI /models endpoint returned {response.status}: {response_text[:200]}"
+                )
         except Exception as e:
             logger.debug(f"OpenAI /models endpoint failed: {e}")
-        
+
         # Strategy 2: If user has configured models, try a minimal chat request
         configured_models = self.config.get("models", {})
         if configured_models:
@@ -424,32 +415,34 @@ class OpenAIProvider(BaseLLMProvider):
                     test_model = configured_models[0]
                 else:
                     test_model = str(configured_models)
-                
+
                 test_payload = {
                     "model": test_model,
                     "messages": [{"role": "user", "content": "test"}],
                     "max_tokens": 1,
                     "max_completion_tokens": 1,
                 }
-                
+
                 request_ctx = await self._resolve_request_context(
                     session.post(
-                        chat_url,
-                        json=test_payload,
-                        timeout=aiohttp.ClientTimeout(total=3)
+                        chat_url, json=test_payload, timeout=aiohttp.ClientTimeout(total=3)
                     )
                 )
                 async with request_ctx as response:
                     # 200 = success, 400/422 = bad request but server is up
                     if response.status in [200, 400, 422]:
-                        logger.info(f"OpenAI health check passed via chat endpoint (status {response.status})")
+                        logger.info(
+                            f"OpenAI health check passed via chat endpoint (status {response.status})"
+                        )
                         return True
                     # Log the failure
                     response_text = await response.text()
-                    logger.warning(f"OpenAI chat endpoint returned {response.status}: {response_text[:200]}")
+                    logger.warning(
+                        f"OpenAI chat endpoint returned {response.status}: {response_text[:200]}"
+                    )
             except Exception as e:
                 logger.debug(f"OpenAI chat endpoint test failed: {e}")
-        
+
         logger.warning(f"OpenAI health check failed: all strategies exhausted")
         return False
 

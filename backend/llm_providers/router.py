@@ -23,8 +23,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from llm_providers.anthropic_provider import AnthropicProvider
 from llm_providers.base import BaseLLMProvider, EmbeddingResponse, LLMResponse, TaskType
+from llm_providers.openai_compatible import model_names_match
 from llm_providers.ollama_provider import OllamaProvider
 from llm_providers.openai_provider import OpenAIProvider
+from llm_providers.provider_resolver import resolve_provider
 from llm_providers.vllm_provider import VLLMProvider
 
 logger = logging.getLogger(__name__)
@@ -33,7 +35,7 @@ logger = logging.getLogger(__name__)
 class LLMRouter:
     """
     Routes LLM requests to appropriate providers with lazy loading.
-    
+
     Architecture:
     - No pre-loading: Providers created on first use
     - Database priority: User configs override system defaults
@@ -53,7 +55,7 @@ class LLMRouter:
                 - max_retries: Maximum retry attempts (default: 3)
                 - retry_delay: Initial retry delay in seconds (default: 1)
                 - cache_ttl: Provider cache TTL in seconds (default: 300, 0 to disable)
-        
+
         Provider Priority:
         1. Database (user-configured via UI) - Always checked first
         2. Config.yaml (system defaults) - Fallback only
@@ -65,6 +67,7 @@ class LLMRouter:
         self.max_retries = config.get("max_retries", 3)
         self.retry_delay = config.get("retry_delay", 1)
         self.cache_ttl = config.get("cache_ttl", 300)  # 5 minutes default
+        self.default_provider = str(config.get("default_provider", "") or "").strip() or None
 
         # Provider cache: {provider_name: (provider_instance, timestamp)}
         self._provider_cache: Dict[str, tuple[BaseLLMProvider, float]] = {}
@@ -72,15 +75,16 @@ class LLMRouter:
 
         # Token usage tracking
         self.token_usage: Dict[str, int] = {}
-        
+
         # Config.yaml providers (read-only system defaults)
         self._config_providers = config.get("providers", {})
         self.providers = self._config_providers
-        
+
         logger.info("=" * 70)
         logger.info("LLMRouter initialized with LAZY LOADING architecture")
         logger.info("- Cache TTL: %ds (0 = disabled)", self.cache_ttl)
         logger.info("- Config.yaml providers: %s", list(self._config_providers.keys()))
+        logger.info("- Default provider: %s", self.default_provider or "<none>")
         logger.info("- Prefer config providers: %s", self.prefer_config_providers)
         logger.info("- Database providers: Loaded on-demand")
         logger.info("- No pre-loading: Providers created when first used")
@@ -89,16 +93,16 @@ class LLMRouter:
     async def _get_provider(self, provider_name: str) -> Optional[BaseLLMProvider]:
         """
         Get provider instance with lazy loading and optional caching.
-        
+
         Flow:
         1. Check cache (if enabled and not expired)
         2. Load from database (user config)
         3. Load from config.yaml (system default)
         4. Cache result (if caching enabled)
-        
+
         Args:
             provider_name: Name of the provider
-            
+
         Returns:
             Provider instance or None if not found
         """
@@ -107,18 +111,18 @@ class LLMRouter:
             if self.cache_ttl > 0 and provider_name in self._provider_cache:
                 provider, timestamp = self._provider_cache[provider_name]
                 age = time.time() - timestamp
-                
+
                 if age < self.cache_ttl:
                     logger.debug(f"Cache HIT: {provider_name} (age: {age:.1f}s)")
                     return provider
                 else:
                     logger.debug(f"Cache EXPIRED: {provider_name} (age: {age:.1f}s)")
                     del self._provider_cache[provider_name]
-            
+
             # Load provider fresh from database or config
             logger.info(f"Loading provider: {provider_name}")
             provider = await self._load_provider(provider_name)
-            
+
             if provider:
                 # Cache if enabled
                 if self.cache_ttl > 0:
@@ -128,18 +132,18 @@ class LLMRouter:
                     logger.info(f"✓ Loaded (no cache): {provider_name}")
             else:
                 logger.warning(f"✗ Provider not found: {provider_name}")
-            
+
             return provider
-    
+
     async def _load_provider(self, provider_name: str) -> Optional[BaseLLMProvider]:
         """
         Load provider from database only.
-        
+
         Config.yaml providers are synced to database on startup.
-        
+
         Args:
             provider_name: Name of the provider
-            
+
         Returns:
             Provider instance or None
         """
@@ -153,16 +157,18 @@ class LLMRouter:
         try:
             from database.connection import get_db_session
             from llm_providers.db_manager import ProviderDBManager
-            
+
             with get_db_session() as db:
                 db_manager = ProviderDBManager(db)
                 db_provider = db_manager.get_provider(provider_name)
-                
+
                 if db_provider and db_provider.enabled:
                     logger.info(f"  → Loading from DATABASE: {provider_name}")
                     return await self._create_provider_from_db(db_provider, db_manager)
                 else:
-                    logger.warning(f"  → Provider '{provider_name}' not found or disabled in database")
+                    logger.warning(
+                        f"  → Provider '{provider_name}' not found or disabled in database"
+                    )
         except Exception as e:
             logger.error(f"  → Database load failed: {e}")
 
@@ -172,7 +178,7 @@ class LLMRouter:
             return self._create_provider_from_config(provider_name, provider_config)
 
         return None
-    
+
     async def _create_provider_from_db(self, db_provider, db_manager) -> Optional[BaseLLMProvider]:
         """Create provider instance from database model."""
         try:
@@ -188,7 +194,7 @@ class LLMRouter:
                 "available_models": db_provider.models or [],
                 "require_api_key": require_api_key,
             }
-            
+
             # Add models
             if db_provider.models:
                 provider_config["models"] = {
@@ -196,13 +202,13 @@ class LLMRouter:
                     "embedding": db_provider.models[0],
                     "code": db_provider.models[0],
                 }
-            
+
             # Decrypt API key
             if db_provider.api_key_encrypted:
                 decrypted_key = db_manager._decrypt_api_key(db_provider.api_key_encrypted)
                 if decrypted_key:
                     provider_config["api_key"] = decrypted_key
-            
+
             # Create provider by protocol
             if db_provider.protocol == "ollama":
                 return OllamaProvider(provider_config)
@@ -211,12 +217,14 @@ class LLMRouter:
             else:
                 logger.error(f"Unknown protocol: {db_provider.protocol}")
                 return None
-                
+
         except Exception as e:
             logger.error(f"Failed to create provider from DB: {e}", exc_info=True)
             return None
-    
-    def _create_provider_from_config(self, provider_name: str, provider_config: Dict[str, Any]) -> Optional[BaseLLMProvider]:
+
+    def _create_provider_from_config(
+        self, provider_name: str, provider_config: Dict[str, Any]
+    ) -> Optional[BaseLLMProvider]:
         """Create provider instance from config.yaml."""
         try:
             if provider_name == "ollama":
@@ -237,26 +245,26 @@ class LLMRouter:
     async def list_all_providers(self) -> List[str]:
         """
         List all available provider names from database only.
-        
+
         Config.yaml providers are synced to database on startup.
-        
+
         Returns:
             List of enabled provider names from database
         """
         providers = set(self._config_providers.keys())
-        
+
         # Get providers from database only
         try:
             from database.connection import get_db_session
             from llm_providers.db_manager import ProviderDBManager
-            
+
             with get_db_session() as db:
                 db_manager = ProviderDBManager(db)
                 db_providers = db_manager.list_providers()
                 providers.update(p.name for p in db_providers if p.enabled)
         except Exception as e:
             logger.warning(f"Failed to list database providers: {e}")
-        
+
         return sorted(providers)
 
     def select_model_for_task(self, task_type: TaskType) -> Tuple[Optional[str], Optional[str]]:
@@ -269,21 +277,69 @@ class LLMRouter:
         return str(provider_name), str(model_name)
 
     def _track_token_usage(self, provider: str, tokens_used: int) -> None:
-        self.token_usage[str(provider)] = self.token_usage.get(str(provider), 0) + int(tokens_used or 0)
+        self.token_usage[str(provider)] = self.token_usage.get(str(provider), 0) + int(
+            tokens_used or 0
+        )
+
+    @staticmethod
+    def _provider_models(provider_cfg: Dict[str, Any]) -> List[str]:
+        models = provider_cfg.get("models") or provider_cfg.get("available_models") or []
+        if isinstance(models, dict):
+            models = list(models.values())
+        if isinstance(models, str):
+            models = [models]
+        return [str(model).strip() for model in models if str(model).strip()]
+
+    def _provider_supports_model(self, provider_name: str, model_name: Optional[str]) -> bool:
+        requested_model = str(model_name or "").strip()
+        if not requested_model:
+            return True
+        provider_cfg = resolve_provider(provider_name)
+        provider_models = self._provider_models(provider_cfg)
+        if not provider_models:
+            return False
+        return any(model_names_match(requested_model, candidate) for candidate in provider_models)
+
+    async def _select_provider_for_request(self, model_name: Optional[str]) -> str:
+        provider_names = await self.list_all_providers()
+        if not provider_names:
+            raise ValueError("No providers available")
+
+        requested_model = str(model_name or "").strip()
+        default_provider = (
+            self.default_provider if self.default_provider in provider_names else None
+        )
+
+        if requested_model:
+            if default_provider and self._provider_supports_model(
+                default_provider, requested_model
+            ):
+                return default_provider
+            for provider_name in provider_names:
+                if self._provider_supports_model(provider_name, requested_model):
+                    return provider_name
+            logger.warning(
+                "No provider advertises requested model; fallback to default selection",
+                extra={"model": requested_model, "default_provider": default_provider},
+            )
+
+        if default_provider:
+            return default_provider
+        return provider_names[0]
 
     async def health_check_all(self) -> Dict[str, bool]:
         """
         Check health of all available providers.
-        
+
         Note: This loads all providers on-demand to check health.
         Use sparingly as it may be expensive.
-        
+
         Returns:
             Dict mapping provider name to health status
         """
         provider_names = await self.list_all_providers()
         health_status = {}
-        
+
         # Check health concurrently
         async def check_one(name: str) -> tuple[str, bool]:
             try:
@@ -295,25 +351,25 @@ class LLMRouter:
             except Exception as e:
                 logger.error(f"Health check failed for {name}: {e}")
                 return (name, False)
-        
+
         results = await asyncio.gather(*[check_one(name) for name in provider_names])
         health_status = dict(results)
-        
+
         return health_status
 
     async def list_available_models(self) -> Dict[str, List[str]]:
         """
         List available models for all providers.
-        
+
         Note: This loads all providers on-demand.
         Use sparingly as it may be expensive.
-        
+
         Returns:
             Dict mapping provider name to list of models
         """
         provider_names = await self.list_all_providers()
         models_dict = {}
-        
+
         # List models concurrently
         async def list_one(name: str) -> tuple[str, List[str]]:
             try:
@@ -325,10 +381,10 @@ class LLMRouter:
             except Exception as e:
                 logger.error(f"List models failed for {name}: {e}")
                 return (name, [])
-        
+
         results = await asyncio.gather(*[list_one(name) for name in provider_names])
         models_dict = dict(results)
-        
+
         return models_dict
 
     async def generate(
@@ -342,9 +398,9 @@ class LLMRouter:
     ) -> LLMResponse:
         """
         Generate text completion.
-        
+
         Provider is loaded on-demand when this method is called.
-        
+
         Args:
             prompt: Input prompt
             provider: Provider name (optional, auto-selected if not provided)
@@ -352,7 +408,7 @@ class LLMRouter:
             temperature: Sampling temperature
             max_tokens: Maximum tokens
             **kwargs: Additional parameters
-            
+
         Returns:
             LLMResponse
         """
@@ -369,28 +425,25 @@ class LLMRouter:
 
         # Auto-select provider if not specified
         if not provider:
-            provider_names = await self.list_all_providers()
-            if not provider_names:
-                raise ValueError("No providers available")
-            provider = provider_names[0]  # Use first available
-        
+            provider = await self._select_provider_for_request(model)
+
         # Load provider on-demand
         provider_instance = await self._get_provider(provider)
         if not provider_instance:
             raise ValueError(f"Provider '{provider}' not available")
-        
+
         # Generate
         response = await provider_instance.generate(
             prompt=prompt,
             model=model or "default",
             temperature=temperature,
             max_tokens=max_tokens,
-            **kwargs
+            **kwargs,
         )
-        
+
         # Track token usage
         self._track_token_usage(str(provider), int(response.tokens_used or 0))
-        
+
         return response
 
     def get_token_usage(self) -> Dict[str, int]:
@@ -450,11 +503,13 @@ def get_llm_provider(config: Optional[Dict[str, Any]] = None) -> LLMRouter:
     if _llm_router is None:
         if config is None:
             from shared.config import get_config
+
             cfg = get_config()
             config = {
                 "providers": cfg.get("llm.providers", {}),
                 "model_mapping": cfg.get("llm.model_mapping", {}),
                 "fallback_enabled": cfg.get("llm.fallback_enabled", False),
+                "default_provider": cfg.get("llm.default_provider", ""),
                 "max_retries": cfg.get("llm.max_retries", 3),
                 "retry_delay": cfg.get("llm.retry_delay", 1),
                 "cache_ttl": cfg.get("llm.cache_ttl", 300),

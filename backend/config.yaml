@@ -454,22 +454,46 @@ user_memory:
     batch_size: 32
     inherit_from_knowledge_base: true
   retrieval:
-    top_k: 10
+    hybrid_enabled: true
     similarity_threshold: 0.3
-    strict_keyword_fallback: true
-    enable_reranking: true
-    rerank_provider: xinference
-    rerank_model: bge-reranker-v2-m3
-    rerank_top_k: 30
-    rerank_weight: 0.75
-    rerank_timeout_seconds: 8
-    rerank_failure_backoff_seconds: 30
-    rerank_doc_max_chars: 1200
-    similarity_weight: 0.7
-    recency_weight: 0.3
-    milvus:
-      metric_type: L2
-      nprobe: 10
+    vector:
+      candidate_top_k: 40
+      collection_prefix: user_memory_embeddings_v2
+      metric_type: IP
+      nprobe: 16
+    lexical:
+      enabled: true
+      top_k: 30
+      fts_enabled: true
+      trigram_enabled: true
+    structured:
+      enabled: true
+      top_k: 20
+    fusion:
+      method: rrf
+      rrf_k: 60
+    rerank:
+      enabled: true
+      provider: xinference
+      model: bge-reranker-v2-m3
+      top_k: 30
+      weight: 0.75
+      timeout_seconds: 8
+      failure_backoff_seconds: 30
+      doc_max_chars: 1200
+    planner:
+      runtime_mode: light
+      api_mode: full
+      provider: ''
+      model: ''
+      timeout_seconds: 4
+      failure_backoff_seconds: 60
+      max_query_variants: 3
+    reflection:
+      enabled_api: true
+      max_rounds: 1
+      min_results: 3
+      min_score: 0.45
   extraction:
     enabled: true
     model_enabled: true
@@ -493,6 +517,25 @@ user_memory:
     use_advisory_lock: true
   observability:
     enable_quality_counters: true
+  vector_indexing:
+    enabled: true
+    run_on_startup: true
+    startup_delay_seconds: 10
+    poll_interval_seconds: 5
+    batch_size: 32
+    stale_lock_seconds: 900
+    max_attempts: 8
+    retry_backoff_seconds: 30
+  vector_cleanup:
+    enabled: true
+    run_on_startup: true
+    startup_delay_seconds: 300
+    interval_seconds: 21600
+    dry_run: false
+    batch_size: 500
+    compact_on_cycle: true
+    advisory_lock_id: 73012023
+    use_advisory_lock: true
 skill_learning:
   retention:
     enabled: true
@@ -575,7 +618,7 @@ knowledge_base:
     vision_timeout_seconds: 120
     output_language: zh-CN
   embedding:
-    provider: ollama
+    provider: xinference
     model: bge-m3
     dimension: 1024
   enrichment:

@@ -19,6 +19,7 @@ from knowledge_base.config_utils import load_knowledge_base_config
 from knowledge_base.document_chunker import ChunkingStrategy, get_document_chunker
 from knowledge_base.knowledge_indexer import get_knowledge_indexer
 from knowledge_base.processing_queue import JobStatus, ProcessingQueue, get_processing_queue
+from knowledge_base.text_normalizer import normalize_knowledge_text
 from knowledge_base.text_extractors import get_extractor
 from object_storage.minio_client import get_minio_client
 from shared.config import get_config
@@ -230,6 +231,7 @@ class DocumentProcessorWorker:
 
             # Step 1: Parse / extract text
             text = self._extract_text(temp_path, job.mime_type)
+            text = normalize_knowledge_text(text) or text
             if not text or not text.strip():
                 raise ValueError(
                     "No extractable text was found in the document. "

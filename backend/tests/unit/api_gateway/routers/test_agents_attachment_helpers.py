@@ -426,7 +426,8 @@ def test_extract_user_preference_signals_keeps_explicit_food_like_signal() -> No
 
     signals = _extract_user_preference_signals(turns)
     assert any(
-        item["key"] == "food_preference_like"
+        item["key"].startswith("preference_")
+        and item["semantic_key"] == "food_preference_like"
         and item["value"] == "黄焖鸡"
         and item["strong_signal"] is True
         for item in signals
@@ -445,7 +446,8 @@ def test_extract_user_preference_signals_keeps_explicit_food_avoid_signal() -> N
 
     signals = _extract_user_preference_signals(turns)
     assert any(
-        item["key"] == "food_preference_avoid"
+        item["key"].startswith("preference_")
+        and item["semantic_key"] == "food_preference_avoid"
         and item["value"] == "花生"
         and item["strong_signal"] is True
         for item in signals
@@ -470,13 +472,15 @@ def test_extract_user_preference_signals_keeps_relationship_and_experience_facts
         for item in signals
     )
     assert any(
-        item["key"].startswith("experience_background_")
+        item["key"].startswith("experience_")
+        and item["semantic_key"] == "experience_background"
         and item["value"] == "电商运营"
         and item["fact_kind"] == "experience"
         for item in signals
     )
     assert any(
-        item["key"].startswith("skill_strength_")
+        item["key"].startswith("skill_")
+        and item["semantic_key"] == "skill_strength"
         and item["value"] == "SQL"
         and item["fact_kind"] == "skill"
         for item in signals
@@ -494,7 +498,8 @@ def test_extract_user_preference_signals_keeps_timed_event_facts() -> None:
 
     signals = _extract_user_preference_signals(turns)
     assert any(
-        item["key"].startswith("important_event_")
+        item["key"].startswith("event_2024_8_")
+        and item["semantic_key"] == "important_event"
         and item["value"] == "搬到了杭州"
         and item["fact_kind"] == "event"
         and item["event_time"] == "2024年8月"
@@ -557,7 +562,8 @@ def test_normalize_llm_user_preference_signals_keeps_single_turn_high_confidence
 
     normalized = _normalize_llm_user_preference_signals(items, turn_ts_map)
     assert len(normalized) == 1
-    assert normalized[0]["key"] == "food_preference_like"
+    assert normalized[0]["key"].startswith("preference_")
+    assert normalized[0]["semantic_key"] == "food_preference_like"
     assert normalized[0]["value"] == "冒菜和可乐"
     assert normalized[0]["latest_ts"] == "2026-02-25T10:00:00+00:00"
 
@@ -583,9 +589,76 @@ def test_normalize_llm_user_preference_signals_preserves_user_fact_atom_fields()
     normalized = _normalize_llm_user_preference_signals(items, turn_ts_map)
     assert len(normalized) == 1
     assert normalized[0]["fact_kind"] == "relationship"
+    assert normalized[0]["semantic_key"] == "relationship_spouse"
+    assert normalized[0]["identity_signature"] == "relationship|spouse|王敏"
     assert normalized[0]["canonical_statement"] == "用户的配偶是王敏"
     assert normalized[0]["predicate"] == "spouse"
     assert normalized[0]["persons"] == ["王敏"]
+
+
+def test_normalize_llm_user_preference_signals_normalizes_relative_event_date() -> None:
+    turn_ts_map = {1: "2026-03-16T10:00:00+00:00"}
+    items = [
+        {
+            "fact_kind": "event",
+            "key": "event_dining_plan",
+            "value": "用户明天将和小陈一起去吃汉堡",
+            "event_time": "明天",
+            "persistent": False,
+            "explicit_source": True,
+            "confidence": 0.93,
+            "evidence_turns": [1],
+        }
+    ]
+
+    normalized = _normalize_llm_user_preference_signals(items, turn_ts_map)
+
+    assert len(normalized) == 1
+    assert normalized[0]["event_time"] == "2026-03-17"
+
+
+def test_normalize_llm_user_preference_signals_skips_ephemeral_relative_relationship() -> None:
+    turn_ts_map = {1: "2026-03-16T10:00:00+00:00"}
+    items = [
+        {
+            "fact_kind": "relationship",
+            "key": "relationship_acquaintance_xiaochen",
+            "value": "小陈",
+            "canonical_statement": "用户明天将和小陈一起外出",
+            "predicate": "associate",
+            "object": "小陈",
+            "persistent": True,
+            "explicit_source": True,
+            "confidence": 0.95,
+            "evidence_turns": [1],
+        }
+    ]
+
+    normalized = _normalize_llm_user_preference_signals(items, turn_ts_map)
+
+    assert normalized == []
+
+
+def test_normalize_llm_user_preference_signals_skips_generic_relationship_without_predicate() -> (
+    None
+):
+    turn_ts_map = {1: "2026-03-16T13:53:30+00:00"}
+    items = [
+        {
+            "fact_kind": "relationship",
+            "key": "relationship_friend_xiaochen",
+            "value": "小陈",
+            "canonical_statement": "用户与小陈是朋友或同伴关系",
+            "persistent": True,
+            "explicit_source": True,
+            "confidence": 0.91,
+            "evidence_turns": [1],
+        }
+    ]
+
+    normalized = _normalize_llm_user_preference_signals(items, turn_ts_map)
+
+    assert normalized == []
 
 
 def test_normalize_llm_agent_candidates_keeps_reusable_candidate() -> None:
@@ -776,7 +849,10 @@ async def test_extract_session_memory_signals_runs_secondary_preference_recall(
         call["kwargs"]["response_format"]["type"] == "json_object" for call in fake_router.calls
     )
     assert any(
-        item["key"] == "food_preference_like" and item["value"] == "黄焖鸡" for item in signals
+        item["key"].startswith("preference_")
+        and item["semantic_key"] == "food_preference_like"
+        and item["value"] == "黄焖鸡"
+        for item in signals
     )
     assert candidates == []
 
@@ -1024,6 +1100,66 @@ async def test_call_llm_for_memory_json_timeout_invalidates_provider_cache() -> 
         )
 
     assert router.invalidated == ["aliyun-bl"]
+
+
+@pytest.mark.asyncio
+async def test_call_llm_for_memory_json_extracts_json_from_mixed_content() -> None:
+    class FakeRouter:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def generate(self, **kwargs):  # noqa: ANN003
+            self.calls.append(kwargs)
+            return SimpleNamespace(
+                content=(
+                    "Thinking Process: 先分析需要提取哪些事实。\n"
+                    '{"user_preferences":[{"key":"food_preference_like","value":"黄焖鸡",'
+                    '"persistent":true,"explicit_source":true,"confidence":0.9,'
+                    '"evidence_turns":[1]}],"skill_proposals":[]}'
+                )
+            )
+
+    fake_router = FakeRouter()
+    parsed, parse_meta = await _call_llm_for_memory_json(
+        llm_router=fake_router,
+        prompt="测试抽取",
+        provider="vllm",
+        model="Qwen3.5-35B-A3B-FP8",
+    )
+
+    assert len(fake_router.calls) == 1
+    assert fake_router.calls[0]["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+    assert parse_meta["parse_status"] == "ok"
+    assert parse_meta["thinking_control_applied"] is True
+    assert isinstance(parsed.get("user_preferences"), list)
+
+
+@pytest.mark.asyncio
+async def test_call_llm_for_memory_json_retries_without_thinking_control_when_unsupported() -> None:
+    class FakeRouter:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def generate(self, **kwargs):  # noqa: ANN003
+            self.calls.append(kwargs)
+            if "extra_body" in kwargs:
+                raise ValueError("chat_template_kwargs unsupported")
+            return SimpleNamespace(content='{"user_preferences":[],"skill_proposals":[]}')
+
+    fake_router = FakeRouter()
+    parsed, parse_meta = await _call_llm_for_memory_json(
+        llm_router=fake_router,
+        prompt="测试抽取",
+        provider="vllm",
+        model="Qwen3.5-35B-A3B-FP8",
+    )
+
+    assert len(fake_router.calls) == 2
+    assert "extra_body" in fake_router.calls[0]
+    assert "extra_body" not in fake_router.calls[1]
+    assert parse_meta["parse_status"] == "ok"
+    assert parse_meta["thinking_control_applied"] is False
+    assert parsed == {"user_preferences": [], "skill_proposals": []}
 
 
 def test_extract_skill_proposals_requires_step_structure() -> None:

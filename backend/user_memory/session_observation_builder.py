@@ -7,11 +7,16 @@ import hashlib
 import json
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent_framework.agent_registry import get_agent_registry
 from shared.logging import get_logger
+from user_memory.fact_identity import (
+    build_user_fact_identity,
+    build_user_fact_semantic_key,
+    normalize_fact_kind as normalize_user_fact_kind,
+)
 from user_memory.session_ledger_repository import (
     MemoryProjectionData,
     MemoryObservationData,
@@ -30,6 +35,58 @@ _SESSION_MEMORY_LLM_PROMPT_MAX_CHARS = 14000
 _SESSION_MEMORY_LLM_ATTEMPT_TIMEOUT_SECONDS = 4.0
 _SESSION_MEMORY_FAILURE_BACKOFF_SECONDS = 60.0
 _SESSION_MEMORY_EXTRACTION_FAIL_UNTIL: Dict[str, float] = {}
+_RELATIVE_DAY_OFFSETS = {
+    "前天": -2,
+    "昨天": -1,
+    "今日": 0,
+    "今天": 0,
+    "今晚": 0,
+    "今早": 0,
+    "明早": 1,
+    "明晚": 1,
+    "明天": 1,
+    "后天": 2,
+}
+_RELATIVE_TEMPORAL_CUES = (
+    "今天",
+    "今日",
+    "今晚",
+    "今早",
+    "明天",
+    "明早",
+    "明晚",
+    "后天",
+    "昨天",
+    "前天",
+    "下周",
+    "下个月",
+    "近期",
+    "最近",
+)
+_GENERIC_RELATIONSHIP_PREDICATES = {
+    "associate",
+    "acquaintance",
+    "companion",
+    "contact",
+    "friend",
+    "teammate",
+    "coworker",
+    "colleague",
+}
+_GENERIC_RELATIONSHIP_EXPLICIT_CUES = (
+    "我的朋友",
+    "我朋友",
+    "是我朋友",
+    "我的同事",
+    "我同事",
+    "是我同事",
+    "我的同学",
+    "我同学",
+    "是我同学",
+    "我的搭档",
+    "我搭档",
+    "是我搭档",
+)
 
 _PERSISTENT_PREFERENCE_CUES = (
     "以后",
@@ -139,11 +196,6 @@ _RELATIONSHIP_CANONICAL_LABELS = {
     "daughter": "女儿",
     "child": "孩子",
 }
-_GENERIC_MULTI_VALUED_FACT_KEYS = {
-    "experience_background",
-    "skill_strength",
-    "long_term_goal",
-}
 _USER_FACT_KIND_TITLE = {
     "preference": "User preference",
     "identity": "User identity",
@@ -167,6 +219,29 @@ def _to_positive_int(value: Any) -> Optional[int]:
 
 class SessionObservationBuilder:
     """Canonical session-memory extraction and projection builder."""
+
+    @staticmethod
+    def _iter_json_object_candidates(text: str) -> List[str]:
+        raw = str(text or "")
+        if not raw:
+            return []
+        decoder = json.JSONDecoder()
+        candidates: List[str] = []
+        seen: set[str] = set()
+        for index, char in enumerate(raw):
+            if char != "{":
+                continue
+            try:
+                parsed, end_index = decoder.raw_decode(raw[index:])
+            except Exception:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            candidate = raw[index : index + end_index].strip()
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                candidates.append(candidate)
+        return candidates
 
     @staticmethod
     def normalize_text(text: Any, max_chars: int = _SESSION_MEMORY_ITEM_MAX_CHARS) -> str:
@@ -213,6 +288,80 @@ class SessionObservationBuilder:
         except ValueError:
             return None
 
+    @staticmethod
+    def _normalize_reference_datetime(value: Any) -> Optional[datetime]:
+        parsed = SessionObservationBuilder.parse_iso_datetime(value)
+        if parsed is None:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _contains_relative_temporal_cue(*values: Any) -> bool:
+        text = " ".join(str(value or "") for value in values)
+        if not text:
+            return False
+        return any(cue in text for cue in _RELATIVE_TEMPORAL_CUES)
+
+    @classmethod
+    def _normalize_relative_event_time(
+        cls,
+        event_time: Optional[str],
+        reference_ts: Optional[str],
+    ) -> Optional[str]:
+        normalized = cls.normalize_text(event_time or "", max_chars=64) or None
+        if not normalized:
+            return None
+        if normalized not in _RELATIVE_DAY_OFFSETS:
+            return normalized
+
+        reference_dt = cls._normalize_reference_datetime(reference_ts)
+        if reference_dt is None:
+            return normalized
+
+        absolute_day = reference_dt.date() + timedelta(days=_RELATIVE_DAY_OFFSETS[normalized])
+        return absolute_day.isoformat()
+
+    @classmethod
+    def _looks_like_ephemeral_relationship_signal(
+        cls,
+        *,
+        semantic_key: str,
+        predicate: Optional[str],
+        value: str,
+        canonical_statement: str,
+        event_time: Optional[str],
+    ) -> bool:
+        if event_time:
+            return False
+        relation_key = cls.normalize_text(
+            predicate or semantic_key.replace("relationship_", ""),
+            max_chars=64,
+        )
+        if relation_key not in _RELATIONSHIP_CANONICAL_LABELS and "_" in relation_key:
+            relation_prefix = relation_key.split("_", 1)[0].strip()
+            if relation_prefix:
+                relation_key = relation_prefix
+        if relation_key in _RELATIONSHIP_CANONICAL_LABELS:
+            return False
+        if relation_key not in _GENERIC_RELATIONSHIP_PREDICATES:
+            return False
+
+        combined_text = " ".join(
+            part for part in (value, canonical_statement) if isinstance(part, str) and part.strip()
+        )
+        if any(cue in combined_text for cue in _GENERIC_RELATIONSHIP_EXPLICIT_CUES):
+            return False
+
+        # Generic relationships inferred from a single interaction are too noisy to persist.
+        if "用户与" in combined_text and "关系" in combined_text:
+            return True
+
+        return cls._contains_relative_temporal_cue(combined_text) and any(
+            cue in combined_text for cue in ("一起", "外出", "去", "赴约")
+        )
+
     @classmethod
     def extract_json_object_from_text(cls, text: str) -> Optional[Dict[str, Any]]:
         parsed, _ = cls.extract_json_object_from_text_with_meta(text)
@@ -250,6 +399,9 @@ class SessionObservationBuilder:
         block_match = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", raw, flags=re.IGNORECASE)
         if block_match:
             _add_candidate("code_fence", block_match.group(1))
+
+        for candidate in cls._iter_json_object_candidates(raw):
+            _add_candidate("json_object_scan", candidate)
 
         left = raw.find("{")
         right = raw.rfind("}")
@@ -419,10 +571,6 @@ class SessionObservationBuilder:
                 break
         return normalized
 
-    @staticmethod
-    def _hash_fact_value(value: str) -> str:
-        return hashlib.sha1(str(value or "").encode("utf-8")).hexdigest()[:10]
-
     @classmethod
     def _extract_event_location(cls, value: str) -> Optional[str]:
         text = str(value or "").strip()
@@ -456,20 +604,7 @@ class SessionObservationBuilder:
         return "重要事件"
 
     def _normalize_user_fact_kind(self, value: Any) -> str:
-        kind = self.normalize_memory_key(value, max_chars=32) or "preference"
-        if kind in {
-            "preference",
-            "identity",
-            "relationship",
-            "experience",
-            "skill",
-            "goal",
-            "constraint",
-            "habit",
-            "event",
-        }:
-            return kind
-        return "preference"
+        return normalize_user_fact_kind(value)
 
     def _stabilize_user_fact_key(
         self,
@@ -478,12 +613,11 @@ class SessionObservationBuilder:
         value: str,
         fact_kind: str,
     ) -> str:
-        normalized_key = self.normalize_memory_key(key, max_chars=80) or "user_fact"
-        if fact_kind in {"event", "experience", "skill", "goal"}:
-            return f"{normalized_key}_{self._hash_fact_value(value)}"
-        if normalized_key in _GENERIC_MULTI_VALUED_FACT_KEYS:
-            return f"{normalized_key}_{self._hash_fact_value(value)}"
-        return normalized_key
+        return build_user_fact_identity(
+            fact_kind=fact_kind,
+            raw_key=key,
+            value=value,
+        ).fact_key
 
     def _build_user_fact_canonical_statement(
         self,
@@ -612,14 +746,21 @@ class SessionObservationBuilder:
         topic: Optional[str] = None,
     ) -> Dict[str, Any]:
         builder = cls()
-        stable_key = builder._stabilize_user_fact_key(
-            key=semantic_key,
-            value=value,
+        identity = build_user_fact_identity(
             fact_kind=fact_kind,
+            raw_key=semantic_key,
+            value=value,
+            predicate=predicate,
+            obj=obj,
+            persons=persons,
+            entities=entities,
+            event_time=event_time,
+            location=location,
+            topic=topic,
         )
         canonical_statement = builder._build_user_fact_canonical_statement(
             fact_kind=fact_kind,
-            semantic_key=semantic_key,
+            semantic_key=identity.semantic_key,
             value=value,
             predicate=predicate,
             obj=obj,
@@ -627,8 +768,9 @@ class SessionObservationBuilder:
             topic=topic,
         )
         return {
-            "key": stable_key,
-            "semantic_key": semantic_key,
+            "key": identity.fact_key,
+            "semantic_key": identity.semantic_key,
+            "identity_signature": identity.identity_signature,
             "value": value,
             "fact_kind": fact_kind,
             "canonical_statement": canonical_statement,
@@ -731,7 +873,7 @@ user_facts 覆盖范围:
 - 同一次会话里如果存在多条有效事实，必须全部提取，不要只保留 1 条。
 - `canonical_statement` 必须是脱离上下文也能读懂的完整陈述；不要用“他/她/这个/那个/昨天/上周”。
 - 如果用户说了明确时间，优先转为绝对时间或绝对日期。
-- `key` 使用英文 snake_case，且要尽量具体，避免所有经历都叫同一个 key。
+- 不要生成 durable key，系统会根据结构化槽位生成稳定 identity。
 - 如无有效项，返回空数组。
 
 高优先级规则:
@@ -756,7 +898,6 @@ skill_proposals 规则:
   "user_facts": [
     {{
       "fact_kind": "preference|relationship|experience|skill|goal|constraint|event|identity|habit",
-      "key": "snake_case",
       "value": "简短明确",
       "canonical_statement": "完整、自包含的事实陈述",
       "predicate": "可选，关系或动作谓词",
@@ -797,7 +938,6 @@ ASSISTANT: 收到
   "user_facts": [
     {{
       "fact_kind": "relationship",
-      "key": "relationship_spouse",
       "value": "王敏",
       "canonical_statement": "用户的配偶是王敏",
       "predicate": "spouse",
@@ -811,7 +951,6 @@ ASSISTANT: 收到
     }},
     {{
       "fact_kind": "experience",
-      "key": "experience_ecommerce_operations",
       "value": "做过电商运营",
       "canonical_statement": "用户做过电商运营",
       "persistent": true,
@@ -822,7 +961,6 @@ ASSISTANT: 收到
     }},
     {{
       "fact_kind": "skill",
-      "key": "skill_sql",
       "value": "SQL",
       "canonical_statement": "用户擅长SQL",
       "persistent": true,
@@ -833,7 +971,6 @@ ASSISTANT: 收到
     }},
     {{
       "fact_kind": "event",
-      "key": "moved_to_hangzhou_2024_08",
       "value": "用户搬到了杭州",
       "canonical_statement": "2024年8月用户搬到了杭州",
       "event_time": "2024-08",
@@ -891,7 +1028,7 @@ ASSISTANT: 收到
 - 一次性临时要求（如“这次导出 PDF”）不抽取。
 - 同一会话若有多条有效画像事实，应全部提取。
 - `canonical_statement` 必须是完整、自包含的陈述；若存在明确时间，转成绝对时间/日期。
-- key 必须是英文 snake_case；value 必须简短。
+- 不要生成 durable key，系统会根据结构化槽位生成稳定 identity；value 必须简短。
 - 如无有效项，返回空数组。
 - 若出现明确陈述（如“我喜欢吃黄焖鸡/我擅长SQL/我做过运营/我老婆叫王敏”），不得漏提。
 
@@ -900,7 +1037,6 @@ ASSISTANT: 收到
   "user_facts": [
     {{
       "fact_kind": "preference|relationship|experience|skill|goal|constraint|event|identity|habit",
-      "key": "snake_case",
       "value": "简短明确",
       "canonical_statement": "完整事实陈述",
       "predicate": "可选",
@@ -929,7 +1065,6 @@ ASSISTANT: 收到
   "user_facts": [
     {{
       "fact_kind": "preference",
-      "key": "food_preference_like",
       "value": "黄焖鸡",
       "canonical_statement": "用户喜欢吃黄焖鸡",
       "persistent": true,
@@ -940,7 +1075,6 @@ ASSISTANT: 收到
     }},
     {{
       "fact_kind": "experience",
-      "key": "experience_background",
       "value": "做过前端开发",
       "canonical_statement": "用户做过前端开发",
       "persistent": true,
@@ -951,7 +1085,6 @@ ASSISTANT: 收到
     }},
     {{
       "fact_kind": "skill",
-      "key": "skill_strength",
       "value": "SQL",
       "canonical_statement": "用户擅长SQL",
       "persistent": true,
@@ -984,6 +1117,50 @@ ASSISTANT: 收到
             "unknown field",
         )
         return any(cue in message for cue in unsupported_cues)
+
+    @staticmethod
+    def _is_thinking_control_not_supported_error(error: Exception) -> bool:
+        message = str(error or "").lower()
+        if not message:
+            return False
+        field_cues = ("chat_template_kwargs", "enable_thinking")
+        unsupported_cues = (
+            "unsupported",
+            "unexpected keyword argument",
+            "extra fields not permitted",
+            "unknown field",
+            "not allowed",
+        )
+        return any(field in message for field in field_cues) and any(
+            cue in message for cue in unsupported_cues
+        )
+
+    @staticmethod
+    def _should_disable_thinking(
+        *,
+        provider: Optional[str],
+        model: Optional[str],
+    ) -> bool:
+        provider_name = str(provider or "").strip().lower()
+        model_name = str(model or "").strip().lower()
+        if provider_name == "vllm":
+            return True
+        return "qwen" in model_name
+
+    @classmethod
+    def _build_reasoning_control_kwargs(
+        cls,
+        *,
+        provider: Optional[str],
+        model: Optional[str],
+    ) -> Dict[str, Any]:
+        if not cls._should_disable_thinking(provider=provider, model=model):
+            return {}
+        return {
+            "extra_body": {
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+        }
 
     @staticmethod
     def _coerce_positive_timeout_seconds(value: Any, *, default: float) -> float:
@@ -1042,28 +1219,60 @@ ASSISTANT: 收到
             response_mode: str,
             fallback_triggered: bool,
         ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-            kwargs = dict(base_kwargs)
+            timeout_limit = max(float(timeout_seconds), 0.5)
+            base_request_kwargs = dict(base_kwargs)
             if with_response_format:
-                kwargs["response_format"] = {"type": "json_object"}
-            try:
-                response = await asyncio.wait_for(
-                    llm_router.generate(**kwargs),
-                    timeout=max(float(timeout_seconds), 0.5),
-                )
-            except asyncio.TimeoutError as timeout_error:
-                await self._invalidate_timed_out_llm_provider(
-                    llm_router=llm_router,
-                    provider_name=provider,
-                )
-                raise TimeoutError(
-                    f"session_memory_extraction_timeout_{max(float(timeout_seconds), 0.5):.1f}s"
-                ) from timeout_error
+                base_request_kwargs["response_format"] = {"type": "json_object"}
+
+            reasoning_control_kwargs = self._build_reasoning_control_kwargs(
+                provider=provider,
+                model=model,
+            )
+            request_variants = []
+            if reasoning_control_kwargs:
+                request_variants.append((True, reasoning_control_kwargs))
+            request_variants.append((False, {}))
+
+            last_error: Optional[Exception] = None
+            response: Any = None
+            thinking_control_applied = False
+            for use_reasoning_control, extra_kwargs in request_variants:
+                kwargs = dict(base_request_kwargs)
+                kwargs.update(extra_kwargs)
+                try:
+                    response = await asyncio.wait_for(
+                        llm_router.generate(**kwargs),
+                        timeout=timeout_limit,
+                    )
+                    thinking_control_applied = use_reasoning_control
+                    break
+                except asyncio.TimeoutError as timeout_error:
+                    await self._invalidate_timed_out_llm_provider(
+                        llm_router=llm_router,
+                        provider_name=provider,
+                    )
+                    raise TimeoutError(
+                        f"session_memory_extraction_timeout_{timeout_limit:.1f}s"
+                    ) from timeout_error
+                except Exception as generate_error:
+                    last_error = generate_error
+                    if use_reasoning_control and self._is_thinking_control_not_supported_error(
+                        generate_error
+                    ):
+                        continue
+                    raise
+
+            if response is None:
+                if last_error is not None:
+                    raise last_error
+                raise ValueError("session_memory_extraction_no_response")
             raw_content = str(getattr(response, "content", "") or "")
             parsed_payload, parse_meta = self.extract_json_object_from_text_with_meta(raw_content)
             parse_meta.update(
                 {
                     "response_mode": response_mode,
                     "fallback_triggered": fallback_triggered,
+                    "thinking_control_applied": thinking_control_applied,
                 }
             )
             return parsed_payload or {}, parse_meta
@@ -1118,15 +1327,12 @@ ASSISTANT: 收到
             if not isinstance(raw, dict):
                 continue
             fact_kind = self._normalize_user_fact_kind(raw.get("fact_kind"))
-            semantic_key = self.normalize_memory_key(raw.get("key"), max_chars=80)
+            # Compatibility-only semantic hint. Durable identity still comes from
+            # server-side slot normalization, not the model-provided key.
+            semantic_hint = self.normalize_memory_key(raw.get("key"), max_chars=80)
             value = self.normalize_text(raw.get("value", ""), max_chars=120)
-            if not semantic_key or not value:
+            if not value:
                 continue
-            key = self._stabilize_user_fact_key(
-                key=semantic_key,
-                value=value,
-                fact_kind=fact_kind,
-            )
 
             confidence = self.coerce_confidence(raw.get("confidence"), default=0.72)
             if confidence < _SESSION_MEMORY_LLM_MIN_PREFERENCE_CONFIDENCE:
@@ -1175,11 +1381,22 @@ ASSISTANT: 收到
             reason = self.normalize_text(raw.get("reason", ""), max_chars=200)
             predicate = self.normalize_text(raw.get("predicate", ""), max_chars=48) or None
             obj = self.normalize_text(raw.get("object", ""), max_chars=120) or None
-            event_time = self.normalize_text(raw.get("event_time", ""), max_chars=64) or None
+            event_time = self._normalize_relative_event_time(
+                self.normalize_text(raw.get("event_time", ""), max_chars=64) or None,
+                latest_turn_ts,
+            )
             location = self.normalize_text(raw.get("location", ""), max_chars=96) or None
             topic = self.normalize_text(raw.get("topic", ""), max_chars=72) or None
             persons = self._normalize_string_list(raw.get("persons"), max_items=8, max_chars=48)
             entities = self._normalize_string_list(raw.get("entities"), max_items=8, max_chars=48)
+            semantic_key = build_user_fact_semantic_key(
+                fact_kind=fact_kind,
+                raw_key=semantic_hint,
+                predicate=predicate,
+                obj=obj,
+                topic=topic,
+                value=value,
+            )
             canonical_statement = self._build_user_fact_canonical_statement(
                 fact_kind=fact_kind,
                 semantic_key=semantic_key,
@@ -1190,10 +1407,32 @@ ASSISTANT: 收到
                 event_time=event_time,
                 topic=topic,
             )
+            if fact_kind == "relationship" and self._looks_like_ephemeral_relationship_signal(
+                semantic_key=semantic_key,
+                predicate=predicate,
+                value=value,
+                canonical_statement=canonical_statement,
+                event_time=event_time,
+            ):
+                continue
+            identity = build_user_fact_identity(
+                fact_kind=fact_kind,
+                raw_key=semantic_hint,
+                value=value,
+                canonical_statement=canonical_statement,
+                predicate=predicate,
+                obj=obj,
+                persons=persons,
+                entities=entities,
+                event_time=event_time,
+                location=location,
+                topic=topic,
+            )
             extracted.append(
                 {
-                    "key": key,
-                    "semantic_key": semantic_key,
+                    "key": identity.fact_key,
+                    "semantic_key": identity.semantic_key,
+                    "identity_signature": identity.identity_signature,
                     "value": value,
                     "fact_kind": fact_kind,
                     "canonical_statement": canonical_statement,
@@ -2205,6 +2444,7 @@ ASSISTANT: 收到
                         "semantic_key": semantic_key,
                         "fact_value": value,
                         "fact_kind": fact_kind,
+                        "identity_signature": signal.get("identity_signature"),
                         "canonical_statement": canonical_statement,
                         "predicate": signal.get("predicate"),
                         "object": signal.get("object"),
@@ -2244,6 +2484,7 @@ ASSISTANT: 收到
                             "semantic_key": semantic_key,
                             "value": value,
                             "fact_kind": fact_kind,
+                            "identity_signature": signal.get("identity_signature"),
                             "canonical_statement": canonical_statement,
                             "predicate": signal.get("predicate"),
                             "object": signal.get("object"),
@@ -2286,6 +2527,7 @@ ASSISTANT: 收到
                             "semantic_key": semantic_key,
                             "value": value,
                             "fact_kind": fact_kind,
+                            "identity_signature": signal.get("identity_signature"),
                             "canonical_statement": canonical_statement,
                             "predicate": signal.get("predicate"),
                             "object": signal.get("object"),

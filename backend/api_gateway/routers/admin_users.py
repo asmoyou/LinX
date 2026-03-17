@@ -475,9 +475,13 @@ async def delete_user(
             "username": username,
             "deleted_by": current_user.user_id,
             "user_memory_entries_deleted": len((user_memory_cleanup or {}).get("entry_ids") or []),
+            "user_memory_relations_deleted": (user_memory_cleanup or {}).get("memory_relations"),
             "user_memory_views_deleted": (user_memory_cleanup or {}).get("memory_views"),
             "skill_proposals_deleted": (user_memory_cleanup or {}).get("skill_proposals"),
             "session_ledgers_deleted": (user_memory_cleanup or {}).get("session_ledgers"),
+            "user_memory_vector_delete_job_enqueued": (
+                user_memory_cleanup or {}
+            ).get("vector_delete_job_enqueued"),
         },
     )
 

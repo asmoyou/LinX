@@ -21,7 +21,53 @@ _RESET_CONFIG_DEFAULTS: Dict[str, Dict[str, Any]] = {
             "inherit_from_knowledge_base": True,
         },
         "retrieval": {
+            "hybrid_enabled": True,
             "similarity_threshold": 0.3,
+            "vector": {
+                "candidate_top_k": 40,
+                "collection_prefix": "user_memory_embeddings_v2",
+                "metric_type": "IP",
+                "nprobe": 16,
+            },
+            "lexical": {
+                "enabled": True,
+                "top_k": 30,
+                "fts_enabled": True,
+                "trigram_enabled": True,
+            },
+            "structured": {
+                "enabled": True,
+                "top_k": 20,
+            },
+            "fusion": {
+                "method": "rrf",
+                "rrf_k": 60,
+            },
+            "rerank": {
+                "enabled": True,
+                "provider": "",
+                "model": "",
+                "top_k": 30,
+                "weight": 0.75,
+                "timeout_seconds": 8,
+                "failure_backoff_seconds": 30,
+                "doc_max_chars": 1200,
+            },
+            "planner": {
+                "runtime_mode": "light",
+                "api_mode": "full",
+                "provider": "",
+                "model": "",
+                "timeout_seconds": 4,
+                "failure_backoff_seconds": 60,
+                "max_query_variants": 3,
+            },
+            "reflection": {
+                "enabled_api": True,
+                "max_rounds": 1,
+                "min_results": 3,
+                "min_score": 0.45,
+            },
         },
         "extraction": {
             "provider": "",
@@ -45,6 +91,27 @@ _RESET_CONFIG_DEFAULTS: Dict[str, Dict[str, Any]] = {
         },
         "observability": {
             "enable_quality_counters": True,
+        },
+        "vector_indexing": {
+            "enabled": True,
+            "run_on_startup": True,
+            "startup_delay_seconds": 10,
+            "poll_interval_seconds": 5,
+            "batch_size": 32,
+            "stale_lock_seconds": 900,
+            "max_attempts": 8,
+            "retry_backoff_seconds": 30,
+        },
+        "vector_cleanup": {
+            "enabled": True,
+            "run_on_startup": True,
+            "startup_delay_seconds": 300,
+            "interval_seconds": 21600,
+            "dry_run": False,
+            "batch_size": 500,
+            "compact_on_cycle": True,
+            "advisory_lock_id": 73012023,
+            "use_advisory_lock": True,
         },
     },
     "skill_learning": {
@@ -197,6 +264,8 @@ def _stored_user_memory_section_from_payload(payload: Dict[str, Any]) -> Dict[st
         },
         "consolidation": _dict_section(user_memory_payload.get("consolidation")),
         "observability": _dict_section(user_memory_payload.get("observability")),
+        "vector_indexing": _dict_section(user_memory_payload.get("vector_indexing")),
+        "vector_cleanup": _dict_section(user_memory_payload.get("vector_cleanup")),
     }
 
 
@@ -240,6 +309,8 @@ def _build_memory_config_payload(
     user_memory_extraction_cfg = _dict_section(user_memory_cfg.get("extraction"))
     user_memory_consolidation_cfg = _dict_section(user_memory_cfg.get("consolidation"))
     user_memory_observability_cfg = _dict_section(user_memory_cfg.get("observability"))
+    user_memory_vector_indexing_cfg = _dict_section(user_memory_cfg.get("vector_indexing"))
+    user_memory_vector_cleanup_cfg = _dict_section(user_memory_cfg.get("vector_cleanup"))
 
     skill_learning_extraction_cfg = _dict_section(skill_learning_cfg.get("extraction"))
     skill_learning_publish_cfg = _dict_section(skill_learning_cfg.get("publish_policy"))
@@ -247,20 +318,89 @@ def _build_memory_config_payload(
     user_memory_embedding = _deep_merge(
         user_memory_defaults["embedding"], user_memory_embedding_cfg
     )
-    user_memory_retrieval = {
-        "similarity_threshold": max(
-            0.0,
-            float(
-                user_memory_retrieval_cfg.get("similarity_threshold")
-                or user_memory_defaults["retrieval"]["similarity_threshold"]
-            ),
+    retrieval_defaults = user_memory_defaults["retrieval"]
+    legacy_milvus_cfg = _dict_section(user_memory_retrieval_cfg.get("milvus"))
+    user_memory_retrieval = _deep_merge(retrieval_defaults, user_memory_retrieval_cfg)
+    user_memory_retrieval["similarity_threshold"] = max(
+        0.0,
+        float(
+            user_memory_retrieval_cfg.get("similarity_threshold")
+            or retrieval_defaults["similarity_threshold"]
+        ),
+    )
+    user_memory_retrieval["vector"] = _deep_merge(
+        retrieval_defaults["vector"],
+        _dict_section(user_memory_retrieval_cfg.get("vector")),
+    )
+    if legacy_milvus_cfg:
+        user_memory_retrieval["vector"]["metric_type"] = str(
+            legacy_milvus_cfg.get("metric_type") or user_memory_retrieval["vector"]["metric_type"]
         )
-    }
+        user_memory_retrieval["vector"]["nprobe"] = int(
+            legacy_milvus_cfg.get("nprobe") or user_memory_retrieval["vector"]["nprobe"]
+        )
+    user_memory_retrieval["lexical"] = _deep_merge(
+        retrieval_defaults["lexical"],
+        _dict_section(user_memory_retrieval_cfg.get("lexical")),
+    )
+    user_memory_retrieval["structured"] = _deep_merge(
+        retrieval_defaults["structured"],
+        _dict_section(user_memory_retrieval_cfg.get("structured")),
+    )
+    user_memory_retrieval["fusion"] = _deep_merge(
+        retrieval_defaults["fusion"],
+        _dict_section(user_memory_retrieval_cfg.get("fusion")),
+    )
+    legacy_rerank_enabled = user_memory_retrieval_cfg.get("enable_reranking")
+    user_memory_retrieval["rerank"] = _deep_merge(
+        retrieval_defaults["rerank"],
+        _dict_section(user_memory_retrieval_cfg.get("rerank")),
+    )
+    if legacy_rerank_enabled is not None:
+        user_memory_retrieval["rerank"]["enabled"] = bool(legacy_rerank_enabled)
+    for source_key, target_key in (
+        ("rerank_provider", "provider"),
+        ("rerank_model", "model"),
+        ("rerank_top_k", "top_k"),
+        ("rerank_weight", "weight"),
+        ("rerank_timeout_seconds", "timeout_seconds"),
+        ("rerank_failure_backoff_seconds", "failure_backoff_seconds"),
+        ("rerank_doc_max_chars", "doc_max_chars"),
+    ):
+        if source_key in user_memory_retrieval_cfg:
+            user_memory_retrieval["rerank"][target_key] = user_memory_retrieval_cfg.get(source_key)
+    user_memory_retrieval["planner"] = _deep_merge(
+        retrieval_defaults["planner"],
+        _dict_section(user_memory_retrieval_cfg.get("planner")),
+    )
+    user_memory_retrieval["reflection"] = _deep_merge(
+        retrieval_defaults["reflection"],
+        _dict_section(user_memory_retrieval_cfg.get("reflection")),
+    )
+    for legacy_key in (
+        "legacy_fallback_enabled",
+        "milvus",
+        "enable_reranking",
+        "rerank_provider",
+        "rerank_model",
+        "rerank_top_k",
+        "rerank_weight",
+        "rerank_timeout_seconds",
+        "rerank_failure_backoff_seconds",
+        "rerank_doc_max_chars",
+    ):
+        user_memory_retrieval.pop(legacy_key, None)
     user_memory_consolidation = _deep_merge(
         user_memory_defaults["consolidation"], user_memory_consolidation_cfg
     )
     user_memory_observability = _deep_merge(
         user_memory_defaults["observability"], user_memory_observability_cfg
+    )
+    user_memory_vector_indexing = _deep_merge(
+        user_memory_defaults["vector_indexing"], user_memory_vector_indexing_cfg
+    )
+    user_memory_vector_cleanup = _deep_merge(
+        user_memory_defaults["vector_cleanup"], user_memory_vector_cleanup_cfg
     )
     skill_learning_publish = _deep_merge(
         skill_learning_defaults["publish_policy"], skill_learning_publish_cfg
@@ -312,6 +452,22 @@ def _build_memory_config_payload(
         int(skill_learning_defaults["extraction"]["max_proposals"]),
     )
 
+    from user_memory.vector_index import (
+        get_user_memory_vector_index_state,
+        user_memory_vector_reindex_required,
+    )
+
+    index_state = get_user_memory_vector_index_state()
+    index_state_payload = {
+        "activeCollection": index_state.get("active_collection"),
+        "activeSignature": index_state.get("active_signature"),
+        "buildState": index_state.get("build_state"),
+        "lastBackfillStartedAt": index_state.get("last_backfill_started_at"),
+        "lastBackfillCompletedAt": index_state.get("last_backfill_completed_at"),
+        "lastReconcileAt": index_state.get("last_reconcile_at"),
+        "reindexRequired": user_memory_vector_reindex_required(),
+    }
+
     return {
         "user_memory": {
             "embedding": embedding_payload,
@@ -319,6 +475,9 @@ def _build_memory_config_payload(
             "extraction": user_memory_extraction,
             "consolidation": user_memory_consolidation,
             "observability": user_memory_observability,
+            "vector_indexing": user_memory_vector_indexing,
+            "vector_cleanup": user_memory_vector_cleanup,
+            "indexState": index_state_payload,
         },
         "skill_learning": {
             "extraction": skill_learning_extraction,

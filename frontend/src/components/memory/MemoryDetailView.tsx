@@ -44,12 +44,15 @@ const parseFacts = (memory: MemoryRecord): MemoryFact[] => {
       value: entry.value.trim(),
     }));
 
-  const sopTitleValue = parsed.find((entry) => entry.key === "interaction.sop.title")?.value;
+  const sopTitleValue = parsed.find(
+    (entry) => entry.key === "interaction.sop.title",
+  )?.value;
   const shouldDropSopTopic = Boolean(
     sopTitleValue &&
-      parsed.some(
-        (entry) => entry.key === "interaction.sop.topic" && entry.value === sopTitleValue,
-      ),
+    parsed.some(
+      (entry) =>
+        entry.key === "interaction.sop.topic" && entry.value === sopTitleValue,
+    ),
   );
 
   const uniqueFacts: MemoryFact[] = [];
@@ -72,7 +75,10 @@ const parseFacts = (memory: MemoryRecord): MemoryFact[] => {
   return uniqueFacts;
 };
 
-const getMetadataText = (memory: MemoryRecord, ...candidates: string[]): string | undefined => {
+const getMetadataText = (
+  memory: MemoryRecord,
+  ...candidates: string[]
+): string | undefined => {
   const metadata = memory.metadata;
   if (!metadata || typeof metadata !== "object") {
     return undefined;
@@ -86,7 +92,10 @@ const getMetadataText = (memory: MemoryRecord, ...candidates: string[]): string 
   return undefined;
 };
 
-const getMetadataNumber = (memory: MemoryRecord, ...candidates: string[]): number | undefined => {
+const getMetadataNumber = (
+  memory: MemoryRecord,
+  ...candidates: string[]
+): number | undefined => {
   const metadata = memory.metadata;
   if (!metadata || typeof metadata !== "object") {
     return undefined;
@@ -175,7 +184,9 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
   const [isEditing, setIsEditing] = useState(false);
   const [editSummary, setEditSummary] = useState(() => memory?.summary || "");
   const [editContent, setEditContent] = useState(() => memory?.content || "");
-  const [editTags, setEditTags] = useState(() => (memory?.tags || []).join(", "));
+  const [editTags, setEditTags] = useState(() =>
+    (memory?.tags || []).join(", "),
+  );
   const [reindexAfterSave, setReindexAfterSave] = useState(true);
 
   if (!isOpen || !memory) return null;
@@ -184,8 +195,16 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
   const goalId = getMetadataText(memory, "goalId", "goal_id");
   const documentId = getMetadataText(memory, "documentId", "document_id");
   const memoryTier = getMetadataText(memory, "memoryTier", "memory_tier");
-  const importanceLevel = getMetadataText(memory, "importanceLevel", "importance_level");
-  const importanceScore = getMetadataNumber(memory, "importanceScore", "importance_score");
+  const importanceLevel = getMetadataText(
+    memory,
+    "importanceLevel",
+    "importance_level",
+  );
+  const importanceScore = getMetadataNumber(
+    memory,
+    "importanceScore",
+    "importance_score",
+  );
   const metadataPresent =
     !!memory.metadata &&
     typeof memory.metadata === "object" &&
@@ -245,7 +264,12 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
       case "skill_proposal":
         return t("memory.tabs.skillProposal", { defaultValue: "技能提案" });
       case "user_memory":
-        return t("memory.tabs.userMemory", { defaultValue: "用户记忆" });
+        return memory.userName
+          ? t("memory.card.userMemoryOwner", {
+              defaultValue: "{{name}} 的记忆",
+              name: memory.userName,
+            })
+          : t("memory.tabs.userMemory", { defaultValue: "用户记忆" });
     }
   };
 
@@ -314,16 +338,22 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
   const publishMode = String(memory.metadata?.publish_mode || "")
     .trim()
     .toLowerCase();
-  const hasPromotionBacklink = Boolean(memory.metadata?.last_promoted_memory_id);
-  const candidatePublished = isAgentCandidate && candidateStatusKey === "published";
-  const isPublished =
-    isAgentCandidate
-      ? candidatePublished
-      : publishMode === "promote" ||
-        hasPromotionBacklink ||
-        ["explicit", "department", "department_tree", "public", "account"].includes(
-          visibility,
-        );
+  const hasPromotionBacklink = Boolean(
+    memory.metadata?.last_promoted_memory_id,
+  );
+  const candidatePublished =
+    isAgentCandidate && candidateStatusKey === "published";
+  const isPublished = isAgentCandidate
+    ? candidatePublished
+    : publishMode === "promote" ||
+      hasPromotionBacklink ||
+      [
+        "explicit",
+        "department",
+        "department_tree",
+        "public",
+        "account",
+      ].includes(visibility);
   const sharingScopeLabel = (() => {
     switch (visibility) {
       case "private":
@@ -572,8 +602,8 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
                   {indexInfo.embeddingPreview &&
                     indexInfo.embeddingPreview.length > 0 && (
                       <p className="break-all">
-                        {t("memory.detail.embeddingPreview")}:{" "}
-                        [{indexInfo.embeddingPreview.join(", ")}]
+                        {t("memory.detail.embeddingPreview")}: [
+                        {indexInfo.embeddingPreview.join(", ")}]
                       </p>
                     )}
                   {indexInfo.milvusError && (
@@ -721,7 +751,9 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
                     {t("memory.detail.extractedFacts")}
                   </h3>
                   <span className="text-xs px-2 py-1 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300">
-                    {t("memory.detail.factCount", { count: extractedFacts.length })}
+                    {t("memory.detail.factCount", {
+                      count: extractedFacts.length,
+                    })}
                   </span>
                 </div>
                 <div className="max-h-72 overflow-y-auto pr-1 space-y-2">
@@ -740,12 +772,14 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
                           <div className="flex items-center gap-2 text-[11px] text-gray-600 dark:text-gray-400 whitespace-nowrap">
                             {importance && (
                               <span>
-                                {t("memory.detail.factImportance")}: {importance}
+                                {t("memory.detail.factImportance")}:{" "}
+                                {importance}
                               </span>
                             )}
                             {confidence && (
                               <span>
-                                {t("memory.detail.factConfidence")}: {confidence}
+                                {t("memory.detail.factConfidence")}:{" "}
+                                {confidence}
                               </span>
                             )}
                           </div>
@@ -869,7 +903,9 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
               </div>
               <p className="text-gray-800 dark:text-white font-medium">
                 {importanceLevel ? importanceLevel : "-"}
-                {importanceScore !== undefined ? ` (${(importanceScore * 100).toFixed(0)}%)` : ""}
+                {importanceScore !== undefined
+                  ? ` (${(importanceScore * 100).toFixed(0)}%)`
+                  : ""}
               </p>
             </div>
           )}
@@ -956,7 +992,9 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
                 >
                   {isReviewingCandidate
                     ? t("common.loading")
-                    : t("memory.share.reviewApprove", { defaultValue: "审批发布" })}
+                    : t("memory.share.reviewApprove", {
+                        defaultValue: "审批发布",
+                      })}
                 </button>
               )}
               {candidateStatusKey === "pending" && (
@@ -967,7 +1005,9 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
                 >
                   {isReviewingCandidate
                     ? t("common.loading")
-                    : t("memory.share.reviewReject", { defaultValue: "拒绝候选" })}
+                    : t("memory.share.reviewReject", {
+                        defaultValue: "拒绝候选",
+                      })}
                 </button>
               )}
             </div>
@@ -984,7 +1024,9 @@ export const MemoryDetailView: React.FC<MemoryDetailViewProps> = ({
             <div className="flex items-center gap-2 mb-2">
               <Share2 className="w-5 h-5 text-indigo-500" />
               <span className="text-sm font-medium text-gray-800 dark:text-white">
-                {isPublished ? t("memory.detail.publishedMemory") : t("memory.detail.sharedMemory")}
+                {isPublished
+                  ? t("memory.detail.publishedMemory")
+                  : t("memory.detail.sharedMemory")}
               </span>
             </div>
           )}

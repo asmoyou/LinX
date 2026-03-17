@@ -232,6 +232,32 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.warning(f"Failed to initialize session-ledger retention manager: {e}")
 
+    # Start user-memory vector indexing worker
+    try:
+        from user_memory.indexing_worker import initialize_user_memory_indexing_worker
+
+        worker = await initialize_user_memory_indexing_worker()
+        if worker:
+            logger.info("User-memory indexing worker initialized")
+        else:
+            logger.info("User-memory indexing worker is disabled by config")
+    except Exception as e:
+        logger.warning(f"Failed to initialize user-memory indexing worker: {e}")
+
+    # Start user-memory vector cleanup manager
+    try:
+        from user_memory.storage_cleanup import (
+            initialize_user_memory_vector_cleanup_manager,
+        )
+
+        manager = await initialize_user_memory_vector_cleanup_manager()
+        if manager:
+            logger.info("User-memory vector cleanup manager initialized")
+        else:
+            logger.info("User-memory vector cleanup manager is disabled by config")
+    except Exception as e:
+        logger.warning(f"Failed to initialize user-memory vector cleanup manager: {e}")
+
     # Start document processing worker
     try:
         from knowledge_base.document_processor_worker import start_worker
@@ -289,6 +315,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.info("Document processor worker stopped")
     except Exception as e:
         logger.error(f"Failed to stop document processor worker: {e}")
+
+    # Stop user-memory vector cleanup manager
+    try:
+        from user_memory.storage_cleanup import shutdown_user_memory_vector_cleanup_manager
+
+        await shutdown_user_memory_vector_cleanup_manager()
+        logger.info("User-memory vector cleanup manager shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown user-memory vector cleanup manager: {e}")
+
+    # Stop user-memory indexing worker
+    try:
+        from user_memory.indexing_worker import shutdown_user_memory_indexing_worker
+
+        await shutdown_user_memory_indexing_worker()
+        logger.info("User-memory indexing worker shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown user-memory indexing worker: {e}")
 
     # Stop knowledge storage cleanup manager
     try:

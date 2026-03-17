@@ -235,6 +235,48 @@ memory_retrieval_source_quality_total = Counter(
     registry=registry,
 )
 
+user_memory_embedding_jobs_pending = Gauge(
+    "user_memory_embedding_jobs_pending",
+    "Current count of non-terminal user-memory embedding jobs",
+    registry=registry,
+)
+
+user_memory_embedding_job_latency_seconds = Histogram(
+    "user_memory_embedding_job_latency_seconds",
+    "Latency of one user-memory embedding job",
+    buckets=(0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10),
+    registry=registry,
+)
+
+user_memory_retrieval_stage_latency_seconds = Histogram(
+    "user_memory_retrieval_stage_latency_seconds",
+    "Latency of user-memory retrieval stages",
+    ["stage"],
+    buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2, 5),
+    registry=registry,
+)
+
+user_memory_retrieval_hits_total = Counter(
+    "user_memory_retrieval_hits_total",
+    "Number of user-memory retrieval hits by source",
+    ["source"],
+    registry=registry,
+)
+
+user_memory_retrieval_reflection_total = Counter(
+    "user_memory_retrieval_reflection_total",
+    "User-memory reflection outcomes",
+    ["outcome"],
+    registry=registry,
+)
+
+user_memory_retrieval_fallback_total = Counter(
+    "user_memory_retrieval_fallback_total",
+    "User-memory retrieval fallback events",
+    ["reason"],
+    registry=registry,
+)
+
 # ============================================================================
 # Application Metrics - Knowledge Base
 # ============================================================================
