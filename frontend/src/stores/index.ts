@@ -16,6 +16,7 @@ import { useMemoryWorkbenchStore } from './memoryWorkbenchStore';
 import { useMissionStore } from './missionStore';
 import { useHealthStore } from './healthStore';
 import { usePreferencesStore } from './preferencesStore';
+import { useNotificationStore } from './notificationStore';
 
 // Authentication and user management
 export { useAuthStore } from './authStore';
@@ -105,6 +106,7 @@ export const resetAllStores = () => {
   const missionStore = useMissionStore.getState();
   const healthStore = useHealthStore.getState();
   const preferencesStore = usePreferencesStore.getState();
+  const notificationStore = useNotificationStore.getState();
 
   authStore.logout();
   userStore.reset();
@@ -116,5 +118,6 @@ export const resetAllStores = () => {
   missionStore.reset();
   healthStore.reset();
   preferencesStore.reset();
-  // Note: Theme and notifications are intentionally not reset
+  notificationStore.reset();
+  // Note: Theme is intentionally not reset
 };

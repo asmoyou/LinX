@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import toast from 'react-hot-toast';
 import { User, Settings, Shield, Bell, Download, LogOut, KeyRound, Monitor, ShieldAlert } from 'lucide-react';
 import { GlassPanel } from '../components/GlassPanel';
 import { ProfileSection } from '../components/profile/ProfileSection';
@@ -12,7 +13,6 @@ import { APIKeysSection } from '../components/profile/APIKeysSection';
 import { SessionsSection } from '../components/profile/SessionsSection';
 import { PrivacySection } from '../components/profile/PrivacySection';
 import { authApi } from '../api';
-import { useNotificationStore } from '../stores/notificationStore';
 import { clearClientSession } from '../utils/clientSession';
 
 type TabType =
@@ -29,7 +29,6 @@ export const Profile = () => {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<TabType>('profile');
   const navigate = useNavigate();
-  const { addNotification } = useNotificationStore();
 
   const handleLogout = async () => {
     if (confirm(t('profileSettings.logOutConfirm'))) {
@@ -40,11 +39,7 @@ export const Profile = () => {
       }
 
       clearClientSession();
-      addNotification({
-        type: 'success',
-        title: t('profileSettings.logOutSuccess'),
-        message: t('profileSettings.logOutSuccess'),
-      });
+      toast.success(t('profileSettings.logOutSuccess'));
       navigate('/login');
     }
   };

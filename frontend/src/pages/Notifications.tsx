@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
+import toast from 'react-hot-toast';
 import {
   AlertTriangle,
   Bell,
@@ -71,10 +72,11 @@ export const Notifications = () => {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const {
-    addNotification,
     replaceServerNotifications,
     notifications: storedNotifications,
     markAsRead: markLocalAsRead,
+    markAllLocalAsRead,
+    clearLocalNotifications,
     removeNotification: removeLocalNotification,
   } = useNotificationStore();
 
@@ -127,6 +129,16 @@ export const Notifications = () => {
         return rightTs - leftTs;
       });
   }, [searchQuery, severityFilter, statusFilter, storedNotifications]);
+
+  const localNotifications = useMemo(
+    () => storedNotifications.filter((notification) => notification.source !== 'server'),
+    [storedNotifications]
+  );
+  const localUnreadCount = useMemo(
+    () => localNotifications.filter((notification) => !notification.read).length,
+    [localNotifications]
+  );
+  const localReadCount = localNotifications.length - localUnreadCount;
 
   const isLocalFallbackMode =
     !isLoading && !errorMessage && total === 0 && localFilteredNotifications.length > 0;
@@ -266,16 +278,18 @@ export const Notifications = () => {
     await Promise.all([loadNotifications(true), syncHeaderNotificationSnapshot()]);
   };
 
+  const showInfoToast = (message: string) => {
+    toast(message, {
+      icon: 'ℹ️',
+    });
+  };
+
   const handleMarkRead = async (notification: ServerNotification) => {
     if (notification.is_read) return;
 
     await withRowPending(notification.notification_id, async () => {
       await notificationsApi.markAsRead(notification.notification_id);
-      addNotification({
-        type: 'success',
-        title: t('notificationsPage.markReadSuccessTitle', 'Marked as Read'),
-        message: t('notificationsPage.markReadSuccessMessage', 'Notification marked as read'),
-      });
+      toast.success(t('notificationsPage.markReadSuccessMessage', 'Notification marked as read'));
       await refreshData();
     });
   };
@@ -287,11 +301,7 @@ export const Notifications = () => {
 
     await withRowPending(notification.notification_id, async () => {
       await notificationsApi.deleteOne(notification.notification_id);
-      addNotification({
-        type: 'success',
-        title: t('notificationsPage.deleteSuccessTitle', 'Deleted'),
-        message: t('notificationsPage.deleteSuccessMessage', 'Notification deleted'),
-      });
+      toast.success(t('notificationsPage.deleteSuccessMessage', 'Notification deleted'));
       await refreshData();
     });
   };
@@ -315,18 +325,36 @@ export const Notifications = () => {
   };
 
   const handleMarkAllRead = async () => {
+    if (isLocalFallbackMode) {
+      if (localUnreadCount === 0) {
+        showInfoToast(
+          t('notificationsPage.noUnreadLocalMessage', 'Local notifications are already read')
+        );
+        return;
+      }
+
+      setIsMutating(true);
+      try {
+        markAllLocalAsRead();
+        toast.success(
+          t('notificationsPage.markAllReadMessage', '{{count}} notifications updated', {
+            count: localUnreadCount,
+          })
+        );
+      } finally {
+        setIsMutating(false);
+      }
+      return;
+    }
+
     setIsMutating(true);
     try {
       const result = await notificationsApi.markAllAsRead();
-      addNotification({
-        type: 'success',
-        title: t('notificationsPage.markAllReadTitle', 'Marked All as Read'),
-        message: t(
-          'notificationsPage.markAllReadMessage',
-          '{{count}} notifications updated',
-          { count: result.updated }
-        ),
-      });
+      toast.success(
+        t('notificationsPage.markAllReadMessage', '{{count}} notifications updated', {
+          count: result.updated,
+        })
+      );
       await refreshData();
       setSelectedIds(new Set());
     } finally {
@@ -353,18 +381,31 @@ export const Notifications = () => {
       return;
     }
 
+    if (isLocalFallbackMode) {
+      const localDeleteCount = scope === 'all' ? localNotifications.length : localReadCount;
+
+      setIsMutating(true);
+      try {
+        clearLocalNotifications(scope);
+        toast.success(
+          t('notificationsPage.clearSuccessMessage', '{{count}} notifications removed', {
+            count: localDeleteCount,
+          })
+        );
+      } finally {
+        setIsMutating(false);
+      }
+      return;
+    }
+
     setIsMutating(true);
     try {
       const result = await notificationsApi.clear(scope);
-      addNotification({
-        type: 'success',
-        title: t('notificationsPage.clearSuccessTitle', 'Notifications Cleared'),
-        message: t(
-          'notificationsPage.clearSuccessMessage',
-          '{{count}} notifications removed',
-          { count: result.deleted }
-        ),
-      });
+      toast.success(
+        t('notificationsPage.clearSuccessMessage', '{{count}} notifications removed', {
+          count: result.deleted,
+        })
+      );
       await refreshData();
       setSelectedIds(new Set());
     } finally {
@@ -378,26 +419,20 @@ export const Notifications = () => {
       .map((item) => item.notification_id);
 
     if (unreadIds.length === 0) {
-      addNotification({
-        type: 'info',
-        title: t('notificationsPage.noUnreadSelectedTitle', 'No Unread Selected'),
-        message: t('notificationsPage.noUnreadSelectedMessage', 'Selected notifications are already read'),
-      });
+      showInfoToast(
+        t('notificationsPage.noUnreadSelectedMessage', 'Selected notifications are already read')
+      );
       return;
     }
 
     setIsMutating(true);
     try {
       await Promise.all(unreadIds.map((id) => notificationsApi.markAsRead(id)));
-      addNotification({
-        type: 'success',
-        title: t('notificationsPage.bulkMarkReadTitle', 'Batch Update Complete'),
-        message: t(
-          'notificationsPage.bulkMarkReadMessage',
-          '{{count}} notifications marked as read',
-          { count: unreadIds.length }
-        ),
-      });
+      toast.success(
+        t('notificationsPage.bulkMarkReadMessage', '{{count}} notifications marked as read', {
+          count: unreadIds.length,
+        })
+      );
       setSelectedIds(new Set());
       await refreshData();
     } finally {
@@ -422,15 +457,11 @@ export const Notifications = () => {
     setIsMutating(true);
     try {
       await Promise.all(selectedRows.map((item) => notificationsApi.deleteOne(item.notification_id)));
-      addNotification({
-        type: 'success',
-        title: t('notificationsPage.bulkDeleteTitle', 'Batch Delete Complete'),
-        message: t(
-          'notificationsPage.bulkDeleteMessage',
-          '{{count}} notifications deleted',
-          { count: selectedRows.length }
-        ),
-      });
+      toast.success(
+        t('notificationsPage.bulkDeleteMessage', '{{count}} notifications deleted', {
+          count: selectedRows.length,
+        })
+      );
       setSelectedIds(new Set());
       await refreshData();
     } finally {
@@ -644,8 +675,8 @@ export const Notifications = () => {
       </GlassPanel>
 
       <GlassPanel className="p-4">
-        {!isLocalFallbackMode && (
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          {!isLocalFallbackMode ? (
             <label className="inline-flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-300">
               <input
                 type="checkbox"
@@ -655,40 +686,44 @@ export const Notifications = () => {
               />
               {t('notificationsPage.selectPage', 'Select current page')}
             </label>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => {
-                  void handleMarkAllRead();
-                }}
-                disabled={isMutating}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 text-xs text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50"
-              >
-                <CheckCheck className="w-3.5 h-3.5" />
-                {t('notificationsPage.markAllRead', 'Mark All Read')}
-              </button>
-              <button
-                onClick={() => {
-                  void handleClear('read');
-                }}
-                disabled={isMutating}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 text-xs text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                {t('notificationsPage.clearRead', 'Clear Read')}
-              </button>
-              <button
-                onClick={() => {
-                  void handleClear('all');
-                }}
-                disabled={isMutating}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-red-300 dark:border-red-700 text-xs text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                {t('notificationsPage.clearAll', 'Clear All')}
-              </button>
+          ) : (
+            <div className="text-xs text-amber-700 dark:text-amber-300">
+              {t('notificationsPage.localToolbarHint', 'These actions apply to local browser notifications.')}
             </div>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => {
+                void handleMarkAllRead();
+              }}
+              disabled={isMutating}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 text-xs text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50"
+            >
+              <CheckCheck className="w-3.5 h-3.5" />
+              {t('notificationsPage.markAllRead', 'Mark All Read')}
+            </button>
+            <button
+              onClick={() => {
+                void handleClear('read');
+              }}
+              disabled={isMutating}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 text-xs text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              {t('notificationsPage.clearRead', 'Clear Read')}
+            </button>
+            <button
+              onClick={() => {
+                void handleClear('all');
+              }}
+              disabled={isMutating}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-red-300 dark:border-red-700 text-xs text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              {t('notificationsPage.clearAll', 'Clear All')}
+            </button>
           </div>
-        )}
+        </div>
 
         {isLocalFallbackMode && (
           <div className="mb-4 rounded-lg border border-amber-300/70 dark:border-amber-600/50 bg-amber-50/60 dark:bg-amber-900/20 px-3 py-2">
@@ -698,7 +733,7 @@ export const Notifications = () => {
             <p className="mt-1 text-xs text-amber-700/90 dark:text-amber-300/90">
               {t(
                 'notificationsPage.localHistoryHint',
-                'The server returned no records for current filters. These notifications come from local browser storage.'
+                'The server returned no records for current filters. These notifications come from local browser storage, and the toolbar actions above apply to them.'
               )}
             </p>
           </div>

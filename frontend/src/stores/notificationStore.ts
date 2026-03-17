@@ -31,7 +31,10 @@ interface NotificationState {
   removeNotification: (id: string) => void;
   markAsRead: (id: string) => void;
   markAllAsRead: () => void;
+  markAllLocalAsRead: () => void;
   clearAll: () => void;
+  clearLocalNotifications: (scope?: 'read' | 'all') => void;
+  reset: () => void;
   togglePanel: () => void;
   setOpen: (open: boolean) => void;
   
@@ -174,10 +177,48 @@ export const useNotificationStore = create<NotificationState>()(
           unreadCount: 0,
         })),
 
+      markAllLocalAsRead: () =>
+        set((state) => {
+          const nextNotifications = state.notifications.map((notification) =>
+            notification.source === 'server' ? notification : { ...notification, read: true }
+          );
+          return {
+            notifications: nextNotifications,
+            unreadCount: computeUnreadCount(nextNotifications),
+          };
+        }),
+
       clearAll: () =>
         set({
           notifications: [],
           unreadCount: 0,
+        }),
+
+      clearLocalNotifications: (scope = 'read') =>
+        set((state) => {
+          const nextNotifications = state.notifications.filter((notification) => {
+            if (notification.source === 'server') {
+              return true;
+            }
+
+            if (scope === 'all') {
+              return false;
+            }
+
+            return !notification.read;
+          });
+
+          return {
+            notifications: nextNotifications,
+            unreadCount: computeUnreadCount(nextNotifications),
+          };
+        }),
+
+      reset: () =>
+        set({
+          notifications: [],
+          unreadCount: 0,
+          isOpen: false,
         }),
 
       togglePanel: () => set((state) => ({ isOpen: !state.isOpen })),
