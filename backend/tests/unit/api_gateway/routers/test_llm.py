@@ -10,6 +10,7 @@ References:
 """
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
@@ -57,37 +58,51 @@ def mock_llm_router():
         "ollama": MagicMock(),
         "vllm": MagicMock(),
     }
-    router.config = {"default_provider": "ollama"}
+    router.config = {
+        "default_provider": "ollama",
+        "providers": {
+            "anthropic": {
+                "base_url": "https://api.anthropic.com",
+                "models": {
+                    "chat": "claude-3-haiku-20240307",
+                },
+            }
+        },
+    }
     router.fallback_enabled = True
     router.model_mapping = {
         "code": {"ollama": "codellama", "vllm": "codellama"},
         "chat": {"ollama": "llama2", "vllm": "llama2"},
     }
-    
+
     # Mock async methods
-    router.health_check_all = AsyncMock(return_value={
-        "ollama": True,
-        "vllm": False,
-    })
-    router.list_available_models = AsyncMock(return_value={
-        "ollama": ["llama2", "codellama", "mistral"],
-        "vllm": ["llama2", "codellama"],
-    })
-    router.get_token_usage = MagicMock(return_value={
-        "ollama": 1000,
-        "vllm": 500,
-    })
-    
+    router.health_check_all = AsyncMock(
+        return_value={
+            "ollama": True,
+            "vllm": False,
+        }
+    )
+    router.list_available_models = AsyncMock(
+        return_value={
+            "ollama": ["llama2", "codellama", "mistral"],
+            "vllm": ["llama2", "codellama"],
+        }
+    )
+    router.get_token_usage = MagicMock(
+        return_value={
+            "ollama": 1000,
+            "vllm": 500,
+        }
+    )
+
     # Mock provider methods
     router.providers["ollama"].list_models = AsyncMock(
         return_value=["llama2", "codellama", "mistral"]
     )
     router.providers["ollama"].health_check = AsyncMock(return_value=True)
-    router.providers["vllm"].list_models = AsyncMock(
-        return_value=["llama2", "codellama"]
-    )
+    router.providers["vllm"].list_models = AsyncMock(return_value=["llama2", "codellama"])
     router.providers["vllm"].health_check = AsyncMock(return_value=False)
-    
+
     # Mock generate method
     mock_response = MagicMock()
     mock_response.content = "Test response"
@@ -95,124 +110,155 @@ def mock_llm_router():
     mock_response.provider = "ollama"
     mock_response.tokens_used = 50
     router.generate = AsyncMock(return_value=mock_response)
-    
+
     return router
 
 
 class TestGetProviders:
     """Tests for GET /api/v1/llm/providers endpoint."""
-    
+
     @pytest.mark.asyncio
     async def test_get_providers_success(self, mock_current_user, mock_llm_router):
         """Test successful retrieval of provider status."""
+        db_manager = MagicMock()
+        db_manager.list_providers.return_value = [
+            SimpleNamespace(
+                name="ollama",
+                last_test_status="success",
+                enabled=True,
+                base_url="http://localhost:11434",
+                models=["llama2", "codellama", "mistral"],
+            ),
+            SimpleNamespace(
+                name="vllm",
+                last_test_status="failed",
+                enabled=True,
+                base_url="http://localhost:8000",
+                models=["llama2", "codellama"],
+            ),
+        ]
+        db_context = MagicMock()
+        db_context.__enter__.return_value = MagicMock()
+        db_context.__exit__.return_value = False
+
+        mock_llm_router.health_check_all.side_effect = AssertionError("should not be called")
+        mock_llm_router.list_available_models.side_effect = AssertionError("should not be called")
+
         with patch("api_gateway.routers.llm.get_llm_provider", return_value=mock_llm_router):
             with patch("api_gateway.routers.llm.get_current_user", return_value=mock_current_user):
-                from api_gateway.routers.llm import get_providers
-                
-                response = await get_providers(current_user=mock_current_user)
-                
-                assert isinstance(response, LLMConfigResponse)
-                assert "ollama" in response.providers
-                assert "vllm" in response.providers
-                assert response.providers["ollama"].healthy is True
-                assert response.providers["vllm"].healthy is False
-                assert response.default_provider == "ollama"
-                assert response.fallback_enabled is True
-    
+                with patch("api_gateway.routers.llm.get_db_session", return_value=db_context):
+                    with patch(
+                        "api_gateway.routers.llm.ProviderDBManager", return_value=db_manager
+                    ):
+                        from api_gateway.routers.llm import get_providers
+
+                        response = await get_providers(current_user=mock_current_user)
+
+                        assert isinstance(response, LLMConfigResponse)
+                        assert "ollama" in response.providers
+                        assert "vllm" in response.providers
+                        assert "anthropic" in response.providers
+                        assert response.providers["ollama"].healthy is True
+                        assert response.providers["vllm"].healthy is False
+                        assert response.providers["anthropic"].healthy is True
+                        assert response.providers["anthropic"].available_models == [
+                            "claude-3-haiku-20240307"
+                        ]
+                        assert response.providers["anthropic"].is_config_based is True
+                        assert response.default_provider == "ollama"
+                        assert response.fallback_enabled is True
+                        mock_llm_router.health_check_all.assert_not_awaited()
+                        mock_llm_router.list_available_models.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_get_providers_not_configured(self, mock_current_user):
         """Test when LLM providers are not configured."""
         with patch("api_gateway.routers.llm.get_llm_provider", None):
             with patch("api_gateway.routers.llm.get_current_user", return_value=mock_current_user):
                 from api_gateway.routers.llm import get_providers
-                
+
                 with pytest.raises(HTTPException) as exc_info:
                     await get_providers(current_user=mock_current_user)
-                
+
                 assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
                 assert "not configured" in exc_info.value.detail
-    
+
     @pytest.mark.asyncio
     async def test_get_providers_error(self, mock_current_user, mock_llm_router):
         """Test error handling when getting providers."""
-        mock_llm_router.health_check_all.side_effect = Exception("Connection error")
-        
         with patch("api_gateway.routers.llm.get_llm_provider", return_value=mock_llm_router):
             with patch("api_gateway.routers.llm.get_current_user", return_value=mock_current_user):
-                from api_gateway.routers.llm import get_providers
-                
-                with pytest.raises(HTTPException) as exc_info:
-                    await get_providers(current_user=mock_current_user)
-                
-                assert exc_info.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+                with patch("shared.config.get_config", side_effect=Exception("config broken")):
+                    from api_gateway.routers.llm import get_providers
+
+                    with pytest.raises(HTTPException) as exc_info:
+                        await get_providers(current_user=mock_current_user)
+
+                    assert exc_info.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
 
 
 class TestGetProviderModels:
     """Tests for GET /api/v1/llm/providers/{provider_name}/models endpoint."""
-    
+
     @pytest.mark.asyncio
     async def test_get_provider_models_success(self, mock_current_user, mock_llm_router):
         """Test successful retrieval of provider models."""
         with patch("api_gateway.routers.llm.get_llm_provider", return_value=mock_llm_router):
             with patch("api_gateway.routers.llm.get_current_user", return_value=mock_current_user):
                 from api_gateway.routers.llm import get_provider_models
-                
+
                 models = await get_provider_models(
-                    provider_name="ollama",
-                    current_user=mock_current_user
+                    provider_name="ollama", current_user=mock_current_user
                 )
-                
+
                 assert isinstance(models, list)
                 assert "llama2" in models
                 assert "codellama" in models
                 assert "mistral" in models
-    
+
     @pytest.mark.asyncio
     async def test_get_provider_models_not_found(self, mock_current_user, mock_llm_router):
         """Test when provider is not found."""
         with patch("api_gateway.routers.llm.get_llm_provider", return_value=mock_llm_router):
             with patch("api_gateway.routers.llm.get_current_user", return_value=mock_current_user):
                 from api_gateway.routers.llm import get_provider_models
-                
+
                 with pytest.raises(HTTPException) as exc_info:
                     await get_provider_models(
-                        provider_name="nonexistent",
-                        current_user=mock_current_user
+                        provider_name="nonexistent", current_user=mock_current_user
                     )
-                
+
                 assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
                 assert "not found" in exc_info.value.detail
 
 
 class TestCheckProviderHealth:
     """Tests for GET /api/v1/llm/providers/{provider_name}/health endpoint."""
-    
+
     @pytest.mark.asyncio
     async def test_check_provider_health_success(self, mock_current_user, mock_llm_router):
         """Test successful health check."""
         with patch("api_gateway.routers.llm.get_llm_provider", return_value=mock_llm_router):
             with patch("api_gateway.routers.llm.get_current_user", return_value=mock_current_user):
                 from api_gateway.routers.llm import check_provider_health
-                
+
                 result = await check_provider_health(
-                    provider_name="ollama",
-                    current_user=mock_current_user
+                    provider_name="ollama", current_user=mock_current_user
                 )
-                
+
                 assert result == {"healthy": True}
-    
+
     @pytest.mark.asyncio
     async def test_check_provider_health_unhealthy(self, mock_current_user, mock_llm_router):
         """Test health check for unhealthy provider."""
         with patch("api_gateway.routers.llm.get_llm_provider", return_value=mock_llm_router):
             with patch("api_gateway.routers.llm.get_current_user", return_value=mock_current_user):
                 from api_gateway.routers.llm import check_provider_health
-                
+
                 result = await check_provider_health(
-                    provider_name="vllm",
-                    current_user=mock_current_user
+                    provider_name="vllm", current_user=mock_current_user
                 )
-                
+
                 assert result == {"healthy": False}
 
 
@@ -268,14 +314,14 @@ class TestTestGeneration:
         assert "ASR test successful" in result
         assert fake_session.calls
         assert "/audio/transcriptions" in fake_session.calls[0][0]
-    
+
     @pytest.mark.asyncio
     async def test_test_generation_success(self, mock_current_user, mock_llm_router):
         """Test successful LLM generation."""
         with patch("api_gateway.routers.llm.get_llm_provider", return_value=mock_llm_router):
             with patch("api_gateway.routers.llm.get_current_user", return_value=mock_current_user):
                 from api_gateway.routers.llm import test_generation
-                
+
                 request = TestGenerationRequest(
                     prompt="Hello, world!",
                     provider="ollama",
@@ -283,65 +329,59 @@ class TestTestGeneration:
                     temperature=0.7,
                     max_tokens=100,
                 )
-                
-                response = await test_generation(
-                    request=request,
-                    current_user=mock_current_user
-                )
-                
+
+                response = await test_generation(request=request, current_user=mock_current_user)
+
                 assert isinstance(response, TestGenerationResponse)
                 assert response.content == "Test response"
                 assert response.model == "llama2"
                 assert response.provider == "ollama"
                 assert response.tokens_used == 50
                 assert response.success is True
-    
+
     @pytest.mark.asyncio
     async def test_test_generation_error(self, mock_current_user, mock_llm_router):
         """Test error handling during generation."""
         mock_llm_router.generate.side_effect = Exception("Generation failed")
-        
+
         with patch("api_gateway.routers.llm.get_llm_provider", return_value=mock_llm_router):
             with patch("api_gateway.routers.llm.get_current_user", return_value=mock_current_user):
                 from api_gateway.routers.llm import test_generation
-                
+
                 request = TestGenerationRequest(
                     prompt="Hello, world!",
                 )
-                
+
                 with pytest.raises(HTTPException) as exc_info:
-                    await test_generation(
-                        request=request,
-                        current_user=mock_current_user
-                    )
-                
+                    await test_generation(request=request, current_user=mock_current_user)
+
                 assert exc_info.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
 
 
 class TestGetTokenUsage:
     """Tests for GET /api/v1/llm/token-usage endpoint."""
-    
+
     @pytest.mark.asyncio
     async def test_get_token_usage_success(self, mock_admin_user, mock_llm_router):
         """Test successful token usage retrieval (admin only)."""
         with patch("api_gateway.routers.llm.get_llm_provider", return_value=mock_llm_router):
             with patch("api_gateway.routers.llm.get_current_user", return_value=mock_admin_user):
                 from api_gateway.routers.llm import get_token_usage
-                
+
                 # Note: The @require_role decorator needs to be tested separately
                 # This test assumes the decorator passes
                 result = await get_token_usage(current_user=mock_admin_user)
-                
+
                 assert result == {"ollama": 1000, "vllm": 500}
-    
+
     @pytest.mark.asyncio
     async def test_get_token_usage_not_configured(self, mock_admin_user):
         """Test when LLM providers are not configured."""
         with patch("api_gateway.routers.llm.get_llm_provider", None):
             with patch("api_gateway.routers.llm.get_current_user", return_value=mock_admin_user):
                 from api_gateway.routers.llm import get_token_usage
-                
+
                 with pytest.raises(HTTPException) as exc_info:
                     await get_token_usage(current_user=mock_admin_user)
-                
+
                 assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE

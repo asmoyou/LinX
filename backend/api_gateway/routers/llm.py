@@ -46,6 +46,7 @@ router = APIRouter(tags=["LLM Providers"])
 # Request/Response Models
 class ProviderStatus(BaseModel):
     """Provider health status"""
+
     __test__ = False
 
     name: str
@@ -56,6 +57,7 @@ class ProviderStatus(BaseModel):
 
 class ModelInfo(BaseModel):
     """Model information"""
+
     __test__ = False
 
     name: str
@@ -65,6 +67,7 @@ class ModelInfo(BaseModel):
 
 class LLMConfigResponse(BaseModel):
     """LLM configuration response"""
+
     __test__ = False
 
     providers: Dict[str, ProviderStatus]
@@ -75,6 +78,7 @@ class LLMConfigResponse(BaseModel):
 
 class TestGenerationRequest(BaseModel):
     """Test generation request"""
+
     __test__ = False
 
     prompt: str = Field(..., min_length=1, max_length=1000)
@@ -86,6 +90,7 @@ class TestGenerationRequest(BaseModel):
 
 class TestGenerationResponse(BaseModel):
     """Test generation response"""
+
     __test__ = False
 
     content: str
@@ -101,6 +106,44 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+def _normalize_provider_models(provider_config: Any) -> List[str]:
+    """Extract configured model ids without touching the remote provider."""
+    if not isinstance(provider_config, dict):
+        return []
+
+    raw_models = provider_config.get("available_models")
+    if not raw_models:
+        raw_models = provider_config.get("models", [])
+
+    if isinstance(raw_models, dict):
+        raw_models = list(raw_models.values())
+    elif isinstance(raw_models, str):
+        raw_models = [raw_models]
+    elif not isinstance(raw_models, list):
+        raw_models = []
+
+    deduped_models: List[str] = []
+    seen_models: set[str] = set()
+    for model in raw_models:
+        model_name = str(model or "").strip()
+        if not model_name or model_name in seen_models:
+            continue
+        deduped_models.append(model_name)
+        seen_models.add(model_name)
+
+    return deduped_models
+
+
+def _is_provider_statically_healthy(provider_config: Any) -> bool:
+    """Infer basic availability from saved configuration only."""
+    if not isinstance(provider_config, dict):
+        return False
+
+    enabled = provider_config.get("enabled", True)
+    base_url = str(provider_config.get("base_url") or "").strip()
+    return bool(enabled and base_url)
+
+
 # Endpoints
 @router.get("/providers", response_model=LLMConfigResponse)
 async def get_providers(
@@ -109,12 +152,12 @@ async def get_providers(
     """
     Get all LLM providers and their status.
 
-    Returns provider health status, available models, and configuration.
-    Only returns providers from database (config.yaml providers are synced on startup).
+    Returns provider status, configured models, and routing configuration.
+    Uses stored database/config data only and does not contact upstream providers.
 
     NOTE: This endpoint does NOT initialize providers (lazy loading).
-    Health status is based on database configuration validity, not actual connection test.
-    Use test_connection endpoint to verify actual connectivity.
+    Health status is derived from the last saved test result or static config validity.
+    Use the explicit provider health/test endpoints to verify live connectivity.
     """
     if get_llm_provider is None:
         raise HTTPException(
@@ -124,16 +167,23 @@ async def get_providers(
 
     try:
         llm_router = get_llm_provider()
-        health_results: Dict[str, bool] = {}
         router_models: Dict[str, List[str]] = {}
         router_provider_names = set()
+        config_providers: Dict[str, Any] = {}
+        router_config = getattr(llm_router, "config", {}) if llm_router is not None else {}
 
         if llm_router is not None:
             router_provider_names = set(getattr(llm_router, "providers", {}).keys())
-            if hasattr(llm_router, "health_check_all"):
-                health_results = dict(await _maybe_await(llm_router.health_check_all()) or {})
-            if hasattr(llm_router, "list_available_models"):
-                router_models = dict(await _maybe_await(llm_router.list_available_models()) or {})
+            raw_config_providers = getattr(llm_router, "_config_providers", None)
+            if not isinstance(raw_config_providers, dict):
+                raw_config_providers = router_config.get("providers", {})
+            if isinstance(raw_config_providers, dict):
+                config_providers = raw_config_providers
+                router_provider_names |= set(config_providers.keys())
+                router_models = {
+                    str(provider_name): _normalize_provider_models(provider_config)
+                    for provider_name, provider_config in config_providers.items()
+                }
 
         # Get all providers from database only
         db_providers = {}
@@ -150,38 +200,40 @@ async def get_providers(
         from shared.config import get_config
 
         config = get_config()
-        router_config = getattr(llm_router, "config", {}) if llm_router is not None else {}
         default_provider = str(
-            router_config.get("default_provider")
-            or config.get("llm.default_provider", "ollama")
+            router_config.get("default_provider") or config.get("llm.default_provider", "ollama")
         )
         fallback_enabled = bool(
             getattr(llm_router, "fallback_enabled", router_config.get("fallback_enabled", False))
         )
         model_mapping = dict(
-            getattr(llm_router, "model_mapping", None) or router_config.get("model_mapping", {}) or config.get("llm.model_mapping", {})
+            getattr(llm_router, "model_mapping", None)
+            or router_config.get("model_mapping", {})
+            or config.get("llm.model_mapping", {})
         )
 
         # Build provider status from database and router fallbacks
         providers = {}
-        provider_names = set(db_providers.keys()) | router_provider_names | set(health_results.keys()) | set(router_models.keys())
+        provider_names = (
+            set(db_providers.keys()) | router_provider_names | set(router_models.keys())
+        )
 
         for provider_name in sorted(provider_names):
             db_provider = db_providers.get(provider_name)
             if db_provider is not None:
-                if provider_name in health_results:
-                    healthy = bool(health_results[provider_name])
-                elif db_provider.last_test_status == "success":
+                if db_provider.last_test_status == "success":
                     healthy = True
                 elif db_provider.last_test_status == "failed":
                     healthy = False
                 else:
                     healthy = db_provider.enabled and bool(db_provider.base_url)
 
-                available_models = list(db_provider.models or router_models.get(provider_name) or [])
+                available_models = list(
+                    db_provider.models or router_models.get(provider_name) or []
+                )
                 is_config_based = False
             else:
-                healthy = bool(health_results.get(provider_name, False))
+                healthy = _is_provider_statically_healthy(config_providers.get(provider_name))
                 available_models = list(router_models.get(provider_name) or [])
                 is_config_based = True
 
@@ -384,7 +436,9 @@ async def test_generation(
                     success=True,
                 )
             except ValueError as e:
-                logger.warning(f"Router generation unavailable, falling back to direct provider test: {e}")
+                logger.warning(
+                    f"Router generation unavailable, falling back to direct provider test: {e}"
+                )
             except Exception as e:
                 logger.error(f"Test generation failed via router: {e}", exc_info=True)
                 raise HTTPException(
@@ -2236,17 +2290,20 @@ async def refresh_models_metadata(
                     if declared_model_type:
                         _apply_specialized_model_type(detected_metadata, declared_model_type)
                     if "display_name" in provider_metadata:
-                        detected_metadata.display_name = str(
-                            provider_metadata["display_name"] or ""
-                        ).strip() or detected_metadata.display_name
+                        detected_metadata.display_name = (
+                            str(provider_metadata["display_name"] or "").strip()
+                            or detected_metadata.display_name
+                        )
                     elif "name" in provider_metadata:
-                        detected_metadata.display_name = str(
-                            provider_metadata["name"] or ""
-                        ).strip() or detected_metadata.display_name
+                        detected_metadata.display_name = (
+                            str(provider_metadata["name"] or "").strip()
+                            or detected_metadata.display_name
+                        )
                     if "description" in provider_metadata:
-                        detected_metadata.description = str(
-                            provider_metadata["description"] or ""
-                        ).strip() or detected_metadata.description
+                        detected_metadata.description = (
+                            str(provider_metadata["description"] or "").strip()
+                            or detected_metadata.description
+                        )
                     # Update detected metadata with provider-specific info
                     if "context_window" in provider_metadata:
                         detected_metadata.context_window = provider_metadata["context_window"]
