@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import mimetypes
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,65 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _format_feishu_api_error(payload: dict[str, Any], *, default_error: str) -> str:
+    message = str(payload.get("msg") or "").strip()
+    details: list[str] = []
+
+    code = payload.get("code")
+    if code not in (None, ""):
+        details.append(f"code={code}")
+
+    error = payload.get("error")
+    if isinstance(error, dict):
+        permission_violations = error.get("permission_violations")
+        if isinstance(permission_violations, list):
+            scopes = sorted(
+                {
+                    str(item.get("subject") or "").strip()
+                    for item in permission_violations
+                    if isinstance(item, dict) and str(item.get("subject") or "").strip()
+                }
+            )
+            if scopes:
+                details.append(f"missing_scopes={','.join(scopes)}")
+
+    summary = f"{default_error}: {message}" if message else default_error
+    if details:
+        summary = f"{summary} ({'; '.join(details)})"
+    return summary
+
+
+def _parse_feishu_json_response(
+    response: requests.Response,
+    *,
+    default_error: str,
+) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except ValueError:
+        response.raise_for_status()
+        raise RuntimeError(default_error)
+
+    if not isinstance(payload, dict):
+        response.raise_for_status()
+        raise RuntimeError(default_error)
+
+    if response.status_code >= 400 or int(payload.get("code", 0) or 0) != 0:
+        raise RuntimeError(_format_feishu_api_error(payload, default_error=default_error))
+
+    return payload
+
+
+def _classify_feishu_file_delivery_error(exc: Exception) -> str | None:
+    message = str(exc)
+    if (
+        "im:resource:upload" in message
+        or "missing_scopes=im:resource,im:resource:upload" in message
+    ):
+        return "当前飞书应用未开通文件上传权限，已改为发送文本结果和网页链接。"
+    return None
+
+
 def _validate_feishu_verification_token(
     payload: dict[str, Any],
     publication: AgentChannelPublication,
@@ -98,10 +158,10 @@ def _get_feishu_tenant_access_token(publication: AgentChannelPublication) -> str
         json={"app_id": app_id, "app_secret": app_secret},
         timeout=20,
     )
-    response.raise_for_status()
-    payload = response.json()
-    if int(payload.get("code", 0)) != 0:
-        raise RuntimeError(payload.get("msg") or "Failed to fetch Feishu tenant access token")
+    payload = _parse_feishu_json_response(
+        response,
+        default_error="Failed to fetch Feishu tenant access token",
+    )
 
     token = str(payload.get("tenant_access_token") or "").strip()
     expire_seconds = int(payload.get("expire", 7200) or 7200)
@@ -133,10 +193,7 @@ def _send_feishu_text_message(
         },
         timeout=20,
     )
-    response.raise_for_status()
-    payload = response.json()
-    if int(payload.get("code", 0)) != 0:
-        raise RuntimeError(payload.get("msg") or "Failed to send Feishu message")
+    _parse_feishu_json_response(response, default_error="Failed to send Feishu message")
 
 
 def _send_feishu_file_message(
@@ -161,10 +218,10 @@ def _send_feishu_file_message(
             },
             timeout=120,
         )
-    upload_response.raise_for_status()
-    upload_payload = upload_response.json()
-    if int(upload_payload.get("code", 0)) != 0:
-        raise RuntimeError(upload_payload.get("msg") or "Failed to upload Feishu file")
+    upload_payload = _parse_feishu_json_response(
+        upload_response,
+        default_error="Failed to upload Feishu file",
+    )
 
     file_key = (
         str((upload_payload.get("data") or {}).get("file_key") or "").strip()
@@ -184,10 +241,7 @@ def _send_feishu_file_message(
         },
         timeout=20,
     )
-    send_response.raise_for_status()
-    send_payload = send_response.json()
-    if int(send_payload.get("code", 0)) != 0:
-        raise RuntimeError(send_payload.get("msg") or "Failed to send Feishu file message")
+    _parse_feishu_json_response(send_response, default_error="Failed to send Feishu file message")
 
 
 def _send_feishu_message_reaction(
@@ -203,10 +257,7 @@ def _send_feishu_message_reaction(
         json={"reaction_type": {"emoji_type": emoji_type}},
         timeout=20,
     )
-    response.raise_for_status()
-    payload = response.json()
-    if int(payload.get("code", 0)) != 0:
-        raise RuntimeError(payload.get("msg") or "Failed to add Feishu message reaction")
+    _parse_feishu_json_response(response, default_error="Failed to add Feishu message reaction")
 
 
 def _try_add_feishu_processing_reaction(
@@ -406,6 +457,14 @@ def _conversation_already_processed(
 
 
 def _is_feishu_deliverable_artifact(entry: dict[str, Any]) -> bool:
+    return _is_feishu_sendable_artifact(entry, allow_input=False)
+
+
+def _is_feishu_sendable_artifact(
+    entry: dict[str, Any],
+    *,
+    allow_input: bool,
+) -> bool:
     if bool(entry.get("is_directory") or entry.get("is_dir")):
         return False
 
@@ -417,7 +476,7 @@ def _is_feishu_deliverable_artifact(entry: dict[str, Any]) -> bool:
     if not parts:
         return False
 
-    if parts[0] in _FEISHU_IGNORED_ARTIFACT_ROOTS:
+    if parts[0] in _FEISHU_IGNORED_ARTIFACT_ROOTS and (parts[0] != "input" or not allow_input):
         return False
     if any(part.startswith(".") or part in _FEISHU_IGNORED_ARTIFACT_NAMES for part in parts):
         return False
@@ -428,6 +487,84 @@ def _select_feishu_deliverable_artifacts(
     artifacts: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
     return [entry for entry in (artifacts or []) if _is_feishu_deliverable_artifact(entry)]
+
+
+def _select_feishu_explicitly_requested_artifacts(
+    artifacts: list[dict[str, Any]] | None,
+    *texts: str | None,
+) -> list[dict[str, Any]]:
+    candidates = [
+        entry
+        for entry in (artifacts or [])
+        if _is_feishu_sendable_artifact(entry, allow_input=True)
+    ]
+    haystack = "\n".join(str(text or "") for text in texts).lower()
+    if not haystack.strip():
+        return []
+
+    selected: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for artifact in candidates:
+        path = str(artifact.get("path") or "").strip()
+        if not path:
+            continue
+        file_name = Path(path).name.lower()
+        if file_name:
+            by_name.setdefault(file_name, []).append(artifact)
+
+        normalized_path = path.lower()
+        if (
+            normalized_path in haystack
+            or f"/workspace/{normalized_path}" in haystack
+            or f"workspace/{normalized_path}" in haystack
+        ):
+            selected.append(artifact)
+            seen_paths.add(path)
+
+    for file_name, matches in by_name.items():
+        if len(matches) != 1 or file_name not in haystack:
+            continue
+        artifact = matches[0]
+        path = str(artifact.get("path") or "").strip()
+        if not path or path in seen_paths:
+            continue
+        selected.append(artifact)
+        seen_paths.add(path)
+
+    return selected
+
+
+def _looks_like_feishu_file_send_request(text: str | None) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+
+    has_send_intent = any(
+        token in normalized
+        for token in (
+            "发我",
+            "发送",
+            "给我文件",
+            "把文件给我",
+            "download",
+            "send me",
+            "attach",
+            "附件",
+        )
+    )
+    has_file_hint = (
+        bool(
+            re.search(
+                r"(/workspace/|workspace/|output/|shared/|input/|[\w.-]+\.(md|txt|pdf|docx?|xlsx?|pptx?|html|csv|json|zip))",
+                normalized,
+            )
+        )
+        or "文件" in normalized
+        or "file" in normalized
+    )
+    return has_send_intent and has_file_hint
 
 
 def _resolve_feishu_artifact_file_paths(
@@ -489,13 +626,14 @@ def _download_feishu_message_attachment(
         headers={"Authorization": f"Bearer {tenant_access_token}"},
         timeout=120,
     )
-    response.raise_for_status()
     content_type = str(response.headers.get("Content-Type") or "")
     if content_type.startswith("application/json"):
-        payload = response.json()
-        if int(payload.get("code", 0)) != 0:
-            raise RuntimeError(payload.get("msg") or "Failed to download Feishu message attachment")
+        _parse_feishu_json_response(
+            response,
+            default_error="Failed to download Feishu message attachment",
+        )
         raise RuntimeError("Feishu attachment download returned JSON unexpectedly")
+    response.raise_for_status()
 
     file_name = None
     content_disposition = str(response.headers.get("Content-Disposition") or "")
@@ -563,16 +701,23 @@ def _build_feishu_reply_text(
     output_text: str,
     delivered_artifacts: list[dict[str, Any]] | None,
     pending_artifacts: list[dict[str, Any]] | None,
+    delivery_notes: list[str] | None = None,
     base_url: str | None = None,
 ) -> str:
     base_text = output_text.strip() or "Agent execution completed."
+    deduped_notes = [note.strip() for note in (delivery_notes or []) if str(note).strip()]
     pending_paths = [
         str(item.get("path") or "").strip()
         for item in (pending_artifacts or [])
         if str(item.get("path") or "").strip()
     ]
-    if not pending_paths:
+    if not pending_paths and not deduped_notes:
         return base_text
+
+    note_block = "\n".join(f"- {note}" for note in deduped_notes[:3])
+    more_notes = max(0, len(deduped_notes) - 3)
+    if more_notes:
+        note_block = f"{note_block}\n- 另外 {more_notes} 条说明"
 
     pending_labels = "\n".join(f"- {path}" for path in pending_paths[:5])
     more_count = max(0, len(pending_paths) - 5)
@@ -583,13 +728,15 @@ def _build_feishu_reply_text(
     )
     if more_count:
         pending_labels = f"{pending_labels}\n- 另外 {more_count} 个文件"
+    detail_blocks = [block for block in (note_block, pending_labels) if block]
+    detail_text = "\n".join(detail_blocks)
     if not base_url:
-        return f"{base_text}\n\n{summary_prefix}\n{pending_labels}"
+        return f"{base_text}\n\n{summary_prefix}\n{detail_text}"
 
     conversation_url = f"{base_url.rstrip('/')}/workforce/{agent.agent_id}/conversations/{conversation.conversation_id}"
     return (
         f"{base_text}\n\n"
-        f"{summary_prefix}\n{pending_labels}\n\n"
+        f"{summary_prefix}\n{detail_text}\n\n"
         f"网页查看对话与工作区: {conversation_url}"
     )
 
@@ -718,13 +865,29 @@ async def process_feishu_publication_message(
     if result.get("duplicate"):
         return {"success": True, "duplicate": True}
 
-    deliverable_artifacts = _select_feishu_deliverable_artifacts(result.get("artifact_delta") or [])
+    current_artifacts = list(result.get("artifacts") or [])
+    delta_artifacts = _select_feishu_deliverable_artifacts(result.get("artifact_delta") or [])
+    requested_artifacts = _select_feishu_explicitly_requested_artifacts(
+        current_artifacts,
+        str(message.get("text") or ""),
+        str(result.get("output") or ""),
+    )
+    deliverable_artifacts: list[dict[str, Any]] = []
+    seen_artifact_paths: set[str] = set()
+    for artifact in [*delta_artifacts, *requested_artifacts]:
+        path = str(artifact.get("path") or "").strip()
+        if not path or path in seen_artifact_paths:
+            continue
+        deliverable_artifacts.append(artifact)
+        seen_artifact_paths.add(path)
+
     resolved_deliverable_files = _resolve_feishu_artifact_file_paths(
         conversation,
         deliverable_artifacts,
     )
     sent_artifacts: list[dict[str, Any]] = []
     pending_artifacts: list[dict[str, Any]] = []
+    delivery_notes: list[str] = []
     resolved_paths = {
         str(artifact.get("path") or "").strip() for artifact, _ in resolved_deliverable_files
     }
@@ -757,6 +920,9 @@ async def process_feishu_publication_message(
                     "artifact_path": str(artifact.get("path") or ""),
                 },
             )
+            delivery_note = _classify_feishu_file_delivery_error(exc)
+            if delivery_note:
+                delivery_notes.append(delivery_note)
             pending_artifacts.append(artifact)
 
     if len(resolved_deliverable_files) > _FEISHU_MAX_DIRECT_FILE_MESSAGES:
@@ -774,12 +940,23 @@ async def process_feishu_publication_message(
         deduped_pending.append(artifact)
         seen_pending_paths.add(path)
 
+    if (
+        not deliverable_artifacts
+        and not deduped_pending
+        and not sent_artifacts
+        and _looks_like_feishu_file_send_request(str(message.get("text") or ""))
+    ):
+        delivery_notes.append(
+            "如果需要发送现有工作区文件，请在消息里写明文件名或路径，例如 output/report.md。"
+        )
+
     reply_text = _build_feishu_reply_text(
         agent=agent,
         conversation=conversation,
         output_text=str(result.get("output") or ""),
         delivered_artifacts=sent_artifacts,
         pending_artifacts=deduped_pending,
+        delivery_notes=delivery_notes,
         base_url=base_url or _resolve_public_web_base_url(),
     )
     if reply_text.strip():

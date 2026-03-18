@@ -13,10 +13,14 @@ from api_gateway.routers.agent_conversations import _diff_workspace_entries
 from api_gateway.routers import integrations as integrations_router
 from api_gateway.routers.integrations import (
     _build_feishu_reply_text,
+    _classify_feishu_file_delivery_error,
     _extract_feishu_message_from_long_connection_event,
+    _format_feishu_api_error,
+    _looks_like_feishu_file_send_request,
     _prepare_feishu_message_uploads,
     _resolve_feishu_artifact_file_paths,
     _select_feishu_deliverable_artifacts,
+    _select_feishu_explicitly_requested_artifacts,
 )
 
 
@@ -152,6 +156,24 @@ def test_build_feishu_reply_text_without_base_url_omits_workspace_link() -> None
     assert "workforce/agent-1/conversations/conv-1" not in text
 
 
+def test_build_feishu_reply_text_includes_delivery_notes() -> None:
+    agent = SimpleNamespace(agent_id="agent-1")
+    conversation = SimpleNamespace(conversation_id="conv-1")
+
+    text = _build_feishu_reply_text(
+        agent=agent,
+        conversation=conversation,
+        output_text="Finished",
+        delivered_artifacts=[],
+        pending_artifacts=[{"path": "output/report.md", "is_directory": False}],
+        delivery_notes=["当前飞书应用未开通文件上传权限，已改为发送文本结果和网页链接。"],
+        base_url=None,
+    )
+
+    assert "当前飞书应用未开通文件上传权限" in text
+    assert "output/report.md" in text
+
+
 def test_select_feishu_deliverable_artifacts_filters_runtime_and_directories() -> None:
     artifacts = [
         {"path": "output/report.md", "is_directory": False},
@@ -221,6 +243,71 @@ def test_diff_workspace_entries_returns_only_this_turn_changes() -> None:
             "modified_at": "2026-03-18T10:05:00+00:00",
         },
     ]
+
+
+def test_format_feishu_api_error_includes_missing_scopes() -> None:
+    message = _format_feishu_api_error(
+        {
+            "code": 99991672,
+            "msg": "Access denied",
+            "error": {
+                "permission_violations": [
+                    {"subject": "im:resource:upload"},
+                    {"subject": "im:resource"},
+                ]
+            },
+        },
+        default_error="Failed to upload Feishu file",
+    )
+
+    assert "Failed to upload Feishu file: Access denied" in message
+    assert "code=99991672" in message
+    assert "missing_scopes=im:resource,im:resource:upload" in message
+
+
+def test_classify_feishu_file_delivery_error_handles_missing_scope() -> None:
+    exc = RuntimeError(
+        "Failed to upload Feishu file: Access denied "
+        "(code=99991672; missing_scopes=im:resource,im:resource:upload)"
+    )
+
+    note = _classify_feishu_file_delivery_error(exc)
+
+    assert note == "当前飞书应用未开通文件上传权限，已改为发送文本结果和网页链接。"
+
+
+def test_select_feishu_explicitly_requested_artifacts_matches_existing_file() -> None:
+    artifacts = [
+        {"path": "output/report.md", "is_directory": False},
+        {"path": "shared/plan.txt", "is_directory": False},
+        {"path": ".linx_runtime/cache.bin", "is_directory": False},
+    ]
+
+    matched = _select_feishu_explicitly_requested_artifacts(
+        artifacts,
+        "把 output/report.md 发我",
+    )
+
+    assert matched == [{"path": "output/report.md", "is_directory": False}]
+
+
+def test_select_feishu_explicitly_requested_artifacts_matches_unique_basename() -> None:
+    artifacts = [
+        {"path": "output/fuzhou-travel-guide.md", "is_directory": False},
+        {"path": "shared/plan.txt", "is_directory": False},
+    ]
+
+    matched = _select_feishu_explicitly_requested_artifacts(
+        artifacts,
+        "请把 fuzhou-travel-guide.md 发给我",
+    )
+
+    assert matched == [{"path": "output/fuzhou-travel-guide.md", "is_directory": False}]
+
+
+def test_looks_like_feishu_file_send_request_detects_intent() -> None:
+    assert _looks_like_feishu_file_send_request("把 output/report.md 发我") is True
+    assert _looks_like_feishu_file_send_request("帮我总结这个需求") is False
 
 
 def test_resolve_feishu_artifact_file_paths_returns_existing_files(monkeypatch, tmp_path) -> None:
