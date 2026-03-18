@@ -558,6 +558,12 @@ session_ledger:
 runtime_context:
   enable_user_memory: true
   enable_skills: true
+integrations:
+  feishu:
+    long_connection:
+      poll_interval_seconds: 5
+      proxy_mode: system
+      proxy_url: ''
   enable_knowledge_base: true
   collection_retry_attempts: 3
   collection_retry_delay_seconds: 0.35

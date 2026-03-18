@@ -5,19 +5,37 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+from pathlib import Path
 
 from cryptography.fernet import Fernet
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
+_ENV_LOADED = False
+
+
+def _ensure_env_loaded() -> None:
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+    if env_path.exists():
+        load_dotenv(env_path, override=False)
+    _ENV_LOADED = True
+
 
 def _get_encryption_key() -> bytes:
+    _ensure_env_loaded()
     raw = os.getenv("LLM_ENCRYPTION_KEY")
     if not raw:
         logger.warning(
             "LLM_ENCRYPTION_KEY not set, using generated key for secret crypto (dev only)"
         )
         raw = Fernet.generate_key().decode()
+        # Keep the generated key in-process so spawned workers can decrypt the same secrets.
+        os.environ["LLM_ENCRYPTION_KEY"] = raw
     return raw.encode() if isinstance(raw, str) else raw
 
 

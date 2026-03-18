@@ -228,6 +228,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.warning(f"Failed to initialize persistent conversation runtime service: {e}")
 
+    try:
+        from api_gateway.feishu_long_connection import initialize_feishu_long_connection_manager
+
+        await initialize_feishu_long_connection_manager()
+        logger.info("Feishu long-connection manager initialized")
+    except Exception as e:
+        logger.warning(f"Failed to initialize Feishu long-connection manager: {e}")
+
     # Start projection maintenance manager
     try:
         from user_memory.projection_maintenance_manager import (
@@ -387,6 +395,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.info("Persistent conversation runtime service shutdown complete")
     except Exception as e:
         logger.error(f"Failed to shutdown persistent conversation runtime service: {e}")
+
+    try:
+        from api_gateway.feishu_long_connection import shutdown_feishu_long_connection_manager
+
+        await shutdown_feishu_long_connection_manager()
+        logger.info("Feishu long-connection manager shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown Feishu long-connection manager: {e}")
 
     # Stop projection maintenance manager
     try:

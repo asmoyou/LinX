@@ -14,6 +14,13 @@ from fastapi import APIRouter, HTTPException, Request
 
 from access_control.permissions import CurrentUser
 from agent_framework.persistent_conversations import build_default_conversation_title
+from api_gateway.feishu_publication_helpers import (
+    extract_feishu_message as _extract_feishu_message,
+    extract_feishu_message_from_long_connection_event as _extract_feishu_message_from_long_connection_event,
+    load_publication_or_raise as _load_publication_or_raise,
+    publication_secrets as _publication_secrets,
+    resolve_public_web_base_url as _resolve_public_web_base_url,
+)
 from api_gateway.routers.agent_conversations import execute_persistent_conversation_turn
 from database.connection import get_db_session
 from database.models import (
@@ -28,7 +35,6 @@ from database.models import (
 )
 from shared.binding_codes import hash_user_binding_code, normalize_user_binding_code
 from shared.logging import get_logger
-from shared.secret_crypto import decrypt_text
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -39,36 +45,6 @@ _TENANT_TOKEN_CACHE: dict[str, tuple[str, datetime]] = {}
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _load_publication_or_raise(session, publication_id: str) -> AgentChannelPublication:
-    try:
-        publication_uuid = UUID(publication_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Invalid publication id") from exc
-
-    publication = (
-        session.query(AgentChannelPublication)
-        .filter(AgentChannelPublication.publication_id == publication_uuid)
-        .filter(AgentChannelPublication.channel_type == "feishu")
-        .first()
-    )
-    if publication is None:
-        raise HTTPException(status_code=404, detail="Feishu publication not found")
-    return publication
-
-
-def _publication_secrets(publication: AgentChannelPublication) -> dict[str, str]:
-    encrypted = (
-        dict(publication.secret_encrypted_json or {})
-        if isinstance(publication.secret_encrypted_json, dict)
-        else {}
-    )
-    secrets: dict[str, str] = {}
-    for key, value in encrypted.items():
-        if value:
-            secrets[key] = decrypt_text(str(value))
-    return secrets
 
 
 def _validate_feishu_verification_token(
@@ -84,42 +60,15 @@ def _validate_feishu_verification_token(
         raise HTTPException(status_code=403, detail="Invalid Feishu verification token")
 
 
-def _extract_feishu_message(payload: dict[str, Any]) -> dict[str, Any] | None:
-    header = payload.get("header") or {}
-    if header.get("event_type") not in {"im.message.receive_v1"}:
-        return None
-
-    event = payload.get("event") or {}
-    message = event.get("message") or {}
-    sender = event.get("sender") or {}
-    sender_id = sender.get("sender_id") or {}
-    raw_content = message.get("content") or "{}"
-    try:
-        parsed_content = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
-    except json.JSONDecodeError:
-        parsed_content = {}
-
-    return {
-        "event_id": header.get("event_id") or message.get("message_id"),
-        "message_type": message.get("message_type"),
-        "chat_id": message.get("chat_id"),
-        "chat_type": message.get("chat_type"),
-        "thread_key": message.get("root_id") or message.get("parent_id") or message.get("chat_id"),
-        "text": str(parsed_content.get("text") or "").strip(),
-        "open_id": sender_id.get("open_id"),
-        "external_user_id": sender_id.get("user_id"),
-        "union_id": sender_id.get("union_id"),
-        "tenant_key": header.get("tenant_key"),
-    }
-
-
 def _get_feishu_tenant_access_token(publication: AgentChannelPublication) -> str:
     cache_key = str(publication.publication_id)
     cached = _TENANT_TOKEN_CACHE.get(cache_key)
     if cached and cached[1] > _utc_now():
         return cached[0]
 
-    config = dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
+    config = (
+        dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
+    )
     secrets = _publication_secrets(publication)
     app_id = str(config.get("app_id") or "").strip()
     app_secret = str(secrets.get("app_secret") or "").strip()
@@ -159,7 +108,11 @@ def _send_feishu_text_message(
         f"{_FEISHU_API_BASE}/im/v1/messages",
         params={"receive_id_type": "chat_id"},
         headers={"Authorization": f"Bearer {tenant_access_token}"},
-        json={"receive_id": chat_id, "msg_type": "text", "content": json.dumps({"text": text}, ensure_ascii=False)},
+        json={
+            "receive_id": chat_id,
+            "msg_type": "text",
+            "content": json.dumps({"text": text}, ensure_ascii=False),
+        },
         timeout=20,
     )
     response.raise_for_status()
@@ -192,7 +145,9 @@ def _find_external_binding(
     external_user_id: str | None,
     union_id: str | None,
 ) -> UserExternalBinding | None:
-    query = session.query(UserExternalBinding).filter(UserExternalBinding.publication_id == publication_id)
+    query = session.query(UserExternalBinding).filter(
+        UserExternalBinding.publication_id == publication_id
+    )
     if open_id:
         row = query.filter(UserExternalBinding.external_open_id == open_id).first()
         if row:
@@ -336,11 +291,11 @@ def _conversation_already_processed(
 
 def _build_feishu_reply_text(
     *,
-    request: Request,
     agent: Agent,
     conversation: AgentConversation,
     output_text: str,
     artifacts: list[dict[str, Any]] | None,
+    base_url: str | None = None,
 ) -> str:
     base_text = output_text.strip() or "Agent execution completed."
     file_paths = [
@@ -352,9 +307,10 @@ def _build_feishu_reply_text(
         return base_text
 
     workspace_paths = "\n".join(f"- /workspace/{path}" for path in file_paths[:5])
-    conversation_url = (
-        f"{str(request.base_url).rstrip('/')}/workforce/{agent.agent_id}/conversations/{conversation.conversation_id}"
-    )
+    if not base_url:
+        return f"{base_text}\n\n已更新工作区文件:\n{workspace_paths}"
+
+    conversation_url = f"{base_url.rstrip('/')}/workforce/{agent.agent_id}/conversations/{conversation.conversation_id}"
     return (
         f"{base_text}\n\n"
         f"已更新工作区文件:\n{workspace_paths}\n\n"
@@ -362,25 +318,17 @@ def _build_feishu_reply_text(
     )
 
 
-@router.post("/feishu/{publication_id}/events")
-async def handle_feishu_events(publication_id: str, request: Request):
-    try:
-        payload = await request.json()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
-
+async def process_feishu_publication_message(
+    publication_id: str | UUID,
+    message: dict[str, Any],
+    *,
+    base_url: str | None = None,
+) -> dict[str, Any]:
     with get_db_session() as session:
-        publication = _load_publication_or_raise(session, publication_id)
+        publication = _load_publication_or_raise(session, str(publication_id))
         if publication.status != "published":
-            raise HTTPException(status_code=409, detail="Feishu publication is not active")
-        _validate_feishu_verification_token(payload, publication)
+            return {"success": False, "ignored": True, "reason": "publication_inactive"}
 
-        if payload.get("type") == "url_verification":
-            return {"challenge": payload.get("challenge")}
-
-        message = _extract_feishu_message(payload)
-        if message is None:
-            return {"success": True, "ignored": True}
         if message.get("chat_type") != "p2p":
             await asyncio.to_thread(
                 _send_feishu_text_message,
@@ -484,11 +432,11 @@ async def handle_feishu_events(publication_id: str, request: Request):
         return {"success": True, "duplicate": True}
 
     reply_text = _build_feishu_reply_text(
-        request=request,
         agent=agent,
         conversation=conversation,
         output_text=str(result.get("output") or ""),
         artifacts=result.get("artifacts") or [],
+        base_url=base_url or _resolve_public_web_base_url(),
     )
     await asyncio.to_thread(
         _send_feishu_text_message,
@@ -497,3 +445,29 @@ async def handle_feishu_events(publication_id: str, request: Request):
         text=reply_text,
     )
     return {"success": True}
+
+
+@router.post("/feishu/{publication_id}/events")
+async def handle_feishu_events(publication_id: str, request: Request):
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+
+    with get_db_session() as session:
+        publication = _load_publication_or_raise(session, publication_id)
+        if publication.status != "published":
+            raise HTTPException(status_code=409, detail="Feishu publication is not active")
+        _validate_feishu_verification_token(payload, publication)
+
+        if payload.get("type") == "url_verification":
+            return {"challenge": payload.get("challenge")}
+
+        message = _extract_feishu_message(payload)
+        if message is None:
+            return {"success": True, "ignored": True}
+    return await process_feishu_publication_message(
+        publication_id,
+        message,
+        base_url=_resolve_public_web_base_url(request),
+    )

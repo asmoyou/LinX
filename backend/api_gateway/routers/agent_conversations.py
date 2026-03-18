@@ -109,26 +109,23 @@ class ReleaseConversationRuntimeResponse(BaseModel):
 
 class FeishuPublicationConfigRequest(BaseModel):
     appId: str = Field(..., min_length=1, max_length=255)
-    botName: Optional[str] = Field(default=None, max_length=255)
-    tenantKey: Optional[str] = Field(default=None, max_length=255)
     appSecret: Optional[str] = Field(default=None, max_length=2000)
-    verificationToken: Optional[str] = Field(default=None, max_length=2000)
-    encryptKey: Optional[str] = Field(default=None, max_length=2000)
 
 
 class FeishuPublicationResponse(BaseModel):
     publicationId: Optional[str] = None
     channelType: str = "feishu"
+    deliveryMode: str = "long_connection"
     status: str
     channelIdentity: Optional[str] = None
-    botName: Optional[str] = None
     appId: Optional[str] = None
-    tenantKey: Optional[str] = None
-    webhookPath: Optional[str] = None
-    webhookUrl: Optional[str] = None
     hasAppSecret: bool = False
-    hasVerificationToken: bool = False
-    hasEncryptKey: bool = False
+    connectionState: str = "inactive"
+    connectionStatusUpdatedAt: Optional[datetime] = None
+    lastConnectedAt: Optional[datetime] = None
+    lastEventAt: Optional[datetime] = None
+    lastErrorAt: Optional[datetime] = None
+    lastErrorMessage: Optional[str] = None
 
 
 def _latest_snapshot_status_payload(
@@ -224,6 +221,26 @@ def _serialize_message(message: AgentConversationMessage) -> AgentConversationMe
     )
 
 
+def _parse_optional_datetime(value: Any) -> Optional[datetime]:
+    if value in {None, ""}:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        normalized = str(value).replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized)
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_feishu_runtime_state(publication: AgentChannelPublication | None) -> dict[str, Any]:
+    if publication is None:
+        return {}
+    config = dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
+    runtime = config.get("long_connection_runtime")
+    return dict(runtime or {}) if isinstance(runtime, dict) else {}
+
+
 def _build_absolute_url(request: Request, path: Optional[str]) -> Optional[str]:
     if not path:
         return None
@@ -249,23 +266,31 @@ def _serialize_feishu_publication(
         return FeishuPublicationResponse(status="draft")
 
     config = dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
+    runtime = _get_feishu_runtime_state(publication)
     secrets = (
         dict(publication.secret_encrypted_json or {})
         if isinstance(publication.secret_encrypted_json, dict)
         else {}
     )
+    from api_gateway.routers.integrations import _publication_secrets
+
+    decrypted_secrets = _publication_secrets(publication)
     return FeishuPublicationResponse(
         publicationId=str(publication.publication_id),
         status=publication.status,
         channelIdentity=publication.channel_identity,
-        botName=config.get("bot_name"),
         appId=config.get("app_id"),
-        tenantKey=config.get("tenant_key"),
-        webhookPath=publication.webhook_path,
-        webhookUrl=_build_absolute_url(request, publication.webhook_path),
-        hasAppSecret=bool(secrets.get("app_secret")),
-        hasVerificationToken=bool(secrets.get("verification_token")),
-        hasEncryptKey=bool(secrets.get("encrypt_key")),
+        hasAppSecret=bool(decrypted_secrets.get("app_secret")),
+        connectionState=(
+            str(runtime.get("state") or "inactive")
+            if publication.status == "published"
+            else "inactive"
+        ),
+        connectionStatusUpdatedAt=_parse_optional_datetime(runtime.get("updated_at")),
+        lastConnectedAt=_parse_optional_datetime(runtime.get("last_connected_at")),
+        lastEventAt=_parse_optional_datetime(runtime.get("last_event_at")),
+        lastErrorAt=_parse_optional_datetime(runtime.get("last_error_at")),
+        lastErrorMessage=str(runtime.get("last_error_message") or "").strip() or None,
     )
 
 
@@ -288,8 +313,8 @@ def _upsert_feishu_publication(
 
     config = dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
     config["app_id"] = payload.appId.strip()
-    config["bot_name"] = str(payload.botName or "").strip() or None
-    config["tenant_key"] = str(payload.tenantKey or "").strip() or None
+    config.pop("bot_name", None)
+    config.pop("tenant_key", None)
     publication.config_json = config
     publication.channel_identity = config["app_id"]
 
@@ -300,10 +325,8 @@ def _upsert_feishu_publication(
     )
     if payload.appSecret:
         secrets["app_secret"] = encrypt_text(payload.appSecret.strip())
-    if payload.verificationToken:
-        secrets["verification_token"] = encrypt_text(payload.verificationToken.strip())
-    if payload.encryptKey:
-        secrets["encrypt_key"] = encrypt_text(payload.encryptKey.strip())
+    secrets.pop("verification_token", None)
+    secrets.pop("encrypt_key", None)
     publication.secret_encrypted_json = secrets or None
     publication.updated_at = now
     return publication
@@ -1344,6 +1367,29 @@ async def save_agent_feishu_publication(
         publication = _upsert_feishu_publication(session=session, agent_id=agent_uuid, payload=payload)
         session.commit()
         session.refresh(publication)
+        try:
+            from api_gateway.feishu_long_connection import (
+                get_feishu_long_connection_manager,
+                update_feishu_long_connection_runtime,
+            )
+
+            if publication.status == "published":
+                update_feishu_long_connection_runtime(
+                    str(publication.publication_id),
+                    state="connecting",
+                    clear_last_error=True,
+                )
+            else:
+                update_feishu_long_connection_runtime(
+                    str(publication.publication_id),
+                    state="inactive",
+                    clear_last_error=True,
+                )
+
+            get_feishu_long_connection_manager().request_reconcile()
+            session.refresh(publication)
+        except Exception:
+            logger.debug("Failed to request Feishu long-connection reconcile after save")
         return _serialize_feishu_publication(publication, request=request)
 
 
@@ -1360,17 +1406,14 @@ async def publish_agent_feishu_publication(
             raise HTTPException(status_code=400, detail="Feishu publication config not found")
 
         config = dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
-        secrets = (
-            dict(publication.secret_encrypted_json or {})
-            if isinstance(publication.secret_encrypted_json, dict)
-            else {}
-        )
+        from api_gateway.routers.integrations import _publication_secrets
+
+        secrets = _publication_secrets(publication)
         missing_fields = [
             field_name
             for field_name, configured in {
                 "appId": bool(config.get("app_id")),
                 "appSecret": bool(secrets.get("app_secret")),
-                "verificationToken": bool(secrets.get("verification_token")),
             }.items()
             if not configured
         ]
@@ -1382,10 +1425,26 @@ async def publish_agent_feishu_publication(
 
         publication.status = "published"
         publication.channel_identity = config.get("app_id")
-        publication.webhook_path = f"/api/v1/integrations/feishu/{publication.publication_id}/events"
+        publication.webhook_path = None
         publication.updated_at = datetime.now(timezone.utc)
         session.commit()
         session.refresh(publication)
+        try:
+            from api_gateway.feishu_long_connection import (
+                get_feishu_long_connection_manager,
+                update_feishu_long_connection_runtime,
+            )
+
+            update_feishu_long_connection_runtime(
+                str(publication.publication_id),
+                state="connecting",
+                clear_last_error=True,
+            )
+
+            get_feishu_long_connection_manager().request_reconcile()
+            session.refresh(publication)
+        except Exception:
+            logger.debug("Failed to request Feishu long-connection reconcile after publish")
         return _serialize_feishu_publication(publication, request=request)
 
 
@@ -1400,8 +1459,25 @@ async def unpublish_agent_feishu_publication(
         publication = _load_feishu_publication(session, agent_uuid)
         if publication is None:
             return _serialize_feishu_publication(None, request=request)
-        publication.status = "disabled"
+        publication.status = "draft"
+        publication.webhook_path = None
         publication.updated_at = datetime.now(timezone.utc)
         session.commit()
         session.refresh(publication)
+        try:
+            from api_gateway.feishu_long_connection import (
+                get_feishu_long_connection_manager,
+                update_feishu_long_connection_runtime,
+            )
+
+            update_feishu_long_connection_runtime(
+                str(publication.publication_id),
+                state="inactive",
+                clear_last_error=True,
+            )
+
+            get_feishu_long_connection_manager().request_reconcile()
+            session.refresh(publication)
+        except Exception:
+            logger.debug("Failed to request Feishu long-connection reconcile after unpublish")
         return _serialize_feishu_publication(publication, request=request)

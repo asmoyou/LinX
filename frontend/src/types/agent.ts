@@ -74,14 +74,15 @@ export interface ConversationMessage {
 export interface FeishuPublicationConfig {
   publicationId?: string | null;
   channelType: 'feishu';
+  deliveryMode: 'long_connection';
   status: string;
   channelIdentity?: string | null;
-  botName?: string | null;
   appId?: string | null;
-  tenantKey?: string | null;
-  webhookPath?: string | null;
-  webhookUrl?: string | null;
   hasAppSecret: boolean;
-  hasVerificationToken: boolean;
-  hasEncryptKey: boolean;
+  connectionState: 'inactive' | 'connecting' | 'connected' | 'error' | string;
+  connectionStatusUpdatedAt?: string | null;
+  lastConnectedAt?: string | null;
+  lastEventAt?: string | null;
+  lastErrorAt?: string | null;
+  lastErrorMessage?: string | null;
 }

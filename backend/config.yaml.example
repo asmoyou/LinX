@@ -811,6 +811,13 @@ runtime_context:
   enable_skills: true
   enable_knowledge_base: true
 
+integrations:
+  feishu:
+    long_connection:
+      poll_interval_seconds: 5
+      proxy_mode: system  # direct | system | explicit
+      proxy_url: ""  # Required when proxy_mode=explicit
+
 # ============================================================================
 # Knowledge Base Configuration
 # ============================================================================

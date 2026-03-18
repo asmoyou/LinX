@@ -1,23 +1,34 @@
-import React, { useState, useEffect } from 'react';
-import { useTranslation } from 'react-i18next';
-import { X, Save, Loader2, AlertCircle, Info, Copy, Bot, Link as LinkIcon, Power, Radio } from 'lucide-react';
-import toast from 'react-hot-toast';
-import type { Agent } from '@/types/agent';
-import type { AgentSkillSummary, FeishuPublicationConfig } from '@/types/agent';
-import { llmApi, agentsApi } from '@/api';
-import { knowledgeApi } from '@/api/knowledge';
-import type { SaveFeishuPublicationRequest } from '@/api/agents';
-import type { ModelMetadata } from '@/api/llm';
-import type { Collection } from '@/types/document';
-import { ModelMetadataCard } from '@/components/settings/ModelMetadataCard';
-import { ImageCropModal } from '@/components/common/ImageCropModal';
-import { DepartmentSelect } from '@/components/departments/DepartmentSelect';
-import { LayoutModal } from '@/components/LayoutModal';
+import React, { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
+import {
+  X,
+  Save,
+  Loader2,
+  AlertCircle,
+  Info,
+  Bot,
+  Link as LinkIcon,
+  Power,
+  Radio,
+  RefreshCw,
+} from "lucide-react";
+import toast from "react-hot-toast";
+import type { Agent } from "@/types/agent";
+import type { AgentSkillSummary, FeishuPublicationConfig } from "@/types/agent";
+import { llmApi, agentsApi } from "@/api";
+import { knowledgeApi } from "@/api/knowledge";
+import type { SaveFeishuPublicationRequest } from "@/api/agents";
+import type { ModelMetadata } from "@/api/llm";
+import type { Collection } from "@/types/document";
+import { ModelMetadataCard } from "@/components/settings/ModelMetadataCard";
+import { ImageCropModal } from "@/components/common/ImageCropModal";
+import { DepartmentSelect } from "@/components/departments/DepartmentSelect";
+import { LayoutModal } from "@/components/LayoutModal";
 
-type MemoryScope = 'skills' | 'user_memory';
+type MemoryScope = "skills" | "user_memory";
 const MEMORY_SCOPE_ALIAS_MAP: Record<string, MemoryScope> = {
-  skills: 'skills',
-  user_memory: 'user_memory',
+  skills: "skills",
+  user_memory: "user_memory",
 };
 
 const normalizeMemoryScopes = (scopes?: string[]): MemoryScope[] => {
@@ -27,7 +38,7 @@ const normalizeMemoryScopes = (scopes?: string[]): MemoryScope[] => {
 
   const normalized: MemoryScope[] = [];
   for (const rawScope of scopes) {
-    const scope = (rawScope || '').trim().toLowerCase();
+    const scope = (rawScope || "").trim().toLowerCase();
     const canonicalScope = MEMORY_SCOPE_ALIAS_MAP[scope];
     if (canonicalScope && !normalized.includes(canonicalScope)) {
       normalized.push(canonicalScope);
@@ -49,51 +60,63 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   onClose,
   onSave,
 }) => {
-  const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<'basic' | 'capabilities' | 'model' | 'knowledge' | 'access' | 'channels'>('basic');
+  const { t, i18n } = useTranslation();
+  const [activeTab, setActiveTab] = useState<
+    "basic" | "capabilities" | "model" | "knowledge" | "access" | "channels"
+  >("basic");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoadingProviders, setIsLoadingProviders] = useState(false);
-  const [availableProviders, setAvailableProviders] = useState<Record<string, string[]>>({});
+  const [availableProviders, setAvailableProviders] = useState<
+    Record<string, string[]>
+  >({});
   const [providersError, setProvidersError] = useState<string | null>(null);
-  const [modelMetadata, setModelMetadata] = useState<ModelMetadata | null>(null);
+  const [modelMetadata, setModelMetadata] = useState<ModelMetadata | null>(
+    null,
+  );
   const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
   const [isAvatarCropModalOpen, setIsAvatarCropModalOpen] = useState(false);
-  const [avatarPreview, setAvatarPreview] = useState<string>('');  // presigned URL for display
-  const [availableKnowledgeBases, setAvailableKnowledgeBases] = useState<Collection[]>([]);
+  const [avatarPreview, setAvatarPreview] = useState<string>(""); // presigned URL for display
+  const [availableKnowledgeBases, setAvailableKnowledgeBases] = useState<
+    Collection[]
+  >([]);
   const [isLoadingKnowledgeBases, setIsLoadingKnowledgeBases] = useState(false);
-  const [knowledgeBasesError, setKnowledgeBasesError] = useState<string | null>(null);
-  
+  const [knowledgeBasesError, setKnowledgeBasesError] = useState<string | null>(
+    null,
+  );
+
   // Skills state
-  const [availableSkills, setAvailableSkills] = useState<AgentSkillSummary[]>([]);
+  const [availableSkills, setAvailableSkills] = useState<AgentSkillSummary[]>(
+    [],
+  );
   const [isLoadingSkills, setIsLoadingSkills] = useState(false);
   const [skillsError, setSkillsError] = useState<string | null>(null);
-  const [feishuPublication, setFeishuPublication] = useState<FeishuPublicationConfig | null>(null);
-  const [feishuFormData, setFeishuFormData] = useState<SaveFeishuPublicationRequest>({
-    appId: '',
-    botName: '',
-    tenantKey: '',
-    appSecret: '',
-    verificationToken: '',
-    encryptKey: '',
-  });
-  const [isLoadingFeishuPublication, setIsLoadingFeishuPublication] = useState(false);
-  const [isSavingFeishuPublication, setIsSavingFeishuPublication] = useState(false);
+  const [feishuPublication, setFeishuPublication] =
+    useState<FeishuPublicationConfig | null>(null);
+  const [feishuFormData, setFeishuFormData] =
+    useState<SaveFeishuPublicationRequest>({
+      appId: "",
+      appSecret: "",
+    });
+  const [isLoadingFeishuPublication, setIsLoadingFeishuPublication] =
+    useState(false);
+  const [isSavingFeishuPublication, setIsSavingFeishuPublication] =
+    useState(false);
   const [feishuError, setFeishuError] = useState<string | null>(null);
 
   const [formData, setFormData] = useState<Partial<Agent>>({
-    name: '',
-    type: '',
-    avatar: '',
-    systemPrompt: '',
+    name: "",
+    type: "",
+    avatar: "",
+    systemPrompt: "",
     skill_ids: [],
-    model: '',
-    provider: '',
+    model: "",
+    provider: "",
     temperature: 0.7,
     maxTokens: 4096,
     topP: 0.9,
-    departmentId: '',
-    accessLevel: 'private',
+    departmentId: "",
+    accessLevel: "private",
     allowedKnowledge: [],
     allowedMemory: [],
     topK: 5,
@@ -102,28 +125,34 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
   // Initialize form data when agent changes
   useEffect(() => {
-    console.log('[AgentConfigModal] Agent or isOpen changed:', { agent, isOpen });
+    console.log("[AgentConfigModal] Agent or isOpen changed:", {
+      agent,
+      isOpen,
+    });
     if (agent && isOpen) {
-      console.log('[AgentConfigModal] Initializing form with agent data:', agent);
+      console.log(
+        "[AgentConfigModal] Initializing form with agent data:",
+        agent,
+      );
       setFormData({
-        name: agent.name || '',
-        type: agent.type || '',
-        avatar: agent.avatar || '',
-        systemPrompt: agent.systemPrompt || '',
+        name: agent.name || "",
+        type: agent.type || "",
+        avatar: agent.avatar || "",
+        systemPrompt: agent.systemPrompt || "",
         skill_ids: agent.skill_ids || [],
-        model: agent.model || '',
-        provider: agent.provider || '',
+        model: agent.model || "",
+        provider: agent.provider || "",
         temperature: agent.temperature ?? 0.7,
         maxTokens: agent.maxTokens ?? 4096,
         topP: agent.topP ?? 0.9,
-        departmentId: agent.departmentId || '',
-        accessLevel: agent.accessLevel || 'private',
+        departmentId: agent.departmentId || "",
+        accessLevel: agent.accessLevel || "private",
         allowedKnowledge: agent.allowedKnowledge || [],
         allowedMemory: normalizeMemoryScopes(agent.allowedMemory || []),
         topK: agent.topK || 5,
         similarityThreshold: agent.similarityThreshold ?? 0.3,
       });
-      setAvatarPreview(agent.avatar || '');
+      setAvatarPreview(agent.avatar || "");
       setSaveError(null);
       setModelMetadata(null);
     }
@@ -135,9 +164,36 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       fetchAvailableProviders();
       fetchAvailableSkills();
       fetchKnowledgeBases();
-      fetchFeishuPublication();
+      void fetchFeishuPublication();
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (
+      !isOpen ||
+      activeTab !== "channels" ||
+      !agent?.id ||
+      feishuPublication?.status !== "published"
+    ) {
+      return;
+    }
+
+    const pollIntervalMs =
+      getFeishuConnectionState(feishuPublication) === "connecting"
+        ? 1000
+        : 5000;
+    const timer = window.setInterval(() => {
+      void fetchFeishuPublication({ silent: true });
+    }, pollIntervalMs);
+
+    return () => window.clearInterval(timer);
+  }, [
+    activeTab,
+    agent?.id,
+    feishuPublication?.connectionState,
+    feishuPublication?.status,
+    isOpen,
+  ]);
 
   // Fetch model metadata when provider and model are selected
   // Only fetch if both are set and not empty, and not currently loading
@@ -150,20 +206,23 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   }, [isOpen, formData.provider, formData.model]);
 
   const fetchAvailableProviders = async () => {
-    console.log('[AgentConfigModal] Fetching available providers...');
+    console.log("[AgentConfigModal] Fetching available providers...");
     setIsLoadingProviders(true);
     setProvidersError(null);
     try {
       const response = await llmApi.getAvailableProviders();
-      console.log('[AgentConfigModal] Available providers loaded:', response);
+      console.log("[AgentConfigModal] Available providers loaded:", response);
       setAvailableProviders(response);
-      
+
       // DON'T auto-select provider/model - this was causing the bug!
       // The agent's existing configuration should be preserved
       // formData is already initialized from agent prop in the useEffect above
     } catch (error: any) {
-      console.error('Failed to fetch available providers:', error);
-      const errorMsg = error.response?.data?.message || error.message || 'Failed to load available providers';
+      console.error("Failed to fetch available providers:", error);
+      const errorMsg =
+        error.response?.data?.message ||
+        error.message ||
+        "Failed to load available providers";
       setProvidersError(`${errorMsg}. Please check your LLM configuration.`);
     } finally {
       setIsLoadingProviders(false);
@@ -180,7 +239,10 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       const allCollections: Collection[] = [];
 
       while (allCollections.length < total) {
-        const response = await knowledgeApi.getCollections({ page, page_size: pageSize });
+        const response = await knowledgeApi.getCollections({
+          page,
+          page_size: pageSize,
+        });
         allCollections.push(...response.collections);
         total = response.total;
         if (response.collections.length < pageSize) {
@@ -192,81 +254,101 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       allCollections.sort((a, b) => a.name.localeCompare(b.name));
       setAvailableKnowledgeBases(allCollections);
     } catch (error: any) {
-      console.error('Failed to fetch knowledge collections:', error);
+      console.error("Failed to fetch knowledge collections:", error);
       const errorMsg =
         error.response?.data?.detail ||
         error.response?.data?.message ||
         error.message ||
-        'Failed to load knowledge bases';
+        "Failed to load knowledge bases";
       setKnowledgeBasesError(errorMsg);
       setAvailableKnowledgeBases([]);
     } finally {
       setIsLoadingKnowledgeBases(false);
     }
   };
-  
+
   const fetchAvailableSkills = async () => {
     if (!agent?.id) return;
-    
-    console.log('[AgentConfigModal] Fetching available skills...');
+
+    console.log("[AgentConfigModal] Fetching available skills...");
     setIsLoadingSkills(true);
     setSkillsError(null);
     try {
       const response = await agentsApi.getAgentSkills(agent.id);
-      console.log('[AgentConfigModal] Skills loaded:', response);
+      console.log("[AgentConfigModal] Skills loaded:", response);
       setAvailableSkills(response.available_skills || []);
-      
+
       // Update form data with configured skills if not already set
       if (!formData.skill_ids || formData.skill_ids.length === 0) {
-        setFormData(prev => ({
+        setFormData((prev) => ({
           ...prev,
-          skill_ids: response.configured_skill_ids || []
+          skill_ids: response.configured_skill_ids || [],
         }));
       }
     } catch (error: any) {
-      console.error('Failed to fetch available skills:', error);
-      const errorMsg = error.response?.data?.message || error.message || 'Failed to load skills';
+      console.error("Failed to fetch available skills:", error);
+      const errorMsg =
+        error.response?.data?.message ||
+        error.message ||
+        "Failed to load skills";
       setSkillsError(errorMsg);
     } finally {
       setIsLoadingSkills(false);
     }
   };
 
-  const fetchFeishuPublication = async () => {
+  const fetchFeishuPublication = async ({
+    silent = false,
+  }: { silent?: boolean } = {}) => {
     if (!agent?.id) return;
-    setIsLoadingFeishuPublication(true);
-    setFeishuError(null);
+    if (!silent) {
+      setIsLoadingFeishuPublication(true);
+      setFeishuError(null);
+    }
     try {
       const publication = await agentsApi.getFeishuPublication(agent.id);
       setFeishuPublication(publication);
-      setFeishuFormData({
-        appId: publication.appId || '',
-        botName: publication.botName || '',
-        tenantKey: publication.tenantKey || '',
-        appSecret: '',
-        verificationToken: '',
-        encryptKey: '',
+      setFeishuFormData((prev) => {
+        const hasUnsavedChanges =
+          trimFeishuAppId(prev.appId) !==
+            trimFeishuAppId(feishuPublication?.appId || "") ||
+          Boolean(prev.appSecret?.trim());
+        if (silent && hasUnsavedChanges) {
+          return prev;
+        }
+        return {
+          appId: publication.appId || "",
+          appSecret: "",
+        };
       });
     } catch (error: any) {
-      console.error('Failed to fetch Feishu publication:', error);
-      setFeishuError(error.response?.data?.detail || error.message || 'Failed to load Feishu publication');
-      setFeishuPublication(null);
+      console.error("Failed to fetch Feishu publication:", error);
+      if (!silent) {
+        setFeishuError(
+          error.response?.data?.detail ||
+            error.message ||
+            t("agent.feishuLoadFailed", "Failed to load Feishu publication"),
+        );
+        setFeishuPublication(null);
+      }
     } finally {
-      setIsLoadingFeishuPublication(false);
+      if (!silent) {
+        setIsLoadingFeishuPublication(false);
+      }
     }
   };
-  
+
   const toggleSkill = (skillId: string) => {
     const currentSkills = formData.skill_ids || [];
     const isSelected = currentSkills.includes(skillId);
-    
+
     const newSkills = isSelected
-      ? currentSkills.filter(s => s !== skillId)
+      ? currentSkills.filter((s) => s !== skillId)
       : [...currentSkills, skillId];
-    
+
     setFormData({
       ...formData,
-      skill_ids: newSkills
+      skill_ids: newSkills,
     });
   };
 
@@ -293,32 +375,38 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   };
 
   const resolveEffectiveMemoryScopes = (): string[] => {
-    const normalizedSelected = normalizeMemoryScopes(formData.allowedMemory || []);
+    const normalizedSelected = normalizeMemoryScopes(
+      formData.allowedMemory || [],
+    );
     if (normalizedSelected.length > 0) {
       return normalizedSelected;
     }
-    return ['skills', 'user_memory'];
+    return ["skills", "user_memory"];
   };
 
   const fetchModelMetadata = async (provider: string, model: string) => {
     // Prevent duplicate requests
     if (isLoadingMetadata) {
-      console.log('[AgentConfigModal] Skipping metadata fetch - already loading');
+      console.log(
+        "[AgentConfigModal] Skipping metadata fetch - already loading",
+      );
       return;
     }
-    
-    console.log(`[AgentConfigModal] Fetching metadata for ${provider}/${model}`);
+
+    console.log(
+      `[AgentConfigModal] Fetching metadata for ${provider}/${model}`,
+    );
     setIsLoadingMetadata(true);
     try {
       const metadata = await llmApi.getModelMetadata(provider, model);
-      console.log('[AgentConfigModal] Metadata loaded:', metadata);
+      console.log("[AgentConfigModal] Metadata loaded:", metadata);
       setModelMetadata(metadata);
-      
+
       // DON'T auto-update temperature/maxTokens if user has already set them
       // Only update if they're at default values AND agent doesn't have custom values
       // This prevents overwriting user's choices
     } catch (error: any) {
-      console.error('Failed to fetch model metadata:', error);
+      console.error("Failed to fetch model metadata:", error);
       setModelMetadata(null);
     } finally {
       setIsLoadingMetadata(false);
@@ -331,7 +419,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     setFormData({
       ...formData,
       provider: newProvider,
-      model: models[0] || '', // Select first model by default
+      model: models[0] || "", // Select first model by default
     });
   };
 
@@ -339,18 +427,21 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const handleAvatarCropComplete = async (croppedBlob: Blob) => {
     try {
       if (!agent) return;
-      
+
       // Upload to MinIO via API
       const result = await agentsApi.uploadAvatar(agent.id, croppedBlob);
 
       // Store minio reference for DB persistence, presigned URL for display
       setFormData({ ...formData, avatar: result.avatar_ref });
       setAvatarPreview(result.avatar_url);
-      
-      toast.success('Avatar uploaded successfully');
+
+      toast.success("Avatar uploaded successfully");
     } catch (error: any) {
-      console.error('Failed to upload avatar:', error);
-      const errorMsg = error.response?.data?.detail || error.message || 'Failed to upload avatar';
+      console.error("Failed to upload avatar:", error);
+      const errorMsg =
+        error.response?.data?.detail ||
+        error.message ||
+        "Failed to upload avatar";
       toast.error(errorMsg);
     }
   };
@@ -358,40 +449,47 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   if (!isOpen || !agent) return null;
 
   const handleSave = async () => {
-    console.log('[AgentConfigModal] handleSave called');
-    console.log('[AgentConfigModal] formData:', formData);
-    
+    console.log("[AgentConfigModal] handleSave called");
+    console.log("[AgentConfigModal] formData:", formData);
+
     // Validate required fields
     if (!formData.name?.trim()) {
-      console.log('[AgentConfigModal] Validation failed: name required');
-      setSaveError('Agent name is required');
+      console.log("[AgentConfigModal] Validation failed: name required");
+      setSaveError("Agent name is required");
       return;
     }
-    
+
     if (!formData.provider) {
-      console.log('[AgentConfigModal] Validation failed: provider required');
-      setSaveError('Please select a provider');
+      console.log("[AgentConfigModal] Validation failed: provider required");
+      setSaveError("Please select a provider");
       return;
     }
-    
+
     if (!formData.model) {
-      console.log('[AgentConfigModal] Validation failed: model required');
-      setSaveError('Please select a model');
+      console.log("[AgentConfigModal] Validation failed: model required");
+      setSaveError("Please select a model");
       return;
     }
 
     // Clear any previous errors and start saving
-    console.log('[AgentConfigModal] Validation passed, starting save...');
+    console.log("[AgentConfigModal] Validation passed, starting save...");
     setSaveError(null);
     setIsSaving(true);
-    
+
     try {
-      const shouldNormalizeKnowledge = !knowledgeBasesError && !isLoadingKnowledgeBases;
-      const availableKnowledgeIds = new Set(availableKnowledgeBases.map((item) => item.id));
+      const shouldNormalizeKnowledge =
+        !knowledgeBasesError && !isLoadingKnowledgeBases;
+      const availableKnowledgeIds = new Set(
+        availableKnowledgeBases.map((item) => item.id),
+      );
       const normalizedAllowedKnowledge = shouldNormalizeKnowledge
-        ? (formData.allowedKnowledge || []).filter((id) => availableKnowledgeIds.has(id))
-        : (formData.allowedKnowledge || []);
-      const normalizedAllowedMemory = normalizeMemoryScopes(formData.allowedMemory || []);
+        ? (formData.allowedKnowledge || []).filter((id) =>
+            availableKnowledgeIds.has(id),
+          )
+        : formData.allowedKnowledge || [];
+      const normalizedAllowedMemory = normalizeMemoryScopes(
+        formData.allowedMemory || [],
+      );
 
       const updatedAgent = {
         ...agent!,
@@ -399,87 +497,201 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         allowedKnowledge: normalizedAllowedKnowledge,
         allowedMemory: normalizedAllowedMemory,
       } as Agent;
-      console.log('[AgentConfigModal] Calling onSave with:', updatedAgent);
-      
+      console.log("[AgentConfigModal] Calling onSave with:", updatedAgent);
+
       // Call parent's onSave with updated agent data
       await onSave(updatedAgent);
-      
-      console.log('[AgentConfigModal] Save successful');
+
+      console.log("[AgentConfigModal] Save successful");
       // If we get here, save was successful
       // Parent component will close the modal
     } catch (error: any) {
       // If parent's onSave throws an error, display it in the modal
-      console.error('[AgentConfigModal] Save failed:', error);
-      
-      let errorMessage = 'Failed to save agent configuration';
-      
+      console.error("[AgentConfigModal] Save failed:", error);
+
+      let errorMessage = "Failed to save agent configuration";
+
       // Handle validation errors from backend
       if (error.response?.data?.details?.errors) {
         // Backend validation error format: { details: { errors: [...] } }
         const errors = error.response.data.details.errors;
         errorMessage = errors
           .map((err: any) => `${err.field}: ${err.message}`)
-          .join('; ');
+          .join("; ");
       } else if (error.response?.data?.message) {
         // Generic error message
         errorMessage = error.response.data.message;
       } else if (error.response?.data?.detail) {
         // FastAPI detail format
-        if (typeof error.response.data.detail === 'string') {
+        if (typeof error.response.data.detail === "string") {
           errorMessage = error.response.data.detail;
         } else if (Array.isArray(error.response.data.detail)) {
           errorMessage = error.response.data.detail
-            .map((err: any) => `${err.loc.join('.')}: ${err.msg}`)
-            .join(', ');
+            .map((err: any) => `${err.loc.join(".")}: ${err.msg}`)
+            .join(", ");
         }
       } else if (error.message) {
         errorMessage = error.message;
       }
-      
-      console.log('[AgentConfigModal] Setting error:', errorMessage);
+
+      console.log("[AgentConfigModal] Setting error:", errorMessage);
       setSaveError(errorMessage);
     } finally {
-      console.log('[AgentConfigModal] Save process complete, setting isSaving=false');
+      console.log(
+        "[AgentConfigModal] Save process complete, setting isSaving=false",
+      );
       setIsSaving(false);
     }
   };
 
   const tabs = [
-    { id: 'basic', label: t('agent.basicInfo') },
-    { id: 'capabilities', label: t('agent.capabilities') },
-    { id: 'model', label: t('agent.modelConfig') },
-    { id: 'knowledge', label: t('agent.knowledgeBase') },
-    { id: 'access', label: t('agent.dataAccess') },
-    { id: 'channels', label: t('agent.channelPublish', '渠道发布') },
+    { id: "basic", label: t("agent.basicInfo") },
+    { id: "capabilities", label: t("agent.capabilities") },
+    { id: "model", label: t("agent.modelConfig") },
+    { id: "knowledge", label: t("agent.knowledgeBase") },
+    { id: "access", label: t("agent.dataAccess") },
+    { id: "channels", label: t("agent.channelPublish", "渠道发布") },
   ];
 
-  const handleSaveFeishuPublication = async () => {
-    if (!agent?.id || !feishuFormData.appId.trim()) {
-      setFeishuError(t('agent.feishuAppIdRequired', 'Feishu App ID is required'));
-      return;
+  const trimFeishuAppId = (value: string | undefined) => value?.trim() || "";
+  const hasUnsavedFeishuChanges =
+    trimFeishuAppId(feishuFormData.appId) !==
+      trimFeishuAppId(feishuPublication?.appId || "") ||
+    Boolean(feishuFormData.appSecret?.trim());
+
+  const getFeishuConnectionState = (
+    publication: FeishuPublicationConfig | null,
+  ): string => {
+    if (!publication || publication.status !== "published") {
+      return "inactive";
     }
+    return publication.connectionState || "connecting";
+  };
+
+  const getFeishuConnectionStateLabel = (state: string): string => {
+    switch (state) {
+      case "connected":
+        return t("agent.feishuConnectionStateConnected", "Connected");
+      case "connecting":
+        return t("agent.feishuConnectionStateConnecting", "Connecting");
+      case "error":
+        return t("agent.feishuConnectionStateError", "Connection failed");
+      case "inactive":
+      default:
+        return t("agent.feishuConnectionStateInactive", "Inactive");
+    }
+  };
+
+  const getFeishuPublicationStatusLabel = (
+    status: string | undefined,
+  ): string => {
+    switch (status) {
+      case "published":
+        return t("agent.feishuPublicationStatusPublished", "Published");
+      case "draft":
+      default:
+        return t("agent.feishuPublicationStatusDraft", "Draft");
+    }
+  };
+
+  const getFeishuConnectionStateTone = (state: string): string => {
+    switch (state) {
+      case "connected":
+        return "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300";
+      case "connecting":
+        return "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300";
+      case "error":
+        return "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300";
+      case "inactive":
+      default:
+        return "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300";
+    }
+  };
+
+  const formatFeishuTimestamp = (value?: string | null) => {
+    if (!value) {
+      return "—";
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return "—";
+    }
+    return parsed.toLocaleString(
+      i18n.language.startsWith("zh") ? "zh-CN" : "en-US",
+    );
+  };
+
+  const getFeishuConnectionSummary = (
+    publication: FeishuPublicationConfig | null,
+  ) => {
+    const state = getFeishuConnectionState(publication);
+    if (!publication || publication.status !== "published") {
+      return t(
+        "agent.feishuConnectionSavedDraft",
+        "Credentials are saved, but the channel is not enabled yet. Publish to start the long connection.",
+      );
+    }
+    if (state === "connected") {
+      return t(
+        "agent.feishuConnectionPublishedConnected",
+        "The channel is enabled and the long connection is established.",
+      );
+    }
+    if (state === "error") {
+      return t(
+        "agent.feishuConnectionPublishedError",
+        "The channel is enabled, but the latest long-connection attempt failed. Check the error and retry.",
+      );
+    }
+    return t(
+      "agent.feishuConnectionPublishedPending",
+      "The channel is enabled. The backend is trying to establish the long connection.",
+    );
+  };
+
+  const persistFeishuPublicationConfig = async ({
+    showToast = true,
+  }: {
+    showToast?: boolean;
+  } = {}): Promise<FeishuPublicationConfig> => {
+    if (!agent?.id || !feishuFormData.appId.trim()) {
+      throw new Error(
+        t("agent.feishuAppIdRequired", "Feishu App ID is required"),
+      );
+    }
+    if (!feishuFormData.appSecret?.trim() && !feishuPublication?.hasAppSecret) {
+      throw new Error(
+        t("agent.feishuAppSecretRequired", "Feishu App secret is required"),
+      );
+    }
+
+    const saved = await agentsApi.saveFeishuPublication(agent.id, {
+      appId: feishuFormData.appId.trim(),
+      appSecret: feishuFormData.appSecret?.trim() || undefined,
+    });
+    setFeishuPublication(saved);
+    setFeishuFormData({
+      appId: saved.appId || feishuFormData.appId.trim(),
+      appSecret: "",
+    });
+    if (showToast) {
+      toast.success(t("agent.feishuConfigSaved", "Feishu config saved"));
+    }
+    return saved;
+  };
+
+  const handleSaveFeishuPublication = async () => {
     setIsSavingFeishuPublication(true);
     setFeishuError(null);
     try {
-      const saved = await agentsApi.saveFeishuPublication(agent.id, {
-        appId: feishuFormData.appId.trim(),
-        botName: feishuFormData.botName?.trim() || undefined,
-        tenantKey: feishuFormData.tenantKey?.trim() || undefined,
-        appSecret: feishuFormData.appSecret?.trim() || undefined,
-        verificationToken: feishuFormData.verificationToken?.trim() || undefined,
-        encryptKey: feishuFormData.encryptKey?.trim() || undefined,
-      });
-      setFeishuPublication(saved);
-      setFeishuFormData((prev) => ({
-        ...prev,
-        appSecret: '',
-        verificationToken: '',
-        encryptKey: '',
-      }));
-      toast.success(t('agent.feishuConfigSaved', 'Feishu config saved'));
+      await persistFeishuPublicationConfig();
     } catch (error: any) {
-      console.error('Failed to save Feishu publication:', error);
-      setFeishuError(error.response?.data?.detail || error.message || 'Failed to save Feishu config');
+      console.error("Failed to save Feishu publication:", error);
+      setFeishuError(
+        error.response?.data?.detail ||
+          error.message ||
+          t("agent.feishuSaveFailed", "Failed to save Feishu config"),
+      );
     } finally {
       setIsSavingFeishuPublication(false);
     }
@@ -490,12 +702,24 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     setIsSavingFeishuPublication(true);
     setFeishuError(null);
     try {
+      if (hasUnsavedFeishuChanges || !feishuPublication?.publicationId) {
+        await persistFeishuPublicationConfig({ showToast: false });
+      }
       const published = await agentsApi.publishFeishuPublication(agent.id);
       setFeishuPublication(published);
-      toast.success(t('agent.feishuPublished', 'Feishu webhook published'));
+      toast.success(
+        t("agent.feishuPublished", "Feishu long connection enabled"),
+      );
     } catch (error: any) {
-      console.error('Failed to publish Feishu publication:', error);
-      setFeishuError(error.response?.data?.detail || error.message || 'Failed to publish Feishu webhook');
+      console.error("Failed to publish Feishu publication:", error);
+      setFeishuError(
+        error.response?.data?.detail ||
+          error.message ||
+          t(
+            "agent.feishuPublishFailed",
+            "Failed to enable Feishu long connection",
+          ),
+      );
     } finally {
       setIsSavingFeishuPublication(false);
     }
@@ -508,22 +732,21 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     try {
       const unpublished = await agentsApi.unpublishFeishuPublication(agent.id);
       setFeishuPublication(unpublished);
-      toast.success(t('agent.feishuUnpublished', 'Feishu webhook disabled'));
+      toast.success(
+        t("agent.feishuUnpublished", "Feishu long connection disabled"),
+      );
     } catch (error: any) {
-      console.error('Failed to unpublish Feishu publication:', error);
-      setFeishuError(error.response?.data?.detail || error.message || 'Failed to disable Feishu webhook');
+      console.error("Failed to unpublish Feishu publication:", error);
+      setFeishuError(
+        error.response?.data?.detail ||
+          error.message ||
+          t(
+            "agent.feishuUnpublishFailed",
+            "Failed to disable Feishu long connection",
+          ),
+      );
     } finally {
       setIsSavingFeishuPublication(false);
-    }
-  };
-
-  const handleCopyWebhook = async () => {
-    if (!feishuPublication?.webhookUrl) return;
-    try {
-      await navigator.clipboard.writeText(feishuPublication.webhookUrl);
-      toast.success(t('agent.webhookCopied', 'Webhook copied'));
-    } catch {
-      toast.error(t('agent.webhookCopyFailed', 'Failed to copy webhook'));
     }
   };
 
@@ -539,9 +762,11 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         <div className="flex items-center justify-between mb-6 pb-4 border-b border-zinc-200 dark:border-zinc-700">
           <div>
             <h2 className="text-2xl font-bold text-zinc-800 dark:text-zinc-200">
-              {t('agent.configure')}
+              {t("agent.configure")}
             </h2>
-            <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">{agent.name}</p>
+            <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">
+              {agent.name}
+            </p>
           </div>
           <button
             onClick={onClose}
@@ -559,8 +784,8 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               onClick={() => setActiveTab(tab.id as any)}
               className={`px-4 py-2 rounded-lg font-semibold text-sm whitespace-nowrap transition-all ${
                 activeTab === tab.id
-                  ? 'bg-emerald-500 text-white shadow-sm'
-                  : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+                  ? "bg-emerald-500 text-white shadow-sm"
+                  : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
               }`}
             >
               {tab.label}
@@ -571,12 +796,12 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         {/* Content */}
         <div className="flex-1 overflow-y-auto mb-6">
           {/* Basic Info Tab */}
-          {activeTab === 'basic' && (
+          {activeTab === "basic" && (
             <div className="space-y-4">
               {/* Avatar Upload */}
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.avatar')}
+                  {t("agent.avatar")}
                 </label>
                 <div className="flex items-center gap-4">
                   {/* Avatar Preview */}
@@ -589,7 +814,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                       />
                     ) : (
                       <span className="text-3xl font-bold text-white">
-                        {formData.name?.charAt(0)?.toUpperCase() || 'A'}
+                        {formData.name?.charAt(0)?.toUpperCase() || "A"}
                       </span>
                     )}
                   </div>
@@ -600,70 +825,81 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                     onClick={() => setIsAvatarCropModalOpen(true)}
                     className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg font-semibold transition-colors"
                   >
-                    {avatarPreview ? t('agent.changeAvatar') : t('agent.uploadAvatar')}
+                    {avatarPreview
+                      ? t("agent.changeAvatar")
+                      : t("agent.uploadAvatar")}
                   </button>
                 </div>
               </div>
 
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.agentName')}
+                  {t("agent.agentName")}
                 </label>
                 <input
                   type="text"
                   value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, name: e.target.value })
+                  }
                   className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
-                  placeholder={t('agent.agentNamePlaceholder')}
+                  placeholder={t("agent.agentNamePlaceholder")}
                 />
               </div>
 
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.systemPrompt')}
+                  {t("agent.systemPrompt")}
                 </label>
                 <textarea
                   value={formData.systemPrompt}
-                  onChange={(e) => setFormData({ ...formData, systemPrompt: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, systemPrompt: e.target.value })
+                  }
                   rows={8}
                   className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200 resize-none"
-                  placeholder={t('agent.systemPromptPlaceholder')}
+                  placeholder={t("agent.systemPromptPlaceholder")}
                 />
               </div>
 
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('departments.label', 'Department')}
+                  {t("departments.label", "Department")}
                 </label>
                 <DepartmentSelect
                   value={formData.departmentId || undefined}
-                  onChange={(val) => setFormData({ ...formData, departmentId: val || '' })}
+                  onChange={(val) =>
+                    setFormData({ ...formData, departmentId: val || "" })
+                  }
                 />
               </div>
             </div>
           )}
 
           {/* Capabilities Tab */}
-          {activeTab === 'capabilities' && (
+          {activeTab === "capabilities" && (
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.selectSkills', '选择技能')}
+                  {t("agent.selectSkills", "选择技能")}
                 </label>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
-                  {t('agent.skillsDescription', '选择此 Agent 可以使用的技能。技能将在 Agent 初始化时加载。')}
+                  {t(
+                    "agent.skillsDescription",
+                    "选择此 Agent 可以使用的技能。技能将在 Agent 初始化时加载。",
+                  )}
                 </p>
-                
+
                 {/* Skills Loading State */}
                 {isLoadingSkills && (
                   <div className="flex items-center justify-center py-8">
                     <Loader2 className="w-6 h-6 animate-spin text-emerald-500" />
                     <span className="ml-2 text-zinc-600 dark:text-zinc-400">
-                      {t('agent.loadingSkills', '加载技能中...')}
+                      {t("agent.loadingSkills", "加载技能中...")}
                     </span>
                   </div>
                 )}
-                
+
                 {/* Skills Error State */}
                 {skillsError && (
                   <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-3">
@@ -676,39 +912,43 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                         onClick={fetchAvailableSkills}
                         className="mt-2 text-sm text-red-600 dark:text-red-400 hover:underline"
                       >
-                        {t('common.retry', '重试')}
+                        {t("common.retry", "重试")}
                       </button>
                     </div>
                   </div>
                 )}
-                
+
                 {/* Skills List */}
                 {!isLoadingSkills && !skillsError && (
                   <div className="space-y-3">
                     {/* Selected Skills Count */}
                     <div className="flex items-center justify-between p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
                       <span className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
-                        {t('agent.selectedSkills', '已选择技能')}
+                        {t("agent.selectedSkills", "已选择技能")}
                       </span>
                       <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
-                        {formData.skill_ids?.length || 0} / {availableSkills.length}
+                        {formData.skill_ids?.length || 0} /{" "}
+                        {availableSkills.length}
                       </span>
                     </div>
-                    
+
                     {/* Skills Grid */}
                     {availableSkills.length === 0 ? (
                       <div className="p-8 text-center bg-zinc-500/5 border border-zinc-500/10 rounded-xl">
                         <Info className="w-8 h-8 text-zinc-400 mx-auto mb-2" />
                         <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                          {t('agent.noSkillsAvailable', '暂无可用技能')}
+                          {t("agent.noSkillsAvailable", "暂无可用技能")}
                         </p>
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 gap-2 max-h-[400px] overflow-y-auto p-1">
                         {availableSkills.map((skill) => {
-                          const isSelected = formData.skill_ids?.includes(skill.skill_id) || false;
-                          const isLangChainTool = skill.skill_type === 'langchain_tool';
-                          
+                          const isSelected =
+                            formData.skill_ids?.includes(skill.skill_id) ||
+                            false;
+                          const isLangChainTool =
+                            skill.skill_type === "langchain_tool";
+
                           return (
                             <button
                               key={skill.skill_id}
@@ -716,28 +956,42 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                               onClick={() => toggleSkill(skill.skill_id)}
                               className={`
                                 p-3 rounded-lg border-2 text-left transition-all
-                                ${isSelected
-                                  ? 'border-emerald-500 bg-emerald-500/10'
-                                  : 'border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:border-emerald-500/50'
+                                ${
+                                  isSelected
+                                    ? "border-emerald-500 bg-emerald-500/10"
+                                    : "border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:border-emerald-500/50"
                                 }
                               `}
                             >
                               <div className="flex items-start gap-3">
                                 {/* Checkbox */}
-                                <div className={`
+                                <div
+                                  className={`
                                   w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5
-                                  ${isSelected
-                                    ? 'border-emerald-500 bg-emerald-500'
-                                    : 'border-zinc-300 dark:border-zinc-600'
+                                  ${
+                                    isSelected
+                                      ? "border-emerald-500 bg-emerald-500"
+                                      : "border-zinc-300 dark:border-zinc-600"
                                   }
-                                `}>
+                                `}
+                                >
                                   {isSelected && (
-                                    <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                    <svg
+                                      className="w-3 h-3 text-white"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={3}
+                                        d="M5 13l4 4L19 7"
+                                      />
                                     </svg>
                                   )}
                                 </div>
-                                
+
                                 {/* Skill Info */}
                                 <div className="flex-1 min-w-0">
                                   <div className="flex items-center gap-2 mb-1">
@@ -747,14 +1001,17 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                                     <span className="text-xs text-zinc-500 dark:text-zinc-400 font-mono">
                                       {skill.skill_slug}
                                     </span>
-                                    <span className={`
+                                    <span
+                                      className={`
                                       px-2 py-0.5 text-xs font-medium rounded
-                                      ${isLangChainTool
-                                        ? 'bg-blue-500/10 text-blue-700 dark:text-blue-400'
-                                        : 'bg-purple-500/10 text-purple-700 dark:text-purple-400'
+                                      ${
+                                        isLangChainTool
+                                          ? "bg-blue-500/10 text-blue-700 dark:text-blue-400"
+                                          : "bg-purple-500/10 text-purple-700 dark:text-purple-400"
                                       }
-                                    `}>
-                                      {isLangChainTool ? 'Tool' : 'Agent Skill'}
+                                    `}
+                                    >
+                                      {isLangChainTool ? "Tool" : "Agent Skill"}
                                     </span>
                                   </div>
                                   <p className="text-sm text-zinc-600 dark:text-zinc-400 line-clamp-2">
@@ -762,7 +1019,9 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                                   </p>
                                   <p className="text-xs text-zinc-500 dark:text-zinc-500 mt-1">
                                     {skill.access_level}
-                                    {skill.department_name ? ` · ${skill.department_name}` : ''}
+                                    {skill.department_name
+                                      ? ` · ${skill.department_name}`
+                                      : ""}
                                   </p>
                                   {skill.version && (
                                     <p className="text-xs text-zinc-500 dark:text-zinc-500 mt-1">
@@ -783,7 +1042,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           )}
 
           {/* Model Config Tab */}
-          {activeTab === 'model' && (
+          {activeTab === "model" && (
             <div className="space-y-4">
               {/* Loading State */}
               {isLoadingProviders && (
@@ -814,165 +1073,196 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               )}
 
               {/* No Providers Available */}
-              {!isLoadingProviders && !providersError && Object.keys(availableProviders).length === 0 && (
-                <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-xl flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-sm font-semibold text-yellow-700 dark:text-yellow-400">
-                      No LLM providers configured
-                    </p>
-                    <p className="text-sm text-yellow-600 dark:text-yellow-500 mt-1">
-                      Please configure at least one LLM provider in the system settings.
-                    </p>
+              {!isLoadingProviders &&
+                !providersError &&
+                Object.keys(availableProviders).length === 0 && (
+                  <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-xl flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-semibold text-yellow-700 dark:text-yellow-400">
+                        No LLM providers configured
+                      </p>
+                      <p className="text-sm text-yellow-600 dark:text-yellow-500 mt-1">
+                        Please configure at least one LLM provider in the system
+                        settings.
+                      </p>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
               {/* Provider and Model Selection */}
-              {!isLoadingProviders && Object.keys(availableProviders).length > 0 && (
-                <>
-                  <div className="grid grid-cols-2 gap-4">
+              {!isLoadingProviders &&
+                Object.keys(availableProviders).length > 0 && (
+                  <>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                          {t("agent.selectProvider")}
+                        </label>
+                        <select
+                          value={formData.provider}
+                          onChange={(e) => handleProviderChange(e.target.value)}
+                          className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
+                        >
+                          <option value="">Select Provider</option>
+                          {Object.keys(availableProviders).map(
+                            (providerName) => (
+                              <option key={providerName} value={providerName}>
+                                {providerName}
+                              </option>
+                            ),
+                          )}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                          {t("agent.selectModel")}
+                        </label>
+                        <select
+                          value={formData.model}
+                          onChange={(e) =>
+                            setFormData({ ...formData, model: e.target.value })
+                          }
+                          disabled={!formData.provider}
+                          className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <option value="">Select Model</option>
+                          {formData.provider &&
+                            availableProviders[formData.provider]?.map(
+                              (modelName) => (
+                                <option key={modelName} value={modelName}>
+                                  {modelName}
+                                </option>
+                              ),
+                            )}
+                        </select>
+                        {!formData.provider && (
+                          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                            Select a provider first
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Model Metadata Display */}
+                    {isLoadingMetadata && (
+                      <div className="flex items-center gap-2 p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+                        <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+                        <span className="text-sm text-blue-700 dark:text-blue-400">
+                          Loading model information...
+                        </span>
+                      </div>
+                    )}
+
+                    {modelMetadata && !isLoadingMetadata && (
+                      <div className="mt-2">
+                        <ModelMetadataCard metadata={modelMetadata} />
+                      </div>
+                    )}
+
                     <div>
                       <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                        {t('agent.selectProvider')}
+                        {t("agent.temperature")}:{" "}
+                        {formData.temperature?.toFixed(1)}
+                        {modelMetadata && (
+                          <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
+                            (recommended: {modelMetadata.default_temperature})
+                          </span>
+                        )}
                       </label>
-                      <select
-                        value={formData.provider}
-                        onChange={(e) => handleProviderChange(e.target.value)}
+                      <input
+                        type="range"
+                        min={modelMetadata?.temperature_range[0] ?? 0}
+                        max={modelMetadata?.temperature_range[1] ?? 2}
+                        step="0.1"
+                        value={formData.temperature}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            temperature: parseFloat(e.target.value),
+                          })
+                        }
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                        <span>More focused</span>
+                        <span>More creative</span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                        {t("agent.maxTokens")} (Maximum Output Tokens)
+                        {modelMetadata?.max_output_tokens && (
+                          <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
+                            (model max:{" "}
+                            {modelMetadata.max_output_tokens.toLocaleString()})
+                          </span>
+                        )}
+                      </label>
+                      <input
+                        type="number"
+                        value={formData.maxTokens}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            maxTokens: parseInt(e.target.value) || 0,
+                          })
+                        }
+                        min={1}
+                        max={modelMetadata?.max_output_tokens ?? 8000}
                         className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
-                      >
-                        <option value="">Select Provider</option>
-                        {Object.keys(availableProviders).map((providerName) => (
-                          <option key={providerName} value={providerName}>
-                            {providerName}
-                          </option>
-                        ))}
-                      </select>
+                        placeholder="4096"
+                      />
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                        Maximum number of tokens in the model's response.
+                        Default: 4096
+                      </p>
                     </div>
 
                     <div>
                       <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                        {t('agent.selectModel')}
+                        {t("agent.topP")}: {formData.topP?.toFixed(1)}
                       </label>
-                      <select
-                        value={formData.model}
-                        onChange={(e) => setFormData({ ...formData, model: e.target.value })}
-                        disabled={!formData.provider}
-                        className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        <option value="">Select Model</option>
-                        {formData.provider &&
-                          availableProviders[formData.provider]?.map((modelName) => (
-                            <option key={modelName} value={modelName}>
-                              {modelName}
-                            </option>
-                          ))}
-                      </select>
-                      {!formData.provider && (
-                        <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                          Select a provider first
-                        </p>
-                      )}
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.1"
+                        value={formData.topP}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            topP: parseFloat(e.target.value),
+                          })
+                        }
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                        <span>More deterministic</span>
+                        <span>More diverse</span>
+                      </div>
                     </div>
-                  </div>
-
-                  {/* Model Metadata Display */}
-                  {isLoadingMetadata && (
-                    <div className="flex items-center gap-2 p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl">
-                      <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
-                      <span className="text-sm text-blue-700 dark:text-blue-400">
-                        Loading model information...
-                      </span>
-                    </div>
-                  )}
-
-                  {modelMetadata && !isLoadingMetadata && (
-                    <div className="mt-2">
-                      <ModelMetadataCard metadata={modelMetadata} />
-                    </div>
-                  )}
-
-                  <div>
-                    <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                      {t('agent.temperature')}: {formData.temperature?.toFixed(1)}
-                      {modelMetadata && (
-                        <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
-                          (recommended: {modelMetadata.default_temperature})
-                        </span>
-                      )}
-                    </label>
-                    <input
-                      type="range"
-                      min={modelMetadata?.temperature_range[0] ?? 0}
-                      max={modelMetadata?.temperature_range[1] ?? 2}
-                      step="0.1"
-                      value={formData.temperature}
-                      onChange={(e) => setFormData({ ...formData, temperature: parseFloat(e.target.value) })}
-                      className="w-full"
-                    />
-                    <div className="flex justify-between text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                      <span>More focused</span>
-                      <span>More creative</span>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                      {t('agent.maxTokens')} (Maximum Output Tokens)
-                      {modelMetadata?.max_output_tokens && (
-                        <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
-                          (model max: {modelMetadata.max_output_tokens.toLocaleString()})
-                        </span>
-                      )}
-                    </label>
-                    <input
-                      type="number"
-                      value={formData.maxTokens}
-                      onChange={(e) => setFormData({ ...formData, maxTokens: parseInt(e.target.value) || 0 })}
-                      min={1}
-                      max={modelMetadata?.max_output_tokens ?? 8000}
-                      className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
-                      placeholder="4096"
-                    />
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                      Maximum number of tokens in the model's response. Default: 4096
-                    </p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                      {t('agent.topP')}: {formData.topP?.toFixed(1)}
-                    </label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.1"
-                      value={formData.topP}
-                      onChange={(e) => setFormData({ ...formData, topP: parseFloat(e.target.value) })}
-                      className="w-full"
-                    />
-                    <div className="flex justify-between text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                      <span>More deterministic</span>
-                      <span>More diverse</span>
-                    </div>
-                  </div>
-                </>
-              )}
+                  </>
+                )}
             </div>
           )}
 
           {/* Knowledge Base Tab */}
-          {activeTab === 'knowledge' && (
+          {activeTab === "knowledge" && (
             <div className="space-y-4">
               <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-start gap-3 mb-4">
                 <Info className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm font-semibold text-blue-700 dark:text-blue-400 mb-1">
-                    {t('agent.knowledgeBaseConfig', '知识库配置')}
+                    {t("agent.knowledgeBaseConfig", "知识库配置")}
                   </p>
                   <p className="text-xs text-blue-600 dark:text-blue-500">
-                    {t('agent.knowledgeBaseConfigDesc', '配置此代理可访问的知识库；Embedding 模型统一在知识库配置页维护。')}
+                    {t(
+                      "agent.knowledgeBaseConfigDesc",
+                      "配置此代理可访问的知识库；Embedding 模型统一在知识库配置页维护。",
+                    )}
                   </p>
                 </div>
               </div>
@@ -980,88 +1270,104 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               {/* Knowledge Base Access */}
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.accessibleKnowledgeBases', '可访问的知识库')}
+                  {t("agent.accessibleKnowledgeBases", "可访问的知识库")}
                 </label>
                 <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-xl min-h-[120px]">
                   <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-3">
-                    {formData.allowedKnowledge?.length || 0} {t('agent.knowledgeBasesSelected', '个知识库已选择')}
+                    {formData.allowedKnowledge?.length || 0}{" "}
+                    {t("agent.knowledgeBasesSelected", "个知识库已选择")}
                   </p>
 
                   {isLoadingKnowledgeBases && (
                     <div className="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>{t('agent.loadingKnowledgeBases', '加载知识库中...')}</span>
+                      <span>
+                        {t("agent.loadingKnowledgeBases", "加载知识库中...")}
+                      </span>
                     </div>
                   )}
 
                   {!isLoadingKnowledgeBases && knowledgeBasesError && (
                     <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
                       <p className="text-sm text-red-700 dark:text-red-400">
-                        {t('agent.knowledgeBasesLoadFailed', '知识库加载失败')}: {knowledgeBasesError}
+                        {t("agent.knowledgeBasesLoadFailed", "知识库加载失败")}:{" "}
+                        {knowledgeBasesError}
                       </p>
                       <button
                         type="button"
                         onClick={fetchKnowledgeBases}
                         className="mt-2 text-xs text-red-600 dark:text-red-400 hover:underline"
                       >
-                        {t('common.retry', '重试')}
+                        {t("common.retry", "重试")}
                       </button>
                     </div>
                   )}
 
-                  {!isLoadingKnowledgeBases && !knowledgeBasesError && availableKnowledgeBases.length === 0 && (
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                      {t('agent.noKnowledgeBasesAvailable', '当前没有可用知识库，请先在知识库页面创建集合。')}
-                    </p>
-                  )}
-
-                  {!isLoadingKnowledgeBases && !knowledgeBasesError && availableKnowledgeBases.length > 0 && (
-                    <>
-                      <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                        {availableKnowledgeBases.map((kb) => {
-                          const isSelected = (formData.allowedKnowledge || []).includes(kb.id);
-                          return (
-                            <button
-                              key={kb.id}
-                              type="button"
-                              onClick={() => toggleKnowledgeBase(kb.id)}
-                              className={`w-full text-left p-3 rounded-lg border transition-colors ${
-                                isSelected
-                                  ? 'border-emerald-500 bg-emerald-500/10'
-                                  : 'border-zinc-200 dark:border-zinc-700 hover:border-emerald-400/60'
-                              }`}
-                            >
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 truncate">
-                                    {kb.name}
-                                  </p>
-                                  {kb.description && (
-                                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-2">
-                                      {kb.description}
-                                    </p>
-                                  )}
-                                </div>
-                                <span className="text-xs px-2 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 whitespace-nowrap">
-                                  {kb.itemCount}
-                                </span>
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
-                        {t('agent.knowledgeBaseAccessDesc', '配置此代理可以查询的知识库。')}
+                  {!isLoadingKnowledgeBases &&
+                    !knowledgeBasesError &&
+                    availableKnowledgeBases.length === 0 && (
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                        {t(
+                          "agent.noKnowledgeBasesAvailable",
+                          "当前没有可用知识库，请先在知识库页面创建集合。",
+                        )}
                       </p>
-                    </>
-                  )}
+                    )}
+
+                  {!isLoadingKnowledgeBases &&
+                    !knowledgeBasesError &&
+                    availableKnowledgeBases.length > 0 && (
+                      <>
+                        <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                          {availableKnowledgeBases.map((kb) => {
+                            const isSelected = (
+                              formData.allowedKnowledge || []
+                            ).includes(kb.id);
+                            return (
+                              <button
+                                key={kb.id}
+                                type="button"
+                                onClick={() => toggleKnowledgeBase(kb.id)}
+                                className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                                  isSelected
+                                    ? "border-emerald-500 bg-emerald-500/10"
+                                    : "border-zinc-200 dark:border-zinc-700 hover:border-emerald-400/60"
+                                }`}
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 truncate">
+                                      {kb.name}
+                                    </p>
+                                    {kb.description && (
+                                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-2">
+                                        {kb.description}
+                                      </p>
+                                    )}
+                                  </div>
+                                  <span className="text-xs px-2 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 whitespace-nowrap">
+                                    {kb.itemCount}
+                                  </span>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
+                          {t(
+                            "agent.knowledgeBaseAccessDesc",
+                            "配置此代理可以查询的知识库。",
+                          )}
+                        </p>
+                      </>
+                    )}
                 </div>
               </div>
 
               {/* Retrieval Settings */}
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.topKResults', 'Top K 结果数')}: {formData.topK || 5}
+                  {t("agent.topKResults", "Top K 结果数")}: {formData.topK || 5}
                 </label>
                 <input
                   type="range"
@@ -1069,22 +1375,28 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                   max="20"
                   step="1"
                   value={formData.topK || 5}
-                  onChange={(e) => setFormData({ ...formData, topK: parseInt(e.target.value) })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, topK: parseInt(e.target.value) })
+                  }
                   className="w-full"
                 />
                 <div className="flex justify-between text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                  <span>{t('agent.fewerResults', '更少结果（更快）')}</span>
-                  <span>{t('agent.moreResults', '更多结果（更全面）')}</span>
+                  <span>{t("agent.fewerResults", "更少结果（更快）")}</span>
+                  <span>{t("agent.moreResults", "更多结果（更全面）")}</span>
                 </div>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
-                  {t('agent.topKResultsDesc', '每次查询从知识库检索的最相关文档数量。')}
+                  {t(
+                    "agent.topKResultsDesc",
+                    "每次查询从知识库检索的最相关文档数量。",
+                  )}
                 </p>
               </div>
 
               {/* Similarity Threshold */}
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.similarityThreshold', '知识库最小相关度')}: {(formData.similarityThreshold ?? 0.3).toFixed(2)}
+                  {t("agent.similarityThreshold", "知识库最小相关度")}:{" "}
+                  {(formData.similarityThreshold ?? 0.3).toFixed(2)}
                 </label>
                 <input
                   type="range"
@@ -1092,60 +1404,75 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                   max="1"
                   step="0.05"
                   value={formData.similarityThreshold ?? 0.3}
-                  onChange={(e) => setFormData({ ...formData, similarityThreshold: parseFloat(e.target.value) })}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      similarityThreshold: parseFloat(e.target.value),
+                    })
+                  }
                   className="w-full"
                 />
                 <div className="flex justify-between text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                  <span>{t('agent.morePermissive', '更宽松 (0.0)')}</span>
-                  <span>{t('agent.moreStrict', '更严格 (1.0)')}</span>
+                  <span>{t("agent.morePermissive", "更宽松 (0.0)")}</span>
+                  <span>{t("agent.moreStrict", "更严格 (1.0)")}</span>
                 </div>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
-                  {t('agent.similarityThresholdDesc', '检索文档的最小相似度分数。较高的值仅返回高度相关的结果。')}
+                  {t(
+                    "agent.similarityThresholdDesc",
+                    "检索文档的最小相似度分数。较高的值仅返回高度相关的结果。",
+                  )}
                 </p>
               </div>
             </div>
           )}
 
           {/* Data Access Tab */}
-          {activeTab === 'access' && (
+          {activeTab === "access" && (
             <div className="space-y-4">
               <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
                 <p className="text-sm text-blue-700 dark:text-blue-400 font-medium">
                   {t(
-                    'agent.accessLevelEffectiveRule',
-                    '访问级别决定默认数据范围；若配置白名单，则在默认范围上进一步收敛。'
+                    "agent.accessLevelEffectiveRule",
+                    "访问级别决定默认数据范围；若配置白名单，则在默认范围上进一步收敛。",
                   )}
                 </p>
               </div>
 
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.accessLevel')}
+                  {t("agent.accessLevel")}
                 </label>
                 <select
                   value={formData.accessLevel}
-                  onChange={(e) => setFormData({ ...formData, accessLevel: e.target.value as any })}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      accessLevel: e.target.value as any,
+                    })
+                  }
                   className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
                 >
-                  <option value="private">{t('agent.accessLevelPrivate')}</option>
-                  <option value="team">{t('agent.accessLevelTeam')}</option>
-                  <option value="public">{t('agent.accessLevelPublic')}</option>
+                  <option value="private">
+                    {t("agent.accessLevelPrivate")}
+                  </option>
+                  <option value="team">{t("agent.accessLevelTeam")}</option>
+                  <option value="public">{t("agent.accessLevelPublic")}</option>
                 </select>
               </div>
 
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.allowedKnowledge', '允许的知识库')}
+                  {t("agent.allowedKnowledge", "允许的知识库")}
                 </label>
                 <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-xl min-h-[100px]">
                   <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-1">
-                    {formData.allowedKnowledge?.length || 0}{' '}
-                    {t('agent.knowledgeBasesSelected', '个知识库已选择')}
+                    {formData.allowedKnowledge?.length || 0}{" "}
+                    {t("agent.knowledgeBasesSelected", "个知识库已选择")}
                   </p>
                   <p className="text-xs text-zinc-500 dark:text-zinc-400">
                     {t(
-                      'agent.allowedKnowledgeConfiguredInKnowledgeTab',
-                      '知识库白名单请在“知识库”标签页中配置。'
+                      "agent.allowedKnowledgeConfiguredInKnowledgeTab",
+                      "知识库白名单请在“知识库”标签页中配置。",
                     )}
                   </p>
                 </div>
@@ -1153,36 +1480,44 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.allowedMemory')}
+                  {t("agent.allowedMemory")}
                 </label>
                 <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-xl">
                   <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-1">
-                    {formData.allowedMemory?.length || 0}{' '}
-                    {t('agent.memoryScopesSelected', '个记忆范围已选择')}
+                    {formData.allowedMemory?.length || 0}{" "}
+                    {t("agent.memoryScopesSelected", "个记忆范围已选择")}
                   </p>
                   <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
-                    {t('agent.allowedMemoryDesc', '选择代理在执行时可检索的记忆范围。')}
+                    {t(
+                      "agent.allowedMemoryDesc",
+                      "选择代理在执行时可检索的记忆范围。",
+                    )}
                   </p>
                   <div className="space-y-2">
                     {[
                       {
-                        id: 'skills',
-                        title: t('agent.memoryScopeSkillsTitle', '技能经验'),
+                        id: "skills",
+                        title: t("agent.memoryScopeSkillsTitle", "技能经验"),
                         desc: t(
-                          'agent.memoryScopeSkillsDesc',
-                          '检索可复用的技能、经验与成功路径。'
+                          "agent.memoryScopeSkillsDesc",
+                          "检索可复用的技能、经验与成功路径。",
                         ),
                       },
                       {
-                        id: 'user_memory',
-                        title: t('agent.memoryScopeUserMemoryTitle', '用户记忆'),
+                        id: "user_memory",
+                        title: t(
+                          "agent.memoryScopeUserMemoryTitle",
+                          "用户记忆",
+                        ),
                         desc: t(
-                          'agent.memoryScopeUserMemoryDesc',
-                          '检索当前用户的事实、偏好与重要事件。'
+                          "agent.memoryScopeUserMemoryDesc",
+                          "检索当前用户的事实、偏好与重要事件。",
                         ),
                       },
                     ].map((option) => {
-                      const isSelected = (formData.allowedMemory || []).includes(option.id);
+                      const isSelected = (
+                        formData.allowedMemory || []
+                      ).includes(option.id);
                       return (
                         <button
                           key={option.id}
@@ -1190,8 +1525,8 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                           onClick={() => toggleMemoryScope(option.id)}
                           className={`w-full text-left p-3 rounded-lg border transition-colors ${
                             isSelected
-                              ? 'border-emerald-500 bg-emerald-500/10'
-                              : 'border-zinc-200 dark:border-zinc-700 hover:border-emerald-400/60'
+                              ? "border-emerald-500 bg-emerald-500/10"
+                              : "border-zinc-200 dark:border-zinc-700 hover:border-emerald-400/60"
                           }`}
                         >
                           <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
@@ -1209,37 +1544,40 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
               <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-xl">
                 <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('agent.effectiveAccessSummaryTitle', '当前生效规则')}
+                  {t("agent.effectiveAccessSummaryTitle", "当前生效规则")}
                 </p>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-1">
                   {t(
-                    'agent.effectiveKnowledgeRule',
-                    '知识库：先按权限过滤，再应用允许的知识库白名单（未配置白名单则不额外限制）。'
+                    "agent.effectiveKnowledgeRule",
+                    "知识库：先按权限过滤，再应用允许的知识库白名单（未配置白名单则不额外限制）。",
                   )}
                 </p>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
                   {t(
-                    'agent.effectiveMemoryRule',
-                    '记忆：优先使用“允许的记忆范围”；未配置时按访问级别使用默认范围。'
-                  )}{' '}
-                  {t('agent.effectiveMemoryScopes', '实际生效的记忆范围')}:{' '}
-                  {resolveEffectiveMemoryScopes().join(', ')}
+                    "agent.effectiveMemoryRule",
+                    "记忆：优先使用“允许的记忆范围”；未配置时按访问级别使用默认范围。",
+                  )}{" "}
+                  {t("agent.effectiveMemoryScopes", "实际生效的记忆范围")}:{" "}
+                  {resolveEffectiveMemoryScopes().join(", ")}
                 </p>
               </div>
             </div>
           )}
 
-          {activeTab === 'channels' && (
+          {activeTab === "channels" && (
             <div className="space-y-4">
               <div className="rounded-xl border border-blue-500/20 bg-blue-500/10 p-4">
                 <div className="flex items-start gap-3">
                   <Bot className="mt-0.5 h-5 w-5 flex-shrink-0 text-blue-500" />
                   <div>
                     <p className="text-sm font-semibold text-blue-700 dark:text-blue-400">
-                      {t('agent.feishuChannelTitle', '飞书机器人发布')}
+                      {t("agent.feishuChannelTitle", "飞书机器人发布")}
                     </p>
                     <p className="mt-1 text-xs text-blue-600 dark:text-blue-500">
-                      {t('agent.feishuChannelDesc', '为当前 Agent 保存飞书应用配置，并生成专属 webhook 地址。首次聊天需要先发送用户识别码完成绑定。')}
+                      {t(
+                        "agent.feishuChannelDesc",
+                        "为企业自建飞书应用保存凭证，通过长连接接收消息。无需配置 webhook、verification token 或 encrypt key。首次聊天仍需先发送用户识别码完成绑定。",
+                      )}
                     </p>
                   </div>
                 </div>
@@ -1249,7 +1587,10 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 <div className="flex items-center justify-center py-10">
                   <Loader2 className="h-6 w-6 animate-spin text-emerald-500" />
                   <span className="ml-2 text-sm text-zinc-600 dark:text-zinc-400">
-                    {t('agent.loadingFeishuPublication', '加载飞书发布配置中...')}
+                    {t(
+                      "agent.loadingFeishuPublication",
+                      "加载飞书发布配置中...",
+                    )}
                   </span>
                 </div>
               ) : (
@@ -1257,73 +1598,15 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <div>
                       <label className="mb-2 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-                        {t('agent.feishuAppId', 'App ID')}
+                        {t("agent.feishuAppId", "App ID")}
                       </label>
                       <input
                         type="text"
                         value={feishuFormData.appId}
                         onChange={(event) =>
-                          setFeishuFormData((prev) => ({ ...prev, appId: event.target.value }))
-                        }
-                        className="w-full rounded-xl border border-zinc-500/10 bg-zinc-500/5 px-4 py-3 text-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:text-zinc-200"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="mb-2 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-                        {t('agent.feishuBotName', 'Bot display name')}
-                      </label>
-                      <input
-                        type="text"
-                        value={feishuFormData.botName || ''}
-                        onChange={(event) =>
-                          setFeishuFormData((prev) => ({ ...prev, botName: event.target.value }))
-                        }
-                        className="w-full rounded-xl border border-zinc-500/10 bg-zinc-500/5 px-4 py-3 text-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:text-zinc-200"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="mb-2 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-                        {t('agent.feishuTenantKey', 'Tenant key')}
-                      </label>
-                      <input
-                        type="text"
-                        value={feishuFormData.tenantKey || ''}
-                        onChange={(event) =>
-                          setFeishuFormData((prev) => ({ ...prev, tenantKey: event.target.value }))
-                        }
-                        className="w-full rounded-xl border border-zinc-500/10 bg-zinc-500/5 px-4 py-3 text-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:text-zinc-200"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="mb-2 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-                        {t('agent.feishuAppSecret', 'App secret')}
-                      </label>
-                      <input
-                        type="password"
-                        value={feishuFormData.appSecret || ''}
-                        placeholder={feishuPublication?.hasAppSecret ? '••••••••' : ''}
-                        onChange={(event) =>
-                          setFeishuFormData((prev) => ({ ...prev, appSecret: event.target.value }))
-                        }
-                        className="w-full rounded-xl border border-zinc-500/10 bg-zinc-500/5 px-4 py-3 text-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:text-zinc-200"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="mb-2 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-                        {t('agent.feishuVerificationToken', 'Verification token')}
-                      </label>
-                      <input
-                        type="password"
-                        value={feishuFormData.verificationToken || ''}
-                        placeholder={feishuPublication?.hasVerificationToken ? '••••••••' : ''}
-                        onChange={(event) =>
                           setFeishuFormData((prev) => ({
                             ...prev,
-                            verificationToken: event.target.value,
+                            appId: event.target.value,
                           }))
                         }
                         className="w-full rounded-xl border border-zinc-500/10 bg-zinc-500/5 px-4 py-3 text-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:text-zinc-200"
@@ -1332,53 +1615,161 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
                     <div>
                       <label className="mb-2 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-                        {t('agent.feishuEncryptKey', 'Encrypt key')}
+                        {t("agent.feishuAppSecret", "App secret")}
                       </label>
                       <input
                         type="password"
-                        value={feishuFormData.encryptKey || ''}
-                        placeholder={feishuPublication?.hasEncryptKey ? '••••••••' : ''}
+                        value={feishuFormData.appSecret || ""}
+                        placeholder={
+                          feishuPublication?.hasAppSecret ? "••••••••" : ""
+                        }
                         onChange={(event) =>
-                          setFeishuFormData((prev) => ({ ...prev, encryptKey: event.target.value }))
+                          setFeishuFormData((prev) => ({
+                            ...prev,
+                            appSecret: event.target.value,
+                          }))
                         }
                         className="w-full rounded-xl border border-zinc-500/10 bg-zinc-500/5 px-4 py-3 text-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:text-zinc-200"
                       />
+                      {feishuPublication?.hasAppSecret && (
+                        <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                          {t(
+                            "agent.feishuAppSecretStored",
+                            "A secret is already stored. Leave this blank to keep the current value.",
+                          )}
+                        </p>
+                      )}
                     </div>
+                  </div>
+
+                  <div className="rounded-xl border border-emerald-500/15 bg-emerald-500/5 p-4 text-sm text-zinc-600 dark:text-zinc-300">
+                    {t(
+                      "agent.feishuLongConnectionHint",
+                      "当前模式为飞书长连接，仅支持企业自建应用。保存仅写入凭证；发布后才会启用渠道。发布时会自动保存当前填写的凭证。",
+                    )}
                   </div>
 
                   <div className="rounded-xl border border-zinc-500/10 bg-zinc-500/5 p-4">
                     <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-500 dark:text-zinc-400">
                       <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1 dark:bg-zinc-800">
                         <Radio className="h-3.5 w-3.5" />
-                        {t('agent.statusLabel', 'Status')}: {feishuPublication?.status || 'draft'}
+                        {t("agent.statusLabel", "Status")}:{" "}
+                        {getFeishuPublicationStatusLabel(
+                          feishuPublication?.status,
+                        )}
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1 dark:bg-zinc-800">
+                        <LinkIcon className="h-3.5 w-3.5" />
+                        {t("agent.deliveryModeLabel", "Delivery mode")}:{" "}
+                        {t(
+                          "agent.feishuDeliveryModeLongConnection",
+                          "long connection",
+                        )}
+                      </span>
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-1 ${getFeishuConnectionStateTone(getFeishuConnectionState(feishuPublication))}`}
+                      >
+                        <Bot className="h-3.5 w-3.5" />
+                        {t(
+                          "agent.feishuConnectionStateLabel",
+                          "Connection",
+                        )}:{" "}
+                        {getFeishuConnectionStateLabel(
+                          getFeishuConnectionState(feishuPublication),
+                        )}
                       </span>
                       <span>
-                        {t('agent.channelIdentity', 'Channel identity')}: {feishuPublication?.channelIdentity || '—'}
+                        {t("agent.channelIdentity", "Channel identity")}:{" "}
+                        {feishuPublication?.channelIdentity || "—"}
                       </span>
                     </div>
 
-                    {feishuPublication?.webhookUrl && (
-                      <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-                              {t('agent.feishuWebhook', 'Webhook')}
-                            </p>
-                            <p className="mt-1 truncate text-sm text-zinc-800 dark:text-zinc-200">
-                              {feishuPublication.webhookUrl}
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => void handleCopyWebhook()}
-                            className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                          >
-                            <Copy className="h-3.5 w-3.5" />
-                            {t('common.copy', 'Copy')}
-                          </button>
+                    <div className="mt-4 rounded-xl border border-zinc-500/10 bg-white/70 p-4 dark:bg-zinc-900/40">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+                            {t(
+                              "agent.feishuConnectionPanelTitle",
+                              "Long connection status",
+                            )}
+                          </p>
+                          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                            {getFeishuConnectionSummary(feishuPublication)}
+                          </p>
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => void fetchFeishuPublication()}
+                          disabled={
+                            isLoadingFeishuPublication ||
+                            isSavingFeishuPublication
+                          }
+                          className="inline-flex items-center gap-2 rounded-xl border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-600 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                        >
+                          <RefreshCw
+                            className={`h-3.5 w-3.5 ${isLoadingFeishuPublication ? "animate-spin" : ""}`}
+                          />
+                          {t("agent.feishuRefreshStatus", "Refresh status")}
+                        </button>
                       </div>
-                    )}
+
+                      <div className="mt-4 grid grid-cols-1 gap-3 text-xs text-zinc-500 dark:text-zinc-400 md:grid-cols-2">
+                        <p>
+                          {t(
+                            "agent.feishuConnectionLastUpdated",
+                            "Status updated",
+                          )}
+                          :{" "}
+                          {formatFeishuTimestamp(
+                            feishuPublication?.connectionStatusUpdatedAt,
+                          )}
+                        </p>
+                        <p>
+                          {t(
+                            "agent.feishuConnectionLastConnected",
+                            "Last connected",
+                          )}
+                          :{" "}
+                          {formatFeishuTimestamp(
+                            feishuPublication?.lastConnectedAt,
+                          )}
+                        </p>
+                        <p>
+                          {t(
+                            "agent.feishuConnectionLastEvent",
+                            "Last event received",
+                          )}
+                          :{" "}
+                          {formatFeishuTimestamp(
+                            feishuPublication?.lastEventAt,
+                          )}
+                        </p>
+                        <p>
+                          {t(
+                            "agent.feishuConnectionLastError",
+                            "Last error time",
+                          )}
+                          :{" "}
+                          {formatFeishuTimestamp(
+                            feishuPublication?.lastErrorAt,
+                          )}
+                        </p>
+                      </div>
+
+                      {feishuPublication?.lastErrorMessage && (
+                        <div className="mt-4 rounded-xl border border-red-500/20 bg-red-500/10 p-3">
+                          <p className="text-xs font-semibold text-red-700 dark:text-red-400">
+                            {t(
+                              "agent.feishuConnectionErrorTitle",
+                              "Latest connection error",
+                            )}
+                          </p>
+                          <p className="mt-1 break-all text-xs text-red-600 dark:text-red-300">
+                            {feishuPublication.lastErrorMessage}
+                          </p>
+                        </div>
+                      )}
+                    </div>
 
                     <div className="mt-4 flex flex-wrap gap-3">
                       <button
@@ -1387,8 +1778,12 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                         disabled={isSavingFeishuPublication}
                         className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {isSavingFeishuPublication ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                        {t('agent.saveChannelConfig', 'Save config')}
+                        {isSavingFeishuPublication ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Save className="h-4 w-4" />
+                        )}
+                        {t("agent.saveChannelConfig", "Save credentials")}
                       </button>
                       <button
                         type="button"
@@ -1397,7 +1792,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                         className="inline-flex items-center gap-2 rounded-xl border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-700 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
                       >
                         <LinkIcon className="h-4 w-4" />
-                        {t('agent.publishChannel', 'Publish')}
+                        {t("agent.publishChannel", "Enable channel")}
                       </button>
                       <button
                         type="button"
@@ -1406,14 +1801,23 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                         className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm font-semibold text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-900/40 dark:hover:bg-red-950/30"
                       >
                         <Power className="h-4 w-4" />
-                        {t('agent.unpublishChannel', 'Disable')}
+                        {t("agent.unpublishChannel", "Disable channel")}
                       </button>
                     </div>
+
+                    <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+                      {t(
+                        "agent.feishuStatusAutoRefresh",
+                        "The status panel refreshes automatically every 5 seconds while this tab is open.",
+                      )}
+                    </p>
                   </div>
 
                   {feishuError && (
                     <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-4">
-                      <p className="text-sm text-red-700 dark:text-red-400">{feishuError}</p>
+                      <p className="text-sm text-red-700 dark:text-red-400">
+                        {feishuError}
+                      </p>
                     </div>
                   )}
                 </>
@@ -1451,7 +1855,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               disabled={isSaving}
               className="px-6 py-3 bg-zinc-500/5 hover:bg-zinc-500/10 text-zinc-700 dark:text-zinc-300 rounded-xl font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {t('common.cancel')}
+              {t("common.cancel")}
             </button>
             <button
               onClick={handleSave}
@@ -1466,7 +1870,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               ) : (
                 <>
                   <Save className="w-4 h-4" />
-                  {t('common.save')}
+                  {t("common.save")}
                 </>
               )}
             </button>
@@ -1480,7 +1884,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         onClose={() => setIsAvatarCropModalOpen(false)}
         onCropComplete={handleAvatarCropComplete}
         aspectRatio={1}
-        title={t('agent.cropAvatar')}
+        title={t("agent.cropAvatar")}
       />
     </LayoutModal>
   );

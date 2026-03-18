@@ -106,11 +106,7 @@ export interface AgentConversationMessagesResponse {
 
 export interface SaveFeishuPublicationRequest {
   appId: string;
-  botName?: string;
-  tenantKey?: string;
   appSecret?: string;
-  verificationToken?: string;
-  encryptKey?: string;
 }
 
 /**
