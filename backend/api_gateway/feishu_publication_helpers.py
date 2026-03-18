@@ -61,11 +61,13 @@ def extract_feishu_message(payload: dict[str, Any]) -> dict[str, Any] | None:
 
     return {
         "event_id": header.get("event_id") or message.get("message_id"),
+        "message_id": message.get("message_id"),
         "message_type": message.get("message_type"),
         "chat_id": message.get("chat_id"),
         "chat_type": message.get("chat_type"),
         "thread_key": message.get("root_id") or message.get("parent_id") or message.get("chat_id"),
         "text": str(parsed_content.get("text") or "").strip(),
+        "content_payload": parsed_content if isinstance(parsed_content, dict) else {},
         "open_id": sender_id.get("open_id"),
         "external_user_id": sender_id.get("user_id"),
         "union_id": sender_id.get("union_id"),
@@ -90,6 +92,7 @@ def extract_feishu_message_from_long_connection_event(event: Any) -> dict[str, A
 
     return {
         "event_id": getattr(header, "event_id", None) or getattr(message, "message_id", None),
+        "message_id": getattr(message, "message_id", None),
         "message_type": getattr(message, "message_type", None),
         "chat_id": getattr(message, "chat_id", None),
         "chat_type": getattr(message, "chat_type", None),
@@ -97,6 +100,7 @@ def extract_feishu_message_from_long_connection_event(event: Any) -> dict[str, A
         or getattr(message, "parent_id", None)
         or getattr(message, "chat_id", None),
         "text": str(parsed_content.get("text") or "").strip(),
+        "content_payload": parsed_content if isinstance(parsed_content, dict) else {},
         "open_id": getattr(sender_id, "open_id", None),
         "external_user_id": getattr(sender_id, "user_id", None),
         "union_id": getattr(sender_id, "union_id", None),

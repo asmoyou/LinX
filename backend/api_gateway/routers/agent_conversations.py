@@ -16,7 +16,17 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -169,7 +179,9 @@ def _display_conversation_title(conversation: AgentConversation) -> str:
     return title or build_default_conversation_title(conversation.created_at)
 
 
-def _serialize_conversation_summary(session, conversation: AgentConversation) -> AgentConversationSummaryResponse:
+def _serialize_conversation_summary(
+    session, conversation: AgentConversation
+) -> AgentConversationSummaryResponse:
     latest_snapshot_status, latest_generation, latest_snapshot_id = _latest_snapshot_status_payload(
         session,
         conversation.conversation_id,
@@ -181,9 +193,8 @@ def _serialize_conversation_summary(session, conversation: AgentConversation) ->
         title=_display_conversation_title(conversation),
         status=conversation.status,
         source=conversation.source,
-        latestSnapshotId=latest_snapshot_id or (
-            str(conversation.latest_snapshot_id) if conversation.latest_snapshot_id else None
-        ),
+        latestSnapshotId=latest_snapshot_id
+        or (str(conversation.latest_snapshot_id) if conversation.latest_snapshot_id else None),
         latestSnapshotStatus=latest_snapshot_status,
         lastMessageAt=conversation.last_message_at,
         lastMessagePreview=_last_message_preview(session, conversation.conversation_id),
@@ -192,7 +203,9 @@ def _serialize_conversation_summary(session, conversation: AgentConversation) ->
     )
 
 
-def _serialize_conversation_detail(session, conversation: AgentConversation) -> AgentConversationDetailResponse:
+def _serialize_conversation_detail(
+    session, conversation: AgentConversation
+) -> AgentConversationDetailResponse:
     summary = _serialize_conversation_summary(session, conversation)
     latest_snapshot_status, latest_generation, latest_snapshot_id = _latest_snapshot_status_payload(
         session,
@@ -206,8 +219,12 @@ def _serialize_conversation_detail(session, conversation: AgentConversation) -> 
 
 
 def _serialize_message(message: AgentConversationMessage) -> AgentConversationMessageResponse:
-    content_json = dict(message.content_json or {}) if isinstance(message.content_json, dict) else None
-    attachments = list(message.attachments_json or []) if isinstance(message.attachments_json, list) else []
+    content_json = (
+        dict(message.content_json or {}) if isinstance(message.content_json, dict) else None
+    )
+    attachments = (
+        list(message.attachments_json or []) if isinstance(message.attachments_json, list) else []
+    )
     return AgentConversationMessageResponse(
         id=str(message.message_id),
         conversationId=str(message.conversation_id),
@@ -233,10 +250,39 @@ def _parse_optional_datetime(value: Any) -> Optional[datetime]:
         return None
 
 
+def _workspace_entry_signature(entry: Dict[str, Any]) -> tuple[bool, int, str]:
+    return (
+        bool(entry.get("is_directory")),
+        int(entry.get("size") or 0),
+        str(entry.get("modified_at") or ""),
+    )
+
+
+def _diff_workspace_entries(
+    before_entries: List[Dict[str, Any]],
+    after_entries: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    before_index = {
+        str(entry.get("path") or "").strip(): _workspace_entry_signature(entry)
+        for entry in before_entries
+        if str(entry.get("path") or "").strip()
+    }
+    delta: List[Dict[str, Any]] = []
+    for entry in after_entries:
+        path = str(entry.get("path") or "").strip()
+        if not path:
+            continue
+        if before_index.get(path) != _workspace_entry_signature(entry):
+            delta.append(entry)
+    return delta
+
+
 def _get_feishu_runtime_state(publication: AgentChannelPublication | None) -> dict[str, Any]:
     if publication is None:
         return {}
-    config = dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
+    config = (
+        dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
+    )
     runtime = config.get("long_connection_runtime")
     return dict(runtime or {}) if isinstance(runtime, dict) else {}
 
@@ -265,7 +311,9 @@ def _serialize_feishu_publication(
     if publication is None:
         return FeishuPublicationResponse(status="draft")
 
-    config = dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
+    config = (
+        dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
+    )
     runtime = _get_feishu_runtime_state(publication)
     secrets = (
         dict(publication.secret_encrypted_json or {})
@@ -311,7 +359,9 @@ def _upsert_feishu_publication(
         session.add(publication)
         session.flush()
 
-    config = dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
+    config = (
+        dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
+    )
     config["app_id"] = payload.appId.strip()
     config.pop("bot_name", None)
     config.pop("tenant_key", None)
@@ -382,7 +432,9 @@ async def _emit_chunk(
         await result
 
 
-def _normalize_attachments_for_storage(file_refs: List[agents_router.FileReference]) -> List[Dict[str, Any]]:
+def _normalize_attachments_for_storage(
+    file_refs: List[agents_router.FileReference],
+) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     for file_ref in file_refs:
         items.append(
@@ -391,9 +443,11 @@ def _normalize_attachments_for_storage(file_refs: List[agents_router.FileReferen
                 "type": file_ref.type,
                 "size": file_ref.size,
                 "content_type": file_ref.content_type,
-                "storage_ref": f"minio:{file_ref.path.split('/', 1)[0]}:{file_ref.path.split('/', 1)[1]}"
-                if "/" in file_ref.path
-                else None,
+                "storage_ref": (
+                    f"minio:{file_ref.path.split('/', 1)[0]}:{file_ref.path.split('/', 1)[1]}"
+                    if "/" in file_ref.path
+                    else None
+                ),
                 "workspace_path": file_ref.workspace_path,
             }
         )
@@ -416,7 +470,9 @@ async def _prepare_uploaded_files(
         file_data = await upload.read()
         file_stream = io.BytesIO(file_data)
         file_name = upload.filename or "unnamed"
-        original_content_type = agents_router._normalize_attachment_content_type(upload.content_type)
+        original_content_type = agents_router._normalize_attachment_content_type(
+            upload.content_type
+        )
         content_type = agents_router._infer_effective_content_type(file_name, original_content_type)
         file_type = agents_router._infer_attachment_type(file_name, content_type)
         bucket_type = agents_router._infer_attachment_bucket_type(file_name, content_type)
@@ -460,7 +516,9 @@ async def _build_history_content_from_row(
     message: AgentConversationMessage,
 ) -> str | List[Dict[str, Any]] | None:
     text = str(message.content_text or "").strip()
-    attachments = list(message.attachments_json or []) if isinstance(message.attachments_json, list) else []
+    attachments = (
+        list(message.attachments_json or []) if isinstance(message.attachments_json, list) else []
+    )
     if not attachments:
         return text or None
 
@@ -702,10 +760,12 @@ async def execute_persistent_conversation_turn(
     )
 
     if file_refs:
-        written_files, materialize_errors = agents_router._materialize_attachment_files_to_workspace(
-            runtime.workdir,
-            file_refs,
-            attachment_payloads,
+        written_files, materialize_errors = (
+            agents_router._materialize_attachment_files_to_workspace(
+                runtime.workdir,
+                file_refs,
+                attachment_payloads,
+            )
         )
         if written_files > 0:
             await _emit_chunk(
@@ -725,6 +785,11 @@ async def execute_persistent_conversation_turn(
                     "content": f"Failed to copy one uploaded file to workspace: {error_text}",
                 },
             )
+
+    baseline_artifact_entries = agents_router._list_session_workspace_entries(
+        runtime.workdir,
+        recursive=True,
+    )
 
     agent_info = _load_agent_for_conversation(conversation.agent_id)
     agent = await initialize_chat_agent(
@@ -766,8 +831,12 @@ async def execute_persistent_conversation_turn(
     except Exception as exc:
         logger.error("Failed to build conversation execution context: %s", exc, exc_info=True)
 
-    attachment_context = agents_router._build_attachment_prompt_context(file_refs, include_image_notes=True)
-    message_with_attachments = f"{user_text}{attachment_context}" if attachment_context else user_text
+    attachment_context = agents_router._build_attachment_prompt_context(
+        file_refs, include_image_notes=True
+    )
+    message_with_attachments = (
+        f"{user_text}{attachment_context}" if attachment_context else user_text
+    )
     attachment_workspace_context = agents_router._build_attachment_workspace_context(file_refs)
     user_message = (
         f"{message_with_attachments}{attachment_workspace_context}"
@@ -911,7 +980,14 @@ async def execute_persistent_conversation_turn(
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
                     )
-                elif content_type in {"start", "tool_call", "tool_result", "tool_error", "done", "error"}:
+                elif content_type in {
+                    "start",
+                    "tool_call",
+                    "tool_result",
+                    "tool_error",
+                    "done",
+                    "error",
+                }:
                     current_round_data["statusMessages"].append(
                         {
                             "content": token_text,
@@ -949,7 +1025,9 @@ async def execute_persistent_conversation_turn(
         raise RuntimeError(error_holder[0])
 
     final_response_text = segment_response[0].strip()
-    execution_messages.extend(segment_execution_messages[0] if isinstance(segment_execution_messages[0], list) else [])
+    execution_messages.extend(
+        segment_execution_messages[0] if isinstance(segment_execution_messages[0], list) else []
+    )
     response_metadata_list.append(
         segment_response_metadata[0] if isinstance(segment_response_metadata[0], dict) else {}
     )
@@ -978,7 +1056,10 @@ async def execute_persistent_conversation_turn(
         "outputTokens": output_tokens,
         "totalTokens": input_tokens + output_tokens,
     }
-    artifact_entries = agents_router._list_session_workspace_entries(runtime.workdir, recursive=True)
+    artifact_entries = agents_router._list_session_workspace_entries(
+        runtime.workdir, recursive=True
+    )
+    artifact_delta_entries = _diff_workspace_entries(baseline_artifact_entries, artifact_entries)
     if not current_round_data["stats"]:
         current_round_data["stats"] = {
             "timeToFirstToken": 0,
@@ -994,7 +1075,12 @@ async def execute_persistent_conversation_turn(
         conversation_id=conversation.conversation_id,
         role="assistant",
         content_text=final_response_text,
-        content_json={"stats": stats, "rounds": persisted_rounds, "artifacts": artifact_entries},
+        content_json={
+            "stats": stats,
+            "rounds": persisted_rounds,
+            "artifacts": artifact_entries,
+            "artifactDelta": artifact_delta_entries,
+        },
         attachments=None,
         source=source,
     )
@@ -1039,11 +1125,16 @@ async def execute_persistent_conversation_turn(
         "stats": stats,
         "snapshot": snapshot,
         "artifacts": artifact_entries,
+        "artifact_delta": artifact_delta_entries,
         "duplicate": False,
     }
 
 
-@router.post("/{agent_id}/conversations", response_model=CreateConversationResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{agent_id}/conversations",
+    response_model=CreateConversationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_agent_conversation(
     agent_id: str,
     current_user: CurrentUser = Depends(get_current_user),
@@ -1060,7 +1151,9 @@ async def create_agent_conversation(
         session.add(row)
         session.commit()
         session.refresh(row)
-        return CreateConversationResponse(conversation=_serialize_conversation_summary(session, row))
+        return CreateConversationResponse(
+            conversation=_serialize_conversation_summary(session, row)
+        )
 
 
 @router.get("/{agent_id}/conversations", response_model=AgentConversationListResponse)
@@ -1082,7 +1175,9 @@ async def list_agent_conversations(
         return AgentConversationListResponse(items=items, total=len(items))
 
 
-@router.get("/{agent_id}/conversations/{conversation_id}", response_model=AgentConversationDetailResponse)
+@router.get(
+    "/{agent_id}/conversations/{conversation_id}", response_model=AgentConversationDetailResponse
+)
 async def get_agent_conversation(
     agent_id: str,
     conversation_id: str,
@@ -1098,7 +1193,9 @@ async def get_agent_conversation(
         return _serialize_conversation_detail(session, row)
 
 
-@router.patch("/{agent_id}/conversations/{conversation_id}", response_model=AgentConversationDetailResponse)
+@router.patch(
+    "/{agent_id}/conversations/{conversation_id}", response_model=AgentConversationDetailResponse
+)
 async def update_agent_conversation(
     agent_id: str,
     conversation_id: str,
@@ -1162,11 +1259,16 @@ async def delete_agent_conversation(
         try:
             minio.delete_file_versions(bucket_name, object_key)
         except Exception as exc:
-            logger.warning("Failed to delete snapshot object %s/%s: %s", bucket_name, object_key, exc)
+            logger.warning(
+                "Failed to delete snapshot object %s/%s: %s", bucket_name, object_key, exc
+            )
     return {"success": True, "conversation_id": str(conversation_uuid)}
 
 
-@router.get("/{agent_id}/conversations/{conversation_id}/messages", response_model=AgentConversationMessagesListResponse)
+@router.get(
+    "/{agent_id}/conversations/{conversation_id}/messages",
+    response_model=AgentConversationMessagesListResponse,
+)
 async def list_agent_conversation_messages(
     agent_id: str,
     conversation_id: str,
@@ -1364,7 +1466,9 @@ async def save_agent_feishu_publication(
 ):
     _, agent_uuid = agents_router._get_owned_agent_or_raise(agent_id, current_user)
     with get_db_session() as session:
-        publication = _upsert_feishu_publication(session=session, agent_id=agent_uuid, payload=payload)
+        publication = _upsert_feishu_publication(
+            session=session, agent_id=agent_uuid, payload=payload
+        )
         session.commit()
         session.refresh(publication)
         try:
@@ -1405,7 +1509,9 @@ async def publish_agent_feishu_publication(
         if publication is None:
             raise HTTPException(status_code=400, detail="Feishu publication config not found")
 
-        config = dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
+        config = (
+            dict(publication.config_json or {}) if isinstance(publication.config_json, dict) else {}
+        )
         from api_gateway.routers.integrations import _publication_secrets
 
         secrets = _publication_secrets(publication)

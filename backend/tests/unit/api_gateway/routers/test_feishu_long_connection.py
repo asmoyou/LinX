@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from types import SimpleNamespace
 
 from api_gateway import feishu_long_connection
@@ -8,9 +9,14 @@ from api_gateway.feishu_long_connection import (
     FeishuPublicationTarget,
     _resolve_feishu_long_connection_proxy,
 )
+from api_gateway.routers.agent_conversations import _diff_workspace_entries
+from api_gateway.routers import integrations as integrations_router
 from api_gateway.routers.integrations import (
     _build_feishu_reply_text,
     _extract_feishu_message_from_long_connection_event,
+    _prepare_feishu_message_uploads,
+    _resolve_feishu_artifact_file_paths,
+    _select_feishu_deliverable_artifacts,
 )
 
 
@@ -72,11 +78,55 @@ def test_extract_feishu_message_from_long_connection_event_parses_expected_field
 
     assert message == {
         "event_id": "evt-123",
+        "message_id": "msg-1",
         "message_type": "text",
         "chat_id": "chat-1",
         "chat_type": "p2p",
         "thread_key": "root-1",
         "text": "hello from feishu",
+        "content_payload": {"text": "hello from feishu"},
+        "open_id": "open-1",
+        "external_user_id": "user-1",
+        "union_id": "union-1",
+        "tenant_key": "tenant-header",
+    }
+
+
+def test_extract_feishu_message_from_long_connection_event_keeps_file_payload() -> None:
+    event = SimpleNamespace(
+        header=SimpleNamespace(
+            event_type="im.message.receive_v1",
+            event_id="evt-file-1",
+            tenant_key="tenant-header",
+        ),
+        event=SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_id=SimpleNamespace(open_id="open-1", user_id="user-1", union_id="union-1"),
+                tenant_key="tenant-sender",
+            ),
+            message=SimpleNamespace(
+                message_id="msg-file-1",
+                root_id=None,
+                parent_id=None,
+                chat_id="chat-1",
+                chat_type="p2p",
+                message_type="file",
+                content='{"file_key":"file-key-1","file_name":"spec.pdf"}',
+            ),
+        ),
+    )
+
+    message = _extract_feishu_message_from_long_connection_event(event)
+
+    assert message == {
+        "event_id": "evt-file-1",
+        "message_id": "msg-file-1",
+        "message_type": "file",
+        "chat_id": "chat-1",
+        "chat_type": "p2p",
+        "thread_key": "chat-1",
+        "text": "",
+        "content_payload": {"file_key": "file-key-1", "file_name": "spec.pdf"},
         "open_id": "open-1",
         "external_user_id": "user-1",
         "union_id": "union-1",
@@ -92,13 +142,140 @@ def test_build_feishu_reply_text_without_base_url_omits_workspace_link() -> None
         agent=agent,
         conversation=conversation,
         output_text="Finished",
-        artifacts=[{"path": "output/report.md", "is_dir": False}],
+        delivered_artifacts=[],
+        pending_artifacts=[{"path": "output/report.md", "is_directory": False}],
         base_url=None,
     )
 
     assert "Finished" in text
-    assert "/workspace/output/report.md" in text
+    assert "output/report.md" in text
     assert "workforce/agent-1/conversations/conv-1" not in text
+
+
+def test_select_feishu_deliverable_artifacts_filters_runtime_and_directories() -> None:
+    artifacts = [
+        {"path": "output/report.md", "is_directory": False},
+        {"path": ".linx_runtime/python_deps", "is_directory": True},
+        {"path": ".linx_runtime/pip_cache/wheel.whl", "is_directory": False},
+        {"path": "input/source.pdf", "is_directory": False},
+        {"path": "shared/summary.pdf", "is_directory": False},
+    ]
+
+    filtered = _select_feishu_deliverable_artifacts(artifacts)
+
+    assert filtered == [
+        {"path": "output/report.md", "is_directory": False},
+        {"path": "shared/summary.pdf", "is_directory": False},
+    ]
+
+
+def test_diff_workspace_entries_returns_only_this_turn_changes() -> None:
+    before = [
+        {
+            "path": "output/report.md",
+            "is_directory": False,
+            "size": 10,
+            "modified_at": "2026-03-18T10:00:00+00:00",
+        },
+        {
+            "path": "shared/existing.txt",
+            "is_directory": False,
+            "size": 5,
+            "modified_at": "2026-03-18T10:00:00+00:00",
+        },
+    ]
+    after = [
+        {
+            "path": "output/report.md",
+            "is_directory": False,
+            "size": 18,
+            "modified_at": "2026-03-18T10:05:00+00:00",
+        },
+        {
+            "path": "shared/existing.txt",
+            "is_directory": False,
+            "size": 5,
+            "modified_at": "2026-03-18T10:00:00+00:00",
+        },
+        {
+            "path": ".linx_runtime/python_deps/site.py",
+            "is_directory": False,
+            "size": 20,
+            "modified_at": "2026-03-18T10:05:00+00:00",
+        },
+    ]
+
+    delta = _diff_workspace_entries(before, after)
+
+    assert delta == [
+        {
+            "path": "output/report.md",
+            "is_directory": False,
+            "size": 18,
+            "modified_at": "2026-03-18T10:05:00+00:00",
+        },
+        {
+            "path": ".linx_runtime/python_deps/site.py",
+            "is_directory": False,
+            "size": 20,
+            "modified_at": "2026-03-18T10:05:00+00:00",
+        },
+    ]
+
+
+def test_resolve_feishu_artifact_file_paths_returns_existing_files(monkeypatch, tmp_path) -> None:
+    runtime = SimpleNamespace(workdir=str(tmp_path))
+    workspace_file = tmp_path / "output" / "report.md"
+    workspace_file.parent.mkdir(parents=True, exist_ok=True)
+    workspace_file.write_text("hello", encoding="utf-8")
+    conversation = SimpleNamespace(conversation_id="conv-1")
+
+    monkeypatch.setattr(
+        integrations_router,
+        "get_persistent_conversation_runtime_service",
+        lambda: SimpleNamespace(get_active_runtime=lambda _conversation_id: runtime),
+    )
+
+    resolved = _resolve_feishu_artifact_file_paths(
+        conversation,
+        [{"path": "output/report.md", "is_directory": False}],
+    )
+
+    assert resolved == [
+        (
+            {"path": "output/report.md", "is_directory": False},
+            workspace_file,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prepare_feishu_message_uploads_downloads_file_attachment(monkeypatch) -> None:
+    publication = SimpleNamespace(publication_id="pub-1")
+    message = {
+        "message_type": "file",
+        "message_id": "msg-file-1",
+        "content_payload": {
+            "file_key": "file-key-1",
+            "file_name": "spec.pdf",
+        },
+    }
+
+    monkeypatch.setattr(
+        integrations_router,
+        "_download_feishu_message_attachment",
+        lambda *_args, **_kwargs: (b"pdf-bytes", "spec.pdf"),
+    )
+
+    uploads = await _prepare_feishu_message_uploads(
+        publication=publication,
+        message=message,
+    )
+
+    assert len(uploads) == 1
+    assert uploads[0].filename == "spec.pdf"
+    assert uploads[0].content_type == "application/pdf"
+    assert await uploads[0].read() == b"pdf-bytes"
 
 
 def test_feishu_long_connection_manager_reconciles_worker_lifecycle() -> None:
@@ -112,7 +289,9 @@ def test_feishu_long_connection_manager_reconciles_worker_lifecycle() -> None:
     first_pid = first_worker.process.pid
     assert first_worker.process.is_alive() is True
 
-    manager._reconcile_workers({"pub-1": FeishuPublicationTarget(publication_id="pub-1", config_fingerprint="fp-1")})
+    manager._reconcile_workers(
+        {"pub-1": FeishuPublicationTarget(publication_id="pub-1", config_fingerprint="fp-1")}
+    )
     same_worker = manager._workers["pub-1"]
     assert same_worker.process.pid == first_pid
 
