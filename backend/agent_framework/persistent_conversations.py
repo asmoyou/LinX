@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 from database.connection import get_db_session
 from database.models import AgentConversation, AgentConversationSnapshot
 from object_storage.minio_client import get_minio_client
+from shared.config import get_config
 from shared.secret_crypto import sha256_text
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,56 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _cfg_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def _cfg_int(
+    value: Any,
+    default: int,
+    *,
+    minimum: Optional[int] = None,
+    maximum: Optional[int] = None,
+) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    if minimum is not None and parsed < minimum:
+        parsed = minimum
+    if maximum is not None and parsed > maximum:
+        parsed = maximum
+    return parsed
+
+
+def _load_runtime_service_settings() -> dict[str, Any]:
+    raw = get_config().get("persistent_conversations.runtime", {}) or {}
+    return {
+        "base_workdir": str(
+            raw.get("base_workdir") or "/tmp/persistent_agent_conversations"
+        ).strip()
+        or "/tmp/persistent_agent_conversations",
+        "ttl_minutes": _cfg_int(raw.get("ttl_minutes"), 30, minimum=1, maximum=1440),
+        "cleanup_interval_seconds": _cfg_int(
+            raw.get("cleanup_interval_seconds"),
+            300,
+            minimum=30,
+            maximum=86400,
+        ),
+        "use_sandbox_by_default": _cfg_bool(raw.get("use_sandbox_by_default"), True),
+    }
+
+
 def _object_ref(bucket_name: str, object_key: str) -> str:
     return f"minio:{bucket_name}:{object_key}"
 
@@ -60,9 +111,35 @@ def _ensure_runtime_dirs(workdir: Path) -> None:
     (runtime_root / "python_deps").mkdir(parents=True, exist_ok=True)
 
 
-def _build_manifest_entries(workdir: Path) -> list[dict[str, Any]]:
+def _normalize_archive_relative_path(value: str) -> str:
+    normalized = str(value or "").replace("\\", "/").strip()
+    if normalized in {"", "."}:
+        return ""
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.strip("/")
+
+
+def _is_excluded_relative_path(relative_path: str, excluded_paths: set[str]) -> bool:
+    normalized = _normalize_archive_relative_path(relative_path)
+    if not normalized:
+        return False
+    for excluded in excluded_paths:
+        if normalized == excluded or normalized.startswith(f"{excluded}/"):
+            return True
+    return False
+
+
+def _build_manifest_entries(
+    workdir: Path,
+    *,
+    excluded_paths: Optional[set[str]] = None,
+) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     root = workdir.resolve()
+    excluded = {
+        _normalize_archive_relative_path(path) for path in (excluded_paths or set()) if path
+    }
     for item in sorted(root.rglob("*")):
         try:
             stat = item.stat()
@@ -70,6 +147,8 @@ def _build_manifest_entries(workdir: Path) -> list[dict[str, Any]]:
             continue
         relative = str(item.relative_to(root)).replace("\\", "/")
         if not relative:
+            continue
+        if _is_excluded_relative_path(relative, excluded):
             continue
         entries.append(
             {
@@ -96,10 +175,27 @@ def _safe_extract_tar_bytes(archive_bytes: bytes, target_dir: Path) -> None:
         archive.extractall(path=target_root)
 
 
-def _build_archive_bytes(workdir: Path) -> tuple[bytes, str]:
+def _build_archive_bytes(
+    workdir: Path,
+    *,
+    excluded_paths: Optional[set[str]] = None,
+) -> tuple[bytes, str]:
     buffer = io.BytesIO()
+    excluded = {
+        _normalize_archive_relative_path(path) for path in (excluded_paths or set()) if path
+    }
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-        archive.add(workdir, arcname=".")
+        archive.add(
+            workdir,
+            arcname=".",
+            filter=(
+                lambda tarinfo: (
+                    None
+                    if _is_excluded_relative_path(str(getattr(tarinfo, "name", "")), excluded)
+                    else tarinfo
+                )
+            ),
+        )
     data = buffer.getvalue()
     return data, hashlib.sha256(data).hexdigest()
 
@@ -119,7 +215,7 @@ def _is_default_conversation_title(title: str) -> bool:
         "reasoning process:",
         "output format",
         "single line json",
-        "{\"title\"",
+        '{"title"',
         "task:",
         "task：",
         "input:",
@@ -232,7 +328,11 @@ class PersistentConversationRuntimeService:
             await self.release_runtime(conversation.conversation_id, reason="expired")
 
         runtime_id = uuid4().hex[:12]
-        workdir = self.base_workdir / f"conversation_{conversation.conversation_id}" / f"runtime_{runtime_id}"
+        workdir = (
+            self.base_workdir
+            / f"conversation_{conversation.conversation_id}"
+            / f"runtime_{runtime_id}"
+        )
         workdir.mkdir(parents=True, exist_ok=True)
         _ensure_runtime_dirs(workdir)
 
@@ -240,7 +340,9 @@ class PersistentConversationRuntimeService:
         restored = False
         generation = 0
         if latest_ready_snapshot and latest_ready_snapshot.archive_ref:
-            await asyncio.to_thread(self._restore_snapshot_to_workdir, latest_ready_snapshot, workdir)
+            await asyncio.to_thread(
+                self._restore_snapshot_to_workdir, latest_ready_snapshot, workdir
+            )
             restored = True
             generation = int(latest_ready_snapshot.generation or 0)
 
@@ -277,6 +379,14 @@ class PersistentConversationRuntimeService:
 
         runtime.touch()
         try:
+            from agent_framework.conversation_workspace_decay import (
+                get_conversation_workspace_decay_service,
+            )
+
+            decay_result = get_conversation_workspace_decay_service().decay_workspace(
+                conversation_id=conversation_id,
+                workdir=runtime.workdir,
+            )
             snapshot = await asyncio.to_thread(
                 self._create_snapshot_record,
                 conversation_id,
@@ -284,9 +394,14 @@ class PersistentConversationRuntimeService:
                 runtime.owner_user_id,
                 runtime.workdir,
                 snapshot_status,
+                set(decay_result.get("excluded_paths") or []),
+                int(decay_result.get("total_bytes") or 0),
+                int(decay_result.get("total_files") or 0),
             )
             if snapshot and snapshot.snapshot_status == "ready":
-                runtime.snapshot_generation = int(snapshot.generation or runtime.snapshot_generation)
+                runtime.snapshot_generation = int(
+                    snapshot.generation or runtime.snapshot_generation
+                )
                 runtime.dirty = False
             return snapshot
         except Exception as exc:
@@ -316,7 +431,7 @@ class PersistentConversationRuntimeService:
         runtime = self._runtimes.get(str(conversation_id))
         if runtime is None:
             return
-        if runtime.dirty:
+        if runtime.dirty and reason != "delete":
             try:
                 await self.snapshot_runtime(conversation_id=conversation_id)
             except Exception:
@@ -441,11 +556,14 @@ class PersistentConversationRuntimeService:
         owner_user_id: UUID,
         workdir: Path,
         snapshot_status: str,
+        excluded_paths: Optional[set[str]] = None,
+        workspace_bytes_estimate: int = 0,
+        workspace_file_count_estimate: int = 0,
     ) -> AgentConversationSnapshot:
         minio = get_minio_client()
         bucket_name = minio.buckets["artifacts"]
-        manifest_entries = _build_manifest_entries(workdir)
-        archive_bytes, checksum = _build_archive_bytes(workdir)
+        manifest_entries = _build_manifest_entries(workdir, excluded_paths=excluded_paths)
+        archive_bytes, checksum = _build_archive_bytes(workdir, excluded_paths=excluded_paths)
         manifest_bytes = json.dumps(
             {"entries": manifest_entries, "generated_at": utcnow().isoformat()},
             ensure_ascii=False,
@@ -468,12 +586,8 @@ class PersistentConversationRuntimeService:
                 .first()
             )
             next_generation = int(previous_ready.generation if previous_ready else 0) + 1
-            archive_key = (
-                f"{agent_id}/{conversation_id}/{next_generation:06d}/workspace.tar.gz"
-            )
-            manifest_key = (
-                f"{agent_id}/{conversation_id}/{next_generation:06d}/manifest.json"
-            )
+            archive_key = f"{agent_id}/{conversation_id}/{next_generation:06d}/workspace.tar.gz"
+            manifest_key = f"{agent_id}/{conversation_id}/{next_generation:06d}/manifest.json"
 
             metadata = {
                 "conversation_id": str(conversation_id),
@@ -511,6 +625,9 @@ class PersistentConversationRuntimeService:
             if snapshot_status == "ready":
                 conversation.latest_snapshot_id = snapshot.snapshot_id
                 conversation.updated_at = utcnow()
+                conversation.workspace_bytes_estimate = int(workspace_bytes_estimate or 0)
+                conversation.workspace_file_count_estimate = int(workspace_file_count_estimate or 0)
+                conversation.last_workspace_decay_at = utcnow()
                 if previous_ready:
                     previous_ready.snapshot_status = "superseded"
             session.commit()
@@ -525,7 +642,9 @@ class PersistentConversationRuntimeService:
                 try:
                     minio.delete_file_versions(bucket, key)
                 except Exception as exc:
-                    logger.warning("Failed to delete previous snapshot object %s/%s: %s", bucket, key, exc)
+                    logger.warning(
+                        "Failed to delete previous snapshot object %s/%s: %s", bucket, key, exc
+                    )
         return snapshot
 
     def _record_failed_snapshot(
@@ -569,7 +688,7 @@ _runtime_service: PersistentConversationRuntimeService | None = None
 def get_persistent_conversation_runtime_service() -> PersistentConversationRuntimeService:
     global _runtime_service
     if _runtime_service is None:
-        _runtime_service = PersistentConversationRuntimeService()
+        _runtime_service = PersistentConversationRuntimeService(**_load_runtime_service_settings())
     return _runtime_service
 
 

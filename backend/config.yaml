@@ -555,6 +555,34 @@ session_ledger:
   dry_run: false
   use_advisory_lock: true
   advisory_lock_id: 73012021
+persistent_conversations:
+  runtime:
+    ttl_minutes: 30
+    cleanup_interval_seconds: 300
+    use_sandbox_by_default: true
+  workspace:
+    decay_enabled: true
+    ephemeral_ttl_hours: 6
+    rebuildable_ttl_hours: 24
+    soft_limit_mb: 500
+    hard_limit_mb: 1024
+    soft_limit_files: 5000
+    hard_limit_files: 10000
+  history:
+    compaction_enabled: true
+    recent_turn_window: 40
+    min_message_age_hours: 24
+  lifecycle:
+    enabled: true
+    run_on_startup: true
+    startup_delay_seconds: 30
+    interval_seconds: 300
+    archive_after_days: 30
+    delete_after_days: 90
+    dry_run: false
+    scan_limit: 200
+    use_advisory_lock: true
+    advisory_lock_id: 73012025
 runtime_context:
   enable_user_memory: true
   enable_skills: true

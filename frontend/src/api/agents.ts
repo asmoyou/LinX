@@ -4,6 +4,7 @@ import type { Agent } from '../types/agent';
 import type { AgentSkillSummary } from '../types/agent';
 import type {
   AgentConversationDetail,
+  AgentConversationHistorySummary,
   AgentConversationSummary,
   ConversationMessage,
   FeishuPublicationConfig,
@@ -66,6 +67,7 @@ export interface AgentSessionWorkspaceFile {
   is_dir: boolean;
   modified_at?: string;
   previewable_inline?: boolean;
+  retentionClass?: 'durable' | 'rebuildable' | 'ephemeral' | 'stateful_runtime' | string;
 }
 
 export interface AgentLogEntry {
@@ -102,6 +104,10 @@ export interface AgentConversationListResponse {
 export interface AgentConversationMessagesResponse {
   items: ConversationMessage[];
   total: number;
+  historySummary?: AgentConversationHistorySummary | null;
+  compactedMessageCount?: number;
+  archivedSegmentCount?: number;
+  recentWindowSize?: number;
 }
 
 export interface SaveFeishuPublicationRequest {
@@ -702,6 +708,7 @@ export const agentsApi = {
       is_dir?: boolean;
       modified_at?: string;
       previewable_inline?: boolean;
+      retention_class?: string;
     }>>(`/agents/${agentId}/conversations/${conversationId}/workspace/files`, requestConfig);
     return response.data.map((item) => ({
       name: item.name,
@@ -710,6 +717,7 @@ export const agentsApi = {
       is_dir: item.is_dir ?? Boolean(item.is_directory),
       modified_at: item.modified_at,
       previewable_inline: item.previewable_inline,
+      retentionClass: item.retention_class,
     }));
   },
 

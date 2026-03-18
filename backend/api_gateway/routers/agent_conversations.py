@@ -35,6 +35,14 @@ from agent_framework.agent_conversation_runner import (
     generate_conversation_title,
     initialize_chat_agent,
 )
+from agent_framework.conversation_history_compaction import (
+    get_conversation_history_compaction_service,
+)
+from agent_framework.conversation_storage_cleanup import (
+    collect_conversation_storage_refs,
+    delete_object_references,
+)
+from agent_framework.conversation_workspace_decay import get_conversation_workspace_decay_service
 from agent_framework.persistent_conversations import (
     build_default_conversation_title,
     get_persistent_conversation_runtime_service,
@@ -49,7 +57,9 @@ from database.connection import get_db_session
 from database.models import (
     Agent,
     AgentConversation,
+    AgentConversationHistorySummary,
     AgentChannelPublication,
+    AgentConversationMessageArchive,
     AgentConversationMessage,
     AgentConversationSnapshot,
 )
@@ -73,6 +83,12 @@ class AgentConversationSummaryResponse(BaseModel):
     source: str
     latestSnapshotId: Optional[str] = None
     latestSnapshotStatus: Optional[str] = None
+    storageTier: str = "hot"
+    archivedAt: Optional[datetime] = None
+    deleteAfter: Optional[datetime] = None
+    workspaceBytes: int = 0
+    workspaceFileCount: int = 0
+    compactedMessageCount: int = 0
     lastMessageAt: Optional[datetime] = None
     lastMessagePreview: Optional[str] = None
     createdAt: datetime
@@ -81,6 +97,25 @@ class AgentConversationSummaryResponse(BaseModel):
 
 class AgentConversationDetailResponse(AgentConversationSummaryResponse):
     latestSnapshotGeneration: Optional[int] = None
+
+
+class AgentConversationHistorySummaryResponse(BaseModel):
+    summaryText: str
+    summaryJson: Optional[Dict[str, List[str]]] = None
+    rawMessageCount: int = 0
+    coversUntilMessageId: Optional[str] = None
+    coversUntilCreatedAt: Optional[datetime] = None
+
+
+class AgentConversationArchiveResponse(BaseModel):
+    archiveId: str
+    conversationId: str
+    startMessageId: Optional[str] = None
+    endMessageId: Optional[str] = None
+    messageCount: int
+    status: str
+    expiresAt: Optional[datetime] = None
+    createdAt: datetime
 
 
 class AgentConversationMessageResponse(BaseModel):
@@ -102,6 +137,15 @@ class AgentConversationListResponse(BaseModel):
 
 class AgentConversationMessagesListResponse(BaseModel):
     items: List[AgentConversationMessageResponse]
+    total: int
+    historySummary: Optional[AgentConversationHistorySummaryResponse] = None
+    compactedMessageCount: int = 0
+    archivedSegmentCount: int = 0
+    recentWindowSize: int = 0
+
+
+class AgentConversationArchiveListResponse(BaseModel):
+    items: List[AgentConversationArchiveResponse]
     total: int
 
 
@@ -196,6 +240,12 @@ def _serialize_conversation_summary(
         latestSnapshotId=latest_snapshot_id
         or (str(conversation.latest_snapshot_id) if conversation.latest_snapshot_id else None),
         latestSnapshotStatus=latest_snapshot_status,
+        storageTier=str(conversation.storage_tier or "hot"),
+        archivedAt=conversation.archived_at,
+        deleteAfter=conversation.delete_after,
+        workspaceBytes=int(conversation.workspace_bytes_estimate or 0),
+        workspaceFileCount=int(conversation.workspace_file_count_estimate or 0),
+        compactedMessageCount=int(conversation.compacted_message_count or 0),
         lastMessageAt=conversation.last_message_at,
         lastMessagePreview=_last_message_preview(session, conversation.conversation_id),
         createdAt=conversation.created_at,
@@ -235,6 +285,66 @@ def _serialize_message(message: AgentConversationMessage) -> AgentConversationMe
         source=message.source,
         externalEventId=message.external_event_id,
         createdAt=message.created_at,
+    )
+
+
+def _serialize_history_summary(
+    summary: AgentConversationHistorySummary,
+) -> AgentConversationHistorySummaryResponse:
+    summary_json = (
+        {key: [str(item) for item in value] for key, value in summary.summary_json.items()}
+        if isinstance(summary.summary_json, dict)
+        else None
+    )
+    return AgentConversationHistorySummaryResponse(
+        summaryText=str(summary.summary_text or ""),
+        summaryJson=summary_json,
+        rawMessageCount=int(summary.raw_message_count or 0),
+        coversUntilMessageId=(
+            str(summary.covers_until_message_id) if summary.covers_until_message_id else None
+        ),
+        coversUntilCreatedAt=summary.covers_until_created_at,
+    )
+
+
+def _serialize_message_archive(
+    archive: AgentConversationMessageArchive,
+) -> AgentConversationArchiveResponse:
+    return AgentConversationArchiveResponse(
+        archiveId=str(archive.archive_id),
+        conversationId=str(archive.conversation_id),
+        startMessageId=str(archive.start_message_id) if archive.start_message_id else None,
+        endMessageId=str(archive.end_message_id) if archive.end_message_id else None,
+        messageCount=int(archive.message_count or 0),
+        status=str(archive.status or "ready"),
+        expiresAt=archive.expires_at,
+        createdAt=archive.created_at,
+    )
+
+
+def _build_history_summary_response_from_window(
+    history_window: Dict[str, Any],
+) -> Optional[AgentConversationHistorySummaryResponse]:
+    summary_row = history_window.get("summary_row")
+    if summary_row is not None:
+        return _serialize_history_summary(summary_row)
+
+    summary_text = str(history_window.get("summary_text") or "").strip()
+    if not summary_text:
+        return None
+
+    summary_json = history_window.get("summary_json")
+    normalized_summary_json = (
+        {str(key): [str(item) for item in value] for key, value in summary_json.items()}
+        if isinstance(summary_json, dict)
+        else None
+    )
+    return AgentConversationHistorySummaryResponse(
+        summaryText=summary_text,
+        summaryJson=normalized_summary_json,
+        rawMessageCount=int(history_window.get("older_message_count") or 0),
+        coversUntilMessageId=None,
+        coversUntilCreatedAt=None,
     )
 
 
@@ -558,17 +668,114 @@ async def _build_history_content_from_row(
 
 
 async def _build_conversation_history(
-    previous_messages: List[AgentConversationMessage],
-) -> List[Dict[str, Any]]:
+    conversation_id: UUID,
+) -> tuple[List[Dict[str, Any]], dict[str, Any]]:
+    history_window = get_conversation_history_compaction_service().load_history_window(
+        conversation_id
+    )
     history: List[Dict[str, Any]] = []
-    for message in previous_messages:
+    summary_text = str(history_window.get("summary_text") or "").strip()
+    if summary_text:
+        history.append(
+            {
+                "role": "system",
+                "content": (
+                    "Earlier persistent conversation summary. "
+                    "Use this as durable context, and prefer newer raw messages when they conflict.\n\n"
+                    f"{summary_text}"
+                ),
+            }
+        )
+    for message in list(history_window.get("recent_messages") or []):
         if message.role not in {"user", "assistant"}:
             continue
         content = await _build_history_content_from_row(message)
         if not content:
             continue
         history.append({"role": message.role, "content": content})
-    return agents_router._sanitize_history_messages(history)
+    return _sanitize_conversation_history_messages(history), history_window
+
+
+def _sanitize_conversation_history_messages(raw_history: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_history, list):
+        return []
+
+    sanitized: List[Dict[str, Any]] = []
+    for entry in raw_history:
+        if not isinstance(entry, dict):
+            continue
+        role = str(entry.get("role") or "").strip().lower()
+        if role not in {"user", "assistant", "system"}:
+            continue
+        normalized_content = agents_router._normalize_history_content(entry.get("content"))
+        if isinstance(normalized_content, list):
+            content = normalized_content
+        else:
+            content = str(normalized_content or "").strip()
+        if not content:
+            continue
+        sanitized.append({"role": role, "content": content})
+    return sanitized
+
+
+def _normalize_workspace_attachment_path(value: Any) -> Optional[str]:
+    raw = str(value or "").replace("\\", "/").strip().lstrip("/")
+    if raw.startswith("workspace/"):
+        raw = raw[len("workspace/") :]
+    normalized = raw.strip("/")
+    if not normalized or ".." in normalized:
+        return None
+    if not normalized.startswith("input/"):
+        return None
+    return normalized
+
+
+def _rematerialize_conversation_attachments_to_workspace(
+    conversation_id: UUID,
+    workdir: Path,
+) -> tuple[int, List[str]]:
+    with get_db_session() as session:
+        rows = (
+            session.query(AgentConversationMessage.attachments_json)
+            .filter(AgentConversationMessage.conversation_id == conversation_id)
+            .order_by(AgentConversationMessage.created_at.asc())
+            .all()
+        )
+
+    minio = get_minio_client()
+    written = 0
+    errors: List[str] = []
+    seen_paths: set[str] = set()
+    for row in rows:
+        attachments = row[0] if isinstance(row, tuple) else row
+        if not isinstance(attachments, list):
+            continue
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            workspace_path = _normalize_workspace_attachment_path(attachment.get("workspace_path"))
+            storage_ref = str(attachment.get("storage_ref") or "").strip()
+            if not workspace_path or not storage_ref or workspace_path in seen_paths:
+                continue
+            seen_paths.add(workspace_path)
+            destination_path, _ = agents_router._resolve_safe_workspace_path(
+                workdir, workspace_path
+            )
+            if destination_path.exists():
+                continue
+            parsed = minio.parse_object_reference(storage_ref)
+            if not parsed:
+                errors.append(f"{workspace_path}: invalid storage ref")
+                continue
+            bucket_name, object_key = parsed
+            try:
+                file_stream, _ = minio.download_file(bucket_name, object_key)
+                destination_path.parent.mkdir(parents=True, exist_ok=True)
+                destination_path.write_bytes(file_stream.read())
+                written += 1
+            except Exception as exc:
+                errors.append(f"{workspace_path}: {exc}")
+    return written, errors
 
 
 def _message_source_label(source: str) -> str:
@@ -607,6 +814,10 @@ def _persist_message(
         now = datetime.now(timezone.utc)
         conversation.last_message_at = now
         conversation.updated_at = now
+        if conversation.storage_tier == "archived":
+            conversation.storage_tier = "hot"
+            conversation.archived_at = None
+            conversation.delete_after = None
         session.commit()
         session.refresh(message)
         return message
@@ -644,16 +855,6 @@ def _message_exists_for_external_event(
             .first()
         )
         return row is not None
-
-
-def _load_previous_messages(conversation_id: UUID) -> List[AgentConversationMessage]:
-    with get_db_session() as session:
-        return (
-            session.query(AgentConversationMessage)
-            .filter(AgentConversationMessage.conversation_id == conversation_id)
-            .order_by(AgentConversationMessage.created_at.asc())
-            .all()
-        )
 
 
 async def _detect_model_supports_vision(agent_info: Agent) -> bool:
@@ -728,8 +929,7 @@ async def execute_persistent_conversation_turn(
         return {"duplicate": True, "output": "", "artifacts": []}
 
     user_text = str(message or "").strip()
-    previous_messages = _load_previous_messages(conversation.conversation_id)
-    history = await _build_conversation_history(previous_messages)
+    history, history_window = await _build_conversation_history(conversation.conversation_id)
     runtime_service = get_persistent_conversation_runtime_service()
     runtime, _ = await runtime_service.get_or_create_runtime(conversation=conversation)
     await _emit_chunk(
@@ -742,6 +942,52 @@ async def execute_persistent_conversation_turn(
             "use_sandbox": runtime.use_sandbox,
         },
     )
+    try:
+        from agent_framework.conversation_workspace_decay import (
+            ConversationWorkspaceLimitExceeded,
+            get_conversation_workspace_decay_service,
+        )
+
+        decay_result = get_conversation_workspace_decay_service().decay_workspace(
+            conversation_id=conversation.conversation_id,
+            workdir=runtime.workdir,
+        )
+        deleted_paths = list(decay_result.get("deleted_paths") or [])
+        if deleted_paths:
+            await _emit_chunk(
+                chunk_callback,
+                {
+                    "type": "info",
+                    "content": (
+                        f"Workspace auto-cleanup removed {len(deleted_paths)} stale file(s) before execution."
+                    ),
+                },
+            )
+    except ConversationWorkspaceLimitExceeded as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    restored_attachments, restore_errors = _rematerialize_conversation_attachments_to_workspace(
+        conversation.conversation_id,
+        runtime.workdir,
+    )
+    if restored_attachments > 0:
+        await _emit_chunk(
+            chunk_callback,
+            {
+                "type": "info",
+                "content": (
+                    f"Restored {restored_attachments} attachment file(s) into /workspace/input/."
+                ),
+            },
+        )
+    for error_text in restore_errors:
+        await _emit_chunk(
+            chunk_callback,
+            {
+                "type": "info",
+                "content": f"Failed to restore one workspace attachment: {error_text}",
+            },
+        )
 
     file_refs, attachment_payloads = await _prepare_uploaded_files(
         agent_id=str(conversation.agent_id),
@@ -888,6 +1134,7 @@ async def execute_persistent_conversation_turn(
                 additional_context={
                     "execution_context_tag": agents_router.AGENT_TEST_RUNTIME_CONTEXT_TAG,
                     "task_intent_text": user_text,
+                    "conversation_history_summary": history_window.get("summary_text"),
                 },
             )
             if is_agent_test_chat_unified_runtime_enabled():
@@ -1247,34 +1494,19 @@ async def delete_agent_conversation(
         )
         if row is None:
             return {"success": True, "conversation_id": conversation_id, "already_deleted": True}
-        snapshot_rows = (
-            session.query(AgentConversationSnapshot)
-            .filter(AgentConversationSnapshot.conversation_id == row.conversation_id)
-            .all()
-        )
-        snapshot_refs = [
-            ref
-            for snapshot in snapshot_rows
-            for ref in (snapshot.archive_ref, snapshot.manifest_ref)
-            if ref
-        ]
+        object_refs = collect_conversation_storage_refs(session, row.conversation_id)
         conversation_uuid = row.conversation_id
         session.delete(row)
         session.commit()
 
     await runtime_service.release_runtime(UUID(conversation_id), reason="delete")
-    minio = get_minio_client()
-    for ref in snapshot_refs:
-        parsed = minio.parse_object_reference(ref)
-        if not parsed:
-            continue
-        bucket_name, object_key = parsed
-        try:
-            minio.delete_file_versions(bucket_name, object_key)
-        except Exception as exc:
-            logger.warning(
-                "Failed to delete snapshot object %s/%s: %s", bucket_name, object_key, exc
-            )
+    delete_object_references(
+        {
+            *set(object_refs.get("snapshot_refs") or set()),
+            *set(object_refs.get("archive_refs") or set()),
+            *set(object_refs.get("attachment_refs") or set()),
+        }
+    )
     return {"success": True, "conversation_id": str(conversation_uuid)}
 
 
@@ -1295,15 +1527,20 @@ async def list_agent_conversation_messages(
             conversation_id=conversation_id,
             current_user=current_user,
         )
-        messages = (
-            session.query(AgentConversationMessage)
-            .filter(AgentConversationMessage.conversation_id == row.conversation_id)
-            .order_by(AgentConversationMessage.created_at.asc())
-            .limit(limit)
-            .all()
+        history_window = get_conversation_history_compaction_service().load_history_window(
+            row.conversation_id
         )
+        recent_messages = list(history_window.get("recent_messages") or [])
+        messages = recent_messages[-limit:] if limit > 0 else recent_messages
         items = [_serialize_message(message) for message in messages]
-        return AgentConversationMessagesListResponse(items=items, total=len(items))
+        return AgentConversationMessagesListResponse(
+            items=items,
+            total=len(items),
+            historySummary=_build_history_summary_response_from_window(history_window),
+            compactedMessageCount=int(history_window.get("compacted_message_count") or 0),
+            archivedSegmentCount=int(history_window.get("archived_segment_count") or 0),
+            recentWindowSize=int(history_window.get("recent_window_size") or 0),
+        )
 
 
 @router.post("/{agent_id}/conversations/{conversation_id}/messages")
@@ -1419,7 +1656,88 @@ async def list_conversation_workspace_files(
     runtime, _ = await get_persistent_conversation_runtime_service().get_or_create_runtime(
         conversation=conversation
     )
-    return agents_router._list_session_workspace_entries(runtime.workdir, path, recursive)
+    entries = agents_router._list_session_workspace_entries(runtime.workdir, path, recursive)
+    retention_index = get_conversation_workspace_decay_service().build_retention_index(
+        conversation_id=conversation.conversation_id,
+        workdir=runtime.workdir,
+    )
+    enriched_entries: List[Dict[str, Any]] = []
+    for entry in entries:
+        relative_path = str(entry.get("path") or "").strip()
+        enriched_entry = dict(entry)
+        enriched_entry["retention_class"] = retention_index.get(relative_path, "durable")
+        enriched_entries.append(enriched_entry)
+    return enriched_entries
+
+
+@router.get(
+    "/{agent_id}/conversations/{conversation_id}/archives",
+    response_model=AgentConversationArchiveListResponse,
+)
+async def list_agent_conversation_archives(
+    agent_id: str,
+    conversation_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    with get_db_session() as session:
+        row = _load_owned_conversation(
+            session,
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            current_user=current_user,
+        )
+        archives = (
+            session.query(AgentConversationMessageArchive)
+            .filter(AgentConversationMessageArchive.conversation_id == row.conversation_id)
+            .order_by(AgentConversationMessageArchive.created_at.desc())
+            .all()
+        )
+        items = [_serialize_message_archive(archive) for archive in archives]
+        return AgentConversationArchiveListResponse(items=items, total=len(items))
+
+
+@router.get("/{agent_id}/conversations/{conversation_id}/archives/{archive_id}/download")
+async def download_agent_conversation_archive(
+    agent_id: str,
+    conversation_id: str,
+    archive_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    with get_db_session() as session:
+        row = _load_owned_conversation(
+            session,
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            current_user=current_user,
+        )
+        archive = (
+            session.query(AgentConversationMessageArchive)
+            .filter(AgentConversationMessageArchive.conversation_id == row.conversation_id)
+            .filter(
+                AgentConversationMessageArchive.archive_id == _parse_conversation_uuid(archive_id)
+            )
+            .first()
+        )
+        if archive is None:
+            raise HTTPException(status_code=404, detail="Conversation archive not found")
+
+    minio = get_minio_client()
+    parsed = minio.parse_object_reference(archive.archive_ref)
+    if not parsed:
+        raise HTTPException(status_code=404, detail="Conversation archive object not found")
+    bucket_name, object_key = parsed
+    archive_stream, _ = minio.download_file(bucket_name, object_key)
+    filename = f"conversation-{conversation_id}-archive-{archive_id}.jsonl.gz"
+    return StreamingResponse(
+        archive_stream,
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": agents_router._build_download_content_disposition(
+                filename,
+                disposition="attachment",
+            )
+        },
+    )
 
 
 @router.get("/{agent_id}/conversations/{conversation_id}/workspace/download")

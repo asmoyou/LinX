@@ -1,9 +1,15 @@
+import io
+import tarfile
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
-from agent_framework.persistent_conversations import PersistentConversationRuntime, PersistentConversationRuntimeService
+from agent_framework.persistent_conversations import (
+    PersistentConversationRuntime,
+    PersistentConversationRuntimeService,
+    _build_archive_bytes,
+)
 
 
 @pytest.mark.asyncio
@@ -41,3 +47,21 @@ async def test_release_runtime_flushes_conversation_memory_even_when_runtime_exi
     await service.release_runtime(conversation_id, reason="user")
 
     assert calls == [(conversation_id, "user")]
+
+
+def test_build_archive_bytes_excludes_paths(tmp_path: Path) -> None:
+    (tmp_path / "output").mkdir()
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "output" / "result.txt").write_text("keep", encoding="utf-8")
+    (tmp_path / "logs" / "run.log").write_text("drop", encoding="utf-8")
+
+    archive_bytes, _checksum = _build_archive_bytes(
+        tmp_path,
+        excluded_paths={"logs"},
+    )
+
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as archive:
+        names = archive.getnames()
+
+    assert "./output/result.txt" in names
+    assert all(not name.startswith("./logs") for name in names)

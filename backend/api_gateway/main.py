@@ -229,6 +229,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.warning(f"Failed to initialize persistent conversation runtime service: {e}")
 
     try:
+        from agent_framework.conversation_lifecycle_manager import (
+            initialize_conversation_lifecycle_manager,
+        )
+
+        manager = await initialize_conversation_lifecycle_manager()
+        if manager:
+            logger.info("Persistent conversation lifecycle manager initialized")
+        else:
+            logger.info("Persistent conversation lifecycle manager is disabled by config")
+    except Exception as e:
+        logger.warning(f"Failed to initialize persistent conversation lifecycle manager: {e}")
+
+    try:
         from api_gateway.feishu_long_connection import initialize_feishu_long_connection_manager
 
         await initialize_feishu_long_connection_manager()
@@ -406,6 +419,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.error(f"Failed to shutdown SessionManager: {e}")
 
     try:
+        from agent_framework.conversation_lifecycle_manager import (
+            shutdown_conversation_lifecycle_manager,
+        )
+
+        await shutdown_conversation_lifecycle_manager()
+        logger.info("Persistent conversation lifecycle manager shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown persistent conversation lifecycle manager: {e}")
+
+    try:
         from agent_framework.persistent_conversations import (
             shutdown_persistent_conversation_runtime_service,
         )
@@ -557,7 +580,9 @@ def create_app() -> FastAPI:
     app.include_router(roles.router, prefix="/api/v1/roles", tags=["Roles"])
     app.include_router(departments.router, prefix="/api/v1/departments", tags=["Departments"])
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
-    app.include_router(agent_conversations.router, prefix="/api/v1/agents", tags=["Agent Conversations"])
+    app.include_router(
+        agent_conversations.router, prefix="/api/v1/agents", tags=["Agent Conversations"]
+    )
     app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
     app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["Knowledge"])
     app.include_router(user_memory.router, prefix="/api/v1/user-memory", tags=["User Memory"])

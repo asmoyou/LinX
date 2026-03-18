@@ -55,6 +55,7 @@ interface FileTreeNode {
   size?: number;
   isOutput?: boolean;
   scopeLabel?: string;
+  retentionClass?: string;
   children?: FileTreeNode[];
 }
 
@@ -143,6 +144,32 @@ function inferScopeLabel(path: string): string {
   return firstSegment;
 }
 
+function getRetentionLabel(retentionClass?: string): string {
+  switch (retentionClass) {
+    case 'ephemeral':
+      return 'ephemeral';
+    case 'rebuildable':
+      return 'rebuildable';
+    case 'stateful_runtime':
+      return 'runtime';
+    default:
+      return 'durable';
+  }
+}
+
+function getRetentionHint(retentionClass?: string): string | null {
+  switch (retentionClass) {
+    case 'ephemeral':
+      return 'This file is treated as temporary and can be removed automatically before snapshots.';
+    case 'rebuildable':
+      return 'This file is a rebuildable input copy and can be removed automatically after aging.';
+    case 'stateful_runtime':
+      return 'This file belongs to preserved runtime dependencies.';
+    default:
+      return null;
+  }
+}
+
 function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
   const sorted = [...nodes].sort((a, b) => {
     if (a.type !== b.type) {
@@ -209,6 +236,7 @@ function buildFileTree(entries: WorkspaceEntry[]): FileTreeNode[] {
             size: entry.size,
             isOutput: entry.isOutput,
             scopeLabel: entry.scopeLabel,
+            retentionClass: entry.retentionClass,
           });
         }
       } else {
@@ -260,7 +288,7 @@ function buildFilesSignature(entries: AgentSessionWorkspaceFile[]): string {
   return entries
     .map(
       (entry) =>
-        `${entry.path}|${entry.size}|${entry.modified_at || ''}|${entry.is_dir ? 'd' : 'f'}`
+        `${entry.path}|${entry.size}|${entry.modified_at || ''}|${entry.is_dir ? 'd' : 'f'}|${entry.retentionClass || ''}`
     )
     .sort()
     .join(';');
@@ -731,6 +759,11 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
             {activeSection === 'all' && node.isOutput && (
               <Star className="h-3 w-3 shrink-0 text-amber-500" />
             )}
+            {node.retentionClass && (
+              <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                {getRetentionLabel(node.retentionClass)}
+              </span>
+            )}
             <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
               {node.scopeLabel}
             </span>
@@ -867,6 +900,11 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
                     <p className="mt-0.5 text-[11px] text-zinc-400">
                       {formatFileSize(selectedFile.size || 0)}
                       {previewMime ? ` • ${previewMime}` : ''}
+                    </p>
+                  )}
+                  {selectedFile && getRetentionHint(selectedFile.retentionClass) && (
+                    <p className="mt-1 text-[11px] text-amber-500 dark:text-amber-300">
+                      {getRetentionHint(selectedFile.retentionClass)}
                     </p>
                   )}
                 </div>

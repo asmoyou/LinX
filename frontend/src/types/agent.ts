@@ -49,6 +49,12 @@ export interface AgentConversationSummary {
   source: 'web' | 'feishu';
   latestSnapshotId?: string | null;
   latestSnapshotStatus?: string | null;
+  storageTier?: 'hot' | 'compacted' | 'archived' | string;
+  archivedAt?: string | null;
+  deleteAfter?: string | null;
+  workspaceBytes?: number;
+  workspaceFileCount?: number;
+  compactedMessageCount?: number;
   lastMessageAt?: string | null;
   lastMessagePreview?: string | null;
   createdAt: string;
@@ -57,6 +63,14 @@ export interface AgentConversationSummary {
 
 export interface AgentConversationDetail extends AgentConversationSummary {
   latestSnapshotGeneration?: number | null;
+}
+
+export interface AgentConversationHistorySummary {
+  summaryText: string;
+  summaryJson?: Record<string, string[]> | null;
+  rawMessageCount: number;
+  coversUntilMessageId?: string | null;
+  coversUntilCreatedAt?: string | null;
 }
 
 export interface ConversationMessage {

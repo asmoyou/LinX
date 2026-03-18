@@ -24,6 +24,7 @@ import { SessionWorkspacePanel } from '@/components/workforce/SessionWorkspacePa
 import type {
   Agent,
   AgentConversationDetail,
+  AgentConversationHistorySummary,
   AgentConversationSummary,
   ConversationMessage,
 } from '@/types/agent';
@@ -252,6 +253,7 @@ export const AgentConversation: React.FC = () => {
   const [conversations, setConversations] = useState<AgentConversationSummary[]>([]);
   const [conversation, setConversation] = useState<AgentConversationDetail | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [historySummary, setHistorySummary] = useState<AgentConversationHistorySummary | null>(null);
   const [inputMessage, setInputMessage] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -290,6 +292,7 @@ export const AgentConversation: React.FC = () => {
       setConversations(listData.items);
       setConversation(detailData);
       setMessages(messagesData?.items || []);
+      setHistorySummary(messagesData?.historySummary || null);
       setPendingConversationTitle(detailData?.title || null);
       setError(null);
     } catch (loadError) {
@@ -422,6 +425,7 @@ export const AgentConversation: React.FC = () => {
         setPendingConversationTitle(detailData.title || null);
         if (messagesData) {
           setMessages(messagesData.items);
+          setHistorySummary(messagesData.historySummary || null);
         }
       } catch (syncError) {
         console.error('Failed to sync conversation state:', syncError);
@@ -442,6 +446,7 @@ export const AgentConversation: React.FC = () => {
     });
     setConversation(null);
     setMessages([]);
+    setHistorySummary(null);
     setInputMessage('');
     setError(null);
     setShowWorkspacePanel(false);
@@ -969,7 +974,7 @@ export const AgentConversation: React.FC = () => {
     : !conversationId
       ? t('agent.draftConversationHint', 'Send the first message to create this conversation.')
       : conversation?.latestSnapshotStatus
-        ? `${t('agent.snapshotStatus', 'Snapshot')}: ${conversation.latestSnapshotStatus}`
+        ? `${conversation.storageTier || 'hot'} • ${t('agent.snapshotStatus', 'Snapshot')}: ${conversation.latestSnapshotStatus}`
         : t('agent.snapshotPending', 'No snapshot yet');
 
   return (
@@ -1062,6 +1067,11 @@ export const AgentConversation: React.FC = () => {
                       <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:bg-zinc-800 dark:text-zinc-300">
                         {item.source}
                       </span>
+                      {item.storageTier && item.storageTier !== 'hot' && (
+                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                          {item.storageTier}
+                        </span>
+                      )}
                       {item.latestSnapshotStatus && (
                         <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
                           {item.latestSnapshotStatus}
@@ -1107,9 +1117,16 @@ export const AgentConversation: React.FC = () => {
             <div className="border-b border-zinc-200 px-5 py-4 dark:border-zinc-800">
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">
-                    {conversationTitle}
-                  </h2>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-lg font-semibold text-zinc-900 dark:text-white">
+                      {conversationTitle}
+                    </h2>
+                    {conversation?.storageTier && conversation.storageTier !== 'hot' && (
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                        {conversation.storageTier}
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-zinc-500 dark:text-zinc-400">
                     {conversationSubtitle}
                   </p>
@@ -1151,6 +1168,30 @@ export const AgentConversation: React.FC = () => {
                 </div>
               ) : (
                 <div className="space-y-6">
+                  {historySummary &&
+                    Number(conversation?.compactedMessageCount || 0) > 0 && (
+                      <div className="rounded-[28px] border border-amber-200 bg-amber-50/80 px-5 py-4 dark:border-amber-900/40 dark:bg-amber-950/20">
+                        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-amber-700 dark:text-amber-300">
+                          <Bot className="h-4 w-4" />
+                          {t('agent.compactedHistory', 'Earlier messages were compacted')}
+                        </div>
+                        <p className="mt-2 text-xs leading-5 text-amber-800/90 dark:text-amber-200/90">
+                          {t(
+                            'agent.compactedHistoryHint',
+                            '{{count}} earlier message(s) were summarized to keep this conversation lightweight.',
+                            { count: conversation?.compactedMessageCount || 0 }
+                          )}
+                        </p>
+                        <div className="mt-3 markdown-content text-sm text-zinc-700 dark:text-zinc-200">
+                          <ReactMarkdown
+                            remarkPlugins={remarkPlugins}
+                            components={markdownComponents}
+                          >
+                            {historySummary.summaryText}
+                          </ReactMarkdown>
+                        </div>
+                      </div>
+                    )}
                   {renderedMessages.map((message) =>
                     message.role === 'user' ? (
                       <div key={message.id} className="flex justify-end">

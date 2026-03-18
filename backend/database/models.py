@@ -257,7 +257,15 @@ class AgentConversation(Base):
         nullable=True,
         index=True,
     )
+    storage_tier = Column(String(32), nullable=False, default="hot", index=True)
+    archived_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    delete_after = Column(DateTime(timezone=True), nullable=True, index=True)
     last_message_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_workspace_decay_at = Column(DateTime(timezone=True), nullable=True)
+    last_history_compaction_at = Column(DateTime(timezone=True), nullable=True)
+    workspace_bytes_estimate = Column(BigInteger, nullable=False, default=0)
+    workspace_file_count_estimate = Column(Integer, nullable=False, default=0)
+    compacted_message_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -292,6 +300,17 @@ class AgentConversation(Base):
         back_populates="conversation",
         cascade="all, delete-orphan",
         uselist=False,
+    )
+    history_summary = relationship(
+        "AgentConversationHistorySummary",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    message_archives = relationship(
+        "AgentConversationMessageArchive",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
     )
 
     __table_args__ = (
@@ -451,6 +470,73 @@ class AgentConversationSnapshot(Base):
         )
 
 
+class AgentConversationHistorySummary(Base):
+    """Rolling summary for compacted persistent conversation history."""
+
+    __tablename__ = "agent_conversation_history_summaries"
+
+    conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_conversations.conversation_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    covers_until_message_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    covers_until_created_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    raw_message_count = Column(Integer, nullable=False, default=0)
+    summary_text = Column(Text, nullable=False, default="")
+    summary_json = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    conversation = relationship("AgentConversation", back_populates="history_summary")
+
+    def __repr__(self):
+        return (
+            "<AgentConversationHistorySummary("
+            f"conversation_id={self.conversation_id}, raw_message_count={self.raw_message_count})>"
+        )
+
+
+class AgentConversationMessageArchive(Base):
+    """Archived raw message batches compacted out of a persistent conversation."""
+
+    __tablename__ = "agent_conversation_message_archives"
+
+    archive_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_conversations.conversation_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    start_message_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    end_message_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    message_count = Column(Integer, nullable=False, default=0)
+    archive_ref = Column(Text, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    status = Column(String(32), nullable=False, default="ready", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    conversation = relationship("AgentConversation", back_populates="message_archives")
+
+    __table_args__ = (
+        Index(
+            "idx_agent_conversation_message_archives_conversation_created",
+            "conversation_id",
+            "created_at",
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            "<AgentConversationMessageArchive("
+            f"archive_id={self.archive_id}, conversation_id={self.conversation_id}, "
+            f"message_count={self.message_count})>"
+        )
+
+
 class UserBindingCode(Base):
     """Reusable binding code for linking external identities back to a platform user."""
 
@@ -475,9 +561,7 @@ class UserBindingCode(Base):
 
     user = relationship("User", back_populates="user_binding_codes")
 
-    __table_args__ = (
-        Index("idx_user_binding_codes_user_status", "user_id", "status"),
-    )
+    __table_args__ = (Index("idx_user_binding_codes_user_status", "user_id", "status"),)
 
     def __repr__(self):
         return f"<UserBindingCode(code_id={self.code_id}, user_id={self.user_id}, status={self.status})>"
