@@ -924,11 +924,13 @@ class SessionObservationBuilder:
             user_text = self.normalize_text(turn.get("user_message", ""), max_chars=520)
             agent_text = self.normalize_text(turn.get("agent_response", ""), max_chars=760)
             timestamp = str(turn.get("timestamp") or "").strip() or None
+            origin = str(turn.get("turn_origin") or "new").strip().lower() or "new"
+            origin_label = "OVERLAP" if origin == "overlap" else "NEW"
             turn_ts_map[idx] = timestamp
             lines.append(
                 "\n".join(
                     [
-                        f"[TURN {idx}] timestamp={timestamp or '-'}",
+                        f"[TURN {idx}][{origin_label}] timestamp={timestamp or '-'}",
                         f"USER: {user_text or '-'}",
                         f"ASSISTANT: {agent_text or '-'}",
                     ]
@@ -960,6 +962,8 @@ user_facts 覆盖范围:
 
 强约束:
 - 只提取用户明确说过的信息，禁止猜测、禁止扩写。
+- 带有 `OVERLAP` 标记的 turn 只用于理解上下文、补全指代、补时间和关系消歧。
+- 任何 user_facts / skill_proposals 都必须至少有一个 evidence_turn 命中 `NEW` turn；如果证据只来自 `OVERLAP`，不要提取。
 - 同一次会话里如果存在多条有效事实，必须全部提取，不要只保留 1 条。
 - `canonical_statement` 必须是脱离上下文也能读懂的完整陈述；不要用“他/她/这个/那个/昨天/上周”。
 - 如果用户说了明确时间，优先转为绝对时间或绝对日期。
@@ -1093,11 +1097,13 @@ ASSISTANT: 收到
             user_text = self.normalize_text(turn.get("user_message", ""), max_chars=520)
             agent_text = self.normalize_text(turn.get("agent_response", ""), max_chars=420)
             timestamp = str(turn.get("timestamp") or "").strip() or None
+            origin = str(turn.get("turn_origin") or "new").strip().lower() or "new"
+            origin_label = "OVERLAP" if origin == "overlap" else "NEW"
             turn_ts_map[idx] = timestamp
             lines.append(
                 "\n".join(
                     [
-                        f"[TURN {idx}] timestamp={timestamp or '-'}",
+                        f"[TURN {idx}][{origin_label}] timestamp={timestamp or '-'}",
                         f"USER: {user_text or '-'}",
                         f"ASSISTANT: {agent_text or '-'}",
                     ]
@@ -1115,6 +1121,7 @@ ASSISTANT: 收到
 补充抽取规则:
 - 不仅抽取偏好，也可抽取关系/经历/能力/长期目标/稳定约束/习惯/重要个人事件（都要求用户明确陈述）。
 - 可以是单轮，但必须是“用户直接表达”；禁止猜测、禁止偏好延伸。
+- `OVERLAP` turn 只能作为上下文，最终提取结果必须至少有一个 evidence_turn 命中 `NEW` turn。
 - 一次性临时要求（如“这次导出 PDF”）不抽取。
 - 同一会话若有多条有效画像事实，应全部提取。
 - `canonical_statement` 必须是完整、自包含的陈述；若存在明确时间，转成绝对时间/日期。
@@ -1549,6 +1556,7 @@ ASSISTANT: 收到
                         fact_kind,
                         is_persistent,
                     ),
+                    "evidence_turns": evidence_turns,
                 }
             )
 
@@ -1652,6 +1660,7 @@ ASSISTANT: 收到
                     "fingerprint": fingerprint,
                     "agent_name": agent_name,
                     "latest_ts": latest_turn_ts,
+                    "evidence_turns": evidence_turns,
                 }
             )
             if len(candidates) >= safe_max_items:
@@ -2555,6 +2564,8 @@ ASSISTANT: 收到
                         "topic": signal.get("topic"),
                         "persistent": bool(signal.get("persistent")),
                         "explicit_source": bool(signal.get("explicit_source")),
+                        "evidence_count": int(signal.get("evidence_count") or 0),
+                        "evidence_turns": list(signal.get("evidence_turns") or []),
                         "latest_turn_ts": signal.get("latest_ts"),
                         "reason": signal.get("reason"),
                     },
@@ -2597,6 +2608,8 @@ ASSISTANT: 收到
                             "importance": importance,
                             "persistent": bool(signal.get("persistent")),
                             "explicit_source": bool(signal.get("explicit_source")),
+                            "evidence_count": int(signal.get("evidence_count") or 0),
+                            "evidence_turns": list(signal.get("evidence_turns") or []),
                         },
                         source_observation_key=observation_key,
                     )
@@ -2642,6 +2655,8 @@ ASSISTANT: 收到
                             "explicit_source": bool(signal.get("explicit_source")),
                             "source_entry_key": key,
                             "is_active": True,
+                            "evidence_count": int(signal.get("evidence_count") or 0),
+                            "evidence_turns": list(signal.get("evidence_turns") or []),
                         },
                         source_observation_key=observation_key,
                     )
@@ -2694,6 +2709,8 @@ ASSISTANT: 收到
                         "avoid": avoid,
                         "applicability": applicability,
                         "skill_candidate": True,
+                        "evidence_turns": list(candidate.get("evidence_turns") or []),
+                        "latest_turn_ts": candidate.get("latest_ts"),
                     },
                 )
             )
@@ -2719,6 +2736,7 @@ ASSISTANT: 收到
                         "review_required": True,
                         "inject_policy": "only_published",
                         "confidence": float(candidate.get("confidence") or 0.72),
+                        "evidence_turns": list(candidate.get("evidence_turns") or []),
                         "latest_turn_ts": candidate.get("latest_ts"),
                     },
                     source_observation_key=observation_key,

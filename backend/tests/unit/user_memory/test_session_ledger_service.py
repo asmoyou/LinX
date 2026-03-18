@@ -1,6 +1,7 @@
 """Tests for the user-memory session-ledger service."""
 
 from pathlib import Path
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from agent_framework.session_manager import ConversationSession
@@ -98,3 +99,32 @@ def test_session_ledger_service_materializes_user_episode_views(tmp_path: Path) 
     assert result.observation_count == 1
     assert result.projection_count == 1
     assert any(item.projection_type == "episode" for item in projections)
+
+
+def test_session_ledger_service_persists_synthetic_turn_batch(tmp_path: Path) -> None:
+    repo = _RepoStub()
+    service = SessionLedgerService(repository=repo)
+
+    result = service.persist_turn_batch(
+        session_id="agent-conversation:conv-1:until:msg-1",
+        agent_id=str(uuid4()),
+        user_id=str(uuid4()),
+        started_at=datetime(2026, 3, 21, 10, 0, tzinfo=timezone.utc),
+        reason="client_release",
+        turns=[
+            {
+                "user_message": "以后默认给我简洁回答。",
+                "agent_response": "收到。",
+                "agent_name": "Memory Agent",
+                "timestamp": "2026-03-21T10:00:00+00:00",
+            }
+        ],
+        agent_name="Memory Agent",
+        extracted_signals=[],
+        extracted_agent_candidates=[],
+        metadata={"conversation_id": "conv-1", "run_sequence": 2},
+    )
+
+    assert result.session_row_id == 42
+    assert repo.calls[0]["snapshot"].session_id == "agent-conversation:conv-1:until:msg-1"
+    assert repo.calls[0]["snapshot"].metadata["conversation_id"] == "conv-1"

@@ -1224,6 +1224,19 @@ async def delete_agent_conversation(
 ):
     runtime_service = get_persistent_conversation_runtime_service()
     conversation_uuid = _parse_conversation_uuid(conversation_id)
+    try:
+        from user_memory.conversation_memory_service import get_conversation_memory_service
+
+        await get_conversation_memory_service().flush_conversation_memory_delta(
+            conversation_uuid,
+            reason="delete",
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to flush persistent conversation memory before delete %s: %s",
+            conversation_uuid,
+            exc,
+        )
     with get_db_session() as session:
         row = (
             session.query(AgentConversation)

@@ -299,6 +299,20 @@ class PersistentConversationRuntimeService:
             return self._record_failed_snapshot(conversation_id, error_text=str(exc))
 
     async def release_runtime(self, conversation_id: UUID, *, reason: str) -> None:
+        try:
+            from user_memory.conversation_memory_service import get_conversation_memory_service
+
+            await get_conversation_memory_service().flush_conversation_memory_delta(
+                conversation_id,
+                reason=reason,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to flush persistent conversation memory before runtime release %s: %s",
+                conversation_id,
+                exc,
+            )
+
         runtime = self._runtimes.get(str(conversation_id))
         if runtime is None:
             return

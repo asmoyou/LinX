@@ -187,6 +187,18 @@ class SessionLedgerRepository:
     def _string_list(value: Any) -> List[str]:
         return [str(item).strip() for item in list(value or []) if str(item).strip()]
 
+    @staticmethod
+    def _int_list(value: Any) -> List[int]:
+        normalized: List[int] = []
+        for item in list(value or []):
+            try:
+                parsed = int(item)
+            except (TypeError, ValueError):
+                continue
+            if parsed not in normalized:
+                normalized.append(parsed)
+        return normalized
+
     @classmethod
     def resolve_entry_identity(
         cls,
@@ -459,25 +471,42 @@ class SessionLedgerRepository:
         steps = [
             str(step).strip() for step in payload.get("successful_path") or [] if str(step).strip()
         ]
+        existing_payload = dict(row.proposal_payload or {}) if isinstance(row.proposal_payload, dict) else {}
+        merged_payload = {**existing_payload, **dict(payload)}
+        existing_session_ids = SessionLedgerRepository._int_list(
+            existing_payload.get("evidence_session_ledger_ids")
+        )
+        if session_ledger_id is not None and int(session_ledger_id) not in existing_session_ids:
+            existing_session_ids.append(int(session_ledger_id))
         row.agent_id = str(proposal.owner_id)
         row.user_id = str(snapshot.user_id)
         row.proposal_key = str(proposal.projection_key)
         row.title = str(proposal.title)
         row.goal = str(payload.get("goal") or proposal.title)
-        row.successful_path = steps
-        row.why_it_worked = str(payload.get("why_it_worked") or proposal.summary or "") or None
-        row.applicability = str(payload.get("applicability") or "") or None
-        row.avoid = str(payload.get("avoid") or "") or None
-        row.confidence = float(payload.get("confidence") or 0.72)
-        row.review_status = SessionLedgerRepository._normalize_review_status(
+        row.successful_path = steps or list(row.successful_path or [])
+        row.why_it_worked = (
+            str(payload.get("why_it_worked") or proposal.summary or row.why_it_worked or "") or None
+        )
+        row.applicability = str(payload.get("applicability") or row.applicability or "") or None
+        row.avoid = str(payload.get("avoid") or row.avoid or "") or None
+        row.confidence = max(float(row.confidence or 0.0), float(payload.get("confidence") or 0.72))
+        next_review_status = SessionLedgerRepository._normalize_review_status(
             proposal.status,
             payload,
         )
-        row.review_note = str(payload.get("review_note") or "") or None
-        row.evidence_session_ledger_id = session_ledger_id
-        merged_payload = dict(payload)
+        current_review_status = str(row.review_status or "").strip().lower()
+        if current_review_status in {"published", "rejected"} and next_review_status == "pending":
+            row.review_status = current_review_status
+        else:
+            row.review_status = next_review_status
+        row.review_note = str(payload.get("review_note") or row.review_note or "") or None
+        row.evidence_session_ledger_id = (
+            int(session_ledger_id) if session_ledger_id is not None else row.evidence_session_ledger_id
+        )
         if proposal.details:
             merged_payload.setdefault("review_content", str(proposal.details))
+        if existing_session_ids:
+            merged_payload["evidence_session_ledger_ids"] = existing_session_ids
         row.proposal_payload = merged_payload
 
     @staticmethod
@@ -489,11 +518,29 @@ class SessionLedgerRepository:
         source_session_ledger_id: Optional[int] = None,
         collection_name: Optional[str] = None,
     ) -> None:
+        existing_payload = dict(row.entry_data or {}) if isinstance(row.entry_data, dict) else {}
+        existing_session_ids = SessionLedgerRepository._int_list(
+            existing_payload.get("evidence_session_ledger_ids")
+        )
+        existing_evidence_count = int(existing_payload.get("evidence_count") or 0)
+        new_evidence_count = int(payload.get("evidence_count") or 0)
+        is_new_evidence_session = False
+        if source_session_ledger_id is not None and int(source_session_ledger_id) not in existing_session_ids:
+            existing_session_ids.append(int(source_session_ledger_id))
+            is_new_evidence_session = True
+        merged_event_indexes: List[int] = []
+        for value in list(row.source_event_indexes or []) + list(entry.source_event_indexes or []):
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed not in merged_event_indexes:
+                merged_event_indexes.append(parsed)
         row.user_id = str(entry.owner_id)
         row.entry_key = str(entry.entry_key)
         row.fact_kind = str(payload.get("fact_kind") or "preference")
         row.canonical_text = str(entry.canonical_text)
-        row.summary = str(entry.summary) if entry.summary else None
+        row.summary = str(entry.summary) if entry.summary else row.summary
         row.predicate = str(payload.get("predicate") or "") or None
         row.object_text = str(payload.get("object") or "") or None
         row.event_time = str(payload.get("event_time") or "") or None
@@ -501,16 +548,37 @@ class SessionLedgerRepository:
         row.persons = list(payload.get("persons") or [])
         row.entities = list(payload.get("entities") or [])
         row.topic = str(payload.get("topic") or "") or None
-        row.confidence = float(entry.confidence)
-        row.importance = float(entry.importance)
+        row.confidence = max(float(row.confidence or 0.0), float(entry.confidence))
+        row.importance = max(float(row.importance or 0.0), float(entry.importance))
         row.status = str(entry.status or "active")
-        row.source_session_ledger_id = source_session_ledger_id
-        row.source_event_indexes = list(entry.source_event_indexes or [])
-        merged_payload = dict(payload)
+        row.source_session_ledger_id = (
+            int(source_session_ledger_id)
+            if source_session_ledger_id is not None
+            else row.source_session_ledger_id
+        )
+        row.source_event_indexes = merged_event_indexes
+        merged_payload = {**existing_payload, **dict(payload)}
         if entry.details:
             merged_payload["details"] = entry.details
+        latest_turn_ts = str(payload.get("latest_turn_ts") or "").strip()
+        if latest_turn_ts:
+            merged_payload["first_seen_at"] = str(
+                existing_payload.get("first_seen_at") or latest_turn_ts
+            )
+            last_seen_at = str(existing_payload.get("last_seen_at") or "").strip()
+            merged_payload["last_seen_at"] = (
+                latest_turn_ts if not last_seen_at or latest_turn_ts > last_seen_at else last_seen_at
+            )
+        if new_evidence_count:
+            merged_payload["evidence_count"] = existing_evidence_count + (
+                new_evidence_count if is_new_evidence_session or not existing_payload else 0
+            )
+        elif existing_evidence_count:
+            merged_payload["evidence_count"] = existing_evidence_count
+        if existing_session_ids:
+            merged_payload["evidence_session_ledger_ids"] = existing_session_ids
         row.entry_data = merged_payload
-        event_time_start, event_time_end = parse_event_time_range(payload.get("event_time"))
+        event_time_start, event_time_end = parse_event_time_range(merged_payload.get("event_time"))
         row.event_time_start = event_time_start
         row.event_time_end = event_time_end
         if collection_name:

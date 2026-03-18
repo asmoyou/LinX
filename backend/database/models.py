@@ -11,6 +11,7 @@ from typing import Optional
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -286,6 +287,12 @@ class AgentConversation(Base):
         back_populates="conversation",
         cascade="all, delete-orphan",
     )
+    memory_state = relationship(
+        "AgentConversationMemoryState",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
     __table_args__ = (
         Index("idx_agent_conversations_owner_agent", "owner_user_id", "agent_id", "status"),
@@ -296,6 +303,67 @@ class AgentConversation(Base):
         return (
             f"<AgentConversation(conversation_id={self.conversation_id}, agent_id={self.agent_id}, "
             f"owner_user_id={self.owner_user_id}, status={self.status})>"
+        )
+
+
+class AgentConversationMemoryState(Base):
+    """Cursor and lease state for segmented memory extraction on one conversation."""
+
+    __tablename__ = "agent_conversation_memory_states"
+
+    conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_conversations.conversation_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    last_processed_assistant_message_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    last_processed_assistant_created_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_processed_turn_count = Column(Integer, nullable=False, default=0)
+    last_run_sequence = Column(Integer, nullable=False, default=0)
+    run_state = Column(String(16), nullable=False, default="idle", index=True)
+    run_token = Column(String(64), nullable=True)
+    lease_until = Column(DateTime(timezone=True), nullable=True, index=True)
+    target_assistant_message_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    target_assistant_created_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_extraction_started_at = Column(DateTime(timezone=True), nullable=True)
+    last_extraction_completed_at = Column(DateTime(timezone=True), nullable=True)
+    last_extraction_reason = Column(String(64), nullable=True)
+    last_successful_session_ledger_id = Column(
+        BigInteger,
+        ForeignKey("session_ledgers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    consecutive_failures = Column(Integer, nullable=False, default=0)
+    retry_after = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    conversation = relationship("AgentConversation", back_populates="memory_state")
+
+    __table_args__ = (
+        CheckConstraint(
+            "(run_state <> 'running') OR "
+            "(run_token IS NOT NULL AND lease_until IS NOT NULL AND "
+            "target_assistant_message_id IS NOT NULL)",
+            name="ck_agent_conversation_memory_states_running_fields",
+        ),
+        Index(
+            "idx_agent_conversation_memory_states_claim",
+            "run_state",
+            "retry_after",
+            "lease_until",
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            "<AgentConversationMemoryState("
+            f"conversation_id={self.conversation_id}, run_state={self.run_state}, "
+            f"last_processed_turn_count={self.last_processed_turn_count})>"
         )
 
 

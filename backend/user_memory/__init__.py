@@ -35,6 +35,22 @@ _EXPORTS = {
         "user_memory.retention_manager",
         "SessionLedgerRetentionSettings",
     ),
+    "ConversationMemoryExtractionSettings": (
+        "user_memory.conversation_memory_service",
+        "ConversationMemoryExtractionSettings",
+    ),
+    "ConversationMemoryManager": (
+        "user_memory.conversation_memory_manager",
+        "ConversationMemoryManager",
+    ),
+    "ConversationMemoryRepository": (
+        "user_memory.conversation_memory_repository",
+        "ConversationMemoryRepository",
+    ),
+    "ConversationMemoryService": (
+        "user_memory.conversation_memory_service",
+        "ConversationMemoryService",
+    ),
     "get_session_ledger_repository": (
         "user_memory.session_ledger_repository",
         "get_session_ledger_repository",
@@ -59,9 +75,25 @@ _EXPORTS = {
         "user_memory.retention_manager",
         "get_session_ledger_retention_manager",
     ),
+    "get_conversation_memory_manager": (
+        "user_memory.conversation_memory_manager",
+        "get_conversation_memory_manager",
+    ),
+    "get_conversation_memory_repository": (
+        "user_memory.conversation_memory_repository",
+        "get_conversation_memory_repository",
+    ),
+    "get_conversation_memory_service": (
+        "user_memory.conversation_memory_service",
+        "get_conversation_memory_service",
+    ),
     "initialize_user_memory_indexing_worker": (
         "user_memory.indexing_worker",
         "initialize_user_memory_indexing_worker",
+    ),
+    "initialize_conversation_memory_manager": (
+        "user_memory.conversation_memory_manager",
+        "initialize_conversation_memory_manager",
     ),
     "initialize_session_ledger_retention_manager": (
         "user_memory.retention_manager",
@@ -74,6 +106,10 @@ _EXPORTS = {
     "load_session_ledger_retention_settings": (
         "user_memory.retention_manager",
         "load_session_ledger_retention_settings",
+    ),
+    "load_conversation_memory_extraction_settings": (
+        "user_memory.conversation_memory_service",
+        "load_conversation_memory_extraction_settings",
     ),
     "drop_legacy_user_memory_vector_collection": (
         "user_memory.storage_cleanup",
@@ -94,6 +130,10 @@ _EXPORTS = {
     "shutdown_user_memory_indexing_worker": (
         "user_memory.indexing_worker",
         "shutdown_user_memory_indexing_worker",
+    ),
+    "shutdown_conversation_memory_manager": (
+        "user_memory.conversation_memory_manager",
+        "shutdown_conversation_memory_manager",
     ),
     "shutdown_session_ledger_retention_manager": (
         "user_memory.retention_manager",

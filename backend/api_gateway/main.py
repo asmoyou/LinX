@@ -236,6 +236,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.warning(f"Failed to initialize Feishu long-connection manager: {e}")
 
+    try:
+        from user_memory.conversation_memory_manager import initialize_conversation_memory_manager
+
+        manager = await initialize_conversation_memory_manager()
+        if manager:
+            logger.info("Conversation memory manager initialized")
+        else:
+            logger.info("Conversation memory manager is disabled by config")
+    except Exception as e:
+        logger.warning(f"Failed to initialize conversation memory manager: {e}")
+
     # Start projection maintenance manager
     try:
         from user_memory.projection_maintenance_manager import (
@@ -376,6 +387,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.info("Knowledge storage cleanup manager shutdown complete")
     except Exception as e:
         logger.error(f"Failed to shutdown knowledge storage cleanup manager: {e}")
+
+    try:
+        from user_memory.conversation_memory_manager import shutdown_conversation_memory_manager
+
+        await shutdown_conversation_memory_manager(flush_pending=True)
+        logger.info("Conversation memory manager shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown conversation memory manager: {e}")
 
     # Shutdown session manager (clean up all sessions and workdirs)
     try:

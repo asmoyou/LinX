@@ -246,6 +246,7 @@ export const AgentConversation: React.FC = () => {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const attachedFilesRef = useRef<AttachedFile[]>([]);
+  const activeConversationRef = useRef<{ agentId?: string; conversationId?: string }>({});
 
   const [agent, setAgent] = useState<Agent | null>(null);
   const [conversations, setConversations] = useState<AgentConversationSummary[]>([]);
@@ -313,6 +314,13 @@ export const AgentConversation: React.FC = () => {
   }, [attachedFiles]);
 
   useEffect(() => {
+    activeConversationRef.current = {
+      agentId: agentId || undefined,
+      conversationId: activeConversationId || undefined,
+    };
+  }, [activeConversationId, agentId]);
+
+  useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     textarea.style.height = '0px';
@@ -320,12 +328,35 @@ export const AgentConversation: React.FC = () => {
   }, [inputMessage]);
 
   useEffect(() => {
-    return () => {
-      if (agentId && activeConversationId) {
-        void agentsApi.releaseConversationRuntime(agentId, activeConversationId).catch(() => undefined);
+    const releaseRuntime = () => {
+      const currentAgentId = activeConversationRef.current.agentId;
+      const currentConversationId = activeConversationRef.current.conversationId;
+      if (!currentAgentId || !currentConversationId) {
+        return;
+      }
+      void agentsApi
+        .releaseConversationRuntime(currentAgentId, currentConversationId)
+        .catch(() => undefined);
+    };
+
+    const handlePageHide = () => {
+      releaseRuntime();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        releaseRuntime();
       }
     };
-  }, [activeConversationId, agentId]);
+
+    window.addEventListener('pagehide', handlePageHide);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      releaseRuntime();
+    };
+  }, []);
 
   useEffect(() => {
     return () => {

@@ -80,6 +80,20 @@ _RESET_CONFIG_DEFAULTS: Dict[str, Dict[str, Any]] = {
             "failure_backoff_seconds": 60,
             "fail_closed_empty_writes": True,
         },
+        "conversation_extraction": {
+            "enabled": True,
+            "run_on_startup": True,
+            "startup_delay_seconds": 30,
+            "interval_seconds": 300,
+            "idle_timeout_minutes": 30,
+            "overlap_turns": 2,
+            "max_new_turns_per_run": 8,
+            "max_batches_per_invocation": 3,
+            "advisory_lock_id": 73012024,
+            "use_advisory_lock": True,
+            "run_lease_seconds": 300,
+            "scan_limit": 200,
+        },
         "consolidation": {
             "enabled": True,
             "run_on_startup": True,
@@ -262,6 +276,9 @@ def _stored_user_memory_section_from_payload(payload: Dict[str, Any]) -> Dict[st
             for key, value in _dict_section(user_memory_payload.get("extraction")).items()
             if key not in {"effective", "sources"}
         },
+        "conversation_extraction": _dict_section(
+            user_memory_payload.get("conversation_extraction")
+        ),
         "consolidation": _dict_section(user_memory_payload.get("consolidation")),
         "observability": _dict_section(user_memory_payload.get("observability")),
         "vector_indexing": _dict_section(user_memory_payload.get("vector_indexing")),
@@ -307,6 +324,9 @@ def _build_memory_config_payload(
     user_memory_embedding_cfg = _dict_section(user_memory_cfg.get("embedding"))
     user_memory_retrieval_cfg = _dict_section(user_memory_cfg.get("retrieval"))
     user_memory_extraction_cfg = _dict_section(user_memory_cfg.get("extraction"))
+    user_memory_conversation_extraction_cfg = _dict_section(
+        user_memory_cfg.get("conversation_extraction")
+    )
     user_memory_consolidation_cfg = _dict_section(user_memory_cfg.get("consolidation"))
     user_memory_observability_cfg = _dict_section(user_memory_cfg.get("observability"))
     user_memory_vector_indexing_cfg = _dict_section(user_memory_cfg.get("vector_indexing"))
@@ -393,6 +413,10 @@ def _build_memory_config_payload(
     user_memory_consolidation = _deep_merge(
         user_memory_defaults["consolidation"], user_memory_consolidation_cfg
     )
+    user_memory_conversation_extraction = _deep_merge(
+        user_memory_defaults["conversation_extraction"],
+        user_memory_conversation_extraction_cfg,
+    )
     user_memory_observability = _deep_merge(
         user_memory_defaults["observability"], user_memory_observability_cfg
     )
@@ -473,6 +497,7 @@ def _build_memory_config_payload(
             "embedding": embedding_payload,
             "retrieval": user_memory_retrieval,
             "extraction": user_memory_extraction,
+            "conversation_extraction": user_memory_conversation_extraction,
             "consolidation": user_memory_consolidation,
             "observability": user_memory_observability,
             "vector_indexing": user_memory_vector_indexing,

@@ -21,6 +21,7 @@ from .mission_models import (
 from .models import (
     ABACPolicyModel,
     Agent,
+    AgentConversationMemoryState,
     AuditLog,
     Base,
     KnowledgeItem,
@@ -42,6 +43,7 @@ __all__ = [
     "Base",
     "User",
     "Agent",
+    "AgentConversationMemoryState",
     "Task",
     "Skill",
     "Permission",

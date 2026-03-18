@@ -748,6 +748,20 @@ user_memory:
     failure_backoff_seconds: 60
     fail_closed_empty_writes: true
 
+  conversation_extraction:
+    enabled: true
+    run_on_startup: true
+    startup_delay_seconds: 30
+    interval_seconds: 300
+    idle_timeout_minutes: 30
+    overlap_turns: 2
+    max_new_turns_per_run: 8
+    max_batches_per_invocation: 3
+    advisory_lock_id: 73012024
+    use_advisory_lock: true
+    run_lease_seconds: 300
+    scan_limit: 200
+
   consolidation:
     enabled: true
     run_on_startup: true
