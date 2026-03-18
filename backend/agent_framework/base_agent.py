@@ -1937,6 +1937,63 @@ class BaseAgent:
         if stream_callback:
             stream_callback((content, content_type))
 
+    @staticmethod
+    def _iter_stream_segments(content: str, max_chars: int = 48) -> List[str]:
+        """Split oversized chunks so coarse provider output still feels incremental."""
+        text = str(content or "")
+        if not text:
+            return []
+        if len(text) <= max_chars:
+            return [text]
+
+        segments: List[str] = []
+        remaining = text
+        separators = ("\n\n", "\n", "。", "！", "？", ". ", "! ", "? ", "；", "; ", "，", ", ", " ")
+
+        while remaining:
+            if len(remaining) <= max_chars:
+                segments.append(remaining)
+                break
+
+            window = remaining[:max_chars]
+            split_at = -1
+            for separator in separators:
+                candidate = window.rfind(separator)
+                if candidate > split_at:
+                    split_at = candidate + len(separator)
+
+            if split_at <= max_chars // 3:
+                split_at = max_chars
+
+            segments.append(remaining[:split_at])
+            remaining = remaining[split_at:]
+
+        return [segment for segment in segments if segment]
+
+    @classmethod
+    def _emit_stream_content_incrementally(
+        cls,
+        stream_callback: Optional[Callable[..., Any]],
+        content: str,
+        content_type: str = "content",
+        *,
+        chunk_delay_seconds: float = 0.01,
+    ) -> None:
+        """Emit content in smaller pieces when upstream returns a coarse chunk."""
+        if not stream_callback:
+            return
+
+        segments = cls._iter_stream_segments(content)
+        if len(segments) <= 1:
+            if segments:
+                stream_callback((segments[0], content_type))
+            return
+
+        for index, segment in enumerate(segments):
+            stream_callback((segment, content_type))
+            if index < len(segments) - 1:
+                time.sleep(chunk_delay_seconds)
+
     def _looks_like_agent_skill_task(self, task_description: str) -> bool:
         """Heuristic: whether this request likely expects agent-skill workflows."""
         if self.loaded_agent_skill_count <= 0:
@@ -4344,7 +4401,11 @@ class BaseAgent:
                             round_output_chars += len(chunk.content)
 
                         if stream_callback:
-                            stream_callback((chunk.content, content_type))
+                            self._emit_stream_content_incrementally(
+                                stream_callback,
+                                chunk.content,
+                                content_type,
+                            )
 
                         if content_type == "thinking":
                             round_thinking += chunk.content
@@ -4422,7 +4483,7 @@ class BaseAgent:
                 and round_output
                 and streamed_content_chars == 0
             ):
-                stream_callback((round_output, "content"))
+                self._emit_stream_content_incrementally(stream_callback, round_output, "content")
 
             logger.info(
                 f"[RECOVERY] Round {state.round_number} output: "

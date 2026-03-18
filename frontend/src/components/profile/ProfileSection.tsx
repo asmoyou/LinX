@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
-import { Camera, Save, X } from 'lucide-react';
+import { Camera, Copy, Eye, EyeOff, RefreshCw, Save, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { GlassPanel } from '../GlassPanel';
 import { useUserStore, useDepartmentStore } from '../../stores';
 import { usersApi } from '../../api/users';
 import { useNotificationStore } from '../../stores/notificationStore';
+import type { BindingCodeResponse } from '../../api/users';
 
 export const ProfileSection = () => {
   const { t } = useTranslation();
@@ -17,6 +18,10 @@ export const ProfileSection = () => {
     email: '',
   });
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [bindingCode, setBindingCode] = useState<BindingCodeResponse | null>(null);
+  const [showBindingCode, setShowBindingCode] = useState(false);
+  const [isBindingCodeLoading, setIsBindingCodeLoading] = useState(false);
+  const [isBindingCodeRefreshing, setIsBindingCodeRefreshing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Fetch departments for display
@@ -35,6 +40,37 @@ export const ProfileSection = () => {
       });
     }
   }, [profile]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadBindingCode = async () => {
+      setIsBindingCodeLoading(true);
+      try {
+        const response = await usersApi.getBindingCode();
+        if (!cancelled) {
+          setBindingCode(response);
+        }
+      } catch (error: any) {
+        if (!cancelled) {
+          addNotification({
+            type: 'error',
+            title: t('profileSettings.profile.bindingCodeLoadFailed', 'Failed to load binding code'),
+            message: error.response?.data?.detail || t('profileSettings.profile.bindingCodeLoadFailedMessage', 'Unable to load your binding code right now.'),
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          setIsBindingCodeLoading(false);
+        }
+      }
+    };
+
+    void loadBindingCode();
+    return () => {
+      cancelled = true;
+    };
+  }, [addNotification, t]);
 
   const handleAvatarClick = () => {
     fileInputRef.current?.click();
@@ -143,6 +179,46 @@ export const ProfileSection = () => {
     });
     setIsEditing(false);
     setAvatarPreview(null);
+  };
+
+  const handleCopyBindingCode = async () => {
+    if (!bindingCode?.code) return;
+    try {
+      await navigator.clipboard.writeText(bindingCode.code);
+      addNotification({
+        type: 'success',
+        title: t('profileSettings.profile.bindingCodeCopied', 'Binding code copied'),
+        message: t('profileSettings.profile.bindingCodeCopiedMessage', 'The binding code is ready to paste into Feishu or another platform.'),
+      });
+    } catch {
+      addNotification({
+        type: 'error',
+        title: t('profileSettings.profile.bindingCodeCopyFailed', 'Copy failed'),
+        message: t('profileSettings.profile.bindingCodeCopyFailedMessage', 'Clipboard access is not available in this browser.'),
+      });
+    }
+  };
+
+  const handleRefreshBindingCode = async () => {
+    setIsBindingCodeRefreshing(true);
+    try {
+      const response = await usersApi.refreshBindingCode();
+      setBindingCode(response);
+      setShowBindingCode(true);
+      addNotification({
+        type: 'success',
+        title: t('profileSettings.profile.bindingCodeRefreshed', 'Binding code refreshed'),
+        message: t('profileSettings.profile.bindingCodeRefreshedMessage', 'The old code is now invalid and the new code is active immediately.'),
+      });
+    } catch (error: any) {
+      addNotification({
+        type: 'error',
+        title: t('profileSettings.profile.bindingCodeRefreshFailed', 'Refresh failed'),
+        message: error.response?.data?.detail || t('profileSettings.profile.bindingCodeRefreshFailedMessage', 'Unable to refresh the binding code right now.'),
+      });
+    } finally {
+      setIsBindingCodeRefreshing(false);
+    }
   };
 
   return (
@@ -265,6 +341,67 @@ export const ProfileSection = () => {
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">{t('departments.assignedByAdmin', 'Assigned by administrator')}</p>
             </div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-200 bg-zinc-50/80 p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h4 className="text-sm font-semibold text-zinc-900 dark:text-white">
+                  {t('profileSettings.profile.bindingCode', 'User binding code')}
+                </h4>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  {t('profileSettings.profile.bindingCodeHint', 'Use this code to bind your LinX identity in Feishu or future third-party platforms.')}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowBindingCode((prev) => !prev)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                >
+                  {showBindingCode ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  {showBindingCode
+                    ? t('profileSettings.profile.hideBindingCode', 'Hide')
+                    : t('profileSettings.profile.showBindingCode', 'Show')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyBindingCode()}
+                  disabled={!bindingCode}
+                  className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  {t('common.copy', 'Copy')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleRefreshBindingCode()}
+                  disabled={isBindingCodeRefreshing}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {isBindingCodeRefreshing ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  )}
+                  {t('profileSettings.profile.refreshBindingCode', 'Refresh')}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-dashed border-zinc-300 bg-white px-4 py-3 font-mono text-sm tracking-[0.2em] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100">
+              {isBindingCodeLoading
+                ? t('common.loading', 'Loading...')
+                : showBindingCode
+                  ? bindingCode?.code || '—'
+                  : bindingCode?.maskedCode || '—'}
+            </div>
+
+            {bindingCode?.updatedAt && (
+              <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                {t('profileSettings.profile.bindingCodeUpdatedAt', 'Last updated')}: {new Date(bindingCode.updatedAt).toLocaleString()}
+              </p>
+            )}
           </div>
 
           {/* Action Buttons */}

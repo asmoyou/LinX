@@ -8,10 +8,16 @@ interface AgentCardProps {
   onView: (agent: Agent) => void;
   onConfigure: (agent: Agent) => void;
   onDelete: (agent: Agent) => void;
-  onTest?: (agent: Agent) => void;
+  onStartConversation: (agent: Agent) => void;
 }
 
-export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure, onDelete, onTest }) => {
+export const AgentCard: React.FC<AgentCardProps> = ({
+  agent,
+  onView,
+  onConfigure,
+  onDelete,
+  onStartConversation,
+}) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = React.useState(false);
   const tasksExecuted = Math.max(
@@ -68,11 +74,9 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure
     );
   };
 
-  const handleTestChat = () => {
+  const handleStartConversation = () => {
     setShowMenu(false);
-    if (onTest) {
-      onTest(agent);
-    }
+    onStartConversation(agent);
   };
 
   return (
@@ -179,10 +183,10 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onView, onConfigure
           {agent.skill_ids?.length || 0} Skills
         </span>
         <button 
-          onClick={handleTestChat}
+          onClick={handleStartConversation}
           className="text-[10px] font-bold text-emerald-600 hover:text-emerald-500 transition-colors uppercase tracking-wider"
         >
-          {t('agent.testAgent')}
+          {t('agent.startConversation', '开启对话')}
         </button>
       </div>
     </div>

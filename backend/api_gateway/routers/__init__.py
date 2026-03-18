@@ -9,10 +9,12 @@ References:
 
 from api_gateway.routers import (
     admin_users,
+    agent_conversations,
     agents,
     auth,
     dashboard,
     departments,
+    integrations,
     knowledge,
     missions,
     monitoring,
@@ -31,7 +33,9 @@ __all__ = [
     "roles",
     "departments",
     "agents",
+    "agent_conversations",
     "dashboard",
+    "integrations",
     "knowledge",
     "missions",
     "monitoring",

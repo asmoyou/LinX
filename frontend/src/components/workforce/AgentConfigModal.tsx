@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Loader2, AlertCircle, Info } from 'lucide-react';
+import { X, Save, Loader2, AlertCircle, Info, Copy, Bot, Link as LinkIcon, Power, Radio } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { Agent } from '@/types/agent';
-import type { AgentSkillSummary } from '@/types/agent';
+import type { AgentSkillSummary, FeishuPublicationConfig } from '@/types/agent';
 import { llmApi, agentsApi } from '@/api';
 import { knowledgeApi } from '@/api/knowledge';
+import type { SaveFeishuPublicationRequest } from '@/api/agents';
 import type { ModelMetadata } from '@/api/llm';
 import type { Collection } from '@/types/document';
 import { ModelMetadataCard } from '@/components/settings/ModelMetadataCard';
@@ -49,7 +50,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   onSave,
 }) => {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<'basic' | 'capabilities' | 'model' | 'knowledge' | 'access'>('basic');
+  const [activeTab, setActiveTab] = useState<'basic' | 'capabilities' | 'model' | 'knowledge' | 'access' | 'channels'>('basic');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoadingProviders, setIsLoadingProviders] = useState(false);
@@ -67,6 +68,18 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [availableSkills, setAvailableSkills] = useState<AgentSkillSummary[]>([]);
   const [isLoadingSkills, setIsLoadingSkills] = useState(false);
   const [skillsError, setSkillsError] = useState<string | null>(null);
+  const [feishuPublication, setFeishuPublication] = useState<FeishuPublicationConfig | null>(null);
+  const [feishuFormData, setFeishuFormData] = useState<SaveFeishuPublicationRequest>({
+    appId: '',
+    botName: '',
+    tenantKey: '',
+    appSecret: '',
+    verificationToken: '',
+    encryptKey: '',
+  });
+  const [isLoadingFeishuPublication, setIsLoadingFeishuPublication] = useState(false);
+  const [isSavingFeishuPublication, setIsSavingFeishuPublication] = useState(false);
+  const [feishuError, setFeishuError] = useState<string | null>(null);
 
   const [formData, setFormData] = useState<Partial<Agent>>({
     name: '',
@@ -122,6 +135,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       fetchAvailableProviders();
       fetchAvailableSkills();
       fetchKnowledgeBases();
+      fetchFeishuPublication();
     }
   }, [isOpen]);
 
@@ -215,6 +229,30 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       setSkillsError(errorMsg);
     } finally {
       setIsLoadingSkills(false);
+    }
+  };
+
+  const fetchFeishuPublication = async () => {
+    if (!agent?.id) return;
+    setIsLoadingFeishuPublication(true);
+    setFeishuError(null);
+    try {
+      const publication = await agentsApi.getFeishuPublication(agent.id);
+      setFeishuPublication(publication);
+      setFeishuFormData({
+        appId: publication.appId || '',
+        botName: publication.botName || '',
+        tenantKey: publication.tenantKey || '',
+        appSecret: '',
+        verificationToken: '',
+        encryptKey: '',
+      });
+    } catch (error: any) {
+      console.error('Failed to fetch Feishu publication:', error);
+      setFeishuError(error.response?.data?.detail || error.message || 'Failed to load Feishu publication');
+      setFeishuPublication(null);
+    } finally {
+      setIsLoadingFeishuPublication(false);
     }
   };
   
@@ -412,7 +450,82 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     { id: 'model', label: t('agent.modelConfig') },
     { id: 'knowledge', label: t('agent.knowledgeBase') },
     { id: 'access', label: t('agent.dataAccess') },
+    { id: 'channels', label: t('agent.channelPublish', '渠道发布') },
   ];
+
+  const handleSaveFeishuPublication = async () => {
+    if (!agent?.id || !feishuFormData.appId.trim()) {
+      setFeishuError(t('agent.feishuAppIdRequired', 'Feishu App ID is required'));
+      return;
+    }
+    setIsSavingFeishuPublication(true);
+    setFeishuError(null);
+    try {
+      const saved = await agentsApi.saveFeishuPublication(agent.id, {
+        appId: feishuFormData.appId.trim(),
+        botName: feishuFormData.botName?.trim() || undefined,
+        tenantKey: feishuFormData.tenantKey?.trim() || undefined,
+        appSecret: feishuFormData.appSecret?.trim() || undefined,
+        verificationToken: feishuFormData.verificationToken?.trim() || undefined,
+        encryptKey: feishuFormData.encryptKey?.trim() || undefined,
+      });
+      setFeishuPublication(saved);
+      setFeishuFormData((prev) => ({
+        ...prev,
+        appSecret: '',
+        verificationToken: '',
+        encryptKey: '',
+      }));
+      toast.success(t('agent.feishuConfigSaved', 'Feishu config saved'));
+    } catch (error: any) {
+      console.error('Failed to save Feishu publication:', error);
+      setFeishuError(error.response?.data?.detail || error.message || 'Failed to save Feishu config');
+    } finally {
+      setIsSavingFeishuPublication(false);
+    }
+  };
+
+  const handlePublishFeishuPublication = async () => {
+    if (!agent?.id) return;
+    setIsSavingFeishuPublication(true);
+    setFeishuError(null);
+    try {
+      const published = await agentsApi.publishFeishuPublication(agent.id);
+      setFeishuPublication(published);
+      toast.success(t('agent.feishuPublished', 'Feishu webhook published'));
+    } catch (error: any) {
+      console.error('Failed to publish Feishu publication:', error);
+      setFeishuError(error.response?.data?.detail || error.message || 'Failed to publish Feishu webhook');
+    } finally {
+      setIsSavingFeishuPublication(false);
+    }
+  };
+
+  const handleUnpublishFeishuPublication = async () => {
+    if (!agent?.id) return;
+    setIsSavingFeishuPublication(true);
+    setFeishuError(null);
+    try {
+      const unpublished = await agentsApi.unpublishFeishuPublication(agent.id);
+      setFeishuPublication(unpublished);
+      toast.success(t('agent.feishuUnpublished', 'Feishu webhook disabled'));
+    } catch (error: any) {
+      console.error('Failed to unpublish Feishu publication:', error);
+      setFeishuError(error.response?.data?.detail || error.message || 'Failed to disable Feishu webhook');
+    } finally {
+      setIsSavingFeishuPublication(false);
+    }
+  };
+
+  const handleCopyWebhook = async () => {
+    if (!feishuPublication?.webhookUrl) return;
+    try {
+      await navigator.clipboard.writeText(feishuPublication.webhookUrl);
+      toast.success(t('agent.webhookCopied', 'Webhook copied'));
+    } catch {
+      toast.error(t('agent.webhookCopyFailed', 'Failed to copy webhook'));
+    }
+  };
 
   return (
     <LayoutModal
@@ -1113,6 +1226,198 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                   {resolveEffectiveMemoryScopes().join(', ')}
                 </p>
               </div>
+            </div>
+          )}
+
+          {activeTab === 'channels' && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-blue-500/20 bg-blue-500/10 p-4">
+                <div className="flex items-start gap-3">
+                  <Bot className="mt-0.5 h-5 w-5 flex-shrink-0 text-blue-500" />
+                  <div>
+                    <p className="text-sm font-semibold text-blue-700 dark:text-blue-400">
+                      {t('agent.feishuChannelTitle', '飞书机器人发布')}
+                    </p>
+                    <p className="mt-1 text-xs text-blue-600 dark:text-blue-500">
+                      {t('agent.feishuChannelDesc', '为当前 Agent 保存飞书应用配置，并生成专属 webhook 地址。首次聊天需要先发送用户识别码完成绑定。')}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {isLoadingFeishuPublication ? (
+                <div className="flex items-center justify-center py-10">
+                  <Loader2 className="h-6 w-6 animate-spin text-emerald-500" />
+                  <span className="ml-2 text-sm text-zinc-600 dark:text-zinc-400">
+                    {t('agent.loadingFeishuPublication', '加载飞书发布配置中...')}
+                  </span>
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="mb-2 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                        {t('agent.feishuAppId', 'App ID')}
+                      </label>
+                      <input
+                        type="text"
+                        value={feishuFormData.appId}
+                        onChange={(event) =>
+                          setFeishuFormData((prev) => ({ ...prev, appId: event.target.value }))
+                        }
+                        className="w-full rounded-xl border border-zinc-500/10 bg-zinc-500/5 px-4 py-3 text-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:text-zinc-200"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                        {t('agent.feishuBotName', 'Bot display name')}
+                      </label>
+                      <input
+                        type="text"
+                        value={feishuFormData.botName || ''}
+                        onChange={(event) =>
+                          setFeishuFormData((prev) => ({ ...prev, botName: event.target.value }))
+                        }
+                        className="w-full rounded-xl border border-zinc-500/10 bg-zinc-500/5 px-4 py-3 text-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:text-zinc-200"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                        {t('agent.feishuTenantKey', 'Tenant key')}
+                      </label>
+                      <input
+                        type="text"
+                        value={feishuFormData.tenantKey || ''}
+                        onChange={(event) =>
+                          setFeishuFormData((prev) => ({ ...prev, tenantKey: event.target.value }))
+                        }
+                        className="w-full rounded-xl border border-zinc-500/10 bg-zinc-500/5 px-4 py-3 text-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:text-zinc-200"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                        {t('agent.feishuAppSecret', 'App secret')}
+                      </label>
+                      <input
+                        type="password"
+                        value={feishuFormData.appSecret || ''}
+                        placeholder={feishuPublication?.hasAppSecret ? '••••••••' : ''}
+                        onChange={(event) =>
+                          setFeishuFormData((prev) => ({ ...prev, appSecret: event.target.value }))
+                        }
+                        className="w-full rounded-xl border border-zinc-500/10 bg-zinc-500/5 px-4 py-3 text-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:text-zinc-200"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                        {t('agent.feishuVerificationToken', 'Verification token')}
+                      </label>
+                      <input
+                        type="password"
+                        value={feishuFormData.verificationToken || ''}
+                        placeholder={feishuPublication?.hasVerificationToken ? '••••••••' : ''}
+                        onChange={(event) =>
+                          setFeishuFormData((prev) => ({
+                            ...prev,
+                            verificationToken: event.target.value,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-zinc-500/10 bg-zinc-500/5 px-4 py-3 text-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:text-zinc-200"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                        {t('agent.feishuEncryptKey', 'Encrypt key')}
+                      </label>
+                      <input
+                        type="password"
+                        value={feishuFormData.encryptKey || ''}
+                        placeholder={feishuPublication?.hasEncryptKey ? '••••••••' : ''}
+                        onChange={(event) =>
+                          setFeishuFormData((prev) => ({ ...prev, encryptKey: event.target.value }))
+                        }
+                        className="w-full rounded-xl border border-zinc-500/10 bg-zinc-500/5 px-4 py-3 text-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:text-zinc-200"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-zinc-500/10 bg-zinc-500/5 p-4">
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-500 dark:text-zinc-400">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-1 dark:bg-zinc-800">
+                        <Radio className="h-3.5 w-3.5" />
+                        {t('agent.statusLabel', 'Status')}: {feishuPublication?.status || 'draft'}
+                      </span>
+                      <span>
+                        {t('agent.channelIdentity', 'Channel identity')}: {feishuPublication?.channelIdentity || '—'}
+                      </span>
+                    </div>
+
+                    {feishuPublication?.webhookUrl && (
+                      <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                              {t('agent.feishuWebhook', 'Webhook')}
+                            </p>
+                            <p className="mt-1 truncate text-sm text-zinc-800 dark:text-zinc-200">
+                              {feishuPublication.webhookUrl}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleCopyWebhook()}
+                            className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                            {t('common.copy', 'Copy')}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveFeishuPublication()}
+                        disabled={isSavingFeishuPublication}
+                        className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {isSavingFeishuPublication ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                        {t('agent.saveChannelConfig', 'Save config')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handlePublishFeishuPublication()}
+                        disabled={isSavingFeishuPublication}
+                        className="inline-flex items-center gap-2 rounded-xl border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-700 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                      >
+                        <LinkIcon className="h-4 w-4" />
+                        {t('agent.publishChannel', 'Publish')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleUnpublishFeishuPublication()}
+                        disabled={isSavingFeishuPublication}
+                        className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm font-semibold text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-900/40 dark:hover:bg-red-950/30"
+                      >
+                        <Power className="h-4 w-4" />
+                        {t('agent.unpublishChannel', 'Disable')}
+                      </button>
+                    </div>
+                  </div>
+
+                  {feishuError && (
+                    <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-4">
+                      <p className="text-sm text-red-700 dark:text-red-400">{feishuError}</p>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>

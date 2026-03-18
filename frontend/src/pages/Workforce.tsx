@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Plus, Search, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -13,6 +14,7 @@ import { DepartmentSelect } from '@/components/departments/DepartmentSelect';
 
 export const Workforce: React.FC = () => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -76,6 +78,10 @@ export const Workforce: React.FC = () => {
   const handleTestAgent = (agent: Agent) => {
     setSelectedAgent(agent);
     setIsTestModalOpen(true);
+  };
+
+  const handleStartConversation = (agent: Agent) => {
+    navigate(`/workforce/${agent.id}/conversations`);
   };
 
   const handleConfigureAgent = (agent: Agent) => {
@@ -231,7 +237,7 @@ export const Workforce: React.FC = () => {
                 onView={handleViewAgent}
                 onConfigure={handleConfigureAgent}
                 onDelete={handleDeleteAgent}
-                onTest={handleTestAgent}
+                onStartConversation={handleStartConversation}
               />
             ))
           )}

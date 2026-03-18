@@ -75,6 +75,16 @@ export interface UserDataExportResponse {
   data: Record<string, unknown>;
 }
 
+export interface BindingCodeResponse {
+  code: string;
+  maskedCode: string;
+  status: string;
+  rotatedAt?: string | null;
+  lastUsedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /**
  * Users API
  */
@@ -217,6 +227,32 @@ export const usersApi = {
     );
     
     return response.data;
+  },
+
+  getBindingCode: async (): Promise<BindingCodeResponse> => {
+    const response = await apiClient.get<any>('/users/me/binding-code');
+    return {
+      code: response.data.code,
+      maskedCode: response.data.masked_code,
+      status: response.data.status,
+      rotatedAt: response.data.rotated_at,
+      lastUsedAt: response.data.last_used_at,
+      createdAt: response.data.created_at,
+      updatedAt: response.data.updated_at,
+    };
+  },
+
+  refreshBindingCode: async (): Promise<BindingCodeResponse> => {
+    const response = await apiClient.post<any>('/users/me/binding-code/refresh');
+    return {
+      code: response.data.code,
+      maskedCode: response.data.masked_code,
+      status: response.data.status,
+      rotatedAt: response.data.rotated_at,
+      lastUsedAt: response.data.last_used_at,
+      createdAt: response.data.created_at,
+      updatedAt: response.data.updated_at,
+    };
   },
 
   /**

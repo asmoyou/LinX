@@ -119,6 +119,15 @@ class User(Base):
     knowledge_items = relationship(
         "KnowledgeItem", back_populates="owner", cascade="all, delete-orphan"
     )
+    agent_conversations = relationship(
+        "AgentConversation", back_populates="owner", cascade="all, delete-orphan"
+    )
+    user_binding_codes = relationship(
+        "UserBindingCode", back_populates="user", cascade="all, delete-orphan"
+    )
+    external_bindings = relationship(
+        "UserExternalBinding", back_populates="user", cascade="all, delete-orphan"
+    )
     resource_quota = relationship(
         "ResourceQuota", back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
@@ -203,6 +212,12 @@ class Agent(Base):
     department = relationship("Department", back_populates="agents")
     tasks = relationship("Task", back_populates="assigned_agent")
     audit_logs = relationship("AuditLog", back_populates="agent")
+    conversations = relationship(
+        "AgentConversation", back_populates="agent", cascade="all, delete-orphan"
+    )
+    channel_publications = relationship(
+        "AgentChannelPublication", back_populates="agent", cascade="all, delete-orphan"
+    )
 
     # Indexes
     __table_args__ = (
@@ -212,6 +227,334 @@ class Agent(Base):
 
     def __repr__(self):
         return f"<Agent(agent_id={self.agent_id}, name={self.name}, type={self.agent_type}, status={self.status})>"
+
+
+class AgentConversation(Base):
+    """Durable user-owned conversation threads for one agent."""
+
+    __tablename__ = "agent_conversations"
+
+    conversation_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.agent_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    owner_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title = Column(String(255), nullable=False)
+    status = Column(String(32), nullable=False, default="active", index=True)
+    source = Column(String(32), nullable=False, default="web", index=True)
+    latest_snapshot_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_conversation_snapshots.snapshot_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    last_message_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    agent = relationship("Agent", back_populates="conversations", foreign_keys=[agent_id])
+    owner = relationship("User", back_populates="agent_conversations", foreign_keys=[owner_user_id])
+    messages = relationship(
+        "AgentConversationMessage",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        foreign_keys="AgentConversationMessage.conversation_id",
+    )
+    snapshots = relationship(
+        "AgentConversationSnapshot",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        foreign_keys="AgentConversationSnapshot.conversation_id",
+    )
+    latest_snapshot = relationship(
+        "AgentConversationSnapshot",
+        foreign_keys=[latest_snapshot_id],
+        post_update=True,
+    )
+    external_links = relationship(
+        "ExternalConversationLink",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("idx_agent_conversations_owner_agent", "owner_user_id", "agent_id", "status"),
+        Index("idx_agent_conversations_agent_updated", "agent_id", "updated_at"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<AgentConversation(conversation_id={self.conversation_id}, agent_id={self.agent_id}, "
+            f"owner_user_id={self.owner_user_id}, status={self.status})>"
+        )
+
+
+class AgentConversationMessage(Base):
+    """Persisted chat message for one conversation."""
+
+    __tablename__ = "agent_conversation_messages"
+
+    message_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_conversations.conversation_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    role = Column(String(32), nullable=False, index=True)
+    content_text = Column(Text, nullable=False, default="")
+    content_json = Column(JSONB, nullable=True)
+    attachments_json = Column(JSONB, nullable=True)
+    source = Column(String(32), nullable=False, default="web", index=True)
+    external_event_id = Column(String(255), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    conversation = relationship("AgentConversation", back_populates="messages")
+
+    __table_args__ = (
+        Index(
+            "idx_agent_conversation_messages_conversation_created",
+            "conversation_id",
+            "created_at",
+        ),
+        Index(
+            "idx_agent_conversation_messages_external_event",
+            "conversation_id",
+            "external_event_id",
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<AgentConversationMessage(message_id={self.message_id}, "
+            f"conversation_id={self.conversation_id}, role={self.role})>"
+        )
+
+
+class AgentConversationSnapshot(Base):
+    """Latest restorable workspace snapshot for one conversation."""
+
+    __tablename__ = "agent_conversation_snapshots"
+
+    snapshot_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_conversations.conversation_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    generation = Column(Integer, nullable=False)
+    archive_ref = Column(Text, nullable=True)
+    manifest_ref = Column(Text, nullable=True)
+    size_bytes = Column(BigInteger, nullable=False, default=0)
+    checksum = Column(String(128), nullable=True)
+    snapshot_status = Column(String(32), nullable=False, default="ready", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    conversation = relationship(
+        "AgentConversation",
+        back_populates="snapshots",
+        foreign_keys=[conversation_id],
+    )
+
+    __table_args__ = (
+        Index(
+            "ux_agent_conversation_snapshots_generation",
+            "conversation_id",
+            "generation",
+            unique=True,
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<AgentConversationSnapshot(snapshot_id={self.snapshot_id}, "
+            f"conversation_id={self.conversation_id}, generation={self.generation})>"
+        )
+
+
+class UserBindingCode(Base):
+    """Reusable binding code for linking external identities back to a platform user."""
+
+    __tablename__ = "user_binding_codes"
+
+    code_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    code_hash = Column(String(128), nullable=False, unique=True, index=True)
+    code_encrypted = Column(Text, nullable=False)
+    status = Column(String(32), nullable=False, default="active", index=True)
+    rotated_at = Column(DateTime(timezone=True), nullable=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    user = relationship("User", back_populates="user_binding_codes")
+
+    __table_args__ = (
+        Index("idx_user_binding_codes_user_status", "user_id", "status"),
+    )
+
+    def __repr__(self):
+        return f"<UserBindingCode(code_id={self.code_id}, user_id={self.user_id}, status={self.status})>"
+
+
+class AgentChannelPublication(Base):
+    """External channel publication for an agent."""
+
+    __tablename__ = "agent_channel_publications"
+
+    publication_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.agent_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    channel_type = Column(String(32), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="draft", index=True)
+    channel_identity = Column(String(255), nullable=True)
+    config_json = Column(JSONB, nullable=True)
+    secret_encrypted_json = Column(JSONB, nullable=True)
+    webhook_path = Column(String(500), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    agent = relationship("Agent", back_populates="channel_publications")
+    external_bindings = relationship(
+        "UserExternalBinding",
+        back_populates="publication",
+        cascade="all, delete-orphan",
+    )
+    external_links = relationship(
+        "ExternalConversationLink",
+        back_populates="publication",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index(
+            "ux_agent_channel_publications_agent_channel",
+            "agent_id",
+            "channel_type",
+            unique=True,
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<AgentChannelPublication(publication_id={self.publication_id}, "
+            f"agent_id={self.agent_id}, channel_type={self.channel_type}, status={self.status})>"
+        )
+
+
+class UserExternalBinding(Base):
+    """Mapping between a platform user and an external channel identity."""
+
+    __tablename__ = "user_external_bindings"
+
+    binding_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    channel_type = Column(String(32), nullable=False, index=True)
+    publication_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_channel_publications.publication_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    external_user_id = Column(String(255), nullable=True, index=True)
+    external_open_id = Column(String(255), nullable=True, index=True)
+    external_union_id = Column(String(255), nullable=True, index=True)
+    tenant_key = Column(String(255), nullable=True, index=True)
+    metadata_json = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User", back_populates="external_bindings")
+    publication = relationship("AgentChannelPublication", back_populates="external_bindings")
+
+    __table_args__ = (
+        Index(
+            "ux_user_external_bindings_publication_open_id",
+            "publication_id",
+            "external_open_id",
+            unique=True,
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<UserExternalBinding(binding_id={self.binding_id}, user_id={self.user_id}, "
+            f"publication_id={self.publication_id}, channel_type={self.channel_type})>"
+        )
+
+
+class ExternalConversationLink(Base):
+    """Maps one external chat/thread identity to one LinX conversation."""
+
+    __tablename__ = "external_conversation_links"
+
+    link_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    publication_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_channel_publications.publication_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_conversations.conversation_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    external_chat_key = Column(String(255), nullable=False)
+    external_thread_key = Column(String(255), nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    publication = relationship("AgentChannelPublication", back_populates="external_links")
+    conversation = relationship("AgentConversation", back_populates="external_links")
+
+    __table_args__ = (
+        Index(
+            "ux_external_conversation_links_publication_chat_thread",
+            "publication_id",
+            "external_chat_key",
+            "external_thread_key",
+            unique=True,
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<ExternalConversationLink(link_id={self.link_id}, publication_id={self.publication_id}, "
+            f"conversation_id={self.conversation_id})>"
+        )
 
 
 class Task(Base):

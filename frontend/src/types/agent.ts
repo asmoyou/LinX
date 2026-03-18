@@ -39,3 +39,49 @@ export type Agent = {
   createdAt?: string;
   updatedAt?: string;
 };
+
+export interface AgentConversationSummary {
+  id: string;
+  agentId: string;
+  ownerUserId: string;
+  title: string;
+  status: string;
+  source: 'web' | 'feishu';
+  latestSnapshotId?: string | null;
+  latestSnapshotStatus?: string | null;
+  lastMessageAt?: string | null;
+  lastMessagePreview?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentConversationDetail extends AgentConversationSummary {
+  latestSnapshotGeneration?: number | null;
+}
+
+export interface ConversationMessage {
+  id: string;
+  conversationId: string;
+  role: 'user' | 'assistant' | 'system';
+  contentText: string;
+  contentJson?: Record<string, any> | null;
+  attachments: Array<Record<string, any>>;
+  source: 'web' | 'feishu';
+  externalEventId?: string | null;
+  createdAt: string;
+}
+
+export interface FeishuPublicationConfig {
+  publicationId?: string | null;
+  channelType: 'feishu';
+  status: string;
+  channelIdentity?: string | null;
+  botName?: string | null;
+  appId?: string | null;
+  tenantKey?: string | null;
+  webhookPath?: string | null;
+  webhookUrl?: string | null;
+  hasAppSecret: boolean;
+  hasVerificationToken: boolean;
+  hasEncryptKey: boolean;
+}

@@ -1,6 +1,13 @@
 import apiClient from './client';
+import type { RequestConfigWithMeta } from './client';
 import type { Agent } from '../types/agent';
 import type { AgentSkillSummary } from '../types/agent';
+import type {
+  AgentConversationDetail,
+  AgentConversationSummary,
+  ConversationMessage,
+  FeishuPublicationConfig,
+} from '../types/agent';
 
 export interface CreateAgentRequest {
   name: string;
@@ -85,6 +92,25 @@ export interface VoiceTranscriptionResponse {
   language?: string | null;
   duration?: number | null;
   processing_time?: number | null;
+}
+
+export interface AgentConversationListResponse {
+  items: AgentConversationSummary[];
+  total: number;
+}
+
+export interface AgentConversationMessagesResponse {
+  items: ConversationMessage[];
+  total: number;
+}
+
+export interface SaveFeishuPublicationRequest {
+  appId: string;
+  botName?: string;
+  tenantKey?: string;
+  appSecret?: string;
+  verificationToken?: string;
+  encryptKey?: string;
 }
 
 /**
@@ -433,8 +459,16 @@ export const agentsApi = {
     agentId: string,
     sessionId: string,
     path?: string,
-    recursive = false
+    recursive = false,
+    options?: { suppressErrorToast?: boolean }
   ): Promise<AgentSessionWorkspaceFile[]> => {
+    const requestConfig: RequestConfigWithMeta = {
+      params: {
+        ...(path ? { path } : {}),
+        ...(recursive ? { recursive: true } : {}),
+      },
+      suppressErrorToast: options?.suppressErrorToast,
+    };
     const response = await apiClient.get<Array<{
       name: string;
       path: string;
@@ -443,12 +477,7 @@ export const agentsApi = {
       is_dir?: boolean;
       modified_at?: string;
       previewable_inline?: boolean;
-    }>>(`/agents/${agentId}/sessions/${sessionId}/workspace/files`, {
-      params: {
-        ...(path ? { path } : {}),
-        ...(recursive ? { recursive: true } : {}),
-      },
-    });
+    }>>(`/agents/${agentId}/sessions/${sessionId}/workspace/files`, requestConfig);
     return response.data.map((item) => ({
       name: item.name,
       path: item.path,
@@ -465,11 +494,275 @@ export const agentsApi = {
   downloadSessionWorkspaceFile: async (
     agentId: string,
     sessionId: string,
-    path: string
+    path: string,
+    options?: { suppressErrorToast?: boolean }
   ): Promise<Blob> => {
+    const requestConfig: RequestConfigWithMeta = {
+      params: { path },
+      responseType: 'blob',
+      suppressErrorToast: options?.suppressErrorToast,
+    };
     const response = await apiClient.get(
       `/agents/${agentId}/sessions/${sessionId}/workspace/download`,
-      { params: { path }, responseType: 'blob' }
+      requestConfig
+    );
+    return response.data;
+  },
+
+  createConversation: async (agentId: string): Promise<AgentConversationSummary> => {
+    const response = await apiClient.post<{ conversation: AgentConversationSummary }>(
+      `/agents/${agentId}/conversations`
+    );
+    return response.data.conversation;
+  },
+
+  getConversations: async (agentId: string): Promise<AgentConversationListResponse> => {
+    const response = await apiClient.get<AgentConversationListResponse>(
+      `/agents/${agentId}/conversations`
+    );
+    return response.data;
+  },
+
+  getConversation: async (
+    agentId: string,
+    conversationId: string
+  ): Promise<AgentConversationDetail> => {
+    const response = await apiClient.get<AgentConversationDetail>(
+      `/agents/${agentId}/conversations/${conversationId}`
+    );
+    return response.data;
+  },
+
+  updateConversation: async (
+    agentId: string,
+    conversationId: string,
+    title: string
+  ): Promise<AgentConversationDetail> => {
+    const response = await apiClient.patch<AgentConversationDetail>(
+      `/agents/${agentId}/conversations/${conversationId}`,
+      { title }
+    );
+    return response.data;
+  },
+
+  deleteConversation: async (agentId: string, conversationId: string): Promise<void> => {
+    try {
+      await apiClient.delete(`/agents/${agentId}/conversations/${conversationId}`, {
+        suppressErrorToast: true,
+      });
+    } catch (error: any) {
+      if (error?.response?.status === 404) {
+        return;
+      }
+      throw error;
+    }
+  },
+
+  getConversationMessages: async (
+    agentId: string,
+    conversationId: string,
+    limit = 200
+  ): Promise<AgentConversationMessagesResponse> => {
+    const response = await apiClient.get<AgentConversationMessagesResponse>(
+      `/agents/${agentId}/conversations/${conversationId}/messages`,
+      { params: { limit } }
+    );
+    return response.data;
+  },
+
+  sendConversationMessage: async (
+    agentId: string,
+    conversationId: string,
+    message: string,
+    onChunk: (chunk: { type: string; content?: string; [key: string]: any }) => void,
+    onError?: (error: string) => void,
+    onComplete?: () => void,
+    files?: File[],
+    signal?: AbortSignal
+  ): Promise<void> => {
+    try {
+      const { useAuthStore } = await import('../stores/authStore');
+      const token = useAuthStore.getState().token;
+
+      const formData = new FormData();
+      formData.append('message', message);
+      if (files && files.length > 0) {
+        files.forEach((file) => {
+          formData.append('files', file);
+        });
+      }
+
+      const response = await fetch(
+        `${apiClient.defaults.baseURL}/agents/${agentId}/conversations/${conversationId}/messages`,
+        {
+          method: 'POST',
+          headers: {
+            Accept: 'text/event-stream',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: formData,
+          signal,
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Failed to send conversation message');
+      }
+      if (!response.body) {
+        throw new Error('No response body received');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let completed = false;
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split('\n\n');
+          buffer = events.pop() || '';
+
+          for (const event of events) {
+            const lines = event.split('\n');
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) {
+                continue;
+              }
+              const data = line.slice(6);
+              try {
+                const parsed = JSON.parse(data);
+                onChunk(parsed);
+                if (parsed.type === 'done') {
+                  completed = true;
+                  onComplete?.();
+                }
+              } catch (parseError) {
+                console.error('Failed to parse conversation SSE chunk:', parseError, data);
+              }
+            }
+          }
+        }
+        if (!completed) {
+          onComplete?.();
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        return;
+      }
+      const errorMessage = error.message || 'Failed to send conversation message';
+      onError?.(errorMessage);
+      throw error;
+    }
+  },
+
+  releaseConversationRuntime: async (
+    agentId: string,
+    conversationId: string
+  ): Promise<{ success: boolean }> => {
+    try {
+      const response = await apiClient.post<{ success: boolean }>(
+        `/agents/${agentId}/conversations/${conversationId}/runtime/release`,
+        undefined,
+        { suppressErrorToast: true }
+      );
+      return response.data;
+    } catch (error: any) {
+      if (error?.response?.status === 404) {
+        return { success: true };
+      }
+      throw error;
+    }
+  },
+
+  getConversationWorkspaceFiles: async (
+    agentId: string,
+    conversationId: string,
+    path?: string,
+    recursive = false,
+    options?: { suppressErrorToast?: boolean }
+  ): Promise<AgentSessionWorkspaceFile[]> => {
+    const requestConfig: RequestConfigWithMeta = {
+      params: {
+        ...(path ? { path } : {}),
+        ...(recursive ? { recursive: true } : {}),
+      },
+      suppressErrorToast: options?.suppressErrorToast,
+    };
+    const response = await apiClient.get<Array<{
+      name: string;
+      path: string;
+      size: number;
+      is_directory?: boolean;
+      is_dir?: boolean;
+      modified_at?: string;
+      previewable_inline?: boolean;
+    }>>(`/agents/${agentId}/conversations/${conversationId}/workspace/files`, requestConfig);
+    return response.data.map((item) => ({
+      name: item.name,
+      path: item.path,
+      size: item.size,
+      is_dir: item.is_dir ?? Boolean(item.is_directory),
+      modified_at: item.modified_at,
+      previewable_inline: item.previewable_inline,
+    }));
+  },
+
+  downloadConversationWorkspaceFile: async (
+    agentId: string,
+    conversationId: string,
+    path: string,
+    options?: { suppressErrorToast?: boolean }
+  ): Promise<Blob> => {
+    const requestConfig: RequestConfigWithMeta = {
+      params: { path },
+      responseType: 'blob',
+      suppressErrorToast: options?.suppressErrorToast,
+    };
+    const response = await apiClient.get(
+      `/agents/${agentId}/conversations/${conversationId}/workspace/download`,
+      requestConfig
+    );
+    return response.data;
+  },
+
+  getFeishuPublication: async (agentId: string): Promise<FeishuPublicationConfig> => {
+    const response = await apiClient.get<FeishuPublicationConfig>(
+      `/agents/${agentId}/channels/feishu`
+    );
+    return response.data;
+  },
+
+  saveFeishuPublication: async (
+    agentId: string,
+    payload: SaveFeishuPublicationRequest
+  ): Promise<FeishuPublicationConfig> => {
+    const response = await apiClient.put<FeishuPublicationConfig>(
+      `/agents/${agentId}/channels/feishu`,
+      payload
+    );
+    return response.data;
+  },
+
+  publishFeishuPublication: async (agentId: string): Promise<FeishuPublicationConfig> => {
+    const response = await apiClient.post<FeishuPublicationConfig>(
+      `/agents/${agentId}/channels/feishu/publish`
+    );
+    return response.data;
+  },
+
+  unpublishFeishuPublication: async (agentId: string): Promise<FeishuPublicationConfig> => {
+    const response = await apiClient.post<FeishuPublicationConfig>(
+      `/agents/${agentId}/channels/feishu/unpublish`
     );
     return response.data;
   },

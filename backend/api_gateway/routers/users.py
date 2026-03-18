@@ -10,6 +10,7 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
@@ -17,7 +18,11 @@ from pydantic import BaseModel, Field
 from access_control import blacklist_session_id, blacklist_token_jti
 from access_control.permissions import CurrentUser, get_current_user, require_role
 from access_control.rbac import Role
+from database.connection import get_db_session
+from database.models import User, UserBindingCode
+from shared.binding_codes import generate_user_binding_code, hash_user_binding_code
 from shared.logging import get_logger
+from shared.secret_crypto import decrypt_text, encrypt_text
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -281,6 +286,74 @@ class DeleteAccountRequest(BaseModel):
     confirmation: str = Field(..., min_length=6, max_length=6)
 
 
+class BindingCodeResponse(BaseModel):
+    code: str
+    masked_code: str
+    status: str
+    rotated_at: str | None = None
+    last_used_at: str | None = None
+    created_at: str
+    updated_at: str
+
+
+def _mask_binding_code(code: str) -> str:
+    normalized = str(code or "").strip()
+    if len(normalized) <= 8:
+        return normalized
+    return f"{normalized[:4]}****{normalized[-4:]}"
+
+
+def _serialize_binding_code(binding_code: UserBindingCode) -> BindingCodeResponse:
+    plaintext = decrypt_text(binding_code.code_encrypted)
+    return BindingCodeResponse(
+        code=plaintext,
+        masked_code=_mask_binding_code(plaintext),
+        status=binding_code.status,
+        rotated_at=binding_code.rotated_at.isoformat() if binding_code.rotated_at else None,
+        last_used_at=binding_code.last_used_at.isoformat() if binding_code.last_used_at else None,
+        created_at=binding_code.created_at.isoformat(),
+        updated_at=binding_code.updated_at.isoformat(),
+    )
+
+
+def _create_binding_code_row(session, user_id: str | UUID) -> UserBindingCode:
+    normalized_user_id = UUID(str(user_id))
+    for _ in range(5):
+        code = generate_user_binding_code()
+        row = UserBindingCode(
+            user_id=normalized_user_id,
+            code_hash=hash_user_binding_code(code),
+            code_encrypted=encrypt_text(code),
+            status="active",
+        )
+        session.add(row)
+        try:
+            session.flush()
+            return row
+        except Exception:
+            session.rollback()
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Failed to generate binding code",
+    )
+
+
+def _get_or_create_active_binding_code(session, user_id: str | UUID) -> UserBindingCode:
+    row = (
+        session.query(UserBindingCode)
+        .filter(UserBindingCode.user_id == UUID(str(user_id)))
+        .filter(UserBindingCode.status == "active")
+        .order_by(UserBindingCode.updated_at.desc())
+        .first()
+    )
+    if row is not None:
+        return row
+    row = _create_binding_code_row(session, user_id)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
 @router.get("/me", response_model=UserProfile)
 async def get_current_user_profile(
     request: Request,
@@ -324,6 +397,43 @@ async def get_current_user_profile(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="User profile service unavailable",
         )
+
+
+@router.get("/me/binding-code", response_model=BindingCodeResponse)
+async def get_current_user_binding_code(current_user: CurrentUser = Depends(get_current_user)):
+    """Get the current durable external-account binding code for the signed-in user."""
+    with get_db_session() as session:
+        user = session.query(User).filter(User.user_id == current_user.user_id).first()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        binding_code = _get_or_create_active_binding_code(session, current_user.user_id)
+        return _serialize_binding_code(binding_code)
+
+
+@router.post("/me/binding-code/refresh", response_model=BindingCodeResponse)
+async def refresh_current_user_binding_code(current_user: CurrentUser = Depends(get_current_user)):
+    """Rotate the current user's binding code and invalidate previous active codes."""
+    with get_db_session() as session:
+        user = session.query(User).filter(User.user_id == current_user.user_id).first()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        now = _utc_now()
+        active_rows = (
+            session.query(UserBindingCode)
+            .filter(UserBindingCode.user_id == UUID(current_user.user_id))
+            .filter(UserBindingCode.status == "active")
+            .all()
+        )
+        for row in active_rows:
+            row.status = "rotated"
+            row.rotated_at = now
+            row.updated_at = now
+
+        next_code = _create_binding_code_row(session, current_user.user_id)
+        session.commit()
+        session.refresh(next_code)
+        return _serialize_binding_code(next_code)
 
 
 @router.put("/me", response_model=UserProfile)

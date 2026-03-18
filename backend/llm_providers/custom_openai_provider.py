@@ -712,6 +712,7 @@ class CustomOpenAIChat(BaseChatModel):
                 # Custom format: {"output": "...", "request_tokens": ..., ...}
                 content = result["output"]
                 tool_calls = []
+                additional_kwargs = {"final_content": content} if content else {}
                 token_usage = {
                     "prompt_tokens": result.get("request_tokens", 0),
                     "completion_tokens": result.get("response_tokens", 0),
@@ -722,16 +723,22 @@ class CustomOpenAIChat(BaseChatModel):
                 # Standard OpenAI format
                 choice = result["choices"][0]
                 message_data = choice.get("message", {})
+                final_content = message_data.get("content") or ""
+                reasoning_content = (
+                    message_data.get("reasoning_content")
+                    or message_data.get("reasoning")
+                    or message_data.get("thinking")
+                    or ""
+                )
 
                 # Check for reasoning/thinking content (for models like Qwen3-VL)
                 # Priority: reasoning_content > reasoning > thinking > content
-                content = (
-                    message_data.get("reasoning_content") or
-                    message_data.get("reasoning") or
-                    message_data.get("thinking") or
-                    message_data.get("content") or
-                    ""
-                )
+                content = reasoning_content or final_content or ""
+                additional_kwargs = {}
+                if final_content:
+                    additional_kwargs["final_content"] = final_content
+                if reasoning_content:
+                    additional_kwargs["reasoning_content"] = reasoning_content
                 
                 # If content is still empty but we have completion_tokens, log warning
                 token_usage = result.get("usage", {})
@@ -752,6 +759,7 @@ class CustomOpenAIChat(BaseChatModel):
             message = AIMessage(
                 content=content,
                 tool_calls=tool_calls,
+                additional_kwargs=additional_kwargs,
                 response_metadata={"usage": token_usage} if token_usage else {},
             )
             generation = ChatGeneration(message=message)
@@ -817,6 +825,7 @@ class CustomOpenAIChat(BaseChatModel):
             if "output" in result:
                 content = result["output"]
                 tool_calls = []
+                additional_kwargs = {"final_content": content} if content else {}
                 token_usage = {
                     "prompt_tokens": result.get("request_tokens", 0),
                     "completion_tokens": result.get("response_tokens", 0),
@@ -826,13 +835,19 @@ class CustomOpenAIChat(BaseChatModel):
             elif "choices" in result and len(result["choices"]) > 0:
                 choice = result["choices"][0]
                 message_data = choice.get("message", {})
-                content = (
+                final_content = message_data.get("content") or ""
+                reasoning_content = (
                     message_data.get("reasoning_content")
                     or message_data.get("reasoning")
                     or message_data.get("thinking")
-                    or message_data.get("content")
                     or ""
                 )
+                content = reasoning_content or final_content or ""
+                additional_kwargs = {}
+                if final_content:
+                    additional_kwargs["final_content"] = final_content
+                if reasoning_content:
+                    additional_kwargs["reasoning_content"] = reasoning_content
                 tool_calls = self._extract_tool_calls_from_message(message_data)
                 token_usage = result.get("usage", {})
             else:
@@ -841,6 +856,7 @@ class CustomOpenAIChat(BaseChatModel):
             message = AIMessage(
                 content=content,
                 tool_calls=tool_calls,
+                additional_kwargs=additional_kwargs,
                 response_metadata={"usage": token_usage} if token_usage else {},
             )
             generation = ChatGeneration(message=message)

@@ -14,6 +14,9 @@ import { authApi, type SetupStatusResponse } from './api';
 // Lazy load pages for better performance (6.9.6)
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
 const Workforce = lazy(() => import('./pages/Workforce').then(m => ({ default: m.Workforce })));
+const AgentConversation = lazy(() =>
+  import('./pages/AgentConversation').then((m) => ({ default: m.AgentConversation }))
+);
 const Tasks = lazy(() => import('./pages/Missions').then(m => ({ default: m.Missions })));
 const Knowledge = lazy(() => import('./pages/Knowledge').then(m => ({ default: m.Knowledge })));
 const Memory = lazy(() => import('./pages/Memory').then((m) => ({ default: m.Memory })));
@@ -36,6 +39,13 @@ const PageLoader = () => (
   </div>
 );
 
+const buildRouteAnimationKey = (pathname: string): string => {
+  return pathname.replace(
+    /^\/workforce\/([^/]+)\/conversations(?:\/[^/]+)?$/,
+    '/workforce/$1/conversations'
+  );
+};
+
 interface AnimatedRoutesProps {
   setupStatus: SetupStatusResponse | null;
   onSetupStatusRefresh: () => Promise<void>;
@@ -46,10 +56,11 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
   const { isAuthenticated } = useAuthStore();
   const requiresSetup = setupStatus?.requires_setup ?? false;
   const defaultAdminUsername = setupStatus?.default_admin_username ?? 'admin';
+  const routeAnimationKey = buildRouteAnimationKey(location.pathname);
 
   return (
     <AnimatePresence mode="wait">
-      <Routes location={location} key={location.pathname}>
+      <Routes location={location} key={routeAnimationKey}>
         <Route
           path="/setup"
           element={
@@ -141,6 +152,40 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
                     transition={{ duration: 0.3 }}
                   >
                     <Workforce />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
+            }
+          />
+          <Route
+            path="workforce/:agentId/conversations"
+            element={
+              <PageErrorBoundary pageName="持久化对话">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <AgentConversation />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
+            }
+          />
+          <Route
+            path="workforce/:agentId/conversations/:conversationId"
+            element={
+              <PageErrorBoundary pageName="持久化对话">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <AgentConversation />
                   </motion.div>
                 </Suspense>
               </PageErrorBoundary>

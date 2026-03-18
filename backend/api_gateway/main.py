@@ -26,10 +26,12 @@ from api_gateway.middleware.logging import RequestLoggingMiddleware
 from api_gateway.middleware.rate_limit import RateLimitMiddleware
 from api_gateway.routers import (
     admin_users,
+    agent_conversations,
     agents,
     auth,
     dashboard,
     departments,
+    integrations,
     knowledge,
     llm,
     missions,
@@ -216,6 +218,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.warning(f"Failed to initialize SessionManager: {e}")
 
+    try:
+        from agent_framework.persistent_conversations import (
+            initialize_persistent_conversation_runtime_service,
+        )
+
+        await initialize_persistent_conversation_runtime_service()
+        logger.info("Persistent conversation runtime service initialized")
+    except Exception as e:
+        logger.warning(f"Failed to initialize persistent conversation runtime service: {e}")
+
     # Start projection maintenance manager
     try:
         from user_memory.projection_maintenance_manager import (
@@ -366,6 +378,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.error(f"Failed to shutdown SessionManager: {e}")
 
+    try:
+        from agent_framework.persistent_conversations import (
+            shutdown_persistent_conversation_runtime_service,
+        )
+
+        await shutdown_persistent_conversation_runtime_service()
+        logger.info("Persistent conversation runtime service shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown persistent conversation runtime service: {e}")
+
     # Stop projection maintenance manager
     try:
         from user_memory.projection_maintenance_manager import (
@@ -500,6 +522,7 @@ def create_app() -> FastAPI:
     app.include_router(roles.router, prefix="/api/v1/roles", tags=["Roles"])
     app.include_router(departments.router, prefix="/api/v1/departments", tags=["Departments"])
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
+    app.include_router(agent_conversations.router, prefix="/api/v1/agents", tags=["Agent Conversations"])
     app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
     app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["Knowledge"])
     app.include_router(user_memory.router, prefix="/api/v1/user-memory", tags=["User Memory"])
@@ -512,6 +535,11 @@ def create_app() -> FastAPI:
     app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["Notifications"])
     app.include_router(skills.router, prefix="/api/v1/skills", tags=["Skills"])
     app.include_router(llm.router, prefix="/api/v1/llm", tags=["LLM Providers"])
+    app.include_router(
+        integrations.router,
+        prefix="/api/v1/integrations",
+        tags=["Integrations"],
+    )
     app.include_router(monitoring.router, tags=["Monitoring"])
     app.include_router(websocket_router, prefix="/api/v1/ws", tags=["WebSocket"])
 
