@@ -14,7 +14,7 @@ from database.connection import get_connection_pool, get_db_session
 from database.models import (
     SessionLedger,
     SessionLedgerEvent,
-    SkillProposal,
+    SkillCandidate,
     UserMemoryEntry,
     UserMemoryLink,
     UserMemoryRelation,
@@ -138,7 +138,7 @@ def prepare_user_memory_rows_for_user_deletion(
             "memory_relations": 0,
             "memory_links": 0,
             "memory_views": 0,
-            "skill_proposals": 0,
+            "skill_candidates": 0,
             "vector_delete_job_enqueued": False,
             "deleted": False,
         }
@@ -177,8 +177,8 @@ def prepare_user_memory_rows_for_user_deletion(
     memory_views = (
         session.query(UserMemoryView).filter(UserMemoryView.user_id == normalized_user_id).count()
     )
-    skill_proposals = (
-        session.query(SkillProposal).filter(SkillProposal.user_id == normalized_user_id).count()
+    skill_candidates = (
+        session.query(SkillCandidate).filter(SkillCandidate.user_id == normalized_user_id).count()
     )
 
     vector_delete_job_enqueued = False
@@ -220,8 +220,8 @@ def prepare_user_memory_rows_for_user_deletion(
             .delete(synchronize_session=False)
         )
         (
-            session.query(SkillProposal)
-            .filter(SkillProposal.user_id == normalized_user_id)
+            session.query(SkillCandidate)
+            .filter(SkillCandidate.user_id == normalized_user_id)
             .delete(synchronize_session=False)
         )
         (
@@ -241,7 +241,7 @@ def prepare_user_memory_rows_for_user_deletion(
         "memory_relations": memory_relations,
         "memory_links": memory_links,
         "memory_views": memory_views,
-        "skill_proposals": skill_proposals,
+        "skill_candidates": skill_candidates,
         "vector_delete_job_enqueued": vector_delete_job_enqueued,
         "vector_collection_name": active_collection,
         "deleted": not dry_run,

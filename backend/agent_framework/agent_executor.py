@@ -447,7 +447,7 @@ class AgentExecutor:
         """Filter out agent-candidate memories until they are explicitly published."""
         metadata = self._extract_metadata(memory)
         signal_type = str(metadata.get("signal_type") or "").strip().lower()
-        if signal_type != "skill_proposal":
+        if signal_type != "skill_candidate":
             return False
         review_status = str(metadata.get("review_status") or "").strip().lower()
         return review_status != "published"
@@ -628,15 +628,11 @@ class AgentExecutor:
 
         config = getattr(agent, "config", None)
         access_level = self._normalize_access_level(getattr(config, "access_level", None))
-        allowed_memory = self._normalize_string_list(getattr(config, "allowed_memory", None))
         allowed_knowledge = self._normalize_string_list(getattr(config, "allowed_knowledge", None))
 
         skill_memories = []
         user_memories = []
-        context_sources = resolve_memory_scopes(
-            access_level=access_level,
-            allowed_memory=allowed_memory,
-        )
+        context_sources = resolve_memory_scopes(access_level=access_level)
         context_sources = [
             source
             for source in context_sources

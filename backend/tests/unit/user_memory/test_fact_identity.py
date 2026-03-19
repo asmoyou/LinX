@@ -1,6 +1,15 @@
 """Unit tests for server-side user-memory fact identity generation."""
 
-from user_memory.fact_identity import build_user_fact_identity, build_user_memory_view_key
+from user_memory.fact_identity import (
+    build_user_fact_identity,
+    build_user_memory_view_key,
+    normalize_fact_kind,
+)
+
+
+def test_normalize_fact_kind_maps_legacy_skill_to_expertise() -> None:
+    assert normalize_fact_kind("skill") == "expertise"
+    assert normalize_fact_kind("expertise") == "expertise"
 
 
 def test_relationship_identity_does_not_trust_free_form_llm_key_suffixes() -> None:

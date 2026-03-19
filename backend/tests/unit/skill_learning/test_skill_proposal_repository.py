@@ -1,9 +1,9 @@
-"""Tests for skill-proposal repository."""
+"""Tests for skill-candidate repository."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from skill_learning.repository import SkillProposalRepository
+from skill_learning.repository import SkillCandidateRepository
 
 
 class _FakeQuery:
@@ -40,7 +40,7 @@ class _FakeSessionContext:
         return False
 
 
-def test_update_proposal_refreshes_row_before_return() -> None:
+def test_update_candidate_refreshes_row_before_return() -> None:
     row = SimpleNamespace(
         id=7,
         title="before",
@@ -48,18 +48,18 @@ def test_update_proposal_refreshes_row_before_return() -> None:
         why_it_worked=None,
         review_status="pending",
         review_note=None,
-        published_skill_id=None,
-        proposal_payload={},
+        promoted_skill_id=None,
+        candidate_payload={},
     )
     session = _FakeSession(row)
-    repository = SkillProposalRepository(repository=MagicMock())
+    repository = SkillCandidateRepository(repository=MagicMock())
 
     with patch(
         "skill_learning.repository.get_db_session",
         return_value=_FakeSessionContext(session),
     ):
-        updated = repository.update_proposal(
-            proposal_id=7,
+        updated = repository.update_candidate(
+            candidate_id=7,
             summary="updated summary",
             review_status="published",
             payload={"goal": "after"},
@@ -69,4 +69,4 @@ def test_update_proposal_refreshes_row_before_return() -> None:
     session.refresh.assert_called_once_with(row)
     assert row.why_it_worked == "updated summary"
     assert row.review_status == "published"
-    assert row.proposal_payload == {"goal": "after"}
+    assert row.candidate_payload == {"goal": "after"}

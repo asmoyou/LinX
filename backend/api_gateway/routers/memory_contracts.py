@@ -6,9 +6,9 @@ from pydantic import BaseModel, Field
 
 
 class AgentCandidateReviewRequest(BaseModel):
-    """Review action for learned skill proposals."""
+    """Review action for learned skill candidates."""
 
-    action: str = Field(..., pattern=r"^(publish|reject|revise)$")
+    action: str = Field(..., pattern=r"^(promote|merge|reject|revise)$")
     content: Optional[str] = Field(None, min_length=1)
     summary: Optional[str] = None
     note: Optional[str] = None
@@ -16,7 +16,7 @@ class AgentCandidateReviewRequest(BaseModel):
 
 
 class MemoryItemResponse(BaseModel):
-    """Shared response model for reset-era user-memory and skill-proposal items."""
+    """Shared response model for reset-era user-memory and skill-candidate items."""
 
     model_config = {"populate_by_name": True, "serialize_by_alias": True}
 
@@ -40,10 +40,11 @@ class MemoryItemResponse(BaseModel):
 
 
 class MemoryConfigResponse(BaseModel):
-    """Reset-era config response for user memory, skill learning, and session ledger."""
+    """Reset-era config response for user memory, skill candidates, and runtime."""
 
     user_memory: dict
-    skill_learning: dict
+    skill_candidates: dict
+    skill_runtime: dict
     session_ledger: dict
     runtime_context: dict
     recommended: Optional[dict] = None
@@ -53,6 +54,7 @@ class MemoryConfigUpdateRequest(BaseModel):
     """Request payload for reset-era memory pipeline updates."""
 
     user_memory: Optional[dict] = None
-    skill_learning: Optional[dict] = None
+    skill_candidates: Optional[dict] = None
+    skill_runtime: Optional[dict] = None
     session_ledger: Optional[dict] = None
     runtime_context: Optional[dict] = None

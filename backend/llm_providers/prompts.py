@@ -242,7 +242,7 @@ Information: ${information}
 Context: ${context}
 
 Determine:
-1. Product surface: user_memory, skill_proposal, knowledge_base, or discard
+1. Product surface: user_memory, skill_candidate, knowledge_base, or discard
 2. Importance: low, medium, high
 3. Tags: relevant keywords (3-5 tags)
 4. Should this be promoted into a shared knowledge asset? (yes/no)

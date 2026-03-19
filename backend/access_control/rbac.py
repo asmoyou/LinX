@@ -204,7 +204,7 @@ USER_PERMISSIONS = {
     Permission(ResourceType.KNOWLEDGE, Action.UPDATE, "own", "Update own knowledge base items"),
     Permission(ResourceType.KNOWLEDGE, Action.DELETE, "own", "Delete own knowledge base items"),
     # Can access own memory
-    Permission(ResourceType.MEMORY, Action.READ, "own", "View own user memory and skill proposals"),
+    Permission(ResourceType.MEMORY, Action.READ, "own", "View own user memory and skill candidates"),
     Permission(ResourceType.MEMORY, Action.CREATE, "own", "Create memory entries"),
     Permission(ResourceType.MEMORY, Action.DELETE, "own", "Delete own memory entries"),
     # Can manage own user profile

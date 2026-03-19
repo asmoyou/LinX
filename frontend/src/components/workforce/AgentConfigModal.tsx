@@ -11,11 +11,18 @@ import {
   Power,
   Radio,
   RefreshCw,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import type { Agent } from "@/types/agent";
 import type { AgentSkillSummary, FeishuPublicationConfig } from "@/types/agent";
 import { llmApi, agentsApi } from "@/api";
+import {
+  skillsApi,
+  type AgentSkillBindingDraft,
+  type AgentSkillBindingMode,
+} from "@/api/skills";
 import { knowledgeApi } from "@/api/knowledge";
 import type { SaveFeishuPublicationRequest } from "@/api/agents";
 import type { ModelMetadata } from "@/api/llm";
@@ -25,33 +32,49 @@ import { ImageCropModal } from "@/components/common/ImageCropModal";
 import { DepartmentSelect } from "@/components/departments/DepartmentSelect";
 import { LayoutModal } from "@/components/LayoutModal";
 
-type MemoryScope = "skills" | "user_memory";
-const MEMORY_SCOPE_ALIAS_MAP: Record<string, MemoryScope> = {
-  skills: "skills",
-  user_memory: "user_memory",
+const resolveDefaultBindingMode = (
+  skill: AgentSkillSummary,
+): AgentSkillBindingMode => {
+  const runtimeMode = String(skill.runtime_mode || "").trim().toLowerCase();
+  if (
+    runtimeMode === "tool" ||
+    runtimeMode === "doc" ||
+    runtimeMode === "retrieval" ||
+    runtimeMode === "hybrid"
+  ) {
+    return runtimeMode as AgentSkillBindingMode;
+  }
+  return skill.skill_type === "langchain_tool" ? "tool" : "doc";
 };
 
-const normalizeMemoryScopes = (scopes?: string[]): MemoryScope[] => {
-  if (!scopes || scopes.length === 0) {
-    return [];
-  }
+const buildDefaultBinding = (
+  skill: AgentSkillSummary,
+  priority: number,
+): AgentSkillBindingDraft => ({
+  skill_id: skill.skill_id,
+  binding_mode: resolveDefaultBindingMode(skill),
+  enabled: true,
+  priority,
+  source: "manual",
+  auto_update_policy: "follow_active",
+  revision_pin_id: null,
+});
 
-  const normalized: MemoryScope[] = [];
-  for (const rawScope of scopes) {
-    const scope = (rawScope || "").trim().toLowerCase();
-    const canonicalScope = MEMORY_SCOPE_ALIAS_MAP[scope];
-    if (canonicalScope && !normalized.includes(canonicalScope)) {
-      normalized.push(canonicalScope);
-    }
+const bindingModeOptionsForSkill = (
+  skill: AgentSkillSummary,
+): AgentSkillBindingMode[] => {
+  const runtimeMode = resolveDefaultBindingMode(skill);
+  if (runtimeMode === "hybrid") {
+    return ["tool", "doc", "retrieval", "hybrid"];
   }
-  return normalized;
+  return [runtimeMode];
 };
 
 interface AgentConfigModalProps {
   agent: Agent | null;
   isOpen: boolean;
   onClose: () => void;
-  onSave: (agent: Agent) => Promise<void>;
+  onSave: (agent: Agent, bindings: AgentSkillBindingDraft[]) => Promise<void>;
 }
 
 export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
@@ -89,8 +112,13 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [availableSkills, setAvailableSkills] = useState<AgentSkillSummary[]>(
     [],
   );
+  const [skillBindings, setSkillBindings] = useState<AgentSkillBindingDraft[]>(
+    [],
+  );
   const [isLoadingSkills, setIsLoadingSkills] = useState(false);
   const [skillsError, setSkillsError] = useState<string | null>(null);
+  const [showAdvancedSkillBindings, setShowAdvancedSkillBindings] =
+    useState(false);
   const [feishuPublication, setFeishuPublication] =
     useState<FeishuPublicationConfig | null>(null);
   const [feishuFormData, setFeishuFormData] =
@@ -109,7 +137,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     type: "",
     avatar: "",
     systemPrompt: "",
-    skill_ids: [],
     model: "",
     provider: "",
     temperature: 0.7,
@@ -118,7 +145,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     departmentId: "",
     accessLevel: "private",
     allowedKnowledge: [],
-    allowedMemory: [],
     topK: 5,
     similarityThreshold: 0.3,
   });
@@ -139,7 +165,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         type: agent.type || "",
         avatar: agent.avatar || "",
         systemPrompt: agent.systemPrompt || "",
-        skill_ids: agent.skill_ids || [],
         model: agent.model || "",
         provider: agent.provider || "",
         temperature: agent.temperature ?? 0.7,
@@ -148,10 +173,11 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         departmentId: agent.departmentId || "",
         accessLevel: agent.accessLevel || "private",
         allowedKnowledge: agent.allowedKnowledge || [],
-        allowedMemory: normalizeMemoryScopes(agent.allowedMemory || []),
         topK: agent.topK || 5,
         similarityThreshold: agent.similarityThreshold ?? 0.3,
       });
+      setSkillBindings([]);
+      setShowAdvancedSkillBindings(false);
       setAvatarPreview(agent.avatar || "");
       setSaveError(null);
       setModelMetadata(null);
@@ -274,17 +300,12 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     setIsLoadingSkills(true);
     setSkillsError(null);
     try {
-      const response = await agentsApi.getAgentSkills(agent.id);
+      const response = await skillsApi.getAgentBindings(agent.id);
       console.log("[AgentConfigModal] Skills loaded:", response);
       setAvailableSkills(response.available_skills || []);
-
-      // Update form data with configured skills if not already set
-      if (!formData.skill_ids || formData.skill_ids.length === 0) {
-        setFormData((prev) => ({
-          ...prev,
-          skill_ids: response.configured_skill_ids || [],
-        }));
-      }
+      setSkillBindings(
+        (response.bindings || []).sort((left, right) => left.priority - right.priority),
+      );
     } catch (error: any) {
       console.error("Failed to fetch available skills:", error);
       const errorMsg =
@@ -339,17 +360,24 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   };
 
   const toggleSkill = (skillId: string) => {
-    const currentSkills = formData.skill_ids || [];
-    const isSelected = currentSkills.includes(skillId);
+    const selectedBinding = skillBindings.find(
+      (binding) => binding.skill_id === skillId,
+    );
+    if (selectedBinding) {
+      setSkillBindings((currentBindings) =>
+        currentBindings.filter((binding) => binding.skill_id !== skillId),
+      );
+      return;
+    }
 
-    const newSkills = isSelected
-      ? currentSkills.filter((s) => s !== skillId)
-      : [...currentSkills, skillId];
-
-    setFormData({
-      ...formData,
-      skill_ids: newSkills,
-    });
+    const skill = availableSkills.find((item) => item.skill_id === skillId);
+    if (!skill) {
+      return;
+    }
+    setSkillBindings((currentBindings) => [
+      ...currentBindings,
+      buildDefaultBinding(skill, currentBindings.length),
+    ]);
   };
 
   const toggleKnowledgeBase = (collectionId: string) => {
@@ -363,25 +391,17 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     });
   };
 
-  const toggleMemoryScope = (scope: string) => {
-    const selected = formData.allowedMemory || [];
-    const nextSelected = selected.includes(scope)
-      ? selected.filter((item) => item !== scope)
-      : [...selected, scope];
-    setFormData({
-      ...formData,
-      allowedMemory: nextSelected,
-    });
-  };
-
-  const resolveEffectiveMemoryScopes = (): string[] => {
-    const normalizedSelected = normalizeMemoryScopes(
-      formData.allowedMemory || [],
+  const updateSkillBinding = (
+    skillId: string,
+    updater: (binding: AgentSkillBindingDraft) => AgentSkillBindingDraft,
+  ) => {
+    setSkillBindings((currentBindings) =>
+      currentBindings
+        .map((binding) =>
+          binding.skill_id === skillId ? updater(binding) : binding,
+        )
+        .sort((left, right) => left.priority - right.priority),
     );
-    if (normalizedSelected.length > 0) {
-      return normalizedSelected;
-    }
-    return ["skills", "user_memory"];
   };
 
   const fetchModelMetadata = async (provider: string, model: string) => {
@@ -448,6 +468,24 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
   if (!isOpen || !agent) return null;
 
+  const hasAdvancedSkillBindingOptions = skillBindings.some((binding) => {
+    const skill = availableSkills.find((item) => item.skill_id === binding.skill_id);
+    return skill ? bindingModeOptionsForSkill(skill).length > 1 : false;
+  });
+
+  const getSkillBindingSourceLabel = (source?: string) => {
+    if (source === "auto_learned") {
+      return t(
+        "agent.skillBindingSourceAutoLearned",
+        "Auto-added from approved learned skill",
+      );
+    }
+    if (source === "template_default") {
+      return t("agent.skillBindingSourceTemplate", "Added by template");
+    }
+    return t("agent.skillBindingSourceManual", "Added manually");
+  };
+
   const handleSave = async () => {
     console.log("[AgentConfigModal] handleSave called");
     console.log("[AgentConfigModal] formData:", formData);
@@ -487,20 +525,24 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             availableKnowledgeIds.has(id),
           )
         : formData.allowedKnowledge || [];
-      const normalizedAllowedMemory = normalizeMemoryScopes(
-        formData.allowedMemory || [],
-      );
-
       const updatedAgent = {
         ...agent!,
         ...formData,
         allowedKnowledge: normalizedAllowedKnowledge,
-        allowedMemory: normalizedAllowedMemory,
       } as Agent;
       console.log("[AgentConfigModal] Calling onSave with:", updatedAgent);
 
       // Call parent's onSave with updated agent data
-      await onSave(updatedAgent);
+      await onSave(
+        updatedAgent,
+        skillBindings
+          .slice()
+          .sort((left, right) => left.priority - right.priority)
+          .map((binding, index) => ({
+            ...binding,
+            priority: index,
+          })),
+      );
 
       console.log("[AgentConfigModal] Save successful");
       // If we get here, save was successful
@@ -886,9 +928,15 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
                   {t(
                     "agent.skillsDescription",
-                    "选择此 Agent 可以使用的技能。技能将在 Agent 初始化时加载。",
+                    "Select the skills this agent can use. Approved learned skills from this agent are auto-added by default.",
                   )}
                 </p>
+                <div className="mb-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-700 dark:text-emerald-300">
+                  {t(
+                    "agent.skillSelectionHint",
+                    "Most of the time you only need to check or uncheck skills here. Extra options only appear for a few hybrid skills.",
+                  )}
+                </div>
 
                 {/* Skills Loading State */}
                 {isLoadingSkills && (
@@ -926,10 +974,35 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                       <span className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
                         {t("agent.selectedSkills", "已选择技能")}
                       </span>
-                      <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
-                        {formData.skill_ids?.length || 0} /{" "}
-                        {availableSkills.length}
-                      </span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+                          {skillBindings.length} / {availableSkills.length}
+                        </span>
+                        {hasAdvancedSkillBindingOptions && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setShowAdvancedSkillBindings((current) => !current)
+                            }
+                            className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-300"
+                          >
+                            {showAdvancedSkillBindings
+                              ? t(
+                                  "agent.hideAdvancedSkillBindings",
+                                  "Hide advanced options",
+                                )
+                              : t(
+                                  "agent.showAdvancedSkillBindings",
+                                  "Show advanced options",
+                                )}
+                            {showAdvancedSkillBindings ? (
+                              <ChevronUp className="h-3.5 w-3.5" />
+                            ) : (
+                              <ChevronDown className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     {/* Skills Grid */}
@@ -943,17 +1016,16 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                     ) : (
                       <div className="grid grid-cols-1 gap-2 max-h-[400px] overflow-y-auto p-1">
                         {availableSkills.map((skill) => {
-                          const isSelected =
-                            formData.skill_ids?.includes(skill.skill_id) ||
-                            false;
+                          const selectedBinding = skillBindings.find(
+                            (binding) => binding.skill_id === skill.skill_id,
+                          );
+                          const isSelected = Boolean(selectedBinding);
                           const isLangChainTool =
                             skill.skill_type === "langchain_tool";
 
                           return (
-                            <button
+                            <div
                               key={skill.skill_id}
-                              type="button"
-                              onClick={() => toggleSkill(skill.skill_id)}
                               className={`
                                 p-3 rounded-lg border-2 text-left transition-all
                                 ${
@@ -963,6 +1035,11 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                                 }
                               `}
                             >
+                              <button
+                                type="button"
+                                onClick={() => toggleSkill(skill.skill_id)}
+                                className="w-full text-left"
+                              >
                               <div className="flex items-start gap-3">
                                 {/* Checkbox */}
                                 <div
@@ -1011,8 +1088,17 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                                       }
                                     `}
                                     >
-                                      {isLangChainTool ? "Tool" : "Agent Skill"}
+                                      {isLangChainTool
+                                        ? t("skills.langchainTool")
+                                        : t("skills.agentSkill")}
                                     </span>
+                                    {selectedBinding && (
+                                      <span className="px-2 py-0.5 text-xs font-medium rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+                                        {getSkillBindingSourceLabel(
+                                          selectedBinding.source,
+                                        )}
+                                      </span>
+                                    )}
                                   </div>
                                   <p className="text-sm text-zinc-600 dark:text-zinc-400 line-clamp-2">
                                     {skill.description}
@@ -1023,14 +1109,39 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                                       ? ` · ${skill.department_name}`
                                       : ""}
                                   </p>
-                                  {skill.version && (
-                                    <p className="text-xs text-zinc-500 dark:text-zinc-500 mt-1">
-                                      v{skill.version}
-                                    </p>
-                                  )}
                                 </div>
                               </div>
-                            </button>
+                              </button>
+
+                              {selectedBinding &&
+                                showAdvancedSkillBindings &&
+                                bindingModeOptionsForSkill(skill).length > 1 && (
+                                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 border-t border-emerald-500/20 pt-3">
+                                  <label className="text-xs text-zinc-600 dark:text-zinc-300">
+                                    <span className="mb-1 block font-medium">
+                                      {t("agent.bindingMode", "绑定模式")}
+                                    </span>
+                                    <select
+                                      value={selectedBinding.binding_mode}
+                                      onChange={(event) =>
+                                        updateSkillBinding(skill.skill_id, (binding) => ({
+                                          ...binding,
+                                          binding_mode: event.target
+                                            .value as AgentSkillBindingMode,
+                                        }))
+                                      }
+                                      className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/80 dark:bg-zinc-900/60 px-3 py-2"
+                                    >
+                                      {bindingModeOptionsForSkill(skill).map((mode) => (
+                                        <option key={mode} value={mode}>
+                                          {mode}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                </div>
+                              )}
+                            </div>
                           );
                         })}
                       </div>
@@ -1478,70 +1589,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 </div>
               </div>
 
-              <div>
-                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t("agent.allowedMemory")}
-                </label>
-                <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-xl">
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-1">
-                    {formData.allowedMemory?.length || 0}{" "}
-                    {t("agent.memoryScopesSelected", "个记忆范围已选择")}
-                  </p>
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
-                    {t(
-                      "agent.allowedMemoryDesc",
-                      "选择代理在执行时可检索的记忆范围。",
-                    )}
-                  </p>
-                  <div className="space-y-2">
-                    {[
-                      {
-                        id: "skills",
-                        title: t("agent.memoryScopeSkillsTitle", "技能经验"),
-                        desc: t(
-                          "agent.memoryScopeSkillsDesc",
-                          "检索可复用的技能、经验与成功路径。",
-                        ),
-                      },
-                      {
-                        id: "user_memory",
-                        title: t(
-                          "agent.memoryScopeUserMemoryTitle",
-                          "用户记忆",
-                        ),
-                        desc: t(
-                          "agent.memoryScopeUserMemoryDesc",
-                          "检索当前用户的事实、偏好与重要事件。",
-                        ),
-                      },
-                    ].map((option) => {
-                      const isSelected = (
-                        formData.allowedMemory || []
-                      ).includes(option.id);
-                      return (
-                        <button
-                          key={option.id}
-                          type="button"
-                          onClick={() => toggleMemoryScope(option.id)}
-                          className={`w-full text-left p-3 rounded-lg border transition-colors ${
-                            isSelected
-                              ? "border-emerald-500 bg-emerald-500/10"
-                              : "border-zinc-200 dark:border-zinc-700 hover:border-emerald-400/60"
-                          }`}
-                        >
-                          <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
-                            {option.title}
-                          </p>
-                          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                            {option.desc}
-                          </p>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-
               <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-xl">
                 <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
                   {t("agent.effectiveAccessSummaryTitle", "当前生效规则")}
@@ -1555,10 +1602,8 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
                   {t(
                     "agent.effectiveMemoryRule",
-                    "记忆：优先使用“允许的记忆范围”；未配置时按访问级别使用默认范围。",
-                  )}{" "}
-                  {t("agent.effectiveMemoryScopes", "实际生效的记忆范围")}:{" "}
-                  {resolveEffectiveMemoryScopes().join(", ")}
+                    "记忆：运行时默认同时检索技能经验与用户记忆；如需限制，请通过全局 memory config 控制。",
+                  )}
                 </p>
               </div>
             </div>

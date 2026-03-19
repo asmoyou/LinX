@@ -41,7 +41,6 @@ class AgentInfo:
     # Access Control
     access_level: str = "private"
     allowed_knowledge: List[str] = None
-    allowed_memory: List[str] = None
     
     # Retrieval Configuration
     top_k: Optional[int] = None
@@ -57,8 +56,6 @@ class AgentInfo:
         """Initialize default values for mutable fields."""
         if self.allowed_knowledge is None:
             self.allowed_knowledge = []
-        if self.allowed_memory is None:
-            self.allowed_memory = []
 
 
 class AgentRegistry:
@@ -80,7 +77,6 @@ class AgentRegistry:
         top_p: float = 0.9,
         access_level: str = "private",
         allowed_knowledge: Optional[List[str]] = None,
-        allowed_memory: Optional[List[str]] = None,
     ) -> AgentInfo:
         """Register a new agent in the registry.
 
@@ -99,7 +95,6 @@ class AgentRegistry:
             top_p: Top-p sampling
             access_level: Access level (private, team, public)
             allowed_knowledge: List of allowed knowledge collection IDs
-            allowed_memory: List of allowed memory scopes
 
         Returns:
             AgentInfo with registered agent details
@@ -121,7 +116,6 @@ class AgentRegistry:
                 top_p=top_p,
                 access_level=access_level,
                 allowed_knowledge=allowed_knowledge or [],
-                allowed_memory=allowed_memory or [],
             )
             session.add(agent)
             session.commit()
@@ -196,7 +190,6 @@ class AgentRegistry:
         top_p: Optional[float] = None,
         access_level: Optional[str] = None,
         allowed_knowledge: Optional[List[str]] = None,
-        allowed_memory: Optional[List[str]] = None,
         top_k: Optional[int] = None,
         similarity_threshold: Optional[float] = None,
         department_id: Optional[str] = None,
@@ -218,7 +211,6 @@ class AgentRegistry:
             top_p: Top-p sampling
             access_level: Access level
             allowed_knowledge: List of allowed knowledge collection IDs
-            allowed_memory: List of allowed memory scopes
             top_k: Top K results for retrieval
             similarity_threshold: Similarity threshold for retrieval
             department_id: Department UUID string (empty string or None to clear)
@@ -258,8 +250,6 @@ class AgentRegistry:
                 agent.access_level = access_level
             if allowed_knowledge is not None:
                 agent.allowed_knowledge = allowed_knowledge
-            if allowed_memory is not None:
-                agent.allowed_memory = allowed_memory
             if top_k is not None:
                 agent.top_k = top_k
             if similarity_threshold is not None:
@@ -335,7 +325,6 @@ class AgentRegistry:
             top_p=agent.top_p or 0.9,
             access_level=agent.access_level or "private",
             allowed_knowledge=agent.allowed_knowledge or [],
-            allowed_memory=agent.allowed_memory or [],
             top_k=getattr(agent, 'top_k', None),
             similarity_threshold=getattr(agent, 'similarity_threshold', None),
             department_id=getattr(agent, 'department_id', None),

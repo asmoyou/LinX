@@ -264,7 +264,7 @@ class SessionLedgerRetentionManager:
                     "dry_run": result.get("dry_run"),
                     "scanned_sessions": cleanup.get("scanned_sessions"),
                     "deleted_sessions": cleanup.get("deleted_sessions"),
-                    "detached_skill_proposals": cleanup.get("detached_skill_proposals"),
+                    "detached_skill_candidates": cleanup.get("detached_skill_candidates"),
                     "detached_entries": cleanup.get("detached_entries"),
                     "detached_links": cleanup.get("detached_links"),
                     "duration_ms": result.get("duration_ms"),

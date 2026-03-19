@@ -1,4 +1,4 @@
-export type MemorySurfaceType = "user_memory" | "skill_proposal";
+export type MemorySurfaceType = "user_memory";
 
 export type MemoryFact = {
   key: string;
@@ -91,7 +91,8 @@ export type MemoryIndexInfo = {
 
 export type MemoryConfig = {
   user_memory: MemoryConfigUserMemory;
-  skill_learning: MemoryConfigSkillLearning;
+  skill_candidates?: MemoryConfigSkillCandidates;
+  skill_runtime?: MemoryConfigSkillRuntime;
   session_ledger?: MemoryConfigSessionLedger;
   runtime_context: MemoryConfigRuntimeContext;
   recommended?: MemoryConfigRecommended;
@@ -186,7 +187,6 @@ export type MemoryConfigFactExtraction = {
   timeout_seconds?: number;
   max_facts?: number;
   max_preference_facts?: number;
-  max_proposals?: number;
   enable_heuristic_fallback?: boolean;
   secondary_recall_enabled?: boolean;
   failure_backoff_seconds?: number;
@@ -202,12 +202,12 @@ export type MemoryConfigFactExtraction = {
   [key: string]: unknown;
 };
 
-export type SkillLearningExtractionConfig = {
+export type SkillCandidatesExtractionConfig = {
   enabled?: boolean;
   provider?: string;
   model?: string;
   timeout_seconds?: number;
-  max_proposals?: number;
+  max_candidates?: number;
   failure_backoff_seconds?: number;
   effective?: {
     provider?: string;
@@ -217,6 +217,21 @@ export type SkillLearningExtractionConfig = {
     provider?: string;
     model?: string;
   };
+  [key: string]: unknown;
+};
+
+export type MemoryConfigSkillCandidates = {
+  extraction: SkillCandidatesExtractionConfig;
+};
+
+export type MemoryConfigSkillRuntime = {
+  retrieval?: {
+    enabled?: boolean;
+    top_k?: number;
+    min_similarity?: number;
+    [key: string]: unknown;
+  };
+  auto_bind_source_agent?: boolean;
   [key: string]: unknown;
 };
 
@@ -248,13 +263,6 @@ export type MemoryConfigObservability = {
   [key: string]: unknown;
 };
 
-export type SkillLearningPublishPolicyConfig = {
-  skill_type?: string;
-  storage_type?: string;
-  reuse_existing_by_name?: boolean;
-  [key: string]: unknown;
-};
-
 export type MemoryConfigUserMemory = {
   embedding: MemoryConfigEmbedding;
   retrieval: MemoryConfigRetrieval;
@@ -263,14 +271,10 @@ export type MemoryConfigUserMemory = {
   observability?: MemoryConfigObservability;
 };
 
-export type MemoryConfigSkillLearning = {
-  extraction: SkillLearningExtractionConfig;
-  publish_policy?: SkillLearningPublishPolicyConfig;
-};
-
 export type MemoryConfigRecommended = {
   user_memory?: Partial<MemoryConfigUserMemory>;
-  skill_learning?: Partial<MemoryConfigSkillLearning>;
+  skill_candidates?: Partial<MemoryConfigSkillCandidates>;
+  skill_runtime?: Partial<MemoryConfigSkillRuntime>;
   session_ledger?: Partial<MemoryConfigSessionLedger>;
   runtime_context?: Partial<MemoryConfigRuntimeContext>;
   [key: string]: unknown;

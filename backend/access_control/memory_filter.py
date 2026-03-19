@@ -23,7 +23,7 @@ def can_access_skill_learning(
     agent_owner_id: str,
     action: Action = Action.READ,
 ) -> bool:
-    """Check whether a user can access skill proposals for an agent."""
+    """Check whether a user can access skill candidates for an agent."""
 
     role = _coerce_role(current_user)
     if role is None:

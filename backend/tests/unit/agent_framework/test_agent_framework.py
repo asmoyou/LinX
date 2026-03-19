@@ -1887,12 +1887,12 @@ class TestAgentTools:
 class TestRuntimeContextService:
     """Test runtime context retrieval against reset-architecture services."""
 
-    @patch("agent_framework.runtime_context_service.get_skill_proposal_service")
-    def test_retrieve_skills_delegates_to_skill_learning_service(self, mock_get_service):
+    @patch("agent_framework.runtime_context_service.get_skill_runtime_registry")
+    def test_retrieve_skills_delegates_to_runtime_registry(self, mock_get_registry):
         agent_id = uuid4()
         user_id = uuid4()
         expected = [SimpleNamespace(content="learned.skill.goal=Stable PDF delivery")]
-        mock_get_service.return_value.list_published_skills.return_value = expected
+        mock_get_registry.return_value.retrieve_skills.return_value = expected
 
         service = RuntimeContextService()
         results = service.retrieve_skills(
@@ -1904,11 +1904,12 @@ class TestRuntimeContextService:
         )
 
         assert results == expected
-        call_kwargs = mock_get_service.return_value.list_published_skills.call_args.kwargs
-        assert call_kwargs["agent_id"] == str(agent_id)
-        assert call_kwargs["query_text"] == "How should I deliver a converted PDF reliably?"
-        assert call_kwargs["limit"] == 3
-        assert call_kwargs["min_score"] == 0.66
+        call_kwargs = mock_get_registry.return_value.retrieve_skills.call_args.kwargs
+        assert call_kwargs["agent_id"] == agent_id
+        assert call_kwargs["user_id"] == user_id
+        assert call_kwargs["query"] == "How should I deliver a converted PDF reliably?"
+        assert call_kwargs["top_k"] == 3
+        assert call_kwargs["min_similarity"] == 0.66
 
     @patch("agent_framework.runtime_context_service.get_user_memory_retriever")
     def test_retrieve_user_memory_delegates_to_user_memory_retriever(self, mock_get_retriever):

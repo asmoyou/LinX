@@ -29,13 +29,19 @@ def _config_payload(similarity_threshold: float) -> dict:
             },
             "observability": {},
         },
-        "skill_learning": {
-            "extraction": {},
-            "publish_policy": {
-                "skill_type": "agent_skill",
-                "storage_type": "inline",
-                "reuse_existing_by_name": True,
+        "skill_candidates": {
+            "extraction": {
+                "enabled": True,
+                "max_candidates": 6,
             },
+        },
+        "skill_runtime": {
+            "retrieval": {
+                "enabled": True,
+                "top_k": 5,
+                "min_similarity": 0.45,
+            },
+            "auto_bind_source_agent": True,
         },
         "session_ledger": {},
         "runtime_context": {
@@ -77,8 +83,8 @@ def test_build_memory_config_payload_resolves_effective_sources():
         },
         "extraction": {"provider": "openai"},
     }
-    skill_learning_section = {
-        "extraction": {"provider": "openai", "max_proposals": 4},
+    skill_candidates_section = {
+        "extraction": {"provider": "openai", "max_candidates": 4},
     }
     llm_section = {
         "default_provider": "anthropic",
@@ -112,7 +118,8 @@ def test_build_memory_config_payload_resolves_effective_sources():
     ):
         payload = _build_memory_config_payload(
             user_memory_section,
-            skill_learning_section,
+            skill_candidates_section,
+            {},
             {},
             {},
             {},
@@ -131,7 +138,7 @@ def test_build_memory_config_payload_resolves_effective_sources():
         == "user_memory_embeddings_v2_deadbeef"
     )
     assert payload["user_memory"]["indexState"]["reindexRequired"] is False
-    assert payload["skill_learning"]["extraction"]["max_proposals"] == 4
+    assert payload["skill_candidates"]["extraction"]["max_candidates"] == 4
 
 
 @pytest.mark.asyncio
@@ -139,7 +146,8 @@ async def test_get_memory_config_uses_reset_sections(admin_user):
     config = SimpleNamespace(
         get_section=lambda name: {
             "user_memory": {"retrieval": {"similarity_threshold": 0.4}},
-            "skill_learning": {},
+            "skill_candidates": {},
+            "skill_runtime": {},
             "session_ledger": {},
             "runtime_context": {},
             "knowledge_base": {},
@@ -177,7 +185,7 @@ async def test_update_memory_config_rejects_non_admin(regular_user):
 async def test_update_memory_config_writes_requested_sections(admin_user):
     canonical_payload = _config_payload(0.42)
     canonical_payload["user_memory"]["consolidation"]["enabled"] = False
-    canonical_payload["skill_learning"]["publish_policy"]["skill_type"] = "workflow_skill"
+    canonical_payload["skill_candidates"]["extraction"]["max_candidates"] = 8
     canonical_payload["runtime_context"]["enable_skills"] = False
 
     update = MemoryConfigUpdateRequest(
@@ -186,12 +194,13 @@ async def test_update_memory_config_writes_requested_sections(admin_user):
             "consolidation": {"enabled": False},
         },
         runtime_context={"enable_skills": False},
-        skill_learning={"publish_policy": {"skill_type": "workflow_skill"}},
+        skill_candidates={"extraction": {"max_candidates": 8}},
     )
     reloaded = SimpleNamespace(
         get_section=lambda name: {
             "user_memory": {"retrieval": {"similarity_threshold": 0.42}},
-            "skill_learning": {},
+            "skill_candidates": {},
+            "skill_runtime": {},
             "session_ledger": {},
             "runtime_context": {},
             "knowledge_base": {},
@@ -204,7 +213,12 @@ async def test_update_memory_config_writes_requested_sections(admin_user):
         patch("builtins.open", file_mock),
         patch(
             "yaml.safe_load",
-            return_value={"user_memory": {}, "skill_learning": {}, "runtime_context": {}},
+            return_value={
+                "user_memory": {},
+                "skill_candidates": {},
+                "skill_runtime": {},
+                "runtime_context": {},
+            },
         ),
         patch("yaml.dump") as yaml_dump,
         patch("shared.config.reload_config", return_value=reloaded),
@@ -224,9 +238,6 @@ async def test_update_memory_config_writes_requested_sections(admin_user):
         "enable_knowledge_base": True,
     }
     assert dumped_config["runtime_context"]["enable_skills"] is False
-    assert dumped_config["skill_learning"]["publish_policy"] == {
-        "skill_type": "workflow_skill",
-        "storage_type": "inline",
-        "reuse_existing_by_name": True,
-    }
+    assert dumped_config["skill_candidates"]["extraction"]["max_candidates"] == 8
+    assert dumped_config["skill_runtime"]["retrieval"]["top_k"] == 5
     assert result.user_memory["retrieval"] == {"similarity_threshold": 0.42}

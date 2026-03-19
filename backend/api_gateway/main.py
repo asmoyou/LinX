@@ -38,7 +38,8 @@ from api_gateway.routers import (
     monitoring,
     notifications,
     roles,
-    skill_proposals,
+    skill_bindings,
+    skill_candidates,
     skills,
     user_memory,
     users,
@@ -587,9 +588,14 @@ def create_app() -> FastAPI:
     app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["Knowledge"])
     app.include_router(user_memory.router, prefix="/api/v1/user-memory", tags=["User Memory"])
     app.include_router(
-        skill_proposals.router,
-        prefix="/api/v1/skill-proposals",
-        tags=["Skill Proposals"],
+        skill_candidates.router,
+        prefix="/api/v1/skills/candidates",
+        tags=["Skill Candidates"],
+    )
+    app.include_router(
+        skill_bindings.router,
+        prefix="/api/v1/skills/bindings",
+        tags=["Skill Bindings"],
     )
     app.include_router(missions.router, prefix="/api/v1/missions", tags=["Missions"])
     app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["Notifications"])

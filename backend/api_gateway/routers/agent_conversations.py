@@ -1057,14 +1057,6 @@ async def execute_persistent_conversation_turn(
     context: Dict[str, Any] = {}
     context_debug: Dict[str, Any] = {}
     try:
-        memory_scopes = agents_router.resolve_memory_scopes(
-            access_level=agent_info.access_level,
-            allowed_memory=agent_info.allowed_memory,
-        )
-        await _emit_chunk(
-            chunk_callback,
-            {"type": "info", "content": f"Effective memory scopes: {', '.join(memory_scopes)}"},
-        )
         context, context_debug = await asyncio.to_thread(
             executor.build_execution_context_with_debug,
             agent,

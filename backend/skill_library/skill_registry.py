@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import List, Optional
 from uuid import UUID
 
 from access_control.skill_access import SkillAccessContext
+from skill_library.canonical_service import get_canonical_skill_service
 from skill_library.skill_model import SkillModel, get_skill_model
 from skill_library.skill_validator import SkillValidator, get_skill_validator
 
@@ -38,6 +40,11 @@ class SkillInfo:
     access_level: str = "private"
     department_id: Optional[str] = None
     department_name: Optional[str] = None
+    source_kind: str = "manual"
+    artifact_kind: str = "tool"
+    runtime_mode: str = "tool"
+    lifecycle_state: str = "active"
+    active_revision_id: Optional[str] = None
     is_active: bool = True
     execution_count: int = 0
     last_executed_at: Optional[object] = None
@@ -89,6 +96,15 @@ class SkillRegistry:
                 str(getattr(skill, "department_id", None)) if getattr(skill, "department_id", None) else None
             ),
             department_name=getattr(department, "name", None),
+            source_kind=str(getattr(skill, "source_kind", "manual") or "manual"),
+            artifact_kind=str(getattr(skill, "artifact_kind", "tool") or "tool"),
+            runtime_mode=str(getattr(skill, "runtime_mode", "tool") or "tool"),
+            lifecycle_state=str(getattr(skill, "lifecycle_state", "active") or "active"),
+            active_revision_id=(
+                str(getattr(skill, "active_revision_id", None))
+                if getattr(skill, "active_revision_id", None)
+                else None
+            ),
             is_active=skill.is_active,
             execution_count=skill.execution_count,
             last_executed_at=skill.last_executed_at,
@@ -132,32 +148,48 @@ class SkillRegistry:
             if not validation.is_valid:
                 raise ValueError(f"Skill validation failed: {validation.errors}")
 
-        existing = self.skill_model.get_skill_by_slug(skill_slug, version)
+        existing = self.skill_model.get_skill_by_slug(skill_slug)
         if existing:
-            raise ValueError(f"Skill {skill_slug} version {version} already exists")
+            raise ValueError(f"Skill {skill_slug} already exists")
 
-        skill = self.skill_model.create_skill(
-            skill_slug=skill_slug,
+        artifact_kind = "tool" if skill_type == "langchain_tool" else "instruction"
+        runtime_mode = "tool" if skill_type == "langchain_tool" else "doc"
+        manifest_payload = dict(manifest or {})
+        if homepage:
+            manifest_payload["homepage"] = homepage
+        if skill_metadata is not None:
+            manifest_payload["skill_metadata"] = skill_metadata
+        if gating_status is not None:
+            manifest_payload["gating_status"] = gating_status
+
+        canonical_skill = get_canonical_skill_service().create_skill(
+            slug=skill_slug,
             display_name=display_name,
             description=description,
-            interface_definition=interface_definition,
-            dependencies=dependencies,
-            version=version,
-            skill_type=skill_type,
-            storage_type=storage_type,
-            code=code,
-            config=config,
-            storage_path=storage_path,
-            manifest=manifest,
-            skill_md_content=skill_md_content,
-            homepage=homepage,
-            skill_metadata=skill_metadata,
-            gating_status=gating_status,
-            access_level=access_level,
+            source_kind="manual",
+            artifact_kind=artifact_kind,
+            runtime_mode=runtime_mode,
+            visibility=access_level,
+            owner_user_id=created_by,
             department_id=department_id,
-            is_active=is_active,
-            created_by=created_by,
+            dependencies=dependencies,
+            revision_payload={
+                "version": version,
+                "instruction_md": skill_md_content if skill_type != "langchain_tool" else None,
+                "tool_code": code if skill_type == "langchain_tool" else None,
+                "interface_definition": interface_definition,
+                "artifact_storage_kind": storage_type,
+                "artifact_ref": storage_path,
+                "manifest": manifest_payload or None,
+                "config": config,
+                "review_state": "approved",
+                "change_note": "Initial revision",
+            },
+            lifecycle_state="active" if is_active else "deprecated",
         )
+        skill = self.skill_model.get_skill_by_id(canonical_skill.skill_id)
+        if skill is None:
+            raise ValueError(f"Failed to load created skill: {skill_slug}")
 
         logger.info(
             "Skill registered",
@@ -248,25 +280,86 @@ class SkillRegistry:
         skill_metadata: Optional[dict] = None,
         gating_status: Optional[dict] = None,
     ) -> Optional[SkillInfo]:
+        current = self.skill_model.get_skill_by_id(skill_id)
+        if current is None:
+            return None
+
+        revision_fields_changed = any(
+            value is not None
+            for value in (
+                interface_definition,
+                code,
+                config,
+                storage_path,
+                manifest,
+                skill_md_content,
+                homepage,
+                skill_metadata,
+                gating_status,
+            )
+        )
+
+        if revision_fields_changed:
+            merged_manifest = dict(current.manifest or {})
+            if manifest:
+                merged_manifest.update(manifest)
+            if homepage is not None:
+                merged_manifest["homepage"] = homepage
+            if skill_metadata is not None:
+                merged_manifest["skill_metadata"] = skill_metadata
+            if gating_status is not None:
+                merged_manifest["gating_status"] = gating_status
+
+            revision = get_canonical_skill_service().create_revision(
+                skill_id=skill_id,
+                owner_user_id=str(current.created_by) if getattr(current, "created_by", None) else None,
+                revision_payload={
+                    "version": self._next_revision_version(str(current.version or "1.0.0")),
+                    "instruction_md": (
+                        skill_md_content
+                        if skill_md_content is not None
+                        else getattr(current, "skill_md_content", None)
+                    ),
+                    "tool_code": code if code is not None else getattr(current, "code", None),
+                    "interface_definition": (
+                        interface_definition
+                        if interface_definition is not None
+                        else dict(getattr(current, "interface_definition", {}) or {})
+                    ),
+                    "artifact_storage_kind": str(getattr(current, "storage_type", "inline") or "inline"),
+                    "artifact_ref": (
+                        storage_path if storage_path is not None else getattr(current, "storage_path", None)
+                    ),
+                    "manifest": merged_manifest or None,
+                    "config": config if config is not None else getattr(current, "config", None),
+                    "review_state": "approved",
+                    "change_note": "Updated via skill registry",
+                },
+            )
+            get_canonical_skill_service().activate_revision(
+                skill_id=skill_id,
+                revision_id=revision.revision_id,
+                actor_user_id=str(current.created_by) if getattr(current, "created_by", None) else None,
+            )
+
         skill = self.skill_model.update_skill(
             skill_id=skill_id,
             display_name=display_name,
             description=description,
-            code=code,
-            interface_definition=interface_definition,
             dependencies=dependencies,
-            config=config,
             access_level=access_level,
             department_id=department_id,
             is_active=is_active,
-            storage_path=storage_path,
-            manifest=manifest,
-            skill_md_content=skill_md_content,
-            homepage=homepage,
-            skill_metadata=skill_metadata,
-            gating_status=gating_status,
         )
         return self._to_skill_info(skill) if skill else None
+
+    @staticmethod
+    def _next_revision_version(version: str) -> str:
+        match = re.match(r"^(\d+)\.(\d+)\.(\d+)$", str(version or "").strip())
+        if not match:
+            return "1.0.1"
+        major, minor, patch = (int(part) for part in match.groups())
+        return f"{major}.{minor}.{patch + 1}"
 
     def delete_skill(self, skill_id: UUID) -> bool:
         return self.skill_model.delete_skill(skill_id)

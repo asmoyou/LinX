@@ -72,7 +72,7 @@ export type { Notification, NotificationType } from './notificationStore';
  *    - Usage: const { documents, uploadQueue } = useKnowledgeStore();
  * 
  * 6. Memory Workbench Store (useMemoryWorkbenchStore):
- *    - Manages user memory and skill proposals
+ *    - Manages user memory and skill candidates
  *    - Supports filtering by product tab, date, tags
  *    - Usage: const { records, activeTab } = useMemoryWorkbenchStore();
  * 

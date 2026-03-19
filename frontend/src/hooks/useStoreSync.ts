@@ -1,29 +1,31 @@
-import { useEffect } from 'react';
-import { useAuthStore } from '../stores/authStore';
-import { useUserStore } from '../stores/userStore';
-import { useAgentStore } from '../stores/agentStore';
-import { useTaskStore } from '../stores/taskStore';
-import { useKnowledgeStore } from '../stores/knowledgeStore';
-import { useMemoryWorkbenchStore } from '../stores/memoryWorkbenchStore';
-import apiClient from '../api/client';
-import { memoryWorkbenchApi } from '../api/memoryWorkbench';
+import { useEffect } from "react";
+import { useAuthStore } from "../stores/authStore";
+import { useUserStore } from "../stores/userStore";
+import { useAgentStore } from "../stores/agentStore";
+import { useTaskStore } from "../stores/taskStore";
+import { useKnowledgeStore } from "../stores/knowledgeStore";
+import { useMemoryWorkbenchStore } from "../stores/memoryWorkbenchStore";
+import apiClient from "../api/client";
+import { memoryWorkbenchApi } from "../api/memoryWorkbench";
 
 /**
  * Hook to sync stores with backend API on mount
- * 
+ *
  * This hook fetches initial data from the backend and populates
  * the stores when the component mounts. It should be used at the
  * app root level.
- * 
+ *
  * @param options - Configuration options
  */
-export const useStoreSync = (options: {
-  syncUser?: boolean;
-  syncAgents?: boolean;
-  syncTasks?: boolean;
-  syncKnowledge?: boolean;
-  syncMemories?: boolean;
-} = {}) => {
+export const useStoreSync = (
+  options: {
+    syncUser?: boolean;
+    syncAgents?: boolean;
+    syncTasks?: boolean;
+    syncKnowledge?: boolean;
+    syncMemories?: boolean;
+  } = {},
+) => {
   const {
     syncUser = true,
     syncAgents = true,
@@ -51,14 +53,14 @@ export const useStoreSync = (options: {
           userStore.setLoading(true);
           try {
             const [profileResponse, quotasResponse] = await Promise.all([
-              apiClient.get('/users/me'),
-              apiClient.get('/users/me/quotas'),
+              apiClient.get("/users/me"),
+              apiClient.get("/users/me/quotas"),
             ]);
             userStore.setProfile(profileResponse.data);
             userStore.setQuotas(quotasResponse.data);
           } catch (error) {
-            console.error('Failed to fetch user data:', error);
-            userStore.setError('Failed to load user profile');
+            console.error("Failed to fetch user data:", error);
+            userStore.setError("Failed to load user profile");
           } finally {
             userStore.setLoading(false);
           }
@@ -68,11 +70,11 @@ export const useStoreSync = (options: {
         if (syncAgents) {
           agentStore.setLoading(true);
           try {
-            const response = await apiClient.get('/agents');
+            const response = await apiClient.get("/agents");
             agentStore.setAgents(response.data);
           } catch (error) {
-            console.error('Failed to fetch agents:', error);
-            agentStore.setError('Failed to load agents');
+            console.error("Failed to fetch agents:", error);
+            agentStore.setError("Failed to load agents");
           } finally {
             agentStore.setLoading(false);
           }
@@ -87,8 +89,8 @@ export const useStoreSync = (options: {
             taskStore.setGoals([]);
             taskStore.setTasks([]);
           } catch (error) {
-            console.error('Failed to fetch tasks:', error);
-            taskStore.setError('Failed to load tasks');
+            console.error("Failed to fetch tasks:", error);
+            taskStore.setError("Failed to load tasks");
           } finally {
             taskStore.setLoading(false);
           }
@@ -98,11 +100,11 @@ export const useStoreSync = (options: {
         if (syncKnowledge) {
           knowledgeStore.setLoading(true);
           try {
-            const response = await apiClient.get('/knowledge');
+            const response = await apiClient.get("/knowledge");
             knowledgeStore.setDocuments(response.data);
           } catch (error) {
-            console.error('Failed to fetch knowledge:', error);
-            knowledgeStore.setError('Failed to load documents');
+            console.error("Failed to fetch knowledge:", error);
+            knowledgeStore.setError("Failed to load documents");
           } finally {
             knowledgeStore.setLoading(false);
           }
@@ -112,25 +114,32 @@ export const useStoreSync = (options: {
         if (syncMemories) {
           memoryWorkbenchStore.setLoading(true);
           try {
-            const [userMemory, skillProposals] = await Promise.all([
-              memoryWorkbenchApi.listUserMemory({ limit: 100 }),
-              memoryWorkbenchApi.listSkillProposals({ review_status: 'all', limit: 200 }),
-            ]);
-            memoryWorkbenchStore.setRecords([...userMemory, ...skillProposals]);
+            const userMemory = await memoryWorkbenchApi.listUserMemory({
+              limit: 100,
+            });
+            memoryWorkbenchStore.setRecords(userMemory);
           } catch (error) {
-            console.error('Failed to fetch memories:', error);
-            memoryWorkbenchStore.setError('Failed to load memories');
+            console.error("Failed to fetch memories:", error);
+            memoryWorkbenchStore.setError("Failed to load memories");
           } finally {
             memoryWorkbenchStore.setLoading(false);
           }
         }
       } catch (error) {
-        console.error('Failed to sync stores:', error);
+        console.error("Failed to sync stores:", error);
       }
     };
 
     fetchData();
-  }, [isAuthenticated, token, syncUser, syncAgents, syncTasks, syncKnowledge, syncMemories]);
+  }, [
+    isAuthenticated,
+    token,
+    syncUser,
+    syncAgents,
+    syncTasks,
+    syncKnowledge,
+    syncMemories,
+  ]);
 };
 
 /**
@@ -143,14 +152,14 @@ export const useRefreshStore = () => {
     userStore.setLoading(true);
     try {
       const [profileResponse, quotasResponse] = await Promise.all([
-        apiClient.get('/users/me'),
-        apiClient.get('/users/me/quotas'),
+        apiClient.get("/users/me"),
+        apiClient.get("/users/me/quotas"),
       ]);
       userStore.setProfile(profileResponse.data);
       userStore.setQuotas(quotasResponse.data);
     } catch (error) {
-      console.error('Failed to refresh user data:', error);
-      userStore.setError('Failed to refresh user profile');
+      console.error("Failed to refresh user data:", error);
+      userStore.setError("Failed to refresh user profile");
     } finally {
       userStore.setLoading(false);
     }
@@ -160,11 +169,11 @@ export const useRefreshStore = () => {
     const agentStore = useAgentStore.getState();
     agentStore.setLoading(true);
     try {
-      const response = await apiClient.get('/agents');
+      const response = await apiClient.get("/agents");
       agentStore.setAgents(response.data);
     } catch (error) {
-      console.error('Failed to refresh agents:', error);
-      agentStore.setError('Failed to refresh agents');
+      console.error("Failed to refresh agents:", error);
+      agentStore.setError("Failed to refresh agents");
     } finally {
       agentStore.setLoading(false);
     }
@@ -178,8 +187,8 @@ export const useRefreshStore = () => {
       taskStore.setGoals([]);
       taskStore.setTasks([]);
     } catch (error) {
-      console.error('Failed to refresh tasks:', error);
-      taskStore.setError('Failed to refresh tasks');
+      console.error("Failed to refresh tasks:", error);
+      taskStore.setError("Failed to refresh tasks");
     } finally {
       taskStore.setLoading(false);
     }
@@ -189,11 +198,11 @@ export const useRefreshStore = () => {
     const knowledgeStore = useKnowledgeStore.getState();
     knowledgeStore.setLoading(true);
     try {
-      const response = await apiClient.get('/knowledge');
+      const response = await apiClient.get("/knowledge");
       knowledgeStore.setDocuments(response.data);
     } catch (error) {
-      console.error('Failed to refresh knowledge:', error);
-      knowledgeStore.setError('Failed to refresh documents');
+      console.error("Failed to refresh knowledge:", error);
+      knowledgeStore.setError("Failed to refresh documents");
     } finally {
       knowledgeStore.setLoading(false);
     }
@@ -203,14 +212,13 @@ export const useRefreshStore = () => {
     const memoryWorkbenchStore = useMemoryWorkbenchStore.getState();
     memoryWorkbenchStore.setLoading(true);
     try {
-      const [userMemory, skillProposals] = await Promise.all([
-        memoryWorkbenchApi.listUserMemory({ limit: 100 }),
-        memoryWorkbenchApi.listSkillProposals({ review_status: 'all', limit: 200 }),
-      ]);
-      memoryWorkbenchStore.setRecords([...userMemory, ...skillProposals]);
+      const userMemory = await memoryWorkbenchApi.listUserMemory({
+        limit: 100,
+      });
+      memoryWorkbenchStore.setRecords(userMemory);
     } catch (error) {
-      console.error('Failed to refresh memories:', error);
-      memoryWorkbenchStore.setError('Failed to refresh memories');
+      console.error("Failed to refresh memories:", error);
+      memoryWorkbenchStore.setError("Failed to refresh memories");
     } finally {
       memoryWorkbenchStore.setLoading(false);
     }

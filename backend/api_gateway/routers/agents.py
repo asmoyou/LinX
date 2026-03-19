@@ -35,7 +35,6 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from access_control.permissions import CurrentUser, get_current_user
-from agent_framework.access_policy import normalize_allowed_memory_scopes, resolve_memory_scopes
 from agent_framework.agent_registry import get_agent_registry
 from object_storage.minio_client import get_minio_client
 from shared.logging import get_logger
@@ -221,20 +220,6 @@ def _validate_allowed_knowledge(
     return normalized_ids
 
 
-def _validate_allowed_memory(allowed_memory: Optional[List[str]]) -> Optional[List[str]]:
-    """Validate and normalize allowed memory scopes."""
-    if allowed_memory is None:
-        return None
-
-    normalized_scopes, invalid_scopes = normalize_allowed_memory_scopes(allowed_memory)
-    if invalid_scopes:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid memory scopes: {', '.join(invalid_scopes)}",
-        )
-    return normalized_scopes
-
-
 def _normalize_skill_id_strings(
     raw_skill_ids: Optional[List[str]],
     *,
@@ -350,6 +335,9 @@ def _build_skill_summary_map(skill_ids: List[str]) -> Dict[str, Dict[str, Any]]:
             "display_name": skill_info.display_name,
             "description": skill_info.description,
             "skill_type": skill_info.skill_type,
+            "artifact_kind": getattr(skill_info, "artifact_kind", None),
+            "runtime_mode": getattr(skill_info, "runtime_mode", None),
+            "active_revision_id": getattr(skill_info, "active_revision_id", None),
             "version": skill_info.version,
             "access_level": skill_info.access_level,
             "department_id": skill_info.department_id,
@@ -1041,7 +1029,7 @@ _SESSION_MEMORY_ITEM_MAX_CHARS = 320
 _SESSION_MEMORY_MAX_PREFERENCE_FACTS = 12
 _SESSION_MEMORY_MAX_AGENT_CANDIDATES = 4
 _SESSION_MEMORY_USER_SIGNAL_TYPE = "user_preference"
-_SESSION_MEMORY_AGENT_SIGNAL_TYPE = "skill_proposal"
+_SESSION_MEMORY_AGENT_SIGNAL_TYPE = "skill_candidate"
 _SESSION_MEMORY_AGENT_REVIEW_PENDING = "pending"
 _SESSION_MEMORY_LLM_MIN_PREFERENCE_CONFIDENCE = 0.62
 _SESSION_MEMORY_LLM_MIN_AGENT_CONFIDENCE = 0.6
@@ -1398,7 +1386,7 @@ Agent 名称: {agent_name or "-"}
 
 抽取目标:
 1. user_preferences: 提取“用户画像事实”，不仅限于喜欢/不喜欢。
-2. skill_proposals: 提取“做事成功路径经验 / 可沉淀为 skill 的方法模板”（后续人工审批）。
+2. skill_candidates: 提取“做事成功路径经验 / 可沉淀为 skill 的方法模板”（后续人工审批）。
 
 user_preferences 可包含的画像要素（示例）:
 - 偏好/禁忌: food_preference_like, food_preference_avoid, communication_style_preference
@@ -1419,7 +1407,7 @@ user_preferences 可包含的画像要素（示例）:
 - 对用户直接陈述（如“我喜欢X/我做过X/我擅长X/我不吃X/我过敏X/我通常预算X”）优先提取。
 - 这类直接陈述建议 explicit_source=true，confidence >= 0.82。
 
-skill_proposals 规则:
+skill_candidates 规则:
 - 重点提取“最终成功的做事路径”，尤其是经历过多次尝试后，最后真正走通的那条路径。
 - 目标是让 agent 下次遇到相似任务时，少走弯路，优先复用成功方法。
 - 必须可迁移、可复用：避免绑定具体人名/地名/商品名/单次任务细节。
@@ -1440,7 +1428,7 @@ skill_proposals 规则:
       "evidence_turns": [1, 2]
     }}
   ],
-  "skill_proposals": [
+  "skill_candidates": [
     {{
       "candidate_type": "successful_path",
       "title": "成功路径标题",
@@ -1481,7 +1469,7 @@ ASSISTANT: 收到
       "evidence_turns": [1]
     }},
     {{
-      "key": "skill_strength",
+      "key": "expertise_strength",
       "value": "SQL",
       "persistent": true,
       "explicit_source": true,
@@ -1490,7 +1478,7 @@ ASSISTANT: 收到
       "evidence_turns": [1]
     }}
   ],
-  "skill_proposals": []
+  "skill_candidates": []
 }}
 
 会话文本:
@@ -1587,7 +1575,7 @@ ASSISTANT: 收到
       "evidence_turns": [1]
     }},
     {{
-      "key": "skill_strength",
+      "key": "expertise_strength",
       "value": "SQL",
       "persistent": true,
       "explicit_source": true,
@@ -1745,13 +1733,13 @@ def _extract_step_lines(response: str) -> List[str]:
     return cleaned
 
 
-def _extract_skill_proposals(
+def _extract_skill_candidates(
     turns: List[Dict[str, str]],
     agent_name: str,
 ) -> List[Dict[str, Any]]:
     from user_memory.builder import get_user_memory_builder
 
-    return get_user_memory_builder().extract_skill_proposals(turns, agent_name)
+    return get_user_memory_builder().extract_skill_candidates(turns, agent_name)
 
 
 async def _flush_session_memories(
@@ -2104,7 +2092,6 @@ class CreateAgentRequest(BaseModel):
     topP: Optional[float] = Field(default=0.9, ge=0.0, le=1.0)
     accessLevel: Optional[str] = Field(default="private")
     allowedKnowledge: List[str] = Field(default_factory=list)
-    allowedMemory: List[str] = Field(default_factory=list)
 
 
 class UpdateAgentRequest(BaseModel):
@@ -2121,7 +2108,6 @@ class UpdateAgentRequest(BaseModel):
     topP: Optional[float] = Field(None, ge=0.0, le=1.0)
     accessLevel: Optional[str] = None
     allowedKnowledge: Optional[List[str]] = None
-    allowedMemory: Optional[List[str]] = None
     # Retrieval Configuration
     topK: Optional[int] = Field(None, ge=1, le=20)
     similarityThreshold: Optional[float] = Field(None, ge=0.0, le=1.0)
@@ -2153,7 +2139,6 @@ class AgentResponse(BaseModel):
     topP: float = 0.9
     accessLevel: str = "private"
     allowedKnowledge: List[str] = Field(default_factory=list)
-    allowedMemory: List[str] = Field(default_factory=list)
     # Retrieval Configuration
     topK: Optional[int] = None
     similarityThreshold: Optional[float] = None
@@ -2213,15 +2198,12 @@ def _get_owned_agent_or_raise(agent_id: str, current_user: CurrentUser):
 
 def _build_agent_response_payload(agent_info: Any) -> Dict[str, Any]:
     """Build skill-related payload fields for agent API responses."""
-    skill_ids = _platform_skill_id_strings(
-        agent_info.agent_type,
-        agent_info.capabilities,
-        agent_id=str(getattr(agent_info, "agent_id", "") or ""),
-    )
+    from skill_library.canonical_service import get_canonical_skill_service
+
+    configured_bindings = get_canonical_skill_service().list_bindings(agent_id=agent_info.agent_id)
+    skill_ids = [str(binding.skill_id) for binding in configured_bindings if binding.enabled]
     skill_summary_map = _build_skill_summary_map(skill_ids)
-    skill_summaries = [
-        skill_summary_map[skill_id] for skill_id in skill_ids if skill_id in skill_summary_map
-    ]
+    skill_summaries = [skill_summary_map[skill_id] for skill_id in skill_ids if skill_id in skill_summary_map]
     return {
         "skill_ids": skill_ids,
         "skill_summaries": skill_summaries,
@@ -2291,7 +2273,6 @@ async def create_agent(
             request.allowedKnowledge or [],
             current_user,
         )
-        validated_allowed_memory = _validate_allowed_memory(request.allowedMemory or [])
         validated_skill_ids = _validate_skill_ids(request.skill_ids, current_user)
 
         # Register agent in database with LLM configuration
@@ -2308,7 +2289,6 @@ async def create_agent(
             top_p=request.topP or 0.9,
             access_level=request.accessLevel or "private",
             allowed_knowledge=validated_allowed_knowledge,
-            allowed_memory=validated_allowed_memory or [],
         )
 
         # Update status to idle after creation
@@ -2345,7 +2325,6 @@ async def create_agent(
             topP=agent_info.top_p,
             accessLevel=agent_info.access_level,
             allowedKnowledge=agent_info.allowed_knowledge,
-            allowedMemory=agent_info.allowed_memory,
             topK=agent_info.top_k,
             similarityThreshold=agent_info.similarity_threshold,
             departmentId=str(agent_info.department_id) if agent_info.department_id else None,
@@ -2402,7 +2381,6 @@ async def list_agents(
                     topP=agent.top_p,
                     accessLevel=agent.access_level,
                     allowedKnowledge=agent.allowed_knowledge,
-                    allowedMemory=agent.allowed_memory,
                     topK=agent.top_k,
                     similarityThreshold=agent.similarity_threshold,
                     departmentId=str(agent.department_id) if agent.department_id else None,
@@ -2458,7 +2436,6 @@ async def get_agent(
             topP=agent.top_p,
             accessLevel=agent.access_level,
             allowedKnowledge=agent.allowed_knowledge,
-            allowedMemory=agent.allowed_memory,
             topK=agent.top_k,
             similarityThreshold=agent.similarity_threshold,
             departmentId=str(agent.department_id) if agent.department_id else None,
@@ -2606,7 +2583,6 @@ async def update_agent(
             if payload.allowedKnowledge is not None
             else None
         )
-        validated_allowed_memory = _validate_allowed_memory(payload.allowedMemory)
         validated_skill_ids = (
             _validate_skill_ids(payload.skill_ids, current_user)
             if payload.skill_ids is not None
@@ -2625,7 +2601,6 @@ async def update_agent(
             top_p=payload.topP,
             access_level=payload.accessLevel,
             allowed_knowledge=validated_allowed_knowledge,
-            allowed_memory=validated_allowed_memory,
             top_k=payload.topK,
             similarity_threshold=payload.similarityThreshold,
             department_id=payload.department_id,
@@ -2672,7 +2647,6 @@ async def update_agent(
             topP=updated_agent.top_p,
             accessLevel=updated_agent.access_level,
             allowedKnowledge=updated_agent.allowed_knowledge,
-            allowedMemory=updated_agent.allowed_memory,
             topK=updated_agent.top_k,
             similarityThreshold=updated_agent.similarity_threshold,
             departmentId=str(updated_agent.department_id) if updated_agent.department_id else None,
@@ -3801,7 +3775,6 @@ async def test_agent(
                         capabilities=agent_info.capabilities or [],
                         access_level=agent_info.access_level or "private",
                         allowed_knowledge=agent_info.allowed_knowledge or [],
-                        allowed_memory=agent_info.allowed_memory or [],
                         llm_model=agent_info.llm_model or "llama3.2:latest",
                         temperature=agent_info.temperature or 0.7,
                         max_iterations=AGENT_TEST_MAX_ITERATIONS,
@@ -3925,21 +3898,6 @@ async def test_agent(
                 )
                 executor = get_agent_executor()
                 try:
-                    memory_scopes = resolve_memory_scopes(
-                        access_level=agent_info.access_level,
-                        allowed_memory=agent_info.allowed_memory,
-                    )
-                    yield (
-                        "data: "
-                        + json.dumps(
-                            {
-                                "type": "info",
-                                "content": f"Effective memory scopes: {', '.join(memory_scopes)}",
-                            }
-                        )
-                        + "\n\n"
-                    )
-
                     context, context_debug = await asyncio.to_thread(
                         executor.build_execution_context_with_debug,
                         agent,
@@ -4543,7 +4501,6 @@ async def test_agent(
                     capabilities=agent_info.capabilities or [],
                     access_level=agent_info.access_level or "private",
                     allowed_knowledge=agent_info.allowed_knowledge or [],
-                    allowed_memory=agent_info.allowed_memory or [],
                     llm_model=agent_info.llm_model or "llama3.2:latest",
                     temperature=agent_info.temperature or 0.7,
                     max_iterations=AGENT_TEST_MAX_ITERATIONS,
@@ -4951,7 +4908,7 @@ class AgentSkillsResponse(BaseModel):
     available_skills: List[Dict[str, Any]] = Field(description="List of visible active skills")
 
 
-@router.get("/{agent_id}/skills", response_model=AgentSkillsResponse)
+@router.get("/{agent_id}/legacy-skills", response_model=AgentSkillsResponse, include_in_schema=False)
 async def get_agent_skills(agent_id: str, current_user: CurrentUser = Depends(get_current_user)):
     """Get agent's configured skills and available skills.
 
@@ -5023,7 +4980,7 @@ class UpdateAgentSkillsRequest(BaseModel):
     skill_ids: List[str] = Field(description="List of skill IDs to configure for this agent")
 
 
-@router.put("/{agent_id}/skills", response_model=AgentResponse)
+@router.put("/{agent_id}/legacy-skills", response_model=AgentResponse, include_in_schema=False)
 async def update_agent_skills(
     agent_id: str,
     request: Request,
@@ -5095,7 +5052,6 @@ async def update_agent_skills(
             topP=updated_agent.top_p,
             accessLevel=updated_agent.access_level,
             allowedKnowledge=updated_agent.allowed_knowledge,
-            allowedMemory=updated_agent.allowed_memory,
             topK=updated_agent.top_k,
             similarityThreshold=updated_agent.similarity_threshold,
             departmentId=str(updated_agent.department_id) if updated_agent.department_id else None,

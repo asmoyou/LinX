@@ -24,28 +24,6 @@ import type { Agent } from '@/types/agent';
 import { LayoutModal } from '@/components/LayoutModal';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const normalizeMemoryScopes = (scopes?: string[]): string[] => {
-  if (!scopes || scopes.length === 0) {
-    return [];
-  }
-
-  const aliasMap: Record<string, string> = {
-    skills: 'skills',
-    user_memory: 'user_memory',
-  };
-  const normalized: string[] = [];
-
-  for (const rawScope of scopes) {
-    const scope = (rawScope || '').trim().toLowerCase();
-    const canonicalScope = aliasMap[scope];
-    if (canonicalScope && !normalized.includes(canonicalScope)) {
-      normalized.push(canonicalScope);
-    }
-  }
-
-  return normalized;
-};
-
 const formatDateTime = (value?: string | null, locale?: string): string => {
   if (!value) {
     return '-';
@@ -127,11 +105,6 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({
   if (!isOpen || !agent) return null;
 
   const displayAgent = agentDetails ?? agent;
-  const configuredMemoryScopes = normalizeMemoryScopes(displayAgent.allowedMemory);
-  const effectiveMemoryScopes =
-    configuredMemoryScopes.length > 0
-      ? configuredMemoryScopes
-      : ['skills', 'user_memory'];
 
   const tasksExecuted = Math.max(
     0,
@@ -163,12 +136,6 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({
   const accessLevelLabel = t(`agent.details.accessLevelValue.${accessLevelValue}`, {
     defaultValue: accessLevelValue,
   });
-  const translateMemoryScope = (scope: string): string =>
-    t(`agent.details.memoryScope.${scope}`, { defaultValue: scope });
-  const configuredMemoryScopesLabel =
-    configuredMemoryScopes.length > 0
-      ? configuredMemoryScopes.map(translateMemoryScope).join(', ')
-      : t('agent.details.noExplicitMemoryScope');
   const knowledgeSelectedCount = displayAgent.allowedKnowledge?.length || 0;
 
   const StatCard = ({ icon: Icon, label, value, colorClass }: any) => (
@@ -418,25 +385,6 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({
                           knowledgeSelectedCount > 0
                             ? t('agent.details.knowledgeSelected', { count: knowledgeSelectedCount })
                             : t('agent.details.noKnowledgeWhitelist')
-                        }
-                      />
-                      <InfoRow
-                        label={t('agent.details.allowedMemoryConfigured')}
-                        value={configuredMemoryScopesLabel}
-                      />
-                      <InfoRow
-                        label={t('agent.details.allowedMemoryEffective')}
-                        value={
-                          <div className="flex flex-wrap justify-end gap-1">
-                            {effectiveMemoryScopes.map((scope) => (
-                              <span
-                                key={scope}
-                                className="px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-700 text-[10px]"
-                              >
-                                {translateMemoryScope(scope)}
-                              </span>
-                            ))}
-                          </div>
                         }
                       />
                     </div>

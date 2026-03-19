@@ -49,23 +49,25 @@ def _list_owned_agent_ids_sync(user_id: Optional[str]) -> List[str]:
 
 def _lookup_agent_name(session, agent_id: Optional[str]) -> Optional[str]:
     """Look up agent name by ID."""
-    if not agent_id:
+    parsed_agent_id = _parse_uuid(agent_id)
+    if not parsed_agent_id:
         return None
 
     from database.models import Agent
 
-    agent = session.query(Agent).filter(Agent.agent_id == agent_id).first()
+    agent = session.query(Agent).filter(Agent.agent_id == parsed_agent_id).first()
     return agent.name if agent else None
 
 
 def _lookup_user_name(session, user_id: Optional[str]) -> Optional[str]:
     """Look up user display name by ID."""
-    if not user_id:
+    parsed_user_id = _parse_uuid(user_id)
+    if not parsed_user_id:
         return None
 
     from database.models import User
 
-    user = session.query(User).filter(User.user_id == user_id).first()
+    user = session.query(User).filter(User.user_id == parsed_user_id).first()
     if not user:
         return None
     attrs = user.attributes or {}
@@ -78,7 +80,7 @@ def _normalize_visibility(memory_type: str, metadata: Dict[str, Any]) -> str:
         return configured
     if memory_type == "user_memory":
         return "private"
-    if memory_type == "skill_proposal":
+    if memory_type == "skill_candidate":
         return "private"
     return "private"
 

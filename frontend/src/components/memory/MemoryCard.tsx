@@ -1,26 +1,23 @@
 import React, { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Brain,
-  User,
-  Clock,
-  Tag,
-  Share2,
-  TrendingUp,
-  RefreshCw,
   CheckCircle2,
-  AlertTriangle,
+  Clock,
   Loader2,
+  Tag,
+  TrendingUp,
+  User,
 } from "lucide-react";
 import { GlassPanel } from "@/components/GlassPanel";
-import type { MemoryRecord, MemoryFact } from "@/types/memory";
+import type { MemoryFact, MemoryRecord } from "@/types/memory";
 
 const parseFacts = (memory: MemoryRecord): MemoryFact[] => {
   const raw = memory.metadata?.facts;
   if (!Array.isArray(raw)) {
     return [];
   }
-  const parsed = raw
+
+  return raw
     .filter((entry): entry is MemoryFact => {
       return (
         !!entry &&
@@ -36,36 +33,6 @@ const parseFacts = (memory: MemoryRecord): MemoryFact[] => {
       key: entry.key.trim(),
       value: entry.value.trim(),
     }));
-
-  const sopTitleValue = parsed.find(
-    (entry) => entry.key === "interaction.sop.title",
-  )?.value;
-  const shouldDropSopTopic = Boolean(
-    sopTitleValue &&
-    parsed.some(
-      (entry) =>
-        entry.key === "interaction.sop.topic" && entry.value === sopTitleValue,
-    ),
-  );
-
-  const uniqueFacts: MemoryFact[] = [];
-  const seenPairs = new Set<string>();
-  for (const entry of parsed) {
-    if (
-      shouldDropSopTopic &&
-      entry.key === "interaction.sop.topic" &&
-      entry.value === sopTitleValue
-    ) {
-      continue;
-    }
-    const signature = `${entry.key}\0${entry.value}`;
-    if (seenPairs.has(signature)) {
-      continue;
-    }
-    seenPairs.add(signature);
-    uniqueFacts.push(entry);
-  }
-  return uniqueFacts;
 };
 
 const parseStructuredContentLines = (
@@ -94,16 +61,12 @@ interface MemoryCardProps {
   memory: MemoryRecord;
   onClick: (memory: MemoryRecord) => void;
   showRelevance?: boolean;
-  onReindex?: (memory: MemoryRecord) => void;
-  isReindexing?: boolean;
 }
 
 export const MemoryCard: React.FC<MemoryCardProps> = ({
   memory,
   onClick,
   showRelevance = false,
-  onReindex,
-  isReindexing = false,
 }) => {
   const { t } = useTranslation();
   const memoryFacts = useMemo(() => parseFacts(memory), [memory]);
@@ -113,54 +76,15 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
   );
   const factPreview = memoryFacts.slice(0, 2);
   const structuredPreview = structuredLines.slice(0, 2);
-  const effectiveSummary =
-    memory.summary && memory.summary.trim() !== memory.content.trim()
-      ? memory.summary
-      : undefined;
-
-  const getTypeIcon = (type: MemoryRecord["type"]) => {
-    switch (type) {
-      case "skill_proposal":
-        return <Brain className="w-5 h-5 text-blue-500" />;
-      case "user_memory":
-        return <User className="w-5 h-5 text-purple-500" />;
-    }
-  };
-
-  const getTypeLabel = (type: MemoryRecord["type"]) => {
-    switch (type) {
-      case "skill_proposal":
-        return t("memory.tabs.skillProposal", { defaultValue: "技能提案" });
-      case "user_memory":
-        return memory.userName
-          ? t("memory.card.userMemoryOwner", {
-              defaultValue: "{{name}} 的记忆",
-              name: memory.userName,
-            })
-          : t("memory.tabs.userMemory", { defaultValue: "用户记忆" });
-    }
-  };
-
-  const getTypeColor = (type: MemoryRecord["type"]) => {
-    switch (type) {
-      case "skill_proposal":
-        return "bg-blue-500/20 text-blue-700 dark:text-blue-400";
-      case "user_memory":
-        return "bg-purple-500/20 text-purple-700 dark:text-purple-400";
-    }
-  };
-
+  const relevanceScore =
+    typeof memory.relevanceScore === "number" &&
+    Number.isFinite(memory.relevanceScore)
+      ? Math.max(0, Math.min(1, memory.relevanceScore))
+      : null;
   const indexStatus = String(memory.indexStatus || "").toLowerCase();
-  const statusKey = (
-    indexStatus === "synced" ||
-    indexStatus === "pending" ||
-    indexStatus === "failed"
-      ? indexStatus
-      : "unknown"
-  ) as "synced" | "pending" | "failed" | "unknown";
 
-  const getIndexStatusBadge = () => {
-    switch (statusKey) {
+  const indexBadge = (() => {
+    switch (indexStatus) {
       case "synced":
         return {
           icon: <CheckCircle2 className="w-3 h-3" />,
@@ -173,178 +97,35 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
           label: t("memory.indexStatus.pending"),
           className: "bg-amber-500/20 text-amber-700 dark:text-amber-300",
         };
-      case "failed":
-        return {
-          icon: <AlertTriangle className="w-3 h-3" />,
-          label: t("memory.indexStatus.failed"),
-          className: "bg-rose-500/20 text-rose-700 dark:text-rose-300",
-        };
       default:
         return {
           icon: <Clock className="w-3 h-3" />,
           label: t("memory.indexStatus.unknown"),
-          className: "bg-gray-500/20 text-gray-700 dark:text-gray-300",
+          className: "bg-zinc-500/20 text-zinc-700 dark:text-zinc-300",
         };
     }
-  };
-
-  const indexBadge = getIndexStatusBadge();
-  const relevanceScore =
-    typeof memory.relevanceScore === "number" &&
-    Number.isFinite(memory.relevanceScore)
-      ? Math.max(0, Math.min(1, memory.relevanceScore))
-      : null;
-  const signalType = String(memory.metadata?.signal_type || "")
-    .trim()
-    .toLowerCase();
-  const reviewStatus = String(memory.metadata?.review_status || "")
-    .trim()
-    .toLowerCase();
-  const isAgentCandidate =
-    signalType === "skill_proposal" || memory.type === "skill_proposal";
-  const candidateStatusKey =
-    reviewStatus === "published" || reviewStatus === "rejected"
-      ? reviewStatus
-      : "pending";
-  const candidateStatusBadge = (() => {
-    if (!isAgentCandidate) {
-      return null;
-    }
-    if (candidateStatusKey === "published") {
-      return {
-        label: t("memory.card.reviewPublished", { defaultValue: "已审批" }),
-        className: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300",
-      };
-    }
-    if (candidateStatusKey === "rejected") {
-      return {
-        label: t("memory.card.reviewRejected", { defaultValue: "已拒绝" }),
-        className: "bg-rose-500/20 text-rose-700 dark:text-rose-300",
-      };
-    }
-    return {
-      label: t("memory.card.reviewPending", { defaultValue: "待审批" }),
-      className: "bg-amber-500/20 text-amber-700 dark:text-amber-300",
-    };
   })();
-  const sharedTargetNames = (
-    memory.sharedWithNames && memory.sharedWithNames.length > 0
-      ? memory.sharedWithNames
-      : memory.sharedWith || []
-  ).slice(0, 3);
-  const publishMode = String(memory.metadata?.publish_mode || "")
-    .trim()
-    .toLowerCase();
-  const hasPromotionBacklink = Boolean(
-    memory.metadata?.last_promoted_memory_id,
-  );
-  const rawVisibility = String(memory.metadata?.visibility || "")
-    .trim()
-    .toLowerCase();
-  const visibility = (() => {
-    if (memory.type === "user_memory") {
-      return rawVisibility === "explicit" || rawVisibility === "private"
-        ? rawVisibility
-        : "private";
-    }
-    if (rawVisibility) {
-      return rawVisibility;
-    }
-    return "private";
-  })();
-  const hasPolicyScope = [
-    "explicit",
-    "department",
-    "department_tree",
-    "public",
-  ].includes(visibility);
-  const candidatePublished =
-    isAgentCandidate && candidateStatusKey === "published";
-  const isPublished = isAgentCandidate
-    ? candidatePublished
-    : publishMode === "promote" ||
-      hasPromotionBacklink ||
-      [
-        "explicit",
-        "department",
-        "department_tree",
-        "public",
-        "account",
-      ].includes(visibility);
-  const sharingBadgeText = isPublished
-    ? t("memory.card.published")
-    : t("memory.card.shared");
-  const scopeSuffix = (() => {
-    switch (visibility) {
-      case "private":
-        return t("memory.share.scope.private");
-      case "account":
-        return t("memory.share.scope.account");
-      case "department":
-        return t("memory.share.scope.department");
-      case "department_tree":
-        return t("memory.share.scope.departmentTree");
-      case "public":
-        return t("memory.share.scope.public");
-      case "explicit":
-        return t("memory.share.scope.explicit");
-      default:
-        return "";
-    }
-  })();
-  const isPolicyShared = isAgentCandidate
-    ? candidatePublished
-    : Boolean(memory.isShared) || hasPolicyScope || isPublished;
-  const candidateHintText = isAgentCandidate
-    ? candidateStatusKey === "published"
-      ? t("memory.card.reviewPublishedHint", {
-          defaultValue: "已审批，可作为记忆参考",
-        })
-      : candidateStatusKey === "rejected"
-        ? t("memory.card.reviewRejectedHint", {
-            defaultValue: "已拒绝，不参与记忆注入",
-          })
-        : t("memory.card.reviewPendingHint", {
-            defaultValue: "待审批，当前不会进入技能注入面",
-          })
-    : "";
-  const policyHintText =
-    candidateHintText ||
-    (sharedTargetNames.length > 0
-      ? t("memory.card.sharedWithNames", {
-          names: sharedTargetNames.join(", "),
-        })
-      : scopeSuffix
-        ? t("memory.card.scopeLabel", { scope: scopeSuffix })
-        : isPolicyShared
-          ? t("memory.card.policyApplied")
-          : "");
 
   return (
     <div onClick={() => onClick(memory)} className="cursor-pointer">
       <GlassPanel className="hover:scale-[1.02] transition-transform duration-200">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-2 mb-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            {getTypeIcon(memory.type)}
-            <span
-              className={`text-xs px-2 py-1 rounded-full ${getTypeColor(memory.type)}`}
-            >
-              {getTypeLabel(memory.type)}
+        <div className="mb-3 flex items-start justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <User className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />
+            <span className="rounded-full bg-emerald-500/15 px-2 py-1 text-xs text-emerald-700 dark:text-emerald-300">
+              {memory.userName
+                ? t("memory.card.userMemoryOwner", {
+                    defaultValue: "{{name}} 的记忆",
+                    name: memory.userName,
+                  })
+                : t("memory.tabs.userMemory", { defaultValue: "用户记忆" })}
             </span>
             <span
-              className={`text-xs px-2 py-1 rounded-full flex items-center gap-1 ${indexBadge.className}`}
+              className={`rounded-full px-2 py-1 text-xs flex items-center gap-1 ${indexBadge.className}`}
             >
               {indexBadge.icon}
               {indexBadge.label}
             </span>
-            {candidateStatusBadge && (
-              <span
-                className={`text-xs px-2 py-1 rounded-full ${candidateStatusBadge.className}`}
-              >
-                {candidateStatusBadge.label}
-              </span>
-            )}
           </div>
           {showRelevance && relevanceScore !== null && (
             <div className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400">
@@ -354,13 +135,13 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
           )}
         </div>
 
-        {/* Content */}
         <div className="mb-3">
-          {effectiveSummary && (
-            <p className="text-sm font-medium text-gray-800 dark:text-white mb-2">
-              {effectiveSummary}
-            </p>
-          )}
+          {memory.summary &&
+            memory.summary.trim() !== memory.content.trim() && (
+              <p className="mb-2 text-sm font-medium text-gray-800 dark:text-white">
+                {memory.summary}
+              </p>
+            )}
           {factPreview.length > 0 ? (
             <div className="space-y-2">
               {factPreview.map((fact, index) => (
@@ -376,13 +157,6 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
                   </p>
                 </div>
               ))}
-              {memoryFacts.length > factPreview.length && (
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  {t("memory.card.moreFacts", {
-                    count: memoryFacts.length - factPreview.length,
-                  })}
-                </p>
-              )}
             </div>
           ) : structuredPreview.length > 0 ? (
             <div className="space-y-2">
@@ -399,13 +173,6 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
                   </p>
                 </div>
               ))}
-              {structuredLines.length > structuredPreview.length && (
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  {t("memory.card.moreFacts", {
-                    count: structuredLines.length - structuredPreview.length,
-                  })}
-                </p>
-              )}
             </div>
           ) : (
             <p className="text-sm text-gray-600 dark:text-gray-400 line-clamp-4 whitespace-pre-wrap">
@@ -414,73 +181,19 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
           )}
         </div>
 
-        {/* Tags */}
         {memory.tags.length > 0 && (
-          <div className="flex flex-wrap gap-1 mb-3">
+          <div className="flex flex-wrap gap-1">
             {memory.tags.slice(0, 3).map((tag) => (
               <span
                 key={tag}
-                className="flex items-center gap-1 text-xs px-2 py-0.5 bg-white/20 rounded-full text-gray-700 dark:text-gray-300"
+                className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-1 text-xs text-zinc-600 dark:text-zinc-300"
               >
                 <Tag className="w-3 h-3" />
                 {tag}
               </span>
             ))}
-            {memory.tags.length > 3 && (
-              <span className="text-xs px-2 py-0.5 bg-white/20 rounded-full text-gray-700 dark:text-gray-300">
-                +{memory.tags.length - 3}
-              </span>
-            )}
           </div>
         )}
-
-        {/* Metadata */}
-        <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 pt-3 border-t border-gray-200 dark:border-gray-700">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1">
-              <Clock className="w-3 h-3" />
-              {new Date(memory.createdAt).toLocaleDateString()}
-            </div>
-            {memory.agentName && (
-              <span className="truncate max-w-[120px]" title={memory.agentName}>
-                {memory.agentName}
-              </span>
-            )}
-          </div>
-          {isPolicyShared && (
-            <div className="flex items-center gap-1 text-indigo-500">
-              <Share2 className="w-3 h-3" />
-              <span>{sharingBadgeText}</span>
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center justify-between mt-2">
-          {policyHintText ? (
-            <p className="text-xs text-gray-500 dark:text-gray-400 truncate pr-2">
-              {policyHintText}
-            </p>
-          ) : (
-            <span />
-          )}
-          {onReindex && (
-            <button
-              onClick={(event) => {
-                event.stopPropagation();
-                onReindex(memory);
-              }}
-              disabled={isReindexing}
-              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-white/15 hover:bg-white/25 text-gray-700 dark:text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isReindexing ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : (
-                <RefreshCw className="w-3 h-3" />
-              )}
-              {t("memory.card.rebuildIndex")}
-            </button>
-          )}
-        </div>
       </GlassPanel>
     </div>
   );

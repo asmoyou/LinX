@@ -3,12 +3,12 @@
 from importlib import import_module
 
 _EXPORTS = {
-    "SkillProposalBuilder": ("skill_learning.builder", "SkillProposalBuilder"),
-    "get_skill_proposal_builder": ("skill_learning.builder", "get_skill_proposal_builder"),
-    "SkillProposalRepository": ("skill_learning.repository", "SkillProposalRepository"),
-    "SkillProposalService": ("skill_learning.service", "SkillProposalService"),
-    "get_skill_proposal_repository": ("skill_learning.repository", "get_skill_proposal_repository"),
-    "get_skill_proposal_service": ("skill_learning.service", "get_skill_proposal_service"),
+    "SkillCandidateService": ("skill_learning.candidate_service", "SkillCandidateService"),
+    "get_skill_candidate_service": ("skill_learning.candidate_service", "get_skill_candidate_service"),
+    "SkillCandidateBuilder": ("skill_learning.builder", "SkillCandidateBuilder"),
+    "get_skill_candidate_builder": ("skill_learning.builder", "get_skill_candidate_builder"),
+    "SkillCandidateRepository": ("skill_learning.repository", "SkillCandidateRepository"),
+    "get_skill_candidate_repository": ("skill_learning.repository", "get_skill_candidate_repository"),
 }
 
 __all__ = list(_EXPORTS)

@@ -88,7 +88,7 @@ def test_executor_exposes_context_debug_details():
     assert debug_info["memory"]["skills"]["hits"][0].startswith("debug skill")
 
 
-def test_executor_ignores_removed_company_and_task_context_scopes():
+def test_executor_uses_default_runtime_scopes_even_with_legacy_allowed_memory_values():
     context_service = Mock()
     context_service.retrieve_skills.return_value = []
     context_service.retrieve_user_memory.return_value = []
@@ -105,8 +105,8 @@ def test_executor_ignores_removed_company_and_task_context_scopes():
     result = executor.execute(agent, context)
 
     assert result["success"] is True
-    context_service.retrieve_skills.assert_not_called()
-    context_service.retrieve_user_memory.assert_not_called()
+    context_service.retrieve_skills.assert_called_once()
+    context_service.retrieve_user_memory.assert_called_once()
     execute_context = agent.execute_task.call_args.kwargs["context"]
     assert execute_context["skills"] == []
     assert execute_context["user_memory"] == []

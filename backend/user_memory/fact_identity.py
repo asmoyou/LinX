@@ -13,7 +13,7 @@ _ALLOWED_FACT_KINDS = {
     "identity",
     "relationship",
     "experience",
-    "skill",
+    "expertise",
     "goal",
     "constraint",
     "habit",
@@ -60,6 +60,8 @@ def normalize_memory_key(value: Any, max_chars: int = 80) -> Optional[str]:
 
 def normalize_fact_kind(value: Any) -> str:
     fact_kind = normalize_memory_key(value, max_chars=32) or "preference"
+    if fact_kind == "skill":
+        fact_kind = "expertise"
     if fact_kind in _ALLOWED_FACT_KINDS:
         return fact_kind
     return "preference"
@@ -277,7 +279,14 @@ def build_user_fact_identity(
         else:
             identity_signature = f"{normalized_fact_kind}|{basis}"
             fact_key = f"{normalized_fact_kind}_{_hash_parts(identity_signature)}"
-    elif normalized_fact_kind in {"experience", "skill", "goal", "identity", "constraint", "habit"}:
+    elif normalized_fact_kind in {
+        "experience",
+        "expertise",
+        "goal",
+        "identity",
+        "constraint",
+        "habit",
+    }:
         identity_signature = f"{normalized_fact_kind}|{basis}"
         fact_key = f"{normalized_fact_kind}_{_hash_parts(identity_signature)}"
     else:

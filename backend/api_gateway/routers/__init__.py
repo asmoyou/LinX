@@ -20,7 +20,8 @@ from api_gateway.routers import (
     monitoring,
     notifications,
     roles,
-    skill_proposals,
+    skill_bindings,
+    skill_candidates,
     skills,
     user_memory,
     users,
@@ -41,6 +42,7 @@ __all__ = [
     "monitoring",
     "notifications",
     "skills",
-    "skill_proposals",
+    "skill_candidates",
+    "skill_bindings",
     "user_memory",
 ]

@@ -23,7 +23,7 @@ from api_gateway.routers.agents import (
     _extract_attachment_text,
     _extract_json_object_from_text,
     _extract_session_memory_signals_with_llm,
-    _extract_skill_proposals,
+    _extract_skill_candidates,
     _extract_token_usage_from_metadata,
     _extract_user_preference_signals,
     _get_cached_agent_status_value,
@@ -479,10 +479,10 @@ def test_extract_user_preference_signals_keeps_relationship_and_experience_facts
         for item in signals
     )
     assert any(
-        item["key"].startswith("skill_")
-        and item["semantic_key"] == "skill_strength"
+        item["key"].startswith("expertise_")
+        and item["semantic_key"] == "expertise_strength"
         and item["value"] == "SQL"
-        and item["fact_kind"] == "skill"
+        and item["fact_kind"] == "expertise"
         for item in signals
     )
 
@@ -756,7 +756,7 @@ async def test_extract_session_memory_signals_prefers_memory_config_then_fallbac
                 content=(
                     '{"user_preferences":[{"key":"output_format","value":"markdown",'
                     '"persistent":true,"confidence":0.9,"evidence_turns":[1]}],'
-                    '"skill_proposals":[]}'
+                    '"skill_candidates":[]}'
                 )
             )
 
@@ -824,7 +824,7 @@ async def test_extract_session_memory_signals_runs_secondary_preference_recall(
                         '"confidence":0.9,"evidence_turns":[1]}]}'
                     )
                 )
-            return SimpleNamespace(content='{"user_preferences":[],"skill_proposals":[]}')
+            return SimpleNamespace(content='{"user_preferences":[],"skill_candidates":[]}')
 
     fake_router = FakeRouter()
 
@@ -871,7 +871,7 @@ async def test_extract_session_memory_signals_uses_max_facts_and_agent_candidate
                 "user_memory.extraction.provider": "memory_provider",
                 "user_memory.extraction.model": "memory-model",
                 "user_memory.extraction.max_facts": 2,
-                "skill_learning.extraction.max_proposals": 2,
+                "skill_candidates.extraction.max_candidates": 2,
                 "llm.providers.memory_provider.models": {"chat": "memory-model"},
             }
             return values.get(key)
@@ -904,7 +904,7 @@ async def test_extract_session_memory_signals_uses_max_facts_and_agent_candidate
                                 "evidence_turns": [1],
                             },
                         ],
-                        "skill_proposals": [
+                        "skill_candidates": [
                             {
                                 "candidate_type": "sop",
                                 "title": "流程A",
@@ -1037,7 +1037,7 @@ async def test_call_llm_for_memory_json_falls_back_when_json_mode_returns_empty(
                 content=(
                     '{"user_preferences":[{"key":"food_preference_like","value":"黄焖鸡",'
                     '"persistent":true,"explicit_source":true,"confidence":0.9,'
-                    '"evidence_turns":[1]}],"skill_proposals":[]}'
+                    '"evidence_turns":[1]}],"skill_candidates":[]}'
                 )
             )
 
@@ -1063,7 +1063,7 @@ async def test_call_llm_for_memory_json_times_out() -> None:
     class SlowRouter:
         async def generate(self, **kwargs):  # noqa: ANN003
             await asyncio.sleep(0.7)
-            return SimpleNamespace(content='{"user_preferences":[],"skill_proposals":[]}')
+            return SimpleNamespace(content='{"user_preferences":[],"skill_candidates":[]}')
 
     with pytest.raises(TimeoutError, match="session_memory_extraction_timeout_0.5s"):
         await _call_llm_for_memory_json(
@@ -1083,7 +1083,7 @@ async def test_call_llm_for_memory_json_timeout_invalidates_provider_cache() -> 
 
         async def generate(self, **kwargs):  # noqa: ANN003
             await asyncio.sleep(0.7)
-            return SimpleNamespace(content='{"user_preferences":[],"skill_proposals":[]}')
+            return SimpleNamespace(content='{"user_preferences":[],"skill_candidates":[]}')
 
         async def invalidate_provider(self, provider_name: str) -> bool:
             self.invalidated.append(provider_name)
@@ -1115,7 +1115,7 @@ async def test_call_llm_for_memory_json_extracts_json_from_mixed_content() -> No
                     "Thinking Process: 先分析需要提取哪些事实。\n"
                     '{"user_preferences":[{"key":"food_preference_like","value":"黄焖鸡",'
                     '"persistent":true,"explicit_source":true,"confidence":0.9,'
-                    '"evidence_turns":[1]}],"skill_proposals":[]}'
+                    '"evidence_turns":[1]}],"skill_candidates":[]}'
                 )
             )
 
@@ -1144,7 +1144,7 @@ async def test_call_llm_for_memory_json_retries_without_thinking_control_when_un
             self.calls.append(kwargs)
             if "extra_body" in kwargs:
                 raise ValueError("chat_template_kwargs unsupported")
-            return SimpleNamespace(content='{"user_preferences":[],"skill_proposals":[]}')
+            return SimpleNamespace(content='{"user_preferences":[],"skill_candidates":[]}')
 
     fake_router = FakeRouter()
     parsed, parse_meta = await _call_llm_for_memory_json(
@@ -1159,10 +1159,10 @@ async def test_call_llm_for_memory_json_retries_without_thinking_control_when_un
     assert "extra_body" not in fake_router.calls[1]
     assert parse_meta["parse_status"] == "ok"
     assert parse_meta["thinking_control_applied"] is False
-    assert parsed == {"user_preferences": [], "skill_proposals": []}
+    assert parsed == {"user_preferences": [], "skill_candidates": []}
 
 
-def test_extract_skill_proposals_requires_step_structure() -> None:
+def test_extract_skill_candidates_requires_step_structure() -> None:
     """Only step-structured assistant outputs should become agent candidates."""
     turns = [
         {
@@ -1173,14 +1173,14 @@ def test_extract_skill_proposals_requires_step_structure() -> None:
         }
     ]
 
-    candidates = _extract_skill_proposals(turns, "小新2号")
+    candidates = _extract_skill_candidates(turns, "小新2号")
     assert len(candidates) == 1
     assert candidates[0]["candidate_type"] == "sop"
     assert len(candidates[0]["steps"]) >= 3
 
 
-def test_extract_skill_proposals_skips_non_step_reply() -> None:
-    """Generic short replies should not produce reusable skill proposals."""
+def test_extract_skill_candidates_skips_non_step_reply() -> None:
+    """Generic short replies should not produce reusable skill candidates."""
     turns = [
         {
             "user_message": "你好",
@@ -1190,5 +1190,5 @@ def test_extract_skill_proposals_skips_non_step_reply() -> None:
         }
     ]
 
-    candidates = _extract_skill_proposals(turns, "小新2号")
+    candidates = _extract_skill_candidates(turns, "小新2号")
     assert candidates == []

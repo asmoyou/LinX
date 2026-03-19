@@ -68,15 +68,18 @@ type MemoryConfigFormState = {
     secondary_recall_enabled: boolean;
     failure_backoff_seconds: number;
   };
-  skill_learning: {
+  skill_candidates: {
     provider: string;
     model: string;
     timeout_seconds: number;
-    max_proposals: number;
+    max_candidates: number;
     failure_backoff_seconds: number;
-    publish_skill_type: string;
-    publish_storage_type: string;
-    reuse_existing_by_name: boolean;
+  };
+  skill_runtime: {
+    retrieval_enabled: boolean;
+    top_k: number;
+    min_similarity: number;
+    auto_bind_source_agent: boolean;
   };
   session_ledger: {
     enabled: boolean;
@@ -150,15 +153,18 @@ const DEFAULT_FORM_STATE: MemoryConfigFormState = {
     secondary_recall_enabled: true,
     failure_backoff_seconds: 60,
   },
-  skill_learning: {
+  skill_candidates: {
     provider: "",
     model: "",
     timeout_seconds: 120,
-    max_proposals: 6,
+    max_candidates: 6,
     failure_backoff_seconds: 60,
-    publish_skill_type: "agent_skill",
-    publish_storage_type: "inline",
-    reuse_existing_by_name: true,
+  },
+  skill_runtime: {
+    retrieval_enabled: true,
+    top_k: 5,
+    min_similarity: 0.45,
+    auto_bind_source_agent: true,
   },
   session_ledger: {
     enabled: true,
@@ -297,7 +303,8 @@ const toFormState = (config: MemoryConfig | null): MemoryConfigFormState => {
       embedding: { ...DEFAULT_FORM_STATE.embedding },
       retrieval: { ...DEFAULT_FORM_STATE.retrieval },
       fact_extraction: { ...DEFAULT_FORM_STATE.fact_extraction },
-      skill_learning: { ...DEFAULT_FORM_STATE.skill_learning },
+      skill_candidates: { ...DEFAULT_FORM_STATE.skill_candidates },
+      skill_runtime: { ...DEFAULT_FORM_STATE.skill_runtime },
       session_ledger: { ...DEFAULT_FORM_STATE.session_ledger },
       maintenance: {
         projection: { ...DEFAULT_FORM_STATE.maintenance.projection },
@@ -307,7 +314,8 @@ const toFormState = (config: MemoryConfig | null): MemoryConfigFormState => {
   }
 
   const userMemory = asObject(config.user_memory);
-  const skillLearning = asObject(config.skill_learning);
+  const skillCandidates = asObject(config.skill_candidates);
+  const skillRuntime = asObject(config.skill_runtime);
   const userMemoryEmbedding = asObject(userMemory.embedding);
   const userMemoryRetrieval = asObject(userMemory.retrieval);
   const userMemoryRerank = asObject(userMemoryRetrieval.rerank);
@@ -315,8 +323,8 @@ const toFormState = (config: MemoryConfig | null): MemoryConfigFormState => {
   const userMemoryReflection = asObject(userMemoryRetrieval.reflection);
   const userMemoryExtraction = asObject(userMemory.extraction);
   const userMemoryConsolidation = asObject(userMemory.consolidation);
-  const skillLearningExtraction = asObject(skillLearning.extraction);
-  const skillLearningPublish = asObject(skillLearning.publish_policy);
+  const skillCandidatesExtraction = asObject(skillCandidates.extraction);
+  const skillRuntimeRetrieval = asObject(skillRuntime.retrieval);
   const sessionLedger = asObject(config.session_ledger);
   const runtime = asObject(config.runtime_context);
 
@@ -393,25 +401,22 @@ const toFormState = (config: MemoryConfig | null): MemoryConfigFormState => {
         60,
       ),
     },
-    skill_learning: {
-      provider: asString(skillLearningExtraction.provider, ""),
-      model: asString(skillLearningExtraction.model, ""),
-      timeout_seconds: asNumber(skillLearningExtraction.timeout_seconds, 120),
-      max_proposals: asNumber(skillLearningExtraction.max_proposals, 6),
+    skill_candidates: {
+      provider: asString(skillCandidatesExtraction.provider, ""),
+      model: asString(skillCandidatesExtraction.model, ""),
+      timeout_seconds: asNumber(skillCandidatesExtraction.timeout_seconds, 120),
+      max_candidates: asNumber(skillCandidatesExtraction.max_candidates, 6),
       failure_backoff_seconds: asNumber(
-        skillLearningExtraction.failure_backoff_seconds,
+        skillCandidatesExtraction.failure_backoff_seconds,
         60,
       ),
-      publish_skill_type: asString(
-        skillLearningPublish.skill_type,
-        "agent_skill",
-      ),
-      publish_storage_type: asString(
-        skillLearningPublish.storage_type,
-        "inline",
-      ),
-      reuse_existing_by_name: asBoolean(
-        skillLearningPublish.reuse_existing_by_name,
+    },
+    skill_runtime: {
+      retrieval_enabled: asBoolean(skillRuntimeRetrieval.enabled, true),
+      top_k: asNumber(skillRuntimeRetrieval.top_k, 5),
+      min_similarity: asNumber(skillRuntimeRetrieval.min_similarity, 0.45),
+      auto_bind_source_agent: asBoolean(
+        skillRuntime.auto_bind_source_agent,
         true,
       ),
     },
@@ -563,30 +568,35 @@ const toUpdatePayload = (
         dry_run: formState.maintenance.projection.dry_run,
       },
     },
-    skill_learning: {
+    skill_candidates: {
       extraction: {
-        provider: formState.skill_learning.provider.trim(),
-        model: formState.skill_learning.model.trim(),
+        enabled: true,
+        provider: formState.skill_candidates.provider.trim(),
+        model: formState.skill_candidates.model.trim(),
         timeout_seconds: Math.max(
           0.5,
-          formState.skill_learning.timeout_seconds,
+          formState.skill_candidates.timeout_seconds,
         ),
-        max_proposals: Math.max(
+        max_candidates: Math.max(
           1,
-          Math.floor(formState.skill_learning.max_proposals),
+          Math.floor(formState.skill_candidates.max_candidates),
         ),
         failure_backoff_seconds: Math.max(
           1,
-          Math.floor(formState.skill_learning.failure_backoff_seconds),
+          Math.floor(formState.skill_candidates.failure_backoff_seconds),
         ),
       },
-      publish_policy: {
-        skill_type:
-          formState.skill_learning.publish_skill_type.trim() || "agent_skill",
-        storage_type:
-          formState.skill_learning.publish_storage_type.trim() || "inline",
-        reuse_existing_by_name: formState.skill_learning.reuse_existing_by_name,
+    },
+    skill_runtime: {
+      retrieval: {
+        enabled: formState.skill_runtime.retrieval_enabled,
+        top_k: Math.max(1, Math.floor(formState.skill_runtime.top_k)),
+        min_similarity: Math.max(
+          0,
+          Math.min(1, formState.skill_runtime.min_similarity),
+        ),
       },
+      auto_bind_source_agent: formState.skill_runtime.auto_bind_source_agent,
     },
     session_ledger: {
       enabled: formState.session_ledger.enabled,
@@ -822,11 +832,11 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
   }, [ensureProviderTypedModels, formState.retrieval.planner.provider]);
 
   useEffect(() => {
-    if (!formState.skill_learning.provider) {
+    if (!formState.skill_candidates.provider) {
       return;
     }
-    void ensureProviderTypedModels(formState.skill_learning.provider);
-  }, [ensureProviderTypedModels, formState.skill_learning.provider]);
+    void ensureProviderTypedModels(formState.skill_candidates.provider);
+  }, [ensureProviderTypedModels, formState.skill_candidates.provider]);
 
   const embeddingModels = useMemo(() => {
     if (!formState.embedding.provider) {
@@ -856,12 +866,15 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     return getCompatibleModelsForType(formState.retrieval.planner.provider, "generation");
   }, [formState.retrieval.planner.provider, getCompatibleModelsForType]);
 
-  const skillLearningModels = useMemo(() => {
-    if (!formState.skill_learning.provider) {
+  const skillCandidateModels = useMemo(() => {
+    if (!formState.skill_candidates.provider) {
       return [];
     }
-    return getCompatibleModelsForType(formState.skill_learning.provider, "generation");
-  }, [formState.skill_learning.provider, getCompatibleModelsForType]);
+    return getCompatibleModelsForType(
+      formState.skill_candidates.provider,
+      "generation",
+    );
+  }, [formState.skill_candidates.provider, getCompatibleModelsForType]);
 
   const plannerConfigEnabled =
     formState.retrieval.planner.runtime_mode === "full" ||
@@ -883,9 +896,9 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     formState.retrieval.planner.provider &&
     loadingModelMetadataByProvider[formState.retrieval.planner.provider],
   );
-  const isSkillLearningModelsLoading = Boolean(
-    formState.skill_learning.provider &&
-    loadingModelMetadataByProvider[formState.skill_learning.provider],
+  const isSkillCandidateModelsLoading = Boolean(
+    formState.skill_candidates.provider &&
+    loadingModelMetadataByProvider[formState.skill_candidates.provider],
   );
 
   const embeddingModelMissing =
@@ -900,9 +913,9 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
   const plannerModelMissing =
     Boolean(formState.retrieval.planner.model) &&
     !plannerModels.includes(formState.retrieval.planner.model);
-  const skillLearningModelMissing =
-    Boolean(formState.skill_learning.model) &&
-    !skillLearningModels.includes(formState.skill_learning.model);
+  const skillCandidateModelMissing =
+    Boolean(formState.skill_candidates.model) &&
+    !skillCandidateModels.includes(formState.skill_candidates.model);
 
   const applyRecommended = () => {
     const recommendedRoot = asObject(config?.recommended);
@@ -915,12 +928,15 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     const recommendedConsolidation = asObject(
       recommendedUserMemory.consolidation,
     );
-    const recommendedSkillLearning = asObject(recommendedRoot.skill_learning);
-    const recommendedSkillExtraction = asObject(
-      recommendedSkillLearning.extraction,
+    const recommendedSkillCandidates = asObject(
+      recommendedRoot.skill_candidates,
     );
-    const recommendedSkillPublish = asObject(
-      recommendedSkillLearning.publish_policy,
+    const recommendedSkillExtraction = asObject(
+      recommendedSkillCandidates.extraction,
+    );
+    const recommendedSkillRuntime = asObject(recommendedRoot.skill_runtime);
+    const recommendedSkillRuntimeRetrieval = asObject(
+      recommendedSkillRuntime.retrieval,
     );
     const recommendedSessionLedger = asObject(recommendedRoot.session_ledger);
     const recommendedRuntime = asObject(recommendedRoot.runtime_context);
@@ -1000,39 +1016,46 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
           prev.fact_extraction.failure_backoff_seconds,
         ),
       },
-      skill_learning: {
-        ...prev.skill_learning,
+      skill_candidates: {
+        ...prev.skill_candidates,
         provider: asString(
           recommendedSkillExtraction.provider,
-          prev.skill_learning.provider,
+          prev.skill_candidates.provider,
         ),
         model: asString(
           recommendedSkillExtraction.model,
-          prev.skill_learning.model,
+          prev.skill_candidates.model,
         ),
         timeout_seconds: asNumber(
           recommendedSkillExtraction.timeout_seconds,
-          prev.skill_learning.timeout_seconds,
+          prev.skill_candidates.timeout_seconds,
         ),
-        max_proposals: asNumber(
-          recommendedSkillExtraction.max_proposals,
-          prev.skill_learning.max_proposals,
+        max_candidates: asNumber(
+          recommendedSkillExtraction.max_candidates,
+          prev.skill_candidates.max_candidates,
         ),
         failure_backoff_seconds: asNumber(
           recommendedSkillExtraction.failure_backoff_seconds,
-          prev.skill_learning.failure_backoff_seconds,
+          prev.skill_candidates.failure_backoff_seconds,
         ),
-        publish_skill_type: asString(
-          recommendedSkillPublish.skill_type,
-          prev.skill_learning.publish_skill_type,
+      },
+      skill_runtime: {
+        ...prev.skill_runtime,
+        retrieval_enabled: asBoolean(
+          recommendedSkillRuntimeRetrieval.enabled,
+          prev.skill_runtime.retrieval_enabled,
         ),
-        publish_storage_type: asString(
-          recommendedSkillPublish.storage_type,
-          prev.skill_learning.publish_storage_type,
+        top_k: asNumber(
+          recommendedSkillRuntimeRetrieval.top_k,
+          prev.skill_runtime.top_k,
         ),
-        reuse_existing_by_name: asBoolean(
-          recommendedSkillPublish.reuse_existing_by_name,
-          prev.skill_learning.reuse_existing_by_name,
+        min_similarity: asNumber(
+          recommendedSkillRuntimeRetrieval.min_similarity,
+          prev.skill_runtime.min_similarity,
+        ),
+        auto_bind_source_agent: asBoolean(
+          recommendedSkillRuntime.auto_bind_source_agent,
+          prev.skill_runtime.auto_bind_source_agent,
         ),
       },
       session_ledger: {
@@ -1197,13 +1220,13 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
     }));
   };
 
-  const handleSkillLearningProviderChange = (provider: string) => {
+  const handleSkillCandidateProviderChange = (provider: string) => {
     void ensureProviderTypedModels(provider);
     const candidates = getCompatibleModelsForType(provider, "generation");
     setFormState((prev) => ({
       ...prev,
-      skill_learning: {
-        ...prev.skill_learning,
+      skill_candidates: {
+        ...prev.skill_candidates,
         provider,
         model: candidates[0] || "",
       },
@@ -1313,27 +1336,27 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
   ]);
 
   useEffect(() => {
-    const provider = formState.skill_learning.provider;
-    if (!provider || skillLearningModels.length === 0) {
+    const provider = formState.skill_candidates.provider;
+    if (!provider || skillCandidateModels.length === 0) {
       return;
     }
     if (
-      formState.skill_learning.model &&
-      skillLearningModels.includes(formState.skill_learning.model)
+      formState.skill_candidates.model &&
+      skillCandidateModels.includes(formState.skill_candidates.model)
     ) {
       return;
     }
     setFormState((prev) => ({
       ...prev,
-      skill_learning: {
-        ...prev.skill_learning,
-        model: skillLearningModels[0] || "",
+      skill_candidates: {
+        ...prev.skill_candidates,
+        model: skillCandidateModels[0] || "",
       },
     }));
   }, [
-    formState.skill_learning.model,
-    formState.skill_learning.provider,
-    skillLearningModels,
+    formState.skill_candidates.model,
+    formState.skill_candidates.provider,
+    skillCandidateModels,
   ]);
 
   if (!isOpen) {
@@ -2391,7 +2414,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
                 {t(
                   "memory.config.factExtractionModeHint",
-                  "These controls tune the user-memory fact extractor. Skill-learning proposal extraction is configured separately below.",
+                  "These controls tune the user-memory fact extractor. Skill-candidate extraction is configured separately below.",
                 )}
               </p>
 
@@ -2676,20 +2699,20 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
             <div className="rounded-xl border border-zinc-200/80 dark:border-zinc-700/80 bg-white/60 dark:bg-zinc-900/50 p-4">
               <div className="mb-3">
                 <h3 className="text-base font-semibold text-zinc-800 dark:text-zinc-100">
-                  {t("memory.config.skillLearning", "Skill Learning")}
+                  {t("memory.config.skillCandidates", "Skill Candidates")}
                 </h3>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                   {t(
-                    "memory.config.skillLearningHint",
-                    "Configure how successful execution paths become reviewable skill proposals and how approved proposals publish into the skill registry.",
+                    "memory.config.skillCandidatesHint",
+                    "Configure how successful execution paths are extracted into reviewable skill candidates before promotion into the canonical skill library.",
                   )}
                 </p>
               </div>
 
               <p className="mb-3 rounded-lg border border-sky-200/80 bg-sky-50/80 px-3 py-2 text-xs text-sky-800 dark:border-sky-800/70 dark:bg-sky-950/30 dark:text-sky-200">
                 {t(
-                  "memory.config.skillLearningEffectiveHint",
-                  "Proposal extraction settings below are active, and publish settings apply when an approved proposal is manually published into the skill registry.",
+                  "memory.config.skillCandidatesEffectiveHint",
+                  "Candidate extraction runs on successful sessions. Approved candidates can then be promoted or merged into canonical skills.",
                 )}
               </p>
 
@@ -2699,9 +2722,9 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                     {t("memory.config.provider", "Provider")}
                   </span>
                   <select
-                    value={formState.skill_learning.provider}
+                    value={formState.skill_candidates.provider}
                     onChange={(event) =>
-                      handleSkillLearningProviderChange(event.target.value)
+                      handleSkillCandidateProviderChange(event.target.value)
                     }
                     className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                   >
@@ -2716,20 +2739,20 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
 
                 <label className="text-sm text-zinc-700 dark:text-zinc-300">
                   <span className="block mb-1">
-                    {t("memory.config.maxSkillProposals", "Max Skill Proposals")}
+                    {t("memory.config.maxSkillCandidates", "Max Skill Candidates")}
                   </span>
                   <input
                     type="number"
                     min={1}
-                    value={formState.skill_learning.max_proposals}
+                    value={formState.skill_candidates.max_candidates}
                     onChange={(event) =>
                       setFormState((prev) => ({
                         ...prev,
-                        skill_learning: {
-                          ...prev.skill_learning,
-                          max_proposals: asNumber(
+                        skill_candidates: {
+                          ...prev.skill_candidates,
+                          max_candidates: asNumber(
                             event.target.value,
-                            prev.skill_learning.max_proposals,
+                            prev.skill_candidates.max_candidates,
                           ),
                         },
                       }))
@@ -2738,8 +2761,8 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                   />
                   <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
                     {t(
-                      "memory.config.maxSkillProposalsHint",
-                      "Caps how many reusable skill proposals the session extractor can keep per flush.",
+                      "memory.config.maxSkillCandidatesHint",
+                      "Caps how many reusable skill candidates the session extractor can keep per flush.",
                     )}
                   </span>
                 </label>
@@ -2750,42 +2773,42 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                   {t("memory.config.model", "Model")}
                 </span>
                 <select
-                  value={formState.skill_learning.model}
+                  value={formState.skill_candidates.model}
                   onChange={(event) =>
                     setFormState((prev) => ({
                       ...prev,
-                      skill_learning: {
-                        ...prev.skill_learning,
+                      skill_candidates: {
+                        ...prev.skill_candidates,
                         model: event.target.value,
                       },
                     }))
                   }
-                  disabled={!formState.skill_learning.provider}
+                  disabled={!formState.skill_candidates.provider}
                   className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                 >
-                  {!formState.skill_learning.provider ? (
+                  {!formState.skill_candidates.provider ? (
                     <option value="">
                       {t(
                         "memory.config.selectProviderFirst",
                         "Select provider first",
                       )}
                     </option>
-                  ) : isSkillLearningModelsLoading ? (
+                  ) : isSkillCandidateModelsLoading ? (
                     <option value="">
                       {t("memory.config.loadingModels", "Loading models")}
                     </option>
-                  ) : skillLearningModels.length === 0 ? (
+                  ) : skillCandidateModels.length === 0 ? (
                     <option value="">
                       {t("memory.config.noModels", "No models available")}
                     </option>
                   ) : null}
-                  {skillLearningModelMissing && (
-                    <option value={formState.skill_learning.model}>
+                  {skillCandidateModelMissing && (
+                    <option value={formState.skill_candidates.model}>
                       {t("memory.config.currentModel", "Current")}:{" "}
-                      {formState.skill_learning.model}
+                      {formState.skill_candidates.model}
                     </option>
                   )}
-                  {skillLearningModels.map((model) => (
+                  {skillCandidateModels.map((model) => (
                     <option key={model} value={model}>
                       {model}
                     </option>
@@ -2805,15 +2828,15 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                     type="number"
                     min={0.5}
                     step="0.1"
-                    value={formState.skill_learning.timeout_seconds}
+                    value={formState.skill_candidates.timeout_seconds}
                     onChange={(event) =>
                       setFormState((prev) => ({
                         ...prev,
-                        skill_learning: {
-                          ...prev.skill_learning,
+                        skill_candidates: {
+                          ...prev.skill_candidates,
                           timeout_seconds: asNumber(
                             event.target.value,
-                            prev.skill_learning.timeout_seconds,
+                            prev.skill_candidates.timeout_seconds,
                           ),
                         },
                       }))
@@ -2832,15 +2855,15 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                   <input
                     type="number"
                     min={1}
-                    value={formState.skill_learning.failure_backoff_seconds}
+                    value={formState.skill_candidates.failure_backoff_seconds}
                     onChange={(event) =>
                       setFormState((prev) => ({
                         ...prev,
-                        skill_learning: {
-                          ...prev.skill_learning,
+                        skill_candidates: {
+                          ...prev.skill_candidates,
                           failure_backoff_seconds: asNumber(
                             event.target.value,
-                            prev.skill_learning.failure_backoff_seconds,
+                            prev.skill_candidates.failure_backoff_seconds,
                           ),
                         },
                       }))
@@ -2851,42 +2874,70 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-                <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
-                  <input
-                    type="checkbox"
-                    checked={formState.skill_learning.reuse_existing_by_name}
+                <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                  <span className="block mb-1">
+                    {t("memory.config.skillRuntimeEnabled", "Runtime Retrieval Enabled")}
+                  </span>
+                  <select
+                    value={formState.skill_runtime.retrieval_enabled ? "true" : "false"}
                     onChange={(event) =>
                       setFormState((prev) => ({
                         ...prev,
-                        skill_learning: {
-                          ...prev.skill_learning,
-                          reuse_existing_by_name: event.target.checked,
+                        skill_runtime: {
+                          ...prev.skill_runtime,
+                          retrieval_enabled: event.target.value === "true",
                         },
                       }))
                     }
-                    className="rounded"
+                    className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                  >
+                    <option value="true">{t("common.enabled", "Enabled")}</option>
+                    <option value="false">{t("common.disabled", "Disabled")}</option>
+                  </select>
+                </label>
+
+                <label className="text-sm text-zinc-700 dark:text-zinc-300">
+                  <span className="block mb-1">
+                    {t("memory.config.skillRuntimeTopK", "Runtime Top K")}
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={formState.skill_runtime.top_k}
+                    onChange={(event) =>
+                      setFormState((prev) => ({
+                        ...prev,
+                        skill_runtime: {
+                          ...prev.skill_runtime,
+                          top_k: asNumber(event.target.value, prev.skill_runtime.top_k),
+                        },
+                      }))
+                    }
+                    className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
                   />
-                  {t(
-                    "memory.config.reuseExistingByName",
-                    "Reuse existing published skill by name",
-                  )}
                 </label>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
                 <label className="text-sm text-zinc-700 dark:text-zinc-300">
                   <span className="block mb-1">
-                    {t("memory.config.skillType", "Skill Type")}
+                    {t("memory.config.skillRuntimeMinSimilarity", "Runtime Min Similarity")}
                   </span>
                   <input
-                    type="text"
-                    value={formState.skill_learning.publish_skill_type}
+                    type="number"
+                    min={0}
+                    max={1}
+                    step="0.01"
+                    value={formState.skill_runtime.min_similarity}
                     onChange={(event) =>
                       setFormState((prev) => ({
                         ...prev,
-                        skill_learning: {
-                          ...prev.skill_learning,
-                          publish_skill_type: event.target.value,
+                        skill_runtime: {
+                          ...prev.skill_runtime,
+                          min_similarity: asNumber(
+                            event.target.value,
+                            prev.skill_runtime.min_similarity,
+                          ),
                         },
                       }))
                     }
@@ -2894,32 +2945,33 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
                   />
                 </label>
 
-                <label className="text-sm text-zinc-700 dark:text-zinc-300">
-                  <span className="block mb-1">
-                    {t("memory.config.storageType", "Storage Type")}
-                  </span>
+                <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
                   <input
-                    type="text"
-                    value={formState.skill_learning.publish_storage_type}
+                    type="checkbox"
+                    checked={formState.skill_runtime.auto_bind_source_agent}
                     onChange={(event) =>
                       setFormState((prev) => ({
                         ...prev,
-                        skill_learning: {
-                          ...prev.skill_learning,
-                          publish_storage_type: event.target.value,
+                        skill_runtime: {
+                          ...prev.skill_runtime,
+                          auto_bind_source_agent: event.target.checked,
                         },
                       }))
                     }
-                    className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/60"
+                    className="rounded"
                   />
+                  {t(
+                    "memory.config.autoBindSourceAgent",
+                    "Auto-bind promoted candidates back to the source agent",
+                  )}
                 </label>
               </div>
 
               <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
                 {t("memory.config.effective", "Effective")}:{" "}
-                {config?.skill_learning?.extraction?.effective?.provider || "-"}{" "}
-                / {config?.skill_learning?.extraction?.effective?.model || "-"}
-                {` (${t("memory.config.source", "Source")}: ${config?.skill_learning?.extraction?.sources?.provider || "-"})`}
+                {config?.skill_candidates?.extraction?.effective?.provider || "-"}{" "}
+                / {config?.skill_candidates?.extraction?.effective?.model || "-"}
+                {` (${t("memory.config.source", "Source")}: ${config?.skill_candidates?.extraction?.sources?.provider || "-"})`}
               </p>
             </div>
 

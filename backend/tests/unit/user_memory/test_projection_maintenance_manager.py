@@ -41,8 +41,8 @@ def test_run_projection_maintenance_once_delegates_without_backfill_flags(
     service.to_dict.return_value = {
         "consolidation": {
             "user_status_updates": 1,
-            "skill_proposal_status_updates": 2,
-            "skill_proposal_duplicate_supersedes": 3,
+            "skill_candidate_status_updates": 2,
+            "skill_candidate_duplicate_supersedes": 3,
             "user_entry_status_updates": 4,
             "user_duplicate_entry_supersedes": 5,
         }

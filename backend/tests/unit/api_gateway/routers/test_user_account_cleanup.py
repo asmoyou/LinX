@@ -63,7 +63,7 @@ async def test_delete_current_user_account_cleans_user_memory(monkeypatch):
             "user_id": user_id,
             "entry_ids": ["101", "102"],
             "memory_views": 1,
-            "skill_proposals": 2,
+            "skill_candidates": 2,
             "session_ledgers": 3,
         },
     )

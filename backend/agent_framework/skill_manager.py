@@ -18,10 +18,7 @@ from uuid import UUID
 
 from langchain_core.tools import BaseTool
 
-from access_control.skill_access import build_skill_access_context_for_user_id, can_read_skill
-from database.connection import get_db_session
-from database.models import Skill as SkillModel, User
-from skill_library.skill_registry import get_skill_registry
+from skill_library.runtime_registry import get_skill_runtime_registry
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +109,6 @@ class SkillManager:
         """
         self.agent_id = agent_id
         self.user_id = user_id
-        self.skill_registry = get_skill_registry()
         self.loaded_langchain_tools: Dict[UUID, BaseTool] = {}
         self.loaded_agent_skills: Dict[UUID, AgentSkillReference] = {}
         
@@ -123,7 +119,7 @@ class SkillManager:
     
     async def discover_skills(
         self,
-        agent_capabilities: List[str],
+        agent_capabilities: Optional[List[str]] = None,
         context: Optional[Dict[str, Any]] = None
     ) -> List[SkillInfo]:
         """Discover available skills for this agent.
@@ -141,66 +137,63 @@ class SkillManager:
             List of SkillInfo objects
         """
         logger.info(
-            f"Discovering skills for agent {self.agent_id}",
-            extra={
-                "agent_id": str(self.agent_id),
-                "capabilities": agent_capabilities
-            }
+            "Discovering bound skills for agent %s",
+            self.agent_id,
+            extra={"agent_id": str(self.agent_id)},
         )
-        
-        discovered_skills = []
-        
-        with get_db_session() as session:
-            user = session.query(User).filter(User.user_id == self.user_id).first()
-            user_role = str(getattr(user, "role", "") or "")
-            access_context = build_skill_access_context_for_user_id(
-                session=session,
-                user_id=self.user_id,
-                role=user_role,
+
+        runtime_registry = get_skill_runtime_registry()
+        discovered_skills: List[SkillInfo] = []
+        seen: set[tuple[UUID, str]] = set()
+
+        for descriptor in runtime_registry.list_tool_skills(
+            agent_id=self.agent_id,
+            user_id=self.user_id,
+        ):
+            key = (descriptor.skill_id, "langchain_tool")
+            if key in seen:
+                continue
+            seen.add(key)
+            discovered_skills.append(
+                SkillInfo(
+                    skill_id=descriptor.skill_id,
+                    skill_slug=descriptor.slug,
+                    display_name=descriptor.display_name,
+                    description=descriptor.description,
+                    skill_type="langchain_tool",
+                    storage_type=descriptor.artifact_storage_kind,
+                    storage_path=descriptor.artifact_ref,
+                    skill_md_content=descriptor.instruction_md,
+                    code=descriptor.tool_code,
+                    interface_definition=descriptor.interface_definition,
+                    manifest=descriptor.manifest,
+                )
             )
 
-            # Query active skills by configured skill_id capability strings.
-            for capability in agent_capabilities:
-                try:
-                    capability_uuid = UUID(str(capability))
-                except (TypeError, ValueError):
-                    continue
-
-                skill = (
-                    session.query(SkillModel)
-                    .filter(
-                        SkillModel.skill_id == capability_uuid,
-                        SkillModel.is_active.is_(True),
-                    )
-                    .first()
+        for descriptor in runtime_registry.list_doc_skills(
+            agent_id=self.agent_id,
+            user_id=self.user_id,
+        ):
+            key = (descriptor.skill_id, "agent_skill")
+            if key in seen:
+                continue
+            seen.add(key)
+            discovered_skills.append(
+                SkillInfo(
+                    skill_id=descriptor.skill_id,
+                    skill_slug=descriptor.slug,
+                    display_name=descriptor.display_name,
+                    description=descriptor.description,
+                    skill_type="agent_skill",
+                    storage_type=descriptor.artifact_storage_kind,
+                    storage_path=descriptor.artifact_ref,
+                    skill_md_content=descriptor.instruction_md,
+                    code=descriptor.tool_code,
+                    interface_definition=descriptor.interface_definition,
+                    manifest=descriptor.manifest,
                 )
+            )
 
-                if not skill or not can_read_skill(skill, access_context):
-                    continue
-
-                skill_info = SkillInfo(
-                    skill_id=skill.skill_id,
-                    skill_slug=skill.skill_slug,
-                    display_name=skill.display_name,
-                    description=skill.description,
-                    skill_type=skill.skill_type,
-                    storage_type=skill.storage_type,
-                    storage_path=skill.storage_path,
-                    skill_md_content=skill.skill_md_content,
-                    code=skill.code,
-                    interface_definition=skill.interface_definition,
-                    manifest=skill.manifest,
-                )
-                discovered_skills.append(skill_info)
-
-                logger.debug(
-                    f"Discovered skill: {skill.skill_slug}",
-                    extra={
-                        "skill_id": str(skill.skill_id),
-                        "skill_type": skill.skill_type,
-                    },
-                )
-        
         logger.info(
             f"Discovered {len(discovered_skills)} skills for agent {self.agent_id}",
             extra={

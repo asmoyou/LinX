@@ -532,19 +532,20 @@ user_memory:
     compact_on_cycle: true
     advisory_lock_id: 73012023
     use_advisory_lock: true
-skill_learning:
+skill_candidates:
   extraction:
     provider: vllm
     model: Qwen3.5-35B-A3B-FP8
     timeout_seconds: 120
-    max_proposals: 6
+    max_candidates: 6
     failure_backoff_seconds: 60
     enabled: true
-  publish_policy:
-    skill_type: agent_skill
-    storage_type: inline
-    reuse_existing_by_name: true
+skill_runtime:
+  retrieval:
     enabled: true
+    top_k: 5
+    min_similarity: 0.45
+  auto_bind_source_agent: true
 session_ledger:
   enabled: true
   retention_days: 14

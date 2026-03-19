@@ -4,6 +4,9 @@ export type AgentSkillSummary = {
   display_name: string;
   description: string;
   skill_type: string;
+  artifact_kind?: string | null;
+  runtime_mode?: string | null;
+  active_revision_id?: string | null;
   version: string;
   access_level: 'private' | 'team' | 'public';
   department_id?: string | null;
@@ -33,7 +36,6 @@ export type Agent = {
   departmentId?: string;
   accessLevel?: 'private' | 'team' | 'public';
   allowedKnowledge?: string[];
-  allowedMemory?: string[];
   topK?: number;
   similarityThreshold?: number;
   createdAt?: string;

@@ -128,19 +128,23 @@ _RESET_CONFIG_DEFAULTS: Dict[str, Dict[str, Any]] = {
             "use_advisory_lock": True,
         },
     },
-    "skill_learning": {
+    "skill_candidates": {
         "extraction": {
+            "enabled": True,
             "provider": "",
             "model": "",
             "timeout_seconds": 120,
-            "max_proposals": 6,
+            "max_candidates": 6,
             "failure_backoff_seconds": 60,
         },
-        "publish_policy": {
-            "skill_type": "agent_skill",
-            "storage_type": "inline",
-            "reuse_existing_by_name": True,
+    },
+    "skill_runtime": {
+        "retrieval": {
+            "enabled": True,
+            "top_k": 5,
+            "min_similarity": 0.45,
         },
+        "auto_bind_source_agent": True,
     },
     "session_ledger": {
         "enabled": True,
@@ -286,21 +290,29 @@ def _stored_user_memory_section_from_payload(payload: Dict[str, Any]) -> Dict[st
     }
 
 
-def _stored_skill_learning_section_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    skill_learning_payload = _dict_section(payload.get("skill_learning"))
+def _stored_skill_candidates_section_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    skill_candidates_payload = _dict_section(payload.get("skill_candidates"))
     return {
         "extraction": {
             key: value
-            for key, value in _dict_section(skill_learning_payload.get("extraction")).items()
+            for key, value in _dict_section(skill_candidates_payload.get("extraction")).items()
             if key not in {"effective", "sources"}
         },
-        "publish_policy": _dict_section(skill_learning_payload.get("publish_policy")),
+    }
+
+
+def _stored_skill_runtime_section_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    skill_runtime_payload = _dict_section(payload.get("skill_runtime"))
+    return {
+        "retrieval": _dict_section(skill_runtime_payload.get("retrieval")),
+        "auto_bind_source_agent": bool(skill_runtime_payload.get("auto_bind_source_agent", True)),
     }
 
 
 def _build_memory_config_payload(
     user_memory_section: dict,
-    skill_learning_section: dict,
+    skill_candidates_section: dict,
+    skill_runtime_section: dict,
     session_ledger_section: dict,
     runtime_context_section: dict,
     kb_section: Optional[dict] = None,
@@ -312,12 +324,14 @@ def _build_memory_config_payload(
     llm_section = llm_section if isinstance(llm_section, dict) else {}
 
     user_memory_defaults = _RESET_CONFIG_DEFAULTS["user_memory"]
-    skill_learning_defaults = _RESET_CONFIG_DEFAULTS["skill_learning"]
+    skill_candidates_defaults = _RESET_CONFIG_DEFAULTS["skill_candidates"]
+    skill_runtime_defaults = _RESET_CONFIG_DEFAULTS["skill_runtime"]
     session_ledger_defaults = _RESET_CONFIG_DEFAULTS["session_ledger"]
     runtime_context_defaults = _RESET_CONFIG_DEFAULTS["runtime_context"]
 
     user_memory_cfg = _dict_section(user_memory_section)
-    skill_learning_cfg = _dict_section(skill_learning_section)
+    skill_candidates_cfg = _dict_section(skill_candidates_section)
+    skill_runtime_cfg = _dict_section(skill_runtime_section)
     session_ledger_cfg = _dict_section(session_ledger_section)
     runtime_context_cfg = _dict_section(runtime_context_section)
 
@@ -332,8 +346,8 @@ def _build_memory_config_payload(
     user_memory_vector_indexing_cfg = _dict_section(user_memory_cfg.get("vector_indexing"))
     user_memory_vector_cleanup_cfg = _dict_section(user_memory_cfg.get("vector_cleanup"))
 
-    skill_learning_extraction_cfg = _dict_section(skill_learning_cfg.get("extraction"))
-    skill_learning_publish_cfg = _dict_section(skill_learning_cfg.get("publish_policy"))
+    skill_candidates_extraction_cfg = _dict_section(skill_candidates_cfg.get("extraction"))
+    skill_runtime_retrieval_cfg = _dict_section(skill_runtime_cfg.get("retrieval"))
 
     user_memory_embedding = _deep_merge(
         user_memory_defaults["embedding"], user_memory_embedding_cfg
@@ -426,10 +440,6 @@ def _build_memory_config_payload(
     user_memory_vector_cleanup = _deep_merge(
         user_memory_defaults["vector_cleanup"], user_memory_vector_cleanup_cfg
     )
-    skill_learning_publish = _deep_merge(
-        skill_learning_defaults["publish_policy"], skill_learning_publish_cfg
-    )
-
     session_ledger_payload = _deep_merge(session_ledger_defaults, session_ledger_cfg)
     runtime_context_payload = _deep_merge(runtime_context_defaults, runtime_context_cfg)
 
@@ -464,17 +474,29 @@ def _build_memory_config_payload(
         int(user_memory_extraction["max_facts"]),
     )
 
-    skill_learning_extraction = _build_extraction_payload(
-        extraction_cfg=skill_learning_extraction_cfg,
-        defaults=skill_learning_defaults["extraction"],
+    skill_candidates_extraction = _build_extraction_payload(
+        extraction_cfg=skill_candidates_extraction_cfg,
+        defaults=skill_candidates_defaults["extraction"],
         llm_section=llm_section,
-        provider_source_key="skill_learning.extraction.provider",
-        model_source_key="skill_learning.extraction.model",
+        provider_source_key="skill_candidates.extraction.provider",
+        model_source_key="skill_candidates.extraction.model",
     )
-    skill_learning_extraction["max_proposals"] = _coerce_positive_int(
-        skill_learning_extraction.get("max_proposals"),
-        int(skill_learning_defaults["extraction"]["max_proposals"]),
+    skill_candidates_extraction["max_candidates"] = _coerce_positive_int(
+        skill_candidates_extraction.get("max_candidates"),
+        int(skill_candidates_defaults["extraction"]["max_candidates"]),
     )
+    skill_runtime_payload = {
+        "retrieval": _deep_merge(
+            skill_runtime_defaults["retrieval"],
+            skill_runtime_retrieval_cfg,
+        ),
+        "auto_bind_source_agent": bool(
+            skill_runtime_cfg.get(
+                "auto_bind_source_agent",
+                skill_runtime_defaults["auto_bind_source_agent"],
+            )
+        ),
+    }
 
     from user_memory.vector_index import (
         get_user_memory_vector_index_state,
@@ -504,10 +526,10 @@ def _build_memory_config_payload(
             "vector_cleanup": user_memory_vector_cleanup,
             "indexState": index_state_payload,
         },
-        "skill_learning": {
-            "extraction": skill_learning_extraction,
-            "publish_policy": skill_learning_publish,
+        "skill_candidates": {
+            "extraction": skill_candidates_extraction,
         },
+        "skill_runtime": skill_runtime_payload,
         "session_ledger": session_ledger_payload,
         "runtime_context": runtime_context_payload,
         "recommended": _RESET_CONFIG_DEFAULTS,
@@ -518,13 +540,20 @@ async def get_memory_config(
     *,
     current_user: CurrentUser,
 ) -> MemoryConfigResponse:
-    """Get reset-era user-memory and skill-learning configuration."""
+    """Get reset-era user-memory, skill-candidate, and runtime configuration."""
     try:
         config = get_config()
+        skill_candidates_section = _safe_get_section(config, "skill_candidates")
+        if not skill_candidates_section:
+            legacy_skill_learning = _safe_get_section(config, "skill_learning")
+            skill_candidates_section = {
+                "extraction": _dict_section(legacy_skill_learning.get("extraction"))
+            }
         return MemoryConfigResponse(
             **_build_memory_config_payload(
                 _safe_get_section(config, "user_memory"),
-                _safe_get_section(config, "skill_learning"),
+                skill_candidates_section,
+                _safe_get_section(config, "skill_runtime"),
                 _safe_get_section(config, "session_ledger"),
                 _safe_get_section(config, "runtime_context"),
                 _safe_get_section(config, "knowledge_base"),
@@ -565,14 +594,24 @@ async def update_memory_config(
             raw_config = yaml.safe_load(file_obj) or {}
 
         merged_user_memory = _dict_section(raw_config.get("user_memory"))
-        merged_skill_learning = _dict_section(raw_config.get("skill_learning"))
+        merged_skill_candidates = _dict_section(raw_config.get("skill_candidates"))
+        if not merged_skill_candidates:
+            legacy_skill_learning = _dict_section(raw_config.get("skill_learning"))
+            merged_skill_candidates = {
+                "extraction": _dict_section(legacy_skill_learning.get("extraction"))
+            }
+        merged_skill_runtime = _dict_section(raw_config.get("skill_runtime"))
         merged_session_ledger = _dict_section(raw_config.get("session_ledger"))
         merged_runtime_context = _dict_section(raw_config.get("runtime_context"))
 
         if update_data.user_memory is not None:
             merged_user_memory = _deep_merge(merged_user_memory, update_data.user_memory)
-        if update_data.skill_learning is not None:
-            merged_skill_learning = _deep_merge(merged_skill_learning, update_data.skill_learning)
+        if update_data.skill_candidates is not None:
+            merged_skill_candidates = _deep_merge(
+                merged_skill_candidates, update_data.skill_candidates
+            )
+        if update_data.skill_runtime is not None:
+            merged_skill_runtime = _deep_merge(merged_skill_runtime, update_data.skill_runtime)
         if update_data.session_ledger is not None:
             merged_session_ledger = _deep_merge(merged_session_ledger, update_data.session_ledger)
         if update_data.runtime_context is not None:
@@ -582,16 +621,19 @@ async def update_memory_config(
 
         canonical_payload = _build_memory_config_payload(
             merged_user_memory,
-            merged_skill_learning,
+            merged_skill_candidates,
+            merged_skill_runtime,
             merged_session_ledger,
             merged_runtime_context,
             _dict_section(raw_config.get("knowledge_base")),
             _dict_section(raw_config.get("llm")),
         )
         raw_config["user_memory"] = _stored_user_memory_section_from_payload(canonical_payload)
-        raw_config["skill_learning"] = _stored_skill_learning_section_from_payload(
+        raw_config["skill_candidates"] = _stored_skill_candidates_section_from_payload(
             canonical_payload
         )
+        raw_config["skill_runtime"] = _stored_skill_runtime_section_from_payload(canonical_payload)
+        raw_config.pop("skill_learning", None)
         raw_config["session_ledger"] = _dict_section(canonical_payload.get("session_ledger"))
         raw_config["runtime_context"] = _dict_section(canonical_payload.get("runtime_context"))
 
@@ -605,10 +647,17 @@ async def update_memory_config(
             )
 
         reloaded = reload_config(config_path)
+        reloaded_skill_candidates = _safe_get_section(reloaded, "skill_candidates")
+        if not reloaded_skill_candidates:
+            legacy_skill_learning = _safe_get_section(reloaded, "skill_learning")
+            reloaded_skill_candidates = {
+                "extraction": _dict_section(legacy_skill_learning.get("extraction"))
+            }
         return MemoryConfigResponse(
             **_build_memory_config_payload(
                 _safe_get_section(reloaded, "user_memory"),
-                _safe_get_section(reloaded, "skill_learning"),
+                reloaded_skill_candidates,
+                _safe_get_section(reloaded, "skill_runtime"),
                 _safe_get_section(reloaded, "session_ledger"),
                 _safe_get_section(reloaded, "runtime_context"),
                 _safe_get_section(reloaded, "knowledge_base"),

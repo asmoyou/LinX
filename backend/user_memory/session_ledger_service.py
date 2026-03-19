@@ -93,7 +93,7 @@ class MemorySessionLedgerService:
                 "agent_name": str(agent_name or "").strip() or None,
                 "turn_count": len(turns),
                 "user_signal_count": len(extracted_signals),
-                "skill_proposal_candidate_count": len(extracted_agent_candidates),
+                "skill_candidate_count": len(extracted_agent_candidates),
                 **dict(metadata or {}),
             },
         )
@@ -105,8 +105,8 @@ class MemorySessionLedgerService:
                 extracted_signals=extracted_signals,
             )
         )
-        agent_observations, skill_proposal_projections = (
-            self._observation_builder.build_skill_proposal_observations(
+        agent_observations, skill_candidate_projections = (
+            self._observation_builder.build_skill_candidate_observations(
                 agent_id=str(agent_id),
                 agent_name=agent_name,
                 turns=turns,
@@ -114,7 +114,7 @@ class MemorySessionLedgerService:
             )
         )
         observations = user_observations + agent_observations
-        projections = user_projections + skill_proposal_projections
+        projections = user_projections + skill_candidate_projections
         session_row_id = self._repository.record_session_snapshot(
             snapshot=snapshot,
             events=events,

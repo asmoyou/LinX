@@ -1,36 +1,68 @@
-import { BrowserRouter as Router, Routes, Route, useLocation, Navigate } from 'react-router-dom';
-import { AnimatePresence, motion } from 'framer-motion';
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
-import { Layout } from './components/layout/Layout';
-import { ProtectedRoute } from './components/ProtectedRoute';
-import { LoadingSpinner } from './components/LoadingSpinner';
-import { Toast } from './components/Toast';
-import { useAuthStore } from './stores';
-import ErrorBoundary from './components/error/ErrorBoundary';
-import PageErrorBoundary from './components/error/PageErrorBoundary';
-import { useUserInitialization } from './hooks';
-import { authApi, type SetupStatusResponse } from './api';
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  useLocation,
+  Navigate,
+} from "react-router-dom";
+import { AnimatePresence, motion } from "framer-motion";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { Layout } from "./components/layout/Layout";
+import { ProtectedRoute } from "./components/ProtectedRoute";
+import { LoadingSpinner } from "./components/LoadingSpinner";
+import { Toast } from "./components/Toast";
+import { useAuthStore } from "./stores";
+import ErrorBoundary from "./components/error/ErrorBoundary";
+import PageErrorBoundary from "./components/error/PageErrorBoundary";
+import { useUserInitialization } from "./hooks";
+import { authApi, type SetupStatusResponse } from "./api";
 
 // Lazy load pages for better performance (6.9.6)
-const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
-const Workforce = lazy(() => import('./pages/Workforce').then(m => ({ default: m.Workforce })));
-const AgentConversation = lazy(() =>
-  import('./pages/AgentConversation').then((m) => ({ default: m.AgentConversation }))
+const Dashboard = lazy(() =>
+  import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })),
 );
-const Tasks = lazy(() => import('./pages/Missions').then(m => ({ default: m.Missions })));
-const Knowledge = lazy(() => import('./pages/Knowledge').then(m => ({ default: m.Knowledge })));
-const Memory = lazy(() => import('./pages/Memory').then((m) => ({ default: m.Memory })));
-const Robots = lazy(() => import('./pages/Robots').then(m => ({ default: m.Robots })));
-const Skills = lazy(() => import('./pages/Skills'));
-const Departments = lazy(() => import('./pages/Departments').then(m => ({ default: m.Departments })));
-const UserManagement = lazy(() => import('./pages/UserManagement').then(m => ({ default: m.UserManagement })));
-const RoleManagement = lazy(() => import('./pages/RoleManagement').then(m => ({ default: m.RoleManagement })));
-const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings })));
-const Profile = lazy(() => import('./pages/Profile').then(m => ({ default: m.Profile })));
-const Notifications = lazy(() => import('./pages/Notifications').then(m => ({ default: m.Notifications })));
-const Login = lazy(() => import('./pages/Login'));
-const Register = lazy(() => import('./pages/Register'));
-const Setup = lazy(() => import('./pages/Setup'));
+const Workforce = lazy(() =>
+  import("./pages/Workforce").then((m) => ({ default: m.Workforce })),
+);
+const AgentConversation = lazy(() =>
+  import("./pages/AgentConversation").then((m) => ({
+    default: m.AgentConversation,
+  })),
+);
+const Tasks = lazy(() =>
+  import("./pages/Missions").then((m) => ({ default: m.Missions })),
+);
+const Knowledge = lazy(() =>
+  import("./pages/Knowledge").then((m) => ({ default: m.Knowledge })),
+);
+const Memory = lazy(() =>
+  import("./pages/Memory").then((m) => ({ default: m.Memory })),
+);
+const Robots = lazy(() =>
+  import("./pages/Robots").then((m) => ({ default: m.Robots })),
+);
+const Skills = lazy(() => import("./pages/Skills"));
+const Departments = lazy(() =>
+  import("./pages/Departments").then((m) => ({ default: m.Departments })),
+);
+const UserManagement = lazy(() =>
+  import("./pages/UserManagement").then((m) => ({ default: m.UserManagement })),
+);
+const RoleManagement = lazy(() =>
+  import("./pages/RoleManagement").then((m) => ({ default: m.RoleManagement })),
+);
+const Settings = lazy(() =>
+  import("./pages/Settings").then((m) => ({ default: m.Settings })),
+);
+const Profile = lazy(() =>
+  import("./pages/Profile").then((m) => ({ default: m.Profile })),
+);
+const Notifications = lazy(() =>
+  import("./pages/Notifications").then((m) => ({ default: m.Notifications })),
+);
+const Login = lazy(() => import("./pages/Login"));
+const Register = lazy(() => import("./pages/Register"));
+const Setup = lazy(() => import("./pages/Setup"));
 
 // Loading fallback component
 const PageLoader = () => (
@@ -42,7 +74,7 @@ const PageLoader = () => (
 const buildRouteAnimationKey = (pathname: string): string => {
   return pathname.replace(
     /^\/workforce\/([^/]+)\/conversations(?:\/[^/]+)?$/,
-    '/workforce/$1/conversations'
+    "/workforce/$1/conversations",
   );
 };
 
@@ -51,11 +83,14 @@ interface AnimatedRoutesProps {
   onSetupStatusRefresh: () => Promise<void>;
 }
 
-const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesProps) => {
+const AnimatedRoutes = ({
+  setupStatus,
+  onSetupStatusRefresh,
+}: AnimatedRoutesProps) => {
   const location = useLocation();
   const { isAuthenticated } = useAuthStore();
   const requiresSetup = setupStatus?.requires_setup ?? false;
-  const defaultAdminUsername = setupStatus?.default_admin_username ?? 'admin';
+  const defaultAdminUsername = setupStatus?.default_admin_username ?? "admin";
   const routeAnimationKey = buildRouteAnimationKey(location.pathname);
 
   return (
@@ -244,11 +279,7 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
           />
           <Route
             path="memory/user-memory"
-            element={<Navigate to="/memory?tab=user-memory" replace />}
-          />
-          <Route
-            path="memory/skill-proposals"
-            element={<Navigate to="/memory?tab=skill-proposals" replace />}
+            element={<Navigate to="/memory" replace />}
           />
           <Route
             path="skills"
@@ -395,7 +426,9 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
 function App() {
   // Initialize user data when authenticated
   useUserInitialization();
-  const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(null);
+  const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(
+    null,
+  );
   const [isSetupStatusLoading, setIsSetupStatusLoading] = useState(true);
 
   const refreshSetupStatus = useCallback(async () => {
@@ -405,11 +438,11 @@ function App() {
       const nextStatus = await authApi.getSetupStatus();
       setSetupStatus(nextStatus);
     } catch (error) {
-      console.error('Failed to load setup status:', error);
+      console.error("Failed to load setup status:", error);
       setSetupStatus({
         requires_setup: false,
         has_admin_account: true,
-        default_admin_username: 'admin',
+        default_admin_username: "admin",
       });
     } finally {
       setIsSetupStatusLoading(false);

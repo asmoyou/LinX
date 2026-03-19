@@ -337,14 +337,14 @@ def test_prune_interaction_log_memories_drops_unpublished_skill_candidates():
         {
             "content": "interaction.sop.topic=写旅游攻略\ninteraction.sop.steps=1.收集资料|2.整理路线|3.输出文档",
             "metadata": {
-                "signal_type": "skill_proposal",
+                "signal_type": "skill_candidate",
                 "review_status": "pending",
             },
         },
         {
             "content": "interaction.sop.topic=写旅游攻略\ninteraction.sop.steps=1.收集资料|2.整理路线|3.输出文档",
             "metadata": {
-                "signal_type": "skill_proposal",
+                "signal_type": "skill_candidate",
                 "review_status": "published",
             },
         },

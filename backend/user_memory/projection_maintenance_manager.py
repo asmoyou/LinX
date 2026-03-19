@@ -181,8 +181,8 @@ def run_projection_maintenance_once(
         consolidation = payload.get("consolidation") or {}
         total_updates = (
             int(consolidation.get("user_status_updates") or 0)
-            + int(consolidation.get("skill_proposal_status_updates") or 0)
-            + int(consolidation.get("skill_proposal_duplicate_supersedes") or 0)
+            + int(consolidation.get("skill_candidate_status_updates") or 0)
+            + int(consolidation.get("skill_candidate_duplicate_supersedes") or 0)
             + int(consolidation.get("user_entry_status_updates") or 0)
             + int(consolidation.get("user_duplicate_entry_supersedes") or 0)
         )

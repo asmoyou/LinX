@@ -34,6 +34,7 @@ from skill_library.execution_engine import get_execution_engine
 from skill_library.gating_engine import GatingEngine
 from skill_library.langchain_parser import parse_langchain_tool
 from skill_library.package_handler import PackageHandler
+from skill_library.canonical_service import SkillRevisionInfo, get_canonical_skill_service
 from skill_library.skill_md_parser import SkillMdParser
 from skill_library.skill_registry import SkillInfo, get_skill_registry
 from skill_library.skill_slug import generate_unique_skill_slug, normalize_skill_slug
@@ -537,6 +538,11 @@ class SkillResponse(BaseModel):
     access_level: str = SKILL_ACCESS_PRIVATE
     department_id: Optional[str] = None
     department_name: Optional[str] = None
+    source_kind: Optional[str] = None
+    artifact_kind: Optional[str] = None
+    runtime_mode: Optional[str] = None
+    lifecycle_state: Optional[str] = None
+    active_revision_id: Optional[str] = None
     can_edit: bool = False
     can_delete: bool = False
     can_publish_public: bool = False
@@ -573,10 +579,10 @@ class SkillResponse(BaseModel):
         """
         access_context = build_skill_access_context(current_user)
         # Get additional fields from manifest if available (only for agent_skill)
-        skill_md_content = None
-        homepage = None
-        skill_metadata = None
-        gating_status = None
+        skill_md_content = getattr(skill_info, "skill_md_content", None)
+        homepage = getattr(skill_info, "homepage", None)
+        skill_metadata = getattr(skill_info, "skill_metadata", None)
+        gating_status = getattr(skill_info, "gating_status", None)
 
         # Only process manifest for agent_skill type
         if (
@@ -601,6 +607,12 @@ class SkillResponse(BaseModel):
             access_level=skill_info.access_level,
             department_id=skill_info.department_id,
             department_name=skill_info.department_name,
+            source_kind=getattr(skill_info, "source_kind", None),
+            artifact_kind=getattr(skill_info, "artifact_kind", None),
+            runtime_mode=getattr(skill_info, "runtime_mode", None),
+            lifecycle_state=getattr(skill_info, "lifecycle_state", None),
+            active_revision_id=str(getattr(skill_info, "active_revision_id", None) or "")
+            or None,
             can_edit=can_update_skill(skill_info, access_context),
             can_delete=can_delete_skill(skill_info, access_context),
             can_publish_public=can_set_public_skill(
@@ -630,6 +642,76 @@ class SkillResponse(BaseModel):
             skill_metadata=skill_metadata,
             gating_status=gating_status,
         )
+
+
+class SkillRevisionResponse(BaseModel):
+    revision_id: str = Field(alias="revisionId")
+    skill_id: str = Field(alias="skillId")
+    version: str
+    review_state: str = Field(alias="reviewState")
+    instruction_md: Optional[str] = Field(default=None, alias="instructionMd")
+    tool_code: Optional[str] = Field(default=None, alias="toolCode")
+    interface_definition: Optional[Dict[str, Any]] = Field(default=None, alias="interfaceDefinition")
+    artifact_storage_kind: str = Field(alias="artifactStorageKind")
+    artifact_ref: Optional[str] = Field(default=None, alias="artifactRef")
+    manifest: Optional[Dict[str, Any]] = None
+    config: Optional[Dict[str, Any]] = None
+    search_document: Optional[str] = Field(default=None, alias="searchDocument")
+    checksum: Optional[str] = None
+    change_note: Optional[str] = Field(default=None, alias="changeNote")
+    created_by: Optional[str] = Field(default=None, alias="createdBy")
+    created_at: Optional[str] = Field(default=None, alias="createdAt")
+
+    model_config = {"populate_by_name": True}
+
+    @classmethod
+    def from_revision_info(cls, info: SkillRevisionInfo) -> "SkillRevisionResponse":
+        return cls(
+            revisionId=str(info.revision_id),
+            skillId=str(info.skill_id),
+            version=info.version,
+            reviewState=info.review_state,
+            instructionMd=info.instruction_md,
+            toolCode=info.tool_code,
+            interfaceDefinition=info.interface_definition,
+            artifactStorageKind=info.artifact_storage_kind,
+            artifactRef=info.artifact_ref,
+            manifest=info.manifest,
+            config=info.config,
+            searchDocument=info.search_document,
+            checksum=info.checksum,
+            changeNote=info.change_note,
+            createdBy=info.created_by,
+            createdAt=info.created_at.isoformat() if getattr(info.created_at, "isoformat", None) else None,
+        )
+
+
+class SkillRevisionCreateRequest(BaseModel):
+    version: str = "1.0.0"
+    instruction_md: Optional[str] = Field(default=None, alias="instructionMd")
+    tool_code: Optional[str] = Field(default=None, alias="toolCode")
+    interface_definition: Dict[str, Any] = Field(default_factory=dict, alias="interfaceDefinition")
+    artifact_storage_kind: str = Field(default="inline", alias="artifactStorageKind")
+    artifact_ref: Optional[str] = Field(default=None, alias="artifactRef")
+    manifest: Optional[Dict[str, Any]] = None
+    config: Optional[Dict[str, Any]] = None
+    change_note: Optional[str] = Field(default=None, alias="changeNote")
+    review_state: str = Field(default="pending_review", alias="reviewState")
+
+    model_config = {"populate_by_name": True}
+
+
+class SkillRevisionReviewRequest(BaseModel):
+    revision_id: str = Field(alias="revisionId")
+    review_state: str = Field(alias="reviewState", pattern=r"^(approved|rejected)$")
+
+    model_config = {"populate_by_name": True}
+
+
+class SkillRevisionActivationRequest(BaseModel):
+    revision_id: str = Field(alias="revisionId")
+
+    model_config = {"populate_by_name": True}
 
 
 class RegisterDefaultsResponse(BaseModel):
@@ -961,6 +1043,108 @@ async def get_skill(
     except Exception as e:
         logger.error(f"Failed to get skill: {e}")
         raise HTTPException(status_code=500, detail="Failed to get skill")
+
+
+@router.get("/{skill_id}/revisions", response_model=List[SkillRevisionResponse])
+async def list_skill_revisions(
+    skill_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        skill_uuid = UUID(skill_id)
+        access_context = build_skill_access_context(current_user)
+        rows = get_canonical_skill_service().list_revisions(
+            skill_id=skill_uuid,
+            access_context=access_context,
+        )
+        return [SkillRevisionResponse.from_revision_info(row) for row in rows]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid skill ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list skill revisions: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list skill revisions")
+
+
+@router.post("/{skill_id}/revisions", response_model=SkillRevisionResponse)
+async def create_skill_revision(
+    skill_id: str,
+    payload: SkillRevisionCreateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        skill_uuid = UUID(skill_id)
+        existing = _require_writable_skill(get_skill_registry().get_skill(skill_uuid), current_user)
+        row = get_canonical_skill_service().create_revision(
+            skill_id=skill_uuid,
+            owner_user_id=str(current_user.user_id),
+            revision_payload=payload.model_dump(by_alias=False),
+        )
+        return SkillRevisionResponse.from_revision_info(row)
+    except ValueError as exc:
+        message = str(exc)
+        if message == "Skill not found":
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create skill revision: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create skill revision")
+
+
+@router.post("/{skill_id}/review", response_model=SkillRevisionResponse)
+async def review_skill_revision(
+    skill_id: str,
+    payload: SkillRevisionReviewRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        skill_uuid = UUID(skill_id)
+        _require_writable_skill(get_skill_registry().get_skill(skill_uuid), current_user)
+        row = get_canonical_skill_service().review_revision(
+            skill_id=skill_uuid,
+            revision_id=UUID(payload.revision_id),
+            review_state=payload.review_state,
+        )
+        return SkillRevisionResponse.from_revision_info(row)
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "not found" in message.lower() else 400
+        raise HTTPException(status_code=status_code, detail=message)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to review skill revision: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to review skill revision")
+
+
+@router.post("/{skill_id}/activate-revision", response_model=SkillResponse)
+async def activate_skill_revision(
+    skill_id: str,
+    payload: SkillRevisionActivationRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        skill_uuid = UUID(skill_id)
+        _require_writable_skill(get_skill_registry().get_skill(skill_uuid), current_user)
+        get_canonical_skill_service().activate_revision(
+            skill_id=skill_uuid,
+            revision_id=UUID(payload.revision_id),
+            actor_user_id=str(current_user.user_id),
+        )
+        skill = _require_readable_skill(get_skill_registry().get_skill(skill_uuid), current_user)
+        return SkillResponse.from_skill_info(skill, current_user=current_user, include_code=True)
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "not found" in message.lower() else 400
+        raise HTTPException(status_code=status_code, detail=message)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to activate skill revision: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to activate skill revision")
 
 
 @router.post("", response_model=SkillResponse, status_code=201)
@@ -1554,7 +1738,6 @@ async def test_skill(
                     capabilities=capabilities,
                     access_level=agent_info.access_level or "private",
                     allowed_knowledge=agent_info.allowed_knowledge or [],
-                    allowed_memory=agent_info.allowed_memory or [],
                     llm_model=agent_info.llm_model or "llama3.2:latest",
                     temperature=agent_info.temperature or 0.7,
                     max_iterations=20,
@@ -2018,6 +2201,7 @@ async def activate_skill(
             _require_writable_skill(db_skill, current_user)
 
             db_skill.is_active = True
+            db_skill.lifecycle_state = "active"
             session.commit()
 
         logger.info(f"Skill activated by user {current_user.user_id}", extra={"skill_id": skill_id})
@@ -2055,6 +2239,7 @@ async def deactivate_skill(
             _require_writable_skill(db_skill, current_user)
 
             db_skill.is_active = False
+            db_skill.lifecycle_state = "deprecated"
             session.commit()
 
         # Clear from execution engine cache

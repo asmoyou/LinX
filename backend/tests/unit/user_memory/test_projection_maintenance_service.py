@@ -90,18 +90,18 @@ class _RepoStub:
                 content="用户喜欢喝可乐",
             ),
         ]
-        self.skill_proposals = [
+        self.skill_candidates = [
             SimpleNamespace(
                 id=10,
                 owner_id="a-1",
                 owner_type="agent",
                 agent_id="a-1",
-                proposal_key="pdf-path-a",
+                cluster_key="pdf-path-a",
                 title="Stable PDF delivery",
                 summary="Stable PDF delivery",
                 details=None,
                 status="active",
-                proposal_payload={
+                candidate_payload={
                     "goal": "Stable PDF delivery",
                     "successful_path": ["inspect", "convert", "verify"],
                     "confidence": 0.9,
@@ -115,12 +115,12 @@ class _RepoStub:
                 owner_id="a-1",
                 owner_type="agent",
                 agent_id="a-1",
-                proposal_key="pdf-path-b",
+                cluster_key="pdf-path-b",
                 title="Stable PDF delivery",
                 summary="Stable PDF delivery",
                 details=None,
                 status="pending_review",
-                proposal_payload={
+                candidate_payload={
                     "goal": "Stable PDF delivery",
                     "successful_path": ["inspect", "convert", "verify"],
                     "confidence": 0.6,
@@ -253,7 +253,7 @@ class _RepoStub:
         self.relation_updates = []
 
     def list_projections(self, *, owner_type, **kwargs):
-        return list(self.user_views if owner_type == "user" else self.skill_proposals)
+        return list(self.user_views if owner_type == "user" else self.skill_candidates)
 
     def list_entries(self, *, owner_type, **kwargs):
         return list(self.user_entries if owner_type == "user" else [])
@@ -283,10 +283,10 @@ class _RepoStub:
         )
 
     def get_projection(self, *, owner_type, owner_id, projection_type, projection_key):
-        rows = self.user_views if owner_type == "user" else self.skill_proposals
+        rows = self.user_views if owner_type == "user" else self.skill_candidates
         for row in rows:
-            row_type = getattr(row, "view_type", None) or "skill_proposal"
-            row_key = getattr(row, "view_key", None) or getattr(row, "proposal_key", None)
+            row_type = getattr(row, "view_type", None) or "skill_candidate"
+            row_key = getattr(row, "view_key", None) or getattr(row, "cluster_key", None)
             if (
                 str(row.owner_id) == str(owner_id)
                 and str(row_type) == str(projection_type)
@@ -297,7 +297,7 @@ class _RepoStub:
 
     def update_projection(self, projection_id, status=None, payload=None, projection_key=None):
         self.projection_updates.append((projection_id, status, payload, projection_key))
-        for row in self.user_views + self.skill_proposals:
+        for row in self.user_views + self.skill_candidates:
             if row.id != projection_id:
                 continue
             if status is not None:
@@ -308,7 +308,7 @@ class _RepoStub:
                 if hasattr(row, "view_data"):
                     row.view_data = payload
                 else:
-                    row.proposal_payload = payload
+                    row.candidate_payload = payload
             break
 
     def upsert_projection(self, *, projection, source_session_id=None):
@@ -375,7 +375,7 @@ def test_run_maintenance_consolidates_status_and_supersedes_duplicates() -> None
     assert payload["consolidation"]["user_entry_status_updates"] == 2
     assert payload["consolidation"]["user_view_identity_rewrites"] >= 1
     assert payload["consolidation"]["user_entry_identity_rewrites"] >= 2
-    assert payload["consolidation"]["skill_proposal_duplicate_supersedes"] == 1
+    assert payload["consolidation"]["skill_candidate_duplicate_supersedes"] == 1
     assert payload["consolidation"]["user_duplicate_entry_supersedes"] == 1
 
     assert any(update[0] == 1 and update[1] == "superseded" for update in repo.projection_updates)

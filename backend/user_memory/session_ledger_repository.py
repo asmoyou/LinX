@@ -1,4 +1,4 @@
-"""Persistence layer for session ledgers, user memory, and learned skill proposals."""
+"""Persistence layer for session ledgers, user memory, and learned skill candidates."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from database.connection import get_db_session
 from database.models import (
     SessionLedger,
     SessionLedgerEvent,
-    SkillProposal,
+    SkillCandidate,
     UserMemoryEmbeddingJob,
     UserMemoryEntry,
     UserMemoryLink,
@@ -72,7 +72,7 @@ class MemoryObservationData:
 
 @dataclass
 class MemoryProjectionData:
-    """In-memory projection rows routed into user views or skill proposals."""
+    """In-memory projection rows routed into user views or skill candidates."""
 
     owner_type: str
     owner_id: str
@@ -460,38 +460,40 @@ class SessionLedgerRepository:
             )
 
     @staticmethod
-    def _apply_skill_proposal_fields(
-        row: SkillProposal,
+    def _apply_skill_candidate_fields(
+        row: SkillCandidate,
         *,
         snapshot: SessionLedgerSnapshot,
-        proposal: MemoryProjectionData,
+        candidate: MemoryProjectionData,
         payload: Dict[str, Any],
         session_ledger_id: Optional[int] = None,
     ) -> None:
         steps = [
             str(step).strip() for step in payload.get("successful_path") or [] if str(step).strip()
         ]
-        existing_payload = dict(row.proposal_payload or {}) if isinstance(row.proposal_payload, dict) else {}
+        existing_payload = (
+            dict(row.candidate_payload or {}) if isinstance(row.candidate_payload, dict) else {}
+        )
         merged_payload = {**existing_payload, **dict(payload)}
         existing_session_ids = SessionLedgerRepository._int_list(
             existing_payload.get("evidence_session_ledger_ids")
         )
         if session_ledger_id is not None and int(session_ledger_id) not in existing_session_ids:
             existing_session_ids.append(int(session_ledger_id))
-        row.agent_id = str(proposal.owner_id)
+        row.agent_id = str(candidate.owner_id)
         row.user_id = str(snapshot.user_id)
-        row.proposal_key = str(proposal.projection_key)
-        row.title = str(proposal.title)
-        row.goal = str(payload.get("goal") or proposal.title)
+        row.cluster_key = str(candidate.projection_key)
+        row.title = str(candidate.title)
+        row.goal = str(payload.get("goal") or candidate.title)
         row.successful_path = steps or list(row.successful_path or [])
         row.why_it_worked = (
-            str(payload.get("why_it_worked") or proposal.summary or row.why_it_worked or "") or None
+            str(payload.get("why_it_worked") or candidate.summary or row.why_it_worked or "") or None
         )
         row.applicability = str(payload.get("applicability") or row.applicability or "") or None
         row.avoid = str(payload.get("avoid") or row.avoid or "") or None
         row.confidence = max(float(row.confidence or 0.0), float(payload.get("confidence") or 0.72))
         next_review_status = SessionLedgerRepository._normalize_review_status(
-            proposal.status,
+            candidate.status,
             payload,
         )
         current_review_status = str(row.review_status or "").strip().lower()
@@ -503,11 +505,11 @@ class SessionLedgerRepository:
         row.evidence_session_ledger_id = (
             int(session_ledger_id) if session_ledger_id is not None else row.evidence_session_ledger_id
         )
-        if proposal.details:
-            merged_payload.setdefault("review_content", str(proposal.details))
+        if candidate.details:
+            merged_payload.setdefault("review_content", str(candidate.details))
         if existing_session_ids:
             merged_payload["evidence_session_ledger_ids"] = existing_session_ids
-        row.proposal_payload = merged_payload
+        row.candidate_payload = merged_payload
 
     @staticmethod
     def _apply_entry_fields(
@@ -872,17 +874,17 @@ class SessionLedgerRepository:
         return None
 
     @staticmethod
-    def _get_skill_proposal_row(
+    def _get_skill_candidate_row(
         db,
         *,
         agent_id: str,
-        proposal_key: str,
-    ) -> Optional[SkillProposal]:
+        cluster_key: str,
+    ) -> Optional[SkillCandidate]:
         return (
-            db.query(SkillProposal)
+            db.query(SkillCandidate)
             .filter(
-                SkillProposal.agent_id == str(agent_id),
-                SkillProposal.proposal_key == str(proposal_key),
+                SkillCandidate.agent_id == str(agent_id),
+                SkillCandidate.cluster_key == str(cluster_key),
             )
             .one_or_none()
         )
@@ -1112,27 +1114,27 @@ class SessionLedgerRepository:
         )
         return existing
 
-    def _upsert_skill_proposal_row(
+    def _upsert_skill_candidate_row(
         self,
         db,
         *,
         snapshot: SessionLedgerSnapshot,
-        proposal: MemoryProjectionData,
+        candidate: MemoryProjectionData,
         session_ledger_id: Optional[int],
-    ) -> SkillProposal:
-        existing = self._get_skill_proposal_row(
+    ) -> SkillCandidate:
+        existing = self._get_skill_candidate_row(
             db,
-            agent_id=str(proposal.owner_id),
-            proposal_key=str(proposal.projection_key),
+            agent_id=str(candidate.owner_id),
+            cluster_key=str(candidate.projection_key),
         )
         if existing is None:
-            existing = SkillProposal()
+            existing = SkillCandidate()
             db.add(existing)
-        self._apply_skill_proposal_fields(
+        self._apply_skill_candidate_fields(
             existing,
             snapshot=snapshot,
-            proposal=proposal,
-            payload=dict(proposal.payload or {}),
+            candidate=candidate,
+            payload=dict(candidate.payload or {}),
             session_ledger_id=session_ledger_id,
         )
         db.flush()
@@ -1256,11 +1258,11 @@ class SessionLedgerRepository:
                         embedding_signature=embedding_signature,
                     )
                     continue
-                if projection_type == "skill_proposal":
-                    self._upsert_skill_proposal_row(
+                if projection_type == "skill_candidate":
+                    self._upsert_skill_candidate_row(
                         db,
                         snapshot=snapshot,
-                        proposal=projection,
+                        candidate=projection,
                         session_ledger_id=int(session_row.id),
                     )
 
@@ -1274,7 +1276,7 @@ class SessionLedgerRepository:
         source_session_id: Optional[int] = None,
         source_observation_id: Optional[int] = None,
     ) -> int:
-        """Upsert a user-memory view or skill proposal by stable identity."""
+        """Upsert a user-memory view or skill candidate by stable identity."""
 
         del source_observation_id
         snapshot = SessionLedgerSnapshot(
@@ -1296,11 +1298,11 @@ class SessionLedgerRepository:
                     embedding_signature=embedding_signature,
                 )
                 return int(row.id)
-            if projection_type == "skill_proposal":
-                row = self._upsert_skill_proposal_row(
+            if projection_type == "skill_candidate":
+                row = self._upsert_skill_candidate_row(
                     db,
                     snapshot=snapshot,
-                    proposal=projection,
+                    candidate=projection,
                     session_ledger_id=source_session_id,
                 )
                 return int(row.id)
@@ -1351,7 +1353,7 @@ class SessionLedgerRepository:
         projection_type: str,
         projection_key: str,
     ) -> Optional[Any]:
-        """Load one user-memory view or skill proposal by stable identity."""
+        """Load one user-memory view or skill candidate by stable identity."""
 
         with get_db_session() as db:
             projection_type = str(projection_type or "").strip().lower()
@@ -1362,16 +1364,16 @@ class SessionLedgerRepository:
                     view_type=projection_type,
                     view_key=str(projection_key),
                 )
-            if str(owner_type) == "agent" and projection_type == "skill_proposal":
-                return self._get_skill_proposal_row(
+            if str(owner_type) == "agent" and projection_type == "skill_candidate":
+                return self._get_skill_candidate_row(
                     db,
                     agent_id=str(owner_id),
-                    proposal_key=str(projection_key),
+                    cluster_key=str(projection_key),
                 )
             return None
 
     def get_projection_by_id(self, projection_id: int) -> Optional[Any]:
-        """Load one user-memory view or skill proposal by numeric id."""
+        """Load one user-memory view or skill candidate by numeric id."""
 
         with get_db_session() as db:
             collection_name, embedding_signature = self._current_vector_target()
@@ -1383,7 +1385,7 @@ class SessionLedgerRepository:
             if row is not None:
                 return row
             return (
-                db.query(SkillProposal).filter(SkillProposal.id == int(projection_id)).one_or_none()
+                db.query(SkillCandidate).filter(SkillCandidate.id == int(projection_id)).one_or_none()
             )
 
     def get_entry(
@@ -1422,7 +1424,7 @@ class SessionLedgerRepository:
         source_session_id: Optional[int] = None,
         source_observation_id: Optional[int] = None,
     ) -> Optional[Any]:
-        """Update a user-memory view or skill proposal."""
+        """Update a user-memory view or skill candidate."""
 
         del source_observation_id
         with get_db_session() as db:
@@ -1456,26 +1458,26 @@ class SessionLedgerRepository:
                 )
                 return row
 
-            proposal = (
-                db.query(SkillProposal).filter(SkillProposal.id == int(projection_id)).one_or_none()
+            candidate = (
+                db.query(SkillCandidate).filter(SkillCandidate.id == int(projection_id)).one_or_none()
             )
-            if proposal is None:
+            if candidate is None:
                 return None
             if title is not None:
-                proposal.title = str(title)
-                proposal.goal = str(title)
+                candidate.title = str(title)
+                candidate.goal = str(title)
             if summary is not None:
-                proposal.why_it_worked = str(summary) if summary else None
+                candidate.why_it_worked = str(summary) if summary else None
             if details is not None:
-                proposal.details = details
+                candidate.details = details
             if status is not None:
-                proposal.status = status
+                candidate.status = status
             if payload is not None:
-                proposal.proposal_payload = dict(payload)
+                candidate.candidate_payload = dict(payload)
             if source_session_id is not None:
-                proposal.evidence_session_ledger_id = source_session_id
+                candidate.evidence_session_ledger_id = source_session_id
             db.flush()
-            return proposal
+            return candidate
 
     def update_entry(
         self,
@@ -1611,24 +1613,24 @@ class SessionLedgerRepository:
         status: Optional[str] = "active",
         limit: Optional[int] = 100,
     ) -> List[Any]:
-        """List user-memory views or skill proposals ordered by recency."""
+        """List user-memory views or skill candidates ordered by recency."""
 
         safe_limit = max(int(limit), 1) if limit is not None else None
         with get_db_session() as db:
             normalized_owner_type = str(owner_type or "").strip().lower()
             normalized_type = str(projection_type or "").strip().lower()
-            if normalized_owner_type == "agent" or normalized_type == "skill_proposal":
-                query = db.query(SkillProposal)
+            if normalized_owner_type == "agent" or normalized_type == "skill_candidate":
+                query = db.query(SkillCandidate)
                 if owner_id:
-                    query = query.filter(SkillProposal.agent_id == str(owner_id))
+                    query = query.filter(SkillCandidate.agent_id == str(owner_id))
                 if status:
                     review_status = self._normalize_review_status(status, {})
                     if str(status).lower() in {"pending_review", "active", "rejected"}:
                         review_status = self._normalize_review_status(status, {})
                     if str(status).lower() == "superseded":
                         return []
-                    query = query.filter(SkillProposal.review_status == review_status)
-                query = query.order_by(SkillProposal.updated_at.desc(), SkillProposal.id.desc())
+                    query = query.filter(SkillCandidate.review_status == review_status)
+                query = query.order_by(SkillCandidate.updated_at.desc(), SkillCandidate.id.desc())
                 if safe_limit is not None:
                     query = query.limit(safe_limit)
                 return list(query.all())
@@ -1696,40 +1698,40 @@ class SessionLedgerRepository:
                 query = query.limit(max(int(limit), 1))
             return list(query.all())
 
-    def list_skill_proposals(
+    def list_skill_candidates(
         self,
         *,
         agent_id: Optional[str] = None,
         review_status: Optional[str] = None,
         limit: Optional[int] = 100,
-    ) -> List[SkillProposal]:
-        """List skill proposals ordered by recency."""
+    ) -> List[SkillCandidate]:
+        """List skill candidates ordered by recency."""
 
         with get_db_session() as db:
-            query = db.query(SkillProposal)
+            query = db.query(SkillCandidate)
             if agent_id:
-                query = query.filter(SkillProposal.agent_id == str(agent_id))
+                query = query.filter(SkillCandidate.agent_id == str(agent_id))
             if review_status and review_status != "all":
-                query = query.filter(SkillProposal.review_status == str(review_status))
-            query = query.order_by(SkillProposal.updated_at.desc(), SkillProposal.id.desc())
+                query = query.filter(SkillCandidate.review_status == str(review_status))
+            query = query.order_by(SkillCandidate.updated_at.desc(), SkillCandidate.id.desc())
             if limit is not None:
                 query = query.limit(max(int(limit), 1))
             return list(query.all())
 
-    def get_skill_proposal(self, proposal_id: int) -> Optional[SkillProposal]:
+    def get_skill_candidate(self, candidate_id: int) -> Optional[SkillCandidate]:
         with get_db_session() as db:
             return (
-                db.query(SkillProposal).filter(SkillProposal.id == int(proposal_id)).one_or_none()
+                db.query(SkillCandidate).filter(SkillCandidate.id == int(candidate_id)).one_or_none()
             )
 
-    def get_skill_proposal_by_key(
-        self, *, agent_id: str, proposal_key: str
-    ) -> Optional[SkillProposal]:
+    def get_skill_candidate_by_key(
+        self, *, agent_id: str, cluster_key: str
+    ) -> Optional[SkillCandidate]:
         with get_db_session() as db:
-            return self._get_skill_proposal_row(
+            return self._get_skill_candidate_row(
                 db,
                 agent_id=str(agent_id),
-                proposal_key=str(proposal_key),
+                cluster_key=str(cluster_key),
             )
 
     def cleanup_sessions_ended_before(
@@ -1773,7 +1775,7 @@ class SessionLedgerRepository:
                     "deleted_events": 0,
                     "detached_entries": 0,
                     "detached_relations": 0,
-                    "detached_skill_proposals": 0,
+                    "detached_skill_candidates": 0,
                 }
 
             deleted_events = (
@@ -1791,9 +1793,9 @@ class SessionLedgerRepository:
                 .filter(UserMemoryRelation.source_session_ledger_id.in_(session_ids))
                 .count()
             )
-            detached_skill_proposals = (
-                db.query(SkillProposal)
-                .filter(SkillProposal.evidence_session_ledger_id.in_(session_ids))
+            detached_skill_candidates = (
+                db.query(SkillCandidate)
+                .filter(SkillCandidate.evidence_session_ledger_id.in_(session_ids))
                 .count()
             )
             if not dry_run:
@@ -1813,10 +1815,11 @@ class SessionLedgerRepository:
                     )
                 )
                 (
-                    db.query(SkillProposal)
-                    .filter(SkillProposal.evidence_session_ledger_id.in_(session_ids))
+                    db.query(SkillCandidate)
+                    .filter(SkillCandidate.evidence_session_ledger_id.in_(session_ids))
                     .update(
-                        {SkillProposal.evidence_session_ledger_id: None}, synchronize_session=False
+                        {SkillCandidate.evidence_session_ledger_id: None},
+                        synchronize_session=False,
                     )
                 )
                 (
@@ -1832,7 +1835,7 @@ class SessionLedgerRepository:
                 "deleted_events": deleted_events,
                 "detached_entries": detached_entries,
                 "detached_relations": detached_relations,
-                "detached_skill_proposals": detached_skill_proposals,
+                "detached_skill_candidates": detached_skill_candidates,
             }
 
 

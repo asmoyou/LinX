@@ -1,4 +1,4 @@
-"""Runtime context retrieval for user memory and published skills."""
+"""Runtime context retrieval for user memory and canonical skill runtime snippets."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import logging
 from typing import List, Optional
 from uuid import UUID
 
-from skill_learning.service import get_skill_proposal_service
+from skill_library.runtime_registry import get_skill_runtime_registry
 from user_memory.retriever import get_user_memory_retriever
 
 logger = logging.getLogger(__name__)
@@ -24,13 +24,14 @@ class RuntimeContextService:
         top_k: int = 5,
         min_similarity: Optional[float] = None,
     ) -> List[object]:
-        """Retrieve published learned skills for an agent."""
+        """Retrieve bound runtime skills for an agent."""
 
-        results = get_skill_proposal_service().list_published_skills(
-            agent_id=str(agent_id),
-            query_text=query,
-            limit=top_k,
-            min_score=min_similarity,
+        results = get_skill_runtime_registry().retrieve_skills(
+            agent_id=UUID(str(agent_id)),
+            user_id=UUID(str(user_id)),
+            query=query,
+            top_k=top_k,
+            min_similarity=min_similarity,
         )
         logger.info(
             "Retrieved runtime skills",

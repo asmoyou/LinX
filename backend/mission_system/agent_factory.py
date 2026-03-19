@@ -162,7 +162,6 @@ async def create_registered_mission_agent(
         capabilities=agent_info.capabilities or [],
         access_level=agent_info.access_level or "private",
         allowed_knowledge=agent_info.allowed_knowledge or [],
-        allowed_memory=agent_info.allowed_memory or [],
         llm_model=agent_info.llm_model or "qwen2.5:14b",
         temperature=agent_info.temperature or 0.7,
         max_iterations=max_iterations,

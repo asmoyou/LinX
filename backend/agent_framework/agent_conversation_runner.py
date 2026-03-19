@@ -89,7 +89,6 @@ async def initialize_chat_agent(
         capabilities=agent_info.capabilities or [],
         access_level=agent_info.access_level or "private",
         allowed_knowledge=agent_info.allowed_knowledge or [],
-        allowed_memory=agent_info.allowed_memory or [],
         llm_model=agent_info.llm_model or "llama3.2:latest",
         temperature=agent_info.temperature or 0.7,
         max_iterations=max_iterations,

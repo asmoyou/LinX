@@ -323,7 +323,6 @@ class AgentConfig:
     capabilities: List[str]  # Platform skill IDs plus any non-platform runtime capabilities
     access_level: str = "private"
     allowed_knowledge: List[str] = field(default_factory=list)
-    allowed_memory: List[str] = field(default_factory=list)
     llm_model: str = "ollama"
     temperature: float = 0.7
     max_iterations: int = 20  # Maximum conversation rounds
@@ -345,8 +344,6 @@ class AgentConfig:
         """Validate configuration and apply environment variable overrides."""
         if self.allowed_knowledge is None:
             self.allowed_knowledge = []
-        if self.allowed_memory is None:
-            self.allowed_memory = []
 
         # Apply environment variable overrides with defaults
         if self.max_parse_retries is None:
@@ -587,9 +584,7 @@ class BaseAgent:
             )
 
             # Discover and load skills based on agent's capabilities
-            skills = await self.skill_manager.discover_skills(
-                agent_capabilities=self.config.capabilities
-            )
+            skills = await self.skill_manager.discover_skills()
 
             logger.info(
                 f"Discovered {len(skills)} skills for agent {self.config.name}",
@@ -3488,13 +3483,18 @@ class BaseAgent:
             for skill_ref in agent_skills:
                 copied_for_skill = 0
                 skill_doc_path_for_log: Optional[str] = None
-                skill_dir_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", skill_ref.skill_slug).strip(
-                    "._"
-                )
+                skill_slug = str(
+                    getattr(skill_ref, "skill_slug", None)
+                    or getattr(skill_ref, "slug", None)
+                    or getattr(skill_ref, "name", None)
+                    or getattr(skill_ref, "display_name", None)
+                    or "skill"
+                ).strip()
+                skill_dir_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", skill_slug).strip("._")
                 if not skill_dir_name:
                     skill_dir_name = "skill"
                 skill_workspace_root = workdir / ".skills" / skill_dir_name
-                package_files = skill_ref.package_files or {}
+                package_files = getattr(skill_ref, "package_files", None) or {}
 
                 def _sanitize_relative_path(raw_path: str) -> Optional[Path]:
                     parts = []
@@ -3563,10 +3563,11 @@ class BaseAgent:
 
                 # Backward-compatible fallback for old packages where SKILL.md
                 # was not included in loaded package files.
-                if skill_ref.skill_md_content and not has_skill_doc_in_package:
+                skill_md_content = getattr(skill_ref, "skill_md_content", None)
+                if skill_md_content and not has_skill_doc_in_package:
                     skill_doc_path = skill_workspace_root / "SKILL.md"
                     skill_doc_path.parent.mkdir(parents=True, exist_ok=True)
-                    skill_doc_path.write_text(skill_ref.skill_md_content, encoding="utf-8")
+                    skill_doc_path.write_text(skill_md_content, encoding="utf-8")
                     skill_doc_path_for_log = str(skill_doc_path.relative_to(workdir)).replace(
                         "\\", "/"
                     )
@@ -3580,7 +3581,7 @@ class BaseAgent:
                     f"{log_prefix} Copied {copied_for_skill} skill files to workdir",
                     extra={
                         "agent_id": str(self.config.agent_id),
-                        "skill_slug": skill_ref.skill_slug,
+                        "skill_slug": skill_slug,
                         "workdir": str(workdir),
                         "workspace_skill_root": str((Path(".skills") / skill_dir_name).as_posix()),
                         "copied_package_files": len(package_files),
@@ -5095,8 +5096,6 @@ class BaseAgent:
         else:
             # Generate default system prompt
             capability_labels = sorted(self.langchain_tool_skill_names | self.agent_skill_names)
-            if not capability_labels:
-                capability_labels = [str(item) for item in self.config.capabilities if str(item).strip()]
             capability_text = ", ".join(capability_labels) if capability_labels else "general"
             base_prompt = f"""You are {self.config.name}, a {self.config.agent_type} agent with the following capabilities: {capability_text}.
 

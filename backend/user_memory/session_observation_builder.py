@@ -258,7 +258,7 @@ _USER_FACT_KIND_TITLE = {
     "identity": "User identity",
     "relationship": "User relationship",
     "experience": "User experience",
-    "skill": "User skill",
+    "expertise": "User expertise",
     "goal": "User goal",
     "constraint": "User constraint",
     "habit": "User habit",
@@ -734,7 +734,7 @@ class SessionObservationBuilder:
             return f"用户的{relation}是{target}"
         if fact_kind == "experience":
             return f"用户做过{value}"
-        if fact_kind == "skill":
+        if fact_kind == "expertise":
             return f"用户擅长{value}"
         if fact_kind == "goal":
             return f"用户的长期目标是{value}"
@@ -812,7 +812,7 @@ class SessionObservationBuilder:
     def _should_materialize_user_fact(fact_kind: str, persistent: bool) -> bool:
         if fact_kind == "event":
             return False
-        return True if persistent else fact_kind in {"relationship", "experience", "skill", "goal"}
+        return True if persistent else fact_kind in {"relationship", "experience", "expertise", "goal"}
 
     @classmethod
     def _build_user_fact_signal(
@@ -948,13 +948,13 @@ Agent 名称: {agent_name or "-"}
 
 抽取目标:
 1. user_facts: 提取“用户事实原子”，不仅限于喜欢/不喜欢，也包括关系、经历、能力、目标、约束、重要事件。
-2. skill_proposals: 提取“做事成功路径经验 / 可沉淀为 skill 的方法模板”（后续人工审批）。
+2. skill_candidates: 提取“做事成功路径经验 / 可沉淀为 skill 的方法模板”（后续人工审批）。
 
 user_facts 覆盖范围:
 - preference: 偏好/禁忌/语言/输出风格/习惯
 - relationship: 谁与谁是什么关系
 - experience: 做过什么、从事过什么、在哪里工作过
-- skill: 擅长什么、熟悉什么
+- expertise: 擅长什么、熟悉什么
 - goal: 长期目标、长期计划
 - constraint: 预算、过敏、稳定限制
 - event: 对后续任务仍可能有帮助的重要经历、明确里程碑、带明确时间的个人事实
@@ -963,7 +963,7 @@ user_facts 覆盖范围:
 强约束:
 - 只提取用户明确说过的信息，禁止猜测、禁止扩写。
 - 带有 `OVERLAP` 标记的 turn 只用于理解上下文、补全指代、补时间和关系消歧。
-- 任何 user_facts / skill_proposals 都必须至少有一个 evidence_turn 命中 `NEW` turn；如果证据只来自 `OVERLAP`，不要提取。
+- 任何 user_facts / skill_candidates 都必须至少有一个 evidence_turn 命中 `NEW` turn；如果证据只来自 `OVERLAP`，不要提取。
 - 同一次会话里如果存在多条有效事实，必须全部提取，不要只保留 1 条。
 - `canonical_statement` 必须是脱离上下文也能读懂的完整陈述；不要用“他/她/这个/那个/昨天/上周”。
 - 如果用户说了明确时间，优先转为绝对时间或绝对日期。
@@ -979,7 +979,7 @@ user_facts 覆盖范围:
   - 我在2024年做过X / 我去年搬到X
 - 这类直接陈述建议 explicit_source=true，confidence >= 0.82。
 
-skill_proposals 规则:
+skill_candidates 规则:
 - 重点提取“最终成功的做事路径”，尤其是经历过多次尝试后，最后真正走通的那条路径。
 - 目标是让 agent 下次遇到相似任务时，少走弯路，优先复用成功方法。
 - 必须可迁移、可复用：避免绑定具体人名/地名/商品名/单次任务细节。
@@ -991,7 +991,7 @@ skill_proposals 规则:
 {{
   "user_facts": [
     {{
-      "fact_kind": "preference|relationship|experience|skill|goal|constraint|event|identity|habit",
+      "fact_kind": "preference|relationship|experience|expertise|goal|constraint|event|identity|habit",
       "value": "简短明确",
       "canonical_statement": "完整、自包含的事实陈述",
       "predicate": "可选，关系或动作谓词",
@@ -1008,7 +1008,7 @@ skill_proposals 规则:
       "evidence_turns": [1, 2]
     }}
   ],
-  "skill_proposals": [
+  "skill_candidates": [
     {{
       "candidate_type": "successful_path",
       "title": "成功路径标题",
@@ -1054,7 +1054,7 @@ ASSISTANT: 收到
       "evidence_turns": [1]
     }},
     {{
-      "fact_kind": "skill",
+      "fact_kind": "expertise",
       "value": "SQL",
       "canonical_statement": "用户擅长SQL",
       "persistent": true,
@@ -1076,7 +1076,7 @@ ASSISTANT: 收到
       "evidence_turns": [1]
     }}
   ],
-  "skill_proposals": []
+  "skill_candidates": []
 }}
 
 会话文本:
@@ -1133,7 +1133,7 @@ ASSISTANT: 收到
 {{
   "user_facts": [
     {{
-      "fact_kind": "preference|relationship|experience|skill|goal|constraint|event|identity|habit",
+      "fact_kind": "preference|relationship|experience|expertise|goal|constraint|event|identity|habit",
       "value": "简短明确",
       "canonical_statement": "完整事实陈述",
       "predicate": "可选",
@@ -1181,7 +1181,7 @@ ASSISTANT: 收到
       "evidence_turns": [1]
     }},
     {{
-      "fact_kind": "skill",
+      "fact_kind": "expertise",
       "value": "SQL",
       "canonical_statement": "用户擅长SQL",
       "persistent": true,
@@ -1457,7 +1457,7 @@ ASSISTANT: 收到
                 in {
                     "relationship",
                     "experience",
-                    "skill",
+                    "expertise",
                     "goal",
                     "constraint",
                     "identity",
@@ -1708,21 +1708,21 @@ ASSISTANT: 收到
 
             cfg = get_config()
             configured_provider = cfg.get("user_memory.extraction.provider") or cfg.get(
-                "skill_learning.extraction.provider"
+                "skill_candidates.extraction.provider"
             )
             configured_model = cfg.get("user_memory.extraction.model") or cfg.get(
-                "skill_learning.extraction.model"
+                "skill_candidates.extraction.model"
             )
             configured_chat = cfg.get("llm.model_mapping.chat")
             configured_timeout = cfg.get("user_memory.extraction.timeout_seconds") or cfg.get(
-                "skill_learning.extraction.timeout_seconds"
+                "skill_candidates.extraction.timeout_seconds"
             )
             configured_failure_backoff = cfg.get(
                 "user_memory.extraction.failure_backoff_seconds"
-            ) or cfg.get("skill_learning.extraction.failure_backoff_seconds")
+            ) or cfg.get("skill_candidates.extraction.failure_backoff_seconds")
             configured_max_facts = cfg.get("user_memory.extraction.max_facts")
             configured_max_preferences = cfg.get("user_memory.extraction.max_preference_facts")
-            configured_max_candidates = cfg.get("skill_learning.extraction.max_proposals")
+            configured_max_candidates = cfg.get("skill_candidates.extraction.max_candidates")
             configured_secondary_recall = cfg.get("user_memory.extraction.secondary_recall_enabled")
             configured_provider_name = str(configured_provider or "").strip() or None
             configured_model_name = str(configured_model or "").strip() or None
@@ -1956,7 +1956,9 @@ ASSISTANT: 收到
         user_items = parsed.get("user_facts")
         if not isinstance(user_items, list):
             user_items = parsed.get("user_preferences")
-        candidate_items = parsed.get("skill_proposals")
+        candidate_items = parsed.get("skill_candidates")
+        if not isinstance(candidate_items, list):
+            candidate_items = []
         user_signals = self.normalize_llm_user_preference_signals(
             user_items,
             turn_ts_map,
@@ -2224,8 +2226,8 @@ ASSISTANT: 收到
                     continue
                 detections.append(
                     self._build_user_fact_signal(
-                        fact_kind="skill",
-                        semantic_key="skill_strength",
+                        fact_kind="expertise",
+                        semantic_key="expertise_strength",
                         value=skill_value,
                         confidence=0.9,
                         persistent=True,
@@ -2394,7 +2396,7 @@ ASSISTANT: 收到
                 cleaned.append(value)
         return cleaned
 
-    def extract_skill_proposals(
+    def extract_skill_candidates(
         self,
         turns: List[Dict[str, str]],
         agent_name: str,
@@ -2663,7 +2665,7 @@ ASSISTANT: 收到
                 )
         return observations, projections
 
-    def build_skill_proposal_observations(
+    def build_skill_candidate_observations(
         self,
         *,
         agent_id: str,
@@ -2689,11 +2691,11 @@ ASSISTANT: 收到
             details = " -> ".join(steps)
             avoid = str(candidate.get("avoid") or "").strip() or None
             applicability = str(candidate.get("applicability") or "").strip() or None
-            observation_key = self._stable_key("skill_proposal", fingerprint, title)
+            observation_key = self._stable_key("skill_candidate", fingerprint, title)
             observations.append(
                 MemoryObservationData(
                     observation_key=observation_key,
-                    observation_type="skill_proposal_candidate",
+                    observation_type="skill_candidate",
                     title=title,
                     summary=summary,
                     details=details,
@@ -2718,7 +2720,7 @@ ASSISTANT: 收到
                 MemoryProjectionData(
                     owner_type="agent",
                     owner_id=agent_id,
-                    projection_type="skill_proposal",
+                    projection_type="skill_candidate",
                     projection_key=fingerprint,
                     title=title,
                     summary=summary,
@@ -2763,11 +2765,11 @@ def extract_user_preference_signals(turns: List[Dict[str, str]]) -> List[Dict[st
     return get_session_observation_builder().extract_user_preference_signals(turns)
 
 
-def extract_skill_proposals(
+def extract_skill_candidates(
     turns: List[Dict[str, str]],
     agent_name: str,
 ) -> List[Dict[str, Any]]:
-    return get_session_observation_builder().extract_skill_proposals(turns, agent_name)
+    return get_session_observation_builder().extract_skill_candidates(turns, agent_name)
 
 
 def call_llm_for_memory_json(**kwargs):

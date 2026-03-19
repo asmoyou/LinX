@@ -15,7 +15,7 @@ from access_control.skill_access import (
     SkillAccessContext,
 )
 from database.connection import get_db_session
-from database.models import Agent, Skill
+from database.models import AgentSkillBinding, Skill
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +246,7 @@ class SkillModel:
                 skill.department_id = UUID(str(department_id)) if department_id else None
             if is_active is not None:
                 skill.is_active = is_active
+                skill.lifecycle_state = "active" if is_active else "deprecated"
             if storage_path is not None:
                 skill.storage_path = storage_path
             if manifest is not None:
@@ -271,29 +272,22 @@ class SkillModel:
             if not skill:
                 return False
 
-            skill_id_str = str(skill.skill_id)
-            detached_agent_ids: List[str] = []
-
-            agents = session.query(Agent).filter(Agent.capabilities.isnot(None)).all()
-            for agent in agents:
-                capabilities = agent.capabilities if isinstance(agent.capabilities, list) else []
-                if skill_id_str not in capabilities:
-                    continue
-                normalized = [item for item in capabilities if item != skill_id_str]
-                if normalized != capabilities:
-                    agent.capabilities = normalized
-                    detached_agent_ids.append(str(agent.agent_id))
+            binding_count = (
+                session.query(AgentSkillBinding)
+                .filter(AgentSkillBinding.skill_id == skill_id, AgentSkillBinding.enabled.is_(True))
+                .count()
+            )
+            if binding_count:
+                raise ValueError("Cannot delete a skill while active agent bindings exist")
 
             session.delete(skill)
             session.commit()
 
             logger.info(
-                "Skill deleted and detached from agent capabilities",
+                "Skill deleted",
                 extra={
-                    "skill_id": skill_id_str,
+                    "skill_id": str(skill.skill_id),
                     "skill_slug": skill.skill_slug,
-                    "detached_agent_count": len(detached_agent_ids),
-                    "detached_agent_ids": detached_agent_ids[:20],
                 },
             )
             return True

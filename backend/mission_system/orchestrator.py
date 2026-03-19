@@ -2184,7 +2184,6 @@ class MissionOrchestrator:
             access_level="private",
             system_prompt=worker_system_prompt,
             allowed_knowledge=selected_knowledge,
-            allowed_memory=memory_scopes,
         )
         logger.info(
             "Provisioned temporary worker prompt",

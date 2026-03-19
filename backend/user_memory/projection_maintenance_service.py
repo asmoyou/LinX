@@ -1,4 +1,4 @@
-"""Consolidation utilities for reset-era user-memory views and skill proposals."""
+"""Consolidation utilities for reset-era user-memory views and skill candidates."""
 
 from __future__ import annotations
 
@@ -35,18 +35,18 @@ def _utc_now_iso() -> str:
 @dataclass
 class ProjectionConsolidationResult:
     scanned_user_profiles: int = 0
-    scanned_skill_proposals: int = 0
+    scanned_skill_candidates: int = 0
     scanned_user_entries: int = 0
     scanned_user_relations: int = 0
     episode_view_upserts: int = 0
     user_status_updates: int = 0
-    skill_proposal_status_updates: int = 0
+    skill_candidate_status_updates: int = 0
     user_entry_status_updates: int = 0
     user_view_identity_rewrites: int = 0
     user_entry_identity_rewrites: int = 0
     user_relation_status_updates: int = 0
     user_relation_identity_rewrites: int = 0
-    skill_proposal_duplicate_supersedes: int = 0
+    skill_candidate_duplicate_supersedes: int = 0
     user_duplicate_entry_supersedes: int = 0
     user_duplicate_relation_supersedes: int = 0
     dry_run: bool = True
@@ -159,8 +159,8 @@ class ProjectionMaintenanceService:
             },
         )
 
-    def _proposal_signature(self, row: Any) -> Optional[str]:
-        payload = dict(getattr(row, "proposal_payload", None) or {})
+    def _candidate_signature(self, row: Any) -> Optional[str]:
+        payload = dict(getattr(row, "candidate_payload", None) or {})
         goal = self._observation_builder.normalize_text(
             payload.get("goal") or row.title or "",
             max_chars=120,
@@ -174,8 +174,8 @@ class ProjectionMaintenanceService:
             return None
         return f"{goal}||{'|'.join(steps)}"
 
-    def _desired_skill_proposal_status(self, row: Any) -> str:
-        payload = dict(getattr(row, "proposal_payload", None) or {})
+    def _desired_skill_candidate_status(self, row: Any) -> str:
+        payload = dict(getattr(row, "candidate_payload", None) or {})
         review_status = payload.get("review_status")
         if review_status is None:
             return self._normalize_status(getattr(row, "status", None), default="pending_review")
@@ -325,23 +325,23 @@ class ProjectionMaintenanceService:
             row.status = desired_status
             row.view_data = payload
 
-        proposal_rows = self._session_repository.list_projections(
+        candidate_rows = self._session_repository.list_projections(
             owner_type="agent",
             owner_id=agent_id,
-            projection_type="skill_proposal",
+            projection_type="skill_candidate",
             status=None,
             limit=limit,
         )
-        result.scanned_skill_proposals = len(proposal_rows)
+        result.scanned_skill_candidates = len(candidate_rows)
 
-        for row in proposal_rows:
-            desired_status = self._desired_skill_proposal_status(row)
+        for row in candidate_rows:
+            desired_status = self._desired_skill_candidate_status(row)
             if str(row.status or "") == desired_status:
                 continue
-            result.skill_proposal_status_updates += 1
+            result.skill_candidate_status_updates += 1
             if dry_run:
                 continue
-            payload = dict(getattr(row, "proposal_payload", None) or {})
+            payload = dict(getattr(row, "candidate_payload", None) or {})
             payload["status_sync_reason"] = "review_status"
             self._session_repository.update_projection(
                 int(row.id),
@@ -349,23 +349,23 @@ class ProjectionMaintenanceService:
                 payload=payload,
             )
             row.status = desired_status
-            row.proposal_payload = payload
+            row.candidate_payload = payload
 
-        grouped_proposals: Dict[Tuple[str, str], List[Any]] = {}
-        for row in proposal_rows:
-            signature = self._proposal_signature(row)
+        grouped_candidates: Dict[Tuple[str, str], List[Any]] = {}
+        for row in candidate_rows:
+            signature = self._candidate_signature(row)
             if not signature:
                 continue
-            grouped_proposals.setdefault((str(row.owner_id), signature), []).append(row)
+            grouped_candidates.setdefault((str(row.owner_id), signature), []).append(row)
 
-        for (_owner_id, _signature), rows in grouped_proposals.items():
+        for (_owner_id, _signature), rows in grouped_candidates.items():
             if len(rows) < 2:
                 continue
             rows.sort(
                 key=lambda row: (
                     self._status_rank(row.status),
                     self._coerce_float(
-                        dict(getattr(row, "proposal_payload", None) or {}).get("confidence"),
+                        dict(getattr(row, "candidate_payload", None) or {}).get("confidence"),
                         default=0.0,
                     ),
                     getattr(row, "updated_at", None)
@@ -380,14 +380,14 @@ class ProjectionMaintenanceService:
             for duplicate in rows[1:]:
                 if str(duplicate.status or "") == "superseded":
                     continue
-                result.skill_proposal_duplicate_supersedes += 1
+                result.skill_candidate_duplicate_supersedes += 1
                 if dry_run:
                     continue
-                payload = dict(getattr(duplicate, "proposal_payload", None) or {})
+                payload = dict(getattr(duplicate, "candidate_payload", None) or {})
                 payload.update(
                     {
-                        "superseded_by_proposal_id": int(canonical.id),
-                        "superseded_by_key": str(canonical.proposal_key),
+                        "superseded_by_candidate_id": int(canonical.id),
+                        "superseded_by_key": str(canonical.cluster_key),
                         "superseded_at": _utc_now_iso(),
                     }
                 )
@@ -397,16 +397,16 @@ class ProjectionMaintenanceService:
                     payload=payload,
                 )
             if not dry_run and duplicate_ids:
-                canonical_payload = dict(getattr(canonical, "proposal_payload", None) or {})
+                canonical_payload = dict(getattr(canonical, "candidate_payload", None) or {})
                 merged_ids = list(
                     dict.fromkeys(
                         [
-                            *(canonical_payload.get("merged_proposal_ids") or []),
+                            *(canonical_payload.get("merged_candidate_ids") or []),
                             *duplicate_ids,
                         ]
                     )
                 )
-                canonical_payload["merged_proposal_ids"] = merged_ids
+                canonical_payload["merged_candidate_ids"] = merged_ids
                 self._session_repository.update_projection(
                     int(canonical.id),
                     payload=canonical_payload,

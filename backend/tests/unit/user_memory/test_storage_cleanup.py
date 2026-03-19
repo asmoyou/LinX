@@ -69,11 +69,11 @@ class _SessionStub:
                 delete_recorder=self.deleted_calls,
                 delete_key="UserMemoryView",
             )
-        if class_name == "SkillProposal":
+        if class_name == "SkillCandidate":
             return _QueryStub(
                 count_value=4,
                 delete_recorder=self.deleted_calls,
-                delete_key="SkillProposal",
+                delete_key="SkillCandidate",
             )
         if class_name == "SessionLedger":
             return _QueryStub(
@@ -97,7 +97,7 @@ def test_prepare_user_memory_rows_for_user_deletion_removes_user_scoped_rows():
     assert result["memory_entries"] == 2
     assert result["memory_relations"] == 1
     assert result["memory_views"] == 3
-    assert result["skill_proposals"] == 4
+    assert result["skill_candidates"] == 4
     assert result["session_events"] == 5
     assert session.flush_called is True
     assert session.deleted_calls == [
@@ -105,7 +105,7 @@ def test_prepare_user_memory_rows_for_user_deletion_removes_user_scoped_rows():
         ("UserMemoryRelation", False),
         ("UserMemoryEntry", False),
         ("UserMemoryView", False),
-        ("SkillProposal", False),
+        ("SkillCandidate", False),
         ("SessionLedger", False),
     ]
 

@@ -195,9 +195,6 @@ class Agent(Base):
         index=True,
     )
     allowed_knowledge = Column(JSONB, nullable=True)  # list of knowledge collection IDs
-    allowed_memory = Column(
-        JSONB, nullable=True
-    )  # list of runtime context sources (skills/user_memory)
 
     # Knowledge Base Configuration
     top_k = Column(Integer, nullable=True)  # top K results for retrieval
@@ -218,6 +215,9 @@ class Agent(Base):
     )
     channel_publications = relationship(
         "AgentChannelPublication", back_populates="agent", cascade="all, delete-orphan"
+    )
+    skill_bindings = relationship(
+        "AgentSkillBinding", back_populates="agent", cascade="all, delete-orphan"
     )
 
     # Indexes
@@ -786,6 +786,10 @@ class Skill(Base):
     skill_slug = Column(String(255), unique=True, nullable=False, index=True)
     display_name = Column(String(255), nullable=False, index=True)
     description = Column(Text, nullable=False)
+    source_kind = Column(String(32), nullable=False, default="manual", index=True)
+    artifact_kind = Column(String(32), nullable=False, default="tool", index=True)
+    runtime_mode = Column(String(32), nullable=False, default="tool", index=True)
+    lifecycle_state = Column(String(32), nullable=False, default="active", index=True)
 
     # Skill type and implementation
     skill_type = Column(String(50), nullable=False, default="python_function", index=True)
@@ -840,8 +844,32 @@ class Skill(Base):
         nullable=True,
         index=True,
     )
+    updated_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    active_revision_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("skill_revisions.revision_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     department = relationship("Department")
+    revisions = relationship(
+        "SkillRevision",
+        back_populates="skill",
+        cascade="all, delete-orphan",
+        foreign_keys="SkillRevision.skill_id",
+    )
+    active_revision = relationship(
+        "SkillRevision",
+        foreign_keys=[active_revision_id],
+        post_update=True,
+    )
+    bindings = relationship("AgentSkillBinding", back_populates="skill")
 
     __table_args__ = (
         Index("idx_skills_access_level", "access_level"),
@@ -857,10 +885,135 @@ class Skill(Base):
     def name(self, value):
         self.skill_slug = value
 
+    @property
+    def slug(self):
+        return self.skill_slug
+
+    @slug.setter
+    def slug(self, value):
+        self.skill_slug = value
+
+    @property
+    def visibility(self):
+        return self.access_level
+
+    @visibility.setter
+    def visibility(self, value):
+        self.access_level = value
+
+    @property
+    def owner_user_id(self):
+        return self.created_by
+
+    @owner_user_id.setter
+    def owner_user_id(self, value):
+        self.created_by = value
+
     def __repr__(self):
         return (
             f"<Skill(skill_id={self.skill_id}, skill_slug={self.skill_slug}, "
             f"type={self.skill_type}, storage={self.storage_type}, version={self.version})>"
+        )
+
+
+class SkillRevision(Base):
+    """Immutable skill revisions for canonical runtime loading."""
+
+    __tablename__ = "skill_revisions"
+
+    revision_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    skill_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("skills.skill_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version = Column(String(50), nullable=False, default="1.0.0")
+    review_state = Column(String(32), nullable=False, default="approved", index=True)
+    instruction_md = Column(Text, nullable=True)
+    tool_code = Column(Text, nullable=True)
+    interface_definition = Column(JSONB, nullable=True)
+    artifact_storage_kind = Column(String(32), nullable=False, default="inline")
+    artifact_ref = Column(String(500), nullable=True)
+    manifest = Column(JSONB, nullable=True)
+    config = Column(JSONB, nullable=True)
+    search_document = Column(Text, nullable=True)
+    checksum = Column(String(128), nullable=True, index=True)
+    change_note = Column(Text, nullable=True)
+    created_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    skill = relationship(
+        "Skill",
+        back_populates="revisions",
+        foreign_keys=[skill_id],
+    )
+    pinned_bindings = relationship("AgentSkillBinding", back_populates="revision_pin")
+
+    __table_args__ = (
+        Index("idx_skill_revisions_skill_created", "skill_id", "created_at"),
+        Index("ux_skill_revisions_skill_version", "skill_id", "version", unique=True),
+    )
+
+    def __repr__(self):
+        return (
+            f"<SkillRevision(revision_id={self.revision_id}, skill_id={self.skill_id}, "
+            f"version={self.version}, review_state={self.review_state})>"
+        )
+
+
+class AgentSkillBinding(Base):
+    """Agent-to-skill binding metadata for canonical skill runtime selection."""
+
+    __tablename__ = "agent_skill_bindings"
+
+    binding_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.agent_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    skill_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("skills.skill_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    revision_pin_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("skill_revisions.revision_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    binding_mode = Column(String(32), nullable=False, default="doc", index=True)
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    priority = Column(Integer, nullable=False, default=0)
+    source = Column(String(32), nullable=False, default="manual", index=True)
+    auto_update_policy = Column(String(32), nullable=False, default="follow_active")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    agent = relationship("Agent", back_populates="skill_bindings")
+    skill = relationship("Skill", back_populates="bindings")
+    revision_pin = relationship("SkillRevision", back_populates="pinned_bindings")
+
+    __table_args__ = (
+        Index("idx_agent_skill_bindings_agent_enabled", "agent_id", "enabled", "priority"),
+        Index("ux_agent_skill_bindings_agent_skill", "agent_id", "skill_id", unique=True),
+    )
+
+    def __repr__(self):
+        return (
+            f"<AgentSkillBinding(binding_id={self.binding_id}, agent_id={self.agent_id}, "
+            f"skill_id={self.skill_id}, mode={self.binding_mode}, enabled={self.enabled})>"
         )
 
 
@@ -1391,15 +1544,15 @@ class UserMemoryEmbeddingJob(Base):
         )
 
 
-class SkillProposal(Base):
-    """Reviewed or pending learned skills extracted from successful sessions."""
+class SkillCandidate(Base):
+    """Learned skill candidates extracted from successful sessions."""
 
-    __tablename__ = "skill_proposals"
+    __tablename__ = "skill_candidates"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     agent_id = Column(String(255), nullable=False, index=True)
     user_id = Column(String(255), nullable=False, index=True)
-    proposal_key = Column(String(255), nullable=False)
+    cluster_key = Column(String(255), nullable=False)
     title = Column(String(255), nullable=False)
     goal = Column(Text, nullable=False)
     successful_path = Column(JSONB, nullable=False)
@@ -1414,23 +1567,31 @@ class SkillProposal(Base):
     )
     confidence = Column(Float, nullable=False, default=0.72)
     review_status = Column(String(32), nullable=False, default="pending", index=True)
+    candidate_status = Column(String(32), nullable=False, default="new", index=True)
     review_note = Column(Text, nullable=True)
-    published_skill_id = Column(
+    promoted_skill_id = Column(
         UUID(as_uuid=True),
         ForeignKey("skills.skill_id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
-    proposal_data = Column(JSONB, nullable=True)
+    promoted_revision_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("skill_revisions.revision_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    candidate_data = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
     __table_args__ = (
-        Index("idx_skill_proposals_agent_review", "agent_id", "review_status"),
-        Index("idx_skill_proposals_user_created", "user_id", "created_at"),
-        Index("ux_skill_proposals_agent_key", "agent_id", "proposal_key", unique=True),
+        Index("idx_skill_candidates_agent_review", "agent_id", "review_status"),
+        Index("idx_skill_candidates_agent_status", "agent_id", "candidate_status"),
+        Index("idx_skill_candidates_user_created", "user_id", "created_at"),
+        Index("ux_skill_candidates_agent_key", "agent_id", "cluster_key", unique=True),
     )
 
     @property
@@ -1455,21 +1616,21 @@ class SkillProposal(Base):
 
     @property
     def details(self):
-        payload = self.proposal_data if isinstance(self.proposal_data, dict) else {}
+        payload = self.candidate_data if isinstance(self.candidate_data, dict) else {}
         return str(payload.get("review_content") or "").strip() or None
 
     @details.setter
     def details(self, value):
-        payload = dict(self.proposal_data or {})
+        payload = dict(self.candidate_data or {})
         if value:
             payload["review_content"] = value
         else:
             payload.pop("review_content", None)
-        self.proposal_data = payload
+        self.candidate_data = payload
 
     @property
-    def proposal_payload(self):
-        payload = dict(self.proposal_data or {})
+    def candidate_payload(self):
+        payload = dict(self.candidate_data or {})
         payload.setdefault("goal", self.goal)
         payload.setdefault("successful_path", list(self.successful_path or []))
         payload.setdefault("why_it_worked", self.why_it_worked)
@@ -1477,12 +1638,15 @@ class SkillProposal(Base):
         payload.setdefault("avoid", self.avoid)
         payload.setdefault("confidence", self.confidence)
         payload.setdefault("review_status", self.review_status)
-        if self.published_skill_id is not None:
-            payload.setdefault("published_skill_id", str(self.published_skill_id))
+        payload.setdefault("candidate_status", self.candidate_status)
+        if self.promoted_skill_id is not None:
+            payload.setdefault("promoted_skill_id", str(self.promoted_skill_id))
+        if self.promoted_revision_id is not None:
+            payload.setdefault("promoted_revision_id", str(self.promoted_revision_id))
         return payload
 
-    @proposal_payload.setter
-    def proposal_payload(self, value):
+    @candidate_payload.setter
+    def candidate_payload(self, value):
         payload = dict(value or {})
         self.goal = str(payload.get("goal") or self.goal or self.title)
         self.successful_path = list(payload.get("successful_path") or self.successful_path or [])
@@ -1501,25 +1665,45 @@ class SkillProposal(Base):
         review_status = str(payload.get("review_status") or "").strip().lower()
         if review_status in {"pending", "published", "rejected"}:
             self.review_status = review_status
-        self.proposal_data = payload
+        candidate_status = str(payload.get("candidate_status") or "").strip().lower()
+        if candidate_status in {"new", "merged", "promoted", "rejected", "expired"}:
+            self.candidate_status = candidate_status
+        self.candidate_data = payload
 
     @property
     def status(self):
-        return {
-            "pending": "pending_review",
-            "published": "active",
-            "rejected": "rejected",
-        }.get(str(self.review_status or "pending"), "pending_review")
+        return self.candidate_status or "new"
 
     @status.setter
     def status(self, value):
         normalized = str(value or "").strip().lower()
-        if normalized == "active":
+        if normalized in {"promoted", "active"}:
             self.review_status = "published"
+            self.candidate_status = "promoted"
+        elif normalized == "merged":
+            self.review_status = "pending"
+            self.candidate_status = "merged"
         elif normalized == "rejected":
             self.review_status = "rejected"
+            self.candidate_status = "rejected"
+        elif normalized == "expired":
+            self.review_status = "pending"
+            self.candidate_status = "expired"
         else:
             self.review_status = "pending"
+            self.candidate_status = "new"
+
+    @property
+    def candidate_id(self):
+        return self.id
+
+    @property
+    def source_agent_id(self):
+        return self.agent_id
+
+    @source_agent_id.setter
+    def source_agent_id(self, value):
+        self.agent_id = str(value) if value is not None else None
 
     @property
     def source_session_id(self):
@@ -1539,8 +1723,8 @@ class SkillProposal(Base):
 
     def __repr__(self):
         return (
-            f"<SkillProposal(id={self.id}, agent_id={self.agent_id}, "
-            f"proposal_key={self.proposal_key}, review_status={self.review_status})>"
+            f"<SkillCandidate(id={self.id}, agent_id={self.agent_id}, "
+            f"cluster_key={self.cluster_key}, candidate_status={self.candidate_status})>"
         )
 
 
