@@ -289,19 +289,15 @@ def _try_add_feishu_processing_reaction(
 
 
 def _user_can_access_agent(agent: Agent, user: User) -> bool:
-    if str(agent.owner_user_id) == str(user.user_id):
-        return True
+    from access_control.agent_access import build_agent_access_context_for_user_id, can_read_agent
 
-    access_level = str(agent.access_level or "private").strip().lower()
-    if access_level == "public":
-        return True
-    if access_level == "team":
-        return bool(
-            agent.department_id
-            and user.department_id
-            and str(agent.department_id) == str(user.department_id)
+    with get_db_session() as session:
+        context = build_agent_access_context_for_user_id(
+            session=session,
+            user_id=str(user.user_id),
+            role=str(user.role or ""),
         )
-    return False
+        return can_read_agent(agent, context)
 
 
 def _find_external_binding(

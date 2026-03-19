@@ -1,14 +1,13 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { DepartmentSelect } from '@/components/departments/DepartmentSelect';
 import { LayoutModal } from '@/components/LayoutModal';
 
 interface AddAgentModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAdd: (name: string, systemPrompt: string, departmentId?: string) => void;
+  onAdd: (name: string, systemPrompt: string) => void;
 }
 
 export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, onAdd }) => {
@@ -16,7 +15,6 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [name, setName] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
-  const [departmentId, setDepartmentId] = useState<string | undefined>();
   const [nameError, setNameError] = useState('');
 
   if (!isOpen) return null;
@@ -24,7 +22,6 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
   const handleClose = () => {
     setName('');
     setSystemPrompt('');
-    setDepartmentId(undefined);
     setNameError('');
     onClose();
   };
@@ -46,7 +43,7 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
     setIsSubmitting(true);
     
     try {
-      onAdd(name.trim(), systemPrompt.trim(), departmentId);
+      onAdd(name.trim(), systemPrompt.trim());
       toast.success(t('agent.success', 'Agent created successfully!'));
       handleClose();
     } catch (error: any) {
@@ -148,16 +145,16 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
           </p>
         </div>
 
-        {/* Department */}
-        <div>
-          <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-            {t('departments.label', 'Department')} <span className="text-zinc-400 text-xs font-normal">({t('common.optional', 'Optional')})</span>
-          </label>
-          <DepartmentSelect
-            value={departmentId}
-            onChange={setDepartmentId}
-            disabled={isSubmitting}
-          />
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/40 p-4">
+          <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+            {t('departments.label', 'Department')}
+          </p>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            {t(
+              'agent.boundDepartmentHint',
+              'This agent will automatically bind to your current department. You can change sharing visibility after creation.',
+            )}
+          </p>
         </div>
       </form>
     </LayoutModal>

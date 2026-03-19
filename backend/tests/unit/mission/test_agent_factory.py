@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 
 from agent_framework.base_agent import AgentConfig
-from mission_system.agent_factory import create_mission_agent
+from mission_system.agent_factory import create_mission_agent, create_registered_mission_agent
 
 
 @pytest.mark.asyncio
@@ -78,3 +78,90 @@ async def test_create_mission_agent_ollama_uses_provider_timeout_and_retries(mon
     assert captured_llm_kwargs["model"] == "qwen2.5:14b"
     assert agent.initialized is True
     assert agent.config.context_window_tokens == 32768
+
+
+@pytest.mark.asyncio
+async def test_create_registered_mission_agent_uses_actor_execution_access(monkeypatch):
+    actor_user_id = uuid4()
+    shared_agent_id = uuid4()
+    captured = {}
+
+    class _FakeQuery:
+        def __init__(self, first_result):
+            self._first_result = first_result
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def first(self):
+            return self._first_result
+
+    class _FakeSession:
+        def __init__(self, user):
+            self._user = user
+
+        def query(self, _model):
+            return _FakeQuery(self._user)
+
+    class _FakeSessionContext:
+        def __enter__(self):
+            return _FakeSession(
+                SimpleNamespace(
+                    user_id=actor_user_id,
+                    username="mission-owner",
+                    role="user",
+                )
+            )
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    async def _fake_create_mission_agent(**kwargs):
+        captured["agent_config"] = kwargs["agent_config"]
+        captured["llm_provider"] = kwargs["llm_provider"]
+        captured["llm_model"] = kwargs["llm_model"]
+        return SimpleNamespace(config=kwargs["agent_config"])
+
+    def _fake_load_accessible_agent_or_raise(session, agent_id, current_user, *, access_type):
+        captured["session"] = session
+        captured["agent_id"] = agent_id
+        captured["current_user"] = current_user
+        captured["access_type"] = access_type
+        return SimpleNamespace(
+            agent_id=shared_agent_id,
+            name="shared-agent",
+            agent_type="research",
+            capabilities=["analysis"],
+            access_level="department",
+            allowed_knowledge=["kb-1"],
+            llm_provider="ollama",
+            llm_model="qwen2.5:14b",
+            temperature=0.3,
+            max_tokens=2048,
+            system_prompt="Be precise.",
+        )
+
+    monkeypatch.setattr("mission_system.agent_factory.get_db_session", lambda: _FakeSessionContext())
+    monkeypatch.setattr(
+        "mission_system.agent_factory.load_accessible_agent_or_raise",
+        _fake_load_accessible_agent_or_raise,
+    )
+    monkeypatch.setattr(
+        "mission_system.agent_factory.create_mission_agent",
+        _fake_create_mission_agent,
+    )
+
+    agent = await create_registered_mission_agent(
+        shared_agent_id,
+        actor_user_id,
+        max_iterations=9,
+    )
+
+    assert agent is not None
+    assert captured["agent_id"] == str(shared_agent_id)
+    assert captured["current_user"].user_id == str(actor_user_id)
+    assert captured["access_type"] == "execute"
+    assert captured["agent_config"].owner_user_id == actor_user_id
+    assert captured["agent_config"].access_level == "department"
+    assert captured["agent_config"].allowed_knowledge == ["kb-1"]
+    assert captured["agent_config"].max_iterations == 9

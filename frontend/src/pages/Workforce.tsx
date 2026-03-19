@@ -23,6 +23,9 @@ export const Workforce: React.FC = () => {
   const [departmentFilter, setDepartmentFilter] = useState<
     string | undefined
   >();
+  const [scopeFilter, setScopeFilter] = useState<
+    "all" | "owned" | "shared" | "department" | "public"
+  >("all");
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
@@ -54,20 +57,21 @@ export const Workforce: React.FC = () => {
       agent.type.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesDepartment =
       !departmentFilter || agent.departmentId === departmentFilter;
-    return matchesSearch && matchesDepartment;
+    const matchesScope =
+      scopeFilter === "all" ||
+      (scopeFilter === "owned" && agent.isOwned) ||
+      (scopeFilter === "shared" && !agent.isOwned) ||
+      (scopeFilter === "department" && agent.accessLevel === "department") ||
+      (scopeFilter === "public" && agent.accessLevel === "public");
+    return matchesSearch && matchesDepartment && matchesScope;
   });
 
-  const handleAddAgent = async (
-    name: string,
-    systemPrompt: string,
-    departmentId?: string,
-  ) => {
+  const handleAddAgent = async (name: string, systemPrompt: string) => {
     try {
       const newAgent = await agentsApi.create({
         name,
         type: "general", // Default type
         systemPrompt: systemPrompt || undefined,
-        department_id: departmentId || undefined,
       });
 
       setAgents([...agents, newAgent]);
@@ -89,6 +93,10 @@ export const Workforce: React.FC = () => {
   };
 
   const handleStartConversation = (agent: Agent) => {
+    if (agent.canExecute === false) {
+      toast.error(t("agent.startConversationDenied", "You cannot execute this agent."));
+      return;
+    }
     navigate(`/workforce/${agent.id}/conversations`);
   };
 
@@ -219,6 +227,30 @@ export const Workforce: React.FC = () => {
             onChange={setDepartmentFilter}
             showAll
           />
+        </div>
+        <div className="w-48">
+          <select
+            value={scopeFilter}
+            onChange={(e) =>
+              setScopeFilter(
+                e.target.value as
+                  | "all"
+                  | "owned"
+                  | "shared"
+                  | "department"
+                  | "public",
+              )
+            }
+            className="w-full px-4 py-3 bg-transparent border-none focus:ring-0 text-sm text-zinc-800 dark:text-zinc-200"
+          >
+            <option value="all">{t("agent.scopeFilterAll", "All Agents")}</option>
+            <option value="owned">{t("agent.scopeFilterOwned", "My Agents")}</option>
+            <option value="shared">{t("agent.scopeFilterShared", "Shared With Me")}</option>
+            <option value="department">
+              {t("agent.scopeFilterDepartment", "Department")}
+            </option>
+            <option value="public">{t("agent.scopeFilterPublic", "Public")}</option>
+          </select>
         </div>
       </div>
 

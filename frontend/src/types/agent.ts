@@ -34,8 +34,14 @@ export type Agent = {
   maxTokens?: number;
   topP?: number;
   departmentId?: string;
-  accessLevel?: 'private' | 'team' | 'public';
+  departmentName?: string | null;
+  accessLevel?: 'private' | 'department' | 'public' | 'team';
   allowedKnowledge?: string[];
+  ownerUserId: string;
+  ownerUsername?: string | null;
+  isOwned?: boolean;
+  canManage?: boolean;
+  canExecute?: boolean;
   topK?: number;
   similarityThreshold?: number;
   createdAt?: string;

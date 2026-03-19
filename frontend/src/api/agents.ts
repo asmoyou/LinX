@@ -20,7 +20,7 @@ export interface CreateAgentRequest {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
-  accessLevel?: string;
+  accessLevel?: 'private' | 'department' | 'public' | 'team';
   allowedKnowledge?: string[];
   topK?: number;
   similarityThreshold?: number;
@@ -38,7 +38,7 @@ export interface UpdateAgentRequest {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
-  accessLevel?: string;
+  accessLevel?: 'private' | 'department' | 'public' | 'team';
   allowedKnowledge?: string[];
   topK?: number;
   similarityThreshold?: number;

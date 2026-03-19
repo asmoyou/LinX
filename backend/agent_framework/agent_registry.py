@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
+from access_control.agent_access import normalize_agent_access_level
 from database.connection import get_db_session
 from database.models import Agent
 
@@ -77,6 +78,7 @@ class AgentRegistry:
         top_p: float = 0.9,
         access_level: str = "private",
         allowed_knowledge: Optional[List[str]] = None,
+        department_id: Optional[str] = None,
     ) -> AgentInfo:
         """Register a new agent in the registry.
 
@@ -93,7 +95,7 @@ class AgentRegistry:
             temperature: Sampling temperature
             max_tokens: Maximum tokens
             top_p: Top-p sampling
-            access_level: Access level (private, team, public)
+            access_level: Access level (private, department, public)
             allowed_knowledge: List of allowed knowledge collection IDs
 
         Returns:
@@ -114,8 +116,9 @@ class AgentRegistry:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 top_p=top_p,
-                access_level=access_level,
+                access_level=normalize_agent_access_level(access_level),
                 allowed_knowledge=allowed_knowledge or [],
+                department_id=UUID(department_id) if department_id else None,
             )
             session.add(agent)
             session.commit()
@@ -247,7 +250,7 @@ class AgentRegistry:
             if top_p is not None:
                 agent.top_p = top_p
             if access_level is not None:
-                agent.access_level = access_level
+                agent.access_level = normalize_agent_access_level(access_level)
             if allowed_knowledge is not None:
                 agent.allowed_knowledge = allowed_knowledge
             if top_k is not None:
@@ -323,7 +326,7 @@ class AgentRegistry:
             temperature=agent.temperature or 0.7,
             max_tokens=agent.max_tokens or 2000,
             top_p=agent.top_p or 0.9,
-            access_level=agent.access_level or "private",
+            access_level=normalize_agent_access_level(agent.access_level),
             allowed_knowledge=agent.allowed_knowledge or [],
             top_k=getattr(agent, 'top_k', None),
             similarity_threshold=getattr(agent, 'similarity_threshold', None),

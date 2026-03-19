@@ -498,11 +498,18 @@ def _load_owned_conversation(
     agent_id: str,
     conversation_id: str,
     current_user: CurrentUser,
+    required_agent_access: str = "read",
 ) -> AgentConversation:
     try:
         conversation_uuid = UUID(conversation_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid conversation id") from exc
+
+    agents_router._get_accessible_agent_or_raise(
+        agent_id,
+        current_user,
+        access_type=required_agent_access,
+    )
 
     row = (
         session.query(AgentConversation)
@@ -1378,7 +1385,7 @@ async def create_agent_conversation(
     agent_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    agents_router._get_owned_agent_or_raise(agent_id, current_user)
+    agents_router._get_accessible_agent_or_raise(agent_id, current_user, access_type="execute")
     with get_db_session() as session:
         row = AgentConversation(
             agent_id=UUID(agent_id),
@@ -1400,7 +1407,7 @@ async def list_agent_conversations(
     agent_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    agents_router._get_owned_agent_or_raise(agent_id, current_user)
+    agents_router._get_accessible_agent_or_raise(agent_id, current_user, access_type="read")
     with get_db_session() as session:
         rows = (
             session.query(AgentConversation)
@@ -1549,6 +1556,7 @@ async def send_agent_conversation_message(
             agent_id=agent_id,
             conversation_id=conversation_id,
             current_user=current_user,
+            required_agent_access="execute",
         )
         conversation_id_uuid = conversation.conversation_id
 
@@ -1613,6 +1621,7 @@ async def release_agent_conversation_runtime(
     conversation_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    agents_router._get_accessible_agent_or_raise(agent_id, current_user, access_type="read")
     with get_db_session() as session:
         row = (
             session.query(AgentConversation.conversation_id)
@@ -1774,7 +1783,11 @@ async def get_agent_feishu_publication(
     request: Request,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    _, agent_uuid = agents_router._get_owned_agent_or_raise(agent_id, current_user)
+    _, agent_uuid = agents_router._get_accessible_agent_or_raise(
+        agent_id,
+        current_user,
+        access_type="manage",
+    )
     with get_db_session() as session:
         publication = _load_feishu_publication(session, agent_uuid)
         return _serialize_feishu_publication(publication, request=request)
@@ -1787,7 +1800,11 @@ async def save_agent_feishu_publication(
     request: Request,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    _, agent_uuid = agents_router._get_owned_agent_or_raise(agent_id, current_user)
+    _, agent_uuid = agents_router._get_accessible_agent_or_raise(
+        agent_id,
+        current_user,
+        access_type="manage",
+    )
     with get_db_session() as session:
         publication = _upsert_feishu_publication(
             session=session, agent_id=agent_uuid, payload=payload
@@ -1826,7 +1843,11 @@ async def publish_agent_feishu_publication(
     request: Request,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    _, agent_uuid = agents_router._get_owned_agent_or_raise(agent_id, current_user)
+    _, agent_uuid = agents_router._get_accessible_agent_or_raise(
+        agent_id,
+        current_user,
+        access_type="manage",
+    )
     with get_db_session() as session:
         publication = _load_feishu_publication(session, agent_uuid)
         if publication is None:
@@ -1883,7 +1904,11 @@ async def unpublish_agent_feishu_publication(
     request: Request,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    _, agent_uuid = agents_router._get_owned_agent_or_raise(agent_id, current_user)
+    _, agent_uuid = agents_router._get_accessible_agent_or_raise(
+        agent_id,
+        current_user,
+        access_type="manage",
+    )
     with get_db_session() as session:
         publication = _load_feishu_publication(session, agent_uuid)
         if publication is None:

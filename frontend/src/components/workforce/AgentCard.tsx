@@ -42,6 +42,19 @@ export const AgentCard: React.FC<AgentCardProps> = ({
   const completionRateLabel = `${(completionRate * 100).toFixed(tasksExecuted > 0 ? 1 : 0)}%`;
   const boundSkillCount =
     agent.skill_summaries?.length || agent.skill_ids?.length || 0;
+  const canManage = agent.canManage ?? agent.isOwned ?? false;
+  const canExecute = agent.canExecute ?? true;
+  const ownershipLabel = agent.isOwned
+    ? t("agent.ownedByYou", "Owned by you")
+    : t("agent.sharedBy", {
+        defaultValue: "Shared by {{owner}}",
+        owner: agent.ownerUsername || t("agent.unknownOwner", "Unknown"),
+      });
+  const normalizedAccessLevel =
+    agent.accessLevel === "team" ? "department" : agent.accessLevel || "private";
+  const visibilityLabel = t(`agent.details.accessLevelValue.${normalizedAccessLevel}`, {
+    defaultValue: normalizedAccessLevel,
+  });
 
   const getStatusColor = (status: Agent["status"]) => {
     switch (status) {
@@ -81,6 +94,9 @@ export const AgentCard: React.FC<AgentCardProps> = ({
   };
 
   const handleStartConversation = () => {
+    if (!canExecute) {
+      return;
+    }
     setShowMenu(false);
     onStartConversation(agent);
   };
@@ -125,26 +141,30 @@ export const AgentCard: React.FC<AgentCardProps> = ({
                   <Eye className="w-3.5 h-3.5" />
                   {t("agent.viewDetails")}
                 </button>
-                <button
-                  onClick={() => {
-                    onConfigure(agent);
-                    setShowMenu(false);
-                  }}
-                  className="w-full px-3 py-2 text-left text-xs hover:bg-zinc-500/5 rounded-lg transition-colors flex items-center gap-2 text-zinc-700 dark:text-zinc-300"
-                >
-                  <Settings className="w-3.5 h-3.5" />
-                  {t("agent.configure")}
-                </button>
-                <button
-                  onClick={() => {
-                    onDelete(agent);
-                    setShowMenu(false);
-                  }}
-                  className="w-full px-3 py-2 text-left text-xs hover:bg-red-500/5 rounded-lg transition-colors flex items-center gap-2 text-red-500"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  {t("agent.deleteAgent")}
-                </button>
+                {canManage && (
+                  <button
+                    onClick={() => {
+                      onConfigure(agent);
+                      setShowMenu(false);
+                    }}
+                    className="w-full px-3 py-2 text-left text-xs hover:bg-zinc-500/5 rounded-lg transition-colors flex items-center gap-2 text-zinc-700 dark:text-zinc-300"
+                  >
+                    <Settings className="w-3.5 h-3.5" />
+                    {t("agent.configure")}
+                  </button>
+                )}
+                {canManage && (
+                  <button
+                    onClick={() => {
+                      onDelete(agent);
+                      setShowMenu(false);
+                    }}
+                    className="w-full px-3 py-2 text-left text-xs hover:bg-red-500/5 rounded-lg transition-colors flex items-center gap-2 text-red-500"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    {t("agent.deleteAgent")}
+                  </button>
+                )}
               </div>
             </>
           )}
@@ -162,6 +182,9 @@ export const AgentCard: React.FC<AgentCardProps> = ({
               {agent.type}
             </span>
           </div>
+          <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+            {ownershipLabel}
+          </p>
         </div>
 
         {agent.currentTask && (
@@ -188,6 +211,14 @@ export const AgentCard: React.FC<AgentCardProps> = ({
               {agent.model}
             </span>
           )}
+          <span className="px-2 py-1 bg-sky-500/10 rounded-md text-[9px] font-bold text-sky-700 dark:text-sky-400 uppercase tracking-tight border border-sky-500/20">
+            {t("agent.sharingScopeBadge", "共享")} · {visibilityLabel}
+          </span>
+          {agent.departmentName && (
+            <span className="px-2 py-1 bg-zinc-500/5 rounded-md text-[9px] font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
+              {t("departments.label", "Department")} · {agent.departmentName}
+            </span>
+          )}
         </div>
       </div>
 
@@ -197,7 +228,8 @@ export const AgentCard: React.FC<AgentCardProps> = ({
         </span>
         <button
           onClick={handleStartConversation}
-          className="text-[10px] font-bold text-emerald-600 hover:text-emerald-500 transition-colors uppercase tracking-wider"
+          disabled={!canExecute}
+          className="text-[10px] font-bold text-emerald-600 hover:text-emerald-500 transition-colors uppercase tracking-wider disabled:text-zinc-400 disabled:cursor-not-allowed"
         >
           {t("agent.startConversation", "开启对话")}
         </button>

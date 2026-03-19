@@ -34,8 +34,19 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
+from access_control.agent_access import (
+    AgentAccessType,
+    build_agent_access_context,
+    can_execute_agent,
+    can_manage_agent,
+    list_accessible_agents,
+    load_accessible_agent_or_raise,
+    normalize_agent_access_level,
+    resolve_agent_owner_department_id,
+)
 from access_control.permissions import CurrentUser, get_current_user
 from agent_framework.agent_registry import get_agent_registry
+from database.connection import get_db_session
 from object_storage.minio_client import get_minio_client
 from shared.logging import get_logger
 from user_memory.builder import (
@@ -2092,6 +2103,7 @@ class CreateAgentRequest(BaseModel):
     topP: Optional[float] = Field(default=0.9, ge=0.0, le=1.0)
     accessLevel: Optional[str] = Field(default="private")
     allowedKnowledge: List[str] = Field(default_factory=list)
+    department_id: Optional[str] = None
 
 
 class UpdateAgentRequest(BaseModel):
@@ -2143,6 +2155,12 @@ class AgentResponse(BaseModel):
     topK: Optional[int] = None
     similarityThreshold: Optional[float] = None
     departmentId: Optional[str] = None
+    departmentName: Optional[str] = None
+    ownerUserId: str
+    ownerUsername: Optional[str] = None
+    isOwned: bool = False
+    canManage: bool = False
+    canExecute: bool = False
     createdAt: datetime
     updatedAt: datetime
 
@@ -2170,31 +2188,85 @@ class AgentMetricsResponse(BaseModel):
     lastActivityAt: Optional[datetime] = None
 
 
-def _get_owned_agent_or_raise(agent_id: str, current_user: CurrentUser):
-    """Resolve one agent and enforce owner-only access."""
-    try:
-        agent_uuid = UUID(agent_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid agent id: {agent_id}",
-        ) from exc
-
-    registry = get_agent_registry()
-    agent = registry.get_agent(agent_uuid)
-    if not agent:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent {agent_id} not found",
+def _get_accessible_agent_or_raise(
+    agent_id: str,
+    current_user: CurrentUser,
+    *,
+    access_type: AgentAccessType = "read",
+):
+    """Resolve one agent and enforce the requested Agent access."""
+    with get_db_session() as session:
+        agent = load_accessible_agent_or_raise(
+            session,
+            agent_id,
+            current_user,
+            access_type=access_type,
         )
+        return agent, agent.agent_id
 
-    if str(agent.owner_user_id) != current_user.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to access this agent",
-        )
 
-    return agent, agent_uuid
+def _build_agent_response(
+    agent_info: Any,
+    *,
+    request: Request,
+    current_user: CurrentUser,
+    task_stats: Optional[Dict[str, Any]] = None,
+    access_context: Optional[Any] = None,
+) -> "AgentResponse":
+    response_payload = _build_agent_response_payload(agent_info)
+    stats = task_stats or _default_agent_task_stats()
+    resolved_access_context = access_context or build_agent_access_context(current_user)
+    owner = getattr(agent_info, "owner", None)
+    owner_username = None
+    if owner is not None:
+        owner_attrs = getattr(owner, "attributes", None) or {}
+        owner_username = owner_attrs.get("display_name") or getattr(owner, "username", None)
+
+    department = getattr(agent_info, "department", None)
+    department_name = getattr(department, "name", None) if department is not None else None
+    normalized_access_level = normalize_agent_access_level(getattr(agent_info, "access_level", None))
+    normalized_status = str(getattr(agent_info, "status", "") or "").strip().lower()
+    if normalized_status in {"active", "initializing", "working", "busy"}:
+        response_status = "working"
+    elif normalized_status == "idle":
+        response_status = "idle"
+    else:
+        response_status = "offline"
+
+    return AgentResponse(
+        id=str(agent_info.agent_id),
+        name=agent_info.name,
+        type=agent_info.agent_type,
+        avatar=_resolve_agent_avatar(agent_info.avatar, request),
+        status=response_status,
+        currentTask=None,
+        tasksExecuted=stats["tasksExecuted"],
+        tasksCompleted=stats["tasksCompleted"],
+        tasksFailed=stats["tasksFailed"],
+        completionRate=stats["completionRate"],
+        uptime="0h 0m",
+        systemPrompt=agent_info.system_prompt,
+        skill_ids=response_payload["skill_ids"],
+        skill_summaries=response_payload["skill_summaries"],
+        model=agent_info.llm_model,
+        provider=agent_info.llm_provider,
+        temperature=agent_info.temperature,
+        maxTokens=agent_info.max_tokens,
+        topP=agent_info.top_p,
+        accessLevel=normalized_access_level,
+        allowedKnowledge=getattr(agent_info, "allowed_knowledge", None) or [],
+        topK=getattr(agent_info, "top_k", None),
+        similarityThreshold=getattr(agent_info, "similarity_threshold", None),
+        departmentId=str(agent_info.department_id) if getattr(agent_info, "department_id", None) else None,
+        departmentName=department_name,
+        ownerUserId=str(agent_info.owner_user_id),
+        ownerUsername=owner_username,
+        isOwned=str(agent_info.owner_user_id) == str(current_user.user_id),
+        canManage=can_manage_agent(agent_info, resolved_access_context),
+        canExecute=can_execute_agent(agent_info, resolved_access_context),
+        createdAt=agent_info.created_at,
+        updatedAt=agent_info.updated_at,
+    )
 
 def _build_agent_response_payload(agent_info: Any) -> Dict[str, Any]:
     """Build skill-related payload fields for agent API responses."""
@@ -2269,11 +2341,17 @@ async def create_agent(
     """Create a new agent."""
     try:
         registry = get_agent_registry()
+        normalized_access_level = normalize_agent_access_level(request.accessLevel)
         validated_allowed_knowledge = _validate_allowed_knowledge(
             request.allowedKnowledge or [],
             current_user,
         )
         validated_skill_ids = _validate_skill_ids(request.skill_ids, current_user)
+
+        with get_db_session() as session:
+            owner_department_id = resolve_agent_owner_department_id(session, current_user.user_id)
+        if normalized_access_level == "department" and not owner_department_id:
+            normalized_access_level = "private"
 
         # Register agent in database with LLM configuration
         agent_info = registry.register_agent(
@@ -2287,8 +2365,9 @@ async def create_agent(
             temperature=request.temperature or 0.7,
             max_tokens=request.maxTokens or 2000,
             top_p=request.topP or 0.9,
-            access_level=request.accessLevel or "private",
+            access_level=normalized_access_level,
             allowed_knowledge=validated_allowed_knowledge,
+            department_id=owner_department_id,
         )
 
         # Update status to idle after creation
@@ -2302,34 +2381,15 @@ async def create_agent(
             extra={"agent_id": str(agent_info.agent_id), "user_id": current_user.user_id},
         )
 
-        response_payload = _build_agent_response_payload(agent_info)
-        return AgentResponse(
-            id=str(agent_info.agent_id),
-            name=agent_info.name,
-            type=agent_info.agent_type,
-            avatar=_resolve_agent_avatar(agent_info.avatar, http_request),
-            status=agent_info.status,
-            currentTask=None,
-            tasksExecuted=0,
-            tasksCompleted=0,
-            tasksFailed=0,
-            completionRate=0.0,
-            uptime="0h 0m",
-            systemPrompt=agent_info.system_prompt,
-            skill_ids=response_payload["skill_ids"],
-            skill_summaries=response_payload["skill_summaries"],
-            model=agent_info.llm_model,
-            provider=agent_info.llm_provider,
-            temperature=agent_info.temperature,
-            maxTokens=agent_info.max_tokens,
-            topP=agent_info.top_p,
-            accessLevel=agent_info.access_level,
-            allowedKnowledge=agent_info.allowed_knowledge,
-            topK=agent_info.top_k,
-            similarityThreshold=agent_info.similarity_threshold,
-            departmentId=str(agent_info.department_id) if agent_info.department_id else None,
-            createdAt=agent_info.created_at,
-            updatedAt=agent_info.updated_at,
+        agent, _ = _get_accessible_agent_or_raise(
+            str(agent_info.agent_id),
+            current_user,
+            access_type="manage",
+        )
+        return _build_agent_response(
+            agent,
+            request=http_request,
+            current_user=current_user,
         )
     except HTTPException:
         raise
@@ -2346,50 +2406,22 @@ async def list_agents(
     request: Request,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """List user's agents."""
+    """List all agents accessible to the current user."""
     try:
-        registry = get_agent_registry()
-
-        # Get agents for current user
-        agents = registry.list_agents(owner_user_id=UUID(current_user.user_id))
+        with get_db_session() as session:
+            agents = list_accessible_agents(session, current_user, access_type="read")
         task_stats_by_agent = _collect_agent_task_stats([agent.agent_id for agent in agents])
-
-        responses: List[AgentResponse] = []
-        for agent in agents:
-            task_stats = task_stats_by_agent.get(agent.agent_id, _default_agent_task_stats())
-            response_payload = _build_agent_response_payload(agent)
-            responses.append(
-                AgentResponse(
-                    id=str(agent.agent_id),
-                    name=agent.name,
-                    type=agent.agent_type,
-                    avatar=_resolve_agent_avatar(agent.avatar, request),
-                    status=agent.status,
-                    currentTask=None,  # TODO: Get from task manager
-                    tasksExecuted=task_stats["tasksExecuted"],
-                    tasksCompleted=task_stats["tasksCompleted"],
-                    tasksFailed=task_stats["tasksFailed"],
-                    completionRate=task_stats["completionRate"],
-                    uptime="0h 0m",  # Deprecated in UI but kept for compatibility
-                    systemPrompt=agent.system_prompt,
-                    skill_ids=response_payload["skill_ids"],
-                    skill_summaries=response_payload["skill_summaries"],
-                    model=agent.llm_model,
-                    provider=agent.llm_provider,
-                    temperature=agent.temperature,
-                    maxTokens=agent.max_tokens,
-                    topP=agent.top_p,
-                    accessLevel=agent.access_level,
-                    allowedKnowledge=agent.allowed_knowledge,
-                    topK=agent.top_k,
-                    similarityThreshold=agent.similarity_threshold,
-                    departmentId=str(agent.department_id) if agent.department_id else None,
-                    createdAt=agent.created_at,
-                    updatedAt=agent.updated_at,
-                )
+        access_context = build_agent_access_context(current_user)
+        return [
+            _build_agent_response(
+                agent,
+                request=request,
+                current_user=current_user,
+                task_stats=task_stats_by_agent.get(agent.agent_id, _default_agent_task_stats()),
+                access_context=access_context,
             )
-
-        return responses
+            for agent in agents
+        ]
 
     except Exception as e:
         logger.error(f"Failed to list agents: {e}")
@@ -2407,40 +2439,16 @@ async def get_agent(
 ):
     """Get agent details."""
     try:
-        agent, _ = _get_owned_agent_or_raise(agent_id, current_user)
+        agent, _ = _get_accessible_agent_or_raise(agent_id, current_user, access_type="read")
 
         task_stats = _collect_agent_task_stats([agent.agent_id]).get(
             agent.agent_id, _default_agent_task_stats()
         )
-
-        response_payload = _build_agent_response_payload(agent)
-        return AgentResponse(
-            id=str(agent.agent_id),
-            name=agent.name,
-            type=agent.agent_type,
-            avatar=_resolve_agent_avatar(agent.avatar, request),
-            status=agent.status,
-            currentTask=None,
-            tasksExecuted=task_stats["tasksExecuted"],
-            tasksCompleted=task_stats["tasksCompleted"],
-            tasksFailed=task_stats["tasksFailed"],
-            completionRate=task_stats["completionRate"],
-            uptime="0h 0m",
-            systemPrompt=agent.system_prompt,
-            skill_ids=response_payload["skill_ids"],
-            skill_summaries=response_payload["skill_summaries"],
-            model=agent.llm_model,
-            provider=agent.llm_provider,
-            temperature=agent.temperature,
-            maxTokens=agent.max_tokens,
-            topP=agent.top_p,
-            accessLevel=agent.access_level,
-            allowedKnowledge=agent.allowed_knowledge,
-            topK=agent.top_k,
-            similarityThreshold=agent.similarity_threshold,
-            departmentId=str(agent.department_id) if agent.department_id else None,
-            createdAt=agent.created_at,
-            updatedAt=agent.updated_at,
+        return _build_agent_response(
+            agent,
+            request=request,
+            current_user=current_user,
+            task_stats=task_stats,
         )
 
     except HTTPException:
@@ -2460,7 +2468,7 @@ async def get_agent_metrics(
 ):
     """Get aggregate metrics for one agent detail page."""
     try:
-        _, agent_uuid = _get_owned_agent_or_raise(agent_id, current_user)
+        _, agent_uuid = _get_accessible_agent_or_raise(agent_id, current_user, access_type="read")
 
         from sqlalchemy import func
 
@@ -2506,7 +2514,7 @@ async def get_agent_logs(
 ):
     """Get recent task/audit logs for one agent detail page."""
     try:
-        _, agent_uuid = _get_owned_agent_or_raise(agent_id, current_user)
+        _, agent_uuid = _get_accessible_agent_or_raise(agent_id, current_user, access_type="read")
 
         from sqlalchemy import and_, func, or_
 
@@ -2562,20 +2570,12 @@ async def update_agent(
     """Update agent configuration."""
     try:
         registry = get_agent_registry()
-        agent = registry.get_agent(UUID(agent_id))
-
-        if not agent:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Agent {agent_id} not found",
-            )
-
-        # Check ownership
-        if str(agent.owner_user_id) != current_user.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have permission to update this agent",
-            )
+        agent, _ = _get_accessible_agent_or_raise(agent_id, current_user, access_type="manage")
+        normalized_access_level = (
+            normalize_agent_access_level(payload.accessLevel)
+            if payload.accessLevel is not None
+            else None
+        )
 
         # Update agent with all configuration fields
         validated_allowed_knowledge = (
@@ -2588,6 +2588,10 @@ async def update_agent(
             if payload.skill_ids is not None
             else None
         )
+        with get_db_session() as session:
+            owner_department_id = resolve_agent_owner_department_id(session, agent.owner_user_id)
+        if normalized_access_level == "department" and not owner_department_id:
+            normalized_access_level = "private"
         updated_agent = registry.update_agent(
             agent_id=UUID(agent_id),
             name=payload.name,
@@ -2599,11 +2603,11 @@ async def update_agent(
             temperature=payload.temperature,
             max_tokens=payload.maxTokens,
             top_p=payload.topP,
-            access_level=payload.accessLevel,
+            access_level=normalized_access_level,
             allowed_knowledge=validated_allowed_knowledge,
             top_k=payload.topK,
             similarity_threshold=payload.similarityThreshold,
-            department_id=payload.department_id,
+            department_id=owner_department_id,
         )
 
         if not updated_agent:
@@ -2623,35 +2627,16 @@ async def update_agent(
         task_stats = _collect_agent_task_stats([updated_agent.agent_id]).get(
             updated_agent.agent_id, _default_agent_task_stats()
         )
-
-        response_payload = _build_agent_response_payload(updated_agent)
-        return AgentResponse(
-            id=str(updated_agent.agent_id),
-            name=updated_agent.name,
-            type=updated_agent.agent_type,
-            avatar=_resolve_agent_avatar(updated_agent.avatar, request),
-            status=updated_agent.status,
-            currentTask=None,
-            tasksExecuted=task_stats["tasksExecuted"],
-            tasksCompleted=task_stats["tasksCompleted"],
-            tasksFailed=task_stats["tasksFailed"],
-            completionRate=task_stats["completionRate"],
-            uptime="0h 0m",
-            systemPrompt=updated_agent.system_prompt,
-            skill_ids=response_payload["skill_ids"],
-            skill_summaries=response_payload["skill_summaries"],
-            model=updated_agent.llm_model,
-            provider=updated_agent.llm_provider,
-            temperature=updated_agent.temperature,
-            maxTokens=updated_agent.max_tokens,
-            topP=updated_agent.top_p,
-            accessLevel=updated_agent.access_level,
-            allowedKnowledge=updated_agent.allowed_knowledge,
-            topK=updated_agent.top_k,
-            similarityThreshold=updated_agent.similarity_threshold,
-            departmentId=str(updated_agent.department_id) if updated_agent.department_id else None,
-            createdAt=updated_agent.created_at,
-            updatedAt=updated_agent.updated_at,
+        refreshed_agent, _ = _get_accessible_agent_or_raise(
+            agent_id,
+            current_user,
+            access_type="manage",
+        )
+        return _build_agent_response(
+            refreshed_agent,
+            request=request,
+            current_user=current_user,
+            task_stats=task_stats,
         )
     except HTTPException:
         raise
@@ -2678,20 +2663,7 @@ async def upload_agent_avatar(
     """
     try:
         registry = get_agent_registry()
-        agent = registry.get_agent(UUID(agent_id))
-
-        if not agent:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Agent {agent_id} not found",
-            )
-
-        # Check ownership
-        if str(agent.owner_user_id) != current_user.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have permission to update this agent",
-            )
+        agent, _ = _get_accessible_agent_or_raise(agent_id, current_user, access_type="manage")
 
         # Validate file type
         allowed_types = ["image/jpeg", "image/png", "image/webp"]
@@ -2785,20 +2757,7 @@ async def delete_agent(agent_id: str, current_user: CurrentUser = Depends(get_cu
     """Delete an agent."""
     try:
         registry = get_agent_registry()
-        agent = registry.get_agent(UUID(agent_id))
-
-        if not agent:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Agent {agent_id} not found",
-            )
-
-        # Check ownership
-        if str(agent.owner_user_id) != current_user.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have permission to delete this agent",
-            )
+        _get_accessible_agent_or_raise(agent_id, current_user, access_type="manage")
 
         # Delete agent
         deleted = registry.delete_agent(UUID(agent_id))
@@ -3643,26 +3602,13 @@ async def test_agent(
             f"{message}{attachment_context}" if attachment_context else message
         )
 
-        registry = get_agent_registry()
-        agent_info = registry.get_agent(UUID(agent_id))
-
-        if not agent_info:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Agent {agent_id} not found",
-            )
-
-        # Check ownership
-        if str(agent_info.owner_user_id) != current_user.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have permission to test this agent",
-            )
-
-        logger.info(
-            f"Testing agent: {agent_info.name}",
-            extra={"agent_id": agent_id, "user_id": current_user.user_id},
+        agent_info, _ = _get_accessible_agent_or_raise(
+            agent_id,
+            current_user,
+            access_type="execute",
         )
+
+        logger.info(f"Testing agent: {agent_info.name}", extra={"agent_id": agent_id, "user_id": current_user.user_id})
 
         async def generate_stream():
             """Generate SSE stream for agent execution with real streaming."""
@@ -4917,17 +4863,11 @@ async def get_agent_skills(agent_id: str, current_user: CurrentUser = Depends(ge
         - available_skills: Visible active skills available for configuration
     """
     try:
-        agent_uuid = UUID(agent_id)
-        registry = get_agent_registry()
-
-        # Get agent info
-        agent_info = registry.get_agent(agent_uuid)
-        if not agent_info:
-            raise HTTPException(status_code=404, detail="Agent not found")
-
-        # Check ownership
-        if str(agent_info.owner_user_id) != current_user.user_id:
-            raise HTTPException(status_code=403, detail="Not authorized to access this agent")
+        agent_info, _ = _get_accessible_agent_or_raise(
+            agent_id,
+            current_user,
+            access_type="read",
+        )
 
         # Get all available skills from database
         from access_control.skill_access import build_skill_access_context
@@ -4993,17 +4933,11 @@ async def update_agent_skills(
     The agent will load these skills on next initialization.
     """
     try:
-        agent_uuid = UUID(agent_id)
-        registry = get_agent_registry()
-
-        # Get agent info
-        agent_info = registry.get_agent(agent_uuid)
-        if not agent_info:
-            raise HTTPException(status_code=404, detail="Agent not found")
-
-        # Check ownership
-        if str(agent_info.owner_user_id) != current_user.user_id:
-            raise HTTPException(status_code=403, detail="Not authorized to modify this agent")
+        agent_info, agent_uuid = _get_accessible_agent_or_raise(
+            agent_id,
+            current_user,
+            access_type="manage",
+        )
 
         validated_skill_ids = _validate_skill_ids(payload.skill_ids, current_user)
 
@@ -5029,34 +4963,16 @@ async def update_agent_skills(
             updated_agent.agent_id, _default_agent_task_stats()
         )
 
-        response_payload = _build_agent_response_payload(updated_agent)
-        return AgentResponse(
-            id=str(updated_agent.agent_id),
-            name=updated_agent.name,
-            type=updated_agent.agent_type,
-            avatar=_resolve_agent_avatar(updated_agent.avatar, request),
-            skill_ids=response_payload["skill_ids"],
-            skill_summaries=response_payload["skill_summaries"],
-            status=updated_agent.status,
-            systemPrompt=updated_agent.system_prompt,
-            currentTask=None,
-            tasksExecuted=task_stats["tasksExecuted"],
-            tasksCompleted=task_stats["tasksCompleted"],
-            tasksFailed=task_stats["tasksFailed"],
-            completionRate=task_stats["completionRate"],
-            uptime="0h 0m",
-            model=updated_agent.llm_model,
-            provider=updated_agent.llm_provider,
-            temperature=updated_agent.temperature,
-            maxTokens=updated_agent.max_tokens,
-            topP=updated_agent.top_p,
-            accessLevel=updated_agent.access_level,
-            allowedKnowledge=updated_agent.allowed_knowledge,
-            topK=updated_agent.top_k,
-            similarityThreshold=updated_agent.similarity_threshold,
-            departmentId=str(updated_agent.department_id) if updated_agent.department_id else None,
-            createdAt=updated_agent.created_at,
-            updatedAt=updated_agent.updated_at,
+        refreshed_agent, _ = _get_accessible_agent_or_raise(
+            agent_id,
+            current_user,
+            access_type="manage",
+        )
+        return _build_agent_response(
+            refreshed_agent,
+            request=request,
+            current_user=current_user,
+            task_stats=task_stats,
         )
 
     except ValueError:

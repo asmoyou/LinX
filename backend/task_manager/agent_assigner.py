@@ -12,8 +12,10 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 from uuid import UUID
 
+from access_control.agent_access import list_accessible_agents
+from access_control.permissions import CurrentUser
 from database.connection import get_db_session
-from database.models import Agent
+from database.models import Agent, User
 from task_manager.capability_mapper import CapabilityMapper
 
 logger = logging.getLogger(__name__)
@@ -104,14 +106,27 @@ class AgentAssigner:
 
         # Query available agents
         with get_db_session() as session:
-            agents = (
-                session.query(Agent)
-                .filter(
-                    Agent.owner_user_id == user_id,
-                    Agent.status.in_(["idle", "active"]),
-                    ~Agent.agent_id.in_(exclude_agent_ids),
+            user = session.query(User).filter(User.user_id == user_id).first()
+            if user is None:
+                logger.warning("No user found for agent assignment", extra={"user_id": str(user_id)})
+                return AgentAssignment(
+                    task_id=task_id,
+                    agent_id=None,
+                    match_score=0.0,
+                    reason="No user found",
                 )
-                .all()
+
+            current_user = CurrentUser(
+                user_id=str(user.user_id),
+                username=str(user.username or ""),
+                role=str(user.role or "user"),
+            )
+            agents = list_accessible_agents(
+                session,
+                current_user,
+                access_type="execute",
+                statuses=["idle", "active"],
+                exclude_agent_ids=exclude_agent_ids,
             )
 
             if not agents:
@@ -131,7 +146,13 @@ class AgentAssigner:
             best_score = 0.0
 
             for agent in agents:
-                agent_capabilities = agent.capabilities.get("skills", [])
+                raw_capabilities = agent.capabilities or []
+                if isinstance(raw_capabilities, dict):
+                    agent_capabilities = list(raw_capabilities.get("skills", []) or [])
+                elif isinstance(raw_capabilities, list):
+                    agent_capabilities = list(raw_capabilities)
+                else:
+                    agent_capabilities = []
                 score = self.capability_mapper.calculate_capability_match_score(
                     required=required_capabilities,
                     available=agent_capabilities,

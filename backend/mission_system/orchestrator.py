@@ -2661,14 +2661,27 @@ class MissionOrchestrator:
         leader = await create_mission_agent(agent_config=leader_config, **llm_cfg)
 
         # Build available platform agent catalog so planning can assign real workers.
-        from agent_framework.agent_registry import AgentRegistry
+        from access_control.agent_access import list_accessible_agents
+        from access_control.permissions import CurrentUser
+        from database.connection import get_db_session
+        from database.models import User
 
-        registry = AgentRegistry()
-        available_agents = [
-            agent
-            for agent in registry.list_agents(owner_user_id=mission.created_by_user_id, limit=500)
-            if agent.status in {"active", "idle", "initializing"}
-        ]
+        with get_db_session() as session:
+            user = session.query(User).filter(User.user_id == mission.created_by_user_id).first()
+            if user is None:
+                available_agents = []
+            else:
+                mission_user = CurrentUser(
+                    user_id=str(user.user_id),
+                    username=str(user.username or ""),
+                    role=str(user.role or "user"),
+                )
+                available_agents = list_accessible_agents(
+                    session,
+                    mission_user,
+                    access_type="execute",
+                    statuses=["active", "idle", "initializing"],
+                )
         agent_id_map = {str(agent.agent_id): agent for agent in available_agents}
         agent_catalog = (
             "\n".join(
@@ -3319,14 +3332,27 @@ class MissionOrchestrator:
             raise MissionError(mission_id, "Mission not found")
         mission_total_tasks = self._coerce_int(getattr(mission, "total_tasks", 0), 0)
 
-        from agent_framework.agent_registry import AgentRegistry
+        from access_control.agent_access import list_accessible_agents
+        from access_control.permissions import CurrentUser
+        from database.connection import get_db_session
+        from database.models import User
 
-        registry = AgentRegistry()
-        available_platform_agents = [
-            agent
-            for agent in registry.list_agents(owner_user_id=mission.created_by_user_id, limit=500)
-            if str(getattr(agent, "status", "")).lower() in {"active", "idle", "initializing"}
-        ]
+        with get_db_session() as session:
+            user = session.query(User).filter(User.user_id == mission.created_by_user_id).first()
+            if user is None:
+                available_platform_agents = []
+            else:
+                mission_user = CurrentUser(
+                    user_id=str(user.user_id),
+                    username=str(user.username or ""),
+                    role=str(user.role or "user"),
+                )
+                available_platform_agents = list_accessible_agents(
+                    session,
+                    mission_user,
+                    access_type="execute",
+                    statuses=["active", "idle", "initializing"],
+                )
 
         # Fetch pending/failed tasks for this mission.
         # Failed tasks are reset to pending at the start of each execution phase so
@@ -3872,7 +3898,7 @@ class MissionOrchestrator:
         if resolved_agent_id:
             agent = await create_registered_mission_agent(
                 agent_id=resolved_agent_id,
-                owner_user_id=mission.created_by_user_id,
+                actor_user_id=mission.created_by_user_id,
             )
             if agent is None:
                 logger.warning(
@@ -3939,7 +3965,7 @@ class MissionOrchestrator:
                 candidate_agent_id = UUID(selected_platform["agent_id"])
                 candidate = await create_registered_mission_agent(
                     agent_id=candidate_agent_id,
-                    owner_user_id=mission.created_by_user_id,
+                    actor_user_id=mission.created_by_user_id,
                 )
                 if candidate is not None:
                     resolved_agent_id = candidate_agent_id
@@ -4017,7 +4043,7 @@ class MissionOrchestrator:
             execution_role = "temporary_worker"
             agent = await create_registered_mission_agent(
                 agent_id=resolved_agent_id,
-                owner_user_id=mission.created_by_user_id,
+                actor_user_id=mission.created_by_user_id,
             )
             if agent is None:
                 raise MissionError(

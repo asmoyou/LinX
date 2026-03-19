@@ -6,6 +6,7 @@ References:
 """
 
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
@@ -253,21 +254,81 @@ class TestAgentAssigner:
 
     def test_assign_agent_to_task_no_agents(self, monkeypatch):
         """Test assignment when no agents available."""
+        requester_id = uuid4()
         monkeypatch.setattr(
             "task_manager.agent_assigner.get_db_session",
-            _mock_db_session_context(all_result=[]),
+            _mock_db_session_context(
+                first_result=SimpleNamespace(
+                    user_id=requester_id,
+                    username="requester",
+                    role="user",
+                )
+            ),
         )
+        monkeypatch.setattr("task_manager.agent_assigner.list_accessible_agents", lambda *args, **kwargs: [])
         assigner = AgentAssigner()
 
         assignment = assigner.assign_agent_to_task(
             task_id=uuid4(),
             required_capabilities=["data_analysis"],
-            user_id=uuid4(),
+            user_id=requester_id,
         )
 
         assert assignment.agent_id is None
         assert assignment.match_score == 0.0
         assert "No available agents" in assignment.reason
+
+    def test_assign_agent_to_task_uses_execute_access_scope(self, monkeypatch):
+        """Test assignment only considers agents executable by the current user."""
+        requester_id = uuid4()
+        accessible_agent = SimpleNamespace(
+            agent_id=uuid4(),
+            capabilities=["data_analysis"],
+            status="idle",
+        )
+        weaker_agent = SimpleNamespace(
+            agent_id=uuid4(),
+            capabilities=["content_writing"],
+            status="idle",
+        )
+        captured = {}
+
+        monkeypatch.setattr(
+            "task_manager.agent_assigner.get_db_session",
+            _mock_db_session_context(
+                first_result=SimpleNamespace(
+                    user_id=requester_id,
+                    username="requester",
+                    role="user",
+                )
+            ),
+        )
+
+        def _fake_list_accessible_agents(session, current_user, **kwargs):
+            captured["session"] = session
+            captured["current_user"] = current_user
+            captured["kwargs"] = kwargs
+            return [accessible_agent, weaker_agent]
+
+        monkeypatch.setattr(
+            "task_manager.agent_assigner.list_accessible_agents",
+            _fake_list_accessible_agents,
+        )
+
+        assigner = AgentAssigner()
+        excluded_agent_ids = [uuid4()]
+        assignment = assigner.assign_agent_to_task(
+            task_id=uuid4(),
+            required_capabilities=["data_analysis"],
+            user_id=requester_id,
+            exclude_agent_ids=excluded_agent_ids,
+        )
+
+        assert assignment.agent_id == accessible_agent.agent_id
+        assert captured["current_user"].user_id == str(requester_id)
+        assert captured["kwargs"]["access_type"] == "execute"
+        assert captured["kwargs"]["statuses"] == ["idle", "active"]
+        assert captured["kwargs"]["exclude_agent_ids"] == excluded_agent_ids
 
 
 class TestDependencyResolver:

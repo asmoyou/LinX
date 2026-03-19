@@ -132,7 +132,10 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({
   const statusLabel = t(`agent.details.statusValue.${displayAgent.status}`, {
     defaultValue: displayAgent.status,
   });
-  const accessLevelValue = displayAgent.accessLevel || 'private';
+  const accessLevelValue =
+    displayAgent.accessLevel === 'team'
+      ? 'department'
+      : displayAgent.accessLevel || 'private';
   const accessLevelLabel = t(`agent.details.accessLevelValue.${accessLevelValue}`, {
     defaultValue: accessLevelValue,
   });
@@ -207,6 +210,14 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({
                 <ChevronRight className="w-3 h-3" />
                 <span>{displayAgent.model || '-'}</span>
               </div>
+              <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+                {displayAgent.isOwned
+                  ? t('agent.ownedByYou', 'Owned by you')
+                  : t('agent.sharedBy', {
+                      defaultValue: 'Shared by {{owner}}',
+                      owner: displayAgent.ownerUsername || t('agent.unknownOwner', 'Unknown'),
+                    })}
+              </p>
             </div>
           </div>
 
@@ -226,7 +237,8 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({
             {onTest && (
               <button
                 onClick={() => onTest(displayAgent)}
-                className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-all flex items-center gap-2 shadow-lg shadow-indigo-500/20"
+                disabled={displayAgent.canExecute === false}
+                className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-all flex items-center gap-2 shadow-lg shadow-indigo-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <MessageSquare className="w-4 h-4" />
                 {t('agent.testAgent')}
@@ -379,6 +391,18 @@ export const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({
                   <div className="space-y-4">
                     <SectionHeader icon={Database} title={t('agent.details.dataAccess')} />
                     <div className="bg-zinc-50/50 dark:bg-zinc-800/30 rounded-2xl p-4 border border-zinc-100 dark:border-zinc-800/50">
+                      <InfoRow
+                        label={t('agent.details.owner', 'Owner')}
+                        value={displayAgent.ownerUsername || t('agent.unknownOwner', 'Unknown')}
+                      />
+                      <InfoRow
+                        label={t('agent.details.department', 'Department')}
+                        value={displayAgent.departmentName || t('agent.unassignedDepartment', 'Unassigned')}
+                      />
+                      <InfoRow
+                        label={t('agent.details.accessLevel')}
+                        value={accessLevelLabel}
+                      />
                       <InfoRow
                         label={t('agent.details.allowedKnowledge')}
                         value={

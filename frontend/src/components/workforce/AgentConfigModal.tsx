@@ -29,7 +29,6 @@ import type { ModelMetadata } from "@/api/llm";
 import type { Collection } from "@/types/document";
 import { ModelMetadataCard } from "@/components/settings/ModelMetadataCard";
 import { ImageCropModal } from "@/components/common/ImageCropModal";
-import { DepartmentSelect } from "@/components/departments/DepartmentSelect";
 import { LayoutModal } from "@/components/LayoutModal";
 
 const resolveDefaultBindingMode = (
@@ -171,7 +170,10 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         maxTokens: agent.maxTokens ?? 4096,
         topP: agent.topP ?? 0.9,
         departmentId: agent.departmentId || "",
-        accessLevel: agent.accessLevel || "private",
+        accessLevel:
+          agent.accessLevel === "team"
+            ? ("department" as any)
+            : agent.accessLevel || "private",
         allowedKnowledge: agent.allowedKnowledge || [],
         topK: agent.topK || 5,
         similarityThreshold: agent.similarityThreshold ?? 0.3,
@@ -591,7 +593,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     { id: "capabilities", label: t("agent.capabilities") },
     { id: "model", label: t("agent.modelConfig") },
     { id: "knowledge", label: t("agent.knowledgeBase") },
-    { id: "access", label: t("agent.dataAccess") },
+    { id: "access", label: t("agent.sharingAndKnowledgeAccess") },
     { id: "channels", label: t("agent.channelPublish", "渠道发布") },
   ];
 
@@ -904,16 +906,45 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 />
               </div>
 
-              <div>
+              <div className="rounded-xl border border-zinc-500/10 bg-zinc-500/5 p-4">
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
                   {t("departments.label", "Department")}
                 </label>
-                <DepartmentSelect
-                  value={formData.departmentId || undefined}
-                  onChange={(val) =>
-                    setFormData({ ...formData, departmentId: val || "" })
+                <p className="text-sm text-zinc-700 dark:text-zinc-300">
+                  {agent?.departmentName || t("agent.unassignedDepartment", "Unassigned")}
+                </p>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  {t(
+                    "agent.boundDepartmentHint",
+                    "This agent will automatically bind to your current department. You can change sharing visibility after creation.",
+                  )}
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t("agent.accessLevel")}
+                </label>
+                <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+                  {t(
+                    "agent.sharingScopeDescription",
+                    "This controls the agent's sharing scope, not which knowledge bases or data the agent can access.",
+                  )}
+                </p>
+                <select
+                  value={formData.accessLevel}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      accessLevel: e.target.value as any,
+                    })
                   }
-                />
+                  className="w-full px-4 py-3 bg-white/80 dark:bg-zinc-900/60 border border-emerald-500/20 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
+                >
+                  <option value="private">{t("agent.accessLevelPrivate")}</option>
+                  <option value="department">{t("agent.accessLevelDepartment")}</option>
+                  <option value="public">{t("agent.accessLevelPublic")}</option>
+                </select>
               </div>
             </div>
           )}
@@ -1544,31 +1575,28 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 <p className="text-sm text-blue-700 dark:text-blue-400 font-medium">
                   {t(
                     "agent.accessLevelEffectiveRule",
-                    "访问级别决定默认数据范围；若配置白名单，则在默认范围上进一步收敛。",
+                    "Sharing scope controls who can discover and use this agent. Knowledge base access is configured separately in the Knowledge tab.",
                   )}
                 </p>
               </div>
 
-              <div>
-                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+              <div className="rounded-xl border border-zinc-500/10 bg-zinc-500/5 p-4">
+                <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
                   {t("agent.accessLevel")}
-                </label>
-                <select
-                  value={formData.accessLevel}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      accessLevel: e.target.value as any,
-                    })
-                  }
-                  className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
-                >
-                  <option value="private">
-                    {t("agent.accessLevelPrivate")}
-                  </option>
-                  <option value="team">{t("agent.accessLevelTeam")}</option>
-                  <option value="public">{t("agent.accessLevelPublic")}</option>
-                </select>
+                </p>
+                <p className="text-sm text-zinc-700 dark:text-zinc-300">
+                  {formData.accessLevel === "public"
+                    ? t("agent.accessLevelPublic")
+                    : formData.accessLevel === "department"
+                      ? t("agent.accessLevelDepartment")
+                      : t("agent.accessLevelPrivate")}
+                </p>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  {t(
+                    "agent.sharingScopeConfiguredInBasicTab",
+                    "Change sharing scope in the Basic Information tab.",
+                  )}
+                </p>
               </div>
 
               <div>

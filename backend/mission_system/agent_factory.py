@@ -8,8 +8,11 @@ import logging
 from typing import Any, Optional
 from uuid import UUID
 
+from access_control.agent_access import load_accessible_agent_or_raise
+from access_control.permissions import CurrentUser
 from agent_framework.base_agent import AgentConfig, BaseAgent
-from agent_framework.agent_registry import AgentRegistry
+from database.connection import get_db_session
+from database.models import User
 from llm_providers.custom_openai_provider import CustomOpenAIChat
 
 logger = logging.getLogger(__name__)
@@ -140,25 +143,38 @@ async def create_mission_agent(
 
 async def create_registered_mission_agent(
     agent_id: UUID,
-    owner_user_id: UUID,
+    actor_user_id: UUID,
     max_iterations: int = 20,
 ) -> Optional[BaseAgent]:
     """Create a mission execution agent from an existing platform agent definition.
 
-    Returns None when the requested agent does not exist or is not owned by the user.
+    Returns None when the requested agent does not exist or is not executable by the user.
     """
-    registry = AgentRegistry()
-    agent_info = registry.get_agent(agent_id)
-    if agent_info is None:
-        return None
-    if agent_info.owner_user_id != owner_user_id:
-        return None
+    with get_db_session() as session:
+        user = session.query(User).filter(User.user_id == actor_user_id).first()
+        if user is None:
+            return None
+
+        current_user = CurrentUser(
+            user_id=str(user.user_id),
+            username=str(user.username or ""),
+            role=str(user.role or "user"),
+        )
+        try:
+            agent_info = load_accessible_agent_or_raise(
+                session,
+                str(agent_id),
+                current_user,
+                access_type="execute",
+            )
+        except Exception:
+            return None
 
     config = AgentConfig(
         agent_id=agent_info.agent_id,
         name=agent_info.name,
         agent_type=agent_info.agent_type,
-        owner_user_id=owner_user_id,
+        owner_user_id=actor_user_id,
         capabilities=agent_info.capabilities or [],
         access_level=agent_info.access_level or "private",
         allowed_knowledge=agent_info.allowed_knowledge or [],
