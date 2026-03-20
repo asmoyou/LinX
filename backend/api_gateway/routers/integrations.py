@@ -979,6 +979,8 @@ def _looks_like_feishu_file_send_request(text: str | None) -> bool:
         token in normalized
         for token in (
             "发我",
+            "发给我",
+            "给我发",
             "发送",
             "给我文件",
             "把文件给我",
@@ -1133,6 +1135,7 @@ def _build_feishu_reply_text(
     agent: Agent,
     conversation: AgentConversation,
     output_text: str,
+    request_text: str | None = None,
     delivered_artifacts: list[dict[str, Any]] | None,
     pending_artifacts: list[dict[str, Any]] | None,
     delivery_notes: list[str] | None = None,
@@ -1150,13 +1153,14 @@ def _build_feishu_reply_text(
         for item in (pending_artifacts or [])
         if str(item.get("path") or "").strip()
     ]
-    if (
-        delivered_items
-        and not pending_paths
-        and not deduped_notes
-        and _should_suppress_feishu_delivery_confirmation(base_text, delivered_items)
-    ):
-        return ""
+    if delivered_items and not pending_paths and not deduped_notes:
+        base_text = _sanitize_feishu_reply_for_delivered_files(
+            request_text=request_text,
+            reply_text=base_text,
+            delivered_artifacts=delivered_items,
+        )
+        if not base_text:
+            return ""
     if not pending_paths and not deduped_notes:
         return base_text
 
@@ -1185,6 +1189,392 @@ def _build_feishu_reply_text(
         f"{summary_prefix}\n{detail_text}\n\n"
         f"网页查看对话与工作区: {conversation_url}"
     )
+
+
+def _should_suppress_feishu_file_request_reply(
+    *,
+    request_text: str | None,
+    reply_text: str,
+    delivered_artifacts: list[dict[str, Any]],
+) -> bool:
+    if not _looks_like_feishu_file_send_request(request_text):
+        return False
+
+    normalized_reply = str(reply_text or "").strip()
+    if not normalized_reply:
+        return True
+
+    lowered_reply = normalized_reply.lower()
+    if "```" in normalized_reply:
+        return True
+
+    artifact_hints: set[str] = set()
+    for item in delivered_artifacts:
+        path = str(item.get("path") or "").strip().lower()
+        if not path:
+            continue
+        artifact_hints.add(path)
+        artifact_hints.add(Path(path).name.lower())
+
+    content_dump_tokens = (
+        "完整代码",
+        "完整内容",
+        "全文如下",
+        "代码如下",
+        "源代码",
+        "full code",
+        "full content",
+        "source code",
+    )
+    if any(token in lowered_reply for token in content_dump_tokens):
+        return True
+
+    has_artifact_hint = any(hint and hint in lowered_reply for hint in artifact_hints)
+
+    if len(normalized_reply) >= 800 and (has_artifact_hint or normalized_reply.count("\n") >= 12):
+        return True
+
+    if has_artifact_hint:
+        file_delivery_tokens = (
+            "文件位置",
+            "路径",
+            "已找到",
+            "attached",
+            "found",
+            "located",
+        )
+        return any(token in lowered_reply for token in file_delivery_tokens)
+
+    return False
+
+
+def _sanitize_feishu_reply_for_delivered_files(
+    *,
+    request_text: str | None,
+    reply_text: str,
+    delivered_artifacts: list[dict[str, Any]],
+) -> str:
+    normalized_reply = str(reply_text or "").strip()
+    if not normalized_reply:
+        return ""
+
+    condensed_reply = _condense_feishu_delivered_file_reply(
+        normalized_reply,
+        delivered_artifacts=delivered_artifacts,
+    )
+    trimmed_reply = condensed_reply or _trim_feishu_file_content_dump(
+        normalized_reply,
+        delivered_artifacts=delivered_artifacts,
+    )
+    if not trimmed_reply:
+        return ""
+
+    if (
+        _should_suppress_feishu_file_request_reply(
+            request_text=request_text,
+            reply_text=trimmed_reply,
+            delivered_artifacts=delivered_artifacts,
+        )
+        or _should_suppress_feishu_delivery_confirmation(trimmed_reply, delivered_artifacts)
+    ):
+        return ""
+
+    return trimmed_reply
+
+
+def _condense_feishu_delivered_file_reply(
+    text: str,
+    *,
+    delivered_artifacts: list[dict[str, Any]],
+) -> str | None:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+
+    lowered = normalized.lower()
+    preview_markers = (
+        "文档内容预览",
+        "内容预览",
+        "文档预览",
+        "文件预览",
+        "内容概览",
+        "文档概览",
+        "完整代码",
+        "完整内容",
+        "全文如下",
+        "代码如下",
+        "内容如下",
+        "preview",
+        "full code",
+        "full content",
+        "source code",
+    )
+    artifact_hints = {
+        hint
+        for item in delivered_artifacts
+        for hint in (
+            str(item.get("path") or "").strip().lower(),
+            Path(str(item.get("path") or "").strip()).name.lower(),
+        )
+        if hint
+    }
+    heading_count = sum(
+        1 for line in normalized.splitlines() if re.match(r"^\s{0,3}#{1,4}\s+\S", line)
+    )
+    has_preview_marker = "```" in normalized or any(token in lowered for token in preview_markers)
+    has_artifact_hint = any(hint in lowered for hint in artifact_hints)
+    looks_like_preview = has_preview_marker or (
+        len(normalized) >= 600 and heading_count >= 4 and has_artifact_hint
+    )
+    if not looks_like_preview:
+        return None
+
+    intro = _extract_feishu_reply_intro_line(normalized)
+    summary_intro = _normalize_feishu_delivery_summary_intro(
+        intro,
+        delivered_artifacts=delivered_artifacts,
+    )
+    outline_items = _extract_feishu_outline_items(normalized)
+    if outline_items:
+        return f"{summary_intro}\n\n内容概览：{'、'.join(outline_items[:5])}。"
+    return summary_intro
+
+
+def _extract_feishu_reply_intro_line(text: str) -> str:
+    ignored_tokens = (
+        "文件位置",
+        "文件信息",
+        "文件详情",
+        "使用方式",
+        "文件已保存到",
+        "完整路径",
+        "普通版",
+        "双语版",
+        "完整内容",
+        "完整代码",
+        "内容预览",
+        "内容概览",
+        "文档内容预览",
+        "文档内容概览",
+    )
+    for raw_line in str(text or "").splitlines():
+        line = _strip_feishu_markdown_text(raw_line)
+        if not line or line == "---":
+            continue
+        if any(token in line for token in ignored_tokens):
+            continue
+        return line
+    return ""
+
+
+def _normalize_feishu_delivery_summary_intro(
+    intro: str,
+    *,
+    delivered_artifacts: list[dict[str, Any]],
+) -> str:
+    cleaned = _strip_feishu_markdown_text(intro)
+    if cleaned:
+        cleaned = re.sub(r"(已为你准备好|已准备好|已找到|已创建|已生成|已输出|已完成)", "已发送", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if cleaned.lower() in {"report", "final report", "document", "overview", "preview"}:
+        cleaned = ""
+    if not cleaned or _is_feishu_delivery_boilerplate_line(cleaned, delivered_artifacts):
+        if len(delivered_artifacts) == 1:
+            return f"{Path(str(delivered_artifacts[0].get('path') or '')).name} 已发送。"
+        return "文件已发送。"
+    if not re.search(r"[。！？.!?]$", cleaned):
+        cleaned = f"{cleaned}。"
+    return cleaned
+
+
+def _extract_feishu_outline_items(text: str) -> list[str]:
+    lines = str(text or "").splitlines()
+    items: list[str] = []
+    seen: set[str] = set()
+    preview_started = False
+    preview_tokens = ("预览", "概览", "完整内容", "完整代码", "全文如下", "代码如下", "内容如下")
+    ignored_tokens = (
+        "文件位置",
+        "文件信息",
+        "文件详情",
+        "使用方式",
+        "文件已保存到",
+        "完整路径",
+        "普通版",
+        "双语版",
+    )
+
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        lowered = stripped.lower()
+        if not preview_started and (
+            "```" in stripped or any(token in stripped for token in preview_tokens)
+        ):
+            preview_started = True
+            continue
+        if not preview_started:
+            continue
+
+        heading_match = re.match(r"^\s{0,3}(#{1,4})\s+(.+?)\s*$", raw_line)
+        numbered_match = re.match(r"^\s*\d+\.\s+(.+?)\s*$", raw_line)
+        candidate = ""
+        if heading_match:
+            level = len(heading_match.group(1))
+            if level >= 4:
+                continue
+            candidate = heading_match.group(2)
+        elif numbered_match:
+            candidate = numbered_match.group(1)
+        else:
+            continue
+
+        cleaned = _clean_feishu_outline_item(candidate)
+        if not cleaned:
+            continue
+        if any(token in cleaned for token in ignored_tokens):
+            continue
+        if any(token in lowered for token in ("```",)):
+            continue
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        items.append(cleaned)
+        if len(items) >= 5:
+            break
+
+    return items
+
+
+def _clean_feishu_outline_item(value: str) -> str:
+    cleaned = _strip_feishu_markdown_text(value)
+    if not cleaned:
+        return ""
+    cleaned = cleaned.split(" - ", 1)[0].strip()
+    cleaned = cleaned.split("：", 1)[0].strip()
+    if "|" in cleaned:
+        cleaned = cleaned.split("|", 1)[0].strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if cleaned.lower() in {"report", "final report", "document", "overview", "preview"}:
+        return ""
+    if len(cleaned) > 32:
+        return ""
+    return cleaned
+
+
+def _strip_feishu_markdown_text(value: str) -> str:
+    cleaned = str(value or "")
+    cleaned = re.sub(r"[*_`#>\-]+", " ", cleaned)
+    cleaned = re.sub(r"^[^\u4e00-\u9fffA-Za-z0-9]+", "", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _is_feishu_delivery_boilerplate_line(
+    text: str,
+    delivered_artifacts: list[dict[str, Any]],
+) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return True
+    artifact_hints = {
+        hint
+        for item in delivered_artifacts
+        for hint in (
+            str(item.get("path") or "").strip().lower(),
+            Path(str(item.get("path") or "").strip()).name.lower(),
+        )
+        if hint
+    }
+    boilerplate_tokens = (
+        "文件位置",
+        "路径",
+        "已发送",
+        "已找到",
+        "attached",
+        "found",
+        "located",
+        "saved",
+        "generated",
+        "created",
+    )
+    return any(token in lowered for token in boilerplate_tokens) and any(
+        hint and hint in lowered for hint in artifact_hints
+    )
+
+
+def _trim_feishu_file_content_dump(
+    text: str,
+    *,
+    delivered_artifacts: list[dict[str, Any]],
+) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+
+    dump_markers = (
+        "```",
+        "## 完整代码",
+        "## 完整内容",
+        "## 文档内容预览",
+        "## 内容预览",
+        "## 文档内容概览",
+        "完整代码",
+        "完整内容",
+        "文档内容预览",
+        "内容预览",
+        "文档内容概览",
+        "全文如下",
+        "代码如下",
+        "内容如下",
+        "full code",
+        "full content",
+        "source code",
+    )
+    cut_positions = [normalized.find(marker) for marker in dump_markers if normalized.find(marker) >= 0]
+    if not cut_positions:
+        return normalized
+
+    prefix = normalized[: min(cut_positions)].strip()
+    if not prefix:
+        return ""
+
+    lowered_prefix = prefix.lower()
+    artifact_hints = {
+        hint
+        for item in delivered_artifacts
+        for hint in (
+            str(item.get("path") or "").strip().lower(),
+            Path(str(item.get("path") or "").strip()).name.lower(),
+        )
+        if hint
+    }
+    boilerplate_tokens = (
+        "文件位置",
+        "路径",
+        "已找到",
+        "attached",
+        "found",
+        "located",
+    )
+    meaningful_tokens = (
+        "总结",
+        "概览",
+        "概述",
+        "说明",
+        "建议",
+        "风险",
+        "结论",
+        "changes",
+        "summary",
+        "overview",
+        "notes",
+    )
+    has_boilerplate = any(token in lowered_prefix for token in boilerplate_tokens)
+    has_artifact_hint = any(hint in lowered_prefix for hint in artifact_hints)
+    has_meaningful_summary = any(token in lowered_prefix for token in meaningful_tokens)
+    if has_boilerplate and has_artifact_hint and not has_meaningful_summary:
+        return ""
+
+    return prefix
 
 
 def _should_suppress_feishu_delivery_confirmation(
@@ -1470,6 +1860,7 @@ async def process_feishu_publication_message(
         agent=agent,
         conversation=conversation,
         output_text=str(result.get("output") or ""),
+        request_text=str(message.get("text") or ""),
         delivered_artifacts=sent_artifacts,
         pending_artifacts=deduped_pending,
         delivery_notes=delivery_notes,

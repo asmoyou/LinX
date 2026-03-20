@@ -196,6 +196,85 @@ def test_build_feishu_reply_text_suppresses_redundant_file_creation_text_when_fi
     assert text == ""
 
 
+def test_build_feishu_reply_text_condenses_file_content_dump_for_file_request() -> None:
+    agent = SimpleNamespace(agent_id="agent-1")
+    conversation = SimpleNamespace(conversation_id="conv-1")
+
+    text = _build_feishu_reply_text(
+        agent=agent,
+        conversation=conversation,
+        request_text="把那个贪吃蛇的文件发给我，代码文件",
+        output_text=(
+            "✅ 贪吃蛇游戏代码文件已找到！\n\n"
+            "文件位置：output/snake-game.html\n\n"
+            "## 完整代码\n"
+            "```html\n"
+            "<!DOCTYPE html><html><body>...</body></html>\n"
+            "```"
+        ),
+        delivered_artifacts=[{"path": "output/snake-game.html", "is_directory": False}],
+        pending_artifacts=[],
+        base_url=None,
+    )
+
+    assert "已发送" in text
+    assert "完整代码" not in text
+    assert "<!DOCTYPE html>" not in text
+
+
+def test_build_feishu_reply_text_condenses_file_content_dump_after_delivery_even_without_request_hint() -> None:
+    agent = SimpleNamespace(agent_id="agent-1")
+    conversation = SimpleNamespace(conversation_id="conv-1")
+
+    text = _build_feishu_reply_text(
+        agent=agent,
+        conversation=conversation,
+        output_text=(
+            "文件位置：output/final-report.md\n\n"
+            "## 完整内容\n"
+            "# Report\n\n"
+            + ("A" * 1200)
+        ),
+        delivered_artifacts=[{"path": "output/final-report.md", "is_directory": False}],
+        pending_artifacts=[],
+        base_url=None,
+    )
+
+    assert "已发送" in text
+    assert "完整内容" not in text
+    assert "A" * 100 not in text
+
+
+def test_build_feishu_reply_text_condenses_preview_into_outline_when_file_delivered() -> None:
+    agent = SimpleNamespace(agent_id="agent-1")
+    conversation = SimpleNamespace(conversation_id="conv-1")
+
+    text = _build_feishu_reply_text(
+        agent=agent,
+        conversation=conversation,
+        output_text=(
+            "✅ **福州旅游攻略已为你准备好！**\n\n"
+            "---\n\n"
+            "## 📄 文件位置\n\n"
+            "**普通版**：`/workspace/output/fuzhou-travel-guide.md`\n\n"
+            "---\n\n"
+            "## 📋 文档内容预览\n\n"
+            "### 🌟 福州简介 | Introduction to Fuzhou\n\n"
+            "### 🏛️ 必游景点 | Must-Visit Attractions\n\n"
+            "### 🍜 美食攻略 | Food Guide\n\n"
+            "### 🗺️ 行程推荐 | Suggested Itineraries\n\n"
+            "### 🚗 实用信息 | Practical Information\n"
+        ),
+        delivered_artifacts=[{"path": "output/fuzhou-travel-guide.md", "is_directory": False}],
+        pending_artifacts=[],
+        base_url=None,
+    )
+
+    assert "福州旅游攻略已发送" in text
+    assert "内容概览：福州简介、必游景点、美食攻略、行程推荐、实用信息。" in text
+    assert "文档内容预览" not in text
+
+
 def test_build_feishu_reply_text_keeps_substantive_summary_when_file_delivered() -> None:
     agent = SimpleNamespace(agent_id="agent-1")
     conversation = SimpleNamespace(conversation_id="conv-1")
@@ -213,6 +292,44 @@ def test_build_feishu_reply_text_keeps_substantive_summary_when_file_delivered()
     )
 
     assert "核心建议" in text
+
+
+def test_build_feishu_reply_text_trims_dump_and_keeps_summary_prefix_when_file_delivered() -> None:
+    agent = SimpleNamespace(agent_id="agent-1")
+    conversation = SimpleNamespace(conversation_id="conv-1")
+
+    text = _build_feishu_reply_text(
+        agent=agent,
+        conversation=conversation,
+        output_text=(
+            "已整理好报告，重点是供应商成本偏高，建议先做小流量验证。\n\n"
+            "## 完整内容\n"
+            "# Final Report\n\n"
+            + ("A" * 1200)
+        ),
+        delivered_artifacts=[{"path": "output/final-report.md", "is_directory": False}],
+        pending_artifacts=[],
+        base_url=None,
+    )
+
+    assert text == "已整理好报告，重点是供应商成本偏高，建议先做小流量验证。"
+
+
+def test_build_feishu_reply_text_keeps_short_summary_for_file_request() -> None:
+    agent = SimpleNamespace(agent_id="agent-1")
+    conversation = SimpleNamespace(conversation_id="conv-1")
+
+    text = _build_feishu_reply_text(
+        agent=agent,
+        conversation=conversation,
+        request_text="把最终报告文件发我",
+        output_text="报告已经发你了。重点看第 2 节的风险判断和第 4 节的上线建议。",
+        delivered_artifacts=[{"path": "output/final-report.md", "is_directory": False}],
+        pending_artifacts=[],
+        base_url=None,
+    )
+
+    assert "重点看第 2 节" in text
 
 
 def test_select_feishu_deliverable_artifacts_filters_runtime_and_directories() -> None:
@@ -470,6 +587,7 @@ def test_select_feishu_explicitly_requested_artifacts_matches_unique_basename() 
 
 def test_looks_like_feishu_file_send_request_detects_intent() -> None:
     assert _looks_like_feishu_file_send_request("把 output/report.md 发我") is True
+    assert _looks_like_feishu_file_send_request("把那个贪吃蛇的文件发给我，代码文件") is True
     assert _looks_like_feishu_file_send_request("帮我总结这个需求") is False
 
 

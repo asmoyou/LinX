@@ -230,6 +230,70 @@ class TestBaseAgent:
         assert sent_messages[2].content == "It is 你好."
         assert sent_messages[3].content == "What did I ask before this?"
 
+    def test_build_messages_with_file_delivery_policy_blocks_full_content_dumps(self):
+        """Whenever a task is delivered as a file, prompt should require concise summaries only."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+
+        messages = agent._build_messages_with_history(
+            human_content="把报告发给我",
+        )
+
+        assert isinstance(messages[0], SystemMessage)
+        assert "Do NOT paste the full file contents" in messages[0].content
+        assert "report the exact saved file path(s) and keep the summary concise" in messages[0].content
+
+    def test_assess_autonomous_completion_rejects_inline_file_dump_after_file_delivery(
+        self,
+    ):
+        """Delivered files should not be reprinted inline as the final answer."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+        decision = agent._assess_autonomous_completion(
+            task_intent_text="把福州攻略整理成 md 文档给我",
+            latest_output=(
+                "✅ 福州旅游攻略已为你准备好！\n\n"
+                "## 文件位置\n"
+                "/workspace/output/fuzhou-travel-guide.md\n\n"
+                "## 文档内容预览\n"
+                "### 福州简介\n"
+                "### 必游景点\n"
+                "### 美食攻略\n"
+                "### 行程推荐\n"
+                "### 实用信息\n"
+            ),
+            tool_call_records=[
+                {
+                    "tool_name": "write_file",
+                    "status": "success",
+                    "round_number": 1,
+                    "arguments": {"file_path": "/workspace/output/fuzhou-travel-guide.md"},
+                    "result": "Saved to /workspace/output/fuzhou-travel-guide.md",
+                }
+            ],
+            round_number=2,
+            max_rounds=6,
+            file_delivery_required=True,
+            requested_file_formats={"md"},
+        )
+
+        assert decision["should_stop"] is False
+        assert "不要粘贴文件原文" in decision["feedback_prompt"]
+
     def test_execute_task_cancellation_releases_busy_status_and_skips_fallback(self):
         """Cancellation during streaming should exit as cancelled without fallback invoke."""
         config = AgentConfig(

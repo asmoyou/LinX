@@ -1269,6 +1269,8 @@ async def execute_persistent_conversation_turn(
             }
             if isinstance(extra_execution_context, dict):
                 additional_context.update(extra_execution_context)
+            run_context = dict(context)
+            run_context.update(additional_context)
             run_exec_context = ExecutionContext(
                 agent_id=conversation.agent_id,
                 user_id=principal_user_id,
@@ -1286,12 +1288,12 @@ async def execute_persistent_conversation_turn(
                     session_workdir=runtime.workdir,
                     container_id=runtime.sandbox_id,
                     message_content=multimodal_content,
-                    prebuilt_execution_context=context,
+                    prebuilt_execution_context=run_context,
                 )
             else:
                 result = agent.execute_task(
                     task_description=user_message,
-                    context=context,
+                    context=run_context,
                     conversation_history=history or None,
                     stream_callback=stream_callback,
                     session_workdir=runtime.workdir,

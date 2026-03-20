@@ -1023,11 +1023,15 @@ class BaseAgent:
         self,
         available_tools: Optional[List[Any]] = None,
         runtime_capabilities: Optional[Dict[str, Any]] = None,
+        response_delivery_mode: str = "chat_inline",
+        response_delivery_channel: str = "",
     ) -> str:
         """Attach live system time context to the base system prompt."""
         base_prompt = self._create_system_prompt(
             available_tools=available_tools,
             runtime_capabilities=runtime_capabilities,
+            response_delivery_mode=response_delivery_mode,
+            response_delivery_channel=response_delivery_channel,
         ).rstrip()
         time_context = self._build_system_time_context()
         time_block = self._render_system_time_prompt_block(time_context)
@@ -1069,11 +1073,15 @@ class BaseAgent:
         conversation_history: Optional[List[Dict[str, Any]]] = None,
         available_tools: Optional[List[Any]] = None,
         runtime_capabilities: Optional[Dict[str, Any]] = None,
+        response_delivery_mode: str = "chat_inline",
+        response_delivery_channel: str = "",
     ) -> List[Any]:
         """Build prompt messages with optional conversation history."""
         system_prompt = self._build_time_aware_system_prompt(
             available_tools=available_tools,
             runtime_capabilities=runtime_capabilities,
+            response_delivery_mode=response_delivery_mode,
+            response_delivery_channel=response_delivery_channel,
         )
         messages: List[Any] = [SystemMessage(content=system_prompt)]
 
@@ -1324,6 +1332,59 @@ class BaseAgent:
             "请自行判断并执行下一步（必要时调用工具），仅在任务完全完成后再给最终答复。"
         )
 
+    @staticmethod
+    def _resolve_response_delivery_mode(context: Any) -> str:
+        """Resolve whether the current surface expects inline chat output or file-first delivery."""
+        if not isinstance(context, dict):
+            return "chat_inline"
+        normalized = str(context.get("response_delivery_mode") or "").strip().lower()
+        if normalized in {"chat_inline", "file_first_summary"}:
+            return normalized
+        return "chat_inline"
+
+    @staticmethod
+    def _resolve_response_delivery_channel(context: Any) -> str:
+        """Resolve channel label for response delivery guidance."""
+        if not isinstance(context, dict):
+            return ""
+        return str(context.get("response_delivery_channel") or "").strip().lower()
+
+    def _looks_like_inline_file_delivery_dump(self, text: str) -> bool:
+        """Detect outputs that inline large file contents instead of concise delivery status."""
+        raw = str(text or "").strip()
+        if not raw:
+            return False
+
+        lowered = raw.lower()
+        preview_tokens = (
+            "```",
+            "完整代码",
+            "完整内容",
+            "文档内容预览",
+            "内容预览",
+            "文档预览",
+            "文件预览",
+            "内容概览",
+            "文档内容概览",
+            "全文如下",
+            "代码如下",
+            "内容如下",
+            "full code",
+            "full content",
+            "source code",
+            "preview",
+        )
+        if any(token in lowered for token in preview_tokens):
+            return True
+
+        heading_count = sum(
+            1 for line in raw.splitlines() if re.match(r"^\s{0,3}#{1,4}\s+\S", line)
+        )
+        workspace_path_count = len(self._extract_workspace_paths_from_text(raw))
+        if len(raw) >= 1200 and (heading_count >= 4 or workspace_path_count >= 1):
+            return True
+        return False
+
     def _assess_autonomous_completion(
         self,
         *,
@@ -1335,6 +1396,7 @@ class BaseAgent:
         file_delivery_required: bool = False,
         file_delivery_guard_mode: FileDeliveryGuardMode = FileDeliveryGuardMode.SOFT,
         requested_file_formats: Optional[Set[str]] = None,
+        response_delivery_mode: str = "chat_inline",
         finish_reason: str = "",
     ) -> Dict[str, Any]:
         """Deterministic state-machine decision for autonomous continue vs stop."""
@@ -1412,6 +1474,22 @@ class BaseAgent:
                             requested_file_formats
                         ),
                     }
+
+            if self._looks_like_inline_file_delivery_dump(latest_output):
+                return {
+                    "should_stop": False,
+                    "confidence": 0.15,
+                    "reason": "final answer inlined delivered file contents",
+                    "next_action": (
+                        "Rewrite the final reply as a concise delivery confirmation "
+                        "with exact file paths and a short summary only."
+                    ),
+                    "feedback_prompt": (
+                        "当前界面会把文件结果单独展示给用户。请重写最终答复："
+                        "只保留交付状态、准确文件路径，以及最多 1-3 句摘要或章节概览；"
+                        "不要粘贴文件原文、长篇预览或完整代码。"
+                    ),
+                }
 
         latest_failed_record = self._find_latest_failed_tool_record(tool_call_records)
         if latest_failed_record is not None:
@@ -2365,6 +2443,8 @@ class BaseAgent:
                 code_execution_network_access=code_execution_network_access,
             )
             context["runtime_capabilities"] = runtime_capabilities
+            response_delivery_mode = self._resolve_response_delivery_mode(context)
+            response_delivery_channel = self._resolve_response_delivery_channel(context)
 
             resolved_policy = self._resolve_runtime_policy(
                 execution_profile=execution_profile,
@@ -2510,6 +2590,8 @@ class BaseAgent:
                     conversation_history=conversation_history,
                     available_tools=runtime_tools,
                     runtime_capabilities=runtime_capabilities,
+                    response_delivery_mode=response_delivery_mode,
+                    response_delivery_channel=response_delivery_channel,
                 )
 
                 # Multi-round conversation loop for tool execution
@@ -2872,6 +2954,7 @@ class BaseAgent:
                             file_delivery_required=file_delivery_required,
                             file_delivery_guard_mode=file_delivery_guard_mode,
                             requested_file_formats=requested_file_formats,
+                            response_delivery_mode=response_delivery_mode,
                             finish_reason=round_finish_reason,
                         )
                         should_stop = bool(completion_decision.get("should_stop"))
@@ -2977,6 +3060,8 @@ class BaseAgent:
                     human_content=user_message,
                     conversation_history=conversation_history,
                     runtime_capabilities=runtime_capabilities,
+                    response_delivery_mode=response_delivery_mode,
+                    response_delivery_channel=response_delivery_channel,
                 )
                 invoke_payload = {"messages": messages}
                 invoke_config = None
@@ -4303,6 +4388,8 @@ class BaseAgent:
         else:
             context = dict(context)
         context["runtime_capabilities"] = runtime_capabilities
+        response_delivery_mode = self._resolve_response_delivery_mode(context)
+        response_delivery_channel = self._resolve_response_delivery_channel(context)
 
         # Prepare system prompt and initial messages
         user_message = task_description
@@ -4341,6 +4428,8 @@ class BaseAgent:
             conversation_history=conversation_history,
             available_tools=runtime_tools,
             runtime_capabilities=runtime_capabilities,
+            response_delivery_mode=response_delivery_mode,
+            response_delivery_channel=response_delivery_channel,
         )
 
         logger.info(
@@ -4759,6 +4848,7 @@ class BaseAgent:
                     file_delivery_required=file_delivery_required,
                     file_delivery_guard_mode=file_delivery_guard_mode,
                     requested_file_formats=requested_file_formats,
+                    response_delivery_mode=response_delivery_mode,
                     finish_reason=round_finish_reason,
                 )
                 should_stop = bool(completion_decision.get("should_stop"))
@@ -5143,6 +5233,8 @@ class BaseAgent:
         self,
         available_tools: Optional[List[Any]] = None,
         runtime_capabilities: Optional[Dict[str, Any]] = None,
+        response_delivery_mode: str = "chat_inline",
+        response_delivery_channel: str = "",
     ) -> str:
         """Create system prompt for the agent.
 
@@ -5264,8 +5356,10 @@ Always be professional, accurate, and helpful."""
 2. Prefer a single target file and update it incrementally across rounds (create first, then continue writing).
 3. Only split into multiple files when explicitly requested by the user or when one file is clearly impractical.
 4. Do NOT use `code_execution` as the final file-delivery step for plain text documents.
-5. In your final response, report the exact saved file path(s).
-6. Never claim a file was saved unless the tool call succeeded.
+5. In your final response, report the exact saved file path(s) and keep the summary concise.
+6. Do NOT paste the full file contents, long previews, or complete code blocks once the deliverable has been saved as a file.
+7. If the user later asks to inspect file contents inline, provide only the specific excerpt or section they ask for instead of dumping the whole file.
+8. Never claim a file was saved unless the tool call succeeded.
 """
         dependency_recovery_policy = """
 **Dependency/tool failure strategy**:
