@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from agent_framework.conversation_history_compaction import (
     ConversationHistoryCompactionService,
@@ -23,7 +23,7 @@ from agent_framework.conversation_storage_cleanup import (
 )
 from agent_framework.persistent_conversations import get_persistent_conversation_runtime_service
 from database.connection import get_connection_pool, get_db_session
-from database.models import AgentConversation, AgentConversationSnapshot
+from database.models import AgentConversation, AgentConversationSnapshot, AgentSchedule
 from shared.config import Config, get_config
 
 logger = logging.getLogger(__name__)
@@ -277,33 +277,44 @@ class ConversationLifecycleManager:
 
     def _list_compaction_candidates(self, *, limit: int) -> list[UUID]:
         with get_db_session() as session:
+            protected_conversations = select(AgentSchedule.bound_conversation_id).where(
+                AgentSchedule.status.in_(["active", "paused"])
+            )
             rows = (
                 session.query(AgentConversation.conversation_id)
                 .filter(AgentConversation.status == "active")
+                .filter(~AgentConversation.conversation_id.in_(protected_conversations))
                 .order_by(AgentConversation.updated_at.asc())
                 .limit(limit)
                 .all()
             )
-        return [row[0] if isinstance(row, tuple) else row for row in rows]
+        return [row[0] for row in rows]
 
     def _list_archive_candidates(self, *, now: datetime, limit: int) -> list[UUID]:
         cutoff = now - timedelta(days=self.settings.archive_after_days)
         with get_db_session() as session:
+            protected_conversations = select(AgentSchedule.bound_conversation_id).where(
+                AgentSchedule.status.in_(["active", "paused"])
+            )
             rows = (
                 session.query(AgentConversation.conversation_id)
                 .filter(AgentConversation.status == "active")
                 .filter(AgentConversation.last_message_at.isnot(None))
                 .filter(AgentConversation.last_message_at <= cutoff)
                 .filter(AgentConversation.storage_tier != "archived")
+                .filter(~AgentConversation.conversation_id.in_(protected_conversations))
                 .order_by(AgentConversation.last_message_at.asc())
                 .limit(limit)
                 .all()
             )
-        return [row[0] if isinstance(row, tuple) else row for row in rows]
+        return [row[0] for row in rows]
 
     def _list_delete_candidates(self, *, now: datetime, limit: int) -> list[UUID]:
         cutoff = now - timedelta(days=self.settings.delete_after_days)
         with get_db_session() as session:
+            protected_conversations = select(AgentSchedule.bound_conversation_id).where(
+                AgentSchedule.status.in_(["active", "paused"])
+            )
             rows = (
                 session.query(AgentConversation.conversation_id)
                 .filter(AgentConversation.status == "active")
@@ -317,11 +328,12 @@ class ConversationLifecycleManager:
                         & (AgentConversation.last_message_at <= cutoff)
                     )
                 )
+                .filter(~AgentConversation.conversation_id.in_(protected_conversations))
                 .order_by(AgentConversation.last_message_at.asc())
                 .limit(limit)
                 .all()
             )
-        return [row[0] if isinstance(row, tuple) else row for row in rows]
+        return [row[0] for row in rows]
 
     async def _archive_conversation(self, conversation_id: UUID, *, now: datetime) -> bool:
         if self.settings.dry_run:

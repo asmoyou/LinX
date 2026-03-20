@@ -17,6 +17,7 @@ import { useMissionStore } from './missionStore';
 import { useHealthStore } from './healthStore';
 import { usePreferencesStore } from './preferencesStore';
 import { useNotificationStore } from './notificationStore';
+import { useScheduleStore } from './scheduleStore';
 
 // Authentication and user management
 export { useAuthStore } from './authStore';
@@ -35,6 +36,7 @@ export { useKnowledgeStore } from './knowledgeStore';
 export { useMemoryWorkbenchStore } from './memoryWorkbenchStore';
 export { useMissionStore } from './missionStore';
 export { useHealthStore } from './healthStore';
+export { useScheduleStore } from './scheduleStore';
 
 // UI and preferences
 export { useThemeStore } from './themeStore';
@@ -107,6 +109,7 @@ export const resetAllStores = () => {
   const healthStore = useHealthStore.getState();
   const preferencesStore = usePreferencesStore.getState();
   const notificationStore = useNotificationStore.getState();
+  const scheduleStore = useScheduleStore.getState();
 
   authStore.logout();
   userStore.reset();
@@ -119,5 +122,6 @@ export const resetAllStores = () => {
   healthStore.reset();
   preferencesStore.reset();
   notificationStore.reset();
+  scheduleStore.reset();
   // Note: Theme is intentionally not reset
 };

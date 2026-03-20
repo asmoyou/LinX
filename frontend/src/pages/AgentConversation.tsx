@@ -18,9 +18,14 @@ import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 
 import { agentsApi } from '@/api';
+import {
+  mergeScheduleEvents,
+  normalizeScheduleCreatedEvent,
+} from '@/components/schedules/scheduleUtils';
 import { ConversationRoundComponent, type ConversationRoundArtifact } from '@/components/workforce/ConversationRound';
 import { createMarkdownComponents } from '@/components/workforce/CodeBlock';
 import { SessionWorkspacePanel } from '@/components/workforce/SessionWorkspacePanel';
+import { useNotificationStore } from '@/stores';
 import type {
   Agent,
   AgentConversationDetail,
@@ -35,6 +40,7 @@ import type {
   RetryAttempt,
   StatusMessage,
 } from '@/types/streaming';
+import type { ScheduleCreatedEvent } from '@/types/schedule';
 
 const WORKSPACE_PATH_PATTERN = /\/workspace\/[^\s,)\]}>"'`]+/gi;
 const FILE_PATH_KV_PATTERN = /file_path=([^\s,)\]}>"'`]+)/gi;
@@ -49,6 +55,7 @@ interface StreamingRoundState {
   retryAttempts: RetryAttempt[];
   errorFeedback: ErrorFeedback[];
   stats: ConversationRound['stats'] | null;
+  scheduleEvents: ScheduleCreatedEvent[];
 }
 
 function createEmptyRoundData(): StreamingRoundState {
@@ -59,6 +66,7 @@ function createEmptyRoundData(): StreamingRoundState {
     retryAttempts: [],
     errorFeedback: [],
     stats: null,
+    scheduleEvents: [],
   };
 }
 
@@ -71,6 +79,8 @@ function buildRoundSnapshot(roundData: StreamingRoundState, roundNumber: number)
     retryAttempts: roundData.retryAttempts.length > 0 ? [...roundData.retryAttempts] : undefined,
     errorFeedback: roundData.errorFeedback.length > 0 ? [...roundData.errorFeedback] : undefined,
     stats: roundData.stats ? { ...roundData.stats } : undefined,
+    scheduleEvents:
+      roundData.scheduleEvents.length > 0 ? [...roundData.scheduleEvents] : undefined,
   };
 }
 
@@ -80,7 +90,8 @@ function hasRoundActivity(round: StreamingRoundState): boolean {
       round.content.trim() ||
       round.statusMessages.length > 0 ||
       round.retryAttempts.length > 0 ||
-      round.errorFeedback.length > 0
+      round.errorFeedback.length > 0 ||
+      round.scheduleEvents.length > 0
   );
 }
 
@@ -215,6 +226,7 @@ function normalizeStoredRound(rawRound: any, index: number): ConversationRound {
         timestamp: new Date(item?.timestamp || Date.now()),
       }))
     : undefined;
+  const scheduleEvents = mergeScheduleEvents(undefined, rawRound?.scheduleEvents);
 
   return {
     roundNumber: Number(rawRound?.roundNumber || index + 1),
@@ -223,6 +235,7 @@ function normalizeStoredRound(rawRound: any, index: number): ConversationRound {
     statusMessages,
     retryAttempts,
     errorFeedback,
+    scheduleEvents,
     stats: rawRound?.stats
       ? {
           timeToFirstToken: Number(rawRound.stats.timeToFirstToken || 0),
@@ -242,6 +255,7 @@ export const AgentConversation: React.FC = () => {
   const { agentId = '', conversationId = '' } = useParams();
   const markdownComponents = useMemo(() => createMarkdownComponents(), []);
   const remarkPlugins = useMemo(() => [remarkGfm], []);
+  const addNotification = useNotificationStore((state) => state.addNotification);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -679,11 +693,15 @@ export const AgentConversation: React.FC = () => {
         completedRounds.length > 0
           ? completedRounds[completedRounds.length - 1].stats
           : undefined;
+      const scheduleEvents = completedRounds.reduce<ScheduleCreatedEvent[]>((acc, round) => {
+        return mergeScheduleEvents(acc, round.scheduleEvents) || acc;
+      }, []);
 
       return {
         completedRounds,
         assistantContent,
         latestStats: latestStats || null,
+        scheduleEvents,
       };
     };
 
@@ -692,10 +710,11 @@ export const AgentConversation: React.FC = () => {
         return finalizeStreamingOutput();
       }
       hasCommittedStreamingOutput = true;
-      const { completedRounds, assistantContent, latestStats } = finalizeStreamingOutput();
+      const { completedRounds, assistantContent, latestStats, scheduleEvents } =
+        finalizeStreamingOutput();
 
       if (!assistantContent && completedRounds.length === 0) {
-        return { completedRounds, assistantContent, latestStats };
+        return { completedRounds, assistantContent, latestStats, scheduleEvents };
       }
 
       const assistantMessage: ConversationMessage = {
@@ -707,13 +726,14 @@ export const AgentConversation: React.FC = () => {
           rounds: completedRounds,
           stats: latestStats,
           artifacts: [],
+          scheduleEvents,
         },
         attachments: [],
         source: 'web',
         createdAt: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, assistantMessage]);
-      return { completedRounds, assistantContent, latestStats };
+      return { completedRounds, assistantContent, latestStats, scheduleEvents };
     };
 
     try {
@@ -820,6 +840,22 @@ export const AgentConversation: React.FC = () => {
             roundStateRef.current.currentRound.thinking += String(chunk.content || '');
           } else if (chunk.type === 'content') {
             roundStateRef.current.currentRound.content += String(chunk.content || '');
+          } else if (chunk.type === 'schedule_created') {
+            const scheduleEvent = normalizeScheduleCreatedEvent(chunk);
+            if (scheduleEvent) {
+              roundStateRef.current.currentRound.scheduleEvents =
+                mergeScheduleEvents(
+                  roundStateRef.current.currentRound.scheduleEvents,
+                  [scheduleEvent]
+                ) || [];
+              addNotification({
+                type: 'success',
+                title: t('schedules.page.createdTitle', '定时任务已创建'),
+                message: `${scheduleEvent.name} ${t('schedules.page.createdSuffix', '已创建')}`,
+                actionUrl: `/schedules/${scheduleEvent.schedule_id}`,
+                actionLabel: t('schedules.page.viewSchedule', '查看定时任务'),
+              });
+            }
           } else if (chunk.type === 'retry_attempt') {
             roundStateRef.current.currentRound.retryAttempts.push({
               retryCount: Number(chunk.retry_count || 1),
@@ -916,6 +952,7 @@ export const AgentConversation: React.FC = () => {
       abortControllerRef.current = null;
     }
   }, [
+    addNotification,
     agentId,
     attachedFiles,
     conversationId,
@@ -937,6 +974,31 @@ export const AgentConversation: React.FC = () => {
       const storedRounds = rawRounds.map((rawRound: any, index: number) =>
         normalizeStoredRound(rawRound, index)
       );
+      const topLevelScheduleEvents = Array.isArray(message.contentJson?.scheduleEvents)
+        ? message.contentJson.scheduleEvents
+        : [];
+      if (topLevelScheduleEvents.length > 0) {
+        if (storedRounds.length > 0) {
+          const lastRoundIndex = storedRounds.length - 1;
+          storedRounds[lastRoundIndex] = {
+            ...storedRounds[lastRoundIndex],
+            scheduleEvents: mergeScheduleEvents(
+              storedRounds[lastRoundIndex].scheduleEvents,
+              topLevelScheduleEvents
+            ),
+          };
+        } else {
+          storedRounds.push(
+            normalizeStoredRound(
+              {
+                roundNumber: 1,
+                scheduleEvents: topLevelScheduleEvents,
+              },
+              0
+            )
+          );
+        }
+      }
       const artifactPaths = Array.isArray(message.contentJson?.artifacts)
         ? message.contentJson.artifacts
             .map((item: any) => normalizeWorkspaceFilePath(item?.path || ''))
@@ -1192,30 +1254,48 @@ export const AgentConversation: React.FC = () => {
                         </div>
                       </div>
                     )}
-                  {renderedMessages.map((message) =>
-                    message.role === 'user' ? (
-                      <div key={message.id} className="flex justify-end">
-                        <div className="max-w-[80%] rounded-[28px] rounded-tr-none bg-emerald-600 px-5 py-4 text-white shadow-lg shadow-emerald-500/10">
-                          <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                            {message.contentText}
-                          </p>
-                          {message.attachments.length > 0 && (
-                            <div className="mt-3 grid gap-2">
-                              {message.attachments.map((attachment, index) => (
-                                <div key={`${message.id}-attachment-${index}`} className="rounded-xl border border-white/15 bg-white/10 px-3 py-2">
-                                  <p className="text-xs font-semibold">
-                                    {String(attachment.name || attachment.file_name || 'Attachment')}
-                                  </p>
-                                  <p className="text-[11px] opacity-80">
-                                    {String(attachment.type || attachment.content_type || '')}
-                                  </p>
-                                </div>
-                              ))}
-                            </div>
-                          )}
+                  {renderedMessages.map((message) => {
+                    if (message.role === 'user') {
+                      return (
+                        <div key={message.id} className="flex justify-end">
+                          <div className="max-w-[80%] rounded-[28px] rounded-tr-none bg-emerald-600 px-5 py-4 text-white shadow-lg shadow-emerald-500/10">
+                            <p className="whitespace-pre-wrap text-sm leading-relaxed">
+                              {message.contentText}
+                            </p>
+                            {message.attachments.length > 0 && (
+                              <div className="mt-3 grid gap-2">
+                                {message.attachments.map((attachment, index) => (
+                                  <div key={`${message.id}-attachment-${index}`} className="rounded-xl border border-white/15 bg-white/10 px-3 py-2">
+                                    <p className="text-xs font-semibold">
+                                      {String(
+                                        attachment.name || attachment.file_name || 'Attachment'
+                                      )}
+                                    </p>
+                                    <p className="text-[11px] opacity-80">
+                                      {String(attachment.type || attachment.content_type || '')}
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ) : (
+                      );
+                    }
+
+                    if (message.role === 'system') {
+                      return (
+                        <div key={message.id} className="flex justify-center">
+                          <div className="rounded-full border border-zinc-200/80 bg-zinc-100 px-5 py-2 dark:border-zinc-800/80 dark:bg-zinc-900/50">
+                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-500">
+                              {message.contentText}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
                       <div key={message.id} className="space-y-4">
                         {message.parsedRounds.length > 0 ? (
                           message.parsedRounds.map((round, index) => (
@@ -1230,7 +1310,9 @@ export const AgentConversation: React.FC = () => {
                                   : []) as string[]).map((path) => ({ path, confirmed: true })),
                               ].filter(
                                 (artifact, artifactIndex, allArtifacts) =>
-                                  allArtifacts.findIndex((candidate) => candidate.path === artifact.path) === artifactIndex
+                                  allArtifacts.findIndex(
+                                    (candidate) => candidate.path === artifact.path
+                                  ) === artifactIndex
                               )}
                               onOpenArtifact={handleOpenArtifactInWorkspace}
                               onDownloadArtifact={handleDownloadArtifact}
@@ -1245,15 +1327,18 @@ export const AgentConversation: React.FC = () => {
                               {agent?.name || 'Agent'}
                             </div>
                             <div className="markdown-content">
-                              <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
+                              <ReactMarkdown
+                                remarkPlugins={remarkPlugins}
+                                components={markdownComponents}
+                              >
                                 {message.contentText}
                               </ReactMarkdown>
                             </div>
                           </div>
                         )}
                       </div>
-                    )
-                  )}
+                    );
+                  })}
 
                   {currentRounds.map((round, index) => (
                     <ConversationRoundComponent

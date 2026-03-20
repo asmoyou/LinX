@@ -9,6 +9,7 @@ References:
 
 import ast
 import logging
+import re
 import time
 from collections import OrderedDict
 from datetime import datetime, timedelta
@@ -23,6 +24,22 @@ from shared.datetime_utils import utcnow
 from skill_library.skill_types import SkillType, StorageType
 
 logger = logging.getLogger(__name__)
+
+
+DEPENDENCY_IMPORT_NAME_OVERRIDES = {
+    "tavily-python": "tavily",
+    "python-dotenv": "dotenv",
+    "psycopg2-binary": "psycopg2",
+    "python-docx": "docx",
+    "python-pptx": "pptx",
+    "python-magic": "magic",
+    "pillow": "PIL",
+    "pyjwt": "jwt",
+    "beautifulsoup4": "bs4",
+    "opencv-python": "cv2",
+    "scikit-learn": "sklearn",
+    "python-dateutil": "dateutil",
+}
 
 
 class CacheEntry:
@@ -80,6 +97,61 @@ class SkillExecutionEngine:
         # Use OrderedDict for LRU cache implementation
         self._tool_cache: OrderedDict[Tuple[UUID, Optional[UUID]], CacheEntry] = OrderedDict()
         logger.info("SkillExecutionEngine initialized with cache management")
+
+    def _dependency_import_name(self, dependency: str) -> str:
+        normalized = str(dependency or "").strip()
+        if not normalized:
+            return ""
+        return DEPENDENCY_IMPORT_NAME_OVERRIDES.get(normalized, normalized.replace("-", "_"))
+
+    def _extract_imports_from_code(self, code: str) -> set[str]:
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return set()
+
+        imports: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    top_level = str(alias.name or "").split(".", 1)[0].strip()
+                    if top_level:
+                        imports.add(top_level)
+            elif isinstance(node, ast.ImportFrom):
+                top_level = str(node.module or "").split(".", 1)[0].strip()
+                if top_level:
+                    imports.add(top_level)
+        return imports
+
+    def _dependency_import_candidates(self, dependency: str, code: Optional[str] = None) -> list[str]:
+        normalized = str(dependency or "").strip()
+        if not normalized:
+            return []
+
+        candidates: list[str] = []
+        primary = self._dependency_import_name(normalized)
+        if primary:
+            candidates.append(primary)
+
+        if code:
+            dep_key = re.sub(r"[^a-z0-9]+", "", normalized.casefold())
+            imported_modules = self._extract_imports_from_code(code)
+            for module_name in imported_modules:
+                module_key = re.sub(r"[^a-z0-9]+", "", module_name.casefold())
+                if not module_key:
+                    continue
+                if module_key in dep_key or dep_key in module_key:
+                    candidates.append(module_name)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            normalized_candidate = str(candidate or "").strip()
+            if not normalized_candidate or normalized_candidate in seen:
+                continue
+            deduped.append(normalized_candidate)
+            seen.add(normalized_candidate)
+        return deduped
 
     async def execute_skill(
         self,
@@ -316,7 +388,7 @@ class SkillExecutionEngine:
         """
         # Install dependencies if needed
         if dependencies:
-            self._ensure_dependencies_installed(dependencies)
+            self._ensure_dependencies_installed(dependencies, code=code)
 
         # Get user environment variables and temporarily inject into os.environ
         import os
@@ -372,7 +444,7 @@ class SkillExecutionEngine:
                     else:
                         os.environ.pop(key, None)
 
-    def _ensure_dependencies_installed(self, dependencies: list) -> None:
+    def _ensure_dependencies_installed(self, dependencies: list, code: Optional[str] = None) -> None:
         """Ensure required dependencies are installed.
 
         Args:
@@ -385,29 +457,41 @@ class SkillExecutionEngine:
         import sys
 
         for dep in dependencies:
-            try:
-                # Check if package is already installed
-                __import__(dep.replace("-", "_"))
-                logger.debug(f"Dependency {dep} already installed")
-            except ImportError:
-                if not allow_host_execution_fallback():
-                    raise ValueError(
-                        "Host dependency installation is disabled by sandbox isolation policy. "
-                        f"Missing dependency: {dep}. Install it in sandbox/base image, or set "
-                        "LINX_ALLOW_HOST_EXECUTION_FALLBACK=1 for emergency compatibility."
-                    )
-                # Install the package
-                logger.info(f"Installing dependency: {dep}")
+            import_candidates = self._dependency_import_candidates(dep, code=code)
+            dependency_available = False
+            last_error: Optional[ImportError] = None
+            for import_name in import_candidates:
                 try:
-                    subprocess.check_call(
-                        [sys.executable, "-m", "pip", "install", dep],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.PIPE,
-                    )
-                    logger.info(f"Successfully installed {dep}")
-                except subprocess.CalledProcessError as e:
-                    error_msg = e.stderr.decode() if e.stderr else str(e)
-                    raise ValueError(f"Failed to install dependency {dep}: {error_msg}")
+                    __import__(import_name)
+                    logger.debug("Dependency %s already installed via import %s", dep, import_name)
+                    dependency_available = True
+                    break
+                except ImportError as exc:
+                    last_error = exc
+            if dependency_available:
+                continue
+            if last_error is not None:
+                logger.debug("Dependency import probe failed for %s: %s", dep, last_error)
+            else:
+                logger.debug("No dependency import candidates resolved for %s", dep)
+            if not allow_host_execution_fallback():
+                raise ValueError(
+                    "Host dependency installation is disabled by sandbox isolation policy. "
+                    f"Missing dependency: {dep}. Install it in sandbox/base image, or set "
+                    "LINX_ALLOW_HOST_EXECUTION_FALLBACK=1 for emergency compatibility."
+                )
+            # Install the package
+            logger.info(f"Installing dependency: {dep}")
+            try:
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", dep],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                )
+                logger.info(f"Successfully installed {dep}")
+            except subprocess.CalledProcessError as e:
+                error_msg = e.stderr.decode() if e.stderr else str(e)
+                raise ValueError(f"Failed to install dependency {dep}: {error_msg}")
 
     async def _update_execution_stats(self, skill: Skill, result: ExecutionResult) -> None:
         """Update skill execution statistics.

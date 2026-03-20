@@ -22,6 +22,27 @@ def _patch_import_to_fail_for(monkeypatch: pytest.MonkeyPatch, missing_module: s
     monkeypatch.setattr(builtins, "__import__", _fake_import)
 
 
+def test_dependency_import_name_uses_override_for_tavily_python() -> None:
+    engine = SkillExecutionEngine()
+
+    assert engine._dependency_import_name("tavily-python") == "tavily"
+    assert engine._dependency_import_name("python-dotenv") == "dotenv"
+    assert engine._dependency_import_name("plain-package") == "plain_package"
+
+
+def test_dependency_import_candidates_can_infer_from_code_imports() -> None:
+    engine = SkillExecutionEngine()
+    code = """
+from tavily import TavilyClient
+from langchain_core.tools import tool
+"""
+
+    candidates = engine._dependency_import_candidates("tavily-python", code=code)
+
+    assert candidates[0] == "tavily"
+    assert "tavily" in candidates
+
+
 def test_host_dependency_install_blocked_when_fallback_disabled(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("LINX_ENFORCE_SANDBOX_ISOLATION", "1")
     monkeypatch.setenv("LINX_ALLOW_HOST_EXECUTION_FALLBACK", "0")

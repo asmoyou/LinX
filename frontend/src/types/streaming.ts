@@ -1,3 +1,5 @@
+import type { ScheduleCreatedEvent } from './schedule';
+
 /**
  * Streaming Types for Agent Error Recovery
  * 
@@ -25,7 +27,8 @@ export type StreamingMessageType =
   | 'retry_attempt'   // Error recovery retry
   | 'error_feedback'  // Error feedback to LLM
   | 'stats'           // Final performance statistics
-  | 'round_stats';    // Per-round performance statistics
+  | 'round_stats'     // Per-round performance statistics
+  | 'schedule_created'; // Agent-created schedule event
 
 /**
  * Base streaming message chunk
@@ -111,6 +114,7 @@ export interface ConversationRound {
   };
   retryAttempts?: RetryAttempt[];
   errorFeedback?: ErrorFeedback[];
+  scheduleEvents?: ScheduleCreatedEvent[];
 }
 
 /**

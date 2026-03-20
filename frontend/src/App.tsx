@@ -32,6 +32,12 @@ const AgentConversation = lazy(() =>
 const Tasks = lazy(() =>
   import("./pages/Missions").then((m) => ({ default: m.Missions })),
 );
+const Schedules = lazy(() =>
+  import("./pages/Schedules").then((m) => ({ default: m.Schedules })),
+);
+const ScheduleDetail = lazy(() =>
+  import("./pages/ScheduleDetail").then((m) => ({ default: m.ScheduleDetail })),
+);
 const Knowledge = lazy(() =>
   import("./pages/Knowledge").then((m) => ({ default: m.Knowledge })),
 );
@@ -238,6 +244,40 @@ const AnimatedRoutes = ({
                     transition={{ duration: 0.3 }}
                   >
                     <Tasks />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
+            }
+          />
+          <Route
+            path="schedules"
+            element={
+              <PageErrorBoundary pageName="定时任务">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <Schedules />
+                  </motion.div>
+                </Suspense>
+              </PageErrorBoundary>
+            }
+          />
+          <Route
+            path="schedules/:scheduleId"
+            element={
+              <PageErrorBoundary pageName="定时任务详情">
+                <Suspense fallback={<PageLoader />}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <ScheduleDetail />
                   </motion.div>
                 </Suspense>
               </PageErrorBoundary>

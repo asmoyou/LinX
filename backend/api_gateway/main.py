@@ -38,6 +38,7 @@ from api_gateway.routers import (
     monitoring,
     notifications,
     roles,
+    schedules,
     skill_bindings,
     skill_candidates,
     skills,
@@ -243,6 +244,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.warning(f"Failed to initialize persistent conversation lifecycle manager: {e}")
 
     try:
+        from agent_scheduling.manager import initialize_agent_schedule_manager
+
+        manager = await initialize_agent_schedule_manager()
+        if manager:
+            logger.info("Agent schedule manager initialized")
+        else:
+            logger.info("Agent schedule manager is disabled by config")
+    except Exception as e:
+        logger.warning(f"Failed to initialize agent schedule manager: {e}")
+
+    try:
         from api_gateway.feishu_long_connection import initialize_feishu_long_connection_manager
 
         await initialize_feishu_long_connection_manager()
@@ -430,6 +442,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.error(f"Failed to shutdown persistent conversation lifecycle manager: {e}")
 
     try:
+        from agent_scheduling.manager import shutdown_agent_schedule_manager
+
+        await shutdown_agent_schedule_manager()
+        logger.info("Agent schedule manager shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown agent schedule manager: {e}")
+
+    try:
         from agent_framework.persistent_conversations import (
             shutdown_persistent_conversation_runtime_service,
         )
@@ -598,6 +618,7 @@ def create_app() -> FastAPI:
         tags=["Skill Bindings"],
     )
     app.include_router(missions.router, prefix="/api/v1/missions", tags=["Missions"])
+    app.include_router(schedules.router, prefix="/api/v1/schedules", tags=["Schedules"])
     app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["Notifications"])
     app.include_router(skills.router, prefix="/api/v1/skills", tags=["Skills"])
     app.include_router(llm.router, prefix="/api/v1/llm", tags=["LLM Providers"])

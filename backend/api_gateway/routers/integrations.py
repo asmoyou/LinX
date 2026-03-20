@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request, UploadFile
 from starlette.datastructures import Headers
 
 from access_control.permissions import CurrentUser
+from agent_framework.conversation_execution import build_conversation_execution_principal
 from agent_framework.persistent_conversations import (
     build_default_conversation_title,
     get_persistent_conversation_runtime_service,
@@ -852,7 +853,11 @@ async def process_feishu_publication_message(
     )
     result = await execute_persistent_conversation_turn(
         conversation=conversation,
-        current_user=current_user,
+        principal=build_conversation_execution_principal(
+            user_id=current_user.user_id,
+            role=current_user.role,
+            username=current_user.username,
+        ),
         message=str(message.get("text") or ""),
         files=feishu_uploads,
         source="feishu",

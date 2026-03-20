@@ -13,6 +13,7 @@ export {
 export { authApi } from "./auth";
 export { usersApi } from "./users";
 export { agentsApi } from "./agents";
+export { schedulesApi } from "./schedules";
 export { tasksApi } from "./tasks";
 export { memoryWorkbenchApi } from "./memoryWorkbench";
 export { skillsApi } from "./skills";

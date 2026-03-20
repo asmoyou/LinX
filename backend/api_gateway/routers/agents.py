@@ -4045,6 +4045,7 @@ async def test_agent(
                 segment_response = [""]
                 segment_response_metadata = [{}]
                 segment_execution_messages = [[]]
+                created_schedule_events = [[]]
 
                 def stream_callback(token_data):
                     """Callback for streaming tokens from agent."""
@@ -4060,7 +4061,24 @@ async def test_agent(
                     content_override: Optional[Any],
                 ):
                     """Execute agent in a separate thread."""
+                    from agent_framework.tools.manage_schedule_tool import (
+                        ScheduleToolContext,
+                        clear_schedule_tool_context,
+                        consume_created_schedule_events,
+                        set_schedule_tool_context,
+                    )
+
                     try:
+                        set_schedule_tool_context(
+                            ScheduleToolContext(
+                                owner_user_id=str(current_user.user_id),
+                                owner_role=str(current_user.role),
+                                agent_id=str(agent_id),
+                                origin_surface="test_chat",
+                                bound_conversation_id=None,
+                                origin_message_id=None,
+                            )
+                        )
                         run_exec_context = ExecutionContext(
                             agent_id=UUID(agent_id),
                             user_id=UUID(current_user.user_id),
@@ -4069,6 +4087,10 @@ async def test_agent(
                             additional_context={
                                 "execution_context_tag": AGENT_TEST_RUNTIME_CONTEXT_TAG,
                                 "task_intent_text": message,
+                                "schedule_origin_surface": "test_chat",
+                                "origin_conversation_id": "",
+                                "origin_message_id": "",
+                                "origin_message_text": message,
                             },
                         )
                         if use_unified_runtime:
@@ -4120,13 +4142,17 @@ async def test_agent(
                                     segment_response_metadata[0] = msg.response_metadata
                                     break
 
+                        created_schedule_events[0] = consume_created_schedule_events()
                         # Signal completion
                         token_queue.put(None)
 
                     except BaseException as e:
                         logger.error(f"Agent execution error: {e}", exc_info=True)
                         error_holder[0] = str(e)
+                        created_schedule_events[0] = consume_created_schedule_events()
                         token_queue.put(None)
+                    finally:
+                        clear_schedule_tool_context()
 
                 # Start agent execution in background thread
                 exec_thread = threading.Thread(
@@ -4202,6 +4228,17 @@ async def test_agent(
 
                 # Wait for thread to complete (should already be done)
                 await asyncio.to_thread(exec_thread.join, 5)
+
+                if created_schedule_events[0]:
+                    from agent_scheduling.service import build_schedule_created_event
+
+                    for event in created_schedule_events[0]:
+                        payload = (
+                            build_schedule_created_event(event)
+                            if "schedule_id" not in event and "id" in event
+                            else dict(event)
+                        )
+                        yield f"data: {json.dumps({'type': 'schedule_created', **payload})}\n\n"
 
                 # Check if there was an error
                 if error_holder[0]:

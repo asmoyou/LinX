@@ -35,6 +35,10 @@ from agent_framework.agent_conversation_runner import (
     generate_conversation_title,
     initialize_chat_agent,
 )
+from agent_framework.conversation_execution import (
+    ConversationExecutionPrincipal,
+    build_conversation_execution_principal,
+)
 from agent_framework.conversation_history_compaction import (
     get_conversation_history_compaction_service,
 )
@@ -52,6 +56,13 @@ from agent_framework.runtime_policy import (
     ExecutionProfile,
     is_agent_test_chat_unified_runtime_enabled,
 )
+from agent_framework.tools.manage_schedule_tool import (
+    ScheduleToolContext,
+    clear_schedule_tool_context,
+    consume_created_schedule_events,
+    set_schedule_tool_context,
+)
+from agent_scheduling.service import build_schedule_created_event
 from api_gateway.routers import agents as agents_router
 from database.connection import get_db_session
 from database.models import (
@@ -787,7 +798,17 @@ def _rematerialize_conversation_attachments_to_workspace(
 
 def _message_source_label(source: str) -> str:
     normalized = str(source or "").strip().lower()
-    return normalized if normalized in {"web", "feishu"} else "web"
+    return normalized if normalized in {"web", "feishu", "schedule"} else "web"
+
+
+def _conversation_context_origin_surface(
+    source: str,
+    explicit_origin_surface: Optional[str],
+) -> str:
+    normalized = str(explicit_origin_surface or "").strip().lower()
+    if normalized in {"persistent_chat", "test_chat", "feishu", "schedule_page"}:
+        return normalized
+    return "feishu" if _message_source_label(source) == "feishu" else "persistent_chat"
 
 
 def _persist_message(
@@ -888,12 +909,21 @@ async def _detect_model_supports_vision(agent_info: Agent) -> bool:
 async def execute_persistent_conversation_turn(
     *,
     conversation: AgentConversation,
-    current_user: CurrentUser,
+    principal: ConversationExecutionPrincipal,
     message: str,
     files: List[UploadFile],
     source: str = "web",
     external_event_id: Optional[str] = None,
     chunk_callback: ConversationChunkCallback | None = None,
+    persist_input_message: bool = True,
+    input_message_role: str = "user",
+    input_message_text: Optional[str] = None,
+    input_message_content_json: Optional[Dict[str, Any]] = None,
+    execution_task_text: Optional[str] = None,
+    execution_intent_text: Optional[str] = None,
+    title_seed_text: Optional[str] = None,
+    context_origin_surface: Optional[str] = None,
+    extra_execution_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     def create_empty_round_data() -> Dict[str, Any]:
         return {
@@ -936,6 +966,25 @@ async def execute_persistent_conversation_turn(
         return {"duplicate": True, "output": "", "artifacts": []}
 
     user_text = str(message or "").strip()
+    persisted_input_text = str(
+        input_message_text if input_message_text is not None else user_text
+    ).strip()
+    task_intent_text = str(
+        execution_intent_text if execution_intent_text is not None else user_text
+    ).strip()
+    title_context_text = str(
+        title_seed_text
+        if title_seed_text is not None
+        else (persisted_input_text or task_intent_text or user_text)
+    ).strip()
+    normalized_input_role = str(input_message_role or "user").strip().lower()
+    if normalized_input_role not in {"user", "assistant", "system"}:
+        normalized_input_role = "user"
+    resolved_origin_surface = _conversation_context_origin_surface(
+        source,
+        context_origin_surface,
+    )
+    principal_user_id = UUID(principal.user_id)
     history, history_window = await _build_conversation_history(conversation.conversation_id)
     runtime_service = get_persistent_conversation_runtime_service()
     runtime, _ = await runtime_service.get_or_create_runtime(conversation=conversation)
@@ -998,19 +1047,25 @@ async def execute_persistent_conversation_turn(
 
     file_refs, attachment_payloads = await _prepare_uploaded_files(
         agent_id=str(conversation.agent_id),
-        current_user=current_user,
+        current_user=build_conversation_execution_principal(
+            user_id=principal.user_id,
+            role=principal.role,
+            username=principal.username,
+        ),
         files=files,
     )
     attachments_payload = _normalize_attachments_for_storage(file_refs)
-    _persist_message(
-        conversation_id=conversation.conversation_id,
-        role="user",
-        content_text=user_text or "[Attached files]",
-        content_json=None,
-        attachments=attachments_payload,
-        source=source,
-        external_event_id=external_event_id,
-    )
+    input_message_row: AgentConversationMessage | None = None
+    if persist_input_message:
+        input_message_row = _persist_message(
+            conversation_id=conversation.conversation_id,
+            role=normalized_input_role,
+            content_text=persisted_input_text or "[Attached files]",
+            content_json=input_message_content_json,
+            attachments=attachments_payload,
+            source=source,
+            external_event_id=external_event_id,
+        )
 
     if file_refs:
         written_files, materialize_errors = (
@@ -1047,7 +1102,7 @@ async def execute_persistent_conversation_turn(
     agent_info = _load_agent_for_conversation(conversation.agent_id)
     agent = await initialize_chat_agent(
         agent_info=agent_info,
-        owner_user_id=UUID(current_user.user_id),
+        owner_user_id=principal_user_id,
         max_iterations=agents_router.AGENT_TEST_MAX_ITERATIONS,
     )
 
@@ -1056,8 +1111,8 @@ async def execute_persistent_conversation_turn(
     executor = get_agent_executor()
     request_exec_context = ExecutionContext(
         agent_id=conversation.agent_id,
-        user_id=UUID(current_user.user_id),
-        user_role=current_user.role,
+        user_id=principal_user_id,
+        user_role=principal.role,
         task_description=user_text,
         additional_context={"execution_context_tag": agents_router.AGENT_TEST_RUNTIME_CONTEXT_TAG},
     )
@@ -1076,11 +1131,14 @@ async def execute_persistent_conversation_turn(
     except Exception as exc:
         logger.error("Failed to build conversation execution context: %s", exc, exc_info=True)
 
+    task_base_text = str(
+        execution_task_text if execution_task_text is not None else task_intent_text
+    ).strip()
     attachment_context = agents_router._build_attachment_prompt_context(
         file_refs, include_image_notes=True
     )
     message_with_attachments = (
-        f"{user_text}{attachment_context}" if attachment_context else user_text
+        f"{task_base_text}{attachment_context}" if attachment_context else task_base_text
     )
     attachment_workspace_context = agents_router._build_attachment_workspace_context(file_refs)
     user_message = (
@@ -1116,6 +1174,7 @@ async def execute_persistent_conversation_turn(
     segment_response: List[str] = [""]
     segment_execution_messages: List[List[Any]] = [[]]
     segment_response_metadata: List[Dict[str, Any]] = [{}]
+    created_schedule_events: List[List[Dict[str, Any]]] = [[]]
     persisted_rounds: List[Dict[str, Any]] = []
     current_round_data = create_empty_round_data()
     current_round_number = 1
@@ -1125,16 +1184,37 @@ async def execute_persistent_conversation_turn(
 
     def execute_agent() -> None:
         try:
+            set_schedule_tool_context(
+                ScheduleToolContext(
+                    owner_user_id=principal.user_id,
+                    owner_role=principal.role,
+                    agent_id=str(conversation.agent_id),
+                    origin_surface=resolved_origin_surface,
+                    bound_conversation_id=str(conversation.conversation_id),
+                    origin_message_id=(
+                        str(input_message_row.message_id) if input_message_row else None
+                    ),
+                )
+            )
+            additional_context = {
+                "execution_context_tag": agents_router.AGENT_TEST_RUNTIME_CONTEXT_TAG,
+                "task_intent_text": task_intent_text,
+                "conversation_history_summary": history_window.get("summary_text"),
+                "schedule_origin_surface": resolved_origin_surface,
+                "origin_conversation_id": str(conversation.conversation_id),
+                "origin_message_id": (
+                    str(input_message_row.message_id) if input_message_row else ""
+                ),
+                "origin_message_text": persisted_input_text or task_intent_text,
+            }
+            if isinstance(extra_execution_context, dict):
+                additional_context.update(extra_execution_context)
             run_exec_context = ExecutionContext(
                 agent_id=conversation.agent_id,
-                user_id=UUID(current_user.user_id),
-                user_role=current_user.role,
+                user_id=principal_user_id,
+                user_role=principal.role,
                 task_description=user_message,
-                additional_context={
-                    "execution_context_tag": agents_router.AGENT_TEST_RUNTIME_CONTEXT_TAG,
-                    "task_intent_text": user_text,
-                    "conversation_history_summary": history_window.get("summary_text"),
-                },
+                additional_context=additional_context,
             )
             if is_agent_test_chat_unified_runtime_enabled():
                 result = executor.execute(
@@ -1172,11 +1252,15 @@ async def execute_persistent_conversation_turn(
                 if hasattr(msg, "response_metadata") and msg.response_metadata:
                     segment_response_metadata[0] = msg.response_metadata
                     break
+            created_schedule_events[0] = consume_created_schedule_events()
             token_queue.put(None)
         except BaseException as exc:  # noqa: BLE001
             logger.error("Persistent conversation agent execution failed: %s", exc, exc_info=True)
             error_holder[0] = str(exc)
+            created_schedule_events[0] = consume_created_schedule_events()
             token_queue.put(None)
+        finally:
+            clear_schedule_tool_context()
 
     exec_thread = threading.Thread(target=execute_agent, daemon=True)
     exec_thread.start()
@@ -1317,7 +1401,26 @@ async def execute_persistent_conversation_turn(
         }
     if has_round_activity(current_round_data):
         persisted_rounds.append(build_round_snapshot(current_round_data, current_round_number))
-    _persist_message(
+    schedule_events_payload = [
+        build_schedule_created_event(event)
+        if "schedule_id" not in event and "id" in event
+        else dict(event)
+        for event in list(created_schedule_events[0] or [])
+    ]
+    if schedule_events_payload:
+        if persisted_rounds:
+            persisted_rounds[-1]["scheduleEvents"] = list(schedule_events_payload)
+        else:
+            persisted_rounds.append(
+                {
+                    "roundNumber": current_round_number,
+                    "thinking": "",
+                    "content": "",
+                    "statusMessages": [],
+                    "scheduleEvents": list(schedule_events_payload),
+                }
+            )
+    assistant_message_row = _persist_message(
         conversation_id=conversation.conversation_id,
         role="assistant",
         content_text=final_response_text,
@@ -1326,6 +1429,7 @@ async def execute_persistent_conversation_turn(
             "rounds": persisted_rounds,
             "artifacts": artifact_entries,
             "artifactDelta": artifact_delta_entries,
+            "scheduleEvents": schedule_events_payload,
         },
         attachments=None,
         source=source,
@@ -1334,7 +1438,7 @@ async def execute_persistent_conversation_turn(
         try:
             generated_title = await generate_conversation_title(
                 agent_info=agent_info,
-                user_message=user_text or "[Attached files]",
+                user_message=title_context_text or "[Attached files]",
                 assistant_message=final_response_text,
             )
             if generated_title:
@@ -1356,6 +1460,14 @@ async def execute_persistent_conversation_turn(
             )
     runtime.dirty = True
     snapshot = await runtime_service.snapshot_runtime(conversation_id=conversation.conversation_id)
+    for schedule_event in schedule_events_payload:
+        await _emit_chunk(
+            chunk_callback,
+            {
+                "type": "schedule_created",
+                **schedule_event,
+            },
+        )
     await _emit_chunk(chunk_callback, {"type": "stats", **stats})
     await _emit_chunk(
         chunk_callback,
@@ -1372,6 +1484,8 @@ async def execute_persistent_conversation_turn(
         "snapshot": snapshot,
         "artifacts": artifact_entries,
         "artifact_delta": artifact_delta_entries,
+        "assistant_message_id": str(assistant_message_row.message_id),
+        "schedule_events": schedule_events_payload,
         "duplicate": False,
     }
 
@@ -1580,7 +1694,11 @@ async def send_agent_conversation_message(
                         raise HTTPException(status_code=404, detail="Conversation not found")
                     await execute_persistent_conversation_turn(
                         conversation=fresh_conversation,
-                        current_user=current_user,
+                        principal=build_conversation_execution_principal(
+                            user_id=current_user.user_id,
+                            role=current_user.role,
+                            username=current_user.username,
+                        ),
                         message=message,
                         files=files,
                         source="web",

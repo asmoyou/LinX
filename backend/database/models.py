@@ -123,6 +123,7 @@ class User(Base):
     agent_conversations = relationship(
         "AgentConversation", back_populates="owner", cascade="all, delete-orphan"
     )
+    schedules = relationship("AgentSchedule", back_populates="owner", cascade="all, delete-orphan")
     user_binding_codes = relationship(
         "UserBindingCode", back_populates="user", cascade="all, delete-orphan"
     )
@@ -216,6 +217,7 @@ class Agent(Base):
     channel_publications = relationship(
         "AgentChannelPublication", back_populates="agent", cascade="all, delete-orphan"
     )
+    schedules = relationship("AgentSchedule", back_populates="agent", cascade="all, delete-orphan")
     skill_bindings = relationship(
         "AgentSkillBinding", back_populates="agent", cascade="all, delete-orphan"
     )
@@ -311,6 +313,17 @@ class AgentConversation(Base):
         "AgentConversationMessageArchive",
         back_populates="conversation",
         cascade="all, delete-orphan",
+    )
+    schedules = relationship(
+        "AgentSchedule",
+        back_populates="bound_conversation",
+        cascade="all, delete-orphan",
+        foreign_keys="AgentSchedule.bound_conversation_id",
+    )
+    schedule_runs = relationship(
+        "AgentScheduleRun",
+        back_populates="conversation",
+        foreign_keys="AgentScheduleRun.conversation_id",
     )
 
     __table_args__ = (
@@ -706,6 +719,161 @@ class ExternalConversationLink(Base):
         return (
             f"<ExternalConversationLink(link_id={self.link_id}, publication_id={self.publication_id}, "
             f"conversation_id={self.conversation_id})>"
+        )
+
+
+class AgentSchedule(Base):
+    """User-managed or agent-created schedules bound to one agent conversation."""
+
+    __tablename__ = "agent_schedules"
+
+    schedule_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.agent_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    bound_conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_conversations.conversation_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    prompt_template = Column(Text, nullable=False)
+    schedule_type = Column(String(16), nullable=False, index=True)  # once, recurring
+    cron_expression = Column(String(100), nullable=True)
+    run_at_utc = Column(DateTime(timezone=True), nullable=True, index=True)
+    timezone = Column(String(100), nullable=False, default="UTC")
+    status = Column(String(16), nullable=False, default="active", index=True)
+    created_via = Column(String(32), nullable=False, default="manual_ui", index=True)
+    origin_surface = Column(String(32), nullable=False, default="schedule_page", index=True)
+    origin_message_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_conversation_messages.message_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    next_run_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    last_run_status = Column(String(16), nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    owner = relationship("User", back_populates="schedules")
+    agent = relationship("Agent", back_populates="schedules")
+    bound_conversation = relationship(
+        "AgentConversation",
+        back_populates="schedules",
+        foreign_keys=[bound_conversation_id],
+    )
+    origin_message = relationship("AgentConversationMessage", foreign_keys=[origin_message_id])
+    runs = relationship(
+        "AgentScheduleRun",
+        back_populates="schedule",
+        cascade="all, delete-orphan",
+        order_by="AgentScheduleRun.scheduled_for.desc()",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "schedule_type IN ('once', 'recurring')",
+            name="ck_agent_schedules_type",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'paused', 'completed', 'failed')",
+            name="ck_agent_schedules_status",
+        ),
+        CheckConstraint(
+            "(schedule_type <> 'once') OR (run_at_utc IS NOT NULL)",
+            name="ck_agent_schedules_once_requires_run_at",
+        ),
+        CheckConstraint(
+            "(schedule_type <> 'recurring') OR (cron_expression IS NOT NULL)",
+            name="ck_agent_schedules_recurring_requires_cron",
+        ),
+        Index("idx_agent_schedules_owner_status", "owner_user_id", "status"),
+        Index("idx_agent_schedules_next_run_status", "next_run_at", "status"),
+        Index("idx_agent_schedules_agent_status", "agent_id", "status"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<AgentSchedule(schedule_id={self.schedule_id}, agent_id={self.agent_id}, "
+            f"status={self.status}, schedule_type={self.schedule_type})>"
+        )
+
+
+class AgentScheduleRun(Base):
+    """One concrete execution attempt for a schedule."""
+
+    __tablename__ = "agent_schedule_runs"
+
+    run_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    schedule_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_schedules.schedule_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    scheduled_for = Column(DateTime(timezone=True), nullable=False, index=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String(16), nullable=False, default="queued", index=True)
+    skip_reason = Column(String(255), nullable=True)
+    error_message = Column(Text, nullable=True)
+    assistant_message_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_conversation_messages.message_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_conversations.conversation_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    delivery_channel = Column(String(16), nullable=False, default="web")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    schedule = relationship("AgentSchedule", back_populates="runs")
+    assistant_message = relationship("AgentConversationMessage", foreign_keys=[assistant_message_id])
+    conversation = relationship("AgentConversation", back_populates="schedule_runs")
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed', 'skipped')",
+            name="ck_agent_schedule_runs_status",
+        ),
+        Index(
+            "ux_agent_schedule_runs_schedule_scheduled_for",
+            "schedule_id",
+            "scheduled_for",
+            unique=True,
+        ),
+        Index(
+            "idx_agent_schedule_runs_status_scheduled",
+            "status",
+            "scheduled_for",
+            "created_at",
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<AgentScheduleRun(run_id={self.run_id}, schedule_id={self.schedule_id}, "
+            f"status={self.status}, scheduled_for={self.scheduled_for})>"
         )
 
 

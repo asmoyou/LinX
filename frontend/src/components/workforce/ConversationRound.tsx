@@ -16,6 +16,7 @@ import type { ConversationRound } from '@/types/streaming';
 import { RetryIndicator } from './RetryIndicator';
 import { ErrorFeedbackDisplay } from './ErrorFeedbackDisplay';
 import { createMarkdownComponents } from './CodeBlock';
+import { ScheduleCreatedCard } from '@/components/schedules/ScheduleCreatedCard';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export interface ConversationRoundArtifact {
@@ -224,6 +225,7 @@ const ConversationRoundComponentBase: React.FC<ConversationRoundProps> = ({
     };
   }, [markdownComponents]);
   const hasRenderableContent = Boolean(round.content && round.content.trim().length > 0);
+  const hasScheduleCards = Boolean(round.scheduleEvents && round.scheduleEvents.length > 0);
   const enrichedContent = useMemo(
     () => enrichContentWithWorkspaceLinks(round.content, artifacts),
     [artifacts, round.content]
@@ -265,6 +267,14 @@ const ConversationRoundComponentBase: React.FC<ConversationRoundProps> = ({
               feedback={feedback}
               defaultCollapsed={!isStreaming && (!isLatest || idx < round.errorFeedback!.length - 1)}
             />
+          ))}
+        </div>
+      )}
+
+      {round.scheduleEvents && round.scheduleEvents.length > 0 && (
+        <div className="space-y-3">
+          {round.scheduleEvents.map((event) => (
+            <ScheduleCreatedCard key={event.schedule_id} event={event} />
           ))}
         </div>
       )}
@@ -401,7 +411,7 @@ const ConversationRoundComponentBase: React.FC<ConversationRoundProps> = ({
         )}
       </div>
 
-      {isStreaming && !hasRenderableContent && (
+      {isStreaming && !hasRenderableContent && !hasScheduleCards && (
         <div className="rounded-[20px] border border-indigo-100 dark:border-indigo-900/30 bg-indigo-50/40 dark:bg-indigo-950/20 px-5 py-4">
           <div className="flex items-center gap-2 text-indigo-700 dark:text-indigo-300">
             <Loader2 className="w-3.5 h-3.5 animate-spin" />

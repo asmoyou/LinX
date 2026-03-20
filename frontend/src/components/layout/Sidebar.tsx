@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   Users,
   Rocket,
+  CalendarClock,
   Database,
   Brain,
   Code2,
@@ -30,7 +31,7 @@ const MAX_QUICK_ACCESS_ITEMS = 5;
 const MIN_DYNAMIC_QUICK_ACCESS_USAGE = 2;
 const QUICK_ACCESS_STORAGE_KEY_PREFIX = 'linx-sidebar-nav-usage';
 const QUICK_ACCESS_ORDER_STORAGE_KEY_PREFIX = 'linx-sidebar-quick-order';
-const DEFAULT_QUICK_ACCESS_PATHS = ['/workforce', '/tasks', '/dashboard'] as const;
+const DEFAULT_QUICK_ACCESS_PATHS = ['/workforce', '/schedules', '/dashboard'] as const;
 
 type NavItem = {
   path: string;
@@ -156,6 +157,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
           { path: '/dashboard', icon: LayoutDashboard, label: t('nav.dashboard') },
           { path: '/workforce', icon: Users, label: t('nav.workforce') },
           { path: '/tasks', icon: Rocket, label: t('nav.tasks') },
+          { path: '/schedules', icon: CalendarClock, label: t('nav.schedules', 'Schedules') },
         ],
       },
       {

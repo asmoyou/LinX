@@ -676,6 +676,14 @@ class BaseAgent:
             )
             self.tools.append(code_exec_tool)
 
+            from agent_framework.tools.manage_schedule_tool import create_manage_schedule_tool
+
+            manage_schedule_tool = create_manage_schedule_tool(
+                agent_id=self.config.agent_id,
+                user_id=self.config.owner_user_id,
+            )
+            self.tools.append(manage_schedule_tool)
+
             # Add file operation tools (read, edit, write, append, list files in workspace)
             from agent_framework.tools.file_tools import create_file_tools
 
@@ -764,7 +772,12 @@ class BaseAgent:
                             tool = self.tools_by_name.get(tool_call["name"])
                             if tool:
                                 try:
-                                    result = tool.invoke(tool_call["args"])
+                                    tool_args = self._normalize_tool_arguments_for_execution(
+                                        tool_call["name"],
+                                        tool,
+                                        tool_call.get("args"),
+                                    )
+                                    result = tool.invoke(tool_args)
                                     from langchain_core.messages import ToolMessage
 
                                     tool_results.append(
@@ -1759,6 +1772,57 @@ class BaseAgent:
         keys = ", ".join(sorted(str(key) for key in arguments.keys())[:8])
         return f"keys=[{keys}]"
 
+    @staticmethod
+    def _decode_positional_tool_payload(payload: Any) -> Optional[Dict[str, Any]]:
+        """Decode JSON-like positional tool payloads emitted under __arg1."""
+        if isinstance(payload, dict):
+            return dict(payload)
+        if not isinstance(payload, str):
+            return None
+
+        stripped = payload.strip()
+        if not stripped or stripped[0] not in "{[":
+            return None
+
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+
+        return dict(parsed) if isinstance(parsed, dict) else None
+
+    def _normalize_tool_arguments_for_execution(
+        self,
+        tool_name: str,
+        tool: Any,
+        arguments: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Normalize fallback positional payloads into structured tool kwargs."""
+        normalized_arguments = dict(arguments or {})
+        positional_payload = normalized_arguments.pop("__arg1", None)
+        normalized_tool_name = str(tool_name or "").strip().lower()
+
+        if normalized_tool_name == "bash":
+            current_command = normalized_arguments.get("command")
+            if (
+                (not isinstance(current_command, str) or not current_command.strip())
+                and isinstance(positional_payload, str)
+                and positional_payload.strip()
+            ):
+                normalized_arguments["command"] = positional_payload
+            return normalized_arguments
+
+        if positional_payload is None:
+            return normalized_arguments
+
+        if getattr(tool, "args_schema", None) is not None and not normalized_arguments:
+            decoded_payload = self._decode_positional_tool_payload(positional_payload)
+            if decoded_payload is not None:
+                return decoded_payload
+
+        normalized_arguments["__arg1"] = positional_payload
+        return normalized_arguments
+
     def _summarize_tool_result_for_stream(self, tool_name: str, result: Any) -> str:
         """Build compact result summary for tool_result stream events."""
         normalized_tool = str(tool_name or "").strip().lower()
@@ -2639,13 +2703,17 @@ class BaseAgent:
                         for tc in parsed_calls:
                             self._raise_if_cancelled()
                             tool_name = tc.tool_name
-                            tool_args = tc.arguments
-                            args_summary = self._summarize_tool_arguments_for_stream(
-                                tool_name, tool_args
-                            )
                             tool = runtime_tools_by_name.get(tool_name)
 
                             if tool:
+                                tool_args = self._normalize_tool_arguments_for_execution(
+                                    tool_name,
+                                    tool,
+                                    tc.arguments,
+                                )
+                                args_summary = self._summarize_tool_arguments_for_stream(
+                                    tool_name, tool_args
+                                )
                                 # Send "calling tool" message BEFORE execution
                                 self._emit_stream_chunk(
                                     stream_callback=stream_callback,
@@ -3790,19 +3858,12 @@ class BaseAgent:
                 # Otherwise, asyncio.wait_for can time out while the underlying sync tool
                 # thread keeps running (e.g. long-lived servers), which blocks asyncio.run
                 # teardown and leaves stream completion pending.
-                if tool_name == "bash" and isinstance(tool_call.arguments, dict):
-                    tool_arguments = dict(tool_call.arguments)
-                    # Parse fallback positional payload produced by JSON tool-call parsing.
-                    # Example: {"tool":"bash","__arg1":"ls -la"}
-                    positional_command = tool_arguments.pop("__arg1", None)
-                    current_command = tool_arguments.get("command")
-                    if (
-                        (not isinstance(current_command, str) or not current_command.strip())
-                        and isinstance(positional_command, str)
-                        and positional_command.strip()
-                    ):
-                        tool_arguments["command"] = positional_command
-
+                tool_arguments = self._normalize_tool_arguments_for_execution(
+                    tool_name,
+                    tool,
+                    dict(tool_call.arguments or {}),
+                )
+                if tool_name == "bash":
                     requested_timeout = tool_arguments.get("timeout")
                     try:
                         normalized_timeout = (

@@ -23,6 +23,11 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Agent } from '@/types/agent';
 import { agentsApi } from '@/api';
+import {
+  mergeScheduleEvents,
+  normalizeScheduleCreatedEvent,
+} from '@/components/schedules/scheduleUtils';
+import { useNotificationStore } from '@/stores';
 import type {
   ConversationRound,
   StatusMessage,
@@ -30,6 +35,7 @@ import type {
   ErrorFeedback,
   AttachedFile,
 } from '@/types/streaming';
+import type { ScheduleCreatedEvent } from '@/types/schedule';
 import {
   ConversationRoundComponent,
   type ConversationRoundArtifact,
@@ -52,6 +58,7 @@ interface Message {
   timestamp: Date;
   rounds?: ConversationRound[]; // Multi-round execution
   attachments?: AttachedFile[];
+  scheduleEvents?: ScheduleCreatedEvent[];
 }
 
 type HistoryContentItem =
@@ -193,6 +200,7 @@ function extractRoundArtifacts(round: ConversationRound): ConversationRoundArtif
 
 export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, onClose }) => {
   const { t } = useTranslation();
+  const addNotification = useNotificationStore((state) => state.addNotification);
   const createEmptyRoundData = () => ({
     thinking: '',
     content: '',
@@ -200,6 +208,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     retryAttempts: [] as RetryAttempt[],
     errorFeedback: [] as ErrorFeedback[],
     stats: null as ConversationRound['stats'] | null,
+    scheduleEvents: [] as ScheduleCreatedEvent[],
   });
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -275,13 +284,15 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     statusMessages: StatusMessage[];
     retryAttempts: RetryAttempt[];
     errorFeedback: ErrorFeedback[];
+    scheduleEvents: ScheduleCreatedEvent[];
   }): boolean =>
     Boolean(
       round.thinking ||
         (round.content && round.content.trim().length > 0) ||
         round.statusMessages.length > 0 ||
         round.retryAttempts.length > 0 ||
-        round.errorFeedback.length > 0
+        round.errorFeedback.length > 0 ||
+        round.scheduleEvents.length > 0
     );
 
   const buildRoundSnapshot = (
@@ -295,6 +306,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     retryAttempts: roundData.retryAttempts.length > 0 ? [...roundData.retryAttempts] : undefined,
     errorFeedback: roundData.errorFeedback.length > 0 ? [...roundData.errorFeedback] : undefined,
     stats: roundData.stats ? { ...roundData.stats } : undefined,
+    scheduleEvents:
+      roundData.scheduleEvents.length > 0 ? [...roundData.scheduleEvents] : undefined,
   });
 
   const buildCurrentRoundDataState = (roundData: ReturnType<typeof createEmptyRoundData>) => ({
@@ -304,6 +317,7 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     retryAttempts: [...roundData.retryAttempts],
     errorFeedback: [...roundData.errorFeedback],
     stats: roundData.stats ? { ...roundData.stats } : null,
+    scheduleEvents: [...roundData.scheduleEvents],
   });
 
   const syncStreamingStateToView = useCallback(() => {
@@ -352,12 +366,16 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
       .reverse()
       .find((round) => Boolean(round.content && round.content.trim()));
     const assistantContent = finalContentRound?.content?.trim() || '';
+    const scheduleEvents = finalizedRounds.reduce<ScheduleCreatedEvent[]>((acc, round) => {
+      return mergeScheduleEvents(acc, round.scheduleEvents) || acc;
+    }, []);
 
     const newMessage: Message = {
       role: 'assistant',
       content: assistantContent,
       timestamp: new Date(),
       rounds: finalizedRounds,
+      scheduleEvents,
     };
 
     setMessages((prev) => [...prev, newMessage]);
@@ -1315,6 +1333,23 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
 
             streamingDataRef.current.currentRound.content += chunkText;
             scheduleStreamingStateSync();
+          } else if (chunk.type === 'schedule_created') {
+            const scheduleEvent = normalizeScheduleCreatedEvent(chunk);
+            if (scheduleEvent) {
+              streamingDataRef.current.currentRound.scheduleEvents =
+                mergeScheduleEvents(
+                  streamingDataRef.current.currentRound.scheduleEvents,
+                  [scheduleEvent]
+                ) || [];
+              addNotification({
+                type: 'success',
+                title: t('schedules.page.createdTitle', '定时任务已创建'),
+                message: `${scheduleEvent.name} ${t('schedules.page.createdSuffix', '已创建')}`,
+                actionUrl: `/schedules/${scheduleEvent.schedule_id}`,
+                actionLabel: t('schedules.page.viewSchedule', '查看定时任务'),
+              });
+              scheduleStreamingStateSync(true);
+            }
           } else if (chunk.type === 'round_stats') {
             const roundStats = {
               timeToFirstToken: chunk.timeToFirstToken,
@@ -1425,6 +1460,8 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
     errorFeedback:
       currentRoundData.errorFeedback.length > 0 ? currentRoundData.errorFeedback : undefined,
     stats: currentRoundData.stats || undefined,
+    scheduleEvents:
+      currentRoundData.scheduleEvents.length > 0 ? currentRoundData.scheduleEvents : undefined,
   };
 
   return (

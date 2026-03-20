@@ -88,7 +88,7 @@ export interface ConversationMessage {
   contentText: string;
   contentJson?: Record<string, any> | null;
   attachments: Array<Record<string, any>>;
-  source: 'web' | 'feishu';
+  source: 'web' | 'feishu' | 'schedule' | string;
   externalEventId?: string | null;
   createdAt: string;
 }
