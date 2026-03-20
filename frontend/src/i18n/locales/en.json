@@ -599,6 +599,26 @@
     "voiceInputFailed": "Voice transcription failed. Please try again.",
     "agentResponse": "Agent Response",
     "thinking": "Thinking...",
+    "persistentProcess": {
+      "thinking": "Thinking…",
+      "usingTools": "Using tools…",
+      "finalizing": "Finalizing answer…",
+      "recovering": "Continuing…",
+      "memory": "Loading memory",
+      "knowledge": "Searching knowledge",
+      "context": "Preparing context",
+      "attachments": "Preparing files",
+      "tool": "Using tool",
+      "waitingHint": "Working"
+    },
+    "persistentResult": {
+      "generatedOutput": "Generated output",
+      "files": "Result files",
+      "schedules": "Schedules",
+      "openInWorkspace": "Open in workspace",
+      "download": "Download",
+      "partialError": "Response incomplete"
+    },
     "viewDetails": "View Details",
     "editAgent": "Edit Agent",
     "deleteAgent": "Delete Agent",

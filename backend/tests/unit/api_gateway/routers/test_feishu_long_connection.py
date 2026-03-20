@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+import requests
 from types import SimpleNamespace
 
 from api_gateway import feishu_long_connection
@@ -12,11 +13,16 @@ from api_gateway.feishu_long_connection import (
 from api_gateway.routers.agent_conversations import _diff_workspace_entries
 from api_gateway.routers import integrations as integrations_router
 from api_gateway.routers.integrations import (
+    FeishuApiError,
+    FeishuFileDeliveryRetryService,
+    _QueuedFeishuFileDelivery,
     _build_feishu_reply_text,
     _classify_feishu_file_delivery_error,
     _extract_feishu_message_from_long_connection_event,
+    _queued_feishu_file_delivery_note,
     _format_feishu_api_error,
     _looks_like_feishu_file_send_request,
+    _parse_feishu_json_response,
     _prepare_feishu_message_uploads,
     _resolve_feishu_artifact_file_paths,
     _select_feishu_deliverable_artifacts,
@@ -174,6 +180,41 @@ def test_build_feishu_reply_text_includes_delivery_notes() -> None:
     assert "output/report.md" in text
 
 
+def test_build_feishu_reply_text_suppresses_redundant_file_creation_text_when_file_delivered() -> None:
+    agent = SimpleNamespace(agent_id="agent-1")
+    conversation = SimpleNamespace(conversation_id="conv-1")
+
+    text = _build_feishu_reply_text(
+        agent=agent,
+        conversation=conversation,
+        output_text="✅ 文档已创建：output/fuzhou-travel-guide.md",
+        delivered_artifacts=[{"path": "output/fuzhou-travel-guide.md", "is_directory": False}],
+        pending_artifacts=[],
+        base_url=None,
+    )
+
+    assert text == ""
+
+
+def test_build_feishu_reply_text_keeps_substantive_summary_when_file_delivered() -> None:
+    agent = SimpleNamespace(agent_id="agent-1")
+    conversation = SimpleNamespace(conversation_id="conv-1")
+
+    text = _build_feishu_reply_text(
+        agent=agent,
+        conversation=conversation,
+        output_text=(
+            "我已经整理完调研结论，并把最终报告发给你。"
+            "核心建议是先验证供应商成本，再评估灰度发布窗口。"
+        ),
+        delivered_artifacts=[{"path": "output/final-report.md", "is_directory": False}],
+        pending_artifacts=[],
+        base_url=None,
+    )
+
+    assert "核心建议" in text
+
+
 def test_select_feishu_deliverable_artifacts_filters_runtime_and_directories() -> None:
     artifacts = [
         {"path": "output/report.md", "is_directory": False},
@@ -274,6 +315,128 @@ def test_classify_feishu_file_delivery_error_handles_missing_scope() -> None:
     note = _classify_feishu_file_delivery_error(exc)
 
     assert note == "当前飞书应用未开通文件上传权限，已改为发送文本结果和网页链接。"
+
+
+def test_classify_feishu_file_delivery_error_handles_transient_failure() -> None:
+    exc = FeishuApiError(
+        "Failed to upload Feishu file (http_status=429; log_id=log-1)",
+        status_code=429,
+        log_id="log-1",
+    )
+
+    note = _classify_feishu_file_delivery_error(exc)
+
+    assert note == "飞书文件接口暂时不可用，多次重试后仍失败，已改为发送文本结果和网页链接。"
+
+
+def test_queued_feishu_file_delivery_note_mentions_background_retry() -> None:
+    assert (
+        _queued_feishu_file_delivery_note()
+        == "飞书文件接口暂时不可用，系统会在后台继续重试发送；当前先发送文本结果和网页链接。"
+    )
+
+
+def test_parse_feishu_json_response_preserves_http_context_for_non_json_failure() -> None:
+    response = requests.Response()
+    response.status_code = 400
+    response._content = b"bad multipart request"
+    response.encoding = "utf-8"
+    response.headers["X-Tt-Logid"] = "log-123"
+
+    with pytest.raises(FeishuApiError) as exc_info:
+        _parse_feishu_json_response(
+            response,
+            default_error="Failed to upload Feishu file",
+        )
+
+    exc = exc_info.value
+    assert exc.status_code == 400
+    assert exc.log_id == "log-123"
+    assert exc.response_preview == "bad multipart request"
+    assert "http_status=400" in str(exc)
+    assert "log_id=log-123" in str(exc)
+
+
+def test_feishu_file_delivery_retry_service_requeues_retryable_failures(monkeypatch) -> None:
+    service = FeishuFileDeliveryRetryService()
+    enqueued: list[tuple[_QueuedFeishuFileDelivery, float]] = []
+
+    monkeypatch.setattr(
+        integrations_router,
+        "_load_feishu_publication_for_retry",
+        lambda _publication_id: SimpleNamespace(publication_id="pub-1"),
+    )
+
+    def _fake_send(*_args, **_kwargs) -> None:
+        raise FeishuApiError(
+            "Failed to upload Feishu file (http_status=429; log_id=retry-log)",
+            status_code=429,
+            log_id="retry-log",
+        )
+
+    monkeypatch.setattr(integrations_router, "_send_feishu_file_bytes_message", _fake_send)
+    monkeypatch.setattr(
+        service,
+        "enqueue",
+        lambda job, delay_seconds=0.0: enqueued.append((job, delay_seconds)) or True,
+    )
+
+    service._process_job(
+        _QueuedFeishuFileDelivery(
+            publication_id="pub-1",
+            conversation_id="conv-1",
+            chat_id="chat-1",
+            artifact_path="output/report.md",
+            file_name="report.md",
+            file_bytes=b"hello",
+        )
+    )
+
+    assert len(enqueued) == 1
+    queued_job, delay = enqueued[0]
+    assert queued_job.attempt == 2
+    assert queued_job.max_attempts == 3
+    assert delay == 0.5
+
+
+def test_feishu_file_delivery_retry_service_stops_on_non_retryable_failures(monkeypatch) -> None:
+    service = FeishuFileDeliveryRetryService()
+    enqueued: list[tuple[_QueuedFeishuFileDelivery, float]] = []
+
+    monkeypatch.setattr(
+        integrations_router,
+        "_load_feishu_publication_for_retry",
+        lambda _publication_id: SimpleNamespace(publication_id="pub-1"),
+    )
+
+    def _fake_send(*_args, **_kwargs) -> None:
+        raise FeishuApiError(
+            "Failed to upload Feishu file: Access denied "
+            "(code=99991672; missing_scopes=im:resource:upload; http_status=400; log_id=log-1)",
+            status_code=400,
+            error_code=99991672,
+            log_id="log-1",
+        )
+
+    monkeypatch.setattr(integrations_router, "_send_feishu_file_bytes_message", _fake_send)
+    monkeypatch.setattr(
+        service,
+        "enqueue",
+        lambda job, delay_seconds=0.0: enqueued.append((job, delay_seconds)) or True,
+    )
+
+    service._process_job(
+        _QueuedFeishuFileDelivery(
+            publication_id="pub-1",
+            conversation_id="conv-1",
+            chat_id="chat-1",
+            artifact_path="output/report.md",
+            file_name="report.md",
+            file_bytes=b"hello",
+        )
+    )
+
+    assert enqueued == []
 
 
 def test_select_feishu_explicitly_requested_artifacts_matches_existing_file() -> None:

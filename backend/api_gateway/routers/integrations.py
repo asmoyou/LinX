@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import atexit
 import asyncio
+import heapq
 import io
 import json
 import mimetypes
 import re
+import threading
+import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -52,6 +57,9 @@ _FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
 _TENANT_TOKEN_CACHE: dict[str, tuple[str, datetime]] = {}
 _FEISHU_MAX_DIRECT_FILE_MESSAGES = 3
 _FEISHU_MAX_DIRECT_FILE_SIZE_BYTES = 30 * 1024 * 1024
+_FEISHU_FILE_DELIVERY_QUEUE_MAX_ATTEMPTS = 3
+_FEISHU_FILE_DELIVERY_BASE_BACKOFF_SECONDS = 0.5
+_FEISHU_FILE_DELIVERY_QUEUE_MAX_PENDING = 128
 _FEISHU_IGNORED_ARTIFACT_ROOTS = {"input", "logs", "tasks"}
 _FEISHU_IGNORED_ARTIFACT_NAMES = {
     ".linx_runtime",
@@ -65,6 +73,225 @@ _FEISHU_PROCESSING_REACTION_EMOJI_TYPES = ("EYES", "SMILE")
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class FeishuApiError(RuntimeError):
+    """Structured Feishu API failure with response context for retry and logging."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        error_code: int | None = None,
+        log_id: str | None = None,
+        response_preview: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+        self.log_id = log_id
+        self.response_preview = response_preview
+
+
+@dataclass
+class _QueuedFeishuFileDelivery:
+    publication_id: str
+    conversation_id: str
+    chat_id: str
+    artifact_path: str
+    file_name: str
+    file_bytes: bytes
+    attempt: int = 1
+    max_attempts: int = _FEISHU_FILE_DELIVERY_QUEUE_MAX_ATTEMPTS
+
+
+class FeishuFileDeliveryRetryService:
+    """Background retry queue for transient Feishu file delivery failures."""
+
+    def __init__(self, *, max_pending: int = _FEISHU_FILE_DELIVERY_QUEUE_MAX_PENDING) -> None:
+        self.max_pending = max(1, int(max_pending))
+        self._condition = threading.Condition()
+        self._pending: list[tuple[float, int, _QueuedFeishuFileDelivery]] = []
+        self._sequence = 0
+        self._shutdown = False
+        self._worker: threading.Thread | None = None
+
+    def start(self) -> None:
+        with self._condition:
+            if self._worker and self._worker.is_alive():
+                return
+            self._shutdown = False
+            self._worker = threading.Thread(
+                target=self._run_loop,
+                daemon=True,
+                name="feishu-file-delivery-retry",
+            )
+            self._worker.start()
+        logger.info("Feishu file delivery retry service started")
+
+    def stop(self) -> None:
+        worker: threading.Thread | None = None
+        with self._condition:
+            self._shutdown = True
+            self._condition.notify_all()
+            worker = self._worker
+            self._worker = None
+        if worker and worker.is_alive():
+            worker.join(timeout=5)
+        logger.info("Feishu file delivery retry service stopped")
+
+    def enqueue(
+        self,
+        job: _QueuedFeishuFileDelivery,
+        *,
+        delay_seconds: float = 0.0,
+    ) -> bool:
+        self.start()
+        run_at = time.monotonic() + max(0.0, float(delay_seconds))
+        with self._condition:
+            if len(self._pending) >= self.max_pending:
+                return False
+            self._sequence += 1
+            heapq.heappush(self._pending, (run_at, self._sequence, job))
+            self._condition.notify_all()
+            return True
+
+    def _run_loop(self) -> None:
+        while True:
+            job: _QueuedFeishuFileDelivery | None = None
+            with self._condition:
+                while not self._shutdown:
+                    if not self._pending:
+                        self._condition.wait()
+                        continue
+                    run_at, _, next_job = self._pending[0]
+                    delay = run_at - time.monotonic()
+                    if delay > 0:
+                        self._condition.wait(timeout=delay)
+                        continue
+                    heapq.heappop(self._pending)
+                    job = next_job
+                    break
+                if self._shutdown:
+                    return
+
+            if job is None:
+                continue
+            self._process_job(job)
+
+    def _process_job(self, job: _QueuedFeishuFileDelivery) -> None:
+        try:
+            publication = _load_feishu_publication_for_retry(job.publication_id)
+            if publication is None:
+                logger.warning(
+                    "Discarding queued Feishu file delivery because publication is unavailable",
+                    extra={
+                        "publication_id": job.publication_id,
+                        "conversation_id": job.conversation_id,
+                        "artifact_path": job.artifact_path,
+                        "attempt": job.attempt,
+                    },
+                )
+                return
+
+            _send_feishu_file_bytes_message(
+                publication,
+                chat_id=job.chat_id,
+                file_bytes=job.file_bytes,
+                file_name=job.file_name,
+            )
+            logger.info(
+                "Queued Feishu file delivery succeeded",
+                extra={
+                    "publication_id": job.publication_id,
+                    "conversation_id": job.conversation_id,
+                    "artifact_path": job.artifact_path,
+                    "attempt": job.attempt,
+                },
+            )
+        except Exception as exc:
+            retryable = _is_retryable_feishu_file_delivery_error(exc)
+            can_retry = retryable and job.attempt < job.max_attempts
+            log_extra = {
+                "publication_id": job.publication_id,
+                "conversation_id": job.conversation_id,
+                "artifact_path": job.artifact_path,
+                "attempt": job.attempt,
+                "max_attempts": job.max_attempts,
+                **_build_feishu_file_delivery_log_extra(exc),
+            }
+            if can_retry:
+                next_attempt = _QueuedFeishuFileDelivery(
+                    publication_id=job.publication_id,
+                    conversation_id=job.conversation_id,
+                    chat_id=job.chat_id,
+                    artifact_path=job.artifact_path,
+                    file_name=job.file_name,
+                    file_bytes=job.file_bytes,
+                    attempt=job.attempt + 1,
+                    max_attempts=job.max_attempts,
+                )
+                delay_seconds = _get_feishu_file_delivery_retry_delay(job.attempt)
+                if self.enqueue(next_attempt, delay_seconds=delay_seconds):
+                    logger.warning(
+                        "Queued Feishu file delivery failed; scheduled another retry: %s",
+                        exc,
+                        extra={
+                            **log_extra,
+                            "retry_delay_seconds": delay_seconds,
+                        },
+                    )
+                    return
+                logger.warning(
+                    "Queued Feishu file delivery failed and retry queue is full: %s",
+                    exc,
+                    extra=log_extra,
+                )
+                return
+
+            logger.warning(
+                "Queued Feishu file delivery failed permanently: %s",
+                exc,
+                extra=log_extra,
+            )
+
+
+_feishu_file_delivery_retry_service: FeishuFileDeliveryRetryService | None = None
+
+
+def _normalize_feishu_response_preview(value: str | None, *, max_chars: int = 240) -> str | None:
+    normalized = " ".join(str(value or "").split()).strip()
+    if not normalized:
+        return None
+    if len(normalized) <= max_chars:
+        return normalized
+    return f"{normalized[: max_chars - 1].rstrip()}…"
+
+
+def _extract_feishu_log_id(response: requests.Response) -> str | None:
+    return str(
+        response.headers.get("X-Tt-Logid") or response.headers.get("x-tt-logid") or ""
+    ).strip() or None
+
+
+def _build_feishu_error_message(
+    base_message: str,
+    *,
+    status_code: int | None,
+    log_id: str | None,
+    response_preview: str | None = None,
+) -> str:
+    details: list[str] = []
+    if status_code is not None:
+        details.append(f"http_status={status_code}")
+    if log_id:
+        details.append(f"log_id={log_id}")
+    if response_preview:
+        details.append(f"response={response_preview}")
+    if not details:
+        return base_message
+    return f"{base_message} ({'; '.join(details)})"
 
 
 def _format_feishu_api_error(payload: dict[str, Any], *, default_error: str) -> str:
@@ -100,30 +327,152 @@ def _parse_feishu_json_response(
     *,
     default_error: str,
 ) -> dict[str, Any]:
+    status_code = response.status_code
+    log_id = _extract_feishu_log_id(response)
+    response_preview = _normalize_feishu_response_preview(getattr(response, "text", None))
+
     try:
         payload = response.json()
     except ValueError:
-        response.raise_for_status()
-        raise RuntimeError(default_error)
+        raise FeishuApiError(
+            _build_feishu_error_message(
+                default_error,
+                status_code=status_code,
+                log_id=log_id,
+                response_preview=response_preview,
+            ),
+            status_code=status_code,
+            log_id=log_id,
+            response_preview=response_preview,
+        )
 
     if not isinstance(payload, dict):
-        response.raise_for_status()
-        raise RuntimeError(default_error)
+        raise FeishuApiError(
+            _build_feishu_error_message(
+                default_error,
+                status_code=status_code,
+                log_id=log_id,
+                response_preview=response_preview,
+            ),
+            status_code=status_code,
+            log_id=log_id,
+            response_preview=response_preview,
+        )
 
-    if response.status_code >= 400 or int(payload.get("code", 0) or 0) != 0:
-        raise RuntimeError(_format_feishu_api_error(payload, default_error=default_error))
+    if status_code >= 400 or int(payload.get("code", 0) or 0) != 0:
+        raise FeishuApiError(
+            _build_feishu_error_message(
+                _format_feishu_api_error(payload, default_error=default_error),
+                status_code=status_code,
+                log_id=log_id,
+            ),
+            status_code=status_code,
+            error_code=int(payload.get("code", 0) or 0) or None,
+            log_id=log_id,
+            response_preview=response_preview,
+        )
 
     return payload
 
 
+def _is_retryable_feishu_status_code(status_code: int | None) -> bool:
+    return status_code in {408, 429} or bool(status_code and status_code >= 500)
+
+
+def _is_retryable_feishu_file_delivery_error(exc: Exception) -> bool:
+    if isinstance(exc, FeishuApiError):
+        return _is_retryable_feishu_status_code(exc.status_code)
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return True
+    if isinstance(exc, requests.RequestException):
+        status_code = getattr(exc.response, "status_code", None)
+        return _is_retryable_feishu_status_code(status_code)
+    return False
+
+
+def _get_feishu_file_delivery_retry_delay(attempt: int) -> float:
+    return _FEISHU_FILE_DELIVERY_BASE_BACKOFF_SECONDS * (2 ** max(0, attempt - 1))
+
+
+def get_feishu_file_delivery_retry_service() -> FeishuFileDeliveryRetryService:
+    global _feishu_file_delivery_retry_service
+    if _feishu_file_delivery_retry_service is None:
+        _feishu_file_delivery_retry_service = FeishuFileDeliveryRetryService()
+    return _feishu_file_delivery_retry_service
+
+
+async def initialize_feishu_file_delivery_retry_service() -> FeishuFileDeliveryRetryService:
+    service = get_feishu_file_delivery_retry_service()
+    await asyncio.to_thread(service.start)
+    return service
+
+
+async def shutdown_feishu_file_delivery_retry_service() -> None:
+    global _feishu_file_delivery_retry_service
+    service = _feishu_file_delivery_retry_service
+    if service is None:
+        return
+    await asyncio.to_thread(service.stop)
+    _feishu_file_delivery_retry_service = None
+
+
+def _stop_feishu_file_delivery_retry_service_at_exit() -> None:
+    service = _feishu_file_delivery_retry_service
+    if service is not None:
+        try:
+            service.stop()
+        except Exception:
+            pass
+
+
+atexit.register(_stop_feishu_file_delivery_retry_service_at_exit)
+
+
+def _build_feishu_file_delivery_log_extra(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, FeishuApiError):
+        return {
+            "feishu_http_status": exc.status_code,
+            "feishu_error_code": exc.error_code,
+            "feishu_log_id": exc.log_id,
+            "feishu_response_preview": exc.response_preview,
+            "feishu_retryable": _is_retryable_feishu_file_delivery_error(exc),
+        }
+
+    response = getattr(exc, "response", None)
+    return {
+        "feishu_http_status": getattr(response, "status_code", None),
+        "feishu_log_id": getattr(response, "headers", {}).get("X-Tt-Logid")
+        if response is not None
+        else None,
+        "feishu_retryable": _is_retryable_feishu_file_delivery_error(exc),
+    }
+
+
 def _classify_feishu_file_delivery_error(exc: Exception) -> str | None:
     message = str(exc)
+    error_code = exc.error_code if isinstance(exc, FeishuApiError) else None
+    status_code = exc.status_code if isinstance(exc, FeishuApiError) else None
     if (
         "im:resource:upload" in message
         or "missing_scopes=im:resource,im:resource:upload" in message
     ):
         return "当前飞书应用未开通文件上传权限，已改为发送文本结果和网页链接。"
+    if error_code == 234006 or "file size exceed the max value" in message.lower():
+        return "文件超过飞书 30MB 限制，已改为发送文本结果和网页链接。"
+    if error_code == 234010 or "size can't be 0" in message.lower():
+        return "文件为空，已改为发送文本结果和网页链接。"
+    if error_code in {230013, 230017, 230027, 230035}:
+        return "当前飞书会话不允许直接发送文件，已改为发送文本结果和网页链接。"
+    if (
+        (status_code is not None and _is_retryable_feishu_status_code(status_code))
+        or isinstance(exc, (requests.Timeout, requests.ConnectionError))
+    ):
+        return "飞书文件接口暂时不可用，多次重试后仍失败，已改为发送文本结果和网页链接。"
     return None
+
+
+def _queued_feishu_file_delivery_note() -> str:
+    return "飞书文件接口暂时不可用，系统会在后台继续重试发送；当前先发送文本结果和网页链接。"
 
 
 def _validate_feishu_verification_token(
@@ -197,28 +546,27 @@ def _send_feishu_text_message(
     _parse_feishu_json_response(response, default_error="Failed to send Feishu message")
 
 
-def _send_feishu_file_message(
+def _send_feishu_file_bytes_message(
     publication: AgentChannelPublication,
     *,
     chat_id: str,
-    file_path: Path,
+    file_bytes: bytes,
     file_name: str,
 ) -> None:
     tenant_access_token = _get_feishu_tenant_access_token(publication)
-    with file_path.open("rb") as handle:
-        upload_response = requests.post(
-            f"{_FEISHU_API_BASE}/im/v1/files",
-            headers={"Authorization": f"Bearer {tenant_access_token}"},
-            data={"file_type": "stream", "file_name": file_name},
-            files={
-                "file": (
-                    file_name,
-                    handle,
-                    mimetypes.guess_type(file_name)[0] or "application/octet-stream",
-                )
-            },
-            timeout=120,
-        )
+    upload_response = requests.post(
+        f"{_FEISHU_API_BASE}/im/v1/files",
+        headers={"Authorization": f"Bearer {tenant_access_token}"},
+        data={"file_type": "stream", "file_name": file_name},
+        files={
+            "file": (
+                file_name,
+                io.BytesIO(file_bytes),
+                mimetypes.guess_type(file_name)[0] or "application/octet-stream",
+            )
+        },
+        timeout=120,
+    )
     upload_payload = _parse_feishu_json_response(
         upload_response,
         default_error="Failed to upload Feishu file",
@@ -243,6 +591,21 @@ def _send_feishu_file_message(
         timeout=20,
     )
     _parse_feishu_json_response(send_response, default_error="Failed to send Feishu file message")
+
+
+def _send_feishu_file_message(
+    publication: AgentChannelPublication,
+    *,
+    chat_id: str,
+    file_path: Path,
+    file_name: str,
+) -> None:
+    _send_feishu_file_bytes_message(
+        publication,
+        chat_id=chat_id,
+        file_bytes=file_path.read_bytes(),
+        file_name=file_name,
+    )
 
 
 def _send_feishu_message_reaction(
@@ -325,6 +688,80 @@ def _find_external_binding(
         if row:
             return row
     return None
+
+
+def _load_feishu_publication_for_retry(publication_id: str) -> AgentChannelPublication | None:
+    try:
+        publication_uuid = UUID(str(publication_id))
+    except (TypeError, ValueError):
+        return None
+
+    with get_db_session() as session:
+        return (
+            session.query(AgentChannelPublication)
+            .filter(AgentChannelPublication.publication_id == publication_uuid)
+            .filter(AgentChannelPublication.channel_type == "feishu")
+            .filter(AgentChannelPublication.status == "published")
+            .first()
+        )
+
+
+def _enqueue_feishu_file_delivery_retry(
+    *,
+    publication: AgentChannelPublication,
+    conversation: AgentConversation,
+    chat_id: str,
+    artifact_path: str,
+    local_path: Path,
+) -> bool:
+    try:
+        file_bytes = local_path.read_bytes()
+    except Exception as exc:
+        logger.warning(
+            "Failed to snapshot Feishu artifact for async retry: %s",
+            exc,
+            extra={
+                "publication_id": str(publication.publication_id),
+                "conversation_id": str(conversation.conversation_id),
+                "artifact_path": artifact_path,
+            },
+        )
+        return False
+
+    job = _QueuedFeishuFileDelivery(
+        publication_id=str(publication.publication_id),
+        conversation_id=str(conversation.conversation_id),
+        chat_id=chat_id,
+        artifact_path=artifact_path,
+        file_name=local_path.name,
+        file_bytes=file_bytes,
+    )
+    queued = get_feishu_file_delivery_retry_service().enqueue(
+        job,
+        delay_seconds=_get_feishu_file_delivery_retry_delay(0),
+    )
+    if queued:
+        logger.info(
+            "Queued Feishu file delivery retry",
+            extra={
+                "publication_id": str(publication.publication_id),
+                "conversation_id": str(conversation.conversation_id),
+                "artifact_path": artifact_path,
+                "initial_delay_seconds": _get_feishu_file_delivery_retry_delay(0),
+                "max_attempts": job.max_attempts,
+            },
+        )
+        return True
+
+    logger.warning(
+        "Feishu file delivery retry queue is full; skipping async retry",
+        extra={
+            "publication_id": str(publication.publication_id),
+            "conversation_id": str(conversation.conversation_id),
+            "artifact_path": artifact_path,
+        },
+    )
+    return False
 
 
 def _bind_user_from_code(
@@ -702,12 +1139,24 @@ def _build_feishu_reply_text(
     base_url: str | None = None,
 ) -> str:
     base_text = output_text.strip() or "Agent execution completed."
+    delivered_items = [
+        item
+        for item in (delivered_artifacts or [])
+        if str(item.get("path") or "").strip()
+    ]
     deduped_notes = [note.strip() for note in (delivery_notes or []) if str(note).strip()]
     pending_paths = [
         str(item.get("path") or "").strip()
         for item in (pending_artifacts or [])
         if str(item.get("path") or "").strip()
     ]
+    if (
+        delivered_items
+        and not pending_paths
+        and not deduped_notes
+        and _should_suppress_feishu_delivery_confirmation(base_text, delivered_items)
+    ):
+        return ""
     if not pending_paths and not deduped_notes:
         return base_text
 
@@ -736,6 +1185,58 @@ def _build_feishu_reply_text(
         f"{summary_prefix}\n{detail_text}\n\n"
         f"网页查看对话与工作区: {conversation_url}"
     )
+
+
+def _should_suppress_feishu_delivery_confirmation(
+    text: str,
+    delivered_artifacts: list[dict[str, Any]],
+) -> bool:
+    raw_text = str(text or "").strip().lower()
+    normalized = re.sub(r"[*_`#>|]+", " ", raw_text)
+    normalized = re.sub(r"\s+", " ", normalized).strip().lower()
+    if not normalized:
+        return True
+    if len(normalized) > 420:
+        return False
+
+    completion_tokens = (
+        "已创建",
+        "已生成",
+        "已完成",
+        "已输出",
+        "已保存",
+        "创建完成",
+        "生成完成",
+        "完成",
+        "created",
+        "generated",
+        "finished",
+        "saved",
+        "done",
+    )
+    file_tokens = (
+        "文件",
+        "文档",
+        "报告",
+        "附件",
+        "file",
+        "document",
+        "report",
+        "attachment",
+    )
+    if not any(token in normalized for token in completion_tokens):
+        return False
+    if not any(token in normalized for token in file_tokens):
+        return False
+
+    artifact_hints: set[str] = set()
+    for item in delivered_artifacts:
+        path = str(item.get("path") or "").strip().lower()
+        if path:
+            artifact_hints.add(path)
+            artifact_hints.add(Path(path).name.lower())
+
+    return any(hint and hint in raw_text for hint in artifact_hints)
 
 
 async def process_feishu_publication_message(
@@ -919,11 +1420,25 @@ async def process_feishu_publication_message(
                     "publication_id": str(publication.publication_id),
                     "conversation_id": str(conversation.conversation_id),
                     "artifact_path": str(artifact.get("path") or ""),
+                    **_build_feishu_file_delivery_log_extra(exc),
                 },
             )
-            delivery_note = _classify_feishu_file_delivery_error(exc)
-            if delivery_note:
-                delivery_notes.append(delivery_note)
+            queued_for_retry = False
+            if _is_retryable_feishu_file_delivery_error(exc):
+                queued_for_retry = await asyncio.to_thread(
+                    _enqueue_feishu_file_delivery_retry,
+                    publication=publication,
+                    conversation=conversation,
+                    chat_id=str(message.get("chat_id") or ""),
+                    artifact_path=str(artifact.get("path") or ""),
+                    local_path=local_path,
+                )
+            if queued_for_retry:
+                delivery_notes.append(_queued_feishu_file_delivery_note())
+            else:
+                delivery_note = _classify_feishu_file_delivery_error(exc)
+                if delivery_note:
+                    delivery_notes.append(delivery_note)
             pending_artifacts.append(artifact)
 
     if len(resolved_deliverable_files) > _FEISHU_MAX_DIRECT_FILE_MESSAGES:

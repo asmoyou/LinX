@@ -599,6 +599,26 @@
     "voiceInputFailed": "语音转写失败，请重试。",
     "agentResponse": "代理响应",
     "thinking": "思考中...",
+    "persistentProcess": {
+      "thinking": "思考中…",
+      "usingTools": "调用工具中…",
+      "finalizing": "整理结果中…",
+      "recovering": "继续处理中…",
+      "memory": "抽取记忆",
+      "knowledge": "检索知识库",
+      "context": "整理上下文",
+      "attachments": "准备附件",
+      "tool": "调用工具",
+      "waitingHint": "正在处理中"
+    },
+    "persistentResult": {
+      "generatedOutput": "已生成结果",
+      "files": "结果文件",
+      "schedules": "定时任务",
+      "openInWorkspace": "在工作区打开",
+      "download": "下载",
+      "partialError": "执行未完整完成"
+    },
     "viewDetails": "查看详情",
     "editAgent": "编辑代理",
     "deleteAgent": "删除代理",

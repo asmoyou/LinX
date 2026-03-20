@@ -27,17 +27,23 @@ import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 
 import { agentsApi } from "@/api";
-import {
-  mergeScheduleEvents,
-  normalizeScheduleCreatedEvent,
-} from "@/components/schedules/scheduleUtils";
-import {
-  ConversationRoundComponent,
-  type ConversationRoundArtifact,
-} from "@/components/workforce/ConversationRound";
 import { createMarkdownComponents } from "@/components/workforce/CodeBlock";
+import { PersistentConversationAssistantMessage } from "@/components/workforce/persistent/PersistentConversationAssistantMessage";
+import { PersistentConversationProcessLine } from "@/components/workforce/persistent/PersistentConversationProcessLine";
+import {
+  derivePersistentArtifacts,
+  derivePersistentProcessDescriptor,
+  derivePersistentScheduleEvents,
+  getPersistentFallbackAssistantText,
+  mapChunkToPersistentPhase,
+  mergePersistentScheduleEvents,
+  normalizeWorkspaceFilePath,
+  shouldHideProcessLine,
+  type PersistentConversationArtifactItem,
+  type PersistentConversationPhase,
+  type PersistentProcessDescriptor,
+} from "@/components/workforce/persistent/persistentConversationHelpers";
 import { SessionWorkspacePanel } from "@/components/workforce/SessionWorkspacePanel";
-import { getRuntimeStatusMessage } from "@/pages/agentConversationRuntime";
 import { useNotificationStore } from "@/stores";
 import type {
   Agent,
@@ -46,21 +52,9 @@ import type {
   AgentConversationSummary,
   ConversationMessage,
 } from "@/types/agent";
-import type {
-  AttachedFile,
-  ConversationRound,
-  ErrorFeedback,
-  RetryAttempt,
-  StatusMessage,
-} from "@/types/streaming";
+import type { AttachedFile } from "@/types/streaming";
 import type { ScheduleCreatedEvent } from "@/types/schedule";
 
-const WORKSPACE_PATH_PATTERN = /\/workspace\/[^\s,)\]}>"'`]+/gi;
-const FILE_PATH_KV_PATTERN = /file_path=([^\s,)\]}>"'`]+)/gi;
-const FILE_ACTION_PATH_PATTERN =
-  /(?:wrote|appended to|edited)\s+([^\s,)\]}>"'`]+)/gi;
-const RELATIVE_FILE_PATH_PATTERN =
-  /(?:^|[\s"'`(（【])((?:\.\/)?[^\s"'`<>(){}[\]]+\.(?:md|markdown|txt|json|csv|ya?ml|pdf|docx?|xlsx?|pptx?|html?))(?=$|[\s"'`)\]}>，。；;!?])/gi;
 const ATTACHMENT_ACCEPT_TYPES =
   "image/*,.pdf,.doc,.docx,.pptx,.xls,.xlsx,.txt,.md,.markdown,.html,.htm,.csv";
 const STREAM_RENDER_THROTTLE_MS = 60;
@@ -70,76 +64,24 @@ const HISTORY_MESSAGE_ESTIMATED_HEIGHT_PX = 320;
 const HISTORY_OVERSCAN_PX = 900;
 const HISTORY_VIRTUALIZATION_MIN_ITEMS = 24;
 
-interface StreamingRoundState {
-  thinking: string;
-  content: string;
-  statusMessages: StatusMessage[];
-  retryAttempts: RetryAttempt[];
-  errorFeedback: ErrorFeedback[];
-  stats: ConversationRound["stats"] | null;
+interface StreamingViewState {
+  assistantText: string;
+  phase: PersistentConversationPhase | null;
+  processDescriptor: PersistentProcessDescriptor | null;
+  hasContentStarted: boolean;
+  inlineError: string | null;
   scheduleEvents: ScheduleCreatedEvent[];
 }
 
-function createEmptyRoundData(): StreamingRoundState {
+function createEmptyStreamingViewState(): StreamingViewState {
   return {
-    thinking: "",
-    content: "",
-    statusMessages: [],
-    retryAttempts: [],
-    errorFeedback: [],
-    stats: null,
+    assistantText: "",
+    phase: null,
+    processDescriptor: null,
+    hasContentStarted: false,
+    inlineError: null,
     scheduleEvents: [],
   };
-}
-
-function buildRoundSnapshot(
-  roundData: StreamingRoundState,
-  roundNumber: number,
-): ConversationRound {
-  return {
-    roundNumber,
-    thinking: roundData.thinking,
-    content: roundData.content,
-    statusMessages: [...roundData.statusMessages],
-    retryAttempts:
-      roundData.retryAttempts.length > 0
-        ? [...roundData.retryAttempts]
-        : undefined,
-    errorFeedback:
-      roundData.errorFeedback.length > 0
-        ? [...roundData.errorFeedback]
-        : undefined,
-    stats: roundData.stats ? { ...roundData.stats } : undefined,
-    scheduleEvents:
-      roundData.scheduleEvents.length > 0
-        ? [...roundData.scheduleEvents]
-        : undefined,
-  };
-}
-
-function buildCurrentRoundDataState(
-  roundData: StreamingRoundState,
-): StreamingRoundState {
-  return {
-    thinking: roundData.thinking,
-    content: roundData.content,
-    statusMessages: [...roundData.statusMessages],
-    retryAttempts: [...roundData.retryAttempts],
-    errorFeedback: [...roundData.errorFeedback],
-    stats: roundData.stats ? { ...roundData.stats } : null,
-    scheduleEvents: [...roundData.scheduleEvents],
-  };
-}
-
-function hasRoundActivity(round: StreamingRoundState): boolean {
-  return Boolean(
-    round.thinking ||
-    round.content.trim() ||
-    round.statusMessages.length > 0 ||
-    round.retryAttempts.length > 0 ||
-    round.errorFeedback.length > 0 ||
-    round.scheduleEvents.length > 0,
-  );
 }
 
 function downloadBlob(blob: Blob, fileName: string): void {
@@ -151,88 +93,6 @@ function downloadBlob(blob: Blob, fileName: string): void {
   anchor.click();
   document.body.removeChild(anchor);
   window.URL.revokeObjectURL(url);
-}
-
-function normalizeWorkspaceFilePath(rawPath: string): string {
-  let normalized = String(rawPath || "")
-    .trim()
-    .replace(/\\/g, "/");
-  normalized = normalized.replace(/^[\s("'`[{（【]+/, "");
-  normalized = normalized.replace(/[\s)"'`.,:;!?}\]）】]+$/, "");
-  if (!normalized) return "";
-  if (/^(?:https?:|data:|file:)/i.test(normalized)) return "";
-
-  const workspaceIndex = normalized.indexOf("/workspace/");
-  if (workspaceIndex >= 0) {
-    normalized = normalized.slice(workspaceIndex);
-  }
-
-  if (normalized.startsWith("workspace/")) {
-    normalized = `/${normalized}`;
-  }
-
-  if (!normalized.startsWith("/workspace/")) {
-    if (normalized.startsWith("./")) {
-      normalized = normalized.slice(2);
-    }
-    if (normalized.startsWith("/")) return "";
-    normalized = `/workspace/${normalized}`;
-  }
-
-  if (normalized.includes("..")) return "";
-  return normalized.startsWith("/workspace/") ? normalized : "";
-}
-
-function extractWorkspacePathsFromText(text: string): string[] {
-  const source = String(text || "");
-  const unique = new Set<string>();
-  const candidatePaths: string[] = [];
-
-  const absoluteMatches = source.match(WORKSPACE_PATH_PATTERN) || [];
-  candidatePaths.push(...absoluteMatches);
-
-  for (const match of source.matchAll(FILE_PATH_KV_PATTERN)) {
-    if (match[1]) {
-      candidatePaths.push(match[1]);
-    }
-  }
-
-  for (const match of source.matchAll(FILE_ACTION_PATH_PATTERN)) {
-    if (match[1]) {
-      candidatePaths.push(match[1]);
-    }
-  }
-
-  for (const match of source.matchAll(RELATIVE_FILE_PATH_PATTERN)) {
-    if (match[1]) {
-      candidatePaths.push(match[1]);
-    }
-  }
-
-  candidatePaths.forEach((rawPath) => {
-    const normalized = normalizeWorkspaceFilePath(rawPath);
-    if (!normalized || normalized.startsWith("/workspace/input/")) {
-      return;
-    }
-    unique.add(normalized);
-  });
-
-  return [...unique];
-}
-
-function extractRoundArtifacts(
-  round: ConversationRound,
-): ConversationRoundArtifact[] {
-  const explicitArtifacts = Array.isArray((round as any).artifacts)
-    ? (round as any).artifacts
-    : [];
-  const explicitPaths = explicitArtifacts
-    .map((item: any) => normalizeWorkspaceFilePath(item?.path || ""))
-    .filter(Boolean);
-  const inferredPaths = extractWorkspacePathsFromText(round.content || "");
-  return [...new Set([...explicitPaths, ...inferredPaths])]
-    .sort((a, b) => a.localeCompare(b))
-    .map((path) => ({ path, confirmed: true }));
 }
 
 function buildAttachmentPreview(file: File): AttachedFile {
@@ -288,72 +148,11 @@ const VirtualizedHistoryItem: React.FC<VirtualizedHistoryItemProps> = ({
   );
 };
 
-function normalizeStoredRound(rawRound: any, index: number): ConversationRound {
-  const statusMessages = Array.isArray(rawRound?.statusMessages)
-    ? rawRound.statusMessages.map((item: any) => ({
-        content: String(item?.content || ""),
-        type: (item?.type || "info") as StatusMessage["type"],
-        timestamp: new Date(item?.timestamp || Date.now()),
-        duration:
-          typeof item?.duration === "number" ? item.duration : undefined,
-      }))
-    : [];
-
-  const retryAttempts = Array.isArray(rawRound?.retryAttempts)
-    ? rawRound.retryAttempts.map((item: any, retryIndex: number) => ({
-        retryCount: Number(
-          item?.retryCount || item?.retry_count || retryIndex + 1 || 1,
-        ),
-        maxRetries: Number(item?.maxRetries || item?.max_retries || 1),
-        errorType: (item?.errorType ||
-          item?.error_type ||
-          "parse_error") as RetryAttempt["errorType"],
-        message: String(item?.message || ""),
-        timestamp: new Date(item?.timestamp || Date.now()),
-      }))
-    : undefined;
-
-  const errorFeedback = Array.isArray(rawRound?.errorFeedback)
-    ? rawRound.errorFeedback.map((item: any) => ({
-        errorType: String(item?.errorType || item?.error_type || "unknown"),
-        retryCount: Number(item?.retryCount || item?.retry_count || 1),
-        maxRetries: Number(item?.maxRetries || item?.max_retries || 1),
-        message: String(item?.message || ""),
-        suggestions: Array.isArray(item?.suggestions)
-          ? item.suggestions.map(String)
-          : undefined,
-        timestamp: new Date(item?.timestamp || Date.now()),
-      }))
-    : undefined;
-  const scheduleEvents = mergeScheduleEvents(
-    undefined,
-    rawRound?.scheduleEvents,
-  );
-
-  return {
-    roundNumber: Number(rawRound?.roundNumber || index + 1),
-    thinking: String(rawRound?.thinking || ""),
-    content: String(rawRound?.content || ""),
-    statusMessages,
-    retryAttempts,
-    errorFeedback,
-    scheduleEvents,
-    stats: rawRound?.stats
-      ? {
-          timeToFirstToken: Number(rawRound.stats.timeToFirstToken || 0),
-          tokensPerSecond: Number(rawRound.stats.tokensPerSecond || 0),
-          inputTokens: Number(rawRound.stats.inputTokens || 0),
-          outputTokens: Number(rawRound.stats.outputTokens || 0),
-          totalTokens: Number(rawRound.stats.totalTokens || 0),
-          totalTime: Number(rawRound.stats.totalTime || 0),
-        }
-      : undefined,
-  };
-}
-
 type RenderedConversationMessage = ConversationMessage & {
-  parsedRounds: ConversationRound[];
-  artifactPaths: string[];
+  artifactItems: PersistentConversationArtifactItem[];
+  scheduleItems: ScheduleCreatedEvent[];
+  displayContent: string;
+  inlineError: string | null;
 };
 
 export const AgentConversation: React.FC = () => {
@@ -382,15 +181,9 @@ export const AgentConversation: React.FC = () => {
   const streamFlushTimerRef = useRef<number | null>(null);
   const shouldAutoScrollRef = useRef(true);
   const lastScrollTopRef = useRef(0);
-  const streamingDataRef = useRef<{
-    rounds: ConversationRound[];
-    currentRound: StreamingRoundState;
-    currentRoundNumber: number;
-  }>({
-    rounds: [],
-    currentRound: createEmptyRoundData(),
-    currentRoundNumber: 1,
-  });
+  const streamingViewRef = useRef<StreamingViewState>(
+    createEmptyStreamingViewState(),
+  );
 
   const [agent, setAgent] = useState<Agent | null>(null);
   const [conversations, setConversations] = useState<
@@ -415,11 +208,19 @@ export const AgentConversation: React.FC = () => {
   const [downloadingArtifactPath, setDownloadingArtifactPath] = useState<
     string | null
   >(null);
-  const [currentRounds, setCurrentRounds] = useState<ConversationRound[]>([]);
-  const [currentRoundData, setCurrentRoundData] = useState<StreamingRoundState>(
-    createEmptyRoundData(),
-  );
-  const [currentRoundNumber, setCurrentRoundNumber] = useState(1);
+  const [streamingAssistantText, setStreamingAssistantText] = useState("");
+  const [streamingPhase, setStreamingPhase] =
+    useState<PersistentConversationPhase | null>(null);
+  const [streamingProcessDescriptor, setStreamingProcessDescriptor] =
+    useState<PersistentProcessDescriptor | null>(null);
+  const [hasStreamingContentStarted, setHasStreamingContentStarted] =
+    useState(false);
+  const [streamingInlineError, setStreamingInlineError] = useState<
+    string | null
+  >(null);
+  const [streamingScheduleItems, setStreamingScheduleItems] = useState<
+    ScheduleCreatedEvent[]
+  >([]);
   const [draftConversationId, setDraftConversationId] = useState<string | null>(
     null,
   );
@@ -552,11 +353,20 @@ export const AgentConversation: React.FC = () => {
   }, [conversationId]);
 
   const syncStreamingStateToView = useCallback(() => {
-    const { rounds, currentRound, currentRoundNumber } =
-      streamingDataRef.current;
-    setCurrentRounds([...rounds]);
-    setCurrentRoundData(buildCurrentRoundDataState(currentRound));
-    setCurrentRoundNumber(currentRoundNumber);
+    const {
+      assistantText,
+      phase,
+      processDescriptor,
+      hasContentStarted,
+      inlineError,
+      scheduleEvents,
+    } = streamingViewRef.current;
+    setStreamingAssistantText(assistantText);
+    setStreamingPhase(phase);
+    setStreamingProcessDescriptor(processDescriptor);
+    setHasStreamingContentStarted(hasContentStarted);
+    setStreamingInlineError(inlineError);
+    setStreamingScheduleItems([...scheduleEvents]);
   }, []);
 
   const scheduleStreamingStateSync = useCallback(
@@ -721,16 +531,15 @@ export const AgentConversation: React.FC = () => {
       window.clearTimeout(streamFlushTimerRef.current);
       streamFlushTimerRef.current = null;
     }
-    setCurrentRounds([]);
-    setCurrentRoundData(createEmptyRoundData());
-    setCurrentRoundNumber(1);
+    setStreamingAssistantText("");
+    setStreamingPhase(null);
+    setStreamingProcessDescriptor(null);
+    setHasStreamingContentStarted(false);
+    setStreamingInlineError(null);
+    setStreamingScheduleItems([]);
     abortControllerRef.current = null;
     abortStreamingHandlerRef.current = null;
-    streamingDataRef.current = {
-      rounds: [],
-      currentRound: createEmptyRoundData(),
-      currentRoundNumber: 1,
-    };
+    streamingViewRef.current = createEmptyStreamingViewState();
   }, []);
 
   useEffect(
@@ -810,14 +619,18 @@ export const AgentConversation: React.FC = () => {
       window.cancelAnimationFrame(frameId);
     };
   }, [
-    currentRoundData,
-    currentRounds,
     historyItemHeights,
     historyPrefixHeight,
+    hasStreamingContentStarted,
     isSending,
     messages,
     scrollMessagesToBottom,
     showWorkspacePanel,
+    streamingAssistantText,
+    streamingInlineError,
+    streamingPhase,
+    streamingProcessDescriptor,
+    streamingScheduleItems,
   ]);
 
   const handleRefreshConversation = useCallback(async () => {
@@ -1319,55 +1132,60 @@ export const AgentConversation: React.FC = () => {
     setError(null);
     resetStreamingState();
     shouldAutoScrollRef.current = true;
-    streamingDataRef.current = {
-      rounds: [],
-      currentRound: createEmptyRoundData(),
-      currentRoundNumber: 1,
+    streamingViewRef.current = createEmptyStreamingViewState();
+    streamingViewRef.current.phase = "thinking";
+    streamingViewRef.current.processDescriptor = {
+      phase: "thinking",
+      kind: "thinking",
+      detail: null,
+      accent: null,
     };
+    scheduleStreamingStateSync(true);
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
     let turnOutcome: "completed" | "cancelled" | "failed" | null = null;
     let hasFinalizedCompletedTurn = false;
-
-    const finalizeStreamingOutput = () => {
-      const completedRounds = [...streamingDataRef.current.rounds];
-      if (hasRoundActivity(streamingDataRef.current.currentRound)) {
-        completedRounds.push(
-          buildRoundSnapshot(
-            streamingDataRef.current.currentRound,
-            streamingDataRef.current.currentRoundNumber,
-          ),
-        );
-      }
-
-      const assistantContent = completedRounds
-        .map((round) => round.content.trim())
-        .filter(Boolean)
-        .join("\n\n")
-        .trim();
-      const latestStats =
-        completedRounds.length > 0
-          ? completedRounds[completedRounds.length - 1].stats
-          : undefined;
-      const scheduleEvents = completedRounds.reduce<ScheduleCreatedEvent[]>(
-        (acc, round) => {
-          return mergeScheduleEvents(acc, round.scheduleEvents) || acc;
-        },
-        [],
-      );
-
-      return {
-        completedRounds,
-        assistantContent,
-        latestStats: latestStats || null,
-        scheduleEvents,
-      };
-    };
+    let hasCommittedFailedTurn = false;
 
     const removeOptimisticMessage = () => {
       setMessages((prev) =>
         prev.filter((message) => message.id !== optimisticMessage.id),
       );
+    };
+
+    const commitFailedTurnToMessages = () => {
+      if (hasCommittedFailedTurn) {
+        return;
+      }
+      hasCommittedFailedTurn = true;
+
+      const assistantContent = getPersistentFallbackAssistantText(
+        {
+          contentText: streamingViewRef.current.assistantText,
+          contentJson: {
+            scheduleEvents: streamingViewRef.current.scheduleEvents,
+          },
+        },
+        t("agent.persistentResult.generatedOutput", "已生成结果"),
+      );
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `temp-assistant-failed-${Date.now()}`,
+          conversationId: targetConversationId,
+          role: "assistant",
+          contentText: assistantContent,
+          contentJson: {
+            artifacts: [],
+            scheduleEvents: streamingViewRef.current.scheduleEvents,
+            inlineError: streamingViewRef.current.inlineError,
+          },
+          attachments: [],
+          source: "web",
+          createdAt: new Date().toISOString(),
+        },
+      ]);
     };
 
     const finalizeCompletedTurn = async () => {
@@ -1377,7 +1195,9 @@ export const AgentConversation: React.FC = () => {
       hasFinalizedCompletedTurn = true;
       turnOutcome = "completed";
       shouldAutoScrollRef.current = true;
-      const { assistantContent } = finalizeStreamingOutput();
+      const assistantContent =
+        streamingViewRef.current.assistantText.trim() ||
+        t("agent.persistentResult.generatedOutput", "已生成结果");
       upsertConversationItem({
         id: targetConversationId,
         agentId,
@@ -1407,10 +1227,10 @@ export const AgentConversation: React.FC = () => {
             }
           : prev,
       );
-      resetStreamingState();
       setIsCreatingConversation(false);
       setShowDraftPlaceholder(false);
       await syncConversationState(targetConversationId);
+      resetStreamingState();
       setIsSending(false);
     };
 
@@ -1433,18 +1253,6 @@ export const AgentConversation: React.FC = () => {
         targetConversationId,
         text || "[Attached files]",
         (chunk) => {
-          if (chunk.type === "runtime") {
-            const statusContent = getRuntimeStatusMessage(chunk, t);
-            if (statusContent) {
-              streamingDataRef.current.currentRound.statusMessages.push({
-                content: statusContent,
-                type: "start",
-                timestamp: new Date(),
-              });
-            }
-            scheduleStreamingStateSync(true);
-            return;
-          }
           if (chunk.type === "conversation_title") {
             const nextTitle = String(chunk.title || "").trim();
             if (nextTitle) {
@@ -1487,62 +1295,9 @@ export const AgentConversation: React.FC = () => {
             return;
           }
 
-          if (chunk.type === "info") {
-            const roundMatch = String(chunk.content || "").match(
-              /第\s*(\d+)\s*轮/,
-            );
-            if (roundMatch) {
-              const nextRoundNumber = parseInt(roundMatch[1], 10);
-              if (hasRoundActivity(streamingDataRef.current.currentRound)) {
-                streamingDataRef.current.rounds.push(
-                  buildRoundSnapshot(
-                    streamingDataRef.current.currentRound,
-                    streamingDataRef.current.currentRoundNumber,
-                  ),
-                );
-              }
-              streamingDataRef.current.currentRoundNumber = nextRoundNumber;
-              streamingDataRef.current.currentRound = createEmptyRoundData();
-            }
-            streamingDataRef.current.currentRound.statusMessages.push({
-              content: String(chunk.content || ""),
-              type: "info",
-              timestamp: new Date(),
-            });
-          } else if (
-            chunk.type === "start" ||
-            chunk.type === "tool_call" ||
-            chunk.type === "tool_result" ||
-            chunk.type === "tool_error" ||
-            chunk.type === "done" ||
-            chunk.type === "error"
-          ) {
-            streamingDataRef.current.currentRound.statusMessages.push({
-              content: String(chunk.content || ""),
-              type: chunk.type as StatusMessage["type"],
-              timestamp: new Date(),
-            });
-            if (chunk.type === "done") {
-              scheduleStreamingStateSync(true);
-              void finalizeCompletedTurn();
-              const activeController = abortControllerRef.current;
-              if (activeController) {
-                activeController.abort();
-              }
-              return;
-            }
-            if (chunk.type === "error") {
-              turnOutcome = "failed";
-              setError(String(chunk.content || ""));
-            }
-          } else if (chunk.type === "thinking") {
-            streamingDataRef.current.currentRound.thinking += String(
-              chunk.content || "",
-            );
-          } else if (chunk.type === "content") {
+          if (chunk.type === "content") {
             const chunkText = String(chunk.content || "");
-            const currentContent =
-              streamingDataRef.current.currentRound.content;
+            const currentContent = streamingViewRef.current.assistantText;
             const isLeadingWhitespaceOnly =
               chunkText.trim().length === 0 &&
               currentContent.trim().length === 0;
@@ -1551,15 +1306,22 @@ export const AgentConversation: React.FC = () => {
               return;
             }
 
-            streamingDataRef.current.currentRound.content += chunkText;
+            streamingViewRef.current.assistantText += chunkText;
+            streamingViewRef.current.hasContentStarted = true;
+            streamingViewRef.current.phase = null;
+            streamingViewRef.current.processDescriptor = null;
           } else if (chunk.type === "schedule_created") {
-            const scheduleEvent = normalizeScheduleCreatedEvent(chunk);
-            if (scheduleEvent) {
-              streamingDataRef.current.currentRound.scheduleEvents =
-                mergeScheduleEvents(
-                  streamingDataRef.current.currentRound.scheduleEvents,
-                  [scheduleEvent],
-                ) || [];
+            const nextScheduleEvents = mergePersistentScheduleEvents(
+              streamingViewRef.current.scheduleEvents,
+              chunk,
+            );
+            if (
+              nextScheduleEvents.length !==
+              streamingViewRef.current.scheduleEvents.length
+            ) {
+              streamingViewRef.current.scheduleEvents = nextScheduleEvents;
+              const scheduleEvent =
+                nextScheduleEvents[nextScheduleEvents.length - 1];
               addNotification({
                 type: "success",
                 title: t("schedules.page.createdTitle", "定时任务已创建"),
@@ -1567,52 +1329,38 @@ export const AgentConversation: React.FC = () => {
                 actionUrl: `/schedules/${scheduleEvent.schedule_id}`,
                 actionLabel: t("schedules.page.viewSchedule", "查看定时任务"),
               });
-              scheduleStreamingStateSync(true);
-              return;
             }
-          } else if (chunk.type === "retry_attempt") {
-            streamingDataRef.current.currentRound.retryAttempts.push({
-              retryCount: Number(chunk.retry_count || 1),
-              maxRetries: Number(chunk.max_retries || 1),
-              errorType: (chunk.error_type ||
-                "parse_error") as RetryAttempt["errorType"],
-              message: String(chunk.content || ""),
-              timestamp: new Date(),
-            });
-          } else if (chunk.type === "error_feedback") {
-            streamingDataRef.current.currentRound.errorFeedback.push({
-              errorType: String(chunk.error_type || "unknown"),
-              retryCount: Number(chunk.retry_count || 1),
-              maxRetries: Number(chunk.max_retries || 1),
-              message: String(chunk.content || ""),
-              suggestions: Array.isArray(chunk.suggestions)
-                ? chunk.suggestions.map(String)
-                : undefined,
-              timestamp: new Date(),
-            });
-          } else if (chunk.type === "round_stats") {
-            streamingDataRef.current.currentRound.stats = {
-              timeToFirstToken: Number(chunk.timeToFirstToken || 0),
-              tokensPerSecond: Number(chunk.tokensPerSecond || 0),
-              inputTokens: Number(chunk.inputTokens || 0),
-              outputTokens: Number(chunk.outputTokens || 0),
-              totalTokens:
-                Number(chunk.inputTokens || 0) +
-                Number(chunk.outputTokens || 0),
-              totalTime: Number(chunk.totalTime || 0),
-            };
-          } else if (
-            chunk.type === "stats" &&
-            !streamingDataRef.current.currentRound.stats
-          ) {
-            streamingDataRef.current.currentRound.stats = {
-              timeToFirstToken: Number(chunk.timeToFirstToken || 0),
-              tokensPerSecond: Number(chunk.tokensPerSecond || 0),
-              inputTokens: Number(chunk.inputTokens || 0),
-              outputTokens: Number(chunk.outputTokens || 0),
-              totalTokens: Number(chunk.totalTokens || 0),
-              totalTime: Number(chunk.totalTime || 0),
-            };
+          } else if (chunk.type === "error") {
+            turnOutcome = "failed";
+            streamingViewRef.current.phase = null;
+            streamingViewRef.current.processDescriptor = null;
+            streamingViewRef.current.inlineError = String(chunk.content || "");
+          } else if (chunk.type === "done") {
+            streamingViewRef.current.phase = null;
+            streamingViewRef.current.processDescriptor = null;
+            scheduleStreamingStateSync(true);
+            void finalizeCompletedTurn();
+            const activeController = abortControllerRef.current;
+            if (activeController) {
+              activeController.abort();
+            }
+            return;
+          } else {
+            const nextPhase = mapChunkToPersistentPhase(chunk);
+            const nextDescriptor = derivePersistentProcessDescriptor(chunk);
+            const resolvedPhase = nextDescriptor?.phase || nextPhase;
+            if (
+              resolvedPhase &&
+              !streamingViewRef.current.hasContentStarted
+            ) {
+              streamingViewRef.current.phase = resolvedPhase;
+            }
+            if (
+              nextDescriptor &&
+              !streamingViewRef.current.hasContentStarted
+            ) {
+              streamingViewRef.current.processDescriptor = nextDescriptor;
+            }
           }
 
           scheduleStreamingStateSync();
@@ -1620,13 +1368,10 @@ export const AgentConversation: React.FC = () => {
         (message) => {
           if (turnOutcome !== "completed") {
             turnOutcome = turnOutcome || "failed";
-            removeOptimisticMessage();
-            shouldAutoScrollRef.current = true;
-            resetStreamingState();
-            setIsCreatingConversation(false);
-            setShowDraftPlaceholder(false);
+            streamingViewRef.current.phase = null;
+            streamingViewRef.current.inlineError = message;
+            scheduleStreamingStateSync(true);
           }
-          setError(message);
         },
         () => {
           if (turnOutcome === "failed" || turnOutcome === "cancelled") {
@@ -1648,17 +1393,21 @@ export const AgentConversation: React.FC = () => {
       console.error("Failed to send conversation message:", sendError);
       if (turnOutcome !== "completed") {
         turnOutcome = turnOutcome || "failed";
-        removeOptimisticMessage();
-        setIsCreatingConversation(false);
-        setShowDraftPlaceholder(false);
-        setError(
+        streamingViewRef.current.phase = null;
+        streamingViewRef.current.inlineError =
           sendError instanceof Error
             ? sendError.message
-            : t("agent.sendMessageFailed", "Failed to send message"),
-        );
+            : t("agent.sendMessageFailed", "Failed to send message");
+        scheduleStreamingStateSync(true);
+        setIsCreatingConversation(false);
+        setShowDraftPlaceholder(false);
       }
     } finally {
-      if (turnOutcome !== "completed") {
+      if (turnOutcome === "failed") {
+        commitFailedTurnToMessages();
+        resetStreamingState();
+        setIsSending(false);
+      } else if (turnOutcome !== "completed") {
         shouldAutoScrollRef.current = true;
         await syncConversationState(targetConversationId);
         setIsSending(false);
@@ -1688,51 +1437,25 @@ export const AgentConversation: React.FC = () => {
 
   const renderedMessages = useMemo<RenderedConversationMessage[]>(() => {
     return messages.map((message) => {
-      const rawRounds = Array.isArray(message.contentJson?.rounds)
-        ? message.contentJson.rounds
-        : [];
-      const storedRounds = rawRounds.map((rawRound: any, index: number) =>
-        normalizeStoredRound(rawRound, index),
+      const artifactItems = derivePersistentArtifacts(message);
+      const scheduleItems = derivePersistentScheduleEvents(message);
+      const displayContent = getPersistentFallbackAssistantText(
+        message,
+        t("agent.persistentResult.generatedOutput", "已生成结果"),
       );
-      const topLevelScheduleEvents = Array.isArray(
-        message.contentJson?.scheduleEvents,
-      )
-        ? message.contentJson.scheduleEvents
-        : [];
-      if (topLevelScheduleEvents.length > 0) {
-        if (storedRounds.length > 0) {
-          const lastRoundIndex = storedRounds.length - 1;
-          storedRounds[lastRoundIndex] = {
-            ...storedRounds[lastRoundIndex],
-            scheduleEvents: mergeScheduleEvents(
-              storedRounds[lastRoundIndex].scheduleEvents,
-              topLevelScheduleEvents,
-            ),
-          };
-        } else {
-          storedRounds.push(
-            normalizeStoredRound(
-              {
-                roundNumber: 1,
-                scheduleEvents: topLevelScheduleEvents,
-              },
-              0,
-            ),
-          );
-        }
-      }
-      const artifactPaths = Array.isArray(message.contentJson?.artifacts)
-        ? message.contentJson.artifacts
-            .map((item: any) => normalizeWorkspaceFilePath(item?.path || ""))
-            .filter(Boolean)
-        : [];
+      const inlineError =
+        typeof message.contentJson?.inlineError === "string"
+          ? message.contentJson.inlineError
+          : null;
       return {
         ...message,
-        parsedRounds: storedRounds,
-        artifactPaths,
+        artifactItems,
+        scheduleItems,
+        displayContent,
+        inlineError,
       };
     });
-  }, [messages]);
+  }, [messages, t]);
 
   const renderHistoryMessage = useCallback(
     (message: RenderedConversationMessage) => {
@@ -1784,76 +1507,49 @@ export const AgentConversation: React.FC = () => {
       }
 
       return (
-        <div className="space-y-4">
-          {message.parsedRounds.length > 0 ? (
-            message.parsedRounds.map((round, index) => (
-              <ConversationRoundComponent
-                key={`${message.id}-round-${round.roundNumber}-${index}`}
-                round={round}
-                isLatest={index === message.parsedRounds.length - 1}
-                artifacts={[
-                  ...extractRoundArtifacts(round),
-                  ...(
-                    (index === message.parsedRounds.length - 1
-                      ? message.artifactPaths
-                      : []) as string[]
-                  ).map((path) => ({ path, confirmed: true })),
-                ].filter(
-                  (artifact, artifactIndex, allArtifacts) =>
-                    allArtifacts.findIndex(
-                      (candidate) => candidate.path === artifact.path,
-                    ) === artifactIndex,
-                )}
-                onOpenArtifact={handleOpenArtifactInWorkspace}
-                onDownloadArtifact={handleDownloadArtifact}
-                downloadingArtifactPath={downloadingArtifactPath}
-                defaultCollapsed={index < message.parsedRounds.length - 1}
-              />
-            ))
-          ) : (
-            <div className="rounded-[32px] rounded-tl-none border border-zinc-200 bg-zinc-50 px-6 py-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/40">
-              <div className="mb-4 flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
-                <Bot className="w-4 h-4 text-emerald-500" />
-                {agent?.name || "Agent"}
-              </div>
-              <div className="markdown-content">
-                <ReactMarkdown
-                  remarkPlugins={remarkPlugins}
-                  components={markdownComponents}
-                >
-                  {message.contentText}
-                </ReactMarkdown>
-              </div>
-            </div>
-          )}
-        </div>
+        <PersistentConversationAssistantMessage
+          content={message.displayContent}
+          artifactItems={message.artifactItems}
+          scheduleItems={message.scheduleItems}
+          errorText={message.inlineError}
+          onOpenArtifact={handleOpenArtifactInWorkspace}
+          onDownloadArtifact={handleDownloadArtifact}
+          downloadingArtifactPath={downloadingArtifactPath}
+        />
       );
     },
     [
-      agent?.name,
       downloadingArtifactPath,
       handleDownloadArtifact,
       handleOpenArtifactInWorkspace,
-      markdownComponents,
-      remarkPlugins,
     ],
   );
-
-  const currentStreamingRound = useMemo(() => {
-    if (!hasRoundActivity(currentRoundData)) {
-      return null;
-    }
-    return buildRoundSnapshot(currentRoundData, currentRoundNumber);
-  }, [currentRoundData, currentRoundNumber]);
 
   const shouldVirtualizeHistory =
     renderedMessages.length >= HISTORY_VIRTUALIZATION_MIN_ITEMS;
 
   const showPendingConversationCard = showDraftPlaceholder;
+  const showStreamingProcessLine =
+    isSending &&
+    Boolean(streamingProcessDescriptor) &&
+    !shouldHideProcessLine(hasStreamingContentStarted);
+  const streamingAssistantDisplayContent = getPersistentFallbackAssistantText(
+    {
+      contentText: streamingAssistantText,
+      contentJson: {
+        scheduleEvents: streamingScheduleItems,
+      },
+    },
+    t("agent.persistentResult.generatedOutput", "已生成结果"),
+  );
+  const showStreamingAssistantMessage =
+    Boolean(streamingAssistantDisplayContent.trim()) ||
+    Boolean(streamingInlineError) ||
+    streamingScheduleItems.length > 0;
   const hasVisibleConversationContent =
     renderedMessages.length > 0 ||
-    currentRounds.length > 0 ||
-    Boolean(currentStreamingRound);
+    showStreamingProcessLine ||
+    showStreamingAssistantMessage;
   const showBlockingLoading = isLoading && !hasVisibleConversationContent;
   const conversationTitle =
     pendingConversationTitle ||
@@ -2159,7 +1855,8 @@ export const AgentConversation: React.FC = () => {
                     ))
                   )}
 
-                  {(currentRounds.length > 0 || currentStreamingRound) && (
+                  {(showStreamingProcessLine ||
+                    showStreamingAssistantMessage) && (
                     <div
                       className="space-y-6"
                       style={{
@@ -2169,30 +1866,21 @@ export const AgentConversation: React.FC = () => {
                             : undefined,
                       }}
                     >
-                      {currentRounds.map((round, index) => (
-                        <ConversationRoundComponent
-                          key={`stream-round-${round.roundNumber}-${index}`}
-                          round={round}
-                          defaultCollapsed={index < currentRounds.length - 1}
-                          artifacts={extractRoundArtifacts(round)}
+                      <PersistentConversationProcessLine
+                        descriptor={streamingProcessDescriptor}
+                        isVisible={showStreamingProcessLine}
+                      />
+                      {showStreamingAssistantMessage ? (
+                        <PersistentConversationAssistantMessage
+                          content={streamingAssistantDisplayContent}
+                          artifactItems={[]}
+                          scheduleItems={streamingScheduleItems}
+                          errorText={streamingInlineError}
                           onOpenArtifact={handleOpenArtifactInWorkspace}
                           onDownloadArtifact={handleDownloadArtifact}
                           downloadingArtifactPath={downloadingArtifactPath}
                         />
-                      ))}
-                      {currentStreamingRound && (
-                        <ConversationRoundComponent
-                          round={currentStreamingRound}
-                          isLatest
-                          isStreaming={isSending}
-                          artifacts={extractRoundArtifacts(
-                            currentStreamingRound,
-                          )}
-                          onOpenArtifact={handleOpenArtifactInWorkspace}
-                          onDownloadArtifact={handleDownloadArtifact}
-                          downloadingArtifactPath={downloadingArtifactPath}
-                        />
-                      )}
+                      ) : null}
                     </div>
                   )}
 
@@ -2202,8 +1890,8 @@ export const AgentConversation: React.FC = () => {
                       style={{
                         marginTop:
                           renderedMessages.length > 0 ||
-                          currentRounds.length > 0 ||
-                          Boolean(currentStreamingRound)
+                          showStreamingProcessLine ||
+                          showStreamingAssistantMessage
                             ? `${HISTORY_MESSAGE_GAP_PX}px`
                             : undefined,
                       }}

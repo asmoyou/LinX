@@ -263,6 +263,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.warning(f"Failed to initialize Feishu long-connection manager: {e}")
 
     try:
+        from api_gateway.routers.integrations import initialize_feishu_file_delivery_retry_service
+
+        await initialize_feishu_file_delivery_retry_service()
+        logger.info("Feishu file delivery retry service initialized")
+    except Exception as e:
+        logger.warning(f"Failed to initialize Feishu file delivery retry service: {e}")
+
+    try:
         from user_memory.conversation_memory_manager import initialize_conversation_memory_manager
 
         manager = await initialize_conversation_memory_manager()
@@ -466,6 +474,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.info("Feishu long-connection manager shutdown complete")
     except Exception as e:
         logger.error(f"Failed to shutdown Feishu long-connection manager: {e}")
+
+    try:
+        from api_gateway.routers.integrations import shutdown_feishu_file_delivery_retry_service
+
+        await shutdown_feishu_file_delivery_retry_service()
+        logger.info("Feishu file delivery retry service shutdown complete")
+    except Exception as e:
+        logger.error(f"Failed to shutdown Feishu file delivery retry service: {e}")
 
     # Stop projection maintenance manager
     try:
