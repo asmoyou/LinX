@@ -165,6 +165,35 @@ async def test_end_session_triggers_callbacks_with_buffered_turns(monkeypatch, t
 
 
 @pytest.mark.asyncio
+async def test_resuming_session_for_different_agent_creates_new_session(monkeypatch, tmp_path):
+    """A session id must not resume another agent's workspace for the same user."""
+    monkeypatch.setattr(SessionManager, "_check_docker_availability", lambda self: False)
+    manager = SessionManager(base_workdir=str(tmp_path), use_sandbox_by_default=False)
+
+    user_id = uuid4()
+    first_agent_id = uuid4()
+    second_agent_id = uuid4()
+
+    first_session, first_is_new = await manager.get_or_create_session(
+        agent_id=first_agent_id,
+        user_id=user_id,
+        use_sandbox=False,
+    )
+    resumed_session, resumed_is_new = await manager.get_or_create_session(
+        agent_id=second_agent_id,
+        user_id=user_id,
+        session_id=first_session.session_id,
+        use_sandbox=False,
+    )
+
+    assert first_is_new is True
+    assert resumed_is_new is True
+    assert resumed_session.session_id != first_session.session_id
+    assert resumed_session.agent_id == second_agent_id
+    assert manager.get_session(first_session.session_id) is first_session
+
+
+@pytest.mark.asyncio
 async def test_expired_cleanup_triggers_callbacks(monkeypatch, tmp_path):
     """Expired session cleanup should trigger callbacks with reason=expired."""
     monkeypatch.setattr(SessionManager, "_check_docker_availability", lambda self: False)

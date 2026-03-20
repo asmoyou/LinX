@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import io
 import json
 import logging
@@ -45,6 +46,7 @@ from agent_framework.conversation_history_compaction import (
 from agent_framework.conversation_storage_cleanup import (
     collect_conversation_storage_refs,
     delete_object_references,
+    extract_attachment_storage_refs,
 )
 from agent_framework.conversation_workspace_decay import get_conversation_workspace_decay_service
 from agent_framework.persistent_conversations import (
@@ -866,6 +868,45 @@ def _persist_message(
         return message
 
 
+def _delete_message_and_cleanup_storage(message_id: UUID) -> bool:
+    attachment_refs: set[str] = set()
+    with get_db_session() as session:
+        message = (
+            session.query(AgentConversationMessage)
+            .filter(AgentConversationMessage.message_id == message_id)
+            .first()
+        )
+        if message is None:
+            return False
+
+        attachment_refs = extract_attachment_storage_refs(message.attachments_json)
+        conversation = (
+            session.query(AgentConversation)
+            .filter(AgentConversation.conversation_id == message.conversation_id)
+            .first()
+        )
+
+        session.delete(message)
+        session.flush()
+
+        latest_message = (
+            session.query(AgentConversationMessage)
+            .filter(AgentConversationMessage.conversation_id == message.conversation_id)
+            .order_by(AgentConversationMessage.created_at.desc())
+            .first()
+        )
+        if conversation is not None:
+            conversation.last_message_at = (
+                latest_message.created_at if latest_message and latest_message.created_at else None
+            )
+            conversation.updated_at = datetime.now(timezone.utc)
+        session.commit()
+
+    if attachment_refs:
+        delete_object_references(attachment_refs)
+    return True
+
+
 def _update_conversation_title(conversation_id: UUID, title: str) -> None:
     normalized = " ".join(str(title or "").split()).strip()
     if not normalized:
@@ -1004,6 +1045,19 @@ async def execute_persistent_conversation_turn(
     runtime_service = get_persistent_conversation_runtime_service()
     runtime, is_new_runtime = await runtime_service.get_or_create_runtime(conversation=conversation)
     await _emit_chunk(chunk_callback, _build_runtime_chunk(runtime, is_new_runtime=is_new_runtime))
+    input_message_row: AgentConversationMessage | None = None
+    assistant_message_row: AgentConversationMessage | None = None
+    uploaded_attachment_refs: set[str] = set()
+
+    def cleanup_incomplete_turn() -> None:
+        if assistant_message_row is not None:
+            return
+        if input_message_row is not None:
+            _delete_message_and_cleanup_storage(input_message_row.message_id)
+            return
+        if uploaded_attachment_refs:
+            delete_object_references(uploaded_attachment_refs)
+
     try:
         from agent_framework.conversation_workspace_decay import (
             ConversationWorkspaceLimitExceeded,
@@ -1061,7 +1115,7 @@ async def execute_persistent_conversation_turn(
         files=files,
     )
     attachments_payload = _normalize_attachments_for_storage(file_refs)
-    input_message_row: AgentConversationMessage | None = None
+    uploaded_attachment_refs = extract_attachment_storage_refs(attachments_payload)
     if persist_input_message:
         input_message_row = _persist_message(
             conversation_id=conversation.conversation_id,
@@ -1270,93 +1324,112 @@ async def execute_persistent_conversation_turn(
 
     exec_thread = threading.Thread(target=execute_agent, daemon=True)
     exec_thread.start()
+    try:
+        while True:
+            try:
+                token_data = await asyncio.to_thread(token_queue.get, True, 0.1)
+                if token_data is None:
+                    break
+                if isinstance(token_data, tuple):
+                    token, content_type = token_data
+                else:
+                    token = token_data
+                    content_type = "content"
+                if content_type == "round_stats":
+                    try:
+                        stats_data = json.loads(token)
+                        stats_data["type"] = "round_stats"
+                        current_round_data["stats"] = {
+                            "timeToFirstToken": stats_data.get("timeToFirstToken", 0),
+                            "tokensPerSecond": stats_data.get("tokensPerSecond", 0),
+                            "inputTokens": stats_data.get("inputTokens", 0),
+                            "outputTokens": stats_data.get("outputTokens", 0),
+                            "totalTokens": (stats_data.get("inputTokens", 0) or 0)
+                            + (stats_data.get("outputTokens", 0) or 0),
+                            "totalTime": stats_data.get("totalTime", 0),
+                        }
+                        await _emit_chunk(chunk_callback, stats_data)
+                    except json.JSONDecodeError:
+                        logger.warning("Invalid round_stats payload: %s", token)
+                else:
+                    token_text = str(token or "")
+                    if content_type == "info":
+                        round_match = re.search(r"第\s*(\d+)\s*轮", token_text)
+                        if round_match:
+                            new_round_number = int(round_match.group(1))
+                            if has_round_activity(current_round_data):
+                                persisted_rounds.append(
+                                    build_round_snapshot(current_round_data, current_round_number)
+                                )
+                            current_round_number = new_round_number
+                            current_round_data = create_empty_round_data()
+                        current_round_data["statusMessages"].append(
+                            {
+                                "content": token_text,
+                                "type": "info",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
+                    elif content_type in {
+                        "start",
+                        "tool_call",
+                        "tool_result",
+                        "tool_error",
+                        "done",
+                        "error",
+                    }:
+                        current_round_data["statusMessages"].append(
+                            {
+                                "content": token_text,
+                                "type": content_type,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
+                    elif content_type == "retry_attempt":
+                        current_round_data["retryAttempts"].append(
+                            {
+                                "message": token_text,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
+                    elif content_type == "error_feedback":
+                        current_round_data["errorFeedback"].append(
+                            {
+                                "message": token_text,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
+                    elif content_type == "thinking":
+                        current_round_data["thinking"] += token_text
+                    elif content_type == "content":
+                        current_round_data["content"] += token_text
+                    await _emit_chunk(chunk_callback, {"type": content_type, "content": token})
+            except queue.Empty:
+                if not exec_thread.is_alive():
+                    break
+                continue
+    except asyncio.CancelledError:
+        if hasattr(agent, "request_cancellation"):
+            try:
+                agent.request_cancellation("client stream cancelled")
+            except Exception as cancel_error:
+                logger.warning(
+                    "Failed to signal persistent conversation cancellation: %s",
+                    cancel_error,
+                    extra={"conversation_id": str(conversation.conversation_id)},
+                )
+        cleanup_incomplete_turn()
+        raise
+    finally:
+        await asyncio.to_thread(exec_thread.join, 5)
+        if exec_thread.is_alive():
+            logger.warning(
+                "Persistent conversation execution thread still running after cancellation",
+                extra={"conversation_id": str(conversation.conversation_id)},
+            )
 
-    while True:
-        try:
-            token_data = await asyncio.to_thread(token_queue.get, True, 0.1)
-            if token_data is None:
-                break
-            if isinstance(token_data, tuple):
-                token, content_type = token_data
-            else:
-                token = token_data
-                content_type = "content"
-            if content_type == "round_stats":
-                try:
-                    stats_data = json.loads(token)
-                    stats_data["type"] = "round_stats"
-                    current_round_data["stats"] = {
-                        "timeToFirstToken": stats_data.get("timeToFirstToken", 0),
-                        "tokensPerSecond": stats_data.get("tokensPerSecond", 0),
-                        "inputTokens": stats_data.get("inputTokens", 0),
-                        "outputTokens": stats_data.get("outputTokens", 0),
-                        "totalTokens": (stats_data.get("inputTokens", 0) or 0)
-                        + (stats_data.get("outputTokens", 0) or 0),
-                        "totalTime": stats_data.get("totalTime", 0),
-                    }
-                    await _emit_chunk(chunk_callback, stats_data)
-                except json.JSONDecodeError:
-                    logger.warning("Invalid round_stats payload: %s", token)
-            else:
-                token_text = str(token or "")
-                if content_type == "info":
-                    round_match = re.search(r"第\s*(\d+)\s*轮", token_text)
-                    if round_match:
-                        new_round_number = int(round_match.group(1))
-                        if has_round_activity(current_round_data):
-                            persisted_rounds.append(
-                                build_round_snapshot(current_round_data, current_round_number)
-                            )
-                        current_round_number = new_round_number
-                        current_round_data = create_empty_round_data()
-                    current_round_data["statusMessages"].append(
-                        {
-                            "content": token_text,
-                            "type": "info",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-                elif content_type in {
-                    "start",
-                    "tool_call",
-                    "tool_result",
-                    "tool_error",
-                    "done",
-                    "error",
-                }:
-                    current_round_data["statusMessages"].append(
-                        {
-                            "content": token_text,
-                            "type": content_type,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-                elif content_type == "retry_attempt":
-                    current_round_data["retryAttempts"].append(
-                        {
-                            "message": token_text,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-                elif content_type == "error_feedback":
-                    current_round_data["errorFeedback"].append(
-                        {
-                            "message": token_text,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-                elif content_type == "thinking":
-                    current_round_data["thinking"] += token_text
-                elif content_type == "content":
-                    current_round_data["content"] += token_text
-                await _emit_chunk(chunk_callback, {"type": content_type, "content": token})
-        except queue.Empty:
-            if not exec_thread.is_alive():
-                break
-            continue
-
-    await asyncio.to_thread(exec_thread.join, 5)
     if error_holder[0]:
+        cleanup_incomplete_turn()
         await _emit_chunk(chunk_callback, {"type": "error", "content": f"Error: {error_holder[0]}"})
         raise RuntimeError(error_holder[0])
 
@@ -1408,9 +1481,11 @@ async def execute_persistent_conversation_turn(
     if has_round_activity(current_round_data):
         persisted_rounds.append(build_round_snapshot(current_round_data, current_round_number))
     schedule_events_payload = [
-        build_schedule_created_event(event)
-        if "schedule_id" not in event and "id" in event
-        else dict(event)
+        (
+            build_schedule_created_event(event)
+            if "schedule_id" not in event and "id" in event
+            else dict(event)
+        )
         for event in list(created_schedule_events[0] or [])
     ]
     if schedule_events_payload:
@@ -1722,8 +1797,14 @@ async def send_agent_conversation_message(
                 if item is done_marker:
                     break
                 yield item
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
         finally:
-            await task
+            if not task.done():
+                task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     return StreamingResponse(
         generate_stream(),

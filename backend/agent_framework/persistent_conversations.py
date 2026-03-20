@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
+from agent_framework.sandbox_policy import allow_host_execution_fallback
 from database.connection import get_db_session
 from database.models import AgentConversation, AgentConversationSnapshot
 from object_storage.minio_client import get_minio_client
@@ -656,8 +657,18 @@ class PersistentConversationRuntimeService:
 
         session_manager = get_session_manager()
         if not self.use_sandbox_by_default:
+            if not allow_host_execution_fallback():
+                raise RuntimeError(
+                    "Host execution fallback is disabled by sandbox isolation policy; "
+                    "persistent conversations must run in a sandbox."
+                )
             return None, False
         if not getattr(session_manager, "_docker_available", False):
+            if not allow_host_execution_fallback():
+                raise RuntimeError(
+                    "Docker not available for required persistent conversation sandbox "
+                    f"(conversation_id={conversation_id})"
+                )
             return None, False
 
         try:
@@ -696,9 +707,19 @@ class PersistentConversationRuntimeService:
             started = container_manager.start_container(container_id)
             if not started:
                 container_manager.terminate_container(container_id)
+                if not allow_host_execution_fallback():
+                    raise RuntimeError(
+                        "Failed to start required persistent conversation sandbox "
+                        f"(conversation_id={conversation_id})"
+                    )
                 return None, False
             return container_id, True
         except Exception as exc:
+            if not allow_host_execution_fallback():
+                raise RuntimeError(
+                    "Failed to acquire persistent conversation sandbox "
+                    f"(conversation_id={conversation_id}): {exc}"
+                ) from exc
             logger.warning("Failed to acquire persistent conversation sandbox: %s", exc)
             return None, False
 

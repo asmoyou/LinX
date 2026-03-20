@@ -419,6 +419,12 @@ class SessionManager:
                     extra={"session_user": str(session.user_id), "request_user": str(user_id)},
                 )
                 # Create new session instead
+            elif session.agent_id != agent_id:
+                logger.warning(
+                    f"Session {session_id} belongs to different agent",
+                    extra={"session_agent": str(session.agent_id), "request_agent": str(agent_id)},
+                )
+                # Create new session instead
             elif session.is_expired():
                 logger.info(f"Session {session_id} has expired, creating new one")
                 await self.end_session(session_id, user_id)

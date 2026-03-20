@@ -244,3 +244,31 @@ def test_cleanup_orphaned_persistent_sandboxes_force_remove_ignores_age(
 
     assert removed == 1
     assert recent.removed is True
+
+
+@pytest.mark.asyncio
+async def test_persistent_runtime_creation_fails_closed_when_sandbox_required(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LINX_ALLOW_HOST_EXECUTION_FALLBACK", "0")
+    monkeypatch.setenv("LINX_ENFORCE_SANDBOX_ISOLATION", "1")
+    monkeypatch.setattr(
+        "agent_framework.session_manager.get_session_manager",
+        lambda: SimpleNamespace(_docker_available=False),
+    )
+
+    service = PersistentConversationRuntimeService(
+        base_workdir=str(tmp_path),
+        use_sandbox_by_default=True,
+    )
+    monkeypatch.setattr(service, "_get_latest_ready_snapshot", lambda _conversation_id: None)
+
+    conversation = SimpleNamespace(
+        conversation_id=uuid4(),
+        agent_id=uuid4(),
+        owner_user_id=uuid4(),
+    )
+
+    with pytest.raises(RuntimeError, match="Docker not available"):
+        await service.get_or_create_runtime(conversation=conversation)

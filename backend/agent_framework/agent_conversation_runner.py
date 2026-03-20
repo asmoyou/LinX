@@ -30,8 +30,8 @@ _REASONING_TITLE_MARKERS = (
     "对话命名助手",
     "output format",
     "single line json",
-    "{\"title\"",
-    "`{\"title\"",
+    '{"title"',
+    '`{"title"',
     "json format",
     "task:",
     "task：",
@@ -81,6 +81,7 @@ async def initialize_chat_agent(
     max_iterations: int = 20,
 ) -> BaseAgent:
     """Create and initialize a BaseAgent for chat execution."""
+    llm, resolved_context_window_tokens = _build_llm_and_context_for_agent(agent_info)
     config = AgentConfig(
         agent_id=agent_info.agent_id,
         name=agent_info.name,
@@ -93,11 +94,112 @@ async def initialize_chat_agent(
         temperature=agent_info.temperature or 0.7,
         max_iterations=max_iterations,
         system_prompt=agent_info.system_prompt,
+        context_window_tokens=resolved_context_window_tokens,
     )
     agent = BaseAgent(config)
-    agent.llm = _build_llm_for_agent(agent_info)
+    agent.llm = llm
     await agent.initialize()
     return agent
+
+
+def _to_positive_int(value: object) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _resolve_model_context_window(
+    provider: object,
+    provider_name: str,
+    model_name: str,
+) -> Optional[int]:
+    if provider and getattr(provider, "model_metadata", None):
+        model_metadata = getattr(provider, "model_metadata", {}) or {}
+        if model_name in model_metadata:
+            metadata = model_metadata.get(model_name) or {}
+            context_window = _to_positive_int(
+                metadata.get("context_window") or metadata.get("context_length")
+            )
+            if context_window:
+                return context_window
+
+    try:
+        from llm_providers.model_metadata import EnhancedModelCapabilityDetector
+
+        detector = EnhancedModelCapabilityDetector()
+        detected = detector.detect_metadata(model_name, provider_name)
+        return _to_positive_int(detected.context_window)
+    except Exception as detect_error:
+        logger.warning(
+            "Failed to resolve chat agent model context window: %s",
+            detect_error,
+        )
+        return None
+
+
+def _build_llm_and_context_for_agent(
+    agent_info,
+    *,
+    streaming: bool = True,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+) -> tuple[CustomOpenAIChat, Optional[int]]:
+    from database.connection import get_db_session
+    from llm_providers.db_manager import ProviderDBManager
+
+    provider_name = agent_info.llm_provider or "ollama"
+    model_name = agent_info.llm_model or "llama3.2:latest"
+    resolved_temperature = (
+        temperature if temperature is not None else (agent_info.temperature or 0.7)
+    )
+    resolved_max_tokens = max_tokens if max_tokens is not None else agent_info.max_tokens
+
+    with get_db_session() as db:
+        db_manager = ProviderDBManager(db)
+        db_provider = db_manager.get_provider(provider_name)
+        if not db_provider or not db_provider.enabled:
+            raise ValueError(f"Provider '{provider_name}' not found or disabled")
+
+        context_window_tokens = _resolve_model_context_window(
+            provider=db_provider,
+            provider_name=provider_name,
+            model_name=model_name,
+        )
+
+        if db_provider.protocol == "openai_compatible":
+            api_key: Optional[str] = None
+            if db_provider.api_key_encrypted:
+                api_key = db_manager._decrypt_api_key(db_provider.api_key_encrypted)
+            return (
+                CustomOpenAIChat(
+                    base_url=db_provider.base_url,
+                    model=model_name,
+                    temperature=resolved_temperature,
+                    api_key=api_key,
+                    timeout=db_provider.timeout,
+                    max_retries=db_provider.max_retries,
+                    max_tokens=resolved_max_tokens,
+                    streaming=streaming,
+                ),
+                context_window_tokens,
+            )
+
+        if db_provider.protocol == "ollama":
+            return (
+                CustomOpenAIChat(
+                    base_url=db_provider.base_url,
+                    model=model_name,
+                    temperature=resolved_temperature,
+                    max_tokens=resolved_max_tokens,
+                    api_key=None,
+                    streaming=streaming,
+                ),
+                context_window_tokens,
+            )
+
+    raise ValueError(f"Could not create LLM for provider: {provider_name}")
 
 
 def _build_llm_for_agent(
@@ -107,46 +209,13 @@ def _build_llm_for_agent(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> CustomOpenAIChat:
-    from database.connection import get_db_session
-    from llm_providers.db_manager import ProviderDBManager
-
-    provider_name = agent_info.llm_provider or "ollama"
-    model_name = agent_info.llm_model or "llama3.2:latest"
-    resolved_temperature = temperature if temperature is not None else (agent_info.temperature or 0.7)
-    resolved_max_tokens = max_tokens if max_tokens is not None else agent_info.max_tokens
-
-    with get_db_session() as db:
-        db_manager = ProviderDBManager(db)
-        db_provider = db_manager.get_provider(provider_name)
-        if not db_provider or not db_provider.enabled:
-            raise ValueError(f"Provider '{provider_name}' not found or disabled")
-
-        if db_provider.protocol == "openai_compatible":
-            api_key: Optional[str] = None
-            if db_provider.api_key_encrypted:
-                api_key = db_manager._decrypt_api_key(db_provider.api_key_encrypted)
-            return CustomOpenAIChat(
-                base_url=db_provider.base_url,
-                model=model_name,
-                temperature=resolved_temperature,
-                api_key=api_key,
-                timeout=db_provider.timeout,
-                max_retries=db_provider.max_retries,
-                max_tokens=resolved_max_tokens,
-                streaming=streaming,
-            )
-
-        if db_provider.protocol == "ollama":
-            return CustomOpenAIChat(
-                base_url=db_provider.base_url,
-                model=model_name,
-                temperature=resolved_temperature,
-                max_tokens=resolved_max_tokens,
-                api_key=None,
-                streaming=streaming,
-            )
-
-    raise ValueError(f"Could not create LLM for provider: {provider_name}")
+    llm, _ = _build_llm_and_context_for_agent(
+        agent_info,
+        streaming=streaming,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return llm
 
 
 def _sanitize_generated_title(raw_title: object, max_chars: int = 60) -> str:
@@ -167,14 +236,14 @@ def _sanitize_generated_title(raw_title: object, max_chars: int = 60) -> str:
         normalized = " ".join(line.split()).strip()
         normalized = re.sub(r"^[#>*\-\d.\s]+", "", normalized)
         normalized = re.sub(r"^(?:标题|title)\s*[:：-]\s*", "", normalized, flags=re.IGNORECASE)
-        normalized = normalized.strip(' \'"`“”‘’#*_[](){}<>-:：;；,.!?！？。')
+        normalized = normalized.strip(" '\"`“”‘’#*_[](){}<>-:：;；,.!?！？。")
         if normalized:
             lines.append(normalized)
 
     candidates = [line for line in lines if not _looks_like_reasoning_title(line)]
     title = candidates[0] if candidates else ""
     if len(title) > max_chars:
-        title = title[:max_chars].rstrip(' \'"`“”‘’#*_[](){}<>-:：;；,.!?！？。')
+        title = title[:max_chars].rstrip(" '\"`“”‘’#*_[](){}<>-:：;；,.!?！？。")
     return title
 
 
@@ -217,7 +286,9 @@ def _fallback_title_from_user_message(user_message: str) -> Optional[str]:
         return None
 
     if re.search(r"[\u4e00-\u9fff]", text):
-        simplified = re.sub(r"^(你好|您好|请问|麻烦|帮我|可以|能不能|我想知道|我想了解)[，,\s]*", "", text)
+        simplified = re.sub(
+            r"^(你好|您好|请问|麻烦|帮我|可以|能不能|我想知道|我想了解)[，,\s]*", "", text
+        )
         if simplified.startswith("怎么"):
             simplified = f"如何{simplified[2:]}"
         elif simplified.startswith("如何"):
