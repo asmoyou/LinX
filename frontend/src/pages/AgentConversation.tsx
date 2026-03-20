@@ -25,6 +25,7 @@ import {
 import { ConversationRoundComponent, type ConversationRoundArtifact } from '@/components/workforce/ConversationRound';
 import { createMarkdownComponents } from '@/components/workforce/CodeBlock';
 import { SessionWorkspacePanel } from '@/components/workforce/SessionWorkspacePanel';
+import { getRuntimeStatusMessage } from '@/pages/agentConversationRuntime';
 import { useNotificationStore } from '@/stores';
 import type {
   Agent,
@@ -743,14 +744,14 @@ export const AgentConversation: React.FC = () => {
         text || '[Attached files]',
         (chunk) => {
           if (chunk.type === 'runtime') {
-            const statusContent = chunk.restored_from_snapshot
-              ? t('agent.runtimeRestored', 'Runtime restored from the latest snapshot.')
-              : t('agent.runtimeFresh', 'Runtime started for this conversation.');
-            roundStateRef.current.currentRound.statusMessages.push({
-              content: statusContent,
-              type: 'start',
-              timestamp: new Date(),
-            });
+            const statusContent = getRuntimeStatusMessage(chunk, t);
+            if (statusContent) {
+              roundStateRef.current.currentRound.statusMessages.push({
+                content: statusContent,
+                type: 'start',
+                timestamp: new Date(),
+              });
+            }
             setCurrentRoundData({ ...roundStateRef.current.currentRound });
             return;
           }

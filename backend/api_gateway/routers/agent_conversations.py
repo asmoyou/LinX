@@ -811,6 +811,21 @@ def _conversation_context_origin_surface(
     return "feishu" if _message_source_label(source) == "feishu" else "persistent_chat"
 
 
+def _build_runtime_chunk(
+    runtime: Any,
+    *,
+    is_new_runtime: bool,
+) -> Dict[str, Any]:
+    return {
+        "type": "runtime",
+        "runtime_session_id": runtime.runtime_session_id,
+        "is_new_runtime": bool(is_new_runtime),
+        "restored_from_snapshot": bool(is_new_runtime and runtime.restored_from_snapshot),
+        "snapshot_generation": runtime.snapshot_generation,
+        "use_sandbox": runtime.use_sandbox,
+    }
+
+
 def _persist_message(
     *,
     conversation_id: UUID,
@@ -987,17 +1002,8 @@ async def execute_persistent_conversation_turn(
     principal_user_id = UUID(principal.user_id)
     history, history_window = await _build_conversation_history(conversation.conversation_id)
     runtime_service = get_persistent_conversation_runtime_service()
-    runtime, _ = await runtime_service.get_or_create_runtime(conversation=conversation)
-    await _emit_chunk(
-        chunk_callback,
-        {
-            "type": "runtime",
-            "runtime_session_id": runtime.runtime_session_id,
-            "restored_from_snapshot": runtime.restored_from_snapshot,
-            "snapshot_generation": runtime.snapshot_generation,
-            "use_sandbox": runtime.use_sandbox,
-        },
-    )
+    runtime, is_new_runtime = await runtime_service.get_or_create_runtime(conversation=conversation)
+    await _emit_chunk(chunk_callback, _build_runtime_chunk(runtime, is_new_runtime=is_new_runtime))
     try:
         from agent_framework.conversation_workspace_decay import (
             ConversationWorkspaceLimitExceeded,

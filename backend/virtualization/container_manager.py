@@ -81,6 +81,7 @@ class ContainerConfig:
 
     # Environment variables
     environment: Dict[str, str] = field(default_factory=dict)
+    labels: Dict[str, str] = field(default_factory=dict)
 
     # Platform-specific settings
     seccomp_profile: Optional[str] = None  # Linux only
@@ -116,6 +117,14 @@ class ContainerConfig:
         }
         if self.agent_id is not None:
             labels["com.linx.agent_id"] = str(self.agent_id)
+        if self.labels:
+            labels.update(
+                {
+                    str(key): str(value)
+                    for key, value in self.labels.items()
+                    if str(key).strip() and value is not None
+                }
+            )
 
         config = {
             "image": self.image,

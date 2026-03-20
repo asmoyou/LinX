@@ -505,6 +505,7 @@ class TestContainerConfig:
             agent_id=uuid4(),
             name="test-container",
             image="test-image:latest",
+            labels={"com.linx.runtime_scope": "persistent_conversation"},
         )
 
         docker_config = config.to_docker_config()
@@ -518,6 +519,7 @@ class TestContainerConfig:
         assert docker_config["labels"]["com.linx.type"] == "sandbox"
         assert docker_config["labels"]["com.linx.container_id"] == config.container_id
         assert docker_config["labels"]["com.linx.agent_id"] == str(config.agent_id)
+        assert docker_config["labels"]["com.linx.runtime_scope"] == "persistent_conversation"
 
 
 class TestDockerCleanupManager:

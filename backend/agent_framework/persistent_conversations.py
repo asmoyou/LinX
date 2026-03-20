@@ -24,6 +24,9 @@ from shared.secret_crypto import sha256_text
 
 logger = logging.getLogger(__name__)
 
+_PERSISTENT_CONVERSATION_SANDBOX_SCOPE = "persistent_conversation"
+_PERSISTENT_CONVERSATION_CONTAINER_PREFIX = "conversation-"
+
 _WORKSPACE_INLINE_PREVIEW_EXTENSIONS = {
     ".txt",
     ".md",
@@ -49,6 +52,35 @@ _WORKSPACE_INLINE_PREVIEW_EXTENSIONS = {
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _parse_docker_timestamp(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    match = re.match(
+        r"^(?P<prefix>.+?)(?P<fraction>\.\d+)?(?P<suffix>Z|[+-]\d{2}:\d{2})?$",
+        raw,
+    )
+    if not match:
+        return None
+
+    prefix = match.group("prefix")
+    fraction = match.group("fraction") or ""
+    suffix = match.group("suffix") or ""
+    if fraction:
+        fraction = f".{fraction[1:7]}"
+    if suffix == "Z":
+        suffix = "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(f"{prefix}{fraction}{suffix}")
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _cfg_bool(value: Any, default: bool) -> bool:
@@ -285,6 +317,21 @@ class PersistentConversationRuntimeService:
         if self._cleanup_task and not self._cleanup_task.done():
             return
         self._shutdown = False
+        try:
+            removed = await asyncio.to_thread(
+                self._cleanup_orphaned_sandboxes,
+                True,
+            )
+            if removed > 0:
+                logger.info(
+                    "Cleaned orphaned persistent conversation sandboxes on startup",
+                    extra={"count": removed},
+                )
+        except Exception as exc:
+            logger.warning(
+                "Failed to clean orphaned persistent conversation sandboxes on startup: %s",
+                exc,
+            )
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
     async def shutdown(self) -> None:
@@ -305,6 +352,12 @@ class PersistentConversationRuntimeService:
                 for runtime in list(self._runtimes.values()):
                     if runtime.is_expired(self.ttl_minutes):
                         await self.release_runtime(runtime.conversation_id, reason="expired")
+                removed = await asyncio.to_thread(self._cleanup_orphaned_sandboxes, False)
+                if removed > 0:
+                    logger.info(
+                        "Cleaned orphaned persistent conversation sandboxes",
+                        extra={"count": removed},
+                    )
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -346,7 +399,12 @@ class PersistentConversationRuntimeService:
             restored = True
             generation = int(latest_ready_snapshot.generation or 0)
 
-        sandbox_id, use_sandbox = await self._acquire_sandbox(conversation.agent_id, workdir)
+        sandbox_id, use_sandbox = await self._acquire_sandbox(
+            conversation_id=conversation.conversation_id,
+            agent_id=conversation.agent_id,
+            workdir=workdir,
+            runtime_session_id=runtime_id,
+        )
         runtime = PersistentConversationRuntime(
             conversation_id=conversation.conversation_id,
             agent_id=conversation.agent_id,
@@ -484,7 +542,116 @@ class PersistentConversationRuntimeService:
         _safe_extract_tar_bytes(archive_stream.read(), workdir)
         _ensure_runtime_dirs(workdir)
 
-    async def _acquire_sandbox(self, agent_id: UUID, workdir: Path) -> tuple[Optional[str], bool]:
+    def _cleanup_orphaned_sandboxes(self, force_remove: bool = False) -> int:
+        from virtualization.container_manager import get_container_manager, get_docker_cleanup_manager
+
+        cleanup_manager = get_docker_cleanup_manager()
+        if not cleanup_manager.docker_available or cleanup_manager.docker_client is None:
+            return 0
+
+        try:
+            containers = cleanup_manager.docker_client.containers.list(
+                all=True,
+                filters={"label": ["com.linx.managed=true", "com.linx.type=sandbox"]},
+            )
+        except Exception as exc:
+            logger.warning("Failed to inspect sandbox containers for orphan cleanup: %s", exc)
+            return 0
+
+        active_sandbox_ids = {
+            str(runtime.sandbox_id).strip()
+            for runtime in self._runtimes.values()
+            if str(runtime.sandbox_id or "").strip()
+        }
+        cutoff = utcnow() - timedelta(seconds=max(self.cleanup_interval_seconds, 60))
+        container_manager = get_container_manager()
+        removed = 0
+
+        for container in containers:
+            labels = self._get_container_labels(container)
+            internal_id = str(labels.get("com.linx.container_id") or "").strip()
+            if internal_id and internal_id in active_sandbox_ids:
+                continue
+            if not self._is_persistent_conversation_sandbox(container, labels):
+                continue
+            if not force_remove and not self._is_container_older_than(container, cutoff):
+                continue
+
+            try:
+                container.remove(force=True)
+                if internal_id:
+                    container_manager.containers.pop(internal_id, None)
+                removed += 1
+                logger.info(
+                    "Removed orphaned persistent conversation sandbox",
+                    extra={
+                        "sandbox_id": internal_id or None,
+                        "container_name": str(getattr(container, "name", "") or ""),
+                        "force_remove": force_remove,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to remove orphaned persistent conversation sandbox %s: %s",
+                    internal_id or getattr(container, "name", "unknown"),
+                    exc,
+                )
+
+        return removed
+
+    @staticmethod
+    def _get_container_labels(container: Any) -> dict[str, str]:
+        raw_labels = getattr(container, "labels", None)
+        if not isinstance(raw_labels, dict):
+            attrs = getattr(container, "attrs", None)
+            if not isinstance(attrs, dict) or not attrs:
+                try:
+                    container.reload()
+                except Exception:
+                    pass
+                attrs = getattr(container, "attrs", None)
+            if isinstance(attrs, dict):
+                raw_labels = ((attrs.get("Config") or {}).get("Labels") or {})
+        if not isinstance(raw_labels, dict):
+            return {}
+        return {str(key): str(value) for key, value in raw_labels.items() if value is not None}
+
+    @staticmethod
+    def _is_persistent_conversation_sandbox(container: Any, labels: dict[str, str]) -> bool:
+        if str(labels.get("com.linx.runtime_scope") or "").strip() == (
+            _PERSISTENT_CONVERSATION_SANDBOX_SCOPE
+        ):
+            return True
+        container_name = str(getattr(container, "name", "") or "").lstrip("/")
+        return container_name.startswith(_PERSISTENT_CONVERSATION_CONTAINER_PREFIX)
+
+    @staticmethod
+    def _is_container_older_than(container: Any, cutoff: datetime) -> bool:
+        attrs = getattr(container, "attrs", None)
+        if not isinstance(attrs, dict) or not attrs:
+            try:
+                container.reload()
+            except Exception:
+                return False
+            attrs = getattr(container, "attrs", None)
+        if not isinstance(attrs, dict):
+            return False
+
+        created_at = _parse_docker_timestamp(
+            ((attrs.get("State") or {}).get("StartedAt")) or attrs.get("Created")
+        )
+        if created_at is None:
+            return False
+        return created_at <= cutoff
+
+    async def _acquire_sandbox(
+        self,
+        *,
+        conversation_id: UUID,
+        agent_id: UUID,
+        workdir: Path,
+        runtime_session_id: str,
+    ) -> tuple[Optional[str], bool]:
         from agent_framework.session_manager import get_session_manager
 
         session_manager = get_session_manager()
@@ -516,6 +683,11 @@ class PersistentConversationRuntimeService:
                     "PYTHONPATH": "/workspace/.linx_runtime/python_deps",
                     "PYTHONNOUSERSITE": "1",
                     "PIP_USER": "0",
+                },
+                labels={
+                    "com.linx.runtime_scope": _PERSISTENT_CONVERSATION_SANDBOX_SCOPE,
+                    "com.linx.conversation_id": str(conversation_id),
+                    "com.linx.runtime_session_id": str(runtime_session_id),
                 },
                 network_disabled=False,
                 network_mode="bridge",
