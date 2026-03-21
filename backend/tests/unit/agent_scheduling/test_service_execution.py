@@ -125,3 +125,53 @@ async def test_execute_schedule_run_uses_schedule_trigger_semantics(monkeypatch)
     assert "不是用户刚刚发送的新消息" in captured["execution_task_text"]
     assert schedule.status == "completed"
     assert schedule.next_run_at is None
+
+
+@pytest.mark.asyncio
+async def test_deliver_to_feishu_if_needed_uses_markdown_card_message(monkeypatch) -> None:
+    from api_gateway.routers import integrations as integrations_router
+
+    publication = SimpleNamespace(status="published")
+    conversation = SimpleNamespace(
+        source="feishu",
+        external_links=[
+            SimpleNamespace(
+                publication=publication,
+                external_chat_key="chat-1",
+            )
+        ],
+    )
+    schedule = SimpleNamespace(
+        agent=SimpleNamespace(name="日报助手"),
+        bound_conversation=conversation,
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        integrations_router,
+        "_build_feishu_reply_text",
+        lambda **_kwargs: "## 今日总结\n- 第一项",
+    )
+
+    def _fake_send(publication_obj, *, chat_id: str, markdown_text: str) -> None:
+        captured["publication"] = publication_obj
+        captured["chat_id"] = chat_id
+        captured["markdown_text"] = markdown_text
+
+    monkeypatch.setattr(
+        integrations_router,
+        "_send_feishu_markdown_card_message",
+        _fake_send,
+    )
+
+    channel = await schedule_service._deliver_to_feishu_if_needed(
+        schedule=schedule,
+        result={"output": "## 今日总结", "artifact_delta": [], "artifacts": []},
+    )
+
+    assert channel == "feishu"
+    assert captured == {
+        "publication": publication,
+        "chat_id": "chat-1",
+        "markdown_text": "## 今日总结\n- 第一项",
+    }

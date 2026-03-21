@@ -270,9 +270,10 @@ def _normalize_feishu_response_preview(value: str | None, *, max_chars: int = 24
 
 
 def _extract_feishu_log_id(response: requests.Response) -> str | None:
-    return str(
-        response.headers.get("X-Tt-Logid") or response.headers.get("x-tt-logid") or ""
-    ).strip() or None
+    return (
+        str(response.headers.get("X-Tt-Logid") or response.headers.get("x-tt-logid") or "").strip()
+        or None
+    )
 
 
 def _build_feishu_error_message(
@@ -441,9 +442,9 @@ def _build_feishu_file_delivery_log_extra(exc: Exception) -> dict[str, Any]:
     response = getattr(exc, "response", None)
     return {
         "feishu_http_status": getattr(response, "status_code", None),
-        "feishu_log_id": getattr(response, "headers", {}).get("X-Tt-Logid")
-        if response is not None
-        else None,
+        "feishu_log_id": (
+            getattr(response, "headers", {}).get("X-Tt-Logid") if response is not None else None
+        ),
         "feishu_retryable": _is_retryable_feishu_file_delivery_error(exc),
     }
 
@@ -463,9 +464,8 @@ def _classify_feishu_file_delivery_error(exc: Exception) -> str | None:
         return "文件为空，已改为发送文本结果和网页链接。"
     if error_code in {230013, 230017, 230027, 230035}:
         return "当前飞书会话不允许直接发送文件，已改为发送文本结果和网页链接。"
-    if (
-        (status_code is not None and _is_retryable_feishu_status_code(status_code))
-        or isinstance(exc, (requests.Timeout, requests.ConnectionError))
+    if (status_code is not None and _is_retryable_feishu_status_code(status_code)) or isinstance(
+        exc, (requests.Timeout, requests.ConnectionError)
     ):
         return "飞书文件接口暂时不可用，多次重试后仍失败，已改为发送文本结果和网页链接。"
     return None
@@ -525,11 +525,13 @@ def _get_feishu_tenant_access_token(publication: AgentChannelPublication) -> str
     return token
 
 
-def _send_feishu_text_message(
+def _send_feishu_message(
     publication: AgentChannelPublication,
     *,
     chat_id: str,
-    text: str,
+    msg_type: str,
+    content: str,
+    default_error: str,
 ) -> None:
     tenant_access_token = _get_feishu_tenant_access_token(publication)
     response = requests.post(
@@ -538,12 +540,83 @@ def _send_feishu_text_message(
         headers={"Authorization": f"Bearer {tenant_access_token}"},
         json={
             "receive_id": chat_id,
-            "msg_type": "text",
-            "content": json.dumps({"text": text}, ensure_ascii=False),
+            "msg_type": msg_type,
+            "content": content,
         },
         timeout=20,
     )
-    _parse_feishu_json_response(response, default_error="Failed to send Feishu message")
+    _parse_feishu_json_response(response, default_error=default_error)
+
+
+def _send_feishu_text_message(
+    publication: AgentChannelPublication,
+    *,
+    chat_id: str,
+    text: str,
+) -> None:
+    _send_feishu_message(
+        publication,
+        chat_id=chat_id,
+        msg_type="text",
+        content=json.dumps({"text": text}, ensure_ascii=False),
+        default_error="Failed to send Feishu message",
+    )
+
+
+def _normalize_feishu_card_markdown(markdown_text: str) -> str:
+    normalized = str(markdown_text or "").strip()
+    if not normalized:
+        return ""
+
+    normalized = re.sub(
+        r"(?m)^网页查看对话与工作区:\s*(https?://\S+)\s*$",
+        lambda match: f"[网页查看对话与工作区]({match.group(1)})",
+        normalized,
+    )
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    return normalized.strip()
+
+
+def _build_feishu_markdown_card_content(
+    *,
+    markdown_text: str,
+) -> str:
+    card: dict[str, Any] = {
+        "schema": "2.0",
+        "config": {
+            "update_multi": True,
+        },
+        "body": {
+            "direction": "vertical",
+            "padding": "12px 12px 12px 12px",
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": _normalize_feishu_card_markdown(markdown_text),
+                    "text_align": "left",
+                    "margin": "0px 0px 0px 0px",
+                }
+            ],
+        },
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+def _send_feishu_markdown_card_message(
+    publication: AgentChannelPublication,
+    *,
+    chat_id: str,
+    markdown_text: str,
+) -> None:
+    _send_feishu_message(
+        publication,
+        chat_id=chat_id,
+        msg_type="interactive",
+        content=_build_feishu_markdown_card_content(
+            markdown_text=markdown_text,
+        ),
+        default_error="Failed to send Feishu message card",
+    )
 
 
 def _send_feishu_file_bytes_message(
@@ -1143,9 +1216,7 @@ def _build_feishu_reply_text(
 ) -> str:
     base_text = output_text.strip() or "Agent execution completed."
     delivered_items = [
-        item
-        for item in (delivered_artifacts or [])
-        if str(item.get("path") or "").strip()
+        item for item in (delivered_artifacts or []) if str(item.get("path") or "").strip()
     ]
     deduped_notes = [note.strip() for note in (delivery_notes or []) if str(note).strip()]
     pending_paths = [
@@ -1269,14 +1340,11 @@ def _sanitize_feishu_reply_for_delivered_files(
     if not trimmed_reply:
         return ""
 
-    if (
-        _should_suppress_feishu_file_request_reply(
-            request_text=request_text,
-            reply_text=trimmed_reply,
-            delivered_artifacts=delivered_artifacts,
-        )
-        or _should_suppress_feishu_delivery_confirmation(trimmed_reply, delivered_artifacts)
-    ):
+    if _should_suppress_feishu_file_request_reply(
+        request_text=request_text,
+        reply_text=trimmed_reply,
+        delivered_artifacts=delivered_artifacts,
+    ) or _should_suppress_feishu_delivery_confirmation(trimmed_reply, delivered_artifacts):
         return ""
 
     return trimmed_reply
@@ -1374,7 +1442,9 @@ def _normalize_feishu_delivery_summary_intro(
 ) -> str:
     cleaned = _strip_feishu_markdown_text(intro)
     if cleaned:
-        cleaned = re.sub(r"(已为你准备好|已准备好|已找到|已创建|已生成|已输出|已完成)", "已发送", cleaned)
+        cleaned = re.sub(
+            r"(已为你准备好|已准备好|已找到|已创建|已生成|已输出|已完成)", "已发送", cleaned
+        )
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if cleaned.lower() in {"report", "final report", "document", "overview", "preview"}:
         cleaned = ""
@@ -1529,7 +1599,9 @@ def _trim_feishu_file_content_dump(
         "full content",
         "source code",
     )
-    cut_positions = [normalized.find(marker) for marker in dump_markers if normalized.find(marker) >= 0]
+    cut_positions = [
+        normalized.find(marker) for marker in dump_markers if normalized.find(marker) >= 0
+    ]
     if not cut_positions:
         return normalized
 
@@ -1868,10 +1940,10 @@ async def process_feishu_publication_message(
     )
     if reply_text.strip():
         await asyncio.to_thread(
-            _send_feishu_text_message,
+            _send_feishu_markdown_card_message,
             publication,
             chat_id=str(message.get("chat_id") or ""),
-            text=reply_text,
+            markdown_text=reply_text,
         )
     return {"success": True}
 

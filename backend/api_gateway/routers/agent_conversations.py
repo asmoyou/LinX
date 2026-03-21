@@ -400,6 +400,162 @@ def _diff_workspace_entries(
     return delta
 
 
+_WORKSPACE_REFERENCE_PATTERN = re.compile(
+    r"`?(?P<path>(?:/workspace/|workspace/)?(?:output|shared|input)/[^\s`<>\[\](){}\"'，。；;！？!?]+)`?"
+)
+_WORKSPACE_SAVE_CLAIM_PATTERN = re.compile(
+    r"(已保存(?:到|至)?|保存到文档中|保存到文件中|保存在|已写入|写入到|已创建|已生成|已导出|输出到|saved(?:\s+to)?|written\s+to|created|generated|exported)",
+    re.IGNORECASE,
+)
+_WORKSPACE_LOCATION_TOKENS = (
+    "文件路径",
+    "文件位置",
+    "完整路径",
+    "文件信息",
+    "文件详情",
+    "保存位置",
+    "file path",
+    "saved to file",
+)
+_WORKSPACE_FILE_HINT_TOKENS = (
+    "文件",
+    "文档",
+    "报告",
+    "附件",
+    "file",
+    "document",
+    "report",
+    "attachment",
+)
+_WORKSPACE_ACCESS_TOKENS = (
+    "直接打开",
+    "访问",
+    "查看",
+    "下载",
+    "分享",
+    "打印",
+    "open",
+    "view",
+    "download",
+    "share",
+    "print",
+)
+_WORKSPACE_FILE_SECTION_TOKENS = (
+    "文件位置",
+    "文件信息",
+    "文件详情",
+    "使用方式",
+)
+
+
+def _normalize_workspace_artifact_path(value: Any) -> Optional[str]:
+    raw = str(value or "").replace("\\", "/").strip().strip("`")
+    raw = raw.rstrip(",，。；;!！?？]}>")
+    if raw.startswith("/workspace/"):
+        raw = raw[len("/workspace/") :]
+    elif raw.startswith("workspace/"):
+        raw = raw[len("workspace/") :]
+    raw = raw.lstrip("/")
+    if not raw or ".." in raw:
+        return None
+    if not raw.startswith(("output/", "shared/", "input/")):
+        return None
+    return raw
+
+
+def _extract_workspace_reference_paths(value: str) -> set[str]:
+    paths: set[str] = set()
+    for match in _WORKSPACE_REFERENCE_PATTERN.finditer(str(value or "")):
+        normalized = _normalize_workspace_artifact_path(match.group("path"))
+        if normalized:
+            paths.add(normalized)
+    return paths
+
+
+def _is_workspace_path_only_block(value: str) -> bool:
+    if not _extract_workspace_reference_paths(value):
+        return False
+    stripped = _WORKSPACE_REFERENCE_PATTERN.sub("", str(value or ""))
+    stripped = re.sub(r"[*_`>#\-:：，。；;!！?？\[\](){}\s]+", "", stripped)
+    return not stripped
+
+
+def _sanitize_unverified_workspace_save_claims(
+    text: str,
+    *,
+    artifact_delta_entries: List[Dict[str, Any]],
+) -> str:
+    normalized_text = str(text or "").strip()
+    if not normalized_text:
+        return ""
+
+    verified_paths = {
+        normalized_path
+        for entry in artifact_delta_entries
+        if (normalized_path := _normalize_workspace_artifact_path(entry.get("path"))) is not None
+    }
+
+    sanitized_blocks: List[str] = []
+    drop_following_file_boilerplate = False
+    for raw_block in re.split(r"\n{2,}", normalized_text):
+        block = str(raw_block or "").strip()
+        if not block:
+            continue
+
+        block_paths = _extract_workspace_reference_paths(block)
+        unverified_paths = block_paths - verified_paths
+        lowered_block = block.lower()
+        has_save_claim = bool(_WORKSPACE_SAVE_CLAIM_PATTERN.search(block))
+        has_location_token = any(token in block for token in _WORKSPACE_LOCATION_TOKENS) or any(
+            token in lowered_block for token in _WORKSPACE_LOCATION_TOKENS if token.isascii()
+        )
+        has_file_hint = any(token in block for token in _WORKSPACE_FILE_HINT_TOKENS) or any(
+            token in lowered_block for token in _WORKSPACE_FILE_HINT_TOKENS if token.isascii()
+        )
+        has_access_hint = any(token in block for token in _WORKSPACE_ACCESS_TOKENS) or any(
+            token in lowered_block for token in _WORKSPACE_ACCESS_TOKENS if token.isascii()
+        )
+        short_file_section_heading = len(block) <= 48 and any(
+            token in block for token in _WORKSPACE_FILE_SECTION_TOKENS
+        )
+
+        should_drop = False
+        if unverified_paths and (has_save_claim or has_location_token):
+            should_drop = True
+        elif not verified_paths and has_save_claim and has_file_hint:
+            should_drop = True
+        elif drop_following_file_boilerplate and (
+            short_file_section_heading
+            or (unverified_paths and (has_access_hint or _is_workspace_path_only_block(block)))
+        ):
+            should_drop = True
+        elif not verified_paths and short_file_section_heading:
+            should_drop = True
+
+        if should_drop:
+            drop_following_file_boilerplate = True
+            continue
+
+        drop_following_file_boilerplate = False
+        sanitized_blocks.append(block)
+
+    cleaned_blocks: List[str] = []
+    for block in sanitized_blocks:
+        if re.fullmatch(r"[-*_]{3,}", block):
+            if not cleaned_blocks or re.fullmatch(r"[-*_]{3,}", cleaned_blocks[-1]):
+                continue
+            cleaned_blocks.append("---")
+            continue
+        cleaned_blocks.append(block)
+
+    while cleaned_blocks and cleaned_blocks[0] == "---":
+        cleaned_blocks.pop(0)
+    while cleaned_blocks and cleaned_blocks[-1] == "---":
+        cleaned_blocks.pop()
+
+    return "\n\n".join(cleaned_blocks).strip()
+
+
 def _get_feishu_runtime_state(publication: AgentChannelPublication | None) -> dict[str, Any]:
     if publication is None:
         return {}
@@ -1435,7 +1591,7 @@ async def execute_persistent_conversation_turn(
         await _emit_chunk(chunk_callback, {"type": "error", "content": f"Error: {error_holder[0]}"})
         raise RuntimeError(error_holder[0])
 
-    final_response_text = segment_response[0].strip()
+    raw_final_response_text = segment_response[0].strip()
     execution_messages.extend(
         segment_execution_messages[0] if isinstance(segment_execution_messages[0], list) else []
     )
@@ -1460,7 +1616,7 @@ async def execute_persistent_conversation_turn(
                         if isinstance(item, dict) and item.get("type") == "text":
                             input_chars += len(item.get("text", ""))
         input_tokens = int(input_chars * 0.5)
-        output_tokens = int(len(final_response_text) * 0.5)
+        output_tokens = int(len(raw_final_response_text) * 0.5)
 
     stats = {
         "inputTokens": input_tokens,
@@ -1471,6 +1627,10 @@ async def execute_persistent_conversation_turn(
         runtime.workdir, recursive=True
     )
     artifact_delta_entries = _diff_workspace_entries(baseline_artifact_entries, artifact_entries)
+    final_response_text = _sanitize_unverified_workspace_save_claims(
+        raw_final_response_text,
+        artifact_delta_entries=artifact_delta_entries,
+    )
     if not current_round_data["stats"]:
         current_round_data["stats"] = {
             "timeToFirstToken": 0,

@@ -129,7 +129,9 @@ def _default_platform_timezone(session) -> str:
     return "UTC"
 
 
-def resolve_owner_timezone(*, session, owner_user_id: UUID, explicit_timezone: Optional[str]) -> str:
+def resolve_owner_timezone(
+    *, session, owner_user_id: UUID, explicit_timezone: Optional[str]
+) -> str:
     if explicit_timezone:
         return resolve_timezone_name(explicit_timezone)
 
@@ -156,7 +158,9 @@ def _load_agent_for_execution(session, *, agent_id: UUID, user_id: UUID, role: s
     return agent
 
 
-def _ensure_manage_access(schedule: AgentSchedule, *, viewer_user_id: UUID, viewer_role: str) -> None:
+def _ensure_manage_access(
+    schedule: AgentSchedule, *, viewer_user_id: UUID, viewer_role: str
+) -> None:
     if _role_can_view_all(viewer_role):
         return
     if schedule.owner_user_id != viewer_user_id:
@@ -213,14 +217,11 @@ def _ensure_bound_conversation(
 
 
 def _schedule_detail_query(session):
-    return (
-        session.query(AgentSchedule)
-        .options(
-            joinedload(AgentSchedule.owner),
-            joinedload(AgentSchedule.agent),
-            joinedload(AgentSchedule.bound_conversation),
-            joinedload(AgentSchedule.runs),
-        )
+    return session.query(AgentSchedule).options(
+        joinedload(AgentSchedule.owner),
+        joinedload(AgentSchedule.agent),
+        joinedload(AgentSchedule.bound_conversation),
+        joinedload(AgentSchedule.runs),
     )
 
 
@@ -421,11 +422,12 @@ def _is_same_agent_auto_schedule_request(
         if str(schedule.cron_expression or "").strip() != str(cron_expression or "").strip():
             return False
 
-    return (
-        _schedule_idempotency_fingerprint(schedule.name)
-        == _schedule_idempotency_fingerprint(name)
-        and _schedule_idempotency_fingerprint(schedule.prompt_template)
-        == _schedule_idempotency_fingerprint(prompt_template)
+    return _schedule_idempotency_fingerprint(schedule.name) == _schedule_idempotency_fingerprint(
+        name
+    ) and _schedule_idempotency_fingerprint(
+        schedule.prompt_template
+    ) == _schedule_idempotency_fingerprint(
+        prompt_template
     )
 
 
@@ -588,7 +590,9 @@ def _load_schedule_for_viewer(
     return schedule
 
 
-def get_schedule_detail(*, schedule_id: str, viewer_user_id: str, viewer_role: str) -> dict[str, Any]:
+def get_schedule_detail(
+    *, schedule_id: str, viewer_user_id: str, viewer_role: str
+) -> dict[str, Any]:
     schedule_uuid = _normalize_uuid(schedule_id, field_name="schedule_id")
     viewer_uuid = _normalize_uuid(viewer_user_id, field_name="viewer_user_id")
     with get_db_session() as session:
@@ -626,7 +630,9 @@ def list_schedules(
         if created_via and created_via != "all":
             query = query.filter(AgentSchedule.created_via == created_via)
         if agent_id:
-            query = query.filter(AgentSchedule.agent_id == _normalize_uuid(agent_id, field_name="agent_id"))
+            query = query.filter(
+                AgentSchedule.agent_id == _normalize_uuid(agent_id, field_name="agent_id")
+            )
         if query_text:
             keyword = f"%{str(query_text).strip()}%"
             query = query.filter(
@@ -668,7 +674,11 @@ def _update_schedule_fields(
     normalized_cron, run_at_utc, next_run_at = _compute_schedule_timing(
         schedule_type=effective_type,
         timezone_name=effective_timezone,
-        cron_expression=cron_expression if schedule_type or cron_expression is not None else schedule.cron_expression,
+        cron_expression=(
+            cron_expression
+            if schedule_type or cron_expression is not None
+            else schedule.cron_expression
+        ),
         run_at=run_at if schedule_type or run_at is not None else schedule.run_at_utc,
         now=_utcnow(),
     )
@@ -785,7 +795,9 @@ def resume_schedule(*, schedule_id: str, viewer_user_id: str, viewer_role: str) 
                 raise ScheduleValidationError("One-time schedule is missing run_at_utc")
             schedule.next_run_at = max(schedule.run_at_utc, now)
         else:
-            base_time = schedule.next_run_at if schedule.next_run_at and schedule.next_run_at > now else now
+            base_time = (
+                schedule.next_run_at if schedule.next_run_at and schedule.next_run_at > now else now
+            )
             schedule.next_run_at = compute_next_run_at(
                 schedule_type="recurring",
                 timezone_name=schedule.timezone,
@@ -1019,10 +1031,8 @@ def _load_run_for_execution(session, *, run_id: UUID) -> AgentScheduleRun:
     run = (
         session.query(AgentScheduleRun)
         .options(
-            joinedload(AgentScheduleRun.schedule)
-            .joinedload(AgentSchedule.owner),
-            joinedload(AgentScheduleRun.schedule)
-            .joinedload(AgentSchedule.agent),
+            joinedload(AgentScheduleRun.schedule).joinedload(AgentSchedule.owner),
+            joinedload(AgentScheduleRun.schedule).joinedload(AgentSchedule.agent),
             joinedload(AgentScheduleRun.schedule)
             .joinedload(AgentSchedule.bound_conversation)
             .joinedload(AgentConversation.external_links)
@@ -1079,13 +1089,21 @@ async def _deliver_to_feishu_if_needed(
 
     eligible_link = None
     for link in conversation.external_links or []:
-        if getattr(link, "publication", None) is not None and link.publication.status == "published":
+        if (
+            getattr(link, "publication", None) is not None
+            and link.publication.status == "published"
+        ):
             eligible_link = link
             break
     if eligible_link is None:
-        raise InvalidScheduleBindingError("Feishu publication is unavailable for this scheduled thread")
+        raise InvalidScheduleBindingError(
+            "Feishu publication is unavailable for this scheduled thread"
+        )
 
-    from api_gateway.routers.integrations import _build_feishu_reply_text, _send_feishu_text_message
+    from api_gateway.routers.integrations import (
+        _build_feishu_reply_text,
+        _send_feishu_markdown_card_message,
+    )
 
     reply_text = _build_feishu_reply_text(
         agent=schedule.agent,
@@ -1096,10 +1114,10 @@ async def _deliver_to_feishu_if_needed(
         base_url=None,
     )
     await asyncio.to_thread(
-        _send_feishu_text_message,
+        _send_feishu_markdown_card_message,
         eligible_link.publication,
         chat_id=eligible_link.external_chat_key,
-        text=reply_text,
+        markdown_text=reply_text,
     )
     return "feishu"
 

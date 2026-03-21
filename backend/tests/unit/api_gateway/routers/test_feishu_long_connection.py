@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pytest
 import requests
 from types import SimpleNamespace
@@ -25,6 +26,8 @@ from api_gateway.routers.integrations import (
     _parse_feishu_json_response,
     _prepare_feishu_message_uploads,
     _resolve_feishu_artifact_file_paths,
+    _send_feishu_markdown_card_message,
+    _send_feishu_text_message,
     _select_feishu_deliverable_artifacts,
     _select_feishu_explicitly_requested_artifacts,
 )
@@ -180,7 +183,9 @@ def test_build_feishu_reply_text_includes_delivery_notes() -> None:
     assert "output/report.md" in text
 
 
-def test_build_feishu_reply_text_suppresses_redundant_file_creation_text_when_file_delivered() -> None:
+def test_build_feishu_reply_text_suppresses_redundant_file_creation_text_when_file_delivered() -> (
+    None
+):
     agent = SimpleNamespace(agent_id="agent-1")
     conversation = SimpleNamespace(conversation_id="conv-1")
 
@@ -222,7 +227,9 @@ def test_build_feishu_reply_text_condenses_file_content_dump_for_file_request() 
     assert "<!DOCTYPE html>" not in text
 
 
-def test_build_feishu_reply_text_condenses_file_content_dump_after_delivery_even_without_request_hint() -> None:
+def test_build_feishu_reply_text_condenses_file_content_dump_after_delivery_even_without_request_hint() -> (
+    None
+):
     agent = SimpleNamespace(agent_id="agent-1")
     conversation = SimpleNamespace(conversation_id="conv-1")
 
@@ -230,10 +237,7 @@ def test_build_feishu_reply_text_condenses_file_content_dump_after_delivery_even
         agent=agent,
         conversation=conversation,
         output_text=(
-            "文件位置：output/final-report.md\n\n"
-            "## 完整内容\n"
-            "# Report\n\n"
-            + ("A" * 1200)
+            "文件位置：output/final-report.md\n\n" "## 完整内容\n" "# Report\n\n" + ("A" * 1200)
         ),
         delivered_artifacts=[{"path": "output/final-report.md", "is_directory": False}],
         pending_artifacts=[],
@@ -304,8 +308,7 @@ def test_build_feishu_reply_text_trims_dump_and_keeps_summary_prefix_when_file_d
         output_text=(
             "已整理好报告，重点是供应商成本偏高，建议先做小流量验证。\n\n"
             "## 完整内容\n"
-            "# Final Report\n\n"
-            + ("A" * 1200)
+            "# Final Report\n\n" + ("A" * 1200)
         ),
         delivered_artifacts=[{"path": "output/final-report.md", "is_directory": False}],
         pending_artifacts=[],
@@ -330,6 +333,81 @@ def test_build_feishu_reply_text_keeps_short_summary_for_file_request() -> None:
     )
 
     assert "重点看第 2 节" in text
+
+
+def _successful_feishu_message_response() -> requests.Response:
+    response = requests.Response()
+    response.status_code = 200
+    response._content = b'{"code":0,"msg":"success"}'
+    response.encoding = "utf-8"
+    return response
+
+
+def test_send_feishu_text_message_uses_plain_text_payload(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        integrations_router,
+        "_get_feishu_tenant_access_token",
+        lambda _publication: "tenant-token",
+    )
+
+    def _fake_post(url: str, **kwargs) -> requests.Response:
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return _successful_feishu_message_response()
+
+    monkeypatch.setattr(integrations_router.requests, "post", _fake_post)
+
+    _send_feishu_text_message(
+        SimpleNamespace(publication_id="pub-1"),
+        chat_id="chat-1",
+        text="**不会渲染**",
+    )
+
+    assert str(captured["url"]).endswith("/im/v1/messages")
+    payload = dict(captured["kwargs"]["json"])
+    assert payload["receive_id"] == "chat-1"
+    assert payload["msg_type"] == "text"
+    assert json.loads(str(payload["content"])) == {"text": "**不会渲染**"}
+
+
+def test_send_feishu_markdown_card_message_uses_interactive_lark_md_payload(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        integrations_router,
+        "_get_feishu_tenant_access_token",
+        lambda _publication: "tenant-token",
+    )
+
+    def _fake_post(url: str, **kwargs) -> requests.Response:
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return _successful_feishu_message_response()
+
+    monkeypatch.setattr(integrations_router.requests, "post", _fake_post)
+
+    _send_feishu_markdown_card_message(
+        SimpleNamespace(publication_id="pub-1"),
+        chat_id="chat-1",
+        markdown_text="## 标题\n- 列表项\n\n网页查看对话与工作区: https://example.com/workspace",
+    )
+
+    assert str(captured["url"]).endswith("/im/v1/messages")
+    payload = dict(captured["kwargs"]["json"])
+    assert payload["receive_id"] == "chat-1"
+    assert payload["msg_type"] == "interactive"
+
+    card = json.loads(str(payload["content"]))
+    assert card["schema"] == "2.0"
+    assert "header" not in card
+    assert card["body"]["direction"] == "vertical"
+    assert card["body"]["elements"][0]["tag"] == "markdown"
+    assert (
+        card["body"]["elements"][0]["content"]
+        == "## 标题\n- 列表项\n\n[网页查看对话与工作区](https://example.com/workspace)"
+    )
 
 
 def test_select_feishu_deliverable_artifacts_filters_runtime_and_directories() -> None:
