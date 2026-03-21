@@ -1,6 +1,7 @@
 import React, {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -44,6 +45,7 @@ import {
   type PersistentProcessDescriptor,
 } from "@/components/workforce/persistent/persistentConversationHelpers";
 import { SessionWorkspacePanel } from "@/components/workforce/SessionWorkspacePanel";
+import { useMeasuredVirtualWindow } from "@/hooks/useMeasuredVirtualWindow";
 import { useNotificationStore } from "@/stores";
 import type {
   Agent,
@@ -63,6 +65,44 @@ const HISTORY_MESSAGE_GAP_PX = 32;
 const HISTORY_MESSAGE_ESTIMATED_HEIGHT_PX = 320;
 const HISTORY_OVERSCAN_PX = 900;
 const HISTORY_VIRTUALIZATION_MIN_ITEMS = 24;
+const CONVERSATION_LIST_PAGE_SIZE = 30;
+const CONVERSATION_LIST_LOAD_MORE_THRESHOLD_PX = 160;
+const CONVERSATION_LIST_ESTIMATED_HEIGHT_PX = 112;
+const CONVERSATION_LIST_OVERSCAN_PX = 480;
+const CONVERSATION_LIST_VIRTUALIZATION_MIN_ITEMS = 18;
+const MESSAGE_PAGE_SIZE = 50;
+const MESSAGE_LOAD_MORE_THRESHOLD_PX = 80;
+const INITIAL_BOTTOM_ANCHOR_SCROLL_TOP = Number.MAX_SAFE_INTEGER;
+
+interface ConversationListState {
+  hasMore: boolean;
+  isLoadingMore: boolean;
+  items: AgentConversationSummary[];
+  nextCursor: string | null;
+  total: number;
+}
+
+interface MessageListState {
+  hasOlderLiveMessages: boolean;
+  isLoadingOlder: boolean;
+  items: ConversationMessage[];
+  olderCursor: string | null;
+}
+
+const EMPTY_CONVERSATION_LIST_STATE: ConversationListState = {
+  items: [],
+  total: 0,
+  hasMore: false,
+  nextCursor: null,
+  isLoadingMore: false,
+};
+
+const EMPTY_MESSAGE_LIST_STATE: MessageListState = {
+  items: [],
+  hasOlderLiveMessages: false,
+  olderCursor: null,
+  isLoadingOlder: false,
+};
 
 interface StreamingViewState {
   assistantText: string;
@@ -111,13 +151,15 @@ function buildAttachmentPreview(file: File): AttachedFile {
   };
 }
 
-interface VirtualizedHistoryItemProps {
+interface MeasuredVirtualItemProps {
+  gapPx?: number;
   index: number;
   onHeightChange: (index: number, height: number) => void;
   children: React.ReactNode;
 }
 
-const VirtualizedHistoryItem: React.FC<VirtualizedHistoryItemProps> = ({
+const MeasuredVirtualItem: React.FC<MeasuredVirtualItemProps> = ({
+  gapPx = HISTORY_MESSAGE_GAP_PX,
   index,
   onHeightChange,
   children,
@@ -142,18 +184,227 @@ const VirtualizedHistoryItem: React.FC<VirtualizedHistoryItemProps> = ({
   }, [index, onHeightChange]);
 
   return (
-    <div ref={itemRef} style={{ paddingBottom: `${HISTORY_MESSAGE_GAP_PX}px` }}>
+    <div ref={itemRef} style={{ paddingBottom: `${gapPx}px` }}>
       {children}
     </div>
   );
 };
 
-type RenderedConversationMessage = ConversationMessage & {
-  artifactItems: PersistentConversationArtifactItem[];
-  scheduleItems: ScheduleCreatedEvent[];
-  displayContent: string;
-  inlineError: string | null;
+type ConversationMessageRowProps = {
+  downloadingArtifactPath: string | null;
+  generatedOutputLabel: string;
+  message: ConversationMessage;
+  onDownloadArtifact: (path: string) => Promise<void>;
+  onOpenArtifact: (path: string) => void;
 };
+
+const ConversationMessageRow = React.memo<ConversationMessageRowProps>(
+  ({
+    downloadingArtifactPath,
+    generatedOutputLabel,
+    message,
+    onDownloadArtifact,
+    onOpenArtifact,
+  }) => {
+    if (message.role === "user") {
+      return (
+        <div className="flex justify-end">
+          <div className="max-w-[80%] rounded-[28px] rounded-tr-none bg-emerald-600 px-5 py-4 text-white shadow-lg shadow-emerald-500/10">
+            <p className="whitespace-pre-wrap text-sm leading-relaxed">
+              {message.contentText}
+            </p>
+            {message.attachments.length > 0 && (
+              <div className="mt-3 grid gap-2">
+                {message.attachments.map((attachment, index) => (
+                  <div
+                    key={`${message.id}-attachment-${index}`}
+                    className="rounded-xl border border-white/15 bg-white/10 px-3 py-2"
+                  >
+                    <p className="text-xs font-semibold">
+                      {String(
+                        attachment.name || attachment.file_name || "Attachment",
+                      )}
+                    </p>
+                    <p className="text-[11px] opacity-80">
+                      {String(
+                        attachment.type || attachment.content_type || "",
+                      )}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    if (message.role === "system") {
+      return (
+        <div className="flex justify-center">
+          <div className="rounded-full border border-zinc-200/80 bg-zinc-100 px-5 py-2 dark:border-zinc-800/80 dark:bg-zinc-900/50">
+            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-500">
+              {message.contentText}
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    const artifactItems = derivePersistentArtifacts(
+      message,
+    ) as PersistentConversationArtifactItem[];
+    const scheduleItems = derivePersistentScheduleEvents(message);
+    const displayContent = getPersistentFallbackAssistantText(
+      message,
+      generatedOutputLabel,
+    );
+    const inlineError =
+      typeof message.contentJson?.inlineError === "string"
+        ? message.contentJson.inlineError
+        : null;
+
+    return (
+      <PersistentConversationAssistantMessage
+        content={displayContent}
+        artifactItems={artifactItems}
+        scheduleItems={scheduleItems}
+        errorText={inlineError}
+        onOpenArtifact={onOpenArtifact}
+        onDownloadArtifact={onDownloadArtifact}
+        downloadingArtifactPath={downloadingArtifactPath}
+      />
+    );
+  },
+);
+
+type ConversationListItemCardProps = {
+  activeConversationId: string;
+  deletingConversationIds: Set<string>;
+  item: AgentConversationSummary;
+  noMessagesLabel: string;
+  onDeleteConversation: (item: AgentConversationSummary) => void;
+  onOpenConversation: (conversationId: string) => void;
+  onRenameConversation: (item: AgentConversationSummary) => void;
+};
+
+const ConversationListItemCard = React.memo<ConversationListItemCardProps>(
+  ({
+    activeConversationId,
+    deletingConversationIds,
+    item,
+    noMessagesLabel,
+    onDeleteConversation,
+    onOpenConversation,
+    onRenameConversation,
+  }) => (
+    <div
+      className={`flex items-start justify-between gap-3 rounded-2xl border px-3 py-3 transition-colors ${
+        item.id === activeConversationId
+          ? "border-emerald-500 bg-emerald-500/10"
+          : "border-zinc-200 bg-zinc-50 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-950/60 dark:hover:bg-zinc-800/80"
+      }`}
+    >
+      <button
+        type="button"
+        onClick={() => onOpenConversation(item.id)}
+        className="min-w-0 flex-1 text-left"
+      >
+        <p className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+          {item.title}
+        </p>
+        <p className="mt-1 line-clamp-2 text-xs text-zinc-500 dark:text-zinc-400">
+          {item.lastMessagePreview || noMessagesLabel}
+        </p>
+        <div className="mt-2 flex items-center gap-2">
+          <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:bg-zinc-800 dark:text-zinc-300">
+            {item.source}
+          </span>
+          {item.storageTier && item.storageTier !== "hot" && (
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+              {item.storageTier}
+            </span>
+          )}
+          {item.latestSnapshotStatus && (
+            <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
+              {item.latestSnapshotStatus}
+            </span>
+          )}
+        </div>
+      </button>
+      <div className="flex shrink-0 flex-col gap-1">
+        <button
+          type="button"
+          onClick={() => onRenameConversation(item)}
+          className="rounded-lg p-1 text-zinc-400 transition-colors hover:bg-zinc-200 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+        >
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={() => onDeleteConversation(item)}
+          disabled={deletingConversationIds.has(item.id)}
+          className="rounded-lg p-1 text-zinc-400 transition-colors hover:bg-red-100 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+        >
+          {deletingConversationIds.has(item.id) ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="w-3.5 h-3.5" />
+          )}
+        </button>
+      </div>
+    </div>
+  ),
+);
+
+function mergeConversationIntoList(
+  items: AgentConversationSummary[],
+  conversationItem: AgentConversationSummary | AgentConversationDetail | null,
+): AgentConversationSummary[] {
+  if (!conversationItem) {
+    return items;
+  }
+  if (items.some((item) => item.id === conversationItem.id)) {
+    return items;
+  }
+  const deduped = items.filter((item) => item.id !== conversationItem.id);
+  return [conversationItem, ...deduped];
+}
+
+function buildConversationListState(
+  items: AgentConversationSummary[],
+  options?: {
+    activeConversation?: AgentConversationSummary | AgentConversationDetail | null;
+    hasMore?: boolean;
+    isLoadingMore?: boolean;
+    nextCursor?: string | null;
+    total?: number;
+  },
+): ConversationListState {
+  return {
+    items: mergeConversationIntoList(items, options?.activeConversation ?? null),
+    total: options?.total ?? items.length,
+    hasMore: options?.hasMore ?? false,
+    nextCursor: options?.nextCursor ?? null,
+    isLoadingMore: options?.isLoadingMore ?? false,
+  };
+}
+
+function buildMessageListState(
+  items: ConversationMessage[],
+  options?: {
+    hasOlderLiveMessages?: boolean;
+    isLoadingOlder?: boolean;
+    olderCursor?: string | null;
+  },
+): MessageListState {
+  return {
+    items,
+    hasOlderLiveMessages: options?.hasOlderLiveMessages ?? false,
+    olderCursor: options?.olderCursor ?? null,
+    isLoadingOlder: options?.isLoadingOlder ?? false,
+  };
+}
 
 export const AgentConversation: React.FC = () => {
   const { t } = useTranslation();
@@ -165,6 +416,7 @@ export const AgentConversation: React.FC = () => {
     (state) => state.addNotification,
   );
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const conversationListContainerRef = useRef<HTMLDivElement | null>(null);
   const historyPrefixRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -180,18 +432,28 @@ export const AgentConversation: React.FC = () => {
   const abortStreamingHandlerRef = useRef<(() => void) | null>(null);
   const streamFlushTimerRef = useRef<number | null>(null);
   const shouldAutoScrollRef = useRef(true);
+  const initialHistoryAnchorPendingRef = useRef(true);
   const lastScrollTopRef = useRef(0);
+  const messageScrollFrameRef = useRef<number | null>(null);
+  const conversationListScrollFrameRef = useRef<number | null>(null);
+  const conversationListStateRef =
+    useRef<ConversationListState>(EMPTY_CONVERSATION_LIST_STATE);
+  const messageListStateRef = useRef<MessageListState>(EMPTY_MESSAGE_LIST_STATE);
+  const pendingPrependScrollAdjustmentRef = useRef<{
+    previousScrollHeight: number;
+    previousScrollTop: number;
+  } | null>(null);
   const streamingViewRef = useRef<StreamingViewState>(
     createEmptyStreamingViewState(),
   );
 
   const [agent, setAgent] = useState<Agent | null>(null);
-  const [conversations, setConversations] = useState<
-    AgentConversationSummary[]
-  >([]);
+  const [conversationListState, setConversationListState] =
+    useState<ConversationListState>(EMPTY_CONVERSATION_LIST_STATE);
   const [conversation, setConversation] =
     useState<AgentConversationDetail | null>(null);
-  const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [messageListState, setMessageListState] =
+    useState<MessageListState>(EMPTY_MESSAGE_LIST_STATE);
   const [historySummary, setHistorySummary] =
     useState<AgentConversationHistorySummary | null>(null);
   const [inputMessage, setInputMessage] = useState("");
@@ -234,12 +496,14 @@ export const AgentConversation: React.FC = () => {
   >(new Set());
   const [messagesScrollTop, setMessagesScrollTop] = useState(0);
   const [messagesViewportHeight, setMessagesViewportHeight] = useState(0);
-  const [historyItemHeights, setHistoryItemHeights] = useState<
-    Record<number, number>
-  >({});
   const [historyPrefixHeight, setHistoryPrefixHeight] = useState(0);
+  const [conversationListScrollTop, setConversationListScrollTop] = useState(0);
+  const [conversationListViewportHeight, setConversationListViewportHeight] =
+    useState(0);
 
   const activeConversationId = conversationId || draftConversationId || "";
+  const conversations = conversationListState.items;
+  const messages = messageListState.items;
 
   const loadConversationData = useCallback(async () => {
     if (!agentId) {
@@ -251,20 +515,41 @@ export const AgentConversation: React.FC = () => {
       const [agentData, listData, detailData, messagesData] = await Promise.all(
         [
           agentsApi.getById(agentId),
-          agentsApi.getConversations(agentId),
+          agentsApi.getConversations(agentId, {
+            limit: CONVERSATION_LIST_PAGE_SIZE,
+          }),
           conversationId
             ? agentsApi.getConversation(agentId, conversationId)
             : Promise.resolve(null),
           conversationId
-            ? agentsApi.getConversationMessages(agentId, conversationId)
+            ? agentsApi.getConversationMessages(agentId, conversationId, {
+                limit: MESSAGE_PAGE_SIZE,
+              })
             : Promise.resolve(null),
         ],
       );
       setAgent(agentData);
-      setConversations(listData.items);
       setConversation(detailData);
-      setMessages(messagesData?.items || []);
-      setHistoryItemHeights({});
+      const nextConversationListState = buildConversationListState(
+        listData.items,
+        {
+          activeConversation: conversationId ? detailData : null,
+          hasMore: listData.hasMore,
+          nextCursor: listData.nextCursor || null,
+          total: listData.total,
+        },
+      );
+      const nextMessageListState = buildMessageListState(
+        messagesData?.items || [],
+        {
+          hasOlderLiveMessages: messagesData?.hasOlderLiveMessages || false,
+          olderCursor: messagesData?.olderCursor || null,
+        },
+      );
+      conversationListStateRef.current = nextConversationListState;
+      messageListStateRef.current = nextMessageListState;
+      setConversationListState(nextConversationListState);
+      setMessageListState(nextMessageListState);
       setHistorySummary(messagesData?.historySummary || null);
       setPendingConversationTitle(detailData?.title || null);
       setError(null);
@@ -284,9 +569,144 @@ export const AgentConversation: React.FC = () => {
     void loadConversationData();
   }, [loadConversationData]);
 
+  const loadMoreConversations = useCallback(async () => {
+    if (!agentId) {
+      return;
+    }
+
+    const currentListState = conversationListStateRef.current;
+    if (
+      currentListState.isLoadingMore ||
+      !currentListState.hasMore ||
+      !currentListState.nextCursor
+    ) {
+      return;
+    }
+    const cursorToLoad = currentListState.nextCursor;
+    setConversationListState((prev) => {
+      const nextState = {
+        ...prev,
+        isLoadingMore: true,
+      };
+      conversationListStateRef.current = nextState;
+      return nextState;
+    });
+
+    try {
+      const nextPage = await agentsApi.getConversations(agentId, {
+        limit: CONVERSATION_LIST_PAGE_SIZE,
+        cursor: cursorToLoad,
+      });
+      setConversationListState((prev) => {
+        const existingIds = new Set(prev.items.map((item) => item.id));
+        const appendedItems = nextPage.items.filter(
+          (item) => !existingIds.has(item.id),
+        );
+        const nextState = {
+          ...prev,
+          items: [...prev.items, ...appendedItems],
+          total: nextPage.total,
+          hasMore: nextPage.hasMore,
+          nextCursor: nextPage.nextCursor || null,
+          isLoadingMore: false,
+        };
+        conversationListStateRef.current = nextState;
+        return nextState;
+      });
+    } catch (loadMoreError) {
+      console.error("Failed to load more conversations:", loadMoreError);
+      setConversationListState((prev) => {
+        const nextState = {
+          ...prev,
+          isLoadingMore: false,
+        };
+        conversationListStateRef.current = nextState;
+        return nextState;
+      });
+    }
+  }, [agentId]);
+
+  const loadOlderMessages = useCallback(async () => {
+    if (!agentId || !activeConversationId) {
+      return;
+    }
+
+    const currentMessageListState = messageListStateRef.current;
+    if (
+      currentMessageListState.isLoadingOlder ||
+      !currentMessageListState.hasOlderLiveMessages ||
+      !currentMessageListState.olderCursor
+    ) {
+      return;
+    }
+    const olderCursorToLoad = currentMessageListState.olderCursor;
+    setMessageListState((prev) => {
+      const nextState = {
+        ...prev,
+        isLoadingOlder: true,
+      };
+      messageListStateRef.current = nextState;
+      return nextState;
+    });
+
+    const container = messagesContainerRef.current;
+    const previousScrollHeight = container?.scrollHeight || 0;
+    const previousScrollTop = container?.scrollTop || 0;
+
+    try {
+      const olderPage = await agentsApi.getConversationMessages(
+        agentId,
+        activeConversationId,
+        {
+          limit: MESSAGE_PAGE_SIZE,
+          before: olderCursorToLoad,
+        },
+      );
+      setHistorySummary(olderPage.historySummary || null);
+      setMessageListState((prev) => {
+        const existingIds = new Set(prev.items.map((item) => item.id));
+        const prependedItems = olderPage.items.filter(
+          (item) => !existingIds.has(item.id),
+        );
+        if (prependedItems.length > 0) {
+          pendingPrependScrollAdjustmentRef.current = {
+            previousScrollHeight,
+            previousScrollTop,
+          };
+        }
+        const nextState = {
+          items: [...prependedItems, ...prev.items],
+          hasOlderLiveMessages: olderPage.hasOlderLiveMessages || false,
+          olderCursor: olderPage.olderCursor || null,
+          isLoadingOlder: false,
+        };
+        messageListStateRef.current = nextState;
+        return nextState;
+      });
+    } catch (loadOlderError) {
+      console.error("Failed to load older messages:", loadOlderError);
+      setMessageListState((prev) => {
+        const nextState = {
+          ...prev,
+          isLoadingOlder: false,
+        };
+        messageListStateRef.current = nextState;
+        return nextState;
+      });
+    }
+  }, [activeConversationId, agentId]);
+
   useEffect(() => {
     attachedFilesRef.current = attachedFiles;
   }, [attachedFiles]);
+
+  useEffect(() => {
+    conversationListStateRef.current = conversationListState;
+  }, [conversationListState]);
+
+  useEffect(() => {
+    messageListStateRef.current = messageListState;
+  }, [messageListState]);
 
   useEffect(() => {
     activeConversationRef.current = {
@@ -401,130 +821,82 @@ export const AgentConversation: React.FC = () => {
     [],
   );
 
-  const handleHistoryItemHeightChange = useCallback(
-    (index: number, height: number) => {
-      const normalizedHeight = Math.max(0, Math.round(height));
-      setHistoryItemHeights((prev) => {
-        if (prev[index] === normalizedHeight) {
-          return prev;
-        }
-        return {
-          ...prev,
-          [index]: normalizedHeight,
-        };
-      });
-    },
-    [],
-  );
-
-  const getHistoryItemHeight = useCallback(
-    (index: number): number =>
-      historyItemHeights[index] ?? HISTORY_MESSAGE_ESTIMATED_HEIGHT_PX,
-    [historyItemHeights],
-  );
+  const historyVirtualization = useMeasuredVirtualWindow({
+    estimatedItemHeight: HISTORY_MESSAGE_ESTIMATED_HEIGHT_PX,
+    itemCount: messages.length,
+    overscan: HISTORY_OVERSCAN_PX,
+    prefixHeight: historyPrefixHeight,
+    scrollTop: messagesScrollTop,
+    viewportHeight: messagesViewportHeight,
+  });
+  const conversationListVirtualization = useMeasuredVirtualWindow({
+    estimatedItemHeight: CONVERSATION_LIST_ESTIMATED_HEIGHT_PX,
+    itemCount: conversations.length,
+    overscan: CONVERSATION_LIST_OVERSCAN_PX,
+    scrollTop: conversationListScrollTop,
+    viewportHeight: conversationListViewportHeight,
+  });
 
   const handleMessagesScroll = useCallback(() => {
-    const container = messagesContainerRef.current;
-    if (!container) return;
-
-    const currentScrollTop = container.scrollTop;
-    const previousScrollTop = lastScrollTopRef.current;
-    lastScrollTopRef.current = currentScrollTop;
-
-    setMessagesScrollTop(currentScrollTop);
-    setMessagesViewportHeight(container.clientHeight);
-
-    const distanceFromBottom =
-      container.scrollHeight - currentScrollTop - container.clientHeight;
-
-    if (currentScrollTop < previousScrollTop - 4) {
-      shouldAutoScrollRef.current = false;
+    if (messageScrollFrameRef.current !== null) {
       return;
     }
+    messageScrollFrameRef.current = window.requestAnimationFrame(() => {
+      messageScrollFrameRef.current = null;
+      const container = messagesContainerRef.current;
+      if (!container) return;
 
-    if (distanceFromBottom <= AUTO_SCROLL_THRESHOLD_PX) {
-      shouldAutoScrollRef.current = true;
+      const currentScrollTop = container.scrollTop;
+      const previousScrollTop = lastScrollTopRef.current;
+      lastScrollTopRef.current = currentScrollTop;
+
+      setMessagesScrollTop(currentScrollTop);
+      setMessagesViewportHeight(container.clientHeight);
+
+      const distanceFromBottom =
+        container.scrollHeight - currentScrollTop - container.clientHeight;
+      const currentMessageListState = messageListStateRef.current;
+
+      if (currentScrollTop < previousScrollTop - 4) {
+        shouldAutoScrollRef.current = false;
+      } else if (distanceFromBottom <= AUTO_SCROLL_THRESHOLD_PX) {
+        shouldAutoScrollRef.current = true;
+      }
+
+      if (
+        currentScrollTop <= MESSAGE_LOAD_MORE_THRESHOLD_PX &&
+        currentMessageListState.hasOlderLiveMessages &&
+        !currentMessageListState.isLoadingOlder
+      ) {
+        void loadOlderMessages();
+      }
+    });
+  }, [loadOlderMessages]);
+
+  const handleConversationListScroll = useCallback(() => {
+    if (conversationListScrollFrameRef.current !== null) {
+      return;
     }
-  }, []);
+    conversationListScrollFrameRef.current = window.requestAnimationFrame(() => {
+      conversationListScrollFrameRef.current = null;
+      const container = conversationListContainerRef.current;
+      if (!container) return;
 
-  const historyVirtualization = useMemo(() => {
-    const itemCount = messages.length;
-    if (itemCount === 0) {
-      return {
-        startIndex: 0,
-        endIndex: -1,
-        topSpacerHeight: 0,
-        bottomSpacerHeight: 0,
-      };
-    }
+      setConversationListScrollTop(container.scrollTop);
+      setConversationListViewportHeight(container.clientHeight);
 
-    const offsets: number[] = new Array(itemCount);
-    const heights: number[] = new Array(itemCount);
-    let totalHeight = 0;
-
-    for (let index = 0; index < itemCount; index += 1) {
-      offsets[index] = totalHeight;
-      const height = getHistoryItemHeight(index);
-      heights[index] = height;
-      totalHeight += height;
-    }
-
-    const adjustedScrollTop = Math.max(
-      0,
-      messagesScrollTop - historyPrefixHeight,
-    );
-    const viewportStart = Math.max(0, adjustedScrollTop - HISTORY_OVERSCAN_PX);
-    const viewportEnd =
-      adjustedScrollTop +
-      Math.max(messagesViewportHeight, 1) +
-      HISTORY_OVERSCAN_PX;
-
-    let startIndex = 0;
-    while (
-      startIndex < itemCount &&
-      offsets[startIndex] + heights[startIndex] < viewportStart
-    ) {
-      startIndex += 1;
-    }
-    startIndex = Math.min(startIndex, itemCount - 1);
-
-    let endIndex = startIndex;
-    while (endIndex < itemCount && offsets[endIndex] < viewportEnd) {
-      endIndex += 1;
-    }
-    endIndex = Math.max(startIndex, Math.min(itemCount - 1, endIndex));
-
-    const topSpacerHeight = offsets[startIndex] ?? 0;
-    const renderedEndOffset = offsets[endIndex] + heights[endIndex];
-    const bottomSpacerHeight = Math.max(0, totalHeight - renderedEndOffset);
-
-    return {
-      startIndex,
-      endIndex,
-      topSpacerHeight,
-      bottomSpacerHeight,
-    };
-  }, [
-    getHistoryItemHeight,
-    historyPrefixHeight,
-    messages.length,
-    messagesScrollTop,
-    messagesViewportHeight,
-  ]);
-
-  const visibleHistoryIndexes = useMemo(() => {
-    if (historyVirtualization.endIndex < historyVirtualization.startIndex) {
-      return [] as number[];
-    }
-
-    return Array.from(
-      {
-        length:
-          historyVirtualization.endIndex - historyVirtualization.startIndex + 1,
-      },
-      (_, index) => historyVirtualization.startIndex + index,
-    );
-  }, [historyVirtualization.endIndex, historyVirtualization.startIndex]);
+      const distanceFromBottom =
+        container.scrollHeight - container.scrollTop - container.clientHeight;
+      const currentConversationListState = conversationListStateRef.current;
+      if (
+        distanceFromBottom <= CONVERSATION_LIST_LOAD_MORE_THRESHOLD_PX &&
+        currentConversationListState.hasMore &&
+        !currentConversationListState.isLoadingMore
+      ) {
+        void loadMoreConversations();
+      }
+    });
+  }, [loadMoreConversations]);
 
   const resetStreamingState = useCallback(() => {
     if (streamFlushTimerRef.current !== null) {
@@ -548,6 +920,12 @@ export const AgentConversation: React.FC = () => {
         window.clearTimeout(streamFlushTimerRef.current);
         streamFlushTimerRef.current = null;
       }
+      if (messageScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(messageScrollFrameRef.current);
+      }
+      if (conversationListScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(conversationListScrollFrameRef.current);
+      }
     },
     [],
   );
@@ -557,6 +935,9 @@ export const AgentConversation: React.FC = () => {
     if (!container) return;
 
     const syncMetrics = () => {
+      if (initialHistoryAnchorPendingRef.current && shouldAutoScrollRef.current) {
+        container.scrollTop = container.scrollHeight;
+      }
       lastScrollTopRef.current = container.scrollTop;
       setMessagesScrollTop(container.scrollTop);
       setMessagesViewportHeight(container.clientHeight);
@@ -570,6 +951,24 @@ export const AgentConversation: React.FC = () => {
       observer.disconnect();
     };
   }, [activeConversationId, showWorkspacePanel]);
+
+  useEffect(() => {
+    const container = conversationListContainerRef.current;
+    if (!container) return;
+
+    const syncMetrics = () => {
+      setConversationListScrollTop(container.scrollTop);
+      setConversationListViewportHeight(container.clientHeight);
+    };
+
+    syncMetrics();
+    const observer = new ResizeObserver(syncMetrics);
+    observer.observe(container);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [conversations.length]);
 
   useEffect(() => {
     const prefix = historyPrefixRef.current;
@@ -591,38 +990,106 @@ export const AgentConversation: React.FC = () => {
     return () => {
       observer.disconnect();
     };
-  }, [historySummary, conversation?.compactedMessageCount]);
+  }, [
+    historySummary,
+    conversation?.compactedMessageCount,
+    messageListState.hasOlderLiveMessages,
+    messageListState.isLoadingOlder,
+  ]);
 
   useEffect(() => {
     shouldAutoScrollRef.current = true;
+    initialHistoryAnchorPendingRef.current = true;
     lastScrollTopRef.current = 0;
-    setHistoryItemHeights({});
-    setMessagesScrollTop(0);
+    setMessagesScrollTop(INITIAL_BOTTOM_ANCHOR_SCROLL_TOP);
+    historyVirtualization.resetMeasurements();
+  }, [
+    activeConversationId,
+    historyVirtualization.resetMeasurements,
+  ]);
+
+  useLayoutEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container || !initialHistoryAnchorPendingRef.current) {
+      return;
+    }
+
+    container.scrollTop = container.scrollHeight;
+    lastScrollTopRef.current = container.scrollTop;
+    setMessagesScrollTop(container.scrollTop);
+    setMessagesViewportHeight(container.clientHeight);
+
+    if (!activeConversationId) {
+      initialHistoryAnchorPendingRef.current = false;
+      return;
+    }
+
+    if (isLoading) {
+      return;
+    }
+
     const frameId = window.requestAnimationFrame(() => {
-      scrollMessagesToBottom("auto");
+      const currentContainer = messagesContainerRef.current;
+      if (!currentContainer) {
+        return;
+      }
+      currentContainer.scrollTop = currentContainer.scrollHeight;
+      lastScrollTopRef.current = currentContainer.scrollTop;
+      setMessagesScrollTop(currentContainer.scrollTop);
+      setMessagesViewportHeight(currentContainer.clientHeight);
+      initialHistoryAnchorPendingRef.current = false;
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [
+    activeConversationId,
+    historyPrefixHeight,
+    historyVirtualization.bottomSpacerHeight,
+    historyVirtualization.topSpacerHeight,
+    isLoading,
+    messages.length,
+  ]);
+
+  useEffect(() => {
+    conversationListVirtualization.resetMeasurements();
+  }, [conversationListVirtualization.resetMeasurements, conversations.length]);
+
+  useEffect(() => {
+    const adjustment = pendingPrependScrollAdjustmentRef.current;
+    const container = messagesContainerRef.current;
+    if (!adjustment || !container) {
+      return;
+    }
+    pendingPrependScrollAdjustmentRef.current = null;
+    const frameId = window.requestAnimationFrame(() => {
+      const delta = container.scrollHeight - adjustment.previousScrollHeight;
+      container.scrollTop = adjustment.previousScrollTop + delta;
+      lastScrollTopRef.current = container.scrollTop;
+      setMessagesScrollTop(container.scrollTop);
     });
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [activeConversationId, scrollMessagesToBottom]);
+  }, [messages.length]);
 
   useEffect(() => {
     if (!shouldAutoScrollRef.current) {
       return;
     }
 
-    const behavior: ScrollBehavior = isSending ? "auto" : "smooth";
     const frameId = window.requestAnimationFrame(() => {
-      scrollMessagesToBottom(behavior);
+      scrollMessagesToBottom("auto");
     });
     return () => {
       window.cancelAnimationFrame(frameId);
     };
   }, [
-    historyItemHeights,
     historyPrefixHeight,
+    historyVirtualization.bottomSpacerHeight,
+    historyVirtualization.topSpacerHeight,
     hasStreamingContentStarted,
-    isSending,
     messages,
     scrollMessagesToBottom,
     showWorkspacePanel,
@@ -651,9 +1118,14 @@ export const AgentConversation: React.FC = () => {
 
   const upsertConversationItem = useCallback(
     (nextItem: AgentConversationSummary) => {
-      setConversations((prev) => {
-        const deduped = prev.filter((item) => item.id !== nextItem.id);
-        return [nextItem, ...deduped];
+      setConversationListState((prev) => {
+        const existingIds = new Set(prev.items.map((item) => item.id));
+        const deduped = prev.items.filter((item) => item.id !== nextItem.id);
+        return {
+          ...prev,
+          items: [nextItem, ...deduped],
+          total: existingIds.has(nextItem.id) ? prev.total : prev.total + 1,
+        };
       });
     },
     [],
@@ -664,18 +1136,39 @@ export const AgentConversation: React.FC = () => {
       if (!agentId || !targetConversationId) return;
       try {
         const [listData, detailData, messagesData] = await Promise.all([
-          agentsApi.getConversations(agentId),
+          agentsApi.getConversations(agentId, {
+            limit: CONVERSATION_LIST_PAGE_SIZE,
+          }),
           agentsApi.getConversation(agentId, targetConversationId),
           includeMessages
-            ? agentsApi.getConversationMessages(agentId, targetConversationId)
+            ? agentsApi.getConversationMessages(agentId, targetConversationId, {
+                limit: MESSAGE_PAGE_SIZE,
+              })
             : Promise.resolve(null),
         ]);
-        setConversations(listData.items);
         setConversation(detailData);
+        const nextConversationListState = buildConversationListState(
+          listData.items,
+          {
+            activeConversation: detailData,
+            hasMore: listData.hasMore,
+            nextCursor: listData.nextCursor || null,
+            total: listData.total,
+          },
+        );
+        conversationListStateRef.current = nextConversationListState;
+        setConversationListState(nextConversationListState);
         setPendingConversationTitle(detailData.title || null);
         if (messagesData) {
-          setHistoryItemHeights({});
-          setMessages(messagesData.items);
+          const nextMessageListState = buildMessageListState(
+            messagesData.items,
+            {
+              hasOlderLiveMessages: messagesData.hasOlderLiveMessages || false,
+              olderCursor: messagesData.olderCursor || null,
+            },
+          );
+          messageListStateRef.current = nextMessageListState;
+          setMessageListState(nextMessageListState);
           setHistorySummary(messagesData.historySummary || null);
         }
       } catch (syncError) {
@@ -696,7 +1189,8 @@ export const AgentConversation: React.FC = () => {
       return [];
     });
     setConversation(null);
-    setMessages([]);
+    messageListStateRef.current = EMPTY_MESSAGE_LIST_STATE;
+    setMessageListState(EMPTY_MESSAGE_LIST_STATE);
     setHistorySummary(null);
     setInputMessage("");
     setError(null);
@@ -754,11 +1248,16 @@ export const AgentConversation: React.FC = () => {
         const remainingConversations = conversations.filter(
           (conversationItem) => conversationItem.id !== item.id,
         );
-        setConversations(remainingConversations);
+        setConversationListState((prev) => ({
+          ...prev,
+          items: remainingConversations,
+          total: Math.max(0, prev.total - 1),
+        }));
 
         if (item.id === activeConversationId) {
           setConversation(null);
-          setMessages([]);
+          messageListStateRef.current = EMPTY_MESSAGE_LIST_STATE;
+          setMessageListState(EMPTY_MESSAGE_LIST_STATE);
           setPendingConversationTitle(null);
           setDraftConversationId(null);
           setShowDraftPlaceholder(false);
@@ -1118,7 +1617,10 @@ export const AgentConversation: React.FC = () => {
       createdAt: new Date().toISOString(),
     };
 
-    setMessages((prev) => [...prev, optimisticMessage]);
+    setMessageListState((prev) => ({
+      ...prev,
+      items: [...prev.items, optimisticMessage],
+    }));
     setInputMessage("");
     setAttachedFiles((prev) => {
       prev.forEach((item) => {
@@ -1148,9 +1650,10 @@ export const AgentConversation: React.FC = () => {
     let hasCommittedFailedTurn = false;
 
     const removeOptimisticMessage = () => {
-      setMessages((prev) =>
-        prev.filter((message) => message.id !== optimisticMessage.id),
-      );
+      setMessageListState((prev) => ({
+        ...prev,
+        items: prev.items.filter((message) => message.id !== optimisticMessage.id),
+      }));
     };
 
     const commitFailedTurnToMessages = () => {
@@ -1169,23 +1672,26 @@ export const AgentConversation: React.FC = () => {
         t("agent.persistentResult.generatedOutput", "已生成结果"),
       );
 
-      setMessages((prev) => [
+      setMessageListState((prev) => ({
         ...prev,
-        {
-          id: `temp-assistant-failed-${Date.now()}`,
-          conversationId: targetConversationId,
-          role: "assistant",
-          contentText: assistantContent,
-          contentJson: {
-            artifacts: [],
-            scheduleEvents: streamingViewRef.current.scheduleEvents,
-            inlineError: streamingViewRef.current.inlineError,
+        items: [
+          ...prev.items,
+          {
+            id: `temp-assistant-failed-${Date.now()}`,
+            conversationId: targetConversationId,
+            role: "assistant",
+            contentText: assistantContent,
+            contentJson: {
+              artifacts: [],
+              scheduleEvents: streamingViewRef.current.scheduleEvents,
+              inlineError: streamingViewRef.current.inlineError,
+            },
+            attachments: [],
+            source: "web",
+            createdAt: new Date().toISOString(),
           },
-          attachments: [],
-          source: "web",
-          createdAt: new Date().toISOString(),
-        },
-      ]);
+        ],
+      }));
     };
 
     const finalizeCompletedTurn = async () => {
@@ -1435,98 +1941,14 @@ export const AgentConversation: React.FC = () => {
     upsertConversationItem,
   ]);
 
-  const renderedMessages = useMemo<RenderedConversationMessage[]>(() => {
-    return messages.map((message) => {
-      const artifactItems = derivePersistentArtifacts(message);
-      const scheduleItems = derivePersistentScheduleEvents(message);
-      const displayContent = getPersistentFallbackAssistantText(
-        message,
-        t("agent.persistentResult.generatedOutput", "已生成结果"),
-      );
-      const inlineError =
-        typeof message.contentJson?.inlineError === "string"
-          ? message.contentJson.inlineError
-          : null;
-      return {
-        ...message,
-        artifactItems,
-        scheduleItems,
-        displayContent,
-        inlineError,
-      };
-    });
-  }, [messages, t]);
-
-  const renderHistoryMessage = useCallback(
-    (message: RenderedConversationMessage) => {
-      if (message.role === "user") {
-        return (
-          <div className="flex justify-end">
-            <div className="max-w-[80%] rounded-[28px] rounded-tr-none bg-emerald-600 px-5 py-4 text-white shadow-lg shadow-emerald-500/10">
-              <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                {message.contentText}
-              </p>
-              {message.attachments.length > 0 && (
-                <div className="mt-3 grid gap-2">
-                  {message.attachments.map((attachment, index) => (
-                    <div
-                      key={`${message.id}-attachment-${index}`}
-                      className="rounded-xl border border-white/15 bg-white/10 px-3 py-2"
-                    >
-                      <p className="text-xs font-semibold">
-                        {String(
-                          attachment.name ||
-                            attachment.file_name ||
-                            "Attachment",
-                        )}
-                      </p>
-                      <p className="text-[11px] opacity-80">
-                        {String(
-                          attachment.type || attachment.content_type || "",
-                        )}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      }
-
-      if (message.role === "system") {
-        return (
-          <div className="flex justify-center">
-            <div className="rounded-full border border-zinc-200/80 bg-zinc-100 px-5 py-2 dark:border-zinc-800/80 dark:bg-zinc-900/50">
-              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-500">
-                {message.contentText}
-              </p>
-            </div>
-          </div>
-        );
-      }
-
-      return (
-        <PersistentConversationAssistantMessage
-          content={message.displayContent}
-          artifactItems={message.artifactItems}
-          scheduleItems={message.scheduleItems}
-          errorText={message.inlineError}
-          onOpenArtifact={handleOpenArtifactInWorkspace}
-          onDownloadArtifact={handleDownloadArtifact}
-          downloadingArtifactPath={downloadingArtifactPath}
-        />
-      );
-    },
-    [
-      downloadingArtifactPath,
-      handleDownloadArtifact,
-      handleOpenArtifactInWorkspace,
-    ],
+  const generatedOutputLabel = t(
+    "agent.persistentResult.generatedOutput",
+    "已生成结果",
   );
-
   const shouldVirtualizeHistory =
-    renderedMessages.length >= HISTORY_VIRTUALIZATION_MIN_ITEMS;
+    messages.length >= HISTORY_VIRTUALIZATION_MIN_ITEMS;
+  const shouldVirtualizeConversationList =
+    conversations.length >= CONVERSATION_LIST_VIRTUALIZATION_MIN_ITEMS;
 
   const showPendingConversationCard = showDraftPlaceholder;
   const showStreamingProcessLine =
@@ -1540,17 +1962,21 @@ export const AgentConversation: React.FC = () => {
         scheduleEvents: streamingScheduleItems,
       },
     },
-    t("agent.persistentResult.generatedOutput", "已生成结果"),
+    generatedOutputLabel,
   );
   const showStreamingAssistantMessage =
     Boolean(streamingAssistantDisplayContent.trim()) ||
     Boolean(streamingInlineError) ||
     streamingScheduleItems.length > 0;
   const hasVisibleConversationContent =
-    renderedMessages.length > 0 ||
+    messages.length > 0 ||
     showStreamingProcessLine ||
     showStreamingAssistantMessage;
   const showBlockingLoading = isLoading && !hasVisibleConversationContent;
+  const showCompactedHistorySummary =
+    !messageListState.hasOlderLiveMessages &&
+    Boolean(historySummary) &&
+    Number(conversation?.compactedMessageCount || 0) > 0;
   const conversationTitle =
     pendingConversationTitle ||
     conversation?.title ||
@@ -1623,11 +2049,16 @@ export const AgentConversation: React.FC = () => {
               {t("agent.conversations", "Conversations")}
             </h2>
             <span className="rounded-full bg-zinc-100 px-2 py-1 text-xs font-semibold text-zinc-500 dark:bg-zinc-800 dark:text-zinc-300">
-              {conversations.length + (showPendingConversationCard ? 1 : 0)}
+              {conversationListState.total + (showPendingConversationCard ? 1 : 0)}
             </span>
           </div>
 
-          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+          <div
+            ref={conversationListContainerRef}
+            onScroll={handleConversationListScroll}
+            data-testid="conversation-list-scroll"
+            className="min-h-0 flex-1 overflow-y-auto pr-1"
+          >
             {showPendingConversationCard && (
               <div className="rounded-2xl border border-emerald-300/60 bg-emerald-50/70 px-3 py-3 dark:border-emerald-700/50 dark:bg-emerald-950/20">
                 <div className="flex items-center gap-2 text-sm font-semibold text-emerald-700 dark:text-emerald-300">
@@ -1644,74 +2075,94 @@ export const AgentConversation: React.FC = () => {
                 </div>
               </div>
             )}
-            {conversations.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() =>
-                  navigate(`/workforce/${agentId}/conversations/${item.id}`)
-                }
-                className={`w-full rounded-2xl border px-3 py-3 text-left transition-colors ${
-                  item.id === activeConversationId
-                    ? "border-emerald-500 bg-emerald-500/10"
-                    : "border-zinc-200 bg-zinc-50 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-950/60 dark:hover:bg-zinc-800/80"
-                }`}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                      {item.title}
-                    </p>
-                    <p className="mt-1 line-clamp-2 text-xs text-zinc-500 dark:text-zinc-400">
-                      {item.lastMessagePreview ||
-                        t("agent.noMessagesYet", "No messages yet")}
-                    </p>
-                    <div className="mt-2 flex items-center gap-2">
-                      <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:bg-zinc-800 dark:text-zinc-300">
-                        {item.source}
-                      </span>
-                      {item.storageTier && item.storageTier !== "hot" && (
-                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-                          {item.storageTier}
-                        </span>
-                      )}
-                      {item.latestSnapshotStatus && (
-                        <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
-                          {item.latestSnapshotStatus}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void handleRenameConversation(item);
+            <div>
+              {shouldVirtualizeConversationList ? (
+                <>
+                  <div
+                    style={{
+                      height: `${conversationListVirtualization.topSpacerHeight}px`,
+                    }}
+                  />
+                  {conversationListVirtualization.visibleIndexes.map((index) => {
+                    const item = conversations[index];
+                    if (!item) {
+                      return null;
+                    }
+                    return (
+                      <MeasuredVirtualItem
+                        key={item.id}
+                        gapPx={8}
+                        index={index}
+                        onHeightChange={
+                          conversationListVirtualization.onItemHeightChange
+                        }
+                      >
+                        <ConversationListItemCard
+                          activeConversationId={activeConversationId}
+                          deletingConversationIds={deletingConversationIds}
+                          item={item}
+                          noMessagesLabel={t(
+                            "agent.noMessagesYet",
+                            "No messages yet",
+                          )}
+                          onDeleteConversation={(conversationItem) => {
+                            void handleDeleteConversation(conversationItem);
+                          }}
+                          onOpenConversation={(nextConversationId) => {
+                            navigate(
+                              `/workforce/${agentId}/conversations/${nextConversationId}`,
+                            );
+                          }}
+                          onRenameConversation={(conversationItem) => {
+                            void handleRenameConversation(conversationItem);
+                          }}
+                        />
+                      </MeasuredVirtualItem>
+                    );
+                  })}
+                  <div
+                    style={{
+                      height: `${conversationListVirtualization.bottomSpacerHeight}px`,
+                    }}
+                  />
+                </>
+              ) : (
+                conversations.map((item, index) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      paddingBottom:
+                        index < conversations.length - 1
+                          ? "8px"
+                          : undefined,
+                    }}
+                  >
+                    <ConversationListItemCard
+                      activeConversationId={activeConversationId}
+                      deletingConversationIds={deletingConversationIds}
+                      item={item}
+                      noMessagesLabel={t("agent.noMessagesYet", "No messages yet")}
+                      onDeleteConversation={(conversationItem) => {
+                        void handleDeleteConversation(conversationItem);
                       }}
-                      className="rounded-lg p-1 text-zinc-400 transition-colors hover:bg-zinc-200 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void handleDeleteConversation(item);
+                      onOpenConversation={(nextConversationId) => {
+                        navigate(
+                          `/workforce/${agentId}/conversations/${nextConversationId}`,
+                        );
                       }}
-                      disabled={deletingConversationIds.has(item.id)}
-                      className="rounded-lg p-1 text-zinc-400 transition-colors hover:bg-red-100 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-red-950/40 dark:hover:text-red-400"
-                    >
-                      {deletingConversationIds.has(item.id) ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Trash2 className="w-3.5 h-3.5" />
-                      )}
-                    </button>
+                      onRenameConversation={(conversationItem) => {
+                        void handleRenameConversation(conversationItem);
+                      }}
+                    />
                   </div>
+                ))
+              )}
+              {conversationListState.isLoadingMore && (
+                <div className="flex items-center justify-center py-3 text-zinc-500 dark:text-zinc-400">
+                  <Loader2 className="h-4 w-4 animate-spin" />
                 </div>
-              </button>
-            ))}
+              )}
+            </div>
           </div>
         </aside>
 
@@ -1748,6 +2199,7 @@ export const AgentConversation: React.FC = () => {
             <div
               ref={messagesContainerRef}
               onScroll={handleMessagesScroll}
+              data-testid="conversation-messages-scroll"
               className="min-h-0 flex-1 overflow-y-auto px-5 py-5"
             >
               {showBlockingLoading ? (
@@ -1777,9 +2229,16 @@ export const AgentConversation: React.FC = () => {
               ) : (
                 <div className="flex flex-col">
                   <div ref={historyPrefixRef}>
-                    {historySummary &&
-                      Number(conversation?.compactedMessageCount || 0) > 0 && (
-                        <div className="rounded-[28px] border border-amber-200 bg-amber-50/80 px-5 py-4 dark:border-amber-900/40 dark:bg-amber-950/20">
+                    {messageListState.isLoadingOlder && (
+                      <div className="flex items-center justify-center pb-4 text-zinc-500 dark:text-zinc-400">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      </div>
+                    )}
+                    {showCompactedHistorySummary && historySummary && (
+                        <div
+                          data-testid="compacted-history-summary"
+                          className="rounded-[28px] border border-amber-200 bg-amber-50/80 px-5 py-4 dark:border-amber-900/40 dark:bg-amber-950/20"
+                        >
                           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-amber-700 dark:text-amber-300">
                             <Bot className="h-4 w-4" />
                             {t(
@@ -1816,20 +2275,28 @@ export const AgentConversation: React.FC = () => {
                         }}
                       />
 
-                      {visibleHistoryIndexes.map((index) => {
-                        const message = renderedMessages[index];
+                      {historyVirtualization.visibleIndexes.map((index) => {
+                        const message = messages[index];
                         if (!message) {
                           return null;
                         }
 
                         return (
-                          <VirtualizedHistoryItem
+                          <MeasuredVirtualItem
                             key={message.id}
                             index={index}
-                            onHeightChange={handleHistoryItemHeightChange}
+                            onHeightChange={
+                              historyVirtualization.onItemHeightChange
+                            }
                           >
-                            {renderHistoryMessage(message)}
-                          </VirtualizedHistoryItem>
+                            <ConversationMessageRow
+                              message={message}
+                              generatedOutputLabel={generatedOutputLabel}
+                              onOpenArtifact={handleOpenArtifactInWorkspace}
+                              onDownloadArtifact={handleDownloadArtifact}
+                              downloadingArtifactPath={downloadingArtifactPath}
+                            />
+                          </MeasuredVirtualItem>
                         );
                       })}
 
@@ -1840,17 +2307,23 @@ export const AgentConversation: React.FC = () => {
                       />
                     </>
                   ) : (
-                    renderedMessages.map((message, index) => (
+                    messages.map((message, index) => (
                       <div
                         key={message.id}
                         style={{
                           paddingBottom:
-                            index < renderedMessages.length - 1
+                            index < messages.length - 1
                               ? `${HISTORY_MESSAGE_GAP_PX}px`
                               : undefined,
                         }}
                       >
-                        {renderHistoryMessage(message)}
+                        <ConversationMessageRow
+                          message={message}
+                          generatedOutputLabel={generatedOutputLabel}
+                          onOpenArtifact={handleOpenArtifactInWorkspace}
+                          onDownloadArtifact={handleDownloadArtifact}
+                          downloadingArtifactPath={downloadingArtifactPath}
+                        />
                       </div>
                     ))
                   )}
@@ -1861,7 +2334,7 @@ export const AgentConversation: React.FC = () => {
                       className="space-y-6"
                       style={{
                         paddingTop:
-                          renderedMessages.length > 0
+                          messages.length > 0
                             ? `${HISTORY_MESSAGE_GAP_PX}px`
                             : undefined,
                       }}
@@ -1889,7 +2362,7 @@ export const AgentConversation: React.FC = () => {
                       className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-300"
                       style={{
                         marginTop:
-                          renderedMessages.length > 0 ||
+                          messages.length > 0 ||
                           showStreamingProcessLine ||
                           showStreamingAssistantMessage
                             ? `${HISTORY_MESSAGE_GAP_PX}px`

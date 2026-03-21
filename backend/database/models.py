@@ -329,6 +329,14 @@ class AgentConversation(Base):
     __table_args__ = (
         Index("idx_agent_conversations_owner_agent", "owner_user_id", "agent_id", "status"),
         Index("idx_agent_conversations_agent_updated", "agent_id", "updated_at"),
+        Index(
+            "idx_agent_conversations_owner_agent_status_updated_cursor",
+            "owner_user_id",
+            "agent_id",
+            "status",
+            "updated_at",
+            "conversation_id",
+        ),
     )
 
     def __repr__(self):
@@ -426,6 +434,12 @@ class AgentConversationMessage(Base):
             "idx_agent_conversation_messages_conversation_created",
             "conversation_id",
             "created_at",
+        ),
+        Index(
+            "idx_agent_conversation_messages_conversation_created_message",
+            "conversation_id",
+            "created_at",
+            "message_id",
         ),
         Index(
             "idx_agent_conversation_messages_external_event",

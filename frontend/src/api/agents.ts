@@ -99,6 +99,8 @@ export interface VoiceTranscriptionResponse {
 export interface AgentConversationListResponse {
   items: AgentConversationSummary[];
   total: number;
+  hasMore: boolean;
+  nextCursor?: string | null;
 }
 
 export interface AgentConversationMessagesResponse {
@@ -108,6 +110,8 @@ export interface AgentConversationMessagesResponse {
   compactedMessageCount?: number;
   archivedSegmentCount?: number;
   recentWindowSize?: number;
+  hasOlderLiveMessages?: boolean;
+  olderCursor?: string | null;
 }
 
 export interface SaveFeishuPublicationRequest {
@@ -526,9 +530,16 @@ export const agentsApi = {
 
   getConversations: async (
     agentId: string,
+    options?: { limit?: number; cursor?: string | null },
   ): Promise<AgentConversationListResponse> => {
     const response = await apiClient.get<AgentConversationListResponse>(
       `/agents/${agentId}/conversations`,
+      {
+        params: {
+          limit: options?.limit,
+          cursor: options?.cursor || undefined,
+        },
+      },
     );
     return response.data;
   },
@@ -577,11 +588,16 @@ export const agentsApi = {
   getConversationMessages: async (
     agentId: string,
     conversationId: string,
-    limit = 200,
+    options?: { limit?: number; before?: string | null },
   ): Promise<AgentConversationMessagesResponse> => {
     const response = await apiClient.get<AgentConversationMessagesResponse>(
       `/agents/${agentId}/conversations/${conversationId}/messages`,
-      { params: { limit } },
+      {
+        params: {
+          limit: options?.limit,
+          before: options?.before || undefined,
+        },
+      },
     );
     return response.data;
   },

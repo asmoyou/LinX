@@ -12,6 +12,7 @@ import mimetypes
 import queue
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -30,6 +31,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import and_, or_
 
 from access_control.permissions import CurrentUser, get_current_user
 from agent_framework.agent_conversation_runner import (
@@ -146,6 +148,8 @@ class AgentConversationMessageResponse(BaseModel):
 class AgentConversationListResponse(BaseModel):
     items: List[AgentConversationSummaryResponse]
     total: int
+    hasMore: bool = False
+    nextCursor: Optional[str] = None
 
 
 class AgentConversationMessagesListResponse(BaseModel):
@@ -155,6 +159,8 @@ class AgentConversationMessagesListResponse(BaseModel):
     compactedMessageCount: int = 0
     archivedSegmentCount: int = 0
     recentWindowSize: int = 0
+    hasOlderLiveMessages: bool = False
+    olderCursor: Optional[str] = None
 
 
 class AgentConversationArchiveListResponse(BaseModel):
@@ -371,6 +377,59 @@ def _parse_optional_datetime(value: Any) -> Optional[datetime]:
         return datetime.fromisoformat(normalized)
     except (TypeError, ValueError):
         return None
+
+
+def _encode_cursor(payload: Dict[str, Any]) -> str:
+    normalized: Dict[str, Any] = {}
+    for key, value in payload.items():
+        if isinstance(value, datetime):
+            normalized[key] = value.isoformat()
+        else:
+            normalized[key] = str(value)
+    raw = json.dumps(normalized, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("utf-8")
+
+
+def _decode_cursor(cursor: Optional[str]) -> Dict[str, Any]:
+    if not cursor:
+        return {}
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
+        data = json.loads(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid pagination cursor") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Invalid pagination cursor")
+    return data
+
+
+def _decode_conversation_cursor(cursor: Optional[str]) -> Optional[tuple[datetime, UUID]]:
+    payload = _decode_cursor(cursor)
+    if not payload:
+        return None
+    updated_at = _parse_optional_datetime(payload.get("updatedAt"))
+    conversation_id = payload.get("conversationId")
+    if updated_at is None or conversation_id in {None, ""}:
+        raise HTTPException(status_code=400, detail="Invalid pagination cursor")
+    try:
+        return updated_at, UUID(str(conversation_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid pagination cursor") from exc
+
+
+def _decode_message_cursor(cursor: Optional[str]) -> Optional[tuple[datetime, UUID]]:
+    payload = _decode_cursor(cursor)
+    if not payload:
+        return None
+    created_at = _parse_optional_datetime(payload.get("createdAt"))
+    message_id = payload.get("messageId")
+    if created_at is None or message_id in {None, ""}:
+        raise HTTPException(status_code=400, detail="Invalid pagination cursor")
+    try:
+        return created_at, UUID(str(message_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid pagination cursor") from exc
 
 
 def _workspace_entry_signature(entry: Dict[str, Any]) -> tuple[bool, int, str]:
@@ -846,7 +905,7 @@ async def _build_history_content_from_row(
 async def _build_conversation_history(
     conversation_id: UUID,
 ) -> tuple[List[Dict[str, Any]], dict[str, Any]]:
-    history_window = get_conversation_history_compaction_service().load_history_window(
+    history_window = get_conversation_history_compaction_service().load_runtime_window(
         conversation_id
     )
     history: List[Dict[str, Any]] = []
@@ -1762,20 +1821,71 @@ async def create_agent_conversation(
 @router.get("/{agent_id}/conversations", response_model=AgentConversationListResponse)
 async def list_agent_conversations(
     agent_id: str,
+    limit: int = Query(30, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    started = time.monotonic()
     agents_router._get_accessible_agent_or_raise(agent_id, current_user, access_type="read")
+    cursor_value = _decode_conversation_cursor(cursor)
     with get_db_session() as session:
-        rows = (
+        base_query = (
             session.query(AgentConversation)
             .filter(AgentConversation.agent_id == UUID(agent_id))
             .filter(AgentConversation.owner_user_id == UUID(current_user.user_id))
             .filter(AgentConversation.status == "active")
-            .order_by(AgentConversation.updated_at.desc())
+        )
+        total = base_query.count()
+        query = base_query
+        if cursor_value is not None:
+            cursor_updated_at, cursor_conversation_id = cursor_value
+            query = query.filter(
+                or_(
+                    AgentConversation.updated_at < cursor_updated_at,
+                    and_(
+                        AgentConversation.updated_at == cursor_updated_at,
+                        AgentConversation.conversation_id < cursor_conversation_id,
+                    ),
+                )
+            )
+        rows = (
+            query.order_by(
+                AgentConversation.updated_at.desc(),
+                AgentConversation.conversation_id.desc(),
+            )
+            .limit(limit + 1)
             .all()
         )
-        items = [_serialize_conversation_summary(session, row) for row in rows]
-        return AgentConversationListResponse(items=items, total=len(items))
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        items = [_serialize_conversation_summary(session, row) for row in page_rows]
+        next_cursor = None
+        if has_more and page_rows:
+            last_row = page_rows[-1]
+            next_cursor = _encode_cursor(
+                {
+                    "updatedAt": last_row.updated_at,
+                    "conversationId": last_row.conversation_id,
+                }
+            )
+
+    logger.info(
+        "Listed persistent conversations page",
+        extra={
+            "agent_id": agent_id,
+            "user_id": current_user.user_id,
+            "limit": limit,
+            "returned_count": len(items),
+            "has_more": has_more,
+            "duration_ms": round((time.monotonic() - started) * 1000, 2),
+        },
+    )
+    return AgentConversationListResponse(
+        items=items,
+        total=int(total or 0),
+        hasMore=has_more,
+        nextCursor=next_cursor,
+    )
 
 
 @router.get(
@@ -1873,9 +1983,12 @@ async def delete_agent_conversation(
 async def list_agent_conversation_messages(
     agent_id: str,
     conversation_id: str,
-    limit: int = Query(200, ge=1, le=500),
+    limit: int = Query(50, ge=1, le=100),
+    before: Optional[str] = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    started = time.monotonic()
+    before_cursor = _decode_message_cursor(before)
     with get_db_session() as session:
         row = _load_owned_conversation(
             session,
@@ -1883,20 +1996,45 @@ async def list_agent_conversation_messages(
             conversation_id=conversation_id,
             current_user=current_user,
         )
-        history_window = get_conversation_history_compaction_service().load_history_window(
-            row.conversation_id
+    history_page = get_conversation_history_compaction_service().list_live_message_page(
+        row.conversation_id,
+        limit=limit,
+        before_cursor=before_cursor,
+    )
+    messages = list(history_page.get("messages") or [])
+    items = [_serialize_message(message) for message in messages]
+    has_older_live_messages = bool(history_page.get("has_older_live_messages"))
+    older_cursor = None
+    if has_older_live_messages and messages:
+        oldest_loaded_message = messages[0]
+        older_cursor = _encode_cursor(
+            {
+                "createdAt": oldest_loaded_message.created_at,
+                "messageId": oldest_loaded_message.message_id,
+            }
         )
-        recent_messages = list(history_window.get("recent_messages") or [])
-        messages = recent_messages[-limit:] if limit > 0 else recent_messages
-        items = [_serialize_message(message) for message in messages]
-        return AgentConversationMessagesListResponse(
-            items=items,
-            total=len(items),
-            historySummary=_build_history_summary_response_from_window(history_window),
-            compactedMessageCount=int(history_window.get("compacted_message_count") or 0),
-            archivedSegmentCount=int(history_window.get("archived_segment_count") or 0),
-            recentWindowSize=int(history_window.get("recent_window_size") or 0),
-        )
+    logger.info(
+        "Listed persistent conversation live messages page",
+        extra={
+            "agent_id": agent_id,
+            "conversation_id": conversation_id,
+            "user_id": current_user.user_id,
+            "limit": limit,
+            "returned_count": len(items),
+            "has_older": has_older_live_messages,
+            "duration_ms": round((time.monotonic() - started) * 1000, 2),
+        },
+    )
+    return AgentConversationMessagesListResponse(
+        items=items,
+        total=len(items),
+        historySummary=_build_history_summary_response_from_window(history_page),
+        compactedMessageCount=int(history_page.get("compacted_message_count") or 0),
+        archivedSegmentCount=int(history_page.get("archived_segment_count") or 0),
+        recentWindowSize=int(history_page.get("recent_window_size") or 0),
+        hasOlderLiveMessages=has_older_live_messages,
+        olderCursor=older_cursor,
+    )
 
 
 @router.post("/{agent_id}/conversations/{conversation_id}/messages")

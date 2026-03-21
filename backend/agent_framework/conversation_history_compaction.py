@@ -14,6 +14,7 @@ from typing import Any, Optional
 from uuid import UUID, uuid4
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from sqlalchemy import and_, or_
 
 from agent_framework.agent_conversation_runner import _build_llm_for_agent
 from database.connection import get_db_session
@@ -276,7 +277,131 @@ class ConversationHistoryCompactionService:
             settings or load_conversation_history_compaction_settings()
         ).with_defaults()
 
-    def load_history_window(self, conversation_id: UUID) -> dict[str, Any]:
+    def _empty_history_window(self) -> dict[str, Any]:
+        return {
+            "summary_text": None,
+            "summary_json": None,
+            "summary_row": None,
+            "recent_messages": [],
+            "older_message_count": 0,
+            "compacted_message_count": 0,
+            "archived_segment_count": 0,
+            "recent_window_size": self.settings.recent_turn_window,
+        }
+
+    @staticmethod
+    def _normalize_summary_row(
+        summary_row: AgentConversationHistorySummary | None,
+    ) -> tuple[Optional[str], Optional[dict[str, list[str]]], int]:
+        if summary_row is None:
+            return None, None, 0
+        summary_text = str(summary_row.summary_text or "").strip() or None
+        summary_json = (
+            _normalize_summary_json(summary_row.summary_json)
+            if isinstance(summary_row.summary_json, dict)
+            else None
+        )
+        return summary_text, summary_json, int(summary_row.raw_message_count or 0)
+
+    def _load_summary_row(self, session, conversation_id: UUID) -> AgentConversationHistorySummary | None:
+        return (
+            session.query(AgentConversationHistorySummary)
+            .filter(AgentConversationHistorySummary.conversation_id == conversation_id)
+            .first()
+        )
+
+    def _load_archived_segment_count(self, session, conversation_id: UUID) -> int:
+        return int(
+            session.query(AgentConversationMessageArchive)
+            .filter(AgentConversationMessageArchive.conversation_id == conversation_id)
+            .count()
+            or 0
+        )
+
+    def load_runtime_window(self, conversation_id: UUID) -> dict[str, Any]:
+        with get_db_session() as session:
+            conversation = (
+                session.query(AgentConversation)
+                .filter(AgentConversation.conversation_id == conversation_id)
+                .first()
+            )
+            if conversation is None:
+                return self._empty_history_window()
+
+            summary_row = self._load_summary_row(session, conversation_id)
+            summary_text, summary_json, older_message_count = self._normalize_summary_row(summary_row)
+            archived_segment_count = self._load_archived_segment_count(session, conversation_id)
+
+            user_anchors = (
+                session.query(AgentConversationMessage)
+                .filter(AgentConversationMessage.conversation_id == conversation_id)
+                .filter(AgentConversationMessage.role == "user")
+                .order_by(
+                    AgentConversationMessage.created_at.desc(),
+                    AgentConversationMessage.message_id.desc(),
+                )
+                .limit(self.settings.recent_turn_window)
+                .all()
+            )
+
+            recent_messages: list[AgentConversationMessage] = []
+            if user_anchors:
+                oldest_anchor = user_anchors[-1]
+                recent_messages = (
+                    session.query(AgentConversationMessage)
+                    .filter(AgentConversationMessage.conversation_id == conversation_id)
+                    .filter(AgentConversationMessage.role.in_(("user", "assistant")))
+                    .filter(
+                        or_(
+                            AgentConversationMessage.created_at > oldest_anchor.created_at,
+                            and_(
+                                AgentConversationMessage.created_at == oldest_anchor.created_at,
+                                AgentConversationMessage.message_id >= oldest_anchor.message_id,
+                            ),
+                        )
+                    )
+                    .order_by(
+                        AgentConversationMessage.created_at.asc(),
+                        AgentConversationMessage.message_id.asc(),
+                    )
+                    .all()
+                )
+            else:
+                recent_messages = list(
+                    reversed(
+                        (
+                    session.query(AgentConversationMessage)
+                    .filter(AgentConversationMessage.conversation_id == conversation_id)
+                    .filter(AgentConversationMessage.role.in_(("user", "assistant")))
+                    .order_by(
+                        AgentConversationMessage.created_at.desc(),
+                        AgentConversationMessage.message_id.desc(),
+                    )
+                    .limit(self.settings.recent_turn_window)
+                    .all()
+                        )
+                    )
+                )
+
+            return {
+                "summary_text": summary_text,
+                "summary_json": summary_json,
+                "summary_row": summary_row,
+                "recent_messages": recent_messages,
+                "older_message_count": older_message_count,
+                "compacted_message_count": int(conversation.compacted_message_count or 0),
+                "archived_segment_count": archived_segment_count,
+                "recent_window_size": self.settings.recent_turn_window,
+            }
+
+    def list_live_message_page(
+        self,
+        conversation_id: UUID,
+        *,
+        limit: int,
+        before_cursor: Optional[tuple[datetime, UUID]] = None,
+    ) -> dict[str, Any]:
+        effective_limit = max(int(limit or 0), 1)
         with get_db_session() as session:
             conversation = (
                 session.query(AgentConversation)
@@ -285,62 +410,56 @@ class ConversationHistoryCompactionService:
             )
             if conversation is None:
                 return {
-                    "summary_text": None,
-                    "summary_json": None,
-                    "summary_row": None,
-                    "recent_messages": [],
-                    "older_message_count": 0,
-                    "compacted_message_count": 0,
-                    "archived_segment_count": 0,
-                    "recent_window_size": 0,
+                    **self._empty_history_window(),
+                    "messages": [],
+                    "has_older_live_messages": False,
                 }
 
-            messages = (
+            query = (
                 session.query(AgentConversationMessage)
                 .filter(AgentConversationMessage.conversation_id == conversation_id)
                 .filter(AgentConversationMessage.role.in_(("user", "assistant")))
-                .order_by(AgentConversationMessage.created_at.asc())
+            )
+            if before_cursor is not None:
+                before_created_at, before_message_id = before_cursor
+                query = query.filter(
+                    or_(
+                        AgentConversationMessage.created_at < before_created_at,
+                        and_(
+                            AgentConversationMessage.created_at == before_created_at,
+                            AgentConversationMessage.message_id < before_message_id,
+                        ),
+                    )
+                )
+
+            page_rows = (
+                query.order_by(
+                    AgentConversationMessage.created_at.desc(),
+                    AgentConversationMessage.message_id.desc(),
+                )
+                .limit(effective_limit + 1)
                 .all()
             )
-            older_messages, recent_messages = _split_messages_by_turn_window(
-                messages,
-                self.settings.recent_turn_window,
-            )
-            summary_row = (
-                session.query(AgentConversationHistorySummary)
-                .filter(AgentConversationHistorySummary.conversation_id == conversation_id)
-                .first()
-            )
-            archived_segment_count = (
-                session.query(AgentConversationMessageArchive)
-                .filter(AgentConversationMessageArchive.conversation_id == conversation_id)
-                .count()
-            )
+            has_older_live_messages = len(page_rows) > effective_limit
+            page_messages = list(reversed(page_rows[:effective_limit]))
 
-            summary_text = summary_row.summary_text if summary_row else None
-            summary_json = (
-                _normalize_summary_json(summary_row.summary_json)
-                if summary_row and isinstance(summary_row.summary_json, dict)
-                else None
-            )
-            fallback_summary_text = (
-                _build_fallback_summary_text(older_messages) if older_messages else None
-            )
-            if summary_text and fallback_summary_text:
-                summary_text = f"{summary_text}\n\nRecent older raw message highlights:\n{fallback_summary_text}"
-            elif not summary_text and fallback_summary_text:
-                summary_text = fallback_summary_text
+            summary_row = self._load_summary_row(session, conversation_id)
+            summary_text, summary_json, older_message_count = self._normalize_summary_row(summary_row)
 
             return {
                 "summary_text": summary_text,
                 "summary_json": summary_json,
                 "summary_row": summary_row,
-                "recent_messages": recent_messages,
-                "older_message_count": len(older_messages),
+                "older_message_count": older_message_count,
                 "compacted_message_count": int(conversation.compacted_message_count or 0),
-                "archived_segment_count": int(archived_segment_count or 0),
+                "archived_segment_count": self._load_archived_segment_count(session, conversation_id),
                 "recent_window_size": self.settings.recent_turn_window,
+                "messages": page_messages,
+                "has_older_live_messages": has_older_live_messages,
             }
+
+    def load_history_window(self, conversation_id: UUID) -> dict[str, Any]:
+        return self.load_runtime_window(conversation_id)
 
     async def compact_conversation(
         self,
