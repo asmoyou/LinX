@@ -20,6 +20,7 @@ from api_gateway.routers.integrations import (
     _build_feishu_reply_text,
     _classify_feishu_file_delivery_error,
     _extract_feishu_message_from_long_connection_event,
+    _normalize_feishu_card_markdown,
     _queued_feishu_file_delivery_note,
     _format_feishu_api_error,
     _looks_like_feishu_file_send_request,
@@ -404,9 +405,35 @@ def test_send_feishu_markdown_card_message_uses_interactive_lark_md_payload(monk
     assert "header" not in card
     assert card["body"]["direction"] == "vertical"
     assert card["body"]["elements"][0]["tag"] == "markdown"
+    assert card["body"]["elements"][0]["text_size"] == "normal"
     assert (
         card["body"]["elements"][0]["content"]
         == "## 标题\n- 列表项\n\n[网页查看对话与工作区](https://example.com/workspace)"
+    )
+
+
+def test_normalize_feishu_card_markdown_simplifies_schedule_markdown_for_feishu() -> None:
+    raw = """
+✅ **当前定时任务列表**
+
+---
+
+## 📋 定时任务详情
+
+| 项目 | 信息 |
+|------|------|
+| **任务名称** | 每日国内金价查询 |
+| **任务 ID** | `e64b4adc-b3fd-4643-b0da-3bf8f902360f` |
+""".strip()
+
+    assert _normalize_feishu_card_markdown(raw) == (
+        "# 当前定时任务列表\n\n"
+        "<hr>\n\n"
+        "## 📋 定时任务详情\n\n"
+        "| 项目 | 信息 |\n"
+        "|------|------|\n"
+        "| 任务名称 | 每日国内金价查询 |\n"
+        "| 任务 ID | e64b4adc-b3fd-4643-b0da-3bf8f902360f |"
     )
 
 

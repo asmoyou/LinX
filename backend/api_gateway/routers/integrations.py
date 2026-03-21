@@ -568,11 +568,50 @@ def _normalize_feishu_card_markdown(markdown_text: str) -> str:
     if not normalized:
         return ""
 
+    def _normalize_table_line(line: str) -> str:
+        stripped_line = line.strip()
+        if stripped_line.count("|") < 2:
+            return line
+        if re.fullmatch(r"\|?\s*:?-{3,}:?(?:\s*\|\s*:?-{3,}:?)*\s*\|?", stripped_line):
+            return stripped_line
+
+        cells = [cell.strip() for cell in stripped_line.strip("|").split("|")]
+        cleaned_cells = []
+        for cell in cells:
+            cleaned = re.sub(r"`([^`]+)`", r"\1", cell)
+            cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
+            cleaned = re.sub(r"__([^_]+)__", r"\1", cleaned)
+            cleaned_cells.append(cleaned.strip())
+        return f"| {' | '.join(cleaned_cells)} |"
+
     normalized = re.sub(
         r"(?m)^网页查看对话与工作区:\s*(https?://\S+)\s*$",
         lambda match: f"[网页查看对话与工作区]({match.group(1)})",
         normalized,
     )
+    normalized_lines: list[str] = []
+    for raw_line in normalized.splitlines():
+        line = str(raw_line or "").rstrip()
+        stripped = line.strip()
+        if not stripped:
+            normalized_lines.append("")
+            continue
+        if re.fullmatch(r"[-*_]{3,}", stripped):
+            normalized_lines.append("<hr>")
+            continue
+        banner_match = re.fullmatch(
+            r"(?:[\W_]+?\s*)?\*\*(.+?)\*\*",
+            stripped,
+        )
+        if banner_match and not stripped.startswith("#") and "|" not in stripped:
+            normalized_lines.append(f"# {banner_match.group(1).strip()}")
+            continue
+        if stripped.count("|") >= 2:
+            normalized_lines.append(_normalize_table_line(stripped))
+            continue
+        normalized_lines.append(line)
+
+    normalized = "\n".join(normalized_lines)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
     return normalized.strip()
 
@@ -594,6 +633,7 @@ def _build_feishu_markdown_card_content(
                     "tag": "markdown",
                     "content": _normalize_feishu_card_markdown(markdown_text),
                     "text_align": "left",
+                    "text_size": "normal",
                     "margin": "0px 0px 0px 0px",
                 }
             ],
