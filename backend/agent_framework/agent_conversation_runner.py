@@ -78,15 +78,22 @@ async def initialize_chat_agent(
     *,
     agent_info,
     owner_user_id: UUID,
+    skill_env_user_id: Optional[UUID] = None,
     max_iterations: int = 20,
 ) -> BaseAgent:
     """Create and initialize a BaseAgent for chat execution."""
     llm, resolved_context_window_tokens = _build_llm_and_context_for_agent(agent_info)
+    resolved_skill_env_user_id = (
+        skill_env_user_id
+        or getattr(agent_info, "owner_user_id", None)
+        or owner_user_id
+    )
     config = AgentConfig(
         agent_id=agent_info.agent_id,
         name=agent_info.name,
         agent_type=agent_info.agent_type,
         owner_user_id=owner_user_id,
+        skill_env_user_id=resolved_skill_env_user_id,
         capabilities=agent_info.capabilities or [],
         access_level=agent_info.access_level or "private",
         allowed_knowledge=agent_info.allowed_knowledge or [],

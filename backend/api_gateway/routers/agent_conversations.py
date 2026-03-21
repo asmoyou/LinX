@@ -904,10 +904,19 @@ async def _build_history_content_from_row(
 
 async def _build_conversation_history(
     conversation_id: UUID,
+    *,
+    history_mode: str = "default",
 ) -> tuple[List[Dict[str, Any]], dict[str, Any]]:
     history_window = get_conversation_history_compaction_service().load_runtime_window(
         conversation_id
     )
+    normalized_mode = str(history_mode or "default").strip().lower()
+    if normalized_mode == "schedule":
+        return (
+            await _build_schedule_conversation_history(history_window),
+            history_window,
+        )
+
     history: List[Dict[str, Any]] = []
     summary_text = str(history_window.get("summary_text") or "").strip()
     if summary_text:
@@ -929,6 +938,35 @@ async def _build_conversation_history(
             continue
         history.append({"role": message.role, "content": content})
     return _sanitize_conversation_history_messages(history), history_window
+
+
+async def _build_schedule_conversation_history(
+    history_window: dict[str, Any],
+    *,
+    max_messages: int = 6,
+) -> List[Dict[str, Any]]:
+    history: List[Dict[str, Any]] = []
+    has_user_anchor = False
+    for message in list(history_window.get("recent_messages") or []):
+        role = str(getattr(message, "role", "") or "").strip().lower()
+        if role == "system":
+            has_user_anchor = False
+            continue
+        if role not in {"user", "assistant"}:
+            continue
+        if role == "assistant" and not has_user_anchor:
+            continue
+        content = await _build_history_content_from_row(message)
+        if not content:
+            continue
+        history.append({"role": role, "content": content})
+        if role == "user":
+            has_user_anchor = True
+
+    sanitized = _sanitize_conversation_history_messages(history)
+    if max_messages > 0 and len(sanitized) > max_messages:
+        return sanitized[-max_messages:]
+    return sanitized
 
 
 def _sanitize_conversation_history_messages(raw_history: Any) -> List[Dict[str, Any]]:
@@ -1191,6 +1229,7 @@ async def execute_persistent_conversation_turn(
     input_message_text: Optional[str] = None,
     input_message_content_json: Optional[Dict[str, Any]] = None,
     execution_task_text: Optional[str] = None,
+    ephemeral_system_messages: Optional[List[str]] = None,
     execution_intent_text: Optional[str] = None,
     title_seed_text: Optional[str] = None,
     context_origin_surface: Optional[str] = None,
@@ -1256,7 +1295,15 @@ async def execute_persistent_conversation_turn(
         context_origin_surface,
     )
     principal_user_id = UUID(principal.user_id)
-    history, history_window = await _build_conversation_history(conversation.conversation_id)
+    history_mode = (
+        "schedule"
+        if source == "schedule" or bool((extra_execution_context or {}).get("schedule_triggered"))
+        else "default"
+    )
+    history, history_window = await _build_conversation_history(
+        conversation.conversation_id,
+        history_mode=history_mode,
+    )
     runtime_service = get_persistent_conversation_runtime_service()
     runtime, is_new_runtime = await runtime_service.get_or_create_runtime(conversation=conversation)
     await _emit_chunk(chunk_callback, _build_runtime_chunk(runtime, is_new_runtime=is_new_runtime))
@@ -1484,6 +1531,15 @@ async def execute_persistent_conversation_turn(
             }
             if isinstance(extra_execution_context, dict):
                 additional_context.update(extra_execution_context)
+            normalized_ephemeral_system_messages = [
+                str(message).strip()
+                for message in (ephemeral_system_messages or [])
+                if str(message or "").strip()
+            ]
+            if normalized_ephemeral_system_messages:
+                additional_context["ephemeral_system_messages"] = (
+                    normalized_ephemeral_system_messages
+                )
             run_context = dict(context)
             run_context.update(additional_context)
             run_exec_context = ExecutionContext(

@@ -95,7 +95,9 @@ class SkillExecutionEngine:
     def __init__(self):
         """Initialize execution engine."""
         # Use OrderedDict for LRU cache implementation
-        self._tool_cache: OrderedDict[Tuple[UUID, Optional[UUID]], CacheEntry] = OrderedDict()
+        self._tool_cache: OrderedDict[
+            Tuple[UUID, Optional[UUID], Optional[UUID]], CacheEntry
+        ] = OrderedDict()
         logger.info("SkillExecutionEngine initialized with cache management")
 
     def _dependency_import_name(self, dependency: str) -> str:
@@ -264,18 +266,24 @@ class SkillExecutionEngine:
         # This will be implemented in a future task
         return ExecutionResult(success=False, error="Package skill execution not yet implemented")
 
-    def _get_or_create_tool(self, skill: Skill, user_id: Optional[UUID] = None) -> Any:
+    def _get_or_create_tool(
+        self,
+        skill: Skill,
+        user_id: Optional[UUID] = None,
+        fallback_user_id: Optional[UUID] = None,
+    ) -> Any:
         """Get cached tool or create new one from code.
 
         Args:
             skill: Skill model instance
             user_id: Optional user ID for environment variables
+            fallback_user_id: Optional fallback user ID for missing environment variables
 
         Returns:
             LangChain tool instance
         """
-        # Create cache key based on skill_id and user_id
-        cache_key = (skill.skill_id, user_id)
+        # Create cache key based on skill_id and effective env scope
+        cache_key = (skill.skill_id, user_id, fallback_user_id)
 
         # Clean expired cache entries
         self._cleanup_expired_cache()
@@ -288,12 +296,22 @@ class SkillExecutionEngine:
             if age.total_seconds() < self.CACHE_TTL_MINUTES * 60:
                 # Move to end (most recently used)
                 self._tool_cache.move_to_end(cache_key)
-                logger.debug(f"Cache hit for skill {skill.skill_id}, user {user_id}")
+                logger.debug(
+                    "Cache hit for skill %s, user %s, fallback_user %s",
+                    skill.skill_id,
+                    user_id,
+                    fallback_user_id,
+                )
                 return entry.access()
             else:
                 # Entry expired, remove it
                 del self._tool_cache[cache_key]
-                logger.info(f"Cache entry expired for skill {skill.skill_id}, user {user_id}")
+                logger.info(
+                    "Cache entry expired for skill %s, user %s, fallback_user %s",
+                    skill.skill_id,
+                    user_id,
+                    fallback_user_id,
+                )
 
         # Validate code exists
         if not skill.code:
@@ -304,7 +322,11 @@ class SkillExecutionEngine:
 
         # Create tool from code with dependencies
         tool = self._create_tool_from_code(
-            skill.code, skill.name, dependencies=skill.dependencies or [], user_id=user_id
+            skill.code,
+            skill.name,
+            dependencies=skill.dependencies or [],
+            user_id=user_id,
+            fallback_user_id=fallback_user_id,
         )
 
         # Evict oldest entry if cache is full
@@ -316,7 +338,12 @@ class SkillExecutionEngine:
 
         # Cache the tool
         self._tool_cache[cache_key] = CacheEntry(tool)
-        logger.info(f"Cached new tool for skill {skill.skill_id}, user {user_id}")
+        logger.info(
+            "Cached new tool for skill %s, user %s, fallback_user %s",
+            skill.skill_id,
+            user_id,
+            fallback_user_id,
+        )
 
         return tool
 
@@ -373,7 +400,12 @@ class SkillExecutionEngine:
             raise ValueError(f"Code contains dangerous patterns: {', '.join(dangerous_patterns)}")
 
     def _create_tool_from_code(
-        self, code: str, skill_name: str, dependencies: list = None, user_id: Optional[UUID] = None
+        self,
+        code: str,
+        skill_name: str,
+        dependencies: list = None,
+        user_id: Optional[UUID] = None,
+        fallback_user_id: Optional[UUID] = None,
     ) -> Any:
         """Create LangChain tool from Python code.
 
@@ -382,6 +414,7 @@ class SkillExecutionEngine:
             skill_name: Name of the skill
             dependencies: List of required dependencies
             user_id: Optional user ID for environment variables
+            fallback_user_id: Optional fallback user ID for missing environment variables
 
         Returns:
             LangChain tool instance
@@ -400,7 +433,10 @@ class SkillExecutionEngine:
             from skill_library.skill_env_manager import get_skill_env_manager
 
             env_manager = get_skill_env_manager()
-            user_env_vars = env_manager.get_env_for_user(user_id)
+            user_env_vars = env_manager.get_env_for_user_with_fallback(
+                user_id=user_id,
+                fallback_user_id=fallback_user_id,
+            )
 
             # Temporarily inject user env vars into os.environ
             for key, value in user_env_vars.items():
@@ -544,10 +580,19 @@ class SkillExecutionEngine:
         """
         if skill_id and user_id:
             # Clear specific entry
-            cache_key = (skill_id, user_id)
-            if cache_key in self._tool_cache:
-                del self._tool_cache[cache_key]
-                logger.info(f"Cleared cache for skill {skill_id}, user {user_id}")
+            keys_to_remove = [
+                key
+                for key in self._tool_cache.keys()
+                if key[0] == skill_id and (key[1] == user_id or key[2] == user_id)
+            ]
+            for key in keys_to_remove:
+                del self._tool_cache[key]
+            logger.info(
+                "Cleared %s cache entries for skill %s, user %s",
+                len(keys_to_remove),
+                skill_id,
+                user_id,
+            )
         elif skill_id:
             # Clear all entries for this skill
             keys_to_remove = [k for k in self._tool_cache.keys() if k[0] == skill_id]
@@ -556,7 +601,9 @@ class SkillExecutionEngine:
             logger.info(f"Cleared {len(keys_to_remove)} cache entries for skill {skill_id}")
         elif user_id:
             # Clear all entries for this user
-            keys_to_remove = [k for k in self._tool_cache.keys() if k[1] == user_id]
+            keys_to_remove = [
+                k for k in self._tool_cache.keys() if k[1] == user_id or k[2] == user_id
+            ]
             for key in keys_to_remove:
                 del self._tool_cache[key]
             logger.info(f"Cleared {len(keys_to_remove)} cache entries for user {user_id}")

@@ -535,6 +535,27 @@ class TestBaseAgent:
         assert "UTC now:" in messages[0].content
         assert "authoritative current time" in messages[0].content
 
+    def test_build_messages_with_history_prepends_extra_system_messages(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        messages = agent._build_messages_with_history(
+            human_content="查询今天的国内金价",
+            extra_system_messages=["这是一次已触发的定时任务，请直接执行，不要把它当成刚收到的新消息。"],
+        )
+
+        assert isinstance(messages[0], SystemMessage)
+        assert isinstance(messages[1], SystemMessage)
+        assert messages[1].content == "这是一次已触发的定时任务，请直接执行，不要把它当成刚收到的新消息。"
+        assert isinstance(messages[2], HumanMessage)
+        assert messages[2].content == "查询今天的国内金价"
+
     def test_requires_file_delivery_detects_explicit_file_intent(self):
         """File-delivery guard should only trigger when prompt explicitly asks for file output."""
         config = AgentConfig(

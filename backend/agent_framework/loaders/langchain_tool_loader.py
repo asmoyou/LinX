@@ -25,16 +25,23 @@ logger = logging.getLogger(__name__)
 
 class LangChainToolLoader:
     """Loader for LangChain tools from skill packages."""
-    
-    def __init__(self, agent_id: UUID, user_id: UUID):
+
+    def __init__(
+        self,
+        agent_id: UUID,
+        user_id: UUID,
+        skill_env_user_id: Optional[UUID] = None,
+    ):
         """Initialize loader.
-        
+
         Args:
             agent_id: Agent UUID (for context)
             user_id: User UUID (for permissions)
+            skill_env_user_id: User UUID whose skill env vars should be used for tool loading
         """
         self.agent_id = agent_id
         self.user_id = user_id
+        self.skill_env_user_id = skill_env_user_id or user_id
         self.minio_client = get_minio_client()
         
         logger.debug(
@@ -111,7 +118,8 @@ class LangChainToolLoader:
                 # Get or create tool using the execution engine
                 tool = execution_engine._get_or_create_tool(
                     skill=skill,
-                    user_id=self.user_id
+                    user_id=self.user_id,
+                    fallback_user_id=self.skill_env_user_id,
                 )
             
             if tool and isinstance(tool, BaseTool):

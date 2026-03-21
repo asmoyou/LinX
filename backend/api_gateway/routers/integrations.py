@@ -616,6 +616,77 @@ def _normalize_feishu_card_markdown(markdown_text: str) -> str:
     return normalized.strip()
 
 
+def _is_feishu_markdown_table_separator(line: str) -> bool:
+    stripped = str(line or "").strip()
+    return bool(
+        re.fullmatch(r"\|?\s*:?-{3,}:?(?:\s*\|\s*:?-{3,}:?)+\s*\|?", stripped)
+    )
+
+
+def _is_feishu_markdown_table_row(line: str) -> bool:
+    stripped = str(line or "").strip()
+    return stripped.count("|") >= 2 and not stripped.startswith("```")
+
+
+def _split_feishu_markdown_table_row(line: str) -> list[str]:
+    return [cell.strip() for cell in str(line or "").strip().strip("|").split("|")]
+
+
+def _flatten_feishu_markdown_tables(markdown_text: str) -> str:
+    lines = str(markdown_text or "").splitlines()
+    flattened: list[str] = []
+    index = 0
+    in_code_block = False
+
+    while index < len(lines):
+        line = lines[index]
+        stripped = str(line or "").strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            flattened.append(line)
+            index += 1
+            continue
+
+        if (
+            not in_code_block
+            and index + 1 < len(lines)
+            and _is_feishu_markdown_table_row(line)
+            and _is_feishu_markdown_table_separator(lines[index + 1])
+        ):
+            headers = _split_feishu_markdown_table_row(line)
+            index += 2
+            converted_rows: list[str] = []
+            while index < len(lines) and _is_feishu_markdown_table_row(lines[index]):
+                cells = _split_feishu_markdown_table_row(lines[index])
+                if len(headers) == 2 and len(cells) >= 2:
+                    converted_rows.append(f"- {cells[0]}: {cells[1]}")
+                else:
+                    pairs = []
+                    for cell_index, cell in enumerate(cells):
+                        if not cell:
+                            continue
+                        header = headers[cell_index] if cell_index < len(headers) else f"列{cell_index + 1}"
+                        pairs.append(f"{header}: {cell}")
+                    if pairs:
+                        converted_rows.append(f"- {'；'.join(pairs)}")
+                index += 1
+            flattened.extend(converted_rows or [line])
+            if flattened and flattened[-1] != "":
+                flattened.append("")
+            continue
+
+        flattened.append(line)
+        index += 1
+
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(flattened)).strip()
+
+
+def _is_feishu_card_table_limit_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    error_code = exc.error_code if isinstance(exc, FeishuApiError) else None
+    return error_code == 230099 or "card table number over limit" in message
+
+
 def _build_feishu_markdown_card_content(
     *,
     markdown_text: str,
@@ -648,15 +719,38 @@ def _send_feishu_markdown_card_message(
     chat_id: str,
     markdown_text: str,
 ) -> None:
-    _send_feishu_message(
-        publication,
-        chat_id=chat_id,
-        msg_type="interactive",
-        content=_build_feishu_markdown_card_content(
-            markdown_text=markdown_text,
-        ),
-        default_error="Failed to send Feishu message card",
-    )
+    normalized_markdown = _normalize_feishu_card_markdown(markdown_text)
+
+    def _send_card(content_markdown: str) -> None:
+        _send_feishu_message(
+            publication,
+            chat_id=chat_id,
+            msg_type="interactive",
+            content=_build_feishu_markdown_card_content(
+                markdown_text=content_markdown,
+            ),
+            default_error="Failed to send Feishu message card",
+        )
+
+    try:
+        _send_card(normalized_markdown)
+    except FeishuApiError as exc:
+        if not _is_feishu_card_table_limit_error(exc):
+            raise
+        flattened_markdown = _flatten_feishu_markdown_tables(normalized_markdown)
+        if flattened_markdown == normalized_markdown:
+            raise
+        logger.warning(
+            "Feishu card hit table limit; retrying with flattened markdown tables",
+            extra={
+                "publication_id": str(publication.publication_id),
+                "chat_id": chat_id,
+                "feishu_error_code": exc.error_code,
+                "feishu_http_status": exc.status_code,
+                "feishu_log_id": exc.log_id,
+            },
+        )
+        _send_card(flattened_markdown)
 
 
 def _send_feishu_file_bytes_message(

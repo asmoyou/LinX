@@ -240,6 +240,88 @@ async def test_build_conversation_history_uses_runtime_window(monkeypatch: pytes
     ]
 
 
+@pytest.mark.asyncio
+async def test_build_conversation_history_schedule_mode_drops_orphan_reports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation_id = uuid4()
+    recent_messages = [
+        _message_row(
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+            role="user",
+            text="以后都用要点列出",
+        ),
+        _message_row(
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=4),
+            role="assistant",
+            text="好的",
+        ),
+        _message_row(
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=3),
+            role="system",
+            text="定时任务已触发：旧任务",
+        ),
+        _message_row(
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+            role="assistant",
+            text="旧的定时报告 A",
+        ),
+        _message_row(
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            role="system",
+            text="定时任务已触发：另一个旧任务",
+        ),
+        _message_row(
+            created_at=datetime.now(timezone.utc) - timedelta(seconds=50),
+            role="assistant",
+            text="旧的定时报告 B",
+        ),
+        _message_row(
+            created_at=datetime.now(timezone.utc) - timedelta(seconds=20),
+            role="user",
+            text="再给我精简一点",
+        ),
+        _message_row(
+            created_at=datetime.now(timezone.utc) - timedelta(seconds=5),
+            role="assistant",
+            text="收到，我之后会更精简。",
+        ),
+    ]
+    history_window = {
+        "summary_text": "不应该进入 schedule mode",
+        "summary_row": None,
+        "recent_messages": recent_messages,
+    }
+
+    monkeypatch.setattr(
+        agent_conversations,
+        "get_conversation_history_compaction_service",
+        lambda: SimpleNamespace(load_runtime_window=lambda _conversation_id: history_window),
+    )
+
+    async def _fake_build_history_content_from_row(message: AgentConversationMessage):
+        return message.content_text
+
+    monkeypatch.setattr(
+        agent_conversations,
+        "_build_history_content_from_row",
+        _fake_build_history_content_from_row,
+    )
+
+    history, returned_window = await agent_conversations._build_conversation_history(
+        conversation_id,
+        history_mode="schedule",
+    )
+
+    assert returned_window is history_window
+    assert history == [
+        {"role": "user", "content": "以后都用要点列出"},
+        {"role": "assistant", "content": "好的"},
+        {"role": "user", "content": "再给我精简一点"},
+        {"role": "assistant", "content": "收到，我之后会更精简。"},
+    ]
+
+
 def test_cursor_helpers_reject_invalid_payload() -> None:
     with pytest.raises(Exception):
         agent_conversations._decode_conversation_cursor("not-a-valid-cursor")

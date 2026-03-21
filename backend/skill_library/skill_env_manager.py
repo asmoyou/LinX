@@ -47,6 +47,25 @@ class SkillEnvManager:
         self._env_cache[user_id] = env_vars
         
         return env_vars.copy()
+
+    def get_env_for_user_with_fallback(
+        self,
+        user_id: UUID,
+        fallback_user_id: Optional[UUID] = None,
+    ) -> Dict[str, str]:
+        """Get env vars for a user, backfilling missing keys from a fallback user.
+
+        The primary user's keys always win. Fallback keys are only used when the
+        primary user does not define that variable.
+        """
+        primary_env = self.get_env_for_user(user_id)
+        if fallback_user_id is None or fallback_user_id == user_id:
+            return primary_env
+
+        fallback_env = self.get_env_for_user(fallback_user_id)
+        merged = dict(fallback_env)
+        merged.update(primary_env)
+        return merged
     
     def set_env_for_user(
         self,

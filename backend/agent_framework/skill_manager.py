@@ -100,15 +100,22 @@ class SkillManager:
     - Provide skills to agent for initialization
     """
     
-    def __init__(self, agent_id: UUID, user_id: UUID):
+    def __init__(
+        self,
+        agent_id: UUID,
+        user_id: UUID,
+        skill_env_user_id: Optional[UUID] = None,
+    ):
         """Initialize skill manager.
-        
+
         Args:
             agent_id: Agent UUID
             user_id: User UUID (for permissions)
+            skill_env_user_id: User UUID whose skill env vars should be used for tool loading
         """
         self.agent_id = agent_id
         self.user_id = user_id
+        self.skill_env_user_id = skill_env_user_id or user_id
         self.loaded_langchain_tools: Dict[UUID, BaseTool] = {}
         self.loaded_agent_skills: Dict[UUID, AgentSkillReference] = {}
         
@@ -231,7 +238,8 @@ class SkillManager:
             
             loader = LangChainToolLoader(
                 agent_id=self.agent_id,
-                user_id=self.user_id
+                user_id=self.user_id,
+                skill_env_user_id=self.skill_env_user_id,
             )
             
             tool = await loader.load(skill_info)
@@ -551,7 +559,11 @@ Available skills:
         )
 
 
-def get_skill_manager(agent_id: UUID, user_id: UUID) -> SkillManager:
+def get_skill_manager(
+    agent_id: UUID,
+    user_id: UUID,
+    skill_env_user_id: Optional[UUID] = None,
+) -> SkillManager:
     """Get a SkillManager instance for an agent.
     
     Args:
@@ -561,4 +573,8 @@ def get_skill_manager(agent_id: UUID, user_id: UUID) -> SkillManager:
     Returns:
         SkillManager instance
     """
-    return SkillManager(agent_id=agent_id, user_id=user_id)
+    return SkillManager(
+        agent_id=agent_id,
+        user_id=user_id,
+        skill_env_user_id=skill_env_user_id,
+    )

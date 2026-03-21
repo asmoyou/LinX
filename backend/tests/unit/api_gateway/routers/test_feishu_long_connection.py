@@ -20,6 +20,7 @@ from api_gateway.routers.integrations import (
     _build_feishu_reply_text,
     _classify_feishu_file_delivery_error,
     _extract_feishu_message_from_long_connection_event,
+    _flatten_feishu_markdown_tables,
     _normalize_feishu_card_markdown,
     _queued_feishu_file_delivery_note,
     _format_feishu_api_error,
@@ -435,6 +436,58 @@ def test_normalize_feishu_card_markdown_simplifies_schedule_markdown_for_feishu(
         "| 任务名称 | 每日国内金价查询 |\n"
         "| 任务 ID | e64b4adc-b3fd-4643-b0da-3bf8f902360f |"
     )
+
+
+def test_flatten_feishu_markdown_tables_converts_table_to_list() -> None:
+    raw = """
+## 今日金价
+
+| 品类 | 价格 |
+| --- | --- |
+| 足金 | 800 元/克 |
+| 金条 | 760 元/克 |
+""".strip()
+
+    assert _flatten_feishu_markdown_tables(raw) == (
+        "## 今日金价\n\n"
+        "- 足金: 800 元/克\n"
+        "- 金条: 760 元/克"
+    )
+
+
+def test_send_feishu_markdown_card_message_retries_with_flattened_tables_on_limit(
+    monkeypatch,
+) -> None:
+    captured_markdowns: list[str] = []
+
+    def _fake_send_message(*_args, **kwargs) -> None:
+        card = json.loads(str(kwargs["content"]))
+        captured_markdowns.append(str(card["body"]["elements"][0]["content"]))
+        if len(captured_markdowns) == 1:
+            raise FeishuApiError(
+                "Failed to send Feishu message card: card table number over limit",
+                status_code=400,
+                error_code=230099,
+                log_id="log-1",
+            )
+
+    monkeypatch.setattr(integrations_router, "_send_feishu_message", _fake_send_message)
+
+    _send_feishu_markdown_card_message(
+        SimpleNamespace(publication_id="pub-1"),
+        chat_id="chat-1",
+        markdown_text=(
+            "## 今日金价\n\n"
+            "| 品类 | 价格 |\n"
+            "| --- | --- |\n"
+            "| 足金 | 800 元/克 |\n"
+            "| 金条 | 760 元/克 |"
+        ),
+    )
+
+    assert len(captured_markdowns) == 2
+    assert captured_markdowns[0].count("|") >= 2
+    assert captured_markdowns[1] == "## 今日金价\n\n- 足金: 800 元/克\n- 金条: 760 元/克"
 
 
 def test_select_feishu_deliverable_artifacts_filters_runtime_and_directories() -> None:

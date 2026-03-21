@@ -47,6 +47,10 @@ from shared.platform_settings import PLATFORM_BOOTSTRAP_SETTINGS_KEY, get_platfo
 logger = logging.getLogger(__name__)
 
 TERMINAL_ONCE_STATUSES = {"completed", "failed"}
+_TIME_SENSITIVE_TASK_PATTERN = re.compile(
+    r"(最新|当前|今日|今天|实时|刚刚|现价|行情|金价|股价|汇率|天气|新闻|热搜|latest|current|today|now|real[ -]?time|price|prices|quote|quotes|news|weather)",
+    re.IGNORECASE,
+)
 
 
 def _utcnow() -> datetime:
@@ -320,11 +324,20 @@ def _build_schedule_execution_prompt(
     prompt_template = str(schedule.prompt_template or "").strip()
     schedule_type = str(schedule.schedule_type or "").strip() or "unknown"
     timezone_name = str(schedule.timezone or "UTC")
+    live_data_guidance = ""
+    if _TIME_SENSITIVE_TASK_PATTERN.search(f"{schedule_name}\n{prompt_template}"):
+        live_data_guidance = (
+            "如果任务涉及最新、当前、今日、实时等时效性信息，必须先调用当前 agent 已配置的网页搜索"
+            "或外部数据工具核验后再回答。\n"
+            "不要仅凭记忆生成价格、新闻、天气、股价、汇率等结果；如果这轮没有可用工具，"
+            "请直接说明无法联网核验。\n\n"
+        )
     return (
         "这是一次已经到点并且已经触发的定时任务执行，不是用户刚刚发送的新消息。\n"
         "请立即执行任务，并直接向用户汇报执行结果、提醒内容或失败原因。\n"
         "不要告诉用户“稍后再提醒”或“到时候再做”，也不要再次创建、修改或查询这个定时任务，"
         "除非用户在当前轮次明确要求这样做。\n\n"
+        f"{live_data_guidance}"
         f"任务名称：{schedule_name}\n"
         f"任务类型：{schedule_type}\n"
         f"计划触发时间：{scheduled_for}\n"
@@ -1110,7 +1123,7 @@ async def _deliver_to_feishu_if_needed(
         conversation=conversation,
         output_text=str(result.get("output") or ""),
         delivered_artifacts=[],
-        pending_artifacts=list(result.get("artifact_delta") or result.get("artifacts") or []),
+        pending_artifacts=list(result.get("artifact_delta") or []),
         base_url=None,
     )
     await asyncio.to_thread(
@@ -1189,7 +1202,7 @@ async def execute_schedule_run(*, run_id: str) -> ScheduleRunExecutionResult:
             input_message_role="system",
             input_message_text=trigger_message_text,
             input_message_content_json=trigger_message_payload,
-            execution_task_text=execution_prompt,
+            ephemeral_system_messages=[execution_prompt],
             execution_intent_text=schedule.prompt_template,
             title_seed_text=title_seed_text or schedule.prompt_template,
             context_origin_surface=context_origin_surface,
@@ -1223,19 +1236,21 @@ async def execute_schedule_run(*, run_id: str) -> ScheduleRunExecutionResult:
             )
     except Exception as exc:  # noqa: BLE001
         logger.error("Scheduled run %s failed: %s", run_id, exc, exc_info=True)
+        payload: dict[str, Any]
         with get_db_session() as session:
             run = _load_run_for_execution(session, run_id=run_uuid)
             schedule = run.schedule
             now = _utcnow()
             run.status = "failed"
             run.completed_at = now
-        run.error_message = str(exc)
-        schedule.last_run_at = now
-        schedule.last_run_status = "failed"
-        schedule.last_error = str(exc)
-        if schedule.schedule_type == "once":
-            _set_terminal_once_status(schedule, status="failed")
-        payload = _serialize_schedule(schedule)
+            run.error_message = str(exc)
+            schedule.last_run_at = now
+            schedule.last_run_status = "failed"
+            schedule.last_error = str(exc)
+            if schedule.schedule_type == "once":
+                _set_terminal_once_status(schedule, status="failed")
+            session.flush()
+            payload = _serialize_schedule(schedule)
         if payload["status"] == "failed":
             _notify_schedule_event(
                 user_id=UUID(payload["ownerUserId"]),

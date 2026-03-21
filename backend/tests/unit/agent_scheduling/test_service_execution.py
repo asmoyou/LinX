@@ -29,6 +29,27 @@ def test_build_schedule_execution_prompt_marks_triggered_run() -> None:
     assert "不要再次创建、修改或查询这个定时任务" in prompt
     assert "去超市买菜" in prompt
     assert "提醒我去超市买菜" in prompt
+    assert "必须先调用当前 agent 已配置的网页搜索或外部数据工具核验后再回答" not in prompt
+
+
+def test_build_schedule_execution_prompt_requires_tools_for_time_sensitive_tasks() -> None:
+    schedule = SimpleNamespace(
+        name="每日国内金价查询",
+        schedule_type="recurring",
+        timezone="Asia/Shanghai",
+        prompt_template="查询今天最新的国内金价并汇总",
+    )
+    run = SimpleNamespace(
+        scheduled_for=datetime(2026, 3, 21, 1, 40, tzinfo=timezone.utc),
+    )
+
+    prompt = schedule_service._build_schedule_execution_prompt(
+        schedule=schedule,
+        run=run,
+    )
+
+    assert "必须先调用当前 agent 已配置的网页搜索或外部数据工具核验后再回答" in prompt
+    assert "不要仅凭记忆生成价格、新闻、天气、股价、汇率等结果" in prompt
 
 
 @pytest.mark.asyncio
@@ -122,7 +143,9 @@ async def test_execute_schedule_run_uses_schedule_trigger_semantics(monkeypatch)
     assert captured["title_seed_text"] == "去超市买菜"
     assert captured["extra_execution_context"]["schedule_triggered"] is True
     assert captured["extra_execution_context"]["schedule_id"] == str(schedule.schedule_id)
-    assert "不是用户刚刚发送的新消息" in captured["execution_task_text"]
+    assert captured["ephemeral_system_messages"]
+    assert "不是用户刚刚发送的新消息" in captured["ephemeral_system_messages"][0]
+    assert "execution_task_text" not in captured
     assert schedule.status == "completed"
     assert schedule.next_run_at is None
 
@@ -175,3 +198,173 @@ async def test_deliver_to_feishu_if_needed_uses_markdown_card_message(monkeypatc
         "chat_id": "chat-1",
         "markdown_text": "## 今日总结\n- 第一项",
     }
+
+
+@pytest.mark.asyncio
+async def test_deliver_to_feishu_if_needed_only_uses_artifact_delta(monkeypatch) -> None:
+    from api_gateway.routers import integrations as integrations_router
+
+    publication = SimpleNamespace(status="published")
+    conversation = SimpleNamespace(
+        source="feishu",
+        external_links=[
+            SimpleNamespace(
+                publication=publication,
+                external_chat_key="chat-1",
+            )
+        ],
+    )
+    schedule = SimpleNamespace(
+        agent=SimpleNamespace(name="日报助手"),
+        bound_conversation=conversation,
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_build(**kwargs):
+        captured["pending_artifacts"] = kwargs.get("pending_artifacts")
+        return "## 今日总结\n- 第一项"
+
+    monkeypatch.setattr(
+        integrations_router,
+        "_build_feishu_reply_text",
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        integrations_router,
+        "_send_feishu_markdown_card_message",
+        lambda *args, **kwargs: None,
+    )
+
+    channel = await schedule_service._deliver_to_feishu_if_needed(
+        schedule=schedule,
+        result={
+            "output": "## 今日总结",
+            "artifact_delta": [],
+            "artifacts": [{"path": "output/history.md", "is_directory": False}],
+        },
+    )
+
+    assert channel == "feishu"
+    assert captured["pending_artifacts"] == []
+
+
+@pytest.mark.asyncio
+async def test_execute_schedule_run_preserves_delivery_error_details(monkeypatch) -> None:
+    owner = SimpleNamespace(
+        user_id=uuid4(),
+        role="admin",
+        username="alice",
+    )
+    conversation = SimpleNamespace(
+        conversation_id=uuid4(),
+        status="active",
+        source="feishu",
+        external_links=[],
+        title="每日国内金价查询",
+    )
+
+    class _AttachedSchedule(SimpleNamespace):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._attached = True
+            self._runs_store = []
+
+        @property
+        def runs(self):
+            if not self._attached:
+                raise RuntimeError("detached runs access")
+            return self._runs_store
+
+        @runs.setter
+        def runs(self, value):
+            self._runs_store = list(value)
+
+    schedule = _AttachedSchedule(
+        schedule_id=uuid4(),
+        owner_user_id=owner.user_id,
+        owner=owner,
+        agent_id=uuid4(),
+        agent=SimpleNamespace(name="金价助手"),
+        bound_conversation_id=conversation.conversation_id,
+        bound_conversation=conversation,
+        name="每日国内金价查询",
+        prompt_template="查询今天最新的国内金价并汇总",
+        schedule_type="once",
+        timezone="Asia/Shanghai",
+        status="active",
+        next_run_at=datetime(2026, 3, 21, 1, 40, tzinfo=timezone.utc),
+        last_run_at=None,
+        last_run_status=None,
+        last_error=None,
+        created_via="web",
+        origin_surface="web",
+        origin_message_id=None,
+        cron_expression=None,
+        run_at_utc=datetime(2026, 3, 21, 1, 40, tzinfo=timezone.utc),
+        created_at=None,
+        updated_at=None,
+    )
+    run = SimpleNamespace(
+        run_id=uuid4(),
+        schedule_id=schedule.schedule_id,
+        schedule=schedule,
+        scheduled_for=datetime(2026, 3, 21, 1, 40, tzinfo=timezone.utc),
+        started_at=None,
+        status="queued",
+        skip_reason=None,
+        completed_at=None,
+        error_message=None,
+        conversation_id=None,
+        assistant_message_id=None,
+        delivery_channel=None,
+        created_at=None,
+    )
+    schedule.runs = [run]
+
+    @contextmanager
+    def _fake_session():
+        schedule._attached = True
+        try:
+            yield SimpleNamespace(flush=lambda: None)
+        finally:
+            schedule._attached = False
+
+    async def _fake_execute_persistent_conversation_turn(**_kwargs):
+        return {
+            "output": "## 今日金价\n\n| 品类 | 价格 |\n| --- | --- |\n| 足金 | 800 元/克 |",
+            "assistant_message_id": str(uuid4()),
+            "artifact_delta": [],
+            "artifacts": [],
+        }
+
+    async def _fake_deliver_to_feishu_if_needed(**_kwargs):
+        raise RuntimeError("card table number over limit")
+
+    monkeypatch.setattr(schedule_service, "get_db_session", _fake_session)
+    monkeypatch.setattr(
+        schedule_service,
+        "_load_run_for_execution",
+        lambda _session, run_id: run,
+    )
+    monkeypatch.setattr(schedule_service, "_notify_schedule_event", lambda **_kwargs: None)
+    fake_conversations_module = ModuleType("api_gateway.routers.agent_conversations")
+    fake_conversations_module.execute_persistent_conversation_turn = (
+        _fake_execute_persistent_conversation_turn
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "api_gateway.routers.agent_conversations",
+        fake_conversations_module,
+    )
+    monkeypatch.setattr(
+        schedule_service,
+        "_deliver_to_feishu_if_needed",
+        _fake_deliver_to_feishu_if_needed,
+    )
+
+    result = await schedule_service.execute_schedule_run(run_id=str(run.run_id))
+
+    assert result.status == "failed"
+    assert result.error == "card table number over limit"
+    assert run.error_message == "card table number over limit"
+    assert schedule.last_error == "card table number over limit"

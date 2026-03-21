@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import subprocess
+from uuid import uuid4
 
 import pytest
 
@@ -81,3 +82,53 @@ def test_host_dependency_install_allowed_when_fallback_enabled(monkeypatch: pyte
     assert cmd[4] == missing_dep
     assert stdout_target is subprocess.DEVNULL
     assert stderr_target is subprocess.PIPE
+
+
+def test_create_tool_from_code_prefers_primary_env_and_backfills_from_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    engine = SkillExecutionEngine()
+    primary_user_id = uuid4()
+    fallback_user_id = uuid4()
+    code = """
+import os
+from langchain_core.tools import tool
+
+PRIMARY_ONLY = os.getenv("PRIMARY_ONLY", "")
+FALLBACK_ONLY = os.getenv("FALLBACK_ONLY", "")
+SHARED = os.getenv("SHARED", "")
+
+@tool
+def show_env() -> str:
+    \"\"\"Return selected environment variables for verification.\"\"\"
+    return "|".join([
+        PRIMARY_ONLY,
+        FALLBACK_ONLY,
+        SHARED,
+    ])
+"""
+
+    class _FakeEnvManager:
+        def get_env_for_user_with_fallback(self, *, user_id, fallback_user_id=None):
+            assert user_id == primary_user_id
+            assert fallback_user_id == fallback_user_id_ref
+            return {
+                "PRIMARY_ONLY": "user-key",
+                "FALLBACK_ONLY": "owner-key",
+                "SHARED": "user-wins",
+            }
+
+    fallback_user_id_ref = fallback_user_id
+    monkeypatch.setattr(
+        "skill_library.skill_env_manager.get_skill_env_manager",
+        lambda: _FakeEnvManager(),
+    )
+
+    tool = engine._create_tool_from_code(
+        code=code,
+        skill_name="show_env",
+        user_id=primary_user_id,
+        fallback_user_id=fallback_user_id,
+    )
+
+    assert tool.invoke({}) == "user-key|owner-key|user-wins"

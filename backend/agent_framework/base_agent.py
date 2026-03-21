@@ -321,6 +321,7 @@ class AgentConfig:
     agent_type: str
     owner_user_id: UUID
     capabilities: List[str]  # Platform skill IDs plus any non-platform runtime capabilities
+    skill_env_user_id: Optional[UUID] = None
     access_level: str = "private"
     allowed_knowledge: List[str] = field(default_factory=list)
     llm_model: str = "ollama"
@@ -344,6 +345,8 @@ class AgentConfig:
         """Validate configuration and apply environment variable overrides."""
         if self.allowed_knowledge is None:
             self.allowed_knowledge = []
+        if self.skill_env_user_id is None:
+            self.skill_env_user_id = self.owner_user_id
 
         # Apply environment variable overrides with defaults
         if self.max_parse_retries is None:
@@ -580,7 +583,9 @@ class BaseAgent:
             from agent_framework.skill_manager import get_skill_manager
 
             self.skill_manager = get_skill_manager(
-                agent_id=self.config.agent_id, user_id=self.config.owner_user_id
+                agent_id=self.config.agent_id,
+                user_id=self.config.owner_user_id,
+                skill_env_user_id=self.config.skill_env_user_id,
             )
 
             # Discover and load skills based on agent's capabilities
@@ -1071,6 +1076,7 @@ class BaseAgent:
         self,
         human_content: Any,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
+        extra_system_messages: Optional[List[str]] = None,
         available_tools: Optional[List[Any]] = None,
         runtime_capabilities: Optional[Dict[str, Any]] = None,
         response_delivery_mode: str = "chat_inline",
@@ -1084,6 +1090,10 @@ class BaseAgent:
             response_delivery_channel=response_delivery_channel,
         )
         messages: List[Any] = [SystemMessage(content=system_prompt)]
+        for system_message in extra_system_messages or []:
+            normalized = str(system_message or "").strip()
+            if normalized:
+                messages.append(SystemMessage(content=normalized))
 
         for item in self._normalize_conversation_history(conversation_history):
             if item["role"] == "assistant":
@@ -4388,6 +4398,11 @@ class BaseAgent:
         else:
             context = dict(context)
         context["runtime_capabilities"] = runtime_capabilities
+        extra_system_messages = [
+            str(message).strip()
+            for message in (context.get("ephemeral_system_messages") or [])
+            if str(message or "").strip()
+        ]
         response_delivery_mode = self._resolve_response_delivery_mode(context)
         response_delivery_channel = self._resolve_response_delivery_channel(context)
 
@@ -4426,6 +4441,7 @@ class BaseAgent:
         messages = self._build_messages_with_history(
             human_content=human_content,
             conversation_history=conversation_history,
+            extra_system_messages=extra_system_messages,
             available_tools=runtime_tools,
             runtime_capabilities=runtime_capabilities,
             response_delivery_mode=response_delivery_mode,
