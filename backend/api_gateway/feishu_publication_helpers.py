@@ -62,6 +62,7 @@ def extract_feishu_message(payload: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "event_id": header.get("event_id") or message.get("message_id"),
         "message_id": message.get("message_id"),
+        "create_time": message.get("create_time"),
         "message_type": message.get("message_type"),
         "chat_id": message.get("chat_id"),
         "chat_type": message.get("chat_type"),
@@ -93,6 +94,7 @@ def extract_feishu_message_from_long_connection_event(event: Any) -> dict[str, A
     return {
         "event_id": getattr(header, "event_id", None) or getattr(message, "message_id", None),
         "message_id": getattr(message, "message_id", None),
+        "create_time": getattr(message, "create_time", None),
         "message_type": getattr(message, "message_type", None),
         "chat_id": getattr(message, "chat_id", None),
         "chat_type": getattr(message, "chat_type", None),

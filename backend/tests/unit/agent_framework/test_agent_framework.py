@@ -731,6 +731,52 @@ class TestBaseAgent:
 
         assert decision["should_stop"] is True
 
+    def test_assess_autonomous_completion_does_not_continue_on_polite_chat_invite(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        decision = agent._assess_autonomous_completion(
+            task_intent_text="你能听到我在说话吗",
+            latest_output=(
+                "所以，请继续用文字和我聊天吧！\n"
+                "有什么问题尽管问，我会认真回答的！"
+            ),
+            tool_call_records=[],
+            round_number=1,
+            max_rounds=6,
+            finish_reason="",
+        )
+
+        assert decision["should_stop"] is True
+
+    def test_assess_autonomous_completion_detects_explicit_wait_and_continue_signal(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        decision = agent._assess_autonomous_completion(
+            task_intent_text="查询天气",
+            latest_output="请稍等，我继续查询最新天气数据。",
+            tool_call_records=[],
+            round_number=1,
+            max_rounds=6,
+            finish_reason="",
+        )
+
+        assert decision["should_stop"] is False
+        assert "incomplete" in str(decision.get("reason", "")).lower()
+
     def test_assess_autonomous_completion_detects_explicit_incomplete_signal(self):
         config = AgentConfig(
             agent_id=uuid4(),

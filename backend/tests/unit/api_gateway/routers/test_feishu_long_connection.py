@@ -21,12 +21,15 @@ from api_gateway.routers.integrations import (
     _classify_feishu_file_delivery_error,
     _extract_feishu_message_from_long_connection_event,
     _flatten_feishu_markdown_tables,
+    _is_supported_feishu_inbound_message_type,
     _normalize_feishu_card_markdown,
     _queued_feishu_file_delivery_note,
     _format_feishu_api_error,
     _looks_like_feishu_file_send_request,
     _parse_feishu_json_response,
+    _prepare_feishu_execution_input,
     _prepare_feishu_message_uploads,
+    _resolve_feishu_message_resource,
     _resolve_feishu_artifact_file_paths,
     _send_feishu_markdown_card_message,
     _send_feishu_text_message,
@@ -79,6 +82,7 @@ def test_extract_feishu_message_from_long_connection_event_parses_expected_field
             ),
             message=SimpleNamespace(
                 message_id="msg-1",
+                create_time="1710000000000",
                 root_id="root-1",
                 parent_id=None,
                 chat_id="chat-1",
@@ -94,6 +98,7 @@ def test_extract_feishu_message_from_long_connection_event_parses_expected_field
     assert message == {
         "event_id": "evt-123",
         "message_id": "msg-1",
+        "create_time": "1710000000000",
         "message_type": "text",
         "chat_id": "chat-1",
         "chat_type": "p2p",
@@ -121,6 +126,7 @@ def test_extract_feishu_message_from_long_connection_event_keeps_file_payload() 
             ),
             message=SimpleNamespace(
                 message_id="msg-file-1",
+                create_time="1710000001000",
                 root_id=None,
                 parent_id=None,
                 chat_id="chat-1",
@@ -136,6 +142,7 @@ def test_extract_feishu_message_from_long_connection_event_keeps_file_payload() 
     assert message == {
         "event_id": "evt-file-1",
         "message_id": "msg-file-1",
+        "create_time": "1710000001000",
         "message_type": "file",
         "chat_id": "chat-1",
         "chat_type": "p2p",
@@ -147,6 +154,206 @@ def test_extract_feishu_message_from_long_connection_event_keeps_file_payload() 
         "union_id": "union-1",
         "tenant_key": "tenant-header",
     }
+
+
+def test_is_supported_feishu_inbound_message_type_accepts_audio() -> None:
+    assert _is_supported_feishu_inbound_message_type("audio") is True
+    assert _is_supported_feishu_inbound_message_type("text") is True
+    assert _is_supported_feishu_inbound_message_type("sticker") is False
+
+
+def test_resolve_feishu_message_resource_prefers_audio_key() -> None:
+    message = {
+        "message_type": "audio",
+        "message_id": "msg-audio-1",
+        "content_payload": {
+            "audio_key": "audio-key-1",
+            "file_key": "legacy-file-key",
+            "file_name": "voice-note.m4a",
+        },
+    }
+
+    assert _resolve_feishu_message_resource(message) == (
+        "file",
+        "audio-key-1",
+        "voice-note.m4a",
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_feishu_execution_input_merges_text_and_audio_transcript(
+    monkeypatch,
+) -> None:
+    publication = SimpleNamespace(publication_id="pub-1")
+    message = {
+        "message_type": "audio",
+        "message_id": "msg-audio-1",
+        "create_time": "1710000002000",
+        "chat_id": "chat-1",
+        "open_id": "open-1",
+        "text": "请帮我总结重点",
+        "content_payload": {"audio_key": "audio-key-1"},
+    }
+
+    async def _fake_transcribe_feishu_audio_message(**_kwargs) -> str:
+        return "会议纪要的重点是排期和预算。"
+
+    monkeypatch.setattr(
+        integrations_router,
+        "_transcribe_feishu_audio_message",
+        _fake_transcribe_feishu_audio_message,
+    )
+
+    prepared = await _prepare_feishu_execution_input(
+        publication=publication,
+        message=message,
+    )
+
+    assert prepared.message_text == "请帮我总结重点"
+    assert prepared.input_message_text == "请帮我总结重点"
+    assert (
+        prepared.execution_task_text
+        == "请帮我总结重点\n\n[语音转写]\n会议纪要的重点是排期和预算。"
+    )
+    assert prepared.execution_intent_text == "请帮我总结重点"
+    assert prepared.title_seed_text == "请帮我总结重点"
+    assert prepared.direct_reply_text is None
+    assert prepared.files == []
+    assert prepared.input_message_content_json == {
+        "feishuVoice": {
+            "messageType": "audio",
+            "originalText": "请帮我总结重点",
+            "transcriptText": "会议纪要的重点是排期和预算。",
+            "transcriptionStatus": "succeeded",
+            "transcriptionError": None,
+            "contentPayloadKeys": ["audio_key"],
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_prepare_feishu_execution_input_falls_back_to_text_when_audio_transcription_fails(
+    monkeypatch,
+) -> None:
+    publication = SimpleNamespace(publication_id="pub-1")
+    message = {
+        "message_type": "audio",
+        "message_id": "msg-audio-2",
+        "create_time": "1710000003000",
+        "chat_id": "chat-1",
+        "open_id": "open-1",
+        "text": "先按文字执行",
+        "content_payload": {"audio_key": "audio-key-2"},
+    }
+
+    async def _fake_transcribe_feishu_audio_message(**_kwargs) -> str:
+        raise RuntimeError("funasr timeout")
+
+    monkeypatch.setattr(
+        integrations_router,
+        "_transcribe_feishu_audio_message",
+        _fake_transcribe_feishu_audio_message,
+    )
+
+    prepared = await _prepare_feishu_execution_input(
+        publication=publication,
+        message=message,
+    )
+
+    assert prepared.message_text == "先按文字执行"
+    assert prepared.input_message_text == "先按文字执行"
+    assert prepared.execution_task_text == "先按文字执行"
+    assert prepared.execution_intent_text == "先按文字执行"
+    assert prepared.title_seed_text == "先按文字执行"
+    assert prepared.direct_reply_text is None
+    assert prepared.input_message_content_json == {
+        "feishuVoice": {
+            "messageType": "audio",
+            "originalText": "先按文字执行",
+            "transcriptText": None,
+            "transcriptionStatus": "failed",
+            "transcriptionError": "funasr timeout",
+            "contentPayloadKeys": ["audio_key"],
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_prepare_feishu_execution_input_requests_text_when_pure_audio_transcription_fails(
+    monkeypatch,
+) -> None:
+    publication = SimpleNamespace(publication_id="pub-1")
+    message = {
+        "message_type": "audio",
+        "message_id": "msg-audio-3",
+        "create_time": "1710000004000",
+        "chat_id": "chat-1",
+        "open_id": "open-1",
+        "text": "",
+        "content_payload": {"audio_key": "audio-key-3"},
+    }
+
+    async def _fake_transcribe_feishu_audio_message(**_kwargs) -> str:
+        raise RuntimeError("audio service unavailable")
+
+    monkeypatch.setattr(
+        integrations_router,
+        "_transcribe_feishu_audio_message",
+        _fake_transcribe_feishu_audio_message,
+    )
+
+    prepared = await _prepare_feishu_execution_input(
+        publication=publication,
+        message=message,
+    )
+
+    assert prepared.message_text == ""
+    assert prepared.direct_reply_text == "语音转写失败，请补发文字消息。"
+    assert prepared.input_message_content_json == {
+        "feishuVoice": {
+            "messageType": "audio",
+            "originalText": "",
+            "transcriptText": None,
+            "transcriptionStatus": "failed",
+            "transcriptionError": "audio service unavailable",
+            "contentPayloadKeys": ["audio_key"],
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_prepare_feishu_execution_input_skips_audio_when_nearby_text_message_exists(
+    monkeypatch,
+) -> None:
+    publication = SimpleNamespace(publication_id="pub-1")
+    message = {
+        "message_type": "audio",
+        "message_id": "msg-audio-4",
+        "create_time": "1710000005000",
+        "chat_id": "chat-1",
+        "open_id": "open-1",
+        "text": "",
+        "content_payload": {"file_key": "file-key-4"},
+    }
+
+    monkeypatch.setattr(
+        integrations_router,
+        "_find_nearby_feishu_text_message",
+        lambda *_args, **_kwargs: {
+            "message_id": "msg-text-4",
+            "text": "这里有配套文字",
+            "create_time": 1710000004800,
+        },
+    )
+
+    prepared = await _prepare_feishu_execution_input(
+        publication=publication,
+        message=message,
+    )
+
+    assert prepared.skip_execution_reason == "nearby_text_message_present"
+    assert prepared.direct_reply_text is None
+    assert prepared.message_text == ""
 
 
 def test_build_feishu_reply_text_without_base_url_omits_workspace_link() -> None:

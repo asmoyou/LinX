@@ -9,9 +9,10 @@ import io
 import json
 import mimetypes
 import re
+import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,19 @@ class _QueuedFeishuFileDelivery:
     file_bytes: bytes
     attempt: int = 1
     max_attempts: int = _FEISHU_FILE_DELIVERY_QUEUE_MAX_ATTEMPTS
+
+
+@dataclass
+class _PreparedFeishuExecutionInput:
+    message_text: str
+    files: list[UploadFile] = field(default_factory=list)
+    input_message_text: str | None = None
+    input_message_content_json: dict[str, Any] | None = None
+    execution_task_text: str | None = None
+    execution_intent_text: str | None = None
+    title_seed_text: str | None = None
+    direct_reply_text: str | None = None
+    skip_execution_reason: str | None = None
 
 
 class FeishuFileDeliveryRetryService:
@@ -1245,7 +1259,7 @@ def _guess_feishu_attachment_filename(
         if isinstance(message.get("content_payload"), dict)
         else {}
     )
-    for field_name in ("file_name", "name", "title"):
+    for field_name in ("file_name", "audio_file_name", "name", "title"):
         value = str(content_payload.get(field_name) or "").strip()
         if value:
             return value
@@ -1285,29 +1299,181 @@ def _download_feishu_message_attachment(
     return response.content, file_name
 
 
-async def _prepare_feishu_message_uploads(
-    *,
-    publication: AgentChannelPublication,
-    message: dict[str, Any],
-) -> list[UploadFile]:
-    message_type = str(message.get("message_type") or "").strip().lower()
-    if message_type not in {"file", "image"}:
-        return []
+def _is_supported_feishu_inbound_message_type(message_type: str | None) -> bool:
+    normalized = str(message_type or "").strip().lower()
+    return normalized in {"text", "file", "image", "audio"}
 
+
+def _parse_feishu_message_timestamp(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _extract_text_from_feishu_message_item(item: dict[str, Any]) -> str:
+    body = dict(item.get("body") or {}) if isinstance(item.get("body"), dict) else {}
+    raw_content = body.get("content") or "{}"
+    try:
+        parsed_content = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
+    except json.JSONDecodeError:
+        parsed_content = {}
+    if not isinstance(parsed_content, dict):
+        return ""
+    return str(parsed_content.get("text") or "").strip()
+
+
+def _list_feishu_chat_messages(
+    publication: AgentChannelPublication,
+    *,
+    chat_id: str,
+    start_time: int | None = None,
+    end_time: int | None = None,
+    page_size: int = 20,
+) -> list[dict[str, Any]]:
+    tenant_access_token = _get_feishu_tenant_access_token(publication)
+    params: dict[str, Any] = {
+        "container_id_type": "chat",
+        "container_id": chat_id,
+        "sort_type": "ByCreateTimeDesc",
+        "page_size": max(1, min(int(page_size), 50)),
+    }
+    if start_time is not None:
+        params["start_time"] = str(start_time)
+    if end_time is not None:
+        params["end_time"] = str(end_time)
+
+    response = requests.get(
+        f"{_FEISHU_API_BASE}/im/v1/messages",
+        params=params,
+        headers={"Authorization": f"Bearer {tenant_access_token}"},
+        timeout=30,
+    )
+    payload = _parse_feishu_json_response(
+        response,
+        default_error="Failed to list Feishu chat messages",
+    )
+    data = dict(payload.get("data") or {}) if isinstance(payload.get("data"), dict) else {}
+    items = data.get("items")
+    return list(items) if isinstance(items, list) else []
+
+
+def _find_nearby_feishu_text_message(
+    publication: AgentChannelPublication,
+    *,
+    message: dict[str, Any],
+    window_ms: int = 8_000,
+) -> dict[str, Any] | None:
+    chat_id = str(message.get("chat_id") or "").strip()
+    current_message_id = str(message.get("message_id") or "").strip()
+    sender_open_id = str(message.get("open_id") or "").strip()
+    current_create_time = _parse_feishu_message_timestamp(message.get("create_time"))
+    if not chat_id or not current_message_id or current_create_time is None:
+        return None
+
+    items = _list_feishu_chat_messages(
+        publication,
+        chat_id=chat_id,
+        start_time=max(0, current_create_time - window_ms),
+        end_time=current_create_time + window_ms,
+        page_size=20,
+    )
+
+    best_match: dict[str, Any] | None = None
+    best_delta: int | None = None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("message_id") or "").strip() == current_message_id:
+            continue
+        if str(item.get("msg_type") or "").strip().lower() != "text":
+            continue
+
+        sender = dict(item.get("sender") or {}) if isinstance(item.get("sender"), dict) else {}
+        sender_id = str(sender.get("id") or "").strip()
+        sender_type = str(sender.get("sender_type") or "").strip().lower()
+        if sender_type != "user":
+            continue
+        if sender_open_id and sender_id and sender_id != sender_open_id:
+            continue
+
+        text = _extract_text_from_feishu_message_item(item)
+        if not text:
+            continue
+        item_create_time = _parse_feishu_message_timestamp(item.get("create_time"))
+        if item_create_time is None:
+            continue
+        delta = abs(item_create_time - current_create_time)
+        if delta > window_ms:
+            continue
+        if best_delta is None or delta < best_delta:
+            best_match = {
+                "message_id": str(item.get("message_id") or "").strip(),
+                "text": text,
+                "create_time": item_create_time,
+            }
+            best_delta = delta
+
+    return best_match
+
+
+def _resolve_feishu_message_resource(
+    message: dict[str, Any],
+) -> tuple[str, str, str] | None:
+    message_type = str(message.get("message_type") or "").strip().lower()
     content_payload = (
         dict(message.get("content_payload") or {})
         if isinstance(message.get("content_payload"), dict)
         else {}
     )
-    resource_type = "image" if message_type == "image" else "file"
-    resource_key = str(
-        content_payload.get("file_key")
-        or content_payload.get("image_key")
-        or content_payload.get("resource_key")
-        or ""
-    ).strip()
+
+    resource_type = ""
+    fallback_suffix = ".bin"
+    candidate_keys: tuple[str, ...] = ()
+    if message_type == "image":
+        resource_type = "image"
+        fallback_suffix = ".png"
+        candidate_keys = ("image_key", "resource_key", "file_key")
+    elif message_type == "file":
+        resource_type = "file"
+        fallback_suffix = ".bin"
+        candidate_keys = ("file_key", "resource_key")
+    elif message_type == "audio":
+        # Feishu audio messages still download through the generic file resource endpoint.
+        resource_type = "file"
+        fallback_suffix = ".m4a"
+        candidate_keys = ("audio_key", "file_key", "resource_key")
+    else:
+        return None
+
+    resource_key = ""
+    for key_name in candidate_keys:
+        value = str(content_payload.get(key_name) or "").strip()
+        if value:
+            resource_key = value
+            break
+    if not resource_key:
+        return None
+
+    file_name = _guess_feishu_attachment_filename(message, fallback_suffix=fallback_suffix)
+    return resource_type, resource_key, file_name
+
+
+async def _prepare_feishu_message_uploads(
+    *,
+    publication: AgentChannelPublication,
+    message: dict[str, Any],
+) -> list[UploadFile]:
+    resource = _resolve_feishu_message_resource(message)
+    if resource is None:
+        return []
+    resource_type, resource_key, file_name = resource
+    if resource_type not in {"file", "image"}:
+        return []
+
     message_id = str(message.get("message_id") or "").strip()
-    if not resource_key or not message_id:
+    if not message_id:
         return []
 
     file_bytes, downloaded_name = await asyncio.to_thread(
@@ -1317,13 +1483,10 @@ async def _prepare_feishu_message_uploads(
         file_key=resource_key,
         resource_type=resource_type,
     )
-    file_name = downloaded_name or _guess_feishu_attachment_filename(
-        message,
-        fallback_suffix=".png" if message_type == "image" else ".bin",
-    )
+    file_name = downloaded_name or file_name
     content_type = (
         "image/png"
-        if message_type == "image"
+        if resource_type == "image"
         else mimetypes.guess_type(file_name)[0] or "application/octet-stream"
     )
 
@@ -1335,6 +1498,184 @@ async def _prepare_feishu_message_uploads(
             headers=Headers({"content-type": content_type}),
         )
     ]
+
+
+async def _transcribe_feishu_audio_message(
+    *,
+    publication: AgentChannelPublication,
+    message: dict[str, Any],
+) -> str:
+    resource = _resolve_feishu_message_resource(message)
+    if resource is None:
+        raise RuntimeError("Feishu audio message is missing file_key")
+
+    resource_type, resource_key, file_name = resource
+    message_id = str(message.get("message_id") or "").strip()
+    if not message_id:
+        raise RuntimeError("Feishu audio message is missing message_id")
+
+    audio_bytes, downloaded_name = await asyncio.to_thread(
+        _download_feishu_message_attachment,
+        publication,
+        message_id=message_id,
+        file_key=resource_key,
+        resource_type=resource_type,
+    )
+    resolved_name = downloaded_name or file_name
+    suffix = Path(resolved_name).suffix.lower() or ".m4a"
+
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_file.write(audio_bytes)
+            temp_path = Path(temp_file.name)
+
+        def _transcribe_audio_file(path: Path) -> str:
+            from knowledge_base.audio_processor import get_audio_processor
+
+            transcription = get_audio_processor().transcribe(path)
+            return agents_router._sanitize_transcription_text(transcription.text)
+
+        transcript_text = await asyncio.to_thread(_transcribe_audio_file, temp_path)
+        if not transcript_text:
+            raise RuntimeError("Speech transcription returned empty text")
+        return transcript_text
+    finally:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+
+
+async def _prepare_feishu_execution_input(
+    *,
+    publication: AgentChannelPublication,
+    message: dict[str, Any],
+) -> _PreparedFeishuExecutionInput:
+    message_type = str(message.get("message_type") or "").strip().lower()
+    original_text = str(message.get("text") or "").strip()
+    if message_type != "audio":
+        uploads = await _prepare_feishu_message_uploads(publication=publication, message=message)
+        return _PreparedFeishuExecutionInput(message_text=original_text, files=uploads)
+
+    nearby_text_message: dict[str, Any] | None = None
+    if not original_text:
+        try:
+            nearby_text_message = await asyncio.to_thread(
+                _find_nearby_feishu_text_message,
+                publication,
+                message=message,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to inspect nearby Feishu text messages for audio event: %s",
+                exc,
+                extra={
+                    "publication_id": str(publication.publication_id),
+                    "message_id": str(message.get("message_id") or ""),
+                    "chat_id": str(message.get("chat_id") or ""),
+                },
+            )
+        if nearby_text_message:
+            logger.info(
+                "Skipping Feishu audio event because a nearby text message is present",
+                extra={
+                    "publication_id": str(publication.publication_id),
+                    "message_id": str(message.get("message_id") or ""),
+                    "nearby_text_message_id": str(nearby_text_message.get("message_id") or ""),
+                    "transcription_status": "skipped_nearby_text",
+                },
+            )
+            return _PreparedFeishuExecutionInput(
+                message_text="",
+                skip_execution_reason="nearby_text_message_present",
+            )
+
+    voice_metadata: dict[str, Any] = {
+        "messageType": message_type,
+        "originalText": original_text,
+        "transcriptText": None,
+        "transcriptionStatus": "skipped",
+        "transcriptionError": None,
+        "contentPayloadKeys": sorted(
+            key
+            for key in (
+                dict(message.get("content_payload") or {})
+                if isinstance(message.get("content_payload"), dict)
+                else {}
+            ).keys()
+            if str(key).strip()
+        ),
+    }
+
+    try:
+        transcript_text = await _transcribe_feishu_audio_message(
+            publication=publication,
+            message=message,
+        )
+    except Exception as exc:
+        error_text = agents_router._trim_process_text(str(exc), max_chars=220)
+        voice_metadata["transcriptionStatus"] = "failed"
+        voice_metadata["transcriptionError"] = error_text
+        logger.warning(
+            "Feishu audio transcription failed: %s",
+            exc,
+            extra={
+                "publication_id": str(publication.publication_id),
+                "message_id": str(message.get("message_id") or ""),
+                "message_type": message_type,
+                "has_original_text": bool(original_text),
+                "content_payload_keys": voice_metadata["contentPayloadKeys"],
+                "transcription_status": "failed",
+                "transcription_error": error_text,
+            },
+        )
+        if original_text:
+            return _PreparedFeishuExecutionInput(
+                message_text=original_text,
+                input_message_text=original_text,
+                input_message_content_json={"feishuVoice": voice_metadata},
+                execution_task_text=original_text,
+                execution_intent_text=original_text,
+                title_seed_text=original_text,
+            )
+        return _PreparedFeishuExecutionInput(
+            message_text="",
+            input_message_content_json={"feishuVoice": voice_metadata},
+            direct_reply_text="语音转写失败，请补发文字消息。",
+        )
+
+    voice_metadata["transcriptText"] = transcript_text
+    voice_metadata["transcriptionStatus"] = "succeeded"
+    logger.info(
+        "Feishu audio transcription succeeded",
+        extra={
+            "publication_id": str(publication.publication_id),
+            "message_id": str(message.get("message_id") or ""),
+            "message_type": message_type,
+            "has_original_text": bool(original_text),
+            "content_payload_keys": voice_metadata["contentPayloadKeys"],
+            "transcription_status": "succeeded",
+        },
+    )
+
+    if original_text:
+        merged_text = f"{original_text}\n\n[语音转写]\n{transcript_text}"
+        return _PreparedFeishuExecutionInput(
+            message_text=original_text,
+            input_message_text=original_text,
+            input_message_content_json={"feishuVoice": voice_metadata},
+            execution_task_text=merged_text,
+            execution_intent_text=original_text,
+            title_seed_text=original_text,
+        )
+
+    return _PreparedFeishuExecutionInput(
+        message_text=transcript_text,
+        input_message_text=transcript_text,
+        input_message_content_json={"feishuVoice": voice_metadata},
+        execution_task_text=transcript_text,
+        execution_intent_text=transcript_text,
+        title_seed_text=transcript_text,
+    )
 
 
 def _build_feishu_reply_text(
@@ -1855,12 +2196,12 @@ async def process_feishu_publication_message(
             )
             return {"success": True, "ignored": True}
         message_type = str(message.get("message_type") or "").strip().lower()
-        if message_type not in {"text", "file", "image"}:
+        if not _is_supported_feishu_inbound_message_type(message_type):
             await asyncio.to_thread(
                 _send_feishu_text_message,
                 publication,
                 chat_id=str(message.get("chat_id") or ""),
-                text="当前仅支持文本和文件消息，请直接发送文本或上传文件。",
+                text="当前支持文本、语音、图片和文件消息，请直接发送文本、语音或上传文件。",
             )
             return {"success": True, "ignored": True}
 
@@ -1944,10 +2285,21 @@ async def process_feishu_publication_message(
             role=user.role,
         )
 
-    feishu_uploads = await _prepare_feishu_message_uploads(
+    prepared_input = await _prepare_feishu_execution_input(
         publication=publication,
         message=message,
     )
+    if prepared_input.skip_execution_reason:
+        return {"success": True, "ignored": True, "reason": prepared_input.skip_execution_reason}
+    if prepared_input.direct_reply_text:
+        await asyncio.to_thread(
+            _send_feishu_text_message,
+            publication,
+            chat_id=str(message.get("chat_id") or ""),
+            text=prepared_input.direct_reply_text,
+        )
+        return {"success": True, "ignored": True, "reason": "audio_transcription_failed"}
+
     result = await execute_persistent_conversation_turn(
         conversation=conversation,
         principal=build_conversation_execution_principal(
@@ -1955,19 +2307,27 @@ async def process_feishu_publication_message(
             role=current_user.role,
             username=current_user.username,
         ),
-        message=str(message.get("text") or ""),
-        files=feishu_uploads,
+        message=prepared_input.message_text,
+        files=prepared_input.files,
         source="feishu",
         external_event_id=message.get("event_id"),
+        input_message_text=prepared_input.input_message_text,
+        input_message_content_json=prepared_input.input_message_content_json,
+        execution_task_text=prepared_input.execution_task_text,
+        execution_intent_text=prepared_input.execution_intent_text,
+        title_seed_text=prepared_input.title_seed_text,
     )
     if result.get("duplicate"):
         return {"success": True, "duplicate": True}
 
+    resolved_request_text = str(
+        prepared_input.execution_task_text or prepared_input.message_text or ""
+    ).strip()
     current_artifacts = list(result.get("artifacts") or [])
     delta_artifacts = _select_feishu_deliverable_artifacts(result.get("artifact_delta") or [])
     requested_artifacts = _select_feishu_explicitly_requested_artifacts(
         current_artifacts,
-        str(message.get("text") or ""),
+        resolved_request_text,
         str(result.get("output") or ""),
     )
     deliverable_artifacts: list[dict[str, Any]] = []
@@ -2056,7 +2416,7 @@ async def process_feishu_publication_message(
         not deliverable_artifacts
         and not deduped_pending
         and not sent_artifacts
-        and _looks_like_feishu_file_send_request(str(message.get("text") or ""))
+        and _looks_like_feishu_file_send_request(resolved_request_text)
     ):
         delivery_notes.append(
             "如果需要发送现有工作区文件，请在消息里写明文件名或路径，例如 output/report.md。"
@@ -2066,7 +2426,7 @@ async def process_feishu_publication_message(
         agent=agent,
         conversation=conversation,
         output_text=str(result.get("output") or ""),
-        request_text=str(message.get("text") or ""),
+        request_text=resolved_request_text,
         delivered_artifacts=sent_artifacts,
         pending_artifacts=deduped_pending,
         delivery_notes=delivery_notes,
