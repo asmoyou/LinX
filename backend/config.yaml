@@ -481,7 +481,7 @@ user_memory:
       runtime_mode: light
       api_mode: full
       provider: vllm
-      model: Qwen3.5-35B-A3B-FP8
+      model: Qwen3.5-27B-FP8
       timeout_seconds: 4
       failure_backoff_seconds: 60
       max_query_variants: 3
@@ -492,7 +492,7 @@ user_memory:
       min_score: 0.45
   extraction:
     provider: vllm
-    model: Qwen3.5-35B-A3B-FP8
+    model: Qwen3.5-27B-FP8
     timeout_seconds: 120
     max_facts: 10
     max_preference_facts: 10
@@ -502,6 +502,19 @@ user_memory:
     fail_closed_empty_writes: true
     enabled: true
     model_enabled: true
+  conversation_extraction:
+    enabled: true
+    run_on_startup: true
+    startup_delay_seconds: 30
+    interval_seconds: 300
+    idle_timeout_minutes: 30
+    overlap_turns: 2
+    max_new_turns_per_run: 8
+    max_batches_per_invocation: 3
+    advisory_lock_id: 73012024
+    use_advisory_lock: true
+    run_lease_seconds: 300
+    scan_limit: 200
   consolidation:
     enabled: true
     run_on_startup: true
@@ -534,12 +547,12 @@ user_memory:
     use_advisory_lock: true
 skill_candidates:
   extraction:
+    enabled: true
     provider: vllm
-    model: Qwen3.5-35B-A3B-FP8
+    model: Qwen3.5-27B-FP8
     timeout_seconds: 120
     max_candidates: 6
     failure_backoff_seconds: 60
-    enabled: true
 skill_runtime:
   retrieval:
     enabled: true
@@ -587,6 +600,7 @@ persistent_conversations:
 runtime_context:
   enable_user_memory: true
   enable_skills: true
+  enable_knowledge_base: true
 integrations:
   feishu:
     long_connection:
@@ -636,7 +650,7 @@ knowledge_base:
       。；！？.!?'
   parsing:
     method: auto
-    vision_model: Qwen3.5-35B-A3B-FP8
+    vision_model: Qwen3.5-27B-FP8
     vision_provider: vllm
     vision_timeout_seconds: 120
     output_language: zh-CN
