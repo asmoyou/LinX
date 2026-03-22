@@ -13,6 +13,9 @@ from database.models import SkillCandidate
 from skill_library.canonical_service import get_canonical_skill_service
 
 
+_CANDIDATE_PLAYBOOK_STORAGE_KIND = "inline"
+
+
 def _build_playbook_instruction(candidate: SkillCandidate) -> str:
     steps = [
         str(step).strip()
@@ -198,7 +201,7 @@ class SkillCandidateService:
                     "outputs": {"recommended_path": "string"},
                     "required_inputs": ["goal"],
                 },
-                "artifact_storage_kind": "inline",
+                "artifact_storage_kind": _CANDIDATE_PLAYBOOK_STORAGE_KIND,
                 "artifact_ref": None,
                 "manifest": {"artifact_kind": "playbook", "runtime_mode": "retrieval"},
                 "config": config_payload,

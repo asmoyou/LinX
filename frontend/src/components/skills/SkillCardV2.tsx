@@ -233,7 +233,7 @@ export default function SkillCardV2({
       : "-";
 
   return (
-    <div className="glass-panel group relative rounded-2xl overflow-visible p-6 hover:-translate-y-1 transition-all duration-300 flex flex-col h-full shadow-xl hover:shadow-2xl">
+    <div className="glass-panel group relative min-w-0 rounded-2xl overflow-visible p-6 hover:-translate-y-1 transition-all duration-300 flex flex-col h-full shadow-xl hover:shadow-2xl">
       {/* Gradient overlay on hover */}
       <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
 
@@ -252,26 +252,34 @@ export default function SkillCardV2({
               )}
             </div>
             <div className="flex-1 min-w-0">
-              <h3 className="text-lg font-semibold text-foreground truncate group-hover:text-primary transition-colors">
+              <h3
+                className="line-clamp-2 break-all text-lg font-semibold text-foreground group-hover:text-primary transition-colors"
+                title={skill.display_name}
+              >
                 {skill.display_name}
               </h3>
-              <p className="text-xs font-mono text-muted-foreground mt-1 truncate">
+              <p
+                className="mt-1 line-clamp-1 break-all text-xs font-mono text-muted-foreground"
+                title={skill.skill_slug}
+              >
                 {skill.skill_slug}
               </p>
               <div className="flex items-center gap-2 mt-2 mb-1 flex-wrap min-w-0">
                 <span
-                  className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${typeInfo.bgColor} ${typeInfo.color}`}
+                  className={`max-w-full truncate px-2.5 py-1 rounded-lg text-xs font-medium ${typeInfo.bgColor} ${typeInfo.color}`}
+                  title={typeInfo.badge}
                 >
                   {typeInfo.badge}
                 </span>
                 <span
-                  className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${ownershipInfo.className}`}
+                  className={`max-w-full truncate px-2.5 py-1 rounded-lg text-xs font-medium ${ownershipInfo.className}`}
+                  title={ownershipInfo.label}
                 >
                   {ownershipInfo.label}
                 </span>
                 {skill.is_active !== undefined && (
                   <span
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${
+                    className={`max-w-full truncate px-2.5 py-1 rounded-lg text-xs font-medium ${
                       skill.is_active
                         ? "bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-400"
                         : "bg-zinc-100 dark:bg-zinc-500/20 text-zinc-600 dark:text-zinc-400"
@@ -284,12 +292,15 @@ export default function SkillCardV2({
                 )}
               </div>
               <div className="relative group/description">
-                <p className="text-sm text-muted-foreground line-clamp-2 break-words cursor-help">
+                <p
+                  className="line-clamp-2 cursor-help break-all text-sm text-muted-foreground"
+                  title={skill.description}
+                >
                   {skill.description}
                 </p>
                 {skill.description && (
                   <div className="absolute top-full left-0 right-0 z-30 mt-2 opacity-0 translate-y-1 pointer-events-none transition-all duration-150 group-hover/description:opacity-100 group-hover/description:translate-y-0">
-                    <div className="max-h-44 overflow-y-auto rounded-lg border border-border/60 bg-background/95 p-3 text-xs leading-5 text-foreground shadow-2xl backdrop-blur-sm">
+                    <div className="max-h-44 overflow-y-auto rounded-lg border border-border/60 bg-background/95 p-3 text-xs leading-5 text-foreground shadow-2xl backdrop-blur-sm break-all">
                       {skill.description}
                     </div>
                   </div>
@@ -305,21 +316,21 @@ export default function SkillCardV2({
             <div className="text-xs font-medium text-muted-foreground mb-2">
               {t("skills.requirements")}:
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex min-w-0 flex-wrap gap-2">
               {skillMetadata.requires.bins &&
                 skillMetadata.requires.bins.length > 0 && (
-                  <div className="flex items-center gap-1 text-xs">
+                  <div className="flex min-w-0 items-start gap-1 text-xs">
                     <span className="text-muted-foreground">Bins:</span>
-                    <span className="text-foreground">
+                    <span className="min-w-0 break-all text-foreground">
                       {skillMetadata.requires.bins.join(", ")}
                     </span>
                   </div>
                 )}
               {skillMetadata.requires.env &&
                 skillMetadata.requires.env.length > 0 && (
-                  <div className="flex items-center gap-1 text-xs">
+                  <div className="flex min-w-0 items-start gap-1 text-xs">
                     <span className="text-muted-foreground">Env:</span>
-                    <span className="text-foreground">
+                    <span className="min-w-0 break-all text-foreground">
                       {skillMetadata.requires.env.join(", ")}
                     </span>
                   </div>
