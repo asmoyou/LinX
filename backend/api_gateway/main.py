@@ -580,7 +580,7 @@ def create_app() -> FastAPI:
     cors_allow_methods = config.get("api.cors.allow_methods", default=["*"])
     cors_allow_headers = config.get("api.cors.allow_headers", default=["*"])
 
-    cors_expose_headers = config.get("api.cors.expose_headers", default=["Content-Disposition"])
+    cors_expose_headers = config.get("api.cors.expose_headers", default=["Content-Disposition", "X-Total-Count"])
 
     app.add_middleware(
         CORSMiddleware,

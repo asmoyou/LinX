@@ -16,7 +16,20 @@ export interface ListUserMemoryRequest {
   query?: string;
   user_id?: string;
   limit?: number;
+  offset?: number;
   minScore?: number;
+  fact_kind?: string;
+  record_type?: string;
+  date_from?: string;
+  date_to?: string;
+  importance_min?: number;
+  importance_max?: number;
+  status?: string;
+}
+
+export interface ListUserMemoryResponse {
+  items: MemoryRecord[];
+  total: number;
 }
 
 export interface UpdateMemoryConfigRequest {
@@ -50,11 +63,16 @@ const normalizeUserMemoryRecord = (record: MemoryRecord): MemoryRecord => ({
 export const memoryWorkbenchApi = {
   async listUserMemory(
     params?: ListUserMemoryRequest,
-  ): Promise<MemoryRecord[]> {
+  ): Promise<ListUserMemoryResponse> {
     const response = await apiClient.get<MemoryRecord[]>("/user-memory", {
       params,
     });
-    return response.data.map(normalizeUserMemoryRecord);
+    const total = parseInt(
+      response.headers?.["x-total-count"] || "0",
+      10,
+    );
+    const items = response.data.map(normalizeUserMemoryRecord);
+    return { items, total: total || items.length };
   },
 
   async listUserMemoryProfile(
@@ -89,5 +107,14 @@ export const memoryWorkbenchApi = {
       data,
     );
     return response.data;
+  },
+
+  async listUsers(): Promise<
+    { user_id: string; username: string; display_name?: string }[]
+  > {
+    const response = await apiClient.get<{
+      users: { user_id: string; username: string; display_name?: string }[];
+    }>("/admin/users", { params: { page_size: 100 } });
+    return response.data.users || [];
   },
 };

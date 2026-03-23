@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 
 @dataclass(slots=True)
 class RetrievedMemoryItem:
     """Normalized retrieval item used by runtime and API adapters."""
 
-    id: Optional[int]
+    id: Optional[Union[int, str]]
     content: str
     memory_type: str
     agent_id: Optional[str] = None

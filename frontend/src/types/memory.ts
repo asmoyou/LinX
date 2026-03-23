@@ -71,6 +71,10 @@ export type MemoryRecordFilter = {
   tags?: string[];
   agentId?: string;
   userId?: string;
+  factKinds?: string[];
+  recordType?: string;
+  importanceMin?: number;
+  importanceMax?: number;
 };
 
 export type MemoryIndexInfo = {

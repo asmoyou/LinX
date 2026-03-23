@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import {
   CheckCircle2,
   Clock,
+  Database,
+  Layers,
   Loader2,
   Tag,
   TrendingUp,
@@ -106,19 +108,46 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
     }
   })();
 
+  const memorySource = String(memory.metadata?.memory_source || "").toLowerCase();
+  const recordType = String(memory.metadata?.record_type || "").toLowerCase();
+
+  const sourceBadge = (() => {
+    if (memorySource === "user_memory_view" || recordType === "user_profile") {
+      return {
+        icon: <Layers className="w-3 h-3" />,
+        label: t("memory.source.profile", { defaultValue: "Profile" }),
+        className: "bg-violet-500/15 text-violet-700 dark:text-violet-300",
+      };
+    }
+    if (recordType === "episode") {
+      return {
+        icon: <Layers className="w-3 h-3" />,
+        label: t("memory.source.episode", { defaultValue: "Episode" }),
+        className: "bg-cyan-500/15 text-cyan-700 dark:text-cyan-300",
+      };
+    }
+    return {
+      icon: <Database className="w-3 h-3" />,
+      label: t("memory.source.entry", { defaultValue: "Entry" }),
+      className: "bg-orange-500/15 text-orange-700 dark:text-orange-300",
+    };
+  })();
+
   return (
     <div onClick={() => onClick(memory)} className="cursor-pointer">
       <GlassPanel className="hover:scale-[1.02] transition-transform duration-200">
         <div className="mb-3 flex items-start justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
-            <User className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />
-            <span className="rounded-full bg-emerald-500/15 px-2 py-1 text-xs text-emerald-700 dark:text-emerald-300">
-              {memory.userName
-                ? t("memory.card.userMemoryOwner", {
-                    defaultValue: "{{name}} 的记忆",
-                    name: memory.userName,
-                  })
-                : t("memory.tabs.userMemory", { defaultValue: "用户记忆" })}
+            <span className="rounded-full bg-blue-500/15 px-2.5 py-1 text-xs text-blue-700 dark:text-blue-300 flex items-center gap-1.5 font-medium">
+              <User className="w-3.5 h-3.5" />
+              {memory.userName ||
+                t("memory.card.unknownUser", { defaultValue: "Unknown" })}
+            </span>
+            <span
+              className={`rounded-full px-2 py-1 text-xs flex items-center gap-1 ${sourceBadge.className}`}
+            >
+              {sourceBadge.icon}
+              {sourceBadge.label}
             </span>
             <span
               className={`rounded-full px-2 py-1 text-xs flex items-center gap-1 ${indexBadge.className}`}
@@ -133,6 +162,16 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
               {(relevanceScore * 100).toFixed(0)}%
             </div>
           )}
+          <span className="text-xs text-zinc-400 dark:text-zinc-500 whitespace-nowrap">
+            {(() => {
+              try {
+                const d = new Date(memory.updatedAt || memory.createdAt);
+                return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+              } catch {
+                return "";
+              }
+            })()}
+          </span>
         </div>
 
         <div className="mb-3">
